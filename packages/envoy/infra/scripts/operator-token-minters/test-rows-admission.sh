@@ -44,6 +44,9 @@
 #        that holds a document without a status, reads UNKNOWN naming the count; and a follow round
 #        whose answer refuses every review, its witness among them, or holds no status, reads
 #        UNKNOWN for the witness rather than pass a seeded chain.
+#   (cz) review's kubectl calls on a cluster are REVIEW_WORKERS, capped at the nominal seats the
+#        API server gives global-default; one call when its /metrics cannot be read or holds no
+#        such seats; and UNKNOWN for a REVIEW_WORKERS that is no whole number above 0.
 
 # --- (ce) A webhook's backend: whoever may write its Service, the workload behind it, its endpoints
 # or its TLS Secret decides what the webhook does to the operator's next pod. A webhook whose rules
@@ -531,4 +534,38 @@ review_answer_row() {
 if row cy; then
   each review_answer_row judged chunked repeated witness-copied follow-refused follow-nostatus
   passed "(cy) reviews answered as one document each are judged, asked in one call or in four at once; an answer that repeats one and leaves out another reads UNKNOWN naming the count; and a follow round whose answer is all refused or has no status reads UNKNOWN for its witness"
+fi
+
+# --- (cz) review's calls on a cluster are REVIEW_WORKERS, capped at the nominal seats the API server
+# gives the priority level global-default (its /metrics): asked with REVIEW_WORKERS=4 in a clean
+# world, a cluster with 2 seats gets 2 calls and one with 40 gets 4; a /metrics refused, or one
+# holding no global-default seats, gets one call; each run passes its step as one call does. A
+# REVIEW_WORKERS that is no whole number above 0 reads UNKNOWN naming it, exit 2. Run by hand, the
+# control is reviews.sh with review_workers' cap taken out (WORKERS set to REVIEW_WORKERS): the
+# capped item gets 4 calls, and the refused and no-seats items 4. ---
+worker_cap_row() {
+  local dir="$world/clusters/operator-cluster" calls want
+  base_world
+  case "$1" in
+    capped) echo 2 >"$dir/global-default-seats"; want=2 ;;
+    upper) echo 40 >"$dir/global-default-seats"; want=4 ;;
+    refused) : >"$dir/metrics-refused"; want=1 ;;
+    no-seats) : >"$dir/metrics-without-seats"; want=1 ;;
+    bad-workers)
+      REVIEW_WORKERS=abc run
+      want_rbac_unknown "REVIEW_WORKERS is not a whole number from 1 to 9999, so the reviews were not asked" \
+        "a REVIEW_WORKERS that is no number"
+      return
+      ;;
+  esac
+  REVIEW_WORKERS=4 run
+  want_status 0 "a clean world asked in capped calls ($1)"
+  want_text "PASS live: RBAC on operator-cluster: " "a clean world asked in capped calls ($1)"
+  calls=$(find "$dir" -maxdepth 1 -name 'review-call-*.json' | wc -l)
+  [ "$calls" -eq "$want" ] ||
+    fail "the review on operator-cluster ($1) was asked in $calls kubectl calls, want $want"
+}
+if row cz; then
+  each worker_cap_row capped upper refused no-seats bad-workers
+  passed "(cz) review's calls on a cluster are REVIEW_WORKERS capped at the API server's global-default seats (2 seats: 2 calls of 4; 40 seats: 4), one call when the seats cannot be read, and UNKNOWN for a REVIEW_WORKERS that is no number"
 fi

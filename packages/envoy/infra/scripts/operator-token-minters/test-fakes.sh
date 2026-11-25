@@ -406,6 +406,19 @@ case "${args[*]}" in
     shaped_answer policies
     { if [ -e "$dir/admission-policies.json" ]; then cat "$dir/admission-policies.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
+  "get --raw /metrics")
+    # The API server's metrics, the seats of global-default among them: 40, as on the operator's
+    # real cluster, or the world's global-default-seats. A world marked metrics-refused refuses the
+    # read, and metrics-without-seats answers metrics that hold no global-default seats (row cz).
+    if [ -e "$dir/metrics-refused" ]; then
+      echo 'Error from server (Forbidden): forbidden: User "ci" cannot get path "/metrics"' >&2
+      exit 1
+    fi
+    echo '# TYPE apiserver_flowcontrol_nominal_limit_seats gauge'
+    echo 'apiserver_flowcontrol_nominal_limit_seats{priority_level="workload-low"} 46'
+    [ -e "$dir/metrics-without-seats" ] ||
+      echo "apiserver_flowcontrol_nominal_limit_seats{priority_level=\"global-default\"} $(cat "$dir/global-default-seats" 2>/dev/null || echo 40)"
+    ;;
   "get --raw "*)
     # Discovery of one group version: the world's raw.json, keyed by path, or the API server's 404.
     jq -e --arg p "${args[2]}" '.[$p] // error("no such path")' "$dir/raw.json" 2>/dev/null ||

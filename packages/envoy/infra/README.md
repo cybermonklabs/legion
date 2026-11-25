@@ -4771,7 +4771,10 @@ a webhook that calls a URL outside the cluster, or a Service of type ExternalNam
 selector, reads UNKNOWN, and so does a cluster where Backup for GKE is installed. It reads code first
 (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming
 each principal and right, or 2 naming each step it could not read, a run that stopped mid-way
-included. `--report <file>` writes the same as JSON, with each allowance the run was given
+included. It asks a cluster's SubjectAccessReviews in up to `REVIEW_WORKERS` kubectl calls at once
+(10 unless set), never more than the seats that cluster's API server gives the priority level
+global-default, which it reads from the server's `/metrics`, and in one call when it cannot read
+them. `--report <file>` writes the same as JSON, with each allowance the run was given
 (`--service-agent`, `--rbac-only-member`, `--fleet none`, `--credentials-arg`) under `allowances`,
 and is deleted when a run starts, so a report is that run's or none. Each flag that names a thing
 (a project, a cluster, a namespace, an account, a secret) is checked for that thing's form before

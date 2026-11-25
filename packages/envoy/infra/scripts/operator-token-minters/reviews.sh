@@ -3,19 +3,41 @@
 # operator-token-minters/reviews.sh: SubjectAccessReviews, how their answers are judged, who can
 # become a ServiceAccount with a finding, and the principals and rights a cluster adds. Sourced by
 # operator-token-minters.sh, whose header says what each step checks.
-# REVIEW_WORKERS: how many kubectl calls review runs at once, each with its own share of the
-# principals. kubectl POSTs one review at a time, so one call is the API server's rate for one
-# connection: on a mock API server over loopback, 500 reviews took 21.5 s, 23.2 a second (measured;
-# a live API server is slower). The operator's cluster asks about 618,000 reviews, which is about
-# 7.4 hours at that one-call rate, and ten calls at once divide it if the API server serves ten
-# connections at that rate, which is arithmetic on the one-call measurement, not a measured figure.
-# A run sets REVIEW_WORKERS in its environment to ask more slowly, or 1 to ask as one call; the
-# answer's order does not depend on it, since the chunks are read back in the order they were asked.
+# REVIEW_WORKERS: the most kubectl calls review runs at once on one cluster, each with its own share
+# of the principals; 10 unless a run sets it. The calls on a cluster are REVIEW_WORKERS or the
+# nominal seats that cluster's API server gives the priority level global-default, whichever is
+# fewer (review_workers). kubectl POSTs one review at a time, so a call holds one seat at a time.
+# Measured on a mock API server over loopback, so kubectl's own cost (a live API server adds its
+# latency to each POST): 2,000 reviews took 86.4 s in one call (23.2 a second), 8.9 s in ten (225
+# a second) and 4.6 s in twenty (433 a second). The answer's order does not depend on the number
+# of calls, since the chunks are read back in the order they were asked.
 REVIEW_WORKERS="${REVIEW_WORKERS:-10}"
+# review_workers KUBECONFIG: sets WORKERS, how many calls review makes at once on that cluster:
+# REVIEW_WORKERS, capped at the nominal seats of the priority level global-default, which serves a
+# user no earlier FlowSchema matches, as the one running this check is. The seats are the API
+# server's apiserver_flowcontrol_nominal_limit_seats in its /metrics, from the replica that
+# answers. More calls than seats would only wait behind each other at the API server, and take
+# seats from global-default's other users. A /metrics that cannot be read, or that holds no
+# whole number of seats for global-default, gives one call, which loads the API server least: the
+# review is slower, never wrong. Returns 1 with REVIEW_ERROR when REVIEW_WORKERS is not a whole
+# number above 0.
+review_workers() {
+  local seats
+  WORKERS=1
+  [[ "$REVIEW_WORKERS" =~ ^[1-9][0-9]{0,3}$ ]] || {
+    REVIEW_ERROR="REVIEW_WORKERS is not a whole number from 1 to 9999, so the reviews were not asked"
+    return 1
+  }
+  seats="$(kubectl --kubeconfig "$1" get --raw /metrics 2>/dev/null |
+    awk '$1 == "apiserver_flowcontrol_nominal_limit_seats{priority_level=\"global-default\"}" { print $2; exit }')" || true
+  [[ "$seats" =~ ^[1-9][0-9]{0,5}$ ]] || return 0
+  WORKERS=$((seats < REVIEW_WORKERS ? seats : REVIEW_WORKERS))
+}
 # review KUBECONFIG PRINCIPALS RIGHTS: one SubjectAccessReview for each principal of the JSON array
 # PRINCIPALS ({principal, user, groups}) and each right of the JSON array RIGHTS. The principals are
-# split into REVIEW_WORKERS chunks, each asked by its own kubectl call as one List, so each call
-# POSTs its share one at a time and the calls run at once; the first chunk always holds the witness,
+# split into WORKERS chunks (review_workers: REVIEW_WORKERS, capped at the cluster's seats), each
+# asked by its own kubectl call as one List, so each call POSTs its share one at a time and the
+# calls run at once; the first chunk always holds the witness,
 # whose reviews every judgement ends on. kubectl create answers with one JSON document per review it
 # made, never a List (review-answer.jq), read with -s. A review's answer is matched to its question
 # by the subject and the attributes the API server echoes in its spec. Writes a record of principal,
@@ -31,8 +53,9 @@ review() {
   REVIEW_ERROR=""
   printf '%s' "$2" >"$WORK/review-principals.json"
   printf '%s' "$3" >"$WORK/review-rights.json"
-  # The chunks: at most REVIEW_WORKERS, each a share of the principals, the witness's in the first.
-  if ! chunks="$(jq -r --argjson workers "$REVIEW_WORKERS" '
+  review_workers "$1" || return 1
+  # The chunks: at most WORKERS, each a share of the principals, the witness's in the first.
+  if ! chunks="$(jq -r --argjson workers "$WORKERS" '
       (if length < $workers then length else $workers end) as $n
       | if $n < 1 then 1 else $n end' "$WORK/review-principals.json" 2>"$WORK/review.err")"; then
     REVIEW_ERROR="this script could not count the principals: $(first_line "$WORK/review.err")"
