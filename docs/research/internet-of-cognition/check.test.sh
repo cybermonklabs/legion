@@ -298,6 +298,16 @@ envoy_plant() {
     [ -n "$line" ] && grep -qxF -- "$line $2" "$1/judgement.md"
 }
 
+# stubbed_replay <check.sh>; gate_run of that script's --replay with the stub omp first on
+# PATH and its models.yml as IOC_OMP_MODELS (check.sh's FIXTURE_OMP_STUB and
+# FIXTURE_OMP_MODELS), as every fixture run has them. The cases that run --replay over this
+# tree to judge a step before any row run it so: --self-test, which runs this file, needs no
+# omp and no IOC_OMP_MODELS of the machine's (SELF_TEST_STUBBED), so without the stub such a
+# run ended at --replay's prerequisites, naming omp, before the step the case judges.
+stubbed_replay() {
+    PATH="$FIXTURE_OMP_STUB:$PATH" IOC_OMP_MODELS="$FIXTURE_OMP_MODELS" gate_run "$1" --replay
+}
+
 # published_step_plant <dir> <commit> [<pull request>]; names <commit> as the commit of the
 # fixture's landed step and the fixture's own repository as our repository's url, so
 # --published fetches from it, and, where <pull request> is given, that pull request as the
@@ -2429,7 +2439,7 @@ for form in 'gone|select(.id != "s-model-checksum")|claims\.jsonl holds no row s
         printf 'FAIL the row env.sh reads could not be planted %s in a copy of claims.jsonl\n' "$planted"
         exit 1
     }
-    out="$(IOC_EVIDENCE="$copy" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" DISPATCH_URL=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 no_proxy= NO_PROXY= gate_run "$HERE/check.sh" --replay)"
+    out="$(IOC_EVIDENCE="$copy" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" DISPATCH_URL=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 no_proxy= NO_PROXY= stubbed_replay "$HERE/check.sh")"
     evidence_stop_result "--replay whose row env.sh reads is $planted fails claim-form alone, naming the row, and stops before it reads a source or builds anything, exit 1" "$detail" "$out"
 done
 out="$(bash -c '. "$1" && claims_parsed && env_functions && env_rows_judge claim-form && printf "it reported nothing\n"' _ "$HERE/check.sh" 2>&1)"
@@ -3227,7 +3237,7 @@ exit 7
 STUB
 sed -i -e "s|THE_DEPLOYMENT_REPO|$FIXTURE_DEPLOYMENT_REPO|g" "$PRIVATE/bin/curl"
 chmod +x "$PRIVATE/bin/git" "$PRIVATE/bin/curl"
-out="$(PATH="$PRIVATE/bin:$PATH" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" gate_run "$HERE/check.sh" --replay)"
+out="$(PATH="$PRIVATE/bin:$PATH" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" stubbed_replay "$HERE/check.sh")"
 private_case="--replay whose git cannot read the deployment repository cannot run, exit 2, naming the input and the rows that read it, and prints no FAIL"
 if grep -q '^FAIL' "$out/text"; then
     case_failed "$private_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
@@ -5526,7 +5536,7 @@ capitals="${FIXTURE_DEPLOYMENT_REPO^^}"
     printf 'FAIL the placeholder could not be written in capitals\n'
     exit 1
 }
-out="$(PATH="$deployment/found:$PATH" IOC_DEPLOYMENT_REPO="$capitals" gate_run "$HERE/check.sh" --replay)"
+out="$(PATH="$deployment/found:$PATH" IOC_DEPLOYMENT_REPO="$capitals" stubbed_replay "$HERE/check.sh")"
 capitals_case="--replay whose IOC_DEPLOYMENT_REPO is written in capitals reads the repository by the name GitHub gives it, and git ls-remote reads that name"
 if grep -q '^FAIL' "$out/text"; then
     case_failed "$capitals_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
@@ -5537,7 +5547,7 @@ else
         "^check\\.sh cannot run --replay: GitHub's answer to git ls-remote of the deployment repository IOC_DEPLOYMENT_REPO names, .* not found\\. fatal: repository 'https://github\\.com/\\\$IOC_DEPLOYMENT_REPO\\.git/' not found" "$out" \
         '^check\.sh cannot run --replay: GitHub'
 fi
-out="$(PATH="$deployment/missing:$PATH" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" gate_run "$HERE/check.sh" --replay)"
+out="$(PATH="$deployment/missing:$PATH" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" stubbed_replay "$HERE/check.sh")"
 missing_case="--replay whose IOC_DEPLOYMENT_REPO names a repository GitHub answers 404 for cannot run, of the kind prerequisite, naming the variable and not the value"
 if grep -qiF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text"; then
     case_failed "$missing_case" "its text names the value: $(grep -ciF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text") lines"
@@ -5602,7 +5612,7 @@ for form in 503 none; do
     503) said='curl: \(22\) The requested URL returned error: 503' what='a 503' ;;
     none) said="curl: \\(7\\) Failed to connect to api\\.github\\.com port 443 after 0 ms: Couldn't connect to server" what='no answer' ;;
     esac
-    out="$(PATH="$outage/$form:$PATH" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" gate_run "$HERE/check.sh" --replay)"
+    out="$(PATH="$outage/$form:$PATH" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" stubbed_replay "$HERE/check.sh")"
     outage_case="--replay whose read of the deployment repository's name gets $what cannot run, of the kind source, naming IOC_DEPLOYMENT_REPO and not the value"
     if grep -qiF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text"; then
         case_failed "$outage_case" "its text names the value: $(grep -ciF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text") lines"
