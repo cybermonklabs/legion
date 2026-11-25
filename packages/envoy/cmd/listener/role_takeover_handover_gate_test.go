@@ -2,24 +2,29 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/session"
 )
 
 const (
 	// gateReplaced is the session a claim names as the one it replaces, gateClaimant the session
-	// that claims gateRole naming it.
+	// that claims gateRole naming it. gateHeldRole is a role gateReplaced held, which the claim
+	// does not take: its message reaches that role's kept lane only through the handover.
 	gateReplaced  = "ses_gate_replaced"
 	gateClaimant  = "ses_gate_claimant"
 	gateRole      = "gate-role"
+	gateHeldRole  = "gate-held-role"
 	gatePerson    = "ada@example.com"
 	gateOther     = "grace@example.com"
 	gateService   = "example-fleet"
@@ -63,15 +68,17 @@ func newGateRig(t *testing.T) *gateRig {
 }
 
 // personToken is the access token of sessionID acting for person, which the stub broker answers.
+// Each session and person has a token of its own, since the listener keeps what the broker
+// answered for a token, so one token never acts for two principals.
 func (rig *gateRig) personToken(sessionID, person string) string {
-	token := "access-token-of-" + sessionID
+	token := "access-token-of-" + sessionID + "-for-" + person
 	rig.broker.Says(token, sessionAnswer(sessionID, person, rig.caller.JKT()))
 	return token
 }
 
 // serviceToken is the access token of sessionID naming service and no person.
 func (rig *gateRig) serviceToken(sessionID, service string) string {
-	token := "access-token-of-" + sessionID
+	token := "access-token-of-" + sessionID + "-for-" + service
 	rig.broker.Says(token, serviceAnswer(sessionID, service, rig.caller.JKT()))
 	return token
 }
@@ -129,34 +136,42 @@ func (rig *gateRig) claimOn(t *testing.T, token string) []string {
 	return answer.Warnings
 }
 
-// replacedUnread starts gateReplaced's process and registers it presenting token, stores a message
-// to it that it reads and then one it does not read, and stops its process as a crash does, past
-// its live window: its consumer stands, holding the unread message unacknowledged, and it is not
-// live. It returns the event ids of the read message and the unread one, and their sequences.
-func (rig *gateRig) replacedUnread(t *testing.T, token string) (string, string, map[string]uint64) {
+// replacedUnread starts gateReplaced's process, registers it presenting token and has it claim
+// gateHeldRole, stores a message to it that it reads, then one it does not read and one role
+// message of gateHeldRole it does not read, and stops its process as a crash does, past its live
+// window: its consumer stands, holding the unread messages unacknowledged, and it is not live.
+// It returns the event ids of the read message, the unread direct message and the unread role
+// message, and their sequences.
+func (rig *gateRig) replacedUnread(t *testing.T, token string) (string, string, string, map[string]uint64) {
 	t.Helper()
 	standIn := startCopiesStandIn(t, rig.url, gateReplaced, copiesHolderAnswer)
 	rig.registerOn(t, token, gateReplaced)
+	grantRoleClaim(t, rig.mux, gateReplaced, gateHeldRole, "", false)
 	read := rig.sendDirect(t, gateReplaced, "dispatch", copiesReadMark+"a message to "+gateReplaced+" it read")
 	unread := rig.sendDirect(t, gateReplaced, "dispatch", "an unread message to "+gateReplaced)
-	seqs := copiesSeqs(t, standIn.collect(t, 2, copiesWatchBound), read, unread)
-	awaitAckState(t, rig.consumers, gateReplaced, 1, seqs[read])
+	role := rig.publish(t, gateHeldRole, "", "an unread role message of "+gateHeldRole, gateReplaced)
+	seqs := copiesSeqs(t, standIn.collect(t, 3, copiesWatchBound), read, unread, role)
+	awaitAckState(t, rig.consumers, gateReplaced, 2, seqs[read])
 	rig.crash(t, gateReplaced, standIn)
 	rig.sessionClock.advance(session.LiveWindow + 30*time.Second)
 	if _, state := rig.harness.sessions.Lookup(gateReplaced); state != session.Unresponsive {
 		t.Fatalf("%s reads %s past its live window; want %s", gateReplaced, state, session.Unresponsive)
 	}
-	return read, unread, seqs
+	return read, unread, role, seqs
 }
 
 // claimantReceives starts gateClaimant's process, registers it presenting token, has it claim
-// gateRole naming gateReplaced on the same credential, and counts what it receives by event id:
-// want, through the claim's handover, then once more through a pass of the kept lane's sweep,
-// which runs the passes of every record not finished. It returns the claim's warnings too.
-func (rig *gateRig) claimantReceives(t *testing.T, token string, want ...string) ([]string, copiesReceived) {
+// gateRole naming gateReplaced on that token, or on the one claimsAs gives where it is set, and
+// counts what it receives by event id: want, through the claim's handover, then once more through
+// a pass of the kept lane's sweep, which runs the passes of every record not finished. It returns
+// the claim's warnings too.
+func (rig *gateRig) claimantReceives(t *testing.T, token string, claimsAs func() string, want ...string) ([]string, copiesReceived) {
 	t.Helper()
 	taker := startCopiesStandIn(t, rig.url, gateClaimant, answerDone)
 	rig.registerOn(t, token, gateClaimant)
+	if claimsAs != nil {
+		token = claimsAs()
+	}
 	warnings := rig.claimOn(t, token)
 	received := rig.watch(t, taker, gateClaimant, gateRole, want...)
 	rig.sweepPass()
@@ -177,25 +192,28 @@ func gateWarning(warnings []string) (string, bool) {
 	return "", false
 }
 
-// A claim that names the session it replaces hands that session's unread direct messages to the
-// claimant only when the credential the claim presents acts for the principal that session last
-// registered as (handoverRefusal): a broker token's person, else its service, else an identity
-// token's principal, else none. A session's own broker token proves only that the claimant is
-// itself, so without this rule any session could name a stopped session - a person's among them -
-// and read its messages. Each refused row fails where the rule is not kept: the claimant receives
-// the unread message, and the role holds a handover record.
+// A claim that names the session it replaces hands that session's unread messages to the claimant
+// only when the credential the claim presents, the claimant's last registration and the replaced
+// session's last registration all name one principal (handoverRefusal): a broker token's person,
+// else its service, else an identity token's principal, else none. A session's own broker token
+// proves only that the claimant is itself, so without this rule any session could name a stopped
+// session - a person's among them - and read its messages. Each refused row fails where the rule
+// is not kept: the claimant receives the unread direct message, the role message of the role the
+// replaced session held reaches that role's kept lane, and the role holds a handover record.
 //
 // The row where neither session's credential proves a principal is the existing handover tests'
 // (TestASessionThatReplacesAnotherReceivesItsUnreadMessages,
-// TestTheHandoverHoldsForEachRoleAndForAPersonsSession, TestAClaimNamingTheSessionItReplacesWritesOneHandoverRecord),
+// TestTheHandoverHoldsForEachRoleAndForTheMessagesAPersonSent, TestAClaimNamingTheSessionItReplacesWritesOneHandoverRecord),
 // whose sessions all register and claim on no credential, so each record names no principal and
 // every claim's credential acts for none.
 func TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal(t *testing.T) {
 	for _, row := range []struct {
 		name string
 		// replaced and claimant are the credentials each session registers on, and the
-		// claimant claims on, by the token each mints for its own session.
+		// claimant claims on, by the token each mints for its own session. claimsAs, where set,
+		// is another token of the claimant's own session, which it claims on once registered.
 		replaced, claimant func(rig *gateRig, sessionID string) string
+		claimsAs           func(rig *gateRig, sessionID string) string
 		handedOver         bool
 	}{
 		{
@@ -226,6 +244,12 @@ func TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal(t *testing.T)
 			claimant: func(rig *gateRig, s string) string { return rig.serviceToken(s, gateService) },
 		},
 		{
+			name:     "d refused: the claimant registered as one person and claims as the replaced session's",
+			replaced: func(rig *gateRig, s string) string { return rig.personToken(s, gateOther) },
+			claimant: func(rig *gateRig, s string) string { return rig.personToken(s, gatePerson) },
+			claimsAs: func(rig *gateRig, s string) string { return rig.personToken(s, gateOther) },
+		},
+		{
 			name:     "e refused: a claim on a credential that proves no principal names a person's session",
 			replaced: func(rig *gateRig, s string) string { return rig.personToken(s, gatePerson) },
 			claimant: func(*gateRig, string) string { return gateNoneToken },
@@ -233,15 +257,24 @@ func TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal(t *testing.T)
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newGateRig(t)
-			read, unread, seqs := rig.replacedUnread(t, row.replaced(rig, gateReplaced))
+			read, unread, role, seqs := rig.replacedUnread(t, row.replaced(rig, gateReplaced))
 			before := rig.harness.logs.String()
-			warnings, received := rig.claimantReceives(t, row.claimant(rig, gateClaimant), wantIf(row.handedOver, unread)...)
+			var claimsAs func() string
+			if row.claimsAs != nil {
+				claimsAs = func() string { return row.claimsAs(rig, gateClaimant) }
+			}
+			warnings, received := rig.claimantReceives(t, row.claimant(rig, gateClaimant), claimsAs, wantIf(row.handedOver, unread)...)
 			logged := strings.TrimPrefix(rig.harness.logs.String(), before)
 			warning, warned := gateWarning(warnings)
 
 			if row.handedOver {
 				t.Run("case: the claimant receives the replaced session's unread direct message", func(t *testing.T) {
 					copiesRequireEach(t, received, gateClaimant, unread)
+				})
+				t.Run("case: the unread message of the role the replaced session held waits on that role's kept lane", func(t *testing.T) {
+					if n := rig.keptCopiesOf(t, gateHeldRole, role); n != 1 {
+						t.Errorf("role %s's kept lane holds %d copies of %s; want exactly one", gateHeldRole, n, role)
+					}
 				})
 				t.Run("control: the claimant receives none of what the replaced session read, and the claim warns of nothing", func(t *testing.T) {
 					copiesRequireNone(t, received, gateClaimant, read)
@@ -272,8 +305,13 @@ func TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal(t *testing.T)
 					t.Errorf("%s's own subject holds %d copies of %s; want none", gateClaimant, n, unread)
 				}
 			})
-			t.Run("case: the replaced session's consumer still holds its unread message unacknowledged", func(t *testing.T) {
-				rig.requireUnacknowledged(t, gateReplaced, seqs, unread)
+			t.Run("case: the unread message of the role the replaced session held is copied nowhere", func(t *testing.T) {
+				if n := rig.keptCopiesOf(t, gateHeldRole, role); n != 0 {
+					t.Errorf("role %s's kept lane holds %d copies of %s; want none", gateHeldRole, n, role)
+				}
+			})
+			t.Run("case: the replaced session's consumer still holds its unread messages unacknowledged", func(t *testing.T) {
+				rig.requireUnacknowledged(t, gateReplaced, seqs, unread, role)
 			})
 			t.Run("case: the listener logs the refusal once at INFO, naming the role and both sessions", func(t *testing.T) {
 				lines := 0
@@ -305,16 +343,145 @@ func wantIf(want bool, eventIDs ...string) []string {
 	return eventIDs
 }
 
-// The rule refuses where nothing tells the principal the replaced session registered as: a session
-// the store holds no record of, and a listener with no store open, which reads every session so.
-// A request with no credential acts for no principal, and a record naming none is the only one
-// it matches.
-func TestTheHandoverGateRefusesASessionWithNoRecord(t *testing.T) {
+// A record decides the rule for good only where it says which principal its session last
+// registered as. The replaced session with no record in an open store, one whose record a
+// listener of an earlier build wrote last (no principal recorded), and a listener with no store
+// at all are refused, and the refusal names why. What only a later claim can read is
+// errHandoverUnjudged, which the claim route answers 503: a store whose bucket is not open, and a
+// claimant whose own registration is not recorded with its principal yet. The control is the same
+// claim where both sessions registered on no credential, as the claim's own does, which stands.
+func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
+	client := setupPublishTestClient(t)
+	known := openKnownSessionsOn(t, client.Conn, time.Now)
 	request := httptest.NewRequest(http.MethodPost, "/v1/roles/set", nil)
 	if principal := requestPrincipal(request); principal != "" {
 		t.Fatalf("a request presenting no credential acts for %q; want no principal", principal)
 	}
-	if refusal := handoverRefusal(request, nil, gateReplaced); !strings.Contains(refusal, gateReplaced) {
-		t.Errorf("the refusal of a claim naming %s on a listener with no known-session store is %q; want one naming it", gateReplaced, refusal)
+	register := func(t *testing.T, sessionIDs ...string) {
+		t.Helper()
+		for _, sessionID := range sessionIDs {
+			if err := known.RecordRegistrationWithin(t.Context(), session.KnownSession{SessionID: sessionID}); err != nil {
+				t.Fatalf("record %s's registration: %v", sessionID, err)
+			}
+		}
+	}
+	writtenByAnEarlierBuild := func(t *testing.T, sessionID string) {
+		t.Helper()
+		kv, err := client.JS().KeyValue(bus.KnownSessionBucket)
+		if err != nil {
+			t.Fatalf("open the known-session bucket: %v", err)
+		}
+		value, err := json.Marshal(map[string]any{"session_id": sessionID, "topics": []string{}, "last_seen": time.Now().UnixMilli()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := kv.Put(sessionID, value); err != nil {
+			t.Fatalf("write %s's record as an earlier build does: %v", sessionID, err)
+		}
+	}
+	refused := func(t *testing.T, known *session.KnownSessions, replaced, claimant, reason string) {
+		t.Helper()
+		why, err := handoverRefusal(t.Context(), request, known, replaced, claimant)
+		if err != nil || why == "" || !strings.Contains(why, reason) {
+			t.Errorf("handoverRefusal(%s replaced by %s) = %q, %v; want a refusal saying %q", replaced, claimant, why, err, reason)
+		}
+	}
+	unjudged := func(t *testing.T, known *session.KnownSessions, replaced, claimant string) {
+		t.Helper()
+		why, err := handoverRefusal(t.Context(), request, known, replaced, claimant)
+		if why != "" || !errors.Is(err, errHandoverUnjudged) {
+			t.Errorf("handoverRefusal(%s replaced by %s) = %q, %v; want %v, for the claim to be made again", replaced, claimant, why, err, errHandoverUnjudged)
+		}
+	}
+
+	t.Run("case: an open store holds no record of the replaced session", func(t *testing.T) {
+		register(t, "ses_gate_unit_claimant_a")
+		refused(t, known, "ses_gate_unit_never", "ses_gate_unit_claimant_a", "holds no record of the principal ses_gate_unit_never")
+	})
+	t.Run("case: a listener of an earlier build wrote the replaced session's record last", func(t *testing.T) {
+		register(t, "ses_gate_unit_claimant_b")
+		writtenByAnEarlierBuild(t, "ses_gate_unit_earlier")
+		refused(t, known, "ses_gate_unit_earlier", "ses_gate_unit_claimant_b", "earlier build")
+	})
+	t.Run("case: the listener keeps no known-session store", func(t *testing.T) {
+		refused(t, nil, "ses_gate_unit_any", "ses_gate_unit_claimant_c", "keeps no record")
+	})
+	t.Run("case: the claimant's own registration is not recorded with its principal yet", func(t *testing.T) {
+		register(t, "ses_gate_unit_replaced_d")
+		unjudged(t, known, "ses_gate_unit_replaced_d", "ses_gate_unit_unregistered")
+		writtenByAnEarlierBuild(t, "ses_gate_unit_claimant_earlier")
+		unjudged(t, known, "ses_gate_unit_replaced_d", "ses_gate_unit_claimant_earlier")
+	})
+	t.Run("case: a store whose bucket is not open", func(t *testing.T) {
+		unjudged(t, &session.KnownSessions{}, "ses_gate_unit_replaced_d", "ses_gate_unit_claimant_e")
+	})
+	t.Run("control: both sessions registered on no credential, and the claim presents none", func(t *testing.T) {
+		register(t, "ses_gate_unit_replaced_f", "ses_gate_unit_claimant_f")
+		if why, err := handoverRefusal(t.Context(), request, known, "ses_gate_unit_replaced_f", "ses_gate_unit_claimant_f"); why != "" || err != nil {
+			t.Errorf("handoverRefusal = %q, %v; want the handover to stand", why, err)
+		}
+	})
+}
+
+// The rule binds the two sessions after the claim as well: each pass of the handover record, and
+// the successor read Dispatch's reply makes, read both sessions' last registrations again
+// (handoverStands). A claim of one person's session names that person's other session while it is
+// still live, so the claim's own pass copies nothing and the record stands; then the replaced
+// session registers again, as another person in the case row and as the same person in the
+// control, and stops. In the case the sweep's pass copies nothing and the successor read names no
+// one; in the control the claimant receives the unread message and is named. The case fails where
+// a record, once written, hands over whatever the sessions register as later.
+func TestAHandoverEndsWhenTheReplacedSessionRegistersAsAnotherPrincipal(t *testing.T) {
+	for _, row := range []struct {
+		name       string
+		registered string
+		handedOver bool
+	}{
+		{name: "case: it registers again as another person", registered: gateOther},
+		{name: "control: it registers again as the same person", registered: gatePerson, handedOver: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newGateRig(t)
+			standIn := startCopiesStandIn(t, rig.url, gateReplaced, copiesHolderAnswer)
+			rig.registerOn(t, rig.personToken(gateReplaced, gatePerson), gateReplaced)
+			read := rig.sendDirect(t, gateReplaced, "dispatch", copiesReadMark+"a message to "+gateReplaced+" it read")
+			unread := rig.sendDirect(t, gateReplaced, "dispatch", "an unread message to "+gateReplaced)
+			seqs := copiesSeqs(t, standIn.collect(t, 2, copiesWatchBound), read, unread)
+			awaitAckState(t, rig.consumers, gateReplaced, 1, seqs[read])
+
+			taker := startCopiesStandIn(t, rig.url, gateClaimant, answerDone)
+			token := rig.personToken(gateClaimant, gatePerson)
+			rig.registerOn(t, token, gateClaimant)
+			if warning, warned := gateWarning(rig.claimOn(t, token)); warned {
+				t.Fatalf("the claim of one person's session naming that person's other session warned %q", warning)
+			}
+			if n := rig.handoverRecords(t, gateRole, gateReplaced, gateClaimant); n != 1 {
+				t.Fatalf("role %s holds %d handover records from %s to %s; want exactly one", gateRole, n, gateReplaced, gateClaimant)
+			}
+
+			rig.registerOn(t, rig.personToken(gateReplaced, row.registered), gateReplaced)
+			rig.crash(t, gateReplaced, standIn)
+			rig.sessionClock.advance(session.LiveWindow + 30*time.Second)
+			rig.sweepPass()
+			received := rig.watch(t, taker, gateClaimant, gateRole, wantIf(row.handedOver, unread)...)
+			successors, recorder := readSuccessors(t, rig.mux, gateReplaced)
+			requireStatus(t, recorder, http.StatusOK, "the successors of "+gateReplaced)
+
+			if row.handedOver {
+				copiesRequireEach(t, received, gateClaimant, unread)
+				if !slices.Equal(successors.Successors, []string{gateClaimant}) {
+					t.Errorf("the successors of %s = %v; want [%s]", gateReplaced, successors.Successors, gateClaimant)
+				}
+				return
+			}
+			copiesRequireNone(t, received, gateClaimant, unread)
+			if n := rig.handedOverCopies(t, gateClaimant, unread); n != 0 {
+				t.Errorf("%s's own subject holds %d copies of %s; want none", gateClaimant, n, unread)
+			}
+			rig.requireUnacknowledged(t, gateReplaced, seqs, unread)
+			if len(successors.Successors) != 0 {
+				t.Errorf("the successors of %s = %v; want none: it last registered as another person than %s", gateReplaced, successors.Successors, gateClaimant)
+			}
+		})
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,16 +16,17 @@ import (
 
 const (
 	// handoverOld is the session a claim replaces, handoverNew the session that replaces it,
-	// handoverNext a session that claims a role later with no session named. handoverPerson is a
-	// person's session and handoverAgent the agent session that replaces it, each with the client
-	// instance of its own process (handoverPersonProcess, handoverAgentProcess).
-	handoverOld           = "ses_handover_old"
-	handoverNew           = "ses_handover_new"
-	handoverNext          = "ses_handover_next"
-	handoverPerson        = "ses_handover_person"
-	handoverAgent         = "ses_handover_agent"
-	handoverPersonProcess = "process-of-the-person"
-	handoverAgentProcess  = "process-of-the-agent"
+	// handoverNext a session that claims a role later with no session named. handoverAddressed is
+	// a session a person sends messages to, and handoverHeir the session of the same principal
+	// that replaces it, each with the client instance of its own process
+	// (handoverAddressedProcess, handoverHeirProcess).
+	handoverOld              = "ses_handover_old"
+	handoverNew              = "ses_handover_new"
+	handoverNext             = "ses_handover_next"
+	handoverAddressed        = "ses_handover_addressed"
+	handoverHeir             = "ses_handover_heir"
+	handoverAddressedProcess = "process-of-the-addressed-session"
+	handoverHeirProcess      = "process-of-the-heir"
 	// handoverOldProcess is the replaced session's process, which a hand-back names: the release
 	// route frees a claim naming the process that releases it.
 	handoverOldProcess = "process-of-the-old-session"
@@ -128,6 +130,29 @@ func (rig *copiesRig) handoverUnread(t *testing.T, sessionID, instance, source s
 	return standIn, direct, role
 }
 
+// readMessageOf is the event id of the one message to sessionID that handoverUnread had it read,
+// found on its own subject by the mark its text begins with (copiesReadMark).
+func (rig *copiesRig) readMessageOf(t *testing.T, sessionID string) string {
+	t.Helper()
+	for _, message := range rig.stored(t, contracts.LegacyAgentSubject(sessionID)) {
+		if strings.HasPrefix(message.item.PayloadSummary, copiesReadMark) {
+			return message.item.EventID
+		}
+	}
+	t.Fatalf("the stream holds no message %s read", sessionID)
+	return ""
+}
+
+// requireNoneHandedOver fails the row where sessionID received the message eventID, or where its
+// own subject holds a copy of it: a message the replaced session read is not handed over.
+func (rig *copiesRig) requireNoneHandedOver(t *testing.T, received copiesReceived, sessionID, eventID string) {
+	t.Helper()
+	copiesRequireNone(t, received, sessionID, eventID)
+	if n := rig.handedOverCopies(t, sessionID, eventID); n != 0 {
+		t.Errorf("%s's own subject holds %d copies of %s, a message the replaced session read; want none", sessionID, n, eventID)
+	}
+}
+
 // A session that replaces another one names it in its claim of its role (previous_session_id),
 // as a Legion session does once its claim's daemon names the session the claim abandoned
 // (registration's `replaces`). Each direct message and each role message the replaced session's
@@ -156,6 +181,10 @@ func TestASessionThatReplacesAnotherReceivesItsUnreadMessages(t *testing.T) {
 		taker := rig.startTaker(t, handoverNew)
 		rig.claimReplacing(t, handoverNew, handoverRole, handoverOld, "")
 		received := rig.watch(t, taker, handoverNew, handoverRole, append(direct, role...)...)
+
+		t.Run("control: the new session receives no message the replaced session read", func(t *testing.T) {
+			rig.requireNoneHandedOver(t, received, handoverNew, rig.readMessageOf(t, handoverOld))
+		})
 
 		t.Run("case: the new session receives each unread direct message of the replaced session", func(t *testing.T) {
 			copiesRequireEach(t, received, handoverNew, direct...)
@@ -187,6 +216,10 @@ func TestASessionThatReplacesAnotherReceivesItsUnreadMessages(t *testing.T) {
 		rig.claimReplacing(t, handoverNew, handoverRole, handoverOld, "")
 		received := rig.watch(t, taker, handoverNew, handoverRole, append(direct, role...)...)
 
+		t.Run("control: the new session receives no message the replaced session read", func(t *testing.T) {
+			rig.requireNoneHandedOver(t, received, handoverNew, rig.readMessageOf(t, handoverOld))
+		})
+
 		t.Run("case: the new session receives each unread direct message of the replaced session", func(t *testing.T) {
 			copiesRequireEach(t, received, handoverNew, direct...)
 		})
@@ -196,22 +229,22 @@ func TestASessionThatReplacesAnotherReceivesItsUnreadMessages(t *testing.T) {
 	})
 }
 
-// The handover holds for a session that held more than one role, and for a person's session that
-// an agent session replaces. A role message of each role the replaced session held goes to that
-// role's kept lane, which hands it to the role's next live holder: the new session for each role
-// it claims (row 1), the next session to claim it for a role the new session does not (row 2). A
-// direct message reaches the new session once however many of its claims name the replaced
-// session. A person's session's unread messages reach the agent session that names it once it
-// has stopped (row 3), and not while it is live (row 4): a session that answers reads its own
-// messages. The case rows fail on the base this change builds on, where nothing is copied from a
-// session whose claim did not stand and no direct message is copied at all.
+// The handover holds for a session that held more than one role, and for the messages a person
+// sent a session. A role message of each role the replaced session held goes to that role's kept
+// lane, which hands it to the role's next live holder: the new session for each role it claims
+// (row 1), the next session to claim it for a role the new session does not (row 2). A direct
+// message reaches the new session once however many of its claims name the replaced session. The
+// unread messages a person sent a session reach the session of the same principal that names it
+// once it has stopped (row 3), and not while it is live (row 4): a session that answers reads its
+// own messages. The case rows fail on the base this change builds on, where nothing is copied from
+// a session whose claim did not stand and no direct message is copied at all.
 //
 // Every session here registers and claims on no credential, so each record and each claim names no
 // principal, and the rule that hands over only between sessions of one principal (handoverRefusal)
-// lets each handover stand. A person's session registered on its person's credential is handed to
-// no agent session on a credential of its own service, by design
+// lets each handover stand. A person's own session registered on its person's credential is handed
+// to no agent session on a credential of its own service, by design
 // (TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal).
-func TestTheHandoverHoldsForEachRoleAndForAPersonsSession(t *testing.T) {
+func TestTheHandoverHoldsForEachRoleAndForTheMessagesAPersonSent(t *testing.T) {
 	t.Run("1 the replaced session held two roles, and the new session claims both", func(t *testing.T) {
 		rig := newCopiesRig(t)
 		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayCopy: func(role string, seq uint64) error {
@@ -270,59 +303,60 @@ func TestTheHandoverHoldsForEachRoleAndForAPersonsSession(t *testing.T) {
 		})
 	})
 
-	t.Run("3 an agent session replaces a person's session that handed its role back and stopped", func(t *testing.T) {
+	t.Run("3 a session a person messaged handed its role back and stopped, and a session of its principal replaces it", func(t *testing.T) {
 		rig := newCopiesRig(t)
 		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayCopy: copiesRelayCopyHeld(handoverRole)})
-		person, direct, role := rig.handoverUnread(t, handoverPerson, handoverPersonProcess, "dispatch", 2, handoverRole)
-		rig.stopCleanly(t, handoverPerson, handoverPersonProcess, person, handoverRole)
+		addressed, direct, role := rig.handoverUnread(t, handoverAddressed, handoverAddressedProcess, "dispatch", 2, handoverRole)
+		rig.stopCleanly(t, handoverAddressed, handoverAddressedProcess, addressed, handoverRole)
 
-		agent := startCopiesStandIn(t, rig.url, handoverAgent, answerDone)
-		rig.register(t, handoverAgent, map[string]any{"client_instance_id": handoverAgentProcess})
-		rig.claimReplacing(t, handoverAgent, handoverRole, handoverPerson, handoverAgentProcess)
-		received := rig.watch(t, agent, handoverAgent, handoverRole, append(direct, role...)...)
+		heir := startCopiesStandIn(t, rig.url, handoverHeir, answerDone)
+		rig.register(t, handoverHeir, map[string]any{"client_instance_id": handoverHeirProcess})
+		rig.claimReplacing(t, handoverHeir, handoverRole, handoverAddressed, handoverHeirProcess)
+		received := rig.watch(t, heir, handoverHeir, handoverRole, append(direct, role...)...)
 
-		t.Run("case: the agent session receives each unread message a person sent the person's session", func(t *testing.T) {
-			copiesRequireEach(t, received, handoverAgent, direct...)
+		t.Run("case: the session that replaced it receives each unread message a person sent it", func(t *testing.T) {
+			copiesRequireEach(t, received, handoverHeir, direct...)
 		})
-		t.Run("case: the agent session receives the person's session's unread role message", func(t *testing.T) {
-			copiesRequireEach(t, received, handoverAgent, role...)
+		t.Run("case: the session that replaced it receives its unread role message", func(t *testing.T) {
+			copiesRequireEach(t, received, handoverHeir, role...)
 		})
 	})
 
-	t.Run("4 an agent session names a person's session that is still live", func(t *testing.T) {
+	t.Run("4 a session names a session a person messaged that is still live", func(t *testing.T) {
 		rig := newCopiesRig(t)
 		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayCopy: copiesRelayCopyHeld(handoverRole)})
-		person, direct, role := rig.handoverUnread(t, handoverPerson, handoverPersonProcess, "dispatch", 1, handoverRole)
+		addressed, direct, role := rig.handoverUnread(t, handoverAddressed, handoverAddressedProcess, "dispatch", 1, handoverRole)
 		seqs := map[string]uint64{}
-		for _, message := range rig.stored(t, contracts.LegacyAgentSubject(handoverPerson)) {
+		for _, message := range rig.stored(t, contracts.LegacyAgentSubject(handoverAddressed)) {
 			seqs[message.item.EventID] = message.seq
 		}
 
-		agent := startCopiesStandIn(t, rig.url, handoverAgent, answerDone)
-		rig.register(t, handoverAgent, map[string]any{"client_instance_id": handoverAgentProcess})
-		rig.claimReplacing(t, handoverAgent, handoverRole, handoverPerson, handoverAgentProcess)
-		// The outright claim takes the role from the live person's session, whose role message the
-		// role's takeover record copies: once it has arrived the claim's passes have run.
-		received := rig.watch(t, agent, handoverAgent, handoverRole, role...)
+		heir := startCopiesStandIn(t, rig.url, handoverHeir, answerDone)
+		rig.register(t, handoverHeir, map[string]any{"client_instance_id": handoverHeirProcess})
+		rig.claimReplacing(t, handoverHeir, handoverRole, handoverAddressed, handoverHeirProcess)
+		// The outright claim takes the role from the live session, whose role message the role's
+		// takeover record copies: once it has arrived the claim's passes have run.
+		received := rig.watch(t, heir, handoverHeir, handoverRole, role...)
 
-		t.Run("control: while the person's session is live, the agent session receives none of its direct messages", func(t *testing.T) {
-			copiesRequireNone(t, received, handoverAgent, direct...)
+		t.Run("control: while the session a person messaged is live, the session that names it receives none of its direct messages", func(t *testing.T) {
+			copiesRequireNone(t, received, handoverHeir, direct...)
 			for _, eventID := range direct {
-				if n := rig.handedOverCopies(t, handoverAgent, eventID); n != 0 {
-					t.Errorf("%s's own subject holds %d copies of %s; want none", handoverAgent, n, eventID)
+				if n := rig.handedOverCopies(t, handoverHeir, eventID); n != 0 {
+					t.Errorf("%s's own subject holds %d copies of %s; want none", handoverHeir, n, eventID)
 				}
 			}
-			rig.requireUnacknowledged(t, handoverPerson, seqs, direct...)
+			rig.requireUnacknowledged(t, handoverAddressed, seqs, direct...)
 		})
 
-		// The person's session stops; the sweep's next pass runs the handover record's passes.
-		rig.deregister(t, handoverPerson, "")
-		person.close()
-		rig.awaitNoConsumer(t, handoverPerson)
+		// The session a person messaged stops; the sweep's next pass runs the handover record's
+		// passes.
+		rig.deregister(t, handoverAddressed, "")
+		addressed.close()
+		rig.awaitNoConsumer(t, handoverAddressed)
 		rig.sweepPass()
-		after := rig.watch(t, agent, handoverAgent, handoverRole, direct...)
-		t.Run("case: once the person's session has stopped, the agent session receives its unread direct message", func(t *testing.T) {
-			copiesRequireEach(t, after, handoverAgent, direct...)
+		after := rig.watch(t, heir, handoverHeir, handoverRole, direct...)
+		t.Run("case: once the session a person messaged has stopped, the session that named it receives its unread direct message", func(t *testing.T) {
+			copiesRequireEach(t, after, handoverHeir, direct...)
 		})
 	})
 }

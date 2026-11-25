@@ -414,11 +414,12 @@ type DeleteSessionResponse struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
-// SessionSuccessors is what GET /v1/sessions/<session_id>/successors answers: the sessions the
-// stream's handover records name as having replaced SessionID (bus.Client.HandoverSuccessors),
-// sorted and each once, which the listener copies that session's unread messages to. Successors
-// is the empty list, never null, for a session no record names. Dispatch reads it to let such a
-// session answer a delivery attempt the replaced session holds.
+// SessionSuccessors is what GET /v1/sessions/<session_id>/successors answers: the sessions that
+// replaced SessionID, sorted and each once - each a handover record names as its successor
+// (bus.Client.HandoverSuccessors), and each that replaced one of those in turn, while each last
+// registered as the principal SessionID did - which the listener copies that session's unread
+// messages to. Successors is the empty list, never null, for a session no record names. Dispatch
+// reads it to let such a session answer a delivery attempt the replaced session holds.
 type SessionSuccessors struct {
 	SessionID  string   `json:"session_id"`
 	Successors []string `json:"successors"`

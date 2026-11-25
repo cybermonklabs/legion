@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // handoverRecords is how many of role's takeover records hand previous's messages to successor
@@ -125,6 +127,66 @@ func TestAHandoverPassTellsAMessageToTheReplacedSessionByEitherFormOfItsTopic(t 
 			}
 			if _, kind := takenFrame(data, "some-role", "ses_gone", false); kind != takenNone {
 				t.Errorf("a takeover pass of a record that names no successor takes a message on %s as %v; want it copied nowhere", c.topic, kind)
+			}
+		})
+	}
+}
+
+// A message to a session is one message however many handovers carry it, so two sessions that
+// each replaced the other copy it to and fro once each and then no more: the stream drops a copy
+// under a message id it already holds (handedOverMsgID). A message that names no event id, which
+// a reader of the agent subject accepts, is given one on its first copy (handedOverEventID), and
+// each later copy keeps it, so the copy that comes back round to a session carries the id its
+// first copy there was stored under. The case fails where an event-less copy is named by the
+// frame each hop reads it from, which is new at every hop. The control is a message with an event
+// id, which every copy keeps as it is.
+func TestAHandedOverMessageKeepsOneIdentityAcrossHops(t *testing.T) {
+	type published struct {
+		item  contracts.Envelope
+		msgID string
+	}
+	hop := func(t *testing.T, data []byte, previous, successor string, seq uint64) published {
+		t.Helper()
+		frame, kind := takenFrame(data, "some-role", previous, true)
+		if kind != takenDirectCopy {
+			t.Fatalf("a handover pass of %s takes %s as %v; want a direct copy", previous, data, kind)
+		}
+		var got published
+		cfg := listenerDeliveryHandlerConfig{keepPublish: func(_ context.Context, subject string, item contracts.Envelope, msgID string) (bus.StoredAck, error) {
+			got = published{item: item, msgID: msgID}
+			return bus.StoredAck{Sequence: seq + 100}, nil
+		}}
+		if err := handOverDirectFrame(t.Context(), cfg, previous, successor, frame, seq); err != nil {
+			t.Fatalf("hand %s's frame %d over to %s: %v", previous, seq, successor, err)
+		}
+		return got
+	}
+	stored := func(t *testing.T, item contracts.Envelope) []byte {
+		t.Helper()
+		data, err := json.Marshal(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	for _, c := range []struct {
+		name, original string
+	}{
+		{"case: a message that names no event id", `{"topic":"notifications.agent.ses_hop_a","message":"m"}`},
+		{"control: a message with an event id", `{"event_id":"evt-hop","topic":"notifications.agent.ses_hop_a","message":"m"}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			toB := hop(t, []byte(c.original), "ses_hop_a", "ses_hop_b", 5)
+			if toB.item.EventID == "" {
+				t.Fatalf("the first copy names no event id: %+v", toB.item)
+			}
+			backToA := hop(t, stored(t, toB.item), "ses_hop_b", "ses_hop_a", 9)
+			againToB := hop(t, stored(t, backToA.item), "ses_hop_a", "ses_hop_b", 12)
+			if againToB.msgID != toB.msgID {
+				t.Errorf("the copy that came back round to ses_hop_b is stored under %q, its first copy under %q; want one id, which the stream drops", againToB.msgID, toB.msgID)
+			}
+			if backToA.item.EventID != toB.item.EventID || againToB.item.EventID != toB.item.EventID {
+				t.Errorf("the copies name event ids %q, %q, %q; want the first copy's at every hop", toB.item.EventID, backToA.item.EventID, againToB.item.EventID)
 			}
 		})
 	}

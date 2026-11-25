@@ -2089,12 +2089,14 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // claimant, its role messages of every role to that role's kept lane - while that session is not
 // live (runTakeoverPass). A record that did not store is answered 503 with Retry-After: 1
 // (errHandoverUnrecorded): the claim stands, the role's lane is handed over, and the client's
-// next claim writes the record. The record is written only when the claim's credential acts for
-// the principal the named session last registered as, none equal to none (handoverRefusal): any
-// other claim stands, writes no record, is answered 200 with a warning that no message of that
-// session is handed over, and is logged at INFO naming the role and both sessions. So a session
-// cannot read another principal's messages by naming its session, and an agent session that
-// names a person's session is refused by design.
+// next claim writes the record. The record is written only when the claim's credential, the
+// claimant's last registration and the named session's last registration name one principal,
+// none equal to none (handoverRefusal): any other claim stands, writes no record, is answered 200
+// with a warning that no message of that session is handed over, and is logged at INFO naming the
+// role and both sessions. A rule the listener could not read is answered the same 503
+// (errHandoverUnjudged), the claim standing. So a session cannot read another principal's
+// messages by naming its session, and an agent session that names a person's session is refused
+// by design.
 //
 // A claim that landed over another session's claim of a Legion controller role narrows that
 // session before it is answered (narrowFormerHolder), as an unsubscribe does: its known-session
@@ -2166,7 +2168,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			// claim of either kind that lands, the session it names hands its unread messages
 			// to the claimant (publishHandover): its direct messages and the role messages of
 			// each of its roles, copied for as long as it is not live, when this claim's
-			// credential acts for the principal that session last registered as
+			// credential and both sessions' last registrations name one principal
 			// (handoverRefusal), and otherwise none of them, with a warning saying so.
 			PreviousSessionID string `json:"previous_session_id"`
 			// The revision GET /v1/roles/<role> reported as claim_revision when this
@@ -2589,24 +2591,30 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			landed = true
 			// A claim that names the session it replaces writes that session's handover record
 			// before the claim's own handover reads the role's records (publishHandover), so the
-			// first pass runs there, and only when its credential acts for the principal that
-			// session last registered as (handoverRefusal): any other claim stands, writes no
-			// record and is answered with the refusal as a warning, so none of that session's
-			// messages is copied to it. A record that did not store leaves nothing to copy that
-			// session's messages, so the claim, which stands, is answered 503 and its client
-			// claims again, which writes the record; the role's lane is handed over and a former
-			// holder narrowed all the same.
+			// first pass runs there, and only when its credential and both sessions' last
+			// registrations name one principal (handoverRefusal): any other claim stands, writes
+			// no record and is answered with the refusal as a warning, so none of that session's
+			// messages is copied to it. A record that did not store, and a rule the listener could
+			// not read, leave nothing to copy that session's messages, so the claim, which stands,
+			// is answered 503 and its client claims again, which judges and writes the record
+			// then; the role's lane is handed over and a former holder narrowed all the same. An
+			// edge listener writes no handover record and judges none.
 			var handoverErr error
 			handoverRefused := ""
-			if replaced != "" {
-				handoverRefused = handoverRefusal(r, d.known, replaced)
-				if handoverRefused == "" {
-					handoverErr = publishHandover(ctx, *d.delivery, body.Role, replaced, body.SessionID)
-				} else {
-					logger.Info("listener role claim hands over no message of the session it replaces: its credential is not shown to act for the principal that session last registered as",
+			if replaced != "" && d.delivery.edge == nil {
+				why, err := handoverRefusal(ctx, r, d.known, replaced, body.SessionID)
+				switch {
+				case err != nil:
+					handoverErr = err
+				case why != "":
+					handoverRefused = handoverRefusedWarning(body.Role, replaced, tries.replaced == replaced, why)
+					logger.Info("listener role claim hands over no message of the session it replaces: the claim and the two sessions' last registrations do not name one principal",
 						slog.String("role", body.Role),
 						slog.String("previous_session_id", replaced),
-						slog.String("session_id", body.SessionID))
+						slog.String("session_id", body.SessionID),
+						slog.String("reason", why))
+				default:
+					handoverErr = publishHandover(ctx, *d.delivery, body.Role, replaced, body.SessionID)
 				}
 			}
 			go runTakenRoleDrain(*d.delivery, body.Role)
@@ -2617,7 +2625,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				narrowFormerHolder(ctx, d, logger, body.Role, body.SessionID, tries.replaced)
 			}
 			if handoverErr != nil {
-				logger.Warn("listener role claim landed, but the handover record of the session it replaces did not store; the claim is answered 503 so its client claims again",
+				logger.Warn("listener role claim landed, but the handover of the session it replaces was not judged or its record did not store; the claim is answered 503 so its client claims again",
 					slog.String("role", body.Role),
 					slog.String("previous_session_id", replaced),
 					slog.String("session_id", body.SessionID),

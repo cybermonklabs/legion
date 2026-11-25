@@ -1624,6 +1624,7 @@ func runListener(credentialWait time.Duration) {
 		forwardRole:       startRoleForward(client),
 		registry:          registry,
 		sessions:          sessions,
+		known:             known,
 		machineID:         cfg.MachineID,
 		dedupeCache:       dedupeCache,
 		attemptCache:      attemptCache,
