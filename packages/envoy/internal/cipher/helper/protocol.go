@@ -71,6 +71,7 @@ type Response struct {
 	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled | refused (the broker refused the session for good, 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, named in Error; the helper asks no more)
 	VerificationURI     string        `json:"verification_uri,omitempty"`      // login: where a person types the code, the broker's device authorization verification_uri; empty from a helper before this field
 	LoginState          string        `json:"login_state,omitempty"`           // login/login-status: the most recent login's pending|issued|denied|expired; expired whenever LoginRefused and that login is not pending
+	LoginReason         string        `json:"login_reason,omitempty"`          // login-status: beside an expired LoginState that is no dropped credential, how many polls in a row before the code lapsed the broker did not answer or answered with an outage; empty otherwise, and from a helper before this field
 	CredentialHeld      bool          `json:"credential_held,omitempty"`       // login-status: the helper holds a launcher credential, whatever the most recent login's state
 	CredentialExpiresAt string        `json:"credential_expires_at,omitempty"` // login-status: RFC3339, when the held credential lapses without a refresh; empty while none is held
 	LoginRefused        bool          `json:"login_refused,omitempty"`         // login-status: the helper dropped the credential it held (the broker refused it or its refresh, or it reached its expiry), and no login has started or settled since
@@ -101,13 +102,15 @@ const (
 )
 
 // NoCredentialReason says why a helper holds no launcher credential, from login-status's fields:
-// the most recent login's state, login_refused and credential_dropped. The helper logs it on every
-// enrollment it cannot attempt, and `agent-secrets machine login-status` prints it, so the journal
-// and the client say the same thing. It names no confirmation code: a pending login's code is for
-// the approver's screen, never the journal. A login still pending outranks a dropped credential,
-// since its approval is what replaces it. A helper from before credential_dropped sets
-// login_refused only when the broker refused the credential, so login_refused alone reads as that.
-func NoCredentialReason(loginState string, refused bool, dropped string) string {
+// the most recent login's state and its reason, login_refused and credential_dropped. The helper
+// logs it on every enrollment it cannot attempt, and `agent-secrets machine login-status` prints
+// it, so the journal and the client say the same thing. It names no confirmation code: a pending
+// login's code is for the approver's screen, never the journal. A login still pending outranks a
+// dropped credential, since its approval is what replaces it. A helper from before
+// credential_dropped sets login_refused only when the broker refused the credential, so
+// login_refused alone reads as that. A login that expired names the polls the broker did not
+// answer just before (loginReason), where there were any.
+func NoCredentialReason(loginState, loginReason string, refused bool, dropped string) string {
 	switch {
 	case loginState == "pending":
 		return "a machine login is waiting for a human to approve it"
@@ -117,6 +120,8 @@ func NoCredentialReason(loginState string, refused bool, dropped string) string 
 		return dropRefused
 	case loginState == "denied":
 		return "the most recent machine login was denied"
+	case loginState == "expired" && loginReason != "":
+		return "the most recent machine login expired before anyone approved it; " + loginReason
 	case loginState == "expired":
 		return "the most recent machine login expired before anyone approved it"
 	case loginState == "":
