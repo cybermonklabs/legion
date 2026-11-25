@@ -7,8 +7,14 @@
 --                        the reading: the issue keys the title and the body name, the GitHub
 --                        issues the body cites, the keys the head branch names and the keys the
 --                        commit messages name, each in text order with the first place of each
---                        entry. A cited issue is https://github.com/<owner>/<repo>/issues/<n>, from
---                        a path /<owner>/<repo>/issues/<n> whose host is github.com in any case
+--                        entry, the commit messages read newest first: GitHub lists a pull
+--                        request's commits oldest first, and the head commit's key is the
+--                        branch's word now, where an older commit's is history the branch may
+--                        carry from another pull request's work (a later pull request credited
+--                        to a closed issue by an older commit's `Dispatch:` trailer, event 162 of
+--                        that issue, 2026-11-25). A cited issue is
+--                        https://github.com/<owner>/<repo>/issues/<n>, from a path
+--                        /<owner>/<repo>/issues/<n> whose host is github.com in any case
 --                        with an optional port of up to 253 digits, as the Go reading credited
 --                        (the byte before the host is no letter, digit, dot or hyphen), or from a
 --                        bare #n of two to six digits, not after a word
@@ -96,7 +102,7 @@ select
      where m[4] is not null or pg_catalog.convert_from(pg_catalog.ltrim(pg_catalog.substring(b.bytes, greatest(path_at - 507, 0) + 1, least(path_at, 507)), '\x808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf'::bytea), 'UTF8') collate "C"
        ~ '(?<![A-Za-z0-9.-])[Gg][Ii][Tt][Hh][Uu][Bb]\.[Cc][Oo][Mm](?::[0-9]{1,253})?$') c where pg_catalog.octet_length(c.u) <= 1024 group by u) d),
   (select coalesce(pg_catalog.array_agg(k order by n), '{}') from (select m[1] k, pg_catalog.min(n) n from pg_catalog.regexp_matches(pg_catalog.translate(coalesce(head_ref, '') collate "C", 'abcdefghijklmnopqrstuvwxyzıſ', 'ABCDEFGHIJKLMNOPQRSTUVWXYZIS'), '(?<![A-Za-z0-9_])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![A-Za-z0-9_])', 'g') with ordinality r(m, n) where pg_catalog.octet_length(m[1]) <= 1024 group by m[1]) t),
-  (select coalesce(pg_catalog.array_agg(k order by n), '{}') from (select m[1] k, pg_catalog.min(n) n from pg_catalog.regexp_matches(pg_catalog.array_to_string(coalesce(messages, '{}'), E'\n') collate "C", '(?<![A-Za-z0-9_])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![A-Za-z0-9_])', 'g') with ordinality r(m, n) where pg_catalog.octet_length(m[1]) <= 1024 group by m[1]) t);
+  (select coalesce(pg_catalog.array_agg(k order by n), '{}') from (select m[1] k, pg_catalog.min(n) n from pg_catalog.regexp_matches(pg_catalog.array_to_string(array(select u.m from pg_catalog.unnest(coalesce(messages, '{}')) with ordinality u(m, i) order by u.i desc), E'\n') collate "C", '(?<![A-Za-z0-9_])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![A-Za-z0-9_])', 'g') with ordinality r(m, n) where pg_catalog.octet_length(m[1]) <= 1024 group by m[1]) t);
 end;
 
 do $reading$

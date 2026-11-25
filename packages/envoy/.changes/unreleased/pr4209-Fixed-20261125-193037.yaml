@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    A pull request credited from its commit messages is credited to the first issue its newest
+    commit names, and no longer to the first its oldest commit names. GitHub lists a pull
+    request's commits oldest first, so a branch that carries an older commit with another issue's
+    `Dispatch:` trailer was credited to that issue, a closed one among them, over the issue its
+    head commit names; that issue's checks then read the later pull request's head, where its own
+    merged head had passed. The reading `attribution_keys` reads the messages newest first, and
+    the next read of each stored pull request gives its keys again with no read of GitHub.
+time: 2026-11-25T19:30:37.000000000Z
+custom:
+    Issue: pr4209

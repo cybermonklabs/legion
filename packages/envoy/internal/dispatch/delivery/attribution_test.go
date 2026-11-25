@@ -197,7 +197,10 @@ func TestAttributionTakesTheHeadBranch(t *testing.T) {
 }
 
 // TestAttributionFallsBackToCommitMessages: source 5, the first known key across the commit
-// messages in commit order, which is read only where the four sources above name nobody.
+// messages, the newest commit first, which is read only where the four sources above name nobody.
+// GitHub lists a pull request's commits oldest first; the head commit's key is the branch's word
+// now, and an older commit's can be history the branch carries
+// (TestALaterPullRequestIsCreditedToItsHeadCommitsTrailerAndNotToAClosedIssueAnOlderCommitNames).
 func TestAttributionFallsBackToCommitMessages(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -206,8 +209,8 @@ func TestAttributionFallsBackToCommitMessages(t *testing.T) {
 		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/130",
 		CommitMessages: []string{"wip", "refs ATTR-999 and ATTR-132", "closes ATTR-131"},
 	})
-	if key != "ATTR-132" || source != sourceCommitMessage {
-		t.Fatalf("resolved %q from %q, want ATTR-132 from %q", key, source, sourceCommitMessage)
+	if key != "ATTR-131" || source != sourceCommitMessage {
+		t.Fatalf("resolved %q from %q, want ATTR-131, the newest commit's, from %q", key, source, sourceCommitMessage)
 	}
 }
 

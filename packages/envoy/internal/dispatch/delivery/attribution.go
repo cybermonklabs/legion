@@ -32,7 +32,9 @@ import (
 //     (citedPullRequest);
 //  3. a key in its head branch name, whatever its case;
 //  4. a key in its title or body, title first;
-//  5. a key in its commit messages, in commit order.
+//  5. a key in its commit messages, the newest commit first: GitHub lists a pull request's
+//     commits oldest first, and the head commit's key is the branch's word now, where an older
+//     commit's can be history the branch carries from other work.
 //
 // The prototype's collector/attribution.py tried the title and the body first, and ranks 1 to 3
 // below them. R8 of INFRA-1522 moved them above: a branch name and a link are acts that name the
