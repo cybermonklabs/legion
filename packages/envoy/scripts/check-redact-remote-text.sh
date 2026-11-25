@@ -4,40 +4,38 @@
 # The check that a remote's words, and a configured URL, print with no credential: the redaction
 # of remote text (packages/envoy/AGENTS.md, "redact.Error(err, base)"). Run it from anywhere in
 # the repository; it prints one line per inventory row and exits 0 only when every step and every
-# row passed, 1 when one failed, 2 when it refused to run or to read a judge of its rows (below),
-# and 3 when nothing failed but a run went past its bound, or a run of the mutation gate skipped a
-# row's test (UNKNOWN: neither a pass nor a failure; run it again).
+# row passed, 1 when one failed, 2 when it refused to run or the normal verification judged no row
+# (below), and 3 when nothing failed but a run went past its bound, or a run of the mutation gate
+# skipped a row's test (UNKNOWN: neither a pass nor a failure; run it again).
 #
 # It reads its inventory, packages/envoy/internal/redact/testdata/redact-check.json: each row a
 # requirement, a Go package (relative to packages/envoy) or a Bun test file (relative to the
 # repository root), a test, and for a print-site row the production code that test calls. It
 #
-#   - refuses an inventory it cannot parse, one with no Go row or no Bun row, one whose row lacks
-#     a field or repeats an id, and one whose gate.row_timeout (the time one row's test may take,
-#     its own budget) is not a whole count of seconds;
-#   - runs `go test -json -count=1 -run '^(<names>)$'` once per package the inventory names, where
+#   - runs the normal verification of the rows, the mutation gate's -verify (cmd/redact-gate,
+#     verify.go), in the working tree. It refuses an inventory it cannot parse, one with no Go row
+#     or no Bun row, one whose row lacks a field or repeats an id, and one whose gate.row_timeout
+#     (the time one row's test may take, its own budget) is not a whole count of seconds. It runs
+#     `go test -json -count=1 -run '^(<names>)$'` once per package the inventory names, where
 #     <names> are the top-level names of that package's inventory tests, each escaped and
-#     anchored, under a timeout this run derives for that package from its own start-up run
-#     (below, at the loop); the whole packages are CI's. It keeps each exit status, and fails on
-#     a non-zero status, on a package that did not end in a pass, and on an inventory test or
-#     subtest that did not run, did not pass, or was skipped; for a package that failed, it prints
-#     each failed test with its first and last reported lines from go test's events (a test's
-#     t.Log lines read as its t.Error lines do, and the last is the one nearest its failure), the
-#     compiler's errors
+#     anchored, under a timeout it derives for that package in this run from its own start-up run
+#     (the gate's runBound says how and why); the whole packages are CI's. It fails on a non-zero
+#     status, on a package that did not end in a pass, and on an inventory test or subtest that
+#     did not run, did not pass, or was skipped; for a package that failed, it prints each failed
+#     test with its first and last reported lines from go test's events (a test's t.Log lines read
+#     as its t.Error lines do, and the last is the one nearest its failure), the compiler's errors
 #     of one that does not build, and the tail of the output of one that failed with no failing
-#     test. A package that ran past its timeout is UNKNOWN, not failed: it prints the timeout's
-#     panic line, the tests it was running and the goroutine running each;
-#   - runs `bun test` on each Bun file in its package with Bun's JUnit reporter, keeps Bun's exit
-#     status, and fails on a non-zero status or on an inventory test the report holds no passing
-#     testcase for. It reads the report rather than Bun's console, which prints no line for a
-#     passing test where AGENT or CLAUDECODE is set, as it is in an agent's shell;
+#     test. A package that ran past its timeout, and no test of which failed, is UNKNOWN, not
+#     failed: it prints the timeout's panic line, the tests it was running and the goroutine
+#     running each. It runs `bun test` on each Bun file in its package with Bun's JUnit reporter,
+#     and fails on a non-zero status or on an inventory test the report holds no passing testcase
+#     for; it reads the report rather than Bun's console, which prints no line for a passing test
+#     where AGENT or CLAUDECODE is set, as it is in an agent's shell. It fails when no holder of
+#     the print test printed a REDACT-PRINT line. It prints one verdict line for each package,
+#     row, Bun file and the print test, and exits 0, 1 or 3; any other exit (a Go panic's 2 among
+#     them) judged no row, and the script refuses it;
 #   - runs `bun run typecheck` in packages/contracts, packages/cipher-client and
-#     packages/envoy-client, and fails on a non-zero status;
-#   - reads the verdicts of its three judges, each a bun script - the Go rows', the Bun rows' and
-#     the print test's - only from a judge that exited 0 and printed one verdict line for each
-#     package, row or print test it judges, and refuses (exit 2) otherwise: a judge that failed to
-#     start, or stopped at a line of go.json that a killed go command cut short, prints nothing,
-#     and a judge's empty or short output holds no FAIL line to count.
+#     packages/envoy-client, and fails on a non-zero status.
 #
 # Around those steps it runs the mutation gate, packages/envoy/cmd/redact-gate, whose stages run
 # in this order and stop at the first that fails, naming it: (1) the inventory; (2) the censuses -
@@ -59,10 +57,11 @@
 # A package's own needs stay its own: a row's test that needs a database reads the variable its
 # suite reads - DISPATCH_TEST_DATABASE_URL in the envoy module (internal/dispatch/api among them),
 # BROKER_TEST_DATABASE_URL for the secrets broker's rigs, and LEGION_TEST_PG_DSN in the daemon
-# module, daemon/internal/daemon among them - and a row whose test skips for want of one fails
-# ("test skip"), so set all three, to one database. No line this script prints is a real
-# credential: the tests' credentials are made up (not-a-secret-...), and a failure line it prints
-# may quote one.
+# module (daemon/internal/daemon among them) and in the envoy module's loadtest, whose row
+# TestABundlesMembersOfNoShapePrintNowhere writes to the loop seed's Postgres - and a row whose
+# test skips for want of one fails ("test skip"), so set all three, to one database. No line this
+# script prints is a real credential: the tests' credentials are made up (not-a-secret-...), and a
+# failure line it prints may quote one.
 #
 # GO names the go binary every step and the gate run (default: the go on PATH). The script puts
 # its directory first on PATH and sets GOROOT to the root that go names for itself (a GOROOT the
@@ -90,56 +89,8 @@ case "${1:-}" in
 esac
 
 root=$(git rev-parse --show-toplevel) || exit 2
-inventory="$root/packages/envoy/internal/redact/testdata/redact-check.json"
 work=$(mktemp -d "${TMPDIR:-/tmp}/redact-check.XXXXXX") || exit 2
 trap 'rm -rf "$work"' EXIT
-module=github.com/sjawhar/envoy
-
-# rows.tsv: kind, id, requirement, package or file, test; row-timeout: gate.row_timeout's seconds.
-# The JavaScript is in single quotes on purpose: its ${...} are its own.
-# shellcheck disable=SC2016
-if ! bun -e '
-const [path, budget] = process.argv.slice(1);
-let inventory;
-try {
-  inventory = JSON.parse(require("node:fs").readFileSync(path, "utf8"));
-} catch (error) {
-  console.error(`the inventory ${path} cannot be parsed: ${error.message}`);
-  process.exit(1);
-}
-const go = Array.isArray(inventory?.go) ? inventory.go : [];
-const bun = Array.isArray(inventory?.bun) ? inventory.bun : [];
-if (go.length === 0 || bun.length === 0) {
-  console.error(`the inventory ${path} names no Go row or no Bun row`);
-  process.exit(1);
-}
-const rowTimeout = inventory?.gate?.row_timeout;
-if (typeof rowTimeout !== "string" || !/^[1-9][0-9]*s$/.test(rowTimeout)) {
-  console.error(`the inventory ${path} names no gate.row_timeout in whole seconds (such as "48s"), the time the test of one row may take`);
-  process.exit(1);
-}
-require("node:fs").writeFileSync(budget, rowTimeout.slice(0, -1));
-const seen = new Set();
-for (const [kind, rows, place] of [["go", go, "package"], ["bun", bun, "file"]]) {
-  for (const row of rows) {
-    for (const field of ["id", "requirement", place, "test"]) {
-      if (typeof row?.[field] !== "string" || row[field] === "" || /[\t\n]/.test(row[field])) {
-        console.error(`an inventory row (${JSON.stringify(row?.id ?? null)}) has no ${field}`);
-        process.exit(1);
-      }
-    }
-    if (seen.has(row.id)) {
-      console.error(`the inventory repeats the id ${row.id}`);
-      process.exit(1);
-    }
-    seen.add(row.id);
-    console.log([kind, row.id, row.requirement, row[place], row.test].join("\t"));
-  }
-}
-' "$inventory" "$work/row-timeout" >"$work/rows.tsv" 2>"$work/inventory.err"; then
-  echo "check-redact-remote-text: refused: $(cat "$work/inventory.err")"
-  exit 2
-fi
 
 failed=0
 step() { # step <name> <status>
@@ -166,350 +117,31 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
-# The printed bound names each build target the boundary census read (cmd/redact-gate's
-# ciTargets) on its BOUNDARY api lines; a plan that printed no such line read nothing, and fails.
-boundary_targets=0
-if grep -q '^BOUNDARY api ' "$work/plan.txt"; then
-  for target in linux/amd64 darwin/arm64 linux/arm64 darwin/amd64; do
-    if ! grep '^BOUNDARY api ' "$work/plan.txt" | grep -qF "$target"; then
-      echo "check: no BOUNDARY api line of the plan names the build target $target"
-      boundary_targets=1
-    fi
-  done
-else
-  echo "check: the plan printed no BOUNDARY api line, so it names no build target"
-  boundary_targets=1
+# Stage 4's normal verification of the rows: the gate's -verify (cmd/redact-gate, verify.go), in
+# the working tree. It exits 0, 1 or 3, and its last line counts its verdicts ("verify: <rows>
+# rows, <failed> failed, <unknown> UNKNOWN (...)"); any other exit - 2 where it refused the
+# inventory, or a Go panic's - judged no row.
+"$gate" -verify | tee "$work/verify.txt"
+verify=${PIPESTATUS[0]}
+read -r rows verify_failed unknown < <(awk '/^verify: [0-9]+ rows, [0-9]+ failed, [0-9]+ UNKNOWN \(/ { print $2, $4, $6 }' "$work/verify.txt")
+case "$verify" in
+0 | 1 | 3) ;;
+*)
+  echo "check c-redact-remote-text: refused: the gate's -verify exited $verify, so no row has a verdict"
+  exit 2
+  ;;
+esac
+if [ -z "${rows:-}" ]; then
+  echo "check c-redact-remote-text: refused: the gate's -verify printed no count of its verdicts"
+  exit 2
 fi
-step "the boundary census names each build target it read" "$boundary_targets"
-
-# Each package's inventory tests, and no other test of it: a row's test is `Top` or `Top/sub`, and
-# `-run '^(Top|...)$'` runs each Top whole, every subtest with it. Each package's timeout is derived
-# in this run, not set ahead, because the box's load moves from one run to the next: on 2026-11-22
-# the one row of daemon/internal/workflow took 46s at 14:06Z and 1.5s at 15:31Z.
-#   - The start-up run: `go test -json -count=1 -run '^$' <package>`, timed. It builds and links
-#     the package's test binary and runs it with no test (its TestMain's start and end), under the
-#     box's load of that moment. Its own bound is go test's default, ten minutes.
-#   - The rows' budget: row_timeout (the inventory's gate.row_timeout, the time the test of one row
-#     may take, which cmd/redact-gate gives each row it runs alone) once for each top-level test
-#     the run selects.
-#   - The bound: the rows' budget plus four times the start-up run's time, in whole seconds, so the
-#     rows' budget is its floor. go test's -timeout counts from the first test, but the go command
-#     kills the binary one minute past it counted from the binary's start, so the bound holds the
-#     binary's start and end as well as its tests: twice the start-up run holds that start and end
-#     (the start-up run made them once, with no test; a run's end also drops what its rows made,
-#     each database they cloned among it), and twice that again holds the load moving between the
-#     two runs.
-# A start-up run that does not exit 0 is its package's outcome, and the package's rows do not run.
-# Each package's stderr is kept apart (go-<n>.err), and its verdict below prints it.
-row_timeout=$(cat "$work/row-timeout")
-mapfile -t packages < <(awk -F'\t' '$1 == "go" { print $4 }' "$work/rows.tsv" | sort -u)
-: >"$work/go.json"
-: >"$work/go-steps.tsv"
-for i in "${!packages[@]}"; do
-  package=${packages[$i]}
-  mapfile -t tops < <(awk -F'\t' -v p="$package" '$1 == "go" && $4 == p { sub(/\/.*/, "", $5); print $5 }' "$work/rows.tsv" | sort -u)
-  names=$(printf '%s\n' "${tops[@]}" | sed 's/[][\.*^$+?(){}|\\]/\\&/g' | paste -sd'|')
-  started=$(date +%s%N)
-  (cd "$root/packages/envoy" && go test -json -count=1 -run '^$' "$package") >"$work/startup.json" 2>"$work/go-$i.err"
-  status=$?
-  startup=$((($(date +%s%N) - started + 999999999) / 1000000000))
-  if [ "$status" -ne 0 ]; then
-    cat "$work/startup.json" >>"$work/go.json"
-    echo "go test $package: its start-up run (-run '^\$') exited $status after ${startup}s, so its rows did not run"
-  else
-    bound=$((${#tops[@]} * row_timeout + 4 * startup))
-    started=$(date +%s)
-    (cd "$root/packages/envoy" && go test -json -count=1 -timeout "${bound}s" -run "^($names)\$" "$package") >>"$work/go.json" 2>>"$work/go-$i.err"
-    status=$?
-    echo "go test $package: $(($(date +%s) - started))s under a bound of ${bound}s (${#tops[@]} top-level tests at ${row_timeout}s, and four times its start-up run's ${startup}s)"
-  fi
-  printf '%s\t%s\t%s\n' "$package" "$status" "$work/go-$i.err" >>"$work/go-steps.tsv"
-done
-
-mapfile -t files < <(awk -F'\t' '$1 == "bun" { print $4 }' "$work/rows.tsv" | sort -u)
-for i in "${!files[@]}"; do
-  file=${files[$i]}
-  package=$(printf '%s\n' "$file" | cut -d/ -f1-2)
-  (cd "$root/$package" && bun test --reporter=junit --reporter-outfile="$work/bun-$i.xml" "${file#"$package"/}") >"$work/bun-$i.txt" 2>&1
-  step "bun test $file" $?
-done
+failed=$((failed + verify_failed))
 
 for package in contracts cipher-client envoy-client; do
   (cd "$root/packages/$package" && bun run typecheck) >"$work/typecheck-$package.txt" 2>&1
   step "bun run typecheck in packages/$package" $?
 done
 
-# judged <judge> <its exit status> <its output> [<owed> <what> <awk pattern>]...: prints the
-# judge's output, then refuses (exit 2), naming the judge and both counts, unless the judge exited
-# 0 and, for each triple, exactly <owed> lines of its output match the pattern. The FAIL and
-# UNKNOWN lines counted after each judge are its verdicts only when it ran to its end and printed
-# one for each package, row or print test it judges: an empty or short output counts no failure.
-# cmd/redact-gate's controls 31a-31c (controls_judges.go) run this script with each judge failing
-# or short, and require this refusal.
-judged() {
-  local judge=$1 code=$2 output=$3 owed what pattern got
-  shift 3
-  cat "$output"
-  if [ "$code" -ne 0 ]; then
-    echo "check c-redact-remote-text: refused: the $judge failed (exit $code), so the rows it judges have no verdict"
-    exit 2
-  fi
-  while [ "$#" -gt 0 ]; do
-    owed=$1 what=$2 pattern=$3
-    shift 3
-    got=$(awk "$pattern { n++ } END { print n + 0 }" "$output")
-    if [ "$got" != "$owed" ]; then
-      echo "check c-redact-remote-text: refused: the $judge printed $got $what where it owes $owed"
-      exit 2
-    fi
-  done
-}
-go_rows=$(awk -F'\t' '$1 == "go" { n++ } END { print n + 0 }' "$work/rows.tsv")
-bun_rows=$(awk -F'\t' '$1 == "bun" { n++ } END { print n + 0 }' "$work/rows.tsv")
-
-# The verdict of each package and each Go row, from go test's own events and each package's exit
-# status. A package passed when it exited 0 and ended in a pass. One that did not is UNKNOWN when it
-# ran past its bound and no test of it failed (go test -json carries the test binary's stderr, so
-# the timeout's panic, or the go command's kill a minute later, is among its output events), and
-# failed otherwise. For each that did not pass: the compiler's errors of one that does not build;
-# each failed test with its first and last reported lines; the panic line, the tests it was running
-# and the goroutine running each, of one that ran past its bound; the tail of the output of one
-# that failed with no failing test; and the tail of its stderr. A row whose test passed or did not
-# run in an UNKNOWN package is UNKNOWN too.
-# shellcheck disable=SC2016
-bun -e '
-const [events, rows, module, steps] = process.argv.slice(1);
-const fs = require("node:fs");
-const verdict = new Map();
-const said = new Map();
-const last = new Map();
-const output = new Map(); // each package: what its test binary printed, in order
-const built = new Map(); // each build target (ImportPath): the compiler output
-const brokenBuild = new Map(); // each package whose build failed: the target that failed
-const failing = (line) => /_test\.go:\d+:|^panic:|\bpanic: |^FAIL\b|build failed|timed out|cannot|undefined:/.test(line.trim());
-for (const line of fs.readFileSync(events, "utf8").split("\n")) {
-  if (!line.startsWith("{")) continue;
-  const event = JSON.parse(line);
-  if (event.Action === "build-output") built.set(event.ImportPath, (built.get(event.ImportPath) ?? "") + (event.Output ?? ""));
-  if (event.Action === "build-output" || event.Action === "build-fail") continue;
-  const key = `${event.Package}\t${event.Test ?? ""}`;
-  if (event.Action === "output") {
-    output.set(event.Package, (output.get(event.Package) ?? "") + (event.Output ?? ""));
-    if (failing(event.Output ?? "")) {
-      if (!said.has(key)) said.set(key, event.Output.trim());
-      last.set(key, event.Output.trim());
-    }
-  }
-  if (event.Action === "fail" && event.Test === undefined && event.FailedBuild) brokenBuild.set(event.Package, event.FailedBuild);
-  if (["pass", "fail", "skip"].includes(event.Action)) verdict.set(key, event.Action);
-}
-// A package of this module is named relative to packages/envoy; one of another module of the
-// workspace, the daemon, by its import path.
-const nameOf = (pkg) => (pkg.startsWith("./") ? `${module}/${pkg.replace(/^\.\//, "")}`.replace(/\/$/, "") : pkg);
-const lines = (key) => {
-  const first = said.get(key) ?? "(no failure line)";
-  const final = last.get(key);
-  return final === undefined || final === first ? first : `${first}\n      last: ${final}`;
-};
-const tail = (text, n) => {
-  const all = text.replace(/\n+$/, "").split("\n");
-  if (text.trim() === "") return ["(nothing)"];
-  return all.length > n ? [`... (${all.length - n} lines before these)`, ...all.slice(-n)] : all;
-};
-// The binary ran past its -timeout (its own panic), or past the minute after it that the go
-// command gives it (the go command kills it with SIGQUIT, and it prints every goroutine).
-const ranPast = /^panic: test timed out after |^\*\*\* Test killed with quit: ran too long/m;
-// stall: the timeout panic line with the tests it was running, the go command kill line, and the
-// goroutines of the dump that run a test - each whose frames name a test function other than
-// TestMain - or, where none does, those in TestMain (a start or an end that ran past the bound).
-// cmd/redact-gate prints the same for a run of one row (rows.go, stall).
-const stall = (text) => {
-  const all = text.split("\n");
-  const shown = [];
-  const panic = all.findIndex((line) => line.startsWith("panic: test timed out after "));
-  if (panic >= 0) {
-    shown.push(all[panic]);
-    for (let i = panic + 1; i < all.length && all[i].trim() !== ""; i++) shown.push(all[i]);
-  }
-  const killed = all.find((line) => line.startsWith("*** Test killed with quit: ran too long"));
-  if (killed !== undefined) shown.push(killed);
-  const blocks = [];
-  let block = null;
-  for (const line of all) {
-    if (/^goroutine \d+ /.test(line)) {
-      if (block !== null) blocks.push(block);
-      block = [line];
-    } else if (block !== null && line.trim() === "") {
-      blocks.push(block);
-      block = null;
-    } else if (block !== null) block.push(line);
-  }
-  if (block !== null) blocks.push(block);
-  const tests = (b) => b.map((line) => /\.(Test(?:[A-Z0-9_]\w*)?)[.(]/.exec(line)?.[1]).filter((name) => name !== undefined);
-  let running = blocks.filter((b) => tests(b).some((name) => name !== "TestMain"));
-  if (running.length === 0) running = blocks.filter((b) => tests(b).includes("TestMain"));
-  for (const b of running.slice(0, 4)) shown.push("", ...b.slice(0, 24), ...(b.length > 24 ? [`... (${b.length - 24} more lines)`] : []));
-  if (running.length > 4) shown.push(`... (${running.length - 4} more goroutines running a test)`);
-  if (running.length === 0) shown.push("(no goroutine of the dump runs a test)");
-  return shown;
-};
-const outcome = new Map();
-const why = [];
-for (const step of fs.readFileSync(steps, "utf8").split("\n")) {
-  if (step === "") continue;
-  const [pkg, code, errFile] = step.split("\t");
-  const name = nameOf(pkg);
-  const status = Number(code);
-  const whole = verdict.get(`${name}\t`) ?? "did not end";
-  if (status === 0 && whole === "pass") {
-    outcome.set(name, "pass");
-    console.log(`PASS step go test ${pkg}`);
-    continue;
-  }
-  const text = output.get(name) ?? "";
-  const stderr = fs.existsSync(errFile) ? fs.readFileSync(errFile, "utf8") : "";
-  const failed = [...verdict].filter(([key, action]) => action === "fail" && key.startsWith(`${name}\t`)).map(([key]) => key.split("\t")[1]).filter((test) => test !== "");
-  const leaves = failed.filter((test) => !failed.some((other) => other.startsWith(`${test}/`)));
-  const late = ranPast.test(text);
-  const broken = brokenBuild.get(name);
-  let state = "FAIL";
-  let what = `no test failed, and it ended in ${whole}`;
-  if (broken !== undefined) what = `it does not build (${broken})`;
-  else if (leaves.length > 0) what = `${leaves.length} tests failed${late ? ", and it ran past its bound" : ""}`;
-  else if (late) {
-    state = "UNKNOWN";
-    what = "it ran past its bound and no test failed, so its rows neither passed nor failed: run it again";
-  }
-  outcome.set(name, state === "UNKNOWN" ? "unknown" : "fail");
-  console.log(`${state} step go test ${pkg} (exit ${status}): ${what}`);
-  why.push(`  why ${name} did not pass:`);
-  if (broken !== undefined) for (const line of tail(built.get(broken) ?? "", 40)) why.push(`    ${line}`);
-  for (const test of leaves) why.push(`    ${test}: ${lines(`${name}\t${test}`)}`);
-  if (late) for (const line of stall(text)) why.push(`    ${line}`);
-  if (broken === undefined && leaves.length === 0 && !late) for (const line of tail(text, 20)) why.push(`    ${line}`);
-  if (stderr.trim() !== "") {
-    why.push("    its stderr, last lines:");
-    for (const line of tail(stderr, 20)) why.push(`      ${line}`);
-  }
-}
-for (const row of fs.readFileSync(rows, "utf8").split("\n")) {
-  const [kind, id, requirement, pkg, test] = row.split("\t");
-  if (kind !== "go") continue;
-  const name = nameOf(pkg);
-  const ran = verdict.get(`${name}\t${test}`) ?? "did not run";
-  const whole = verdict.get(`${name}\t`) ?? "did not end";
-  const ok = ran === "pass" && whole === "pass";
-  const state = ok ? "PASS" : outcome.get(name) === "unknown" && ran !== "fail" ? "UNKNOWN" : "FAIL";
-  console.log(`${state} ${id} (${requirement}) ${pkg} ${test}${ok ? "" : `: test ${ran}, package ${state === "UNKNOWN" ? "ran past its bound" : whole}`}`);
-}
-for (const line of why) console.log(line);
-' "$work/go.json" "$work/rows.tsv" "$module" "$work/go-steps.tsv" >"$work/go-rows.txt"
-status=$?
-judged "Go-row judge" "$status" "$work/go-rows.txt" \
-  "${#packages[@]}" "package step lines (one for each package it ran)" '/^(PASS|FAIL|UNKNOWN) step go test /' \
-  "$go_rows" "Go row lines (one for each Go row of the inventory)" '/^(PASS|FAIL|UNKNOWN) / && !/^[A-Z]+ step go test /'
-failed=$((failed + $(grep -c '^FAIL' "$work/go-rows.txt")))
-unknown=$(grep -c '^UNKNOWN' "$work/go-rows.txt")
-
-# The verdict of each Bun row, from its file's JUnit report: the testcase whose full name (the
-# names of the describe blocks around it and its own, joined by " > ", as Bun prints them) is the
-# row's test, whole, so a longer name that begins with it is not that row. It passed when that
-# testcase holds no failure, error or skipped child.
-bun_reports=()
-for i in "${!files[@]}"; do bun_reports+=("${files[$i]}=$work/bun-$i.xml"); done
-# shellcheck disable=SC2016
-bun -e '
-const [rows, ...reports] = process.argv.slice(1);
-const fs = require("node:fs");
-const entities = { apos: "\x27", quot: "\"", amp: "&", lt: "<", gt: ">" };
-const decode = (text) =>
-  text.replace(/&(#x[0-9a-f]+|#[0-9]+|apos|quot|amp|lt|gt);/gi, (_, entity) =>
-    entity[0] === "#"
-      ? String.fromCodePoint(entity[1].toLowerCase() === "x" ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10))
-      : entities[entity.toLowerCase()]);
-function cases(xml) {
-  const found = new Map();
-  const suites = [];
-  let open = null;
-  const close = () => {
-    if (open === null) return;
-    const before = found.get(open.name);
-    found.set(open.name, before !== undefined && before !== "passed" ? before : open.state);
-    open = null;
-  };
-  for (const [, closing, tag, attrs, self] of xml.matchAll(/<(\/?)(testsuite|testcase|failure|error|skipped)\b([^>]*?)(\/?)>/g)) {
-    const name = decode(/\bname="([^"]*)"/.exec(attrs)?.[1] ?? "");
-    if (tag === "testsuite") {
-      if (closing) suites.pop();
-      else if (!self) suites.push(name);
-    } else if (tag === "testcase") {
-      if (closing) close();
-      else {
-        open = { name: [...suites.slice(1), name].join(" > "), state: "passed" };
-        if (self) close();
-      }
-    } else if (open !== null && !closing) {
-      open.state = tag === "skipped" ? "was skipped" : "failed";
-    }
-  }
-  return found;
-}
-const byFile = new Map();
-for (const report of reports) {
-  const at = report.indexOf("=");
-  const path = report.slice(at + 1);
-  byFile.set(report.slice(0, at), fs.existsSync(path) ? cases(fs.readFileSync(path, "utf8")) : null);
-}
-for (const row of fs.readFileSync(rows, "utf8").split("\n")) {
-  const [kind, id, requirement, file, test] = row.split("\t");
-  if (kind !== "bun") continue;
-  const found = byFile.get(file);
-  const state = found === null || found === undefined ? "has no JUnit report" : (found.get(test) ?? "is not in the report");
-  console.log(`${state === "passed" ? "PASS" : "FAIL"} ${id} (${requirement}) ${file} ${test}${state === "passed" ? "" : `: the test ${state}`}`);
-}
-' "$work/rows.tsv" "${bun_reports[@]}" >"$work/bun-rows.txt"
-status=$?
-judged "Bun-row judge" "$status" "$work/bun-rows.txt" \
-  "$bun_rows" "Bun row lines (one for each Bun row of the inventory)" '/^(PASS|FAIL) /'
-failed=$((failed + $(grep -c '^FAIL' "$work/bun-rows.txt")))
-
-# The box print test's rows, from each holder's REDACT-PRINT line in both languages' output: the
-# rows whose twin sat at the row's own placement in the row's own shape (same) apart from those
-# whose twin was reshaped or relocated, which show only that the printer's output is captured
-# there. A run that printed no such line has tested no holder, and fails.
-# shellcheck disable=SC2016
-bun -e '
-const fs = require("node:fs");
-const [events, ...texts] = process.argv.slice(1);
-const lines = [];
-for (const line of fs.readFileSync(events, "utf8").split("\n")) {
-  if (!line.startsWith("{")) continue;
-  const out = JSON.parse(line).Output ?? "";
-  const at = out.indexOf("REDACT-PRINT ");
-  if (at >= 0) lines.push(out.slice(at).trim());
-}
-for (const text of texts) {
-  for (const line of fs.existsSync(text) ? fs.readFileSync(text, "utf8").split("\n") : []) {
-    if (line.startsWith("REDACT-PRINT ")) lines.push(line.trim());
-  }
-}
-const total = { rows: 0, same: 0, reshaped: 0, relocated: 0, blind: 0 };
-for (const line of lines) {
-  for (const [, k, v] of line.matchAll(/(rows|same|reshaped|relocated|blind)=(\d+)/g)) total[k] += Number(v);
-}
-if (lines.length === 0) {
-  console.log("FAIL print-test: no holder printed a REDACT-PRINT line, so no print row ran");
-} else {
-  console.log(`PRINT ${lines.length} holders: ${total.rows} printer and placement rows, ${total.same} with a twin at their own placement and shape, ${total.reshaped} reshaped and ${total.relocated} relocated (each shows only that the printer output is captured there), ${total.blind} blind`);
-  for (const line of lines) console.log(`  ${line}`);
-}
-' "$work/go.json" "$work"/bun-*.txt >"$work/print-rows.txt"
-status=$?
-judged "print judge" "$status" "$work/print-rows.txt" \
-  1 "PRINT or FAIL print-test lines (one for the print test)" '/^(PRINT [0-9]+ holders: |FAIL print-test: )/'
-failed=$((failed + $(grep -c '^FAIL' "$work/print-rows.txt")))
-
-rows=$(wc -l <"$work/rows.tsv")
 if [ "$failed" -ne 0 ]; then
   echo "check c-redact-remote-text: failed at stage 4, the normal verification ($failed failures and $unknown UNKNOWN over $rows rows and the steps); the gate's stages 4 and 5 did not run"
   exit 1
@@ -553,7 +185,13 @@ that a guarded_package entry names holds at run time beyond what the reflection 
 it (the one read guardedPackageRead in packages/envoy/cmd/redact-gate/guarded.go states), which
 counts a func field as holding nothing and reads no type's methods, since a func's captured values
 are out of reflect's reach and its results and a method's are reached only through a method the
-census refuses;
+census refuses; a credential cut into pieces shorter than redact.TokenPiece (8 characters) in
+another party's words, which prints, since the rule redacts only runs of 8 or more of its
+characters, and which reads whole once the gaps between the pieces are taken out; a value public
+by its contract on a route, which is public only where the route matches the request's whole
+escaped path, so a broker or listener served under a path prefix matches none of its routes and
+its public values are redacted as credentials (an echo of one is cut, and SendBack can drop an id
+that repeats one), which errs toward redacting;
 and that the list of remote fields, which the spec's census and review settle, is complete. The
 two forms the fixture's known-residual rows pin print by design: a bare "label: secret@host",
 with no scheme and no key before it (split-user-info-bare), and the same form as a JSON key's

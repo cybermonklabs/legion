@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/token"
@@ -72,7 +73,8 @@ type answerExempt struct {
 // In the box's own package the census checks the reader's type: its exported methods are exactly
 // gate.answers.methods, and the package's exported functions that take it exactly
 // gate.answers.functions, so no method or function that answers the bytes can be added unseen.
-func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, files []*ast.File, info *types.Info, pkg *types.Package) {
+// response is net/http.Response as pkg's imports hold it (httpResponse).
+func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, files []*ast.File, info *types.Info, pkg *types.Package, response types.Type) {
 	cfg := g.inv.Gate.Answers
 	boxPkg, boxName := splitTypeName(g.inv.Gate.Box.Type)
 	if path == boxPkg {
@@ -80,15 +82,7 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 		g.answerFunctions(c, dir, fset, pkg, cfg)
 		return
 	}
-	a := &answerReader{info: info, cfg: cfg, readers: set(cfg.Readers), makers: set(cfg.Makers), decoders: set(cfg.Decoders), boxPkg: boxPkg, boxName: boxName, external: set(g.inv.Gate.External)}
-	if http := importedPackage(pkg, "net/http"); http != nil {
-		response, ok := http.Scope().Lookup("Response").(*types.TypeName)
-		if !ok {
-			c.Unknown = append(c.Unknown, fmt.Sprintf("%s: net/http is in its imports without its Response, which the answer census compares a type's struct with", path))
-			return
-		}
-		a.httpResponse = response.Type()
-	}
+	a := &answerReader{info: info, cfg: cfg, readers: set(cfg.Readers), makers: set(cfg.Makers), decoders: set(cfg.Decoders), boxPkg: boxPkg, boxName: boxName, httpResponse: response, external: set(g.inv.Gate.External)}
 	for _, f := range files {
 		rel, _ := filepath.Rel(dir, fset.Position(f.Pos()).Filename)
 		rel = filepath.ToSlash(rel)
@@ -140,11 +134,11 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 					add("whole-response", false, exprString(cv.expr), "a response handed whole to "+cv.to+", as a "+held+", where fmt, log, slog and encoding/json print the status line the answering party wrote and every header it sent, as they came: name its status through redact.StatusLine and a header through redact.Header")
 				}
 			}
+			if name, ok := a.reference(n, parents); ok {
+				add("reference", false, exprString(n.(ast.Expr)), shortName(name)+" referred to other than by its call, as a function or method value, which no call rule follows: call it, so the census reads the call")
+			}
 			switch n := n.(type) {
 			case *ast.SelectorExpr:
-				if name, ok := a.reference(n, parents); ok {
-					add("reference", false, exprString(n), shortName(name)+" referred to other than by its call, as a function or method value, which no call rule follows: call it, so the census reads the call")
-				}
 				switch {
 				case a.responseField(n, "Body"):
 					switch {
@@ -161,10 +155,6 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 					} else {
 						add("status", false, exprString(n), "a read of an answer's status line as the answering party wrote it, whose phrase is its own words: name the status through redact.StatusLine (oauth2call.StatusLine), its code and the standard phrase")
 					}
-				}
-			case *ast.Ident:
-				if name, ok := a.reference(n, parents); ok {
-					add("reference", false, exprString(n), shortName(name)+" referred to other than by its call, as a function or method value, which no call rule follows: call it, so the census reads the call")
 				}
 			case *ast.CallExpr:
 				if why := a.decodedIntoBox(n, function()); why != "" {
@@ -207,18 +197,25 @@ func (g *gate) answerMethods(c *census, dir string, fset *token.FileSet, pkg *ty
 			}
 		}
 	}
-	sort.Strings(got)
-	want := slices.Clone(cfg.Methods)
-	sort.Strings(want)
 	p := fset.Position(obj.Pos())
 	rel, _ := filepath.Rel(dir, p.Filename)
-	f := finding{File: filepath.ToSlash(rel), Line: p.Line, Function: cfg.Answer, What: strings.Join(got, ", "), Kind: "methods"}
+	c.Answers = append(c.Answers, exactly(finding{File: filepath.ToSlash(rel), Line: p.Line, Function: cfg.Answer, Kind: "methods"}, got, cfg.Methods, "its exported methods are", "a method"))
+}
+
+// exactly is f, a listing of the reader's type, with what it lists, got: OK only where got is
+// exactly want, in any order. are says what got is ("its exported methods are"), and one what one
+// more would be ("a method"), which answers the body's bytes and so lets a client print them.
+func exactly(f finding, got, want []string, are, one string) finding {
+	sort.Strings(got)
+	want = slices.Clone(want)
+	sort.Strings(want)
+	f.What = strings.Join(got, ", ")
 	if slices.Equal(got, want) {
-		f.OK, f.Why = true, "its exported methods are exactly "+strings.Join(want, ", ")
+		f.OK, f.Why = true, are+" exactly "+strings.Join(want, ", ")
 	} else {
-		f.Why = "its exported methods are " + strings.Join(got, ", ") + ", not exactly " + strings.Join(want, ", ") + ": a method that answers the body's bytes lets a client print them"
+		f.Why = are + " " + strings.Join(got, ", ") + ", not exactly " + strings.Join(want, ", ") + ": " + one + " that answers the body's bytes lets a client print them"
 	}
-	c.Answers = append(c.Answers, f)
+	return f
 }
 
 type answerReader struct {
@@ -401,6 +398,27 @@ func importedPackage(pkg *types.Package, path string) *types.Package {
 		}
 	}
 	return nil
+}
+
+// httpResponse is net/http.Response as pkg's imports hold it, or nil where they hold no net/http.
+// Export data loads a package only as far as it names it, so net/http can be in the imports
+// without its Response, which the answer census compares a type's struct with: imp loads it whole
+// there.
+func httpResponse(pkg *types.Package, imp types.Importer) (types.Type, error) {
+	http := importedPackage(pkg, "net/http")
+	if http == nil {
+		return nil, nil
+	}
+	if http.Scope().Lookup("Response") == nil {
+		if _, err := imp.Import("net/http"); err != nil {
+			return nil, fmt.Errorf("net/http cannot be loaded for the answer census: %v", err)
+		}
+	}
+	response, ok := http.Scope().Lookup("Response").(*types.TypeName)
+	if !ok {
+		return nil, errors.New("net/http is in its imports without its Response, which the answer census compares a type's struct with")
+	}
+	return response.Type(), nil
 }
 
 // recordOf is the response whose record recorder is given: record(x)... directly, or a local that

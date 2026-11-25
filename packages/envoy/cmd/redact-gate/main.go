@@ -31,12 +31,13 @@
 //     answers_reach.go);
 //  3. binding: each mutation's function is in its file and its preimage occurs there once;
 //  4. baseline: each row's test passes unmutated in its scratch copy (the check script runs the
-//     normal verification between stage 3 and this one);
+//     normal verification, -verify, between stage 3 and this one);
 //  5. mutation: each row's mutation, applied alone, makes its test fail at its designated
 //     assertion with a marker in the output the test captured there.
 //
-// Each run of stages 4 and 5 has a bound derived in the same run: row_timeout, the row's own
-// budget, plus four times its start-up run (runTest). A run past its bound is UNKNOWN, neither a
+// Each Go row's run in stages 4 and 5 has a bound derived in the same run: row_timeout, the row's
+// own budget, plus four times its start-up run (runBound); a Bun row's run is bounded by
+// row_timeout alone (runBun). A run past its bound is UNKNOWN, neither a
 // pass nor a failure: its stage stops, the gate prints the timeout's panic and the goroutine
 // running the test, and it exits 3 when nothing failed. So is a run that skipped the row's test
 // or a subtest of it (go test's skip action, a Bun testcase's <skipped>), which the gate names:
@@ -44,7 +45,9 @@
 //
 // -stage plan runs stages 1-3; -stage mutate runs 1-3 again and then 4 and 5. -report prints
 // the censuses' findings without judging them against rows. -controls runs the check's negative
-// controls (controls.go).
+// controls (controls.go). -verify runs the check's normal verification of the rows instead, in the
+// working tree: each Go package's inventory tests under a bound derived in the run, each Bun test
+// file, and one verdict line for each package, row, Bun file and the print test (verify.go).
 package main
 
 import (
@@ -92,15 +95,29 @@ type recallEntry struct {
 	Note   string `json:"note"`
 }
 
-// leak is a leak row and where its leak is: control (19) applies the row's test, with the head's
-// Files copied in, to Base, and requires it to fail at REDACT-ASSERT Capture with a marker in the
-// output captured there. Base is a commit's full 40-character name, which a clone of origin can
-// fetch where it lacks the commit (earlierTree), so origin must hold a ref that reaches it.
+// leak is a leak row and where its leak is: control (19) applies the row's test to Base, with the
+// head's Files copied in whole and the head's text of each of Declarations put in place of the
+// base's, and requires it to fail at REDACT-ASSERT Capture with a marker in the output captured
+// there. Files are the row's own test file and files that hold no test (helpers, a production
+// file the base lacks); a helper or constant of a test file other tests share goes in
+// Declarations, so a test of that file the base cannot compile, which a whole copy would carry,
+// stays out of the base's run. Base is a commit's full 40-character name, which a clone of origin
+// can fetch where it lacks the commit (earlierTree), so origin must hold a ref that reaches it.
 type leak struct {
-	Row     string   `json:"row"`
-	Base    string   `json:"base"`
-	Files   []string `json:"files"`
-	Capture string   `json:"capture"`
+	Row          string        `json:"row"`
+	Base         string        `json:"base"`
+	Files        []string      `json:"files"`
+	Declarations []declaration `json:"declarations"`
+	Capture      string        `json:"capture"`
+}
+
+// declaration names top-level declarations of a Go file both the base and the head hold, each by
+// types.Func.FullName's form for a function or method ("pkg.F", "(*pkg.T).M") and pkg.Name for a
+// type, a constant or a variable: headDeclarations puts the head's text of each in place of the
+// base's, or adds it after the base's last declaration where the base has none.
+type declaration struct {
+	File  string   `json:"file"`
+	Names []string `json:"names"`
 }
 
 // boxConfig names the box and what may read its storage: the rule's functions its text may be the
@@ -126,16 +143,16 @@ type holderRow struct {
 	Test   string `json:"test"` // the print test's row id
 }
 
-// reflectionExempt is a reflection or unsafe site the reflection census allows, with the types it
-// reaches, which the census checks hold no box storage and no external error type. RecordsBoxes
-// names the box's own record walk instead, in the box's package alone, which reaches box-holding
-// types to hand each box its record. ExportedFieldsOnly names a walk that reads exported fields
-// alone, each reflect.Value.Field it calls under a t.Field(i).IsExported() guard on its own index,
-// which the census checks in place of the types it reaches: the box keeps its text in unexported
-// fields. GuardedPackage names a reflection of a value whose type no static type names (a
-// library's unexported type behind an interface), allowed for the one read guardedPackageRead
-// (guarded.go) states, which the census checks, with the package GuardedPackage names, in place
-// of the types it reaches.
+// reflectionExempt is a reflection or unsafe site the reflection census allows, in one of the
+// ways reflectionMode names: by the types it reaches (Operands), which the census checks hold no
+// box storage and no external error type, or by one of three modes in their place. RecordsBoxes
+// names the box's own record walk, in the box's package alone, which reaches box-holding types to
+// hand each box its record. ExportedFieldsOnly names a walk that reads exported fields alone, each
+// reflect.Value.Field it calls under a t.Field(i).IsExported() guard on its own index: the box
+// keeps its text in unexported fields. GuardedPackage names a reflection of a value whose type no
+// static type names (a library's unexported type behind an interface), allowed for the one read
+// guardedPackageRead (guarded.go) states, which the census checks with the package GuardedPackage
+// names. An entry sets at most one mode, and none with operands (mode; load refuses it otherwise).
 type reflectionExempt struct {
 	File               string   `json:"file"`
 	Function           string   `json:"function"`
@@ -144,6 +161,42 @@ type reflectionExempt struct {
 	ExportedFieldsOnly bool     `json:"exported_fields_only"`
 	GuardedPackage     string   `json:"guarded_package"`
 	Why                string   `json:"why"`
+}
+
+// reflectionMode is the one way a reflection entry allows its site.
+type reflectionMode int
+
+const (
+	byOperands reflectionMode = iota // the types it reaches, its operands
+	byRecordsBoxes
+	byExportedFieldsOnly
+	byGuardedPackage
+)
+
+// mode is the one way e allows its site, or an error where e sets two modes, or a mode and
+// operands, which the mode's check would not read.
+func (e reflectionExempt) mode() (reflectionMode, error) {
+	mode, set := byOperands, []string(nil)
+	for _, m := range []struct {
+		on   bool
+		mode reflectionMode
+		name string
+	}{
+		{e.RecordsBoxes, byRecordsBoxes, "records_boxes"},
+		{e.ExportedFieldsOnly, byExportedFieldsOnly, "exported_fields_only"},
+		{e.GuardedPackage != "", byGuardedPackage, "guarded_package"},
+	} {
+		if m.on {
+			mode, set = m.mode, append(set, m.name)
+		}
+	}
+	switch {
+	case len(set) > 1:
+		return 0, fmt.Errorf("it sets %s, and an entry allows its site in one way", strings.Join(set, " and "))
+	case len(set) == 1 && len(e.Operands) > 0:
+		return 0, fmt.Errorf("it sets %s and lists operands, which %s does not read", set[0], set[0])
+	}
+	return mode, nil
 }
 
 type gateConfig struct {
@@ -283,6 +336,7 @@ type gate struct {
 	longest                   time.Duration // the longest correct run of stage 4
 	longestRow                string
 	valueOf                   map[string][]valueOfSite   // reflect.ValueOf sites by package
+	builds                    map[string]ciBuilds        // every build CI makes of a module, by snapshot and module (gate.ciBuilds)
 	imports                   map[string]map[string]bool // each listed package's import closure, itself included (recordImports)
 	declared                  map[string]*checkedSource  // guarded packages type-checked from source, by package and build (sourceChecked)
 	failures                  int
@@ -300,6 +354,8 @@ func main() {
 	report := flag.Bool("report", false, "print the censuses' findings without judging them against rows")
 	controlsFlag := flag.Bool("controls", false, "run the check's negative controls")
 	only := flag.String("only", "", "with -controls, the comma-separated controls to run")
+	verifyFlag := flag.Bool("verify", false, "run the check's normal verification of the rows, in the working tree")
+	keep := flag.String("keep", "", "with -verify, the directory to keep each run's events, stderr, JUnit report and output in")
 	flag.Parse()
 	if *repo == "" {
 		top, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
@@ -318,6 +374,9 @@ func main() {
 	}
 	if *controlsFlag {
 		os.Exit(runControls(*repo, *only))
+	}
+	if *verifyFlag {
+		os.Exit(verify(*repo, *inventoryPath, *keep, os.Stdout))
 	}
 	o := options{rows: *rowsFlag, stage: *stage, head: *head, base: *base, report: *report}
 	os.Exit(run(*repo, *inventoryPath, o, os.Stdout))
@@ -458,16 +517,25 @@ func (g *gate) unknown(format string, args ...any) {
 	fmt.Fprintf(g.out, "UNKNOWN "+format+"\n", args...)
 }
 
+// decodeInventory is the inventory data holds, each Bun row marked as one (row.bun).
+func decodeInventory(data []byte) (inventory, error) {
+	var inv inventory
+	if err := json.Unmarshal(data, &inv); err != nil {
+		return inv, err
+	}
+	for i := range inv.Bun {
+		inv.Bun[i].bun = true
+	}
+	return inv, nil
+}
+
 func (g *gate) load(needSites bool) error {
 	data, err := os.ReadFile(g.inventoryPath)
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(data, &g.inv); err != nil {
+	if g.inv, err = decodeInventory(data); err != nil {
 		return fmt.Errorf("the inventory cannot be parsed: %v", err)
-	}
-	for i := range g.inv.Bun {
-		g.inv.Bun[i].bun = true
 	}
 	if g.inv.Gate.Base == "" || len(g.inv.Gate.Rule) == 0 {
 		return errors.New("the inventory names no gate.base or gate.rule")
@@ -479,6 +547,11 @@ func (g *gate) load(needSites bool) error {
 			return fmt.Errorf("gate.row_timeout: %v", err)
 		}
 		g.rowTimeout = d
+	}
+	for _, e := range g.inv.Gate.Reflection {
+		if _, err := e.mode(); err != nil {
+			return fmt.Errorf("reflection entry %s (%s): %v", e.Function, e.File, err)
+		}
 	}
 	if !needSites {
 		return nil
@@ -518,6 +591,11 @@ func (g *gate) load(needSites bool) error {
 		}
 		if len(l.Base) != 40 || strings.Trim(l.Base, "0123456789abcdef") != "" {
 			return fmt.Errorf("leak %s: its base %q is not a commit's full 40-character name, which a clone that lacks it cannot fetch", l.Row, l.Base)
+		}
+		for _, d := range l.Declarations {
+			if !strings.HasSuffix(d.File, ".go") || len(d.Names) == 0 {
+				return fmt.Errorf("leak %s: a declarations entry names no Go file or no declaration", l.Row)
+			}
 		}
 	}
 	if len(g.inv.Recall) == 0 {
@@ -742,8 +820,8 @@ func (g *gate) judge(c census, ranges map[*row][2]int, bindErr map[*row]error) b
 }
 
 // judgeStructural fails each box-storage use the box census could not classify, each holder no
-// print-test row names, each reflection or unsafe site it does not allow, and a census that
-// listed nothing.
+// print-test row names, each reflection or unsafe site it does not allow, each build target no
+// API line of the boundary census names (judgeTargets), and a census that listed nothing.
 func (g *gate) judgeStructural(c census) {
 	if len(c.Box) == 0 {
 		g.fail("stage 2 (box census) UNKNOWN: it listed no use of the box's storage")
@@ -816,6 +894,7 @@ func (g *gate) judgeStructural(c census) {
 	if calls == 0 {
 		g.fail("stage 2 (boundary census) UNKNOWN: it listed no call of a library")
 	}
+	g.judgeTargets(c)
 	if len(c.Fields) == 0 {
 		g.fail("stage 2 (field census) UNKNOWN: it listed no field the boundary sets")
 	}

@@ -153,75 +153,19 @@ func (w *walker) at(n ast.Node) (string, int) {
 	return w.rel, p.Line
 }
 
-// isBox reports whether t is the box's named type.
-func (w *walker) isBox(t types.Type) bool {
-	n, ok := types.Unalias(t).(*types.Named)
-	return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == w.boxPkg && n.Obj().Name() == w.boxName
-}
-
-// contains reports whether a value of type t holds the box anywhere: the box itself, or through a
-// pointer, a field (embedded or not), a slice, an array, a map's key or value, or a channel.
+// contains reports whether a value of type t holds the box anywhere (holdsBox).
 func (w *walker) contains(t types.Type, seen map[types.Type]bool) bool {
-	if seen[t] {
-		return false
-	}
-	seen[t] = true
-	switch t := types.Unalias(t).(type) {
-	case *types.Named:
-		return w.isBox(t) || w.contains(t.Underlying(), seen)
-	case *types.Pointer:
-		return w.contains(t.Elem(), seen)
-	case *types.Slice:
-		return w.contains(t.Elem(), seen)
-	case *types.Array:
-		return w.contains(t.Elem(), seen)
-	case *types.Map:
-		return w.contains(t.Key(), seen) || w.contains(t.Elem(), seen)
-	case *types.Chan:
-		return w.contains(t.Elem(), seen)
-	case *types.Struct:
-		for i := range t.NumFields() {
-			if w.contains(t.Field(i).Type(), seen) {
-				return true
-			}
-		}
-	}
-	return false
+	return holdsBox(t, w.boxPkg, w.boxName, seen)
 }
 
-// external reports whether t reaches one of the inventory's external error types.
+// external reports whether t reaches one of the inventory's external error types, through every
+// edge holdsBox follows, a channel's among them: a channel holds what is sent on it, and a
+// reflection that reaches the channel's value reaches that.
 func (w *walker) external(t types.Type, seen map[types.Type]bool) bool {
-	if seen[t] {
-		return false
-	}
-	seen[t] = true
-	switch t := types.Unalias(t).(type) {
-	case *types.Named:
-		if t.Obj().Pkg() != nil {
-			name := t.Obj().Pkg().Path() + "." + t.Obj().Name()
-			for _, e := range w.g.inv.Gate.External {
-				if e == name {
-					return true
-				}
-			}
-		}
-		return w.external(t.Underlying(), seen)
-	case *types.Pointer:
-		return w.external(t.Elem(), seen)
-	case *types.Slice:
-		return w.external(t.Elem(), seen)
-	case *types.Array:
-		return w.external(t.Elem(), seen)
-	case *types.Map:
-		return w.external(t.Key(), seen) || w.external(t.Elem(), seen)
-	case *types.Struct:
-		for i := range t.NumFields() {
-			if w.external(t.Field(i).Type(), seen) {
-				return true
-			}
-		}
-	}
-	return false
+	return edges{chans: true}.reaches(t, func(t types.Type) bool {
+		n, ok := t.(*types.Named)
+		return ok && n.Obj().Pkg() != nil && slices.Contains(w.g.inv.Gate.External, n.Obj().Pkg().Path()+"."+n.Obj().Name())
+	}, seen)
 }
 
 func (w *walker) file(f *ast.File) {
@@ -564,20 +508,27 @@ func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function str
 		f.Why = "no inventory entry names this site"
 		return
 	}
-	// The box's own record walk (redact.recordBoxes) reaches every type a caller decodes an answer
-	// into, box-holding ones by design: it hands each box its record through the box's own method
-	// and reads no storage, which the box census holds, since that census allows the storage to be
-	// read only by the box's rule and comparison methods. An entry may name such a walk only in the
-	// box's own package; anywhere else a reflection that reaches the box fails as before.
-	if exempt.RecordsBoxes {
+	mode, err := exempt.mode()
+	if err != nil {
+		// load refuses such an entry; a census given one unloaded passes no site by it.
+		f.Why = "its inventory entry is refused: " + err.Error()
+		return
+	}
+	switch mode {
+	case byRecordsBoxes:
+		// The box's own record walk (redact.recordBoxes) reaches every type a caller decodes an
+		// answer into, box-holding ones by design: it hands each box its record through the box's
+		// own method and reads no storage, which the box census holds, since that census allows the
+		// storage to be read only by the box's rule and comparison methods. An entry may name such
+		// a walk only in the box's own package; anywhere else a reflection that reaches the box
+		// fails as before.
 		if w.path != w.boxPkg || kind != "reflect" {
 			f.Why = "records_boxes names a reflection outside the box's package, or no reflect call"
 			return
 		}
 		f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); the box's own walk, which hands each box its record and reads no storage"
 		return
-	}
-	if exempt.ExportedFieldsOnly {
+	case byExportedFieldsOnly:
 		switch {
 		case ast.IsExported(w.g.inv.Gate.Box.Field):
 			f.Why = "exported_fields_only names a walk of exported fields, and the box's storage field is exported"
@@ -589,8 +540,7 @@ func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function str
 			f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); it reads an exported field alone, and the box keeps its text in unexported fields"
 		}
 		return
-	}
-	if exempt.GuardedPackage != "" {
+	case byGuardedPackage:
 		if ok, why := w.guardedPackageRead(call, parents, kind, what, exempt.GuardedPackage); ok {
 			f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); "+why
 		} else {

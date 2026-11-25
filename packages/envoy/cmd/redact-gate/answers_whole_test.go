@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -182,7 +181,7 @@ func wholeCensus(t *testing.T) []finding {
 		}
 	}
 	modDir := filepath.Join(dir, "m")
-	listed, err := goList(modDir, runtime.GOOS+"/"+runtime.GOARCH, "", true, "./p", "./r")
+	listed, err := goList(modDir, hostBuild(), true, "./p", "./r")
 	if err != nil {
 		t.Fatal(err)
 	}

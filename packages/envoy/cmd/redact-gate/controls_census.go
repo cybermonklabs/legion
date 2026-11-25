@@ -5,13 +5,9 @@ import (
 	"path/filepath"
 )
 
-// The negative controls of the Go census's reading of every build (census.go) and of the answer
-// census's rules for the ways out of an answer a type shows (answers_reach.go). They are added to
-// controls in init, so runControls runs them with the rest.
-func init() {
-	controls = append(controls, censusControls...)
-}
-
+// censusControls are the negative controls of the Go census's reading of every build (census.go)
+// and of the answer census's rules for the ways out of an answer a type shows (answers_reach.go).
+// controls (controls.go) lists them after the core controls.
 var censusControls = []control{
 	{id: "29", what: "a read of an answer's body and status line planted in a file only darwin builds and in one only linux/arm64 builds, and one planted in a file no CI build compiles", stage: 2,
 		each: [][]string{

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -140,7 +141,11 @@ func (c *controlRun) setMutation(id, preimage, replacement string) {
 	m["preimage"], m["replacement"] = preimage, replacement
 }
 
-var controls = []control{
+// controls is every negative control runControls runs, in order: the core controls, then the Go
+// census's and the answer census's (censusControls, controls_census.go).
+var controls = slices.Concat(coreControls, censusControls)
+
+var coreControls = []control{
 	{id: "1", what: "the grammar returns every field unchanged, in Go and in TypeScript", fixture: true, plant: func(c *controlRun) error {
 		if err := c.edit("packages/envoy/internal/redact/remote.go", "func Remote(field string) (string, bool) {\n", "func Remote(field string) (string, bool) {\n\tif field != \"\\x00control\" {\n\t\treturn field, true\n\t}\n"); err != nil {
 			return err
@@ -381,7 +386,7 @@ func controlAlias(words string) string {
 		own: func(repo string, inv inventory) (string, string) {
 			// The head's redacttest goes in with the test, since main has none, and the rule's file,
 			// which the test's expected detail is computed with.
-			return earlierTree(repo, inv, githubRow, githubBase, []string{"packages/envoy/internal/dispatch/api/ci_detail_refusal_test.go", "packages/envoy/internal/redact/redacttest/redacttest.go", "packages/envoy/internal/redact/remote.go"}, "api.ci-detail")
+			return earlierTree(repo, inv, leak{Row: githubRow, Base: githubBase, Capture: "api.ci-detail", Files: []string{"packages/envoy/internal/dispatch/api/ci_detail_refusal_test.go", "packages/envoy/internal/redact/redacttest/redacttest.go", "packages/envoy/internal/redact/remote.go"}})
 		}},
 	{id: "18", what: "a planted direct call, outside the boundary function, to an exported function of golang.org/x/oauth2 and to one of openid-client", stage: 2,
 		each: [][]string{
@@ -443,11 +448,11 @@ import { randomState } from "openid-client";
 export const controlHandedOut: string = callLibrary(() => randomState)();
 `)
 		}},
-	{id: "19", what: "each leak row, applied to the tree where its leak is, compiles and fails on a marker in its captured output",
+	{id: "19", what: "each leak row, applied to the tree where its leak is with its files and declarations from the head, compiles and fails on a marker in its captured output",
 		own: func(repo string, inv inventory) (string, string) {
 			var failed, out []string
 			for _, l := range inv.Gate.Leaks {
-				verdict, output := earlierTree(repo, inv, l.Row, l.Base, l.Files, l.Capture)
+				verdict, output := earlierTree(repo, inv, l)
 				out = append(out, fmt.Sprintf("leak %s at %s: %s", l.Row, l.Base, orAccepted(verdict)), output)
 				if verdict != "" {
 					failed = append(failed, l.Row+": "+verdict)
@@ -725,13 +730,16 @@ func orAccepted(verdict string) string {
 	return verdict
 }
 
-// earlierTree applies row id's test to rev: a worktree of rev with files copied in from the head,
-// the row's test run there alone. A clone that lacks rev fetches origin's leak-row base refs
-// first (leakBaseRefs), each named redact-leak-row-base-<abbreviated commit>, which hold #4368's
-// earlier heads once its branch is merged. It answers "" when the test compiled and failed at
-// REDACT-ASSERT capture with a marker in the output captured there, and the reason otherwise; a
-// build or setup failure does not count.
-func earlierTree(repo string, inv inventory, id, rev string, files []string, capture string) (string, string) {
+// earlierTree applies leak l's row's test to l.Base: a worktree of l.Base with l.Files copied in
+// whole from the head and the head's text of each of l.Declarations put in place of the base's
+// (headDeclarations), the row's test run there alone. A clone that lacks the base fetches
+// origin's leak-row base refs first (leakBaseRefs), each named
+// redact-leak-row-base-<abbreviated commit>, which hold #4368's earlier heads once its branch is
+// merged. It answers "" when the test compiled and failed at REDACT-ASSERT l.Capture with a
+// marker in the output captured there, and the reason otherwise; a build or setup failure does
+// not count.
+func earlierTree(repo string, inv inventory, l leak) (string, string) {
+	id, rev, capture := l.Row, l.Base, l.Capture
 	g := &gate{repo: repo, inv: inv, rowTimeout: 10 * time.Minute}
 	var r *row
 	for _, candidate := range g.allRows() {
@@ -761,15 +769,20 @@ func earlierTree(repo string, inv inventory, id, rev string, files []string, cap
 		return fmt.Sprintf("the worktree at %s: %v: %s", rev, err, out), ""
 	}
 	defer exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run()
-	for _, f := range files {
-		data, err := exec.Command("git", "-C", repo, "show", "HEAD:"+f).Output()
+	for _, f := range l.Files {
+		data, err := headFile(repo, f)
 		if err != nil {
-			return fmt.Sprintf("the head's %s: %v", f, err), ""
+			return err.Error(), ""
 		}
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(wt, f)), 0o755); err != nil {
 			return err.Error(), ""
 		}
 		if err := os.WriteFile(filepath.Join(wt, f), data, 0o644); err != nil {
+			return err.Error(), ""
+		}
+	}
+	for _, d := range l.Declarations {
+		if err := headDeclarations(repo, wt, d); err != nil {
 			return err.Error(), ""
 		}
 	}
@@ -804,7 +817,7 @@ func runControls(repo, only string) int {
 		}
 		fmt.Printf("control %s %s (%s): %s %s\n", ctl.id, status, time.Since(start).Round(time.Second), ctl.what, verdict)
 		for _, line := range strings.Split(output, "\n") {
-			if strings.HasPrefix(line, "FAIL ") || strings.HasPrefix(line, "gate: stopped") || strings.HasPrefix(line, "fixture ") || strings.HasPrefix(line, "leak ") || strings.HasPrefix(line, "judges ") {
+			if strings.HasPrefix(line, "FAIL ") || strings.HasPrefix(line, "gate: stopped") || strings.HasPrefix(line, "fixture ") || strings.HasPrefix(line, "leak ") {
 				fmt.Printf("    %s\n", line)
 			}
 		}
@@ -821,13 +834,13 @@ func runControls(repo, only string) int {
 // with the gate's output.
 func runControl(repo string, ctl control) (string, string) {
 	if ctl.own != nil {
-		var inv inventory
 		data, err := os.ReadFile(filepath.Join(repo, inventoryFile))
-		if err != nil || json.Unmarshal(data, &inv) != nil {
-			return "the head's inventory does not parse", ""
+		var inv inventory
+		if err == nil {
+			inv, err = decodeInventory(data)
 		}
-		for i := range inv.Bun {
-			inv.Bun[i].bun = true
+		if err != nil {
+			return "the head's inventory does not parse", ""
 		}
 		return ctl.own(repo, inv)
 	}
