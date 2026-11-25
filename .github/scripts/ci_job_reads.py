@@ -75,7 +75,6 @@ from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact,
 from ci_filter_coverage import at as at_in, gate as gate_in
 from ci_filter_sources import excluded, load_directives, load_gate_files
 from go_build_tags import go_skips_dir, tag_sets
-from legion_targets import legion_targets
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
@@ -573,7 +572,7 @@ def go_notices_runs():
     script, and ci-caches.yaml's notices job runs the same one to fill the cache lint restores."""
     started_by = at("lint", NOTICES_STEP)
     out = []
-    for target in legion_targets(GO_TARGETS):
+    for target in targets(GO_TARGETS, "legion"):
         goos, goarch = target.split("/")
         out.append(script_run(NOTICES_LOOPS, '../../scripts/go-third-party-notices.sh "$notices/legion-${target%/*}-${target#*/}" ./cmd/legion',
                               started_by, DAEMON, ["./cmd/legion"], mode="build",
@@ -608,7 +607,7 @@ def legion_release_paths_runs():
     the environment that script's build gives the target."""
     started_by = at("lint", RELEASE_PATHS_STEP)
     out = []
-    for target in legion_targets(GO_TARGETS):
+    for target in targets(GO_TARGETS, "legion"):
         goos, goarch = target.split("/")
         out.append(script_run(RELEASE_BUILD_LEGION, 'for_target "$target" go -C packages/daemon list "$@" ./cmd/legion',
                               started_by, DAEMON, ["./cmd/legion"], mode="build",

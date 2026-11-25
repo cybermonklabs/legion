@@ -19,5 +19,4 @@ GATE = harness("go_test_step_expansion_test", "Test the go test step expansion",
     (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
     (f"{SCRIPTS}/ci_filter_sources.py", "ci_job_reads.py loads the gate files and //ci: lines through it"),
     (".github/ci-gates/*.py", "the import of ci_job_reads.py loads every gate file"),
-    (f"{SCRIPTS}/legion_targets.py", "ci_job_reads.py, which its last case imports, reads the legion list through it"),
 ])

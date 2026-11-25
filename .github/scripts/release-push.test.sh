@@ -1915,6 +1915,16 @@ done
 legion_targets_run '"linux/amd64"'
 check "a legion key that is no list: exits 1 printing nothing, saying it could not read it" \
   "$(is "$rc|$out|$(contains "$err" '^::error file=\.github/go-release-targets\.json::release-push\.sh legion-targets: could not read the legion targets of .*its legion key is no list')" '1||true')"
+# A file jq cannot read and a file with no legion key are refused as a missing file is.
+for form in 'not json' '{"envoy": ["amd64"]}'; do
+  printf '%s\n' "$form" > "$lt/.github/go-release-targets.json"
+  set +e
+  out=$("$lt/.github/scripts/release-push.sh" legion-targets 2>"$lt/err")
+  rc=$?
+  set -e
+  check "a target list of $form: exits 1 printing nothing, saying it could not read it" \
+    "$(is "$rc|$out|$(contains "$(<"$lt/err")" '^::error file=\.github/go-release-targets\.json::release-push\.sh legion-targets: could not read the legion targets of ')" '1||true')"
+done
 rm "$lt/.github/go-release-targets.json"
 set +e
 out=$("$lt/.github/scripts/release-push.sh" legion-targets 2>"$lt/err")
@@ -1928,35 +1938,6 @@ rc=$?
 set -e
 check "an argument: exits 1 printing nothing, with the usage" \
   "$(is "$rc|$out|$(contains "$(<"$lt/err")" '^::error::release-push.sh legion-targets takes no argument; usage: release-push.sh legion-targets$')" '1||true')"
-
-echo
-echo "Case: legion-targets and legion_targets.py, ci_job_reads.py's reader, give one list or both refuse"
-# ci_job_reads.py, CI's model of which go commands those scripts run, reads the legion list in
-# Python through legion_targets.py. Two readers of one list may stay two only while they cannot
-# disagree unseen, so each file goes to both: the repository's own list must give both the same
-# lines, and each form legion-targets refuses must be refused by both, printing nothing.
-# read_both <release-push.sh> <the list beside it>: leaves shell_rc and shell_out, py_rc and py_out.
-read_both() {
-  set +e
-  shell_out=$("$1" legion-targets 2>/dev/null)
-  shell_rc=$?
-  py_out=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c 'import sys
-from legion_targets import legion_targets
-print("\n".join(legion_targets(sys.argv[1])))' "$2" 2>/dev/null)
-  py_rc=$?
-  set -e
-}
-read_both "$release_push" "$script_dir/../go-release-targets.json"
-check "the repository's list: both exit 0 with the same lines" \
-  "$(is "$shell_rc|$py_rc|$([ -n "$shell_out" ] && [ "$shell_out" = "$py_out" ] && echo same || echo "differ: [$shell_out] [$py_out]")" '0|0|same')"
-for form in '{"legion": []}' '{"legion": ["linux/amd64", " darwin/arm64"]}' '{"envoy": ["amd64"]}' \
-  '{"legion": ["Linux/amd64"]}' '{"legion": ["linux/amd64/v3"]}' '{"legion": ["linux/amd64", ""]}' \
-  '{"legion": ["linux/amd64", 1]}' '{"legion": "linux/amd64"}' 'not json'; do
-  printf '%s\n' "$form" > "$lt/.github/go-release-targets.json"
-  read_both "$lt/.github/scripts/release-push.sh" "$lt/.github/go-release-targets.json"
-  check "$form: both refuse, printing nothing" \
-    "$(is "$([ "$shell_rc" -ne 0 ] && [ -z "$shell_out" ] && echo refused || echo "took [$shell_out]")|$([ "$py_rc" -ne 0 ] && [ -z "$py_out" ] && echo refused || echo "took [$py_out]")" 'refused|refused')"
-done
 
 echo
 echo "Case: release.yaml's legion archive check names the archives after legion-targets"
