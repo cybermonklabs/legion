@@ -2,12 +2,12 @@ import { existsSync } from "node:fs";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { type Body, type Result, routeUrl } from "../web/src/api/paths";
-import type { IssueDetails, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
+import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { blockIdOfNode } from "../web/src/features/issue-page/decision-review";
-import { isOvertaken } from "../web/src/features/issue-page/issue-address";
 import { PRESET_NAMES, type Preset } from "../web/src/features/issue-page/page-words";
 import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
-import { ownStatesOf, type TreeIdReads } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import type { TreeIdReads } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { closedReadIds } from "../web/src/features/issue-page/waiting";
 import { buildDispatchReference } from "../web/src/features/refs/routes";
 import {
   baseUrlOf,
@@ -139,7 +139,8 @@ export async function settleNodeApi(
 // ---------------------------------------------------------------------------------------------
 
 /** The reads `treeIdOf` names a node by - the issue read and the asks read - as `login` reads
- *  them, so a row names each node by the id the page draws it under. */
+ *  them, so a row names each node by the id the page draws it under; the same reads pair a
+ *  question's block with its ask where the page closes nodes (`closedReadIds`). */
 export async function treeIdReads(key: string, login = "alice"): Promise<TreeIdReads> {
   const [issue, asks] = await Promise.all([
     getIssue(key, { login }),
@@ -1216,56 +1217,6 @@ export function focusedNodeFacts(page: Page): Locator {
 // What the page draws once the parts after this one are under the head.
 // ---------------------------------------------------------------------------------------------
 
-/** One open ask of an issue, as the issue read answers it (`IssueDetails.open_asks`). */
-type OpenAsk = NonNullable<IssueDetails["open_asks"]>[number];
-
-/**
- * The read id of every node of `answer` the page closes, as the header's count closes them
- * (`waiting.ts`' `closedKeys`): each node overtaken by a state of its own (`ownStatesOf`, which
- * gives the block a question is written as none), the block an open question of `asks` is written
- * as where that question's ask's node is overtaken, since the page draws the block and its ask as
- * one row, which takes the ask's state, and every node under one of these, at any depth, in
- * whatever order the read answers them. These are the nodes this part draws open and marked,
- * which no gate on how the page opens reads, since a gate that read them would read this part's
- * own behaviour. `asks` are the issue's open asks as the issue read answers the reader, which
- * name the block each question is written as.
- */
-export function closedIdsOf(answer: IssueTreeRead, asks: readonly OpenAsk[]): ReadonlySet<string> {
-  const nodes = answer.nodes ?? [];
-  const overtaken = nodes.filter((node) => isOvertaken(ownStatesOf(node)));
-  // The read's own id of each, which the ask's node of a question shares with its ask.
-  const overtakenIds = new Set(overtaken.map((node) => node.id));
-  // The block each open question whose ask's node is overtaken is written as, by its document
-  // and its block id, as the read names a block within its document.
-  const blocks = new Set(
-    asks.flatMap((ask) => {
-      const document = ask.block_artifact?.id ?? ask.artifact_id;
-      return document === null || ask.block_id === null || !overtakenIds.has(ask.id)
-        ? []
-        : [`${document}#${ask.block_id}`];
-    })
-  );
-  const closing = [
-    ...overtaken,
-    ...nodes.filter(
-      (node) =>
-        node.supertag === "ask" &&
-        node.document !== undefined &&
-        blocks.has(`${node.document.artifact_id}#${blockIdOfNode(node)}`)
-    ),
-  ];
-  const children = childrenIn(answer);
-  const closed = new Set<string>();
-  // Every node to close is known before the walk, so each one's children are closed under it
-  // wherever the read answers them; a read whose parents lead round closes each node once.
-  for (let node = closing.pop(); node !== undefined; node = closing.pop()) {
-    if (closed.has(node.id)) continue;
-    closed.add(node.id);
-    closing.push(...(children.get(node.id) ?? []));
-  }
-  return closed;
-}
-
 /** The rows of the page's tree as it opened, read once it draws a row: the caller waited for its
  *  load to settle. */
 async function rowsAsOpened(page: Page): Promise<TreeItem[]> {
@@ -1281,21 +1232,23 @@ async function rowsAsOpened(page: Page): Promise<TreeItem[]> {
 
 /**
  * Whether the page opens with every node drawn open (part T's R11), read once, on the page as it
- * opened and before any press, of the issue whose tree read is `answer` and whose open asks, as
- * the issue read answers them, are `asks`: no row of a node the page does not close is folded, no
- * branch below the drawn levels stands as one line, and at least one such row holds an open
- * branch, so a page that draws no branch is not taken for one that draws them all open. The nodes
- * this part draws open (`closedIdsOf`) are left out, by the read id each row carries, which for a
- * question's row is that of the block it is drawn from, closed where its ask's node is overtaken:
- * so the gate never reads this part's own behaviour, and a build that draws an overtaken node
- * folded fails the readings of that node and does not turn them owed.
+ * opened and before any press, of the issue whose tree read is `answer`, with `reads` the issue
+ * read and the asks read as the page's reader reads them (`treeIdReads`): no row of a node the
+ * page does not close is folded, no branch below the drawn levels stands as one line, and at
+ * least one such row holds an open branch, so a page that draws no branch is not taken for one
+ * that draws them all open. The nodes this part draws open, at or under an overtaken one, are
+ * left out, as the header's count leaves them out (`waiting.ts`' `closedReadIds`), by the read id
+ * each row carries, which for a question's row is that of the block it is drawn from, closed
+ * where its ask's node is overtaken, the block paired with its ask as the page pairs them, open
+ * or answered: so the gate never reads this part's own behaviour, and a build that draws an
+ * overtaken node folded fails the readings of that node and does not turn them owed.
  */
 export async function drawnOpenGate(
   page: Page,
   answer: IssueTreeRead,
-  asks: readonly OpenAsk[]
+  reads: TreeIdReads
 ): Promise<Gate> {
-  const closed = closedIdsOf(answer, asks);
+  const closed = closedReadIds(answer, reads);
   const rows = (await rowsAsOpened(page)).filter(
     (item) => item.readId === null || !closed.has(item.readId)
   );
@@ -1317,14 +1270,14 @@ export async function drawnOpenGate(
 export interface PlaceOnLoad {
   /** The tree read of the issue the page is open on. */
   readonly answer: IssueTreeRead;
-  /** That issue's open asks, as the issue read answers the reader, which name the block each
-   *  question is written as (`closedIdsOf`). */
-  readonly asks: readonly OpenAsk[];
   /** How many levels one opening draws at the page's width: `tree-fold.ts`' `DRAWN_LEVELS` from
    *  1024 px up, `NARROW_LEVELS` below. */
   readonly levels: number;
   /** The read id of the node whose place is read. */
   readonly readId: string;
+  /** That issue's read and its asks read, as the page's reader reads them (`treeIdReads`), which
+   *  pair each question's block with its ask, open or answered (`closedReadIds`). */
+  readonly reads: TreeIdReads;
   /** The id the page draws a node of `answer` under, by its read id (`treeIdOf`). */
   readonly treeId: (readId: string) => string;
   /** How the owed note names the node. */
@@ -1344,16 +1297,17 @@ export interface PlaceOnLoad {
  * `readId` stands there and every live row at its level or above that holds a branch is drawn
  * open, at least one of them: the page opens every branch that deep on this load. It reads no path
  * of the frontier, so it is read for a node under which nothing is open, in whose place the
- * frontier opens no live node. The rows at or under an overtaken node (`closedIdsOf`), the row of
- * a question whose ask's node is overtaken among them, told by the id the page draws each under
- * (`treeId`, which gives a question's ask the row of the block it was indexed from), are left
- * out, so the gate never reads this part's own behaviour.
+ * frontier opens no live node. The rows at or under an overtaken node, as the header's count
+ * finds them (`waiting.ts`' `closedReadIds`), the row of a question whose ask's node is overtaken
+ * among them, told by the id the page draws each under (`treeId`, which gives a question's ask
+ * the row of the block it was indexed from), are left out, so the gate never reads this part's
+ * own behaviour.
  */
 export async function openOnLoadGate(
   page: Page,
-  { answer, asks, levels, readId, treeId, what }: PlaceOnLoad
+  { answer, levels, readId, reads, treeId, what }: PlaceOnLoad
 ): Promise<Gate> {
-  const closed = new Set([...closedIdsOf(answer, asks)].map(treeId));
+  const closed = new Set([...closedReadIds(answer, reads)].map(treeId));
   const rows = await rowsAsOpened(page);
   // A node whose row the load does not draw stands in no place an opening draws the rows of.
   const level = rows.find((item) => item.readId === readId)?.level ?? Number.POSITIVE_INFINITY;

@@ -38,7 +38,7 @@ import { StatusGlyph } from "./StatusGlyph";
 import { coverageStatements } from "./tree-drafts";
 import { useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { issueCommentsQuery } from "./useIssueTree";
+import { issueAsksQuery, issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -90,17 +90,20 @@ export function IssuePropertiesRow({
   // observer, so each read here takes that rule too, and the count costs no request of its own
   // (`waiting.ts`). A statement is one by the rule the outline's review list reads
   // (`coverageStatements`), so the count counts the very decisions the outline marks as waiting.
+  // The asks read, which the outline holds too, pairs a question's block with its ask as the
+  // outline pairs them, open or answered (`askOfNode`), so the count closes what the outline does.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH });
+  const asks = useQuery({ ...issueAsksQuery(issue.key), ...EVENT_FRESH });
   const tree = useTreeRead(issue).answer;
   const isCoverageStatement = useMemo(
     () => coverageStatements(issue, coverage.data),
     [issue, coverage.data]
   );
   const waiting = useMemo(
-    () => waitingOnReader(issue, viewer, isCoverageStatement, tree, comments.data),
-    [issue, viewer, isCoverageStatement, tree, comments.data]
+    () => waitingOnReader(issue, viewer, isCoverageStatement, tree, comments.data, asks.data),
+    [issue, viewer, isCoverageStatement, tree, comments.data, asks.data]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.

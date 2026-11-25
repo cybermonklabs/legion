@@ -143,8 +143,10 @@ import { asUser } from "./users";
  * open on load (`openOnLoadGate`), and row 3 whole until the page opens with every node drawn
  * open (`drawnOpenGate`). A gate never reads what this part draws: the nodes the page closes, at
  * or under an overtaken one, with the block of a question whose ask's node is overtaken, are left
- * out of the page's opening (`closedIdsOf`), so a build that draws an overtaken node folded where
- * a live one is drawn open fails the reading of that node and does not turn it owed.
+ * out of the page's opening as the header's count leaves them out (`waiting.ts`'
+ * `closedReadIds`, over the issue read and the asks read as the page's reader reads them,
+ * `treeIdReads`), so a build that draws an overtaken node folded where a live one is drawn open
+ * fails the reading of that node and does not turn it owed.
  */
 
 /** The mark of a proposed node, an overtaken one and one reserved for its reader, each as the
@@ -1310,9 +1312,9 @@ test("a proposed node is marked and settled on the page, and an overtaken one is
     const graph = await graphGate(page);
     const opens = await openOnLoadGate(page, {
       answer: loaded.answer,
-      asks: (await getIssue(loaded.key)).open_asks ?? [],
       levels: size === PHONE ? NARROW_LEVELS : DRAWN_LEVELS,
       readId: seeded.ids.statement8,
+      reads: await treeIdReads(loaded.key),
       treeId: loaded.treeId,
       what: "statement 8",
     });
@@ -1539,23 +1541,31 @@ async function expectQuestionInDecisions(page: Page, read: SeededPage): Promise<
 }
 
 /**
- * Conversation opens with the focus on the first question in the tree's order that waits on
- * alice, and not on the overtaken question nor on a row under it. The spec's own open question,
- * which stands right before the overtaken one, is answered first: the overtaken question is then
- * the first in the tree's order that would wait on alice were it live, so a page that let it keep
- * its wait would open on it. The proposed question, which stands right after it and still waits
- * on alice (`seedNodeStates`), is where the page opens. The readings after this one hold with the
- * spec's own question answered: the header's count reads what waits from the issue read as it
- * stands (`expectWaitsLeaveOut`), and the Graph readings read the overtaken question alone.
+ * Answers the spec's own open question, which stands right before the overtaken one: the
+ * overtaken question is then the first in the tree's order that would wait on alice were it live,
+ * so a page that let it keep its wait would open on it (`expectOpensOnLiveQuestion`). The readings
+ * after this write hold with the spec's own question answered: the header's count reads what
+ * waits from the issue read as it stands (`expectWaitsLeaveOut`), and the Graph readings read the
+ * overtaken question alone.
  */
-async function expectOpensOnLiveQuestion(page: Page, read: SeededPage): Promise<void> {
-  const { plain, seeded, traffic } = read;
-  const { ids } = seeded;
-  await answerAsk(seeded.whole.openQuestion.askId, {
+async function answerSpecQuestion(read: SeededPage): Promise<void> {
+  await answerAsk(read.seeded.whole.openQuestion.askId, {
     expected_edited_at: null,
     selected: [],
     text: "1280 px.",
   });
+}
+
+/**
+ * Conversation opens with the focus on the first question in the tree's order that waits on
+ * alice, and not on the overtaken question nor on a row under it. With the spec's own open
+ * question answered (`answerSpecQuestion`), the overtaken question is the first in the tree's
+ * order that would wait on alice were it live. The proposed question, which stands right after it
+ * and still waits on alice (`seedNodeStates`), is where the page opens.
+ */
+async function expectOpensOnLiveQuestion(page: Page, read: SeededPage): Promise<void> {
+  const { plain, seeded, traffic } = read;
+  const { ids } = seeded;
   await gotoSettled(page, traffic, plain);
   await expectOpeningLanded(page);
   await expect
@@ -1617,6 +1627,7 @@ test("an overtaken question stays a Contents entry and counts in no waiting coun
     await expectOvertakenQuestionRows(page, read);
     await expectQuestionInContents(page, read);
     await expectQuestionInDecisions(page, read);
+    await answerSpecQuestion(read);
     // The first focus is read before the header's count: a closed question that kept its wait
     // would be reached by the count's presses too, and the first focus is the reading of that wait.
     await expectOpensOnLiveQuestion(page, read);
@@ -2228,7 +2239,7 @@ test("a node reserved for its author is on its author's page and on nobody else'
     await page.setViewportSize(DESKTOP);
     const traffic = watchApiRequests(page);
     await gotoSettled(page, traffic, plain);
-    owedUnless(await drawnOpenGate(page, hers, (await getIssue(key)).open_asks ?? []));
+    owedUnless(await drawnOpenGate(page, hers, await treeIdReads(key)));
     const reserved = new Map(
       RESERVED_NODES.map((name) => [
         name,
