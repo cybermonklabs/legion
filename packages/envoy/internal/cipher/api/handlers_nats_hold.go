@@ -39,9 +39,9 @@ type NATSHold struct {
 	Keys []ed25519.PublicKey
 	// OperatorToken verifies a platform identity token for the NATS audiences, as the auth service
 	// verifies a service's (cmd/cipherd passes natscallout.PlatformTokens.Verify), and answers what
-	// it says of its account (OperatorIdentity). Nil, a broker with no NATS audience, admits no
+	// it says of its account (PlatformIdentity). Nil, a broker with no NATS audience, admits no
 	// caller.
-	OperatorToken func(ctx context.Context, raw string) (OperatorIdentity, error)
+	OperatorToken func(ctx context.Context, raw string) (PlatformIdentity, error)
 	// OperatorAccount and OperatorGoogle are the operator entry's account and whether it is a
 	// Google account: the one caller the routes admit. An empty OperatorAccount, a list with no
 	// operator entry, admits none. OperatorIssuers are the names of the issuers of
@@ -59,16 +59,19 @@ type NATSHold struct {
 	RowFloor *signedrecord.Floor
 }
 
-// OperatorIdentity is what NATSHold.OperatorToken answers of a verified platform token: the
-// account it names, whether that is a Google account, the name of the issuer of
-// BROKER_K8S_OIDC_ISSUER that signed a Kubernetes token ("" for a Google token, and for the one
-// issuer of a bare URL), and when it was issued and expires. Its fields are those of
-// natscallout.ServiceIdentity, the auth service's answer of the same verifier, which cmd/cipherd
-// converts to it.
-type OperatorIdentity struct {
-	Account        string
-	Google         bool
-	Issuer         string
+// PlatformIdentity is what a verified platform identity token says of its account, as the auth
+// service's verifier answers it (natscallout.PlatformTokens.Verify). Both of its readers read this
+// one struct: the auth service (natscallout, as ServiceIdentity) of a service's token, and the
+// hold routes (NATSHold.OperatorToken) of the operator's.
+type PlatformIdentity struct {
+	// Account is the account the token names.
+	Account string
+	// Google is whether Account is a Google account.
+	Google bool
+	// Issuer is the name of the issuer of BROKER_K8S_OIDC_ISSUER that signed a Kubernetes token:
+	// "" for a Google token, and for the one issuer of a bare URL.
+	Issuer string
+	// Issued and Expiry are when the token was issued and when it expires.
 	Issued, Expiry time.Time
 }
 

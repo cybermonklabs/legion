@@ -67,13 +67,12 @@ var holdServices = strings.Join([]string{
 // the second issuer, whose tokens no entry takes. restart mounts the routes afresh on the same
 // tables, as a broker process that starts again does.
 type holdRig struct {
-	t      *testing.T
-	url    string
-	pool   *pgxpool.Pool
-	key    ed25519.PrivateKey
-	issuer *oidctest.Issuer
-	signer *oidctest.Key
-	// second and secondSigner are the rig's second issuer and its key.
+	t            *testing.T
+	url          string
+	pool         *pgxpool.Pool
+	key          ed25519.PrivateKey
+	issuer       *oidctest.Issuer
+	signer       *oidctest.Key
 	second       *oidctest.Issuer
 	secondSigner *oidctest.Key
 	deps         api.Deps
@@ -110,13 +109,9 @@ func newHoldRig(t *testing.T) *holdRig {
 			operator = entry
 		}
 	}
-	verify := func(ctx context.Context, raw string) (api.OperatorIdentity, error) {
-		identity, err := tokens.Verify(ctx, raw)
-		return api.OperatorIdentity(identity), err
-	}
 	rig := &holdRig{t: t, pool: pool, key: private, issuer: issuer, signer: signer, second: second, secondSigner: secondSigner, deps: api.Deps{NATSHold: api.NATSHold{
 		Pool: pool, Schema: parsed.Query().Get("search_path"), Keys: []ed25519.PublicKey{public},
-		OperatorToken: verify, OperatorAccount: operator.Account, OperatorGoogle: operator.Google, OperatorIssuers: operator.Issuers,
+		OperatorToken: tokens.Verify, OperatorAccount: operator.Account, OperatorGoogle: operator.Google, OperatorIssuers: operator.Issuers,
 	}}}
 	rig.restart()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { rig.mux.Load().ServeHTTP(w, req) }))

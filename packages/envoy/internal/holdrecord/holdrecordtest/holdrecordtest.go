@@ -170,12 +170,12 @@ func (b *Broker) HoldView(second bool) *natscallout.HoldView {
 // verifyOperatorToken is the routes' platform-token verifier: OperatorToken is the operator
 // entry's account, from the one issuer of a bare BROKER_K8S_OIDC_ISSUER URL, issued now and
 // living ten minutes, and any other token is refused.
-func verifyOperatorToken(_ context.Context, raw string) (api.OperatorIdentity, error) {
+func verifyOperatorToken(_ context.Context, raw string) (api.PlatformIdentity, error) {
 	if raw != OperatorToken {
-		return api.OperatorIdentity{}, errors.New("holdrecordtest: not the operator's token")
+		return api.PlatformIdentity{}, errors.New("holdrecordtest: not the operator's token")
 	}
 	now := time.Now()
-	return api.OperatorIdentity{Account: OperatorAccount, Issued: now, Expiry: now.Add(10 * time.Minute)}, nil
+	return api.PlatformIdentity{Account: OperatorAccount, Issued: now, Expiry: now.Add(10 * time.Minute)}, nil
 }
 
 // Config is the operator's client configuration for b: its URL, OperatorToken and both halves of

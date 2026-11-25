@@ -24,6 +24,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -67,18 +68,11 @@ func (d Deps) now() time.Time {
 }
 
 // ServiceIdentity is what a service's verified platform identity token says of it
-// (Deps.ServiceToken).
-type ServiceIdentity struct {
-	// Account is the account the token names.
-	Account string
-	// Google is whether Account is a Google account.
-	Google bool
-	// Issuer is the name of the issuer of BROKER_K8S_OIDC_ISSUER that signed a Kubernetes token:
-	// "" for a Google token, and for the one issuer of a bare URL.
-	Issuer string
-	// Issued and Expiry are when the token was issued and when it expires.
-	Issued, Expiry time.Time
-}
+// (Deps.ServiceToken). It is the api package's PlatformIdentity, which the hold routes read of the
+// operator's token, rather than a struct of its own, because the api package cannot import this
+// one: the auth service and the routes read one struct, so cmd/cipherd hands both the same
+// verifier (PlatformTokens.Verify) and a field added to the answer reaches both.
+type ServiceIdentity = api.PlatformIdentity
 
 // Request is what the server asks about one connection, read from its authorization request.
 type Request struct {
