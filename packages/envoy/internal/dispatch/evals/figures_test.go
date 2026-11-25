@@ -1328,13 +1328,422 @@ var evalDaysIndexes = []string{"eval_days_pkey", "eval_days_window", "eval_days_
 // relation and the rows its filter removed, over every loop of it.
 func evalDaysRowsRead(t *testing.T, plan json.RawMessage) float64 {
 	t.Helper()
+	return relationRowsRead(t, plan, "eval_days")
+}
+
+// relationRowsRead is how many rows of relation an analyzed plan read: each node's rows of it and
+// the rows its filter removed, over every loop of it.
+func relationRowsRead(t *testing.T, plan json.RawMessage, relation string) float64 {
+	t.Helper()
 	read := 0.0
 	for _, node := range explaintest.Nodes(t, plan) {
-		if node.Relation == "eval_days" {
+		if node.Relation == relation {
 			read += node.Rows*node.Loops + node.RowsRemovedByFilter*node.Loops
 		}
 	}
 	return read
+}
+
+// movedDayLines is moved, what movedFigureDays answers, as sorted lines `eval "repo" "deploy
+// repo" day`, one for each moved day of each eval and cut.
+func movedDayLines(moved map[figureGroupKey]map[time.Time]bool) []string {
+	var lines []string
+	for group, days := range moved {
+		for day := range days {
+			lines = append(lines, fmt.Sprintf("%s %q %q %s", group.eval, group.repo, group.deployRepo, day.Format(time.DateOnly)))
+		}
+	}
+	slices.Sort(lines)
+	return lines
+}
+
+// keysRead is the keys eval_project_owners says project reads, each with whether it reads it
+// through the repository.
+func keysRead(t *testing.T, q delivery.Querier, project string) map[string]bool {
+	t.Helper()
+	rows, err := q.Query(t.Context(), `select owner, via from eval_project_owners where project_key = $1`, project)
+	if err != nil {
+		t.Fatalf("read the keys %s reads: %v", project, err)
+	}
+	read := map[string]bool{}
+	var owner string
+	var via bool
+	if _, err := pgx.ForEachRow(rows, []any{&owner, &via}, func() error {
+		read[owner] = via
+		return nil
+	}); err != nil {
+		t.Fatalf("read the keys %s reads: %v", project, err)
+	}
+	return read
+}
+
+// TestTheMovedDaysAreFoundThroughEachKeyAndCutTheProjectReadsThem: over one eval's days 0 to 2,
+// movedFigureDays stamps the rows of each cut through each key the project reads
+// (eval_project_owners): the project's own, a plain owner key it reads through the repository (via
+// true, so the rows' via_repository counts), an owner key whose list picks the project and one
+// whose terminal does (via false, which count 0), and the project's own rows stored under
+// ':default', which are rows of the repository the project publishes as its default and of none
+// where it publishes none. It
+// reads no row of a key the project does not read (another repository's, or one the project is a
+// sharer of), none that is unlisted, none of the other writer or of another eval, and none of a day
+// past the span. The stored day rows match the stamps of most days; one holds another stamp, one
+// another fold key, one day has no stored row, one stored row has no rows any more, and one is
+// past the span. The days it answers are exactly those that do not match, with acme/main published
+// as the default, once it publishes none (the terminal's key is still read, with its repository's
+// cut) and once it publishes acme/side (the ':default' row follows it, and the plain key and the
+// list that names the project are read no more). Red where a key's rows are not stamped as the
+// project reads them: a via_repository it does not read, an owner key's ':default' row, the
+// project's under another repository than its default, or a key it does not read, differs from
+// the stored stamp on a day that matches, or hides a day that does not. Over 5,200 more evals the
+// spans name, which sort before the one eval, the spans go in chunks of at most statementBytes and
+// statementRows, each read by both statements, and the answer holds the days of the one eval, read
+// in the last chunk, and of two of the others, read in the first.
+func TestTheMovedDaysAreFoundThroughEachKeyAndCutTheProjectReadsThem(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool, project := t.Context(), r.database.Pool, r.project
+	const repo, side, otherDeploy = "acme/main", "acme/side", "acme/other-deploy"
+	plain := OwnerKey(repo, nil, nil)
+	picked := OwnerKey(repo, nil, []attributionList{{conditions: []string{project}}})
+	terminal := OwnerKey(repo, nil, []attributionList{{terminal: project}})
+	elsewhere, shared := OwnerKey("acme/other", nil, nil), OwnerKey(repo, []string{project}, nil)
+	day := func(n int) time.Time { return time.Date(2026, 11, 10+n, 0, 0, 0, 0, time.UTC) }
+	evalID := EvalID(project, "a")
+	entryOf := func(slug string) Entry {
+		return Entry{Definition: Definition{EvalID: EvalID(project, slug), ProjectKey: project, Source: SourceComputedPrefix + "test"}}
+	}
+	type seeded struct {
+		key, slug, writer, deployRepo, series, repo string
+		day, via                                    int
+		unlisted                                    bool
+		at                                          time.Time
+	}
+	rows := []seeded{
+		{key: project, day: 0, via: 5}, {key: project, day: 1, via: 5}, {key: project, day: 2, via: 5},
+		{key: project, repo: repo, day: 0, via: 5},
+		{key: project, repo: legionfacts.DefaultRepo, day: 1, via: 5},
+		{key: project, day: 3, via: 5},
+		{key: project, day: 1, series: "t", unlisted: true},
+		{key: project, day: 2, writer: writerReadings, via: 5},
+		{key: project, slug: "b", day: 0, via: 5},
+		{key: plain, day: 0, deployRepo: "acme/deploy", via: 7},
+		{key: plain, repo: repo, day: 0, via: 7},
+		{key: plain, repo: legionfacts.DefaultRepo, day: 1, via: 7},
+		{key: picked, repo: repo, day: 0, via: 9},
+		{key: terminal, repo: repo, day: 2, via: 11},
+		{key: terminal, repo: legionfacts.DefaultRepo, day: 2, via: 11},
+		{key: elsewhere, day: 0, via: 13},
+		{key: shared, day: 0, via: 15},
+	}
+	for index := range rows {
+		one := &rows[index]
+		one.slug, one.writer, one.series = cmp.Or(one.slug, "a"), cmp.Or(one.writer, writerComputation), cmp.Or(one.series, "s")
+		one.at = time.Date(2026, 11, 9, 12, index+1, 0, 0, time.UTC)
+		r.exec(t, "seed a day row", `
+			insert into eval_days (project_key, eval_id, writer, deploy_repo, series, repo, day, listed, via_repository, built_by, updated_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'test', $10)`,
+			one.key, EvalID(one.key, one.slug), one.writer, one.deployRepo, one.series, one.repo, day(one.day), !one.unlisted, one.via, one.at)
+	}
+	// stampsOf is, by cut and day, what the project reads of the eval's days 0 to 2 when it reads
+	// the keys reads names (each with whether it reads it through the repository) and publishes
+	// published as its default.
+	stampsOf := func(reads map[string]bool, published string) map[figureCut]map[int][]stampedRow {
+		stamps := map[figureCut]map[int][]stampedRow{}
+		for _, one := range rows {
+			through, read := reads[one.key]
+			if !read || one.unlisted || one.writer != writerComputation || one.slug != "a" || one.day > 2 {
+				continue
+			}
+			cut := figureCut{repo: one.repo, deployRepo: one.deployRepo}
+			if cut.repo == legionfacts.DefaultRepo {
+				if one.key != project || published == "" {
+					continue
+				}
+				cut.repo = published
+			}
+			if stamps[cut] == nil {
+				stamps[cut] = map[int][]stampedRow{}
+			}
+			via := 0
+			if through {
+				via = one.via
+			}
+			stamps[cut][one.day] = append(stamps[cut][one.day], stampedRow{series: one.series, updatedAt: one.at, via: via})
+		}
+		return stamps
+	}
+	store := func(cut figureCut, at int, foldKey, stamp int64) {
+		r.exec(t, "store a day row of the figures", `
+			insert into eval_day_figures (project_key, repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, built_by)
+			values ($1, $2, $3, $4, $5, $6, '\x00', $7, 'test')`, project, cut.repo, day(at), evalID, cut.deployRepo, foldKey, stamp)
+	}
+	publish := func(to string) {
+		r.exec(t, "publish "+to, `
+			insert into eval_days_defaults (project_key, repo) values ($1, $2)
+			on conflict (project_key) do update set repo = excluded.repo`, project, to)
+	}
+	readsA := map[string]bool{project: false, plain: true, picked: false, terminal: false}
+	readsB := map[string]bool{project: false, terminal: false}
+	ownCut, deployedCut, mainCut := figureCut{}, figureCut{deployRepo: "acme/deploy"}, figureCut{repo: repo}
+	goneCut, sideCut := figureCut{repo: repo, deployRepo: otherDeploy}, figureCut{repo: side}
+	publish(repo)
+	foldKey := foldKeyOf(entryOf("a"))
+	for cut, days := range stampsOf(readsA, repo) {
+		for at, held := range days {
+			stamp, key := rowsStamp(held), foldKey
+			switch {
+			case cut == ownCut && at == 0:
+				stamp++
+			case cut == ownCut && at == 2:
+				continue
+			case cut == mainCut && at == 1:
+				key++
+			}
+			store(cut, at, key, stamp)
+		}
+	}
+	store(goneCut, 1, foldKey, 0)
+	store(ownCut, 3, foldKey, 0)
+
+	entries, spans := map[string]Entry{evalID: entryOf("a")}, map[string]daySpan{evalID: {first: day(0), last: day(2)}}
+	scope := figureScope{build: testBuild, project: project, through: day(30)}
+	lineOf := func(eval string, cut figureCut, days ...int) []string {
+		var lines []string
+		for _, at := range days {
+			lines = append(lines, fmt.Sprintf("%s %q %q %s", eval, cut.repo, cut.deployRepo, day(at).Format(time.DateOnly)))
+		}
+		return lines
+	}
+	line := func(cut figureCut, days ...int) []string { return lineOf(evalID, cut, days...) }
+	want := func(lines ...[]string) []string { return slices.Sorted(slices.Values(slices.Concat(lines...))) }
+	check := func(what string, reads map[string]bool, wantMoved []string) {
+		t.Helper()
+		if read := keysRead(t, pool, project); !maps.Equal(read, reads) {
+			t.Fatalf("%s: %s reads the keys %v, want %v", what, project, read, reads)
+		}
+		moved, err := movedFigureDays(ctx, pool, scope, entries, spans)
+		if err != nil {
+			t.Fatalf("%s: read the moved days of %s: %v", what, project, err)
+		}
+		if got := movedDayLines(moved); !slices.Equal(got, wantMoved) {
+			t.Errorf("%s: the moved days are\n%s\nwant\n%s", what, strings.Join(got, "\n"), strings.Join(wantMoved, "\n"))
+		}
+	}
+	movedA := want(line(ownCut, 0, 2), line(mainCut, 1), line(goneCut, 1))
+	check("with "+repo+" published", readsA, movedA)
+
+	// 5,200 more evals the spans name, which sort before the one eval: the first holds a listed
+	// row and no stored one, the second a stored row and no listed one, and the one eval's rows are
+	// read in the last chunk. Every statement holds at most statementBytes.
+	first, second := EvalID(project, "000000"), EvalID(project, "000001")
+	r.exec(t, "seed a listed day row of the first eval", `
+		insert into eval_days (project_key, eval_id, series, day, listed, built_by) values ($1, $2, 's', $3, true, 'test')`, project, first, day(0))
+	r.exec(t, "store a day row of the second eval", `
+		insert into eval_day_figures (project_key, repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, built_by)
+		values ($1, '', $3, $2, '', 0, '\x00', 0, 'test')`, project, second, day(0))
+	movedMany := want(movedA, lineOf(first, ownCut, 0), lineOf(second, ownCut, 0))
+	many, manySpans := map[string]Entry{evalID: entryOf("a")}, map[string]daySpan{evalID: spans[evalID]}
+	for n := range statementRows + 200 {
+		id := EvalID(project, fmt.Sprintf("0%05d", n))
+		many[id], manySpans[id] = Entry{Definition: Definition{EvalID: id, ProjectKey: project, Source: SourceComputedPrefix + "test"}}, daySpan{first: day(0), last: day(0)}
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	recorded := &explaintest.RecordedTx{Tx: tx}
+	moved, err := movedFigureDays(ctx, recorded, scope, many, manySpans)
+	if err != nil {
+		t.Fatalf("read the moved days over %d spans: %v", len(manySpans), err)
+	}
+	if got := movedDayLines(moved); !slices.Equal(got, movedMany) {
+		t.Errorf("over %d spans the moved days are\n%s\nwant\n%s", len(manySpans), strings.Join(got, "\n"), strings.Join(movedMany, "\n"))
+	}
+	for marker, oids := range map[string][]uint32{
+		"eval_days d":        {pgtype.TextOID, pgtype.TextArrayOID, pgtype.TextArrayOID, pgtype.DateArrayOID, pgtype.DateArrayOID},
+		"eval_day_figures f": {pgtype.TextOID, pgtype.TextArrayOID, pgtype.DateArrayOID, pgtype.DateArrayOID},
+	} {
+		sent := 0
+		for _, statement := range recorded.Sent {
+			if !strings.Contains(statement.SQL, marker) {
+				continue
+			}
+			sent++
+			encoded, estimated := encodedBytes(t, oids, statement.Args), paramEstimate(t, statement.Args)
+			if estimated > statementBytes || encoded > estimated {
+				t.Errorf("statement %d of the read of %q takes %d bytes of parameters as pgx encodes them and an estimated %d, where the bound is %d",
+					sent, marker, encoded, estimated, statementBytes)
+			}
+		}
+		if sent < 2 {
+			t.Errorf("over %d spans the read of %q sent %d statements, want several", len(manySpans), marker, sent)
+		}
+	}
+
+	r.exec(t, "publish none", `delete from eval_days_defaults where project_key = $1`, project)
+	movedB := want(line(ownCut, 0, 2), line(deployedCut, 0), line(mainCut, 0, 1), line(goneCut, 1))
+	check("with none published", readsB, movedB)
+	publish(side)
+	check("with "+side+" published", readsB, want(movedB, line(sideCut, 1)))
+}
+
+// TestTheStampsOfAFoldAreReadByProbesOfTheDaysItsSpansNameAndNoOtherRow: a closed issue's one-day
+// change moves 6 Legion evals' one day, and movedFigureDays, which every such change runs, reads
+// those evals' rows of that day and no other row of eval_days or of eval_day_figures (k29 of
+// dispatch://INFRA-2916). Over 7 keys (the project's, two other projects', two of the owner keys it
+// reads, one it does not and one it is a sharer of), 6 evals, 2 series, 3 cuts and 120 days (30,240
+// rows of eval_days; 8,640 stored day figures of 3 projects over 6 evals, 2 cuts, 2 deploy
+// repositories and 120 days), with eval_day_owners never analyzed, as the farm's was when it
+// measured the view's last arm at 517 rows, the two statements it sends are explained and run with
+// the planner's own settings (explaintest.ExplainBuffered) under each plan-cache mode. The stamps'
+// scans no eval_days sequentially and reads it through eval_days_stamps alone, each of its 18
+// probes (3 keys the project reads, 6 spans) bounded by the key, the eval, the writer and the days,
+// and reads exactly the 108 rows they name. The stored day figures' reads eval_day_figures through
+// eval_day_figures_eval_day alone, bounded by the project, the eval and the days, and exactly the
+// 24 rows of the day. Red against the statements before them, which joined eval_project_owners to
+// eval_days and the spans to eval_day_figures plainly: on the farm the first is a hash join over a
+// seq scan of eval_days that reads all 30,240 rows (22 ms, where the probes take 0.5 ms), and the
+// second a bitmap scan of the project's 2,880 stored day rows.
+func TestTheStampsOfAFoldAreReadByProbesOfTheDaysItsSpansNameAndNoOtherRow(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool, project := t.Context(), r.database.Pool, r.project
+	const repo = "acme/main"
+	plain := OwnerKey(repo, nil, nil)
+	picked := OwnerKey(repo, nil, []attributionList{{conditions: []string{project}}})
+	elsewhere, shared := OwnerKey("acme/other", nil, nil), OwnerKey(repo, []string{project}, nil)
+	slugs := []string{"a", "b", "c", "d", "e", "f"}
+	r.exec(t, "the other projects", `insert into projects (key, name, default_assignee) values ('QUAY', 'Quay', 'alice'), ('PIER', 'Pier', 'alice')`)
+	r.exec(t, "publish the defaults", `insert into eval_days_defaults (project_key, repo) values ($1, $2), ('PIER', $2), ('QUAY', 'acme/other')`, project, repo)
+	r.exec(t, "seed the day rows", `
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, built_by)
+		select k.key, k.key || '/' || e.slug, '', s.series, c.repo, date '2026-07-01' + n, true, 'test'
+		from unnest($1::text[]) as k(key)
+		cross join unnest($2::text[]) as e(slug)
+		cross join (values ('n'), ('m')) as s(series)
+		cross join unnest(array['', $3::text, $4::text]) as c(repo)
+		cross join generate_series(0, 119) as n`,
+		[]string{project, "QUAY", "PIER", plain, picked, elsewhere, shared}, slugs, repo, legionfacts.DefaultRepo)
+	r.exec(t, "seed the stored day figures", `
+		insert into eval_day_figures (project_key, repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, built_by)
+		select p.key, c.repo, date '2026-07-01' + n, p.key || '/' || e.slug, d.deploy_repo, 0, '\x00', 0, 'test'
+		from unnest($1::text[]) as p(key)
+		cross join unnest($2::text[]) as e(slug)
+		cross join unnest(array['', $3::text]) as c(repo)
+		cross join unnest(array['', 'acme/deploy']) as d(deploy_repo)
+		cross join generate_series(0, 119) as n`, []string{project, "QUAY", "PIER"}, slugs, repo)
+	r.exec(t, "analyze the day rows", `analyze eval_days`)
+	r.exec(t, "analyze the stored day figures", `analyze eval_day_figures`)
+
+	probed := time.Date(2026, 8, 30, 0, 0, 0, 0, time.UTC)
+	entries, spans := map[string]Entry{}, map[string]daySpan{}
+	var readEvals []string
+	for _, slug := range slugs {
+		id := EvalID(project, slug)
+		entries[id] = Entry{Definition: Definition{EvalID: id, ProjectKey: project, Source: SourceComputedPrefix + "test"}}
+		spans[id] = daySpan{first: probed, last: probed}
+		for _, key := range []string{project, plain, picked} {
+			readEvals = append(readEvals, EvalID(key, slug))
+		}
+	}
+	scope := figureScope{build: testBuild, project: project, through: probed.AddDate(0, 0, 10)}
+	read := slices.Sorted(maps.Keys(keysRead(t, pool, project)))
+	if want := []string{plain, picked, project}; !slices.Equal(read, want) {
+		t.Fatalf("%s reads the keys %v, want %v: the check needs the keys it reads and not the others", project, read, want)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	recorded := &explaintest.RecordedTx{Tx: tx}
+	moved, err := movedFigureDays(ctx, recorded, scope, entries, spans)
+	if err != nil {
+		t.Fatalf("read the moved days of %s: %v", project, err)
+	}
+	if len(moved) == 0 {
+		t.Fatalf("the stored day figures hold no stamp of any row, and no day of %s is moved", project)
+	}
+	for group, days := range moved {
+		if len(days) != 1 || !days[probed] {
+			t.Errorf("the moved days of %s's %+v are %v, want the one day the spans name, %s", project, group, days, probed.Format(time.DateOnly))
+		}
+	}
+	stamps, stored := recorded.Holding(t, "eval_days d"), recorded.Holding(t, "eval_day_figures f")
+	var stampRows, population, storedRows, storedPopulation float64
+	for _, count := range []struct {
+		into      *float64
+		statement string
+		args      []any
+	}{
+		{&stampRows, `select count(*)::float8 from eval_days where listed and writer = 'computation' and day = $3 and project_key = any($1) and eval_id = any($2)`, []any{read, readEvals, probed}},
+		{&population, `select count(*)::float8 from eval_days`, nil},
+		{&storedRows, `select count(*)::float8 from eval_day_figures where project_key = $1 and day = $3 and eval_id = any($2)`, []any{project, slices.Collect(maps.Keys(entries)), probed}},
+		{&storedPopulation, `select count(*)::float8 from eval_day_figures`, nil},
+	} {
+		if err := pool.QueryRow(ctx, count.statement, count.args...).Scan(count.into); err != nil {
+			t.Fatalf("count the rows of %q: %v", count.statement, err)
+		}
+	}
+	probes := float64(len(read) * len(spans))
+	index := explaintest.NewIndexKeys(pool)
+	for _, mode := range explaintest.PlanCacheModes {
+		plan := explaintest.ExplainBuffered(t, ctx, pool, stamps, mode, "json")
+		subject := "the read of the stamps under " + mode
+		index.RequireIndexKeyed(t, plan, "eval_days_stamps", subject, explaintest.CondRequired)
+		for _, scan := range explaintest.IndexScans(t, plan) {
+			if !slices.Contains(evalDaysIndexes, scan.Index) {
+				continue
+			}
+			if scan.Index != "eval_days_stamps" {
+				t.Errorf("%s reads eval_days through %s, want eval_days_stamps alone:\n%s", subject, scan, explaintest.Outline(t, plan))
+			}
+			for _, bound := range []string{"project_key = ", "eval_id = ", "writer = ", "day >= ", "day <= "} {
+				if !strings.Contains(scan.Cond, bound) {
+					t.Errorf("%s reads %s under %q, which names no `%s`:\n%s", subject, scan, scan.Cond, bound, explaintest.Outline(t, plan))
+				}
+			}
+		}
+		loops := 0.0
+		for _, node := range explaintest.Nodes(t, plan) {
+			if node.Relation == "eval_days" {
+				loops += node.Loops
+			}
+		}
+		if loops != probes {
+			t.Errorf("%s reads eval_days in %.0f probes, want one for each of the %.0f keys and spans:\n%s", subject, loops, probes, explaintest.Outline(t, plan))
+		}
+		if rowsRead := evalDaysRowsRead(t, plan); math.Abs(rowsRead-stampRows) > 0.5 {
+			t.Errorf("%s read %.0f rows of eval_days, want the %.0f its probes name, of the %.0f it holds:\n%s", subject, rowsRead, stampRows, population, explaintest.Outline(t, plan))
+		}
+		if explaintest.SeqScansRelation(t, plan, "eval_days") {
+			t.Errorf("%s scans eval_days sequentially, where it holds %.0f rows to the %.0f it names:\n%s", subject, population, stampRows, explaintest.Outline(t, plan))
+		}
+		t.Logf("the stamps' statement as movedFigureDays sends it, under %s:\n%s", mode, explaintest.ExplainBuffered(t, ctx, pool, stamps, mode, "text"))
+
+		plan = explaintest.ExplainBuffered(t, ctx, pool, stored, mode, "json")
+		subject = "the read of the stored day figures under " + mode
+		index.RequireIndexKeyed(t, plan, "eval_day_figures_eval_day", subject, explaintest.CondRequired)
+		for _, scan := range explaintest.IndexScans(t, plan) {
+			if scan.Index == "eval_day_figures_eval_day" {
+				for _, bound := range []string{"project_key = ", "eval_id = ", "day >= ", "day <= "} {
+					if !strings.Contains(scan.Cond, bound) {
+						t.Errorf("%s reads %s under %q, which names no `%s`:\n%s", subject, scan, scan.Cond, bound, explaintest.Outline(t, plan))
+					}
+				}
+			} else if strings.HasPrefix(scan.Index, "eval_day_figures") {
+				t.Errorf("%s reads eval_day_figures through %s, want eval_day_figures_eval_day alone:\n%s", subject, scan, explaintest.Outline(t, plan))
+			}
+		}
+		if rowsRead := relationRowsRead(t, plan, "eval_day_figures"); math.Abs(rowsRead-storedRows) > 0.5 {
+			t.Errorf("%s read %.0f rows of eval_day_figures, want the %.0f its spans name, of the %.0f it holds:\n%s", subject, rowsRead, storedRows, storedPopulation, explaintest.Outline(t, plan))
+		}
+		if explaintest.SeqScansRelation(t, plan, "eval_day_figures") {
+			t.Errorf("%s scans eval_day_figures sequentially, where it holds %.0f rows to the %.0f it names:\n%s", subject, storedPopulation, storedRows, explaintest.Outline(t, plan))
+		}
+		t.Logf("the stored day figures' statement as movedFigureDays sends it, under %s:\n%s", mode, explaintest.ExplainBuffered(t, ctx, pool, stored, mode, "text"))
+	}
 }
 
 // firstDiffering is the first index at which a and b differ.

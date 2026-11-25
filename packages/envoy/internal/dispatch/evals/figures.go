@@ -677,6 +677,13 @@ type figureGroupKey struct {
 	figureCut
 }
 
+// evalSpan is one run of days of one eval that movedFigureDays reads (spansOf): the eval's id, the
+// writer whose rows its fold reads (Definition.writer), and the days.
+type evalSpan struct {
+	eval, writer string
+	daySpan
+}
+
 // movedFigureDays reads, in q, which days of spans (each by eval id, each eval one of entries)
 // hold figures that no longer fold their rows: each eval, cut and day whose listed rows' stamp
 // (rowsStamp, of the rows of the cut, the project's and its owner keys', each with its
@@ -686,70 +693,92 @@ type figureGroupKey struct {
 // (a register write). Which build folded a stored row is no part of the test: a figure whose rows
 // stand is the fold every build of these folds answers. A day on or after scope.through is the figures
 // walks', and none of it is read. The days of an eval are those any of spans names, each read once
-// (spansOf), and none between two spans of it that none names. Each of its two reads is one range
-// of an index for each of those spans, every cut's rows in it: eval_days_stamps of the rows'
-// stamps, and eval_day_figures_eval_day of the stored day rows.
+// (spansOf), and none between two spans of it that none names.
+//
+// Each of its two reads is one range of an index for each of those spans, every cut's rows in it:
+// eval_days_stamps (project_key, eval_id, writer, day) of the rows' stamps, one for each key the
+// project reads (eval_project_owners), and eval_day_figures_eval_day of the stored day rows. Each
+// lateral ends in `offset 0`, which keeps Postgres from pulling it up into a join: pulled up, the
+// stamps' read took the estimate of the view's widest arm, refused a nested loop into eval_days and
+// read every listed row of every project (181 to 304 ms on the farm to answer the 75 rows of one
+// closed issue's day, dispatch://INFRA-2916, k29 at 4dbab72a), and the stored rows' read hashed the
+// spans against every stored day row of the project. The spans go in chunks of at most
+// statementBytes (statementChunks), each read by both statements.
 func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, spans ...map[string]daySpan) (map[figureGroupKey]map[time.Time]bool, error) {
-	var evalIDs, writers []string
-	var firsts, lasts []time.Time
+	var named []evalSpan
 	for _, evalID := range spannedEvals(spans) {
 		entry, held := entries[evalID]
 		if !held {
 			continue
 		}
 		for _, span := range spansOf(spans, evalID, scope.through.AddDate(0, 0, -1)) {
-			evalIDs, writers = append(evalIDs, evalID), append(writers, entry.Definition.writer())
-			firsts, lasts = append(firsts, span.first), append(lasts, span.last)
+			named = append(named, evalSpan{eval: evalID, writer: entry.Definition.writer(), daySpan: span})
 		}
 	}
 	moved := map[figureGroupKey]map[time.Time]bool{}
-	if len(evalIDs) == 0 {
+	if len(named) == 0 {
 		return moved, nil
 	}
 	type dayKey struct {
 		group figureGroupKey
 		day   time.Time
 	}
-	rows, err := q.Query(ctx, `
-		select given.eval_id, d.deploy_repo, cut.repo, d.day, d.series, d.updated_at, `+viaAsRead("d.via_repository")+`
-		from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
-		cross join eval_project_owners o
-		join eval_days d on d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "$1")+`
-			and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and d.listed
-		cross join lateral (select `+cutOf("d", "$1")+` as repo) cut
-		where o.project_key = $1 and cut.repo is not null
-	`, scope.project, evalIDs, writers, firsts, lasts)
-	if err != nil {
-		return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
-	}
-	stamped := map[dayKey][]stampedRow{}
+	type storedDay struct{ key, stamp int64 }
+	stamped, stored := map[dayKey][]stampedRow{}, map[dayKey]storedDay{}
 	var key dayKey
 	var row stampedRow
-	if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.group.repo, &key.day, &row.series, &row.updatedAt, &row.via}, func() error {
-		key.day = key.day.UTC()
-		stamped[key] = append(stamped[key], row)
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
-	}
-	rows, err = q.Query(ctx, `
-		select f.eval_id, f.deploy_repo, f.repo, f.day, f.fold_key, f.rows_stamp
-		from unnest($2::text[], $3::date[], $4::date[]) as given(eval_id, first_day, last_day)
-		join eval_day_figures f on f.project_key = $1 and f.eval_id = given.eval_id
-			and f.day >= given.first_day and f.day <= given.last_day
-	`, scope.project, evalIDs, firsts, lasts)
-	if err != nil {
-		return nil, fmt.Errorf("read the stored day figures of %s: %w", scope.project, err)
-	}
-	type storedDay struct{ key, stamp int64 }
-	stored := map[dayKey]storedDay{}
 	var day storedDay
-	if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.group.repo, &key.day, &day.key, &day.stamp}, func() error {
-		key.day = key.day.UTC()
-		stored[key] = day
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the stored day figures of %s: %w", scope.project, err)
+	size := func(span *evalSpan) int { return 4*4 + len(span.eval) + len(span.writer) + 2*8 }
+	for chunk := range statementChunks(named, paramBytes(4, scope.project), size) {
+		evalIDs, writers := make([]string, len(chunk)), make([]string, len(chunk))
+		firsts, lasts := make([]time.Time, len(chunk)), make([]time.Time, len(chunk))
+		for index, span := range chunk {
+			evalIDs[index], writers[index], firsts[index], lasts[index] = span.eval, span.writer, span.first, span.last
+		}
+		rows, err := q.Query(ctx, `
+			select given.eval_id, d.deploy_repo, cut.repo, d.day, d.series, d.updated_at, `+viaAsRead("d.via_repository")+`
+			from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
+			cross join eval_project_owners o
+			cross join lateral (
+				select d.project_key, d.deploy_repo, d.repo, d.day, d.series, d.updated_at, d.via_repository
+				from eval_days d
+				where d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "$1")+`
+					and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and d.listed
+				offset 0
+			) d
+			cross join lateral (select `+cutOf("d", "$1")+` as repo) cut
+			where o.project_key = $1 and cut.repo is not null
+		`, scope.project, evalIDs, writers, firsts, lasts)
+		if err != nil {
+			return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
+		}
+		if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.group.repo, &key.day, &row.series, &row.updatedAt, &row.via}, func() error {
+			key.day = key.day.UTC()
+			stamped[key] = append(stamped[key], row)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
+		}
+		rows, err = q.Query(ctx, `
+			select f.eval_id, f.deploy_repo, f.repo, f.day, f.fold_key, f.rows_stamp
+			from unnest($2::text[], $3::date[], $4::date[]) as given(eval_id, first_day, last_day)
+			cross join lateral (
+				select f.eval_id, f.deploy_repo, f.repo, f.day, f.fold_key, f.rows_stamp
+				from eval_day_figures f
+				where f.project_key = $1 and f.eval_id = given.eval_id and f.day >= given.first_day and f.day <= given.last_day
+				offset 0
+			) f
+		`, scope.project, evalIDs, firsts, lasts)
+		if err != nil {
+			return nil, fmt.Errorf("read the stored day figures of %s: %w", scope.project, err)
+		}
+		if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.group.repo, &key.day, &day.key, &day.stamp}, func() error {
+			key.day = key.day.UTC()
+			stored[key] = day
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the stored day figures of %s: %w", scope.project, err)
+		}
 	}
 	keys := map[string]int64{}
 	note := func(at dayKey) {
