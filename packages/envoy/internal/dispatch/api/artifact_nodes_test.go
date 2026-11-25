@@ -18,7 +18,7 @@ import (
 )
 
 // TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues holds the writers of an issue's
-// document's node to R16 of dispatch://INFRA-1253 (T2a of its plan): the spec at the issue's
+// document's node to R16 of the issue-tree spec (T2a of its plan): the spec at the issue's
 // create, a markdown upload and an image upload each write the document's node with its part_of to
 // issue:<KEY>, caused by the event of the write, and stamp the node on the artifacts row
 // (node_kind, node_address); the issue's row names its node too; and the image's node holds the
@@ -197,7 +197,7 @@ func TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues(t *testing.T) {
 }
 
 // TestARemovedDocumentIsNoLongerANodeOfItsIssue holds the removal of an issue's document (api's
-// removeArtifact) to R16 of dispatch://INFRA-1253: the document is a node under its issue, and one
+// removeArtifact) to R16 of the issue-tree spec: the document is a node under its issue, and one
 // removed is present no longer. The removal states the node gone in its own transaction, caused by
 // the artifact.removed event, as the block index states a deleted block gone, and leaves its
 // history as it stood, its part_of among it. A removed document holds no block node, since the
@@ -255,7 +255,7 @@ func TestARemovedDocumentIsNoLongerANodeOfItsIssue(t *testing.T) {
 }
 
 // TestADocumentMadeAgainAfterItsRemovalIsANodeAgain holds a document of an issue made, removed
-// and made again under the same name (dispatch://INFRA-1253, R16): the removal frees the slug, so
+// and made again under the same name (R16 of the issue-tree spec): the removal frees the slug, so
 // the new row takes the ref_key of the node the removal stated gone, and its first version the
 // address of that version's gone node. The create writes both again as their writers restate a
 // node (graphstore.Node.Restates), which brings a node stored gone back live: the document's node

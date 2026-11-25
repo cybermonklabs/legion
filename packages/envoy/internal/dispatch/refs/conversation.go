@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// R2's test (dispatch://INFRA-1253/spec R2): which items of an issue are its conversation, the
+// R2's test (R2 of the issue-tree spec): which items of an issue are its conversation, the
 // back-and-forth a person and the issue's agents had, and so may be a node's parent and are what
 // a query of the issue's tree returns. An ask is always one. A comment or a message is one when a
 // person wrote it, or when it sits in a thread a person wrote in. Any other comment or message an

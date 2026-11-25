@@ -240,7 +240,7 @@ func (p *PgVersioned) AppendParkedUpdate(ctx context.Context, room string, updat
 // document is edited in, in one statement (lockArtifactRoom), and appends only where that room is
 // artifactID itself. An update its caller built on a document's own Yjs document - a settlement's
 // repair of the document's room, a live write, a seed - is refused once the document moved into
-// its issue's room (ErrRoomMoved, dispatch://INFRA-1253 R5), and a write to the issue's room
+// its issue's room (ErrRoomMoved, R5 of the issue-tree spec), and a write to the issue's room
 // addresses it by its tree artifact's own id.
 func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, artifactID string, update []byte, contentChanged bool) (persistence.Version, error) {
 	if err := refuseUpdateItemCap(update); err != nil {

@@ -134,15 +134,16 @@ const kindFilterSpec = ":::callout{#m1}\nThe board lists the urgent asks first.\
 
 // TestTheTreeReadFiltersByNodeKind is c-kind-filter (R30, R8). alice creates an issue born
 // converted whose spec opens with its memo callout and holds a Summary paragraph, a second callout
-// and an ask block she declines. She writes a message and the criterion k1 under it holding the
-// requirement r1, a comment C and the criterion k2 under it holding r2; an agent session asks a1
-// in the spec, alice answers it, and the session writes the reading g1 under it and the decision d1
-// with uncertainty medium and a reason. alice writes a constraint r1's constrained_by names, the
-// check h1 serving r1 and r2 with one result, a plan task, a paragraph of the room's own fragment,
-// a child issue she places under C through PATCH whose check h2 serves r1 and holds one result, a
-// pre-mortem lens on r1 with one finding and one risk, a post to which the session replies, and a
-// comment on the text of h1's result through a node anchor (R31). The session comments on r1's
-// text, alice writes 205 posts more, and an interaction is seeded with a changed_by_run from r1.
+// and an ask block she declines. She writes a message and the criterion k1 under it, with the
+// requirement r1 under k1, and a comment C and the criterion k2 under it, with r2 under k2; an
+// agent session asks a1 in the spec, alice answers it, and the session writes the reading g1 under
+// it and the decision d1 with uncertainty medium and a reason. alice writes a constraint r1's
+// constrained_by names, the check h1 serving r1 and r2 with one result, a plan task, a paragraph of
+// the room's own fragment she places under k1 through PATCH, a child issue she places under C
+// through PATCH whose check h2 serves r1 and holds one result, a pre-mortem lens on r1 with one
+// finding and one risk, a post to which the session replies, and a comment on the text of h1's
+// result through a node anchor (R31). The session comments on r1's text, alice writes 205 posts
+// more, and an interaction is seeded with a changed_by_run from r1.
 //
 // The read with the conversation's kinds, page by page through comments_before, answers exactly
 // the nodes of those kinds the read with no view answers, with each ancestor of each, but each
@@ -162,6 +163,7 @@ const kindFilterSpec = ":::callout{#m1}\nThe board lists the urgent asks first.\
 // query written while h1 and h2 serve r1 answers r1's checks 2, and the head 1 once h2 serves r2
 // alone.
 func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "KINDS")
@@ -177,10 +179,13 @@ func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
 	message := decodeBody[writtenRecord](t, created(t, "a person's message", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/messages",
 		map[string]any{"body": "The board must hold every urgent ask."}, "alice"))).ID
 	commentC, _ := personComment(t, handler, database, key, "The board should show the age too.")
-	editSpec(t, handler, key, []map[string]any{{"op": "insert", "after": "end", "markdown": "::::criterion{#k1 parent=\"dispatch://" + key + "/message/" + message + "\"}\n" +
-		"I want the urgent asks first.\n\n:::requirement{#r1}\nThe board lists each urgent ask first.\n:::\n::::\n\n" +
-		"::::criterion{#k2 parent=\"dispatch://" + key + "/comment/" + commentC + "\"}\nI want each ask's age shown.\n\n" +
-		":::requirement{#r2}\nThe board shows each ask's age.\n:::\n::::\n"}})
+	// A criterion holds paragraphs alone (pmdoc/schema/blocks.json, `"content": "paragraph+"`), so
+	// each requirement stands under its criterion through its parent attribute.
+	k1Ref, k2Ref := refs.BlockRef(specRef, "k1"), refs.BlockRef(specRef, "k2")
+	editSpec(t, handler, key, []map[string]any{{"op": "insert", "after": "end", "markdown": ":::criterion{#k1 parent=\"dispatch://" + key + "/message/" + message + "\"}\n" +
+		"I want the urgent asks first.\n:::\n\n:::requirement{#r1 parent=\"" + k1Ref + "\"}\nThe board lists each urgent ask first.\n:::\n\n" +
+		":::criterion{#k2 parent=\"dispatch://" + key + "/comment/" + commentC + "\"}\nI want each ask's age shown.\n:::\n\n" +
+		":::requirement{#r2 parent=\"" + k2Ref + "\"}\nThe board shows each ask's age.\n:::\n"}})
 	r1, r2 := spec.address("r1"), spec.address("r2")
 	r1Ref, r2Ref := refs.BlockRef(specRef, "r1"), refs.BlockRef(specRef, "r2")
 
@@ -236,21 +241,36 @@ func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
 		t.Fatalf("record a result of h2: status=%d body=%s", recordedChild.Code, recordedChild.Body.String())
 	}
 	h2Result := decodeBody[recordedResult](t, recordedChild).Result.ID
+	// alice places the child under C, and the paragraph P of the room's own fragment under k1, each
+	// through PATCH naming the placement_seq the tree read answers: Markdown shows no paragraph under
+	// a criterion, so the tree alone holds P's place (R7).
 	before := treeRead(t, handler, key, "", "alice", false)
+	placeUnder := func(what string, node model.IssueTreeNode, id, parent string) {
+		t.Helper()
+		if node.PlacementSeq == nil {
+			t.Fatalf("the tree read of %s answers %s with no placement_seq, which a move names", key, what)
+		}
+		move, _ := json.Marshal(map[string]any{"parent": parent})
+		moving := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+key+"/nodes/"+url.PathEscape(id), bytes.NewReader(move))
+		moving.Header.Set("Content-Type", "application/json")
+		moving.Header.Set("X-Dispatch-User", "alice")
+		moving.Header.Set("If-Match", strconv.Quote(strconv.FormatInt(*node.PlacementSeq, 10)))
+		moved := httptest.NewRecorder()
+		handler.ServeHTTP(moved, moving)
+		if moved.Code != http.StatusOK {
+			t.Fatalf("alice places %s under %s through PATCH: status=%d body=%s", what, parent, moved.Code, moved.Body.String())
+		}
+	}
 	placed, _ := before.node(t, graphstore.KindIssue, child.Key)
-	if placed.PlacementSeq == nil {
-		t.Fatalf("the tree read of %s answers the child %s with no placement_seq, which a move names", key, child.Key)
+	placeUnder("the child "+child.Key, placed, graphstore.KindIssue+"/"+child.Key, graphstore.KindComment+"/"+commentC)
+	proseAt := slices.IndexFunc(before.Nodes, func(node model.IssueTreeNode) bool {
+		return node.Kind == refs.BlockNodeKind && strings.TrimSpace(node.Text) == "A paragraph of the room's own fragment."
+	})
+	if proseAt < 0 {
+		t.Fatalf("the tree read of %s answers no paragraph of the room's own fragment: %v", key, before.addresses())
 	}
-	move, _ := json.Marshal(map[string]any{"parent": graphstore.KindComment + "/" + commentC})
-	moving := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+key+"/nodes/"+url.PathEscape(graphstore.KindIssue+"/"+child.Key), bytes.NewReader(move))
-	moving.Header.Set("Content-Type", "application/json")
-	moving.Header.Set("X-Dispatch-User", "alice")
-	moving.Header.Set("If-Match", strconv.Quote(strconv.FormatInt(*placed.PlacementSeq, 10)))
-	moved := httptest.NewRecorder()
-	handler.ServeHTTP(moved, moving)
-	if moved.Code != http.StatusOK {
-		t.Fatalf("alice places the child %s under the comment C through PATCH: status=%d body=%s", child.Key, moved.Code, moved.Body.String())
-	}
+	prose := before.Nodes[proseAt]
+	placeUnder("the paragraph "+prose.ID, prose, prose.ID, spec.address("k1"))
 
 	// A pre-mortem lens on r1 with one finding and one risk.
 	lens := rig.invoke(r1Ref, graphstore.LensKindPreMortem, "alice", nil)

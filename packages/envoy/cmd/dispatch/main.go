@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -247,6 +248,10 @@ type bootConfig struct {
 	// by the broker client on each call, never here: a projected token rotates.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// ProofOrigins is DISPATCH_PROOF_ORIGINS read (proofOriginEntries): the origins Dispatch is
+	// reached at beside DISPATCH_SERVER_URL's, each written scheme://host, which a broker token's
+	// proof may name in its 'htu' (proofOrigins). Empty, unset, adds none.
+	ProofOrigins []string
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
 	// Postgres.
@@ -446,6 +451,14 @@ func main() {
 		slog.Error("dispatch: open database", "error", err)
 		os.Exit(1)
 	}
+	// Whether this boot creates the database from empty, read before the migrations make it: R26's
+	// step (graphcensus.RunTypedBlockSupertagsStep) restates the reads of a block's type on such a
+	// database with no fleet to wait for, since every block it will hold is written by this build.
+	migrated, err := store.Census(ctx, boot.DatabaseURL)
+	if err != nil {
+		slog.Error("dispatch: read whether the database is empty before its migrations", "error", err)
+		os.Exit(1)
+	}
 	if err := database.Migrate(ctx); err != nil {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
 		os.Exit(1)
@@ -479,36 +492,17 @@ func main() {
 	renames := refs.NewRenames(renamePairs)
 	attributor := delivery.NewAttributor(renames)
 
-	// document_search (migration 20261101182447) holds each document's latest search vector,
-	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
-	// documents stored before that. It runs here, in committed batches, rather than as migration
-	// 20261101182501: one transaction over artifact_versions measured 35.5 s on a
-	// production-shaped database, and 20261101182454's trigger makes every concurrent version
-	// write to a document the pass has already written wait that whole transaction out
-	// (20261101182501's comment holds the measurement).
-	//
-	// A failure stops the boot, unlike the count below: this release's search reads
-	// document_search alone, so a process that served with the table unfilled would answer a
-	// search with documents missing. The rolling deploy keeps that correct - the release
-	// before this one serves every request until this process has filled the table and begins
-	// serving.
-	if filled, err := database.FillDocumentSearch(ctx); err != nil {
-		slog.Error("dispatch: fill document_search for the documents stored before this release", "error", err)
-		os.Exit(1)
-	} else if filled > 0 {
-		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
-	}
-
 	// The decisions step's first phase (docs.DecisionStep): every asks and ask_followers row the
 	// release before wrote is stated on its ask's node and marked, in committed batches, before
-	// this process serves, as document_search is filled above. A reading's check of its ask takes
-	// the answer from the node, which reads an ask the backfill has not stated as open, so a
+	// this process serves. A reading's check of its ask takes the answer from the node, which
+	// reads an ask the backfill has not stated as open, so a
 	// failure stops the boot, and the release before keeps serving in a roll until this process
 	// can. The process waits here for the step's lock only while the first phase owes a row, so a
 	// process that holds the lock, stalled or not, keeps no boot waiting when nothing is owed. Its
 	// catch-up, its count of what the restore and the conversion owe, and its later passes run on
 	// its own tick once the server listens, below: the boot reads only what the first phase reads,
 	// so a table it does not need, held by another transaction, keeps no process from serving.
+	// kept for one release: decisions-step
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
 	// kept for one release: decisions-step
 	if !boot.HoldDecisionsStep {
@@ -595,6 +589,7 @@ func main() {
 	// The decisions step's third phase writes the issues' documents through this service: the
 	// restore of the answered asks that left their specs and the conversion of the decisions
 	// documents, on the step's tick below.
+	// kept for one release: decisions-step
 	decisionStep.UseDocuments(documentService)
 	// R2's daemon-thread step (docs.DaemonThreadStep): it re-places under its issue each node a
 	// release before left under a message of a thread the Legion daemon's session began, once
@@ -1039,7 +1034,7 @@ func main() {
 	// functions set it from the deploy on, and this labels the rows stored before it, in
 	// committed batches of its own (20261109120100 holds the cursor it records its place in).
 	//
-	// In the background, where the document_search fill above blocks the boot: a label costs
+	// In the background, and not on the boot's path: a label costs
 	// about 253 bytes of heap and 4.9 KiB of growth in the vector index, and the pass is one to
 	// two hours on a deployment of a million rows (INFRA-988, store.EmbeddingProjectKeyBatch), so
 	// a boot that waited for it would outlast any rollout. What waiting would buy is nothing a
@@ -1049,8 +1044,8 @@ func main() {
 	// (api/search.go, meaningProjectScope), and every batch moves rows onto the faster predicate
 	// the pass exists for. A failure is logged and the process serves on, for the same reason.
 	//
-	// Here, among the loops, and not beside the document_search fill above, because it needs the
-	// lease pool, which is opened below that: one process of a roll fills and the other skips,
+	// Here, among the loops, because it needs the lease pool, which the boot opens before this:
+	// one process of a roll fills and the other skips,
 	// since two of them would each pay the same hours for one result. The process that skipped
 	// tries again every five minutes until the labelling is over, so a holder killed mid-pass
 	// costs the fill that wait rather than lasting until something next boots
@@ -1114,7 +1109,7 @@ func main() {
 	// run on a goroutine of their own, as the embedding fill's do, so no pod's readiness waits for
 	// them (startBootBackfill, runBootBackfill). Two processes that boot together each run it, which
 	// the backfill allows.
-	startBootBackfill(ctx, database, boot)
+	startBootBackfill(ctx, database, boot, migrated.Fresh)
 	// The block index: each document version no block-aware write indexed - every document at
 	// migration 0121, each version a build without the block index writes during a roll, and each
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
@@ -1371,7 +1366,10 @@ func main() {
 			githubreads.CIReconcile:        reconciler != nil,
 		}}
 	}
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, decisionStep, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer,
+		// kept for one release: decisions-step
+		decisionStep,
+		issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1779,6 +1777,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if boot.AgentSecretsTokenFile == "" {
 			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
+	}
+	boot.ProofOrigins, err = proofOriginEntries(env.get("DISPATCH_PROOF_ORIGINS"))
+	if err != nil {
+		return bootConfig{}, err
 	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
@@ -2326,9 +2328,15 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.Handler {
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer,
+	// kept for one release: decisions-step
+	decisions *docs.DecisionStep,
+	issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, decisions, issuers, reads))
+	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer,
+		// kept for one release: decisions-step
+		decisions,
+		issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
@@ -2443,12 +2451,13 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 }
 
 // brokerTokenVerifier decides callers presenting an access token the secrets broker issued, under
-// the RFC 9449 DPoP scheme. It is built from the settings Dispatch already has and needs none of
-// its own: the broker DISPATCH_AGENT_SECRETS_URL names, which the approval relays already call,
-// Dispatch's own projected ServiceAccount token from DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE,
-// which it already presents there, and DISPATCH_SERVER_URL as the origin a proof's 'htu' is
-// checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
-// the maintenance pass sweeps.
+// the RFC 9449 DPoP scheme. It is built from the broker DISPATCH_AGENT_SECRETS_URL names, which
+// the approval relays already call, Dispatch's own projected ServiceAccount token from
+// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, which it already presents there, and the origins a
+// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, and each one
+// DISPATCH_PROOF_ORIGINS adds, which is the one setting of its own, since a pod or a daemon calls
+// Dispatch at an in-cluster address and signs the URL it calls. Spent proofs are recorded in
+// Dispatch's own database (store.DPoPProofs), which the maintenance pass sweeps.
 //
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
@@ -2466,7 +2475,7 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
 		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
-		Origin:    strings.TrimSuffix(serverURL, "/"),
+		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
@@ -2476,6 +2485,48 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// token reaches the reads of that class and no other route.
 		ServesReadOnly: true,
 	})
+}
+
+// proofOriginEntries reads DISPATCH_PROOF_ORIGINS: each comma-separated entry as the bare origin
+// it is, written scheme://host. A value of nothing but whitespace is unset. An entry that is not a
+// bare origin - empty, a scheme other than http or https, no host, a path, a query, a fragment or
+// user info - refuses the start, naming the entry by its position and by its value where
+// redact.URL prints it, as the DISPATCH_AGENT_SECRETS_URL refusal names its value.
+func proofOriginEntries(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	origins := make([]string, 0, len(entries))
+	for i, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("DISPATCH_PROOF_ORIGINS entry %d of %d is empty", i+1, len(entries))
+		}
+		parsed, err := url.Parse(entry)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" ||
+			parsed.Path != "" || parsed.User != nil || strings.ContainsAny(entry, "?#") {
+			return nil, fmt.Errorf("DISPATCH_PROOF_ORIGINS entry %d of %d is %q (expected an origin: an absolute http(s) URL with no path, query, fragment or user)",
+				i+1, len(entries), redact.URL(entry))
+		}
+		origins = append(origins, parsed.Scheme+"://"+parsed.Host)
+	}
+	return origins, nil
+}
+
+// proofOrigins is every origin a broker token's proof may name in its 'htu': DISPATCH_SERVER_URL's
+// first, the one a proof naming none of them is checked against, then each origin added names. An
+// origin equal to one before it, compared without case as an origin's scheme and host are, is
+// taken once rather than refused: a deployment lists the public origin again beside the
+// in-cluster one.
+func proofOrigins(serverURL string, added []string) []string {
+	origins := append(make([]string, 0, 1+len(added)), strings.TrimSuffix(serverURL, "/"))
+	for _, origin := range added {
+		if !slices.ContainsFunc(origins, func(taken string) bool { return strings.EqualFold(taken, origin) }) {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
 }
 
 // healthzHandler answers the readiness probe: 200 while this process can serve requests, which is
@@ -2557,7 +2608,10 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // has counted - the boot's pass counts nothing (docs.DecisionStep.Boot), and
 // DISPATCH_TEST_HOLD_DECISIONS_STEP holds the tick for as long as it is set - and it is read from
 // the step, so the probe adds no statement to the database. It never decides `ok`.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer,
+	// kept for one release: decisions-step
+	decisions *docs.DecisionStep,
+	issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2633,7 +2687,9 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
-			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, DecisionsStepOwed: decisions.OwedTotal(),
+			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			// kept for one release: decisions-step
+			DecisionsStepOwed: decisions.OwedTotal(),
 		})
 	}
 }
@@ -2662,8 +2718,10 @@ func bootBackfillHorizonBound(boot bootConfig) time.Duration {
 // logged which and ended. So the record, and the line a skip or a failure logs, come before
 // anything the boot does after this call, and nothing of the boot waits for the passes.
 // DISPATCH_TEST_HOLD_BOOT_BACKFILL, under the test hooks, holds the passes once the horizon is
-// recorded, until the process stops.
-func startBootBackfill(ctx context.Context, database *store.Store, boot bootConfig) {
+// recorded, until the process stops. Once the run has logged that it is done, the same goroutine
+// runs R26's step (graphcensus.RunTypedBlockSupertagsStep), which a run that logged no done line
+// never reaches; fresh says this boot created the database from empty.
+func startBootBackfill(ctx context.Context, database *store.Store, boot bootConfig, fresh bool) {
 	var run graphcensus.BackfillRun
 	record := func(ctx context.Context) error {
 		var err error
@@ -2681,6 +2739,10 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 			}
 			_, err := run.Passes(ctx, io.Discard)
 			return err
+		}, func(ctx context.Context) {
+			if err := graphcensus.RunTypedBlockSupertagsStep(ctx, database, buildCommit, fresh, slog.Default()); err != nil {
+				slog.Error("dispatch: the typed block supertags step failed", "error", err)
+			}
 		})
 	}()
 	select {
@@ -2702,7 +2764,9 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 //     beside it as a finding;
 //   - any other error of the run, one beside such rows included: that error and no done line, so
 //     what waits for the backfill's end waits for the next boot's run.
-func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error) error {
+//
+// afterDone, where it is not nil, runs right after each done line, on the same goroutine.
+func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error, afterDone func(context.Context)) error {
 	if err := record(ctx); err != nil {
 		var bound *graphcensus.HorizonBoundError
 		if errors.As(err, &bound) {
@@ -2715,11 +2779,17 @@ func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(conte
 	err := run(ctx)
 	if err == nil {
 		logger.Info(bootBackfillDoneLine)
+		if afterDone != nil {
+			afterDone(ctx)
+		}
 		return nil
 	}
 	if moved, only := graphcensus.OnlyProjectMoved(err); only {
 		logger.Warn(bootBackfillDoneLine, "project_moved", moved,
 			"finding", "rows whose node the store holds in another project, which no run of the backfill writes")
+		if afterDone != nil {
+			afterDone(ctx)
+		}
 		return nil
 	}
 	logger.Error("dispatch: boot backfill failed", "error", err)

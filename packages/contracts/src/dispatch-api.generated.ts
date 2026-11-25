@@ -322,7 +322,7 @@ export interface paths {
     /** @description List a document's asks. */
     get: operations["getApiV1ArtifactsByIdAsks"];
     put?: never;
-    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An ask on a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
+    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An issue's document, its decisions document included, is 400 ARTIFACT_LINKED whether or not it is retired, naming its issue's routes: ask on it through POST /api/v1/issues/{key}/asks. An ask anchored in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1ArtifactsByIdAsks"];
     delete?: never;
     options?: never;
@@ -408,7 +408,7 @@ export interface paths {
     /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. */
+    /** @description Comment on a document or one of its quotes. An issue's document, its decisions document included, is 400 ARTIFACT_LINKED whether or not it is retired, naming its issue's routes: comment on it through POST /api/v1/issues/{key}/comments. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -425,7 +425,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. An issue's tree artifact (kind tree) takes an edit as a document does, into its own fragment of the issue room. An op naming, by its store address (<ref_key>#<block id>), a node of another issue is 409 NODE_IN_OTHER_ISSUE, naming that node's issue, and writes nothing. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. A batch whose result adds a requirement block to an issue that is a view on its ancestor's spec - an issue born converted whose spec is not its own and whose nearest ancestor holding requirements and no view itself is not done, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and writes nothing; one taken whose result holds a requirement block on an issue that is no view makes the issue's spec its own, so it is never a view. An edit of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; one of an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. An edit of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. On an issue Legion runs, an edit of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so is such a session's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, naming the first such block; an edit of the tree artifact that touches none of those blocks is taken, and each refused edit writes nothing. */
+    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. An issue's tree artifact (kind tree) takes an edit as a document does, into its own fragment of the issue room. An op naming, by its store address (<ref_key>#<block id>), a node of another issue is 409 NODE_IN_OTHER_ISSUE, naming that node's issue, and writes nothing. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, quoting each such ask's question or decision's words and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. A batch whose result adds a requirement block to an issue that is a view on its ancestor's spec - an issue born converted whose spec is not its own and whose nearest ancestor holding requirements and no view itself is not done, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and writes nothing; one taken whose result holds a requirement block on an issue that is no view makes the issue's spec its own, so it is never a view. An edit of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; one of an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. An edit of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. On an issue Legion runs, an edit of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so is such a session's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, naming the first such block; an edit of the tree artifact that touches none of those blocks is taken, and each refused edit writes nothing. */
     post: operations["postApiV1ArtifactsByIdEdits"];
     delete?: never;
     options?: never;
@@ -476,7 +476,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Rebuild a document history ygo cannot load from its latest saved markdown; a live document is 409 DOCUMENT_LIVE and one that loads is 409 DOCUMENT_LOADS. A retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
+    /** @description Rebuild a document history ygo cannot load from its latest saved markdown; a live document is 409 DOCUMENT_LIVE and one that loads is 409 DOCUMENT_LOADS, whether or not it is retired. A retired document whose history does not load, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; it is 409 DECISIONS_ARE_NODES instead where it is an issue's decisions document: a decision is a `decision` block in the spec. */
     post: operations["postApiV1ArtifactsByIdRebuild"];
     delete?: never;
     options?: never;
@@ -835,7 +835,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read one comment with its thread. */
+    /** @description Read one comment with its thread. With ?node_anchor=true the comment carries node_anchor {node {kind, id, state}, quote, occurrence, orphaned} where its anchor names a node or a block, and the answer is not cached. */
     get: operations["getApiV1CommentsById"];
     put?: never;
     post?: never;
@@ -1297,7 +1297,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: 29 of the 53 tool specs agents operate Dispatch with, every one that writes but five, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The tools that write and that it leaves out are dispatch_review, dispatch_settle, dispatch_state, dispatch_premortem_convert and dispatch_project_update, on purpose: the first three each record or undo a person's decision - a review an approval or a changes request in a person's name, a settle that a person settled a proposal, a state write a move out of settled, which undoes a settle, or into gone, which is final - the conversion retires a document once, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose one. The list is read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: 29 of the 54 tool specs agents operate Dispatch with, every one that writes but five, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The tools that write and that it leaves out are dispatch_review, dispatch_settle, dispatch_state, dispatch_premortem_convert and dispatch_project_update, on purpose: the first three each record or undo a person's decision - a review an approval or a changes request in a person's name, a settle that a person settled a proposal, a state write a move out of settled, which undoes a settle, or into gone, which is final - the conversion retires a document once, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose one. The list is read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1382,10 +1382,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
+    /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), own (true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing; without an advances value it filters nothing; advances=any&own=true over backlog and icebox is the second fault of GET /api/v1/priorities), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as the second fault of GET /api/v1/priorities reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. A spec that holds a requirement block, on an issue born converted under a parent whose chain's nearest issue holding requirements and no view itself is not done - so the new issue is a view on that issue's spec, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that issue, and creates nothing; a spec holding one that is taken makes the new issue's spec its own, so the issue is never a view. needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. With DISPATCH_PARENT_STATUS_RULE on, a parent that the new issue would leave out of line with its children (a done parent) is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, issues naming each issue that holds the rule. When Legion runs the new issue, because it or an issue of its project above it carries the label legion, a create under a parent of its project by a session that is no person and no architect of the parent or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. A spec that holds a requirement block, on an issue born converted under a parent whose chain's nearest issue holding requirements and no view itself is not done - so the new issue is a view on that issue's spec, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that issue, and creates nothing; a spec holding one that is taken makes the new issue's spec its own, so the issue is never a view. needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. advances is the priorities the new issue advances, a list of priority ids: more than 20 of them, counted before duplicates are removed, an id no priority carries, and one whose priority is gone are each 400 ADVANCES_INPUT, and the create writes nothing; a create carries no advances_revision and is never refused for one, since the new issue holds no relation yet. With DISPATCH_PARENT_STATUS_RULE on, a parent that the new issue would leave out of line with its children (a done parent) is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, issues naming each issue that holds the rule. When Legion runs the new issue, because it or an issue of its project above it carries the label legion, a create under a parent of its project by a session that is no person and no architect of the parent or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1424,7 +1424,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), needs ([] clears it), duplicate_of and filed_from (null clears either), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that would leave a parent out of line with its children is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, relation parent or child, issues naming each issue that holds the rule. On an issue Legion runs, a close, a reopen and a labels or parent write that takes the issue out of Legion are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon. A move under a parent, after which Legion runs the issue, is 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person and no architect of the new parent or of an issue above it. When Legion runs the issue, or an issue under it, before the move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that is no person and no architect of each such issue or of an issue above it where it stands: the issue itself when Legion runs it, and else each issue under it with the label legion. Neither check of a move passes the session of the project's Legion daemon. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), needs ([] clears it), duplicate_of and filed_from (null clears either), advances, or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. advances is the issue's whole list of its own priorities, which replaces the list it holds ([] clears it; an inherited entry is no relation of the issue and no write states or retracts one): more than 20 ids, counted before duplicates are removed, an id no priority carries, and one whose priority is gone are each 400 ADVANCES_INPUT. advances_revision is the advances_revision of the issue read the write answers: a write whose advances_revision is not the revision the issue holds is 409 ADVANCES_REVISION naming the one it holds, and a write that names no revision may assert or retract one relation, so one that would change two or more is 409 ADVANCES_REVISION too, naming the revision held. A closed issue refuses advances (409 ISSUE_CLOSED). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that would leave a parent out of line with its children is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, relation parent or child, issues naming each issue that holds the rule. On an issue Legion runs, a close, a reopen and a labels or parent write that takes the issue out of Legion are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon. A move under a parent, after which Legion runs the issue, is 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person and no architect of the new parent or of an issue above it. When Legion runs the issue, or an issue under it, before the move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that is no person and no architect of each such issue or of an issue above it where it stands: the issue itself when Legion runs it, and else each issue under it with the label legion. Neither check of a move passes the session of the project's Legion daemon. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -1438,7 +1438,7 @@ export interface paths {
     /** @description List an issue's documents and files. */
     get: operations["getApiV1IssuesByKeyArtifacts"];
     put?: never;
-    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. A new version or a new document that adds a requirement block to an issue that is a view on its ancestor's spec - an issue born converted whose spec is not its own and whose nearest ancestor holding requirements and no view itself is not done, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and writes nothing; one taken that holds a requirement block on an issue that is no view makes the issue's spec its own, so it is never a view. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired, rather than DOCUMENT_RETIRED: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. An upload under the name or slug of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. On an issue Legion runs, an upload of its spec or Verification document, a file under the name verification.md among them, by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. */
+    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. A new version or a new document that adds a requirement block to an issue that is a view on its ancestor's spec - an issue born converted whose spec is not its own and whose nearest ancestor holding requirements and no view itself is not done, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and writes nothing; one taken that holds a requirement block on an issue that is no view makes the issue's spec its own, so it is never a view. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired, rather than DOCUMENT_RETIRED: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. An upload under the name or slug of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. On an issue Legion runs, an upload of its spec or Verification document, a file under the name verification.md among them, by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. */
     post: operations["postApiV1IssuesByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -1489,7 +1489,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, one that adds a requirement block to an issue that is a view on its ancestor's spec is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, an edit of a retired document 409 DOCUMENT_RETIRED, one of the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, and an edit of the issue's decisions query is 409 DECISIONS_QUERY, as POST /api/v1/artifacts/{id}/edits answers them. On an issue Legion runs, an edit of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so is such a session's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, as POST /api/v1/artifacts/{id}/edits answers it. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, one that adds a requirement block to an issue that is a view on its ancestor's spec is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, an edit of a retired document, which only its slug finds, 409 DOCUMENT_RETIRED, one of the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, and an edit of the issue's decisions query is 409 DECISIONS_QUERY, as POST /api/v1/artifacts/{id}/edits answers them. On an issue Legion runs, an edit of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so is such a session's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, as POST /api/v1/artifacts/{id}/edits answers it. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -1540,7 +1540,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Name the current version of an issue document, by slug or unambiguous filename. A retired document is 409 DOCUMENT_RETIRED, and the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/versions answers them. On an issue Legion runs, a named version of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. */
+    /** @description Name the current version of an issue document, by slug or unambiguous filename. A retired document, which only its slug finds, is 409 DOCUMENT_RETIRED, and the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/versions answers them. On an issue Legion runs, a named version of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugVersions"];
     delete?: never;
     options?: never;
@@ -1625,7 +1625,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
+    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. With ?node_anchor=true each comment whose anchor names a node or a block carries node_anchor {node {kind, id, state}, quote, occurrence, orphaned}, and the answer is not cached. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
     /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. visibility is project, the default; author is refused 400 VISIBILITY_NOT_ADMITTED, naming the kind comment, and nothing is stored, because not every read of a comment binds the visibility predicate. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. */
@@ -1852,10 +1852,11 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    delete?: never;
+    /** @description Delete the node {id} names and its part_of subtree {actor?}, in one transaction, or with ?dry_run=true answer how many nodes the delete would take that a read of the issue's tree returns to the caller, writing nothing and taking no write lock. {id} is read as the move reads it; a node the caller may not see under the issue is 404 NOT_FOUND. The delete takes no comment, message, issue node, ask, :::ask block or document of the subtree, nor what stands under one; each block it takes leaves the text of its document in one direct write of the document's tree under the room locks, a block it does not take being lifted to where the taken block's text stood, and each document so changed writes one version with its artifact.version, which moves its open approval request; each lens, finding, risk and constraint it takes goes gone, each comment whose node anchor names one is orphaned, every tuple out of what it takes is retracted, and a converted issue's queries are marked owed and drained once it has committed. Refusals, in order: an ask, an :::ask block, a comment, a message, a result, an issue node or a document as {id} is 400 NODE_NOT_DELETABLE, after a caller who holds no person scope naming the :::ask block of an answered ask, 409 ANSWERED_ASK_KEPT; on the delete, no If-Match is 428 PRECONDITION_REQUIRED and no expected_count 400 DELETE_INPUT; under the owner locks of the issue and of every issue a node of the subtree stands under, a node under an issue it did not lock at each of two attempts is 409 PARENT_CONTENDED, and a tag that is no longer the node's placement_seq 412 PRECONDITION_FAILED; on the dry run as on the delete, a subtree that holds a result is 409 NODE_HOLDS_RESULT, a requirement, criterion or check on an issue Legion runs from a writer who is no person and no architect 403 DOCUMENT_WRITER_NOT_ARCHITECT, from a caller who holds no person scope a person's decision 409 ANSWERED_ASK_KEPT and a lens, finding, risk or constraint 403 STATE_NOT_PERMITTED, each naming a node only where the caller may see it, and a delete that would leave a callout or a list item it keeps with no block of its own 409 CONTAINER_WOULD_EMPTY, naming the container and its kind, which the dry run reads off the live document with no write lock; last, an expected_count that is not the count the delete takes is 409 DELETE_COUNT_MOVED, carrying the count now in count. A refused delete stores nothing. Answers 200 {count}. */
+    delete: operations["deleteApiV1IssuesByKeyNodesById"];
     options?: never;
     head?: never;
-    /** @description Move the node {id} names {parent?, after?, actor?}: under the node parent names, among its siblings where after names one, in one write. {id} is the node's store address under the issue, percent-encoded as one path segment, read as the state route reads it; a node the caller may not see under the issue is 404 NOT_FOUND, and so is a parent the caller may not see. The request names the placement it read in If-Match: the node's placement_seq, the seq of its current part_of, which the tree read answers on every node, as a quoted entity tag; a move with no If-Match is 428 PRECONDITION_REQUIRED, and one whose tag is no longer the node's placement_seq 412 PRECONDITION_FAILED, so a move taken against a parent that has since changed stores nothing. A body with neither parent nor after is 400 MOVE_INPUT. A parent appends one part_of tuple from the node to the new parent and one retraction of the old, at no event, and touches no descendant and no serves; a ranked node takes a rank of its own document's band between after and the next ranked sibling of that band, after null placing it first in its band (after the issue's memo, for a block of the spec's band under the issue) and no after after every ranked sibling of its band; an after that is no ranked child of the parent, the node itself, or of another band, and an after on a node that holds no rank, are 400 INVALID_POINTER naming after. A block of a document holds the placement stored, which every later index pass keeps but where an edit names another parent in a typed block's parent attribute or takes the block's parent out of the text. Where Markdown can show the block's new place - under its document's top level, a callout or a list item that stands in no decision, reading, ask, requirement, criterion, check or plan_task - its text moves there in the same transaction, under the room's lock, and a typed block's parent attribute names the new parent, or is taken out where it can name none (a lens, a finding, a risk, a constraint, a result, an issue or a document); a change of the text writes one version of the document, with its artifact.version, which moves the document's open approval request; a text move that would leave a callout or a list item with no block of its own - its last block, or a list item's own first paragraph - is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. Where the move changes a query of a converted issue, the issue's queries are marked owed in the write and their versions written once it has committed. Refusals, in order: on an issue Legion runs, a move of a requirement, criterion or check by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT; a caller who holds no person scope moving a person's decision - an answered ask, the :::ask block of one, or a decision a person decided - is 409 ANSWERED_ASK_KEPT, quoting it; an ask, a comment or a message is 400 NODE_NOT_MOVABLE, naming it and its kind; a constraint under any node but an issue's is 400 INVALID_POINTER; under the owner locks of the issue and of every issue a node of the node's subtree or the parent's chain stands under, a node under an issue the move did not lock at each of two attempts is 409 PARENT_CONTENDED; a parent inside the node's subtree, one outside the issue's own tree, and a node that reads its issue from its own row under a node of an issue below are 400 INVALID_POINTER; a parent that is, or stands under, the node of a document a removal could take, where only a lens, a finding or a risk stands, is 409 PARENT_DOCUMENT_REMOVABLE, naming the node and its kind, the parent and the document; a parent the walk of its issue does not reach - gone, a comment or a message the conversation test does not pass, or under one - is 409 PARENT_NOT_REACHED, naming the parent and why. A refused move stores nothing. Answers 200 {parent, after, placement_seq}: the parent's store address, the ranked sibling the node now follows or null, and the new placement_seq, the tag the next If-Match of the node takes. */
+    /** @description Move the node {id} names {parent?, after?, actor?}: under the node parent names, among its siblings where after names one, in one write. {id} is the node's store address under the issue, percent-encoded as one path segment, read as the state route reads it; a node the caller may not see under the issue is 404 NOT_FOUND, and so is a parent the caller may not see. The request names the placement it read in If-Match: the node's placement_seq, the seq of its current part_of, which the tree read answers on every node, as a quoted entity tag; a move with no If-Match is 428 PRECONDITION_REQUIRED, and one whose tag is no longer the node's placement_seq 412 PRECONDITION_FAILED, so a move taken against a parent that has since changed stores nothing. A body with neither parent nor after is 400 MOVE_INPUT. A parent appends one part_of tuple from the node to the new parent and one retraction of the old, at no event, and touches no descendant and no serves; a ranked node takes a rank of its own document's band between after and the next ranked sibling of that band, after null placing it first in its band (after the issue's memo, for a block of the spec's band under the issue) and no after after every ranked sibling of its band; an after that is no ranked child of the parent, the node itself, or of another band, and an after on a node that holds no rank, are 400 INVALID_POINTER naming after. A block of a document holds the placement stored, which every later index pass keeps but where an edit names another parent in a typed block's parent attribute or takes the block's parent out of the text. Where Markdown can show the block's new place - under its document's top level, a callout or a list item that stands in no decision, reading, ask, requirement, criterion, check or plan_task - its text moves there in the same transaction, under the room's lock, and a typed block's parent attribute names the new parent, or is taken out where it can name none (a lens, a finding, a risk, a constraint, a result, an issue or a document); a change of the text writes one version of the document, with its artifact.version, which moves the document's open approval request; a text move that would leave a callout or a list item with no block of its own - its last block, or a list item's own first paragraph - is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. Where the move changes a query of a converted issue, the issue's queries are marked owed in the write and their versions written once it has committed. Refusals, in order: an ask, a comment or a message is 400 NODE_NOT_MOVABLE, naming it and its kind; a constraint under any node but an issue's is 400 INVALID_POINTER; a body with neither parent nor after is 400 MOVE_INPUT, and a move with no If-Match 428 PRECONDITION_REQUIRED; on an issue Legion runs, a move of a requirement, criterion or check by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT; a caller who holds no person scope moving a person's decision - an answered ask, the :::ask block of one, or a decision a person decided - is 409 ANSWERED_ASK_KEPT, quoting it; then, under the owner locks of the issue and of every issue a node of the node's subtree or the parent's chain stands under, a tag that is no longer the node's placement_seq is 412 PRECONDITION_FAILED; a node under an issue the move did not lock at each of two attempts is 409 PARENT_CONTENDED; a parent inside the node's subtree, one outside the issue's own tree, and a node that reads its issue from its own row under a node of an issue below are 400 INVALID_POINTER; a parent that is, or stands under, the node of a document a removal could take, where only a lens, a finding or a risk stands, is 409 PARENT_DOCUMENT_REMOVABLE, naming the node and its kind, the parent and the document; a parent the walk of its issue does not reach - gone, a comment or a message the conversation test does not pass, or under one - is 409 PARENT_NOT_REACHED, naming the parent and why; an after that is no ranked sibling of the node's band is 400 INVALID_POINTER, naming after; and last, under the room locks, a text move that would leave a callout or a list item with no block of its own is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. A refused move stores nothing. Answers 200 {parent, after, placement_seq}: the parent's store address, the ranked sibling the node now follows or null, and the new placement_seq, the tag the next If-Match of the node takes. */
     patch: operations["patchApiV1IssuesByKeyNodesById"];
     trace?: never;
   };
@@ -1919,7 +1920,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Write the node state of the node {id} names {state}: proposed, overtaken or live on any node the store holds that is not gone but the block of an :::ask block of a document, and gone only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block. gone is final: any write on a gone node is 409 NODE_GONE, naming the node. The write that takes a lens, a finding, a risk or a constraint to gone takes its whole part_of subtree to gone in the same write, at every depth and whatever each node's kind - a finding or a risk under a lens, a lens invoked on a lens, a finding, a risk or a constraint, and all that stands under each - those the caller may not see included, so no read by its own address answers one of them once the node above it is gone. A block of an ask, a comment or a message is no node the store holds: every read answers it live, and every value on it is 409 NODE_STATE_NOT_WRITABLE, saying so. A write on the block of an :::ask block of a document is 409 ASK_HOLDS_STATE and writes nothing, naming the ask whose node holds the question's state (the block's own ask or the source ask for a copy) by its dispatch://<KEY>/ask/<uuid> address, or saying no ask holds the question yet. {id} is the node's store address under the issue (`<ref_key>#<block id>` for a block of a document, `lens/<uuid>`, or its whole dispatch:// address), percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND, gone or not. The value is checked first: a word that is none of live, gone, proposed, settled and overtaken is 400 INVALID_ATTRIBUTE_VALUE, naming the attribute state and the word, and nothing is stored. settled is 409 NODE_STATE_NOT_WRITABLE, since POST /api/v1/issues/{key}/nodes/{id}/settle alone settles a proposed node, and so is gone on a block of a document or an issue, a document, an ask, a comment or a message, each naming the node's kind, its state and the value asked for. A move of a lens, a finding, a risk or a constraint into gone is a person's alone - a browser's cookie, or a token holding the person scope - since it takes what the caller may not see: any other caller, the node's own author included, is 403 STATE_NOT_PERMITTED naming the node, in the same words whatever stands under it, and an agent marks a node it wrote overtaken instead. Any other move of a node into or out of proposed or settled, other than the settle itself, takes the settle's caller rule: a person makes it on any node, and any other caller only on a node whose recorded author is the author its credential proves, by the one author rule the settle reads; any other is 403 STATE_NOT_PERMITTED, naming the node, and nothing is stored, so the deployment's shared agent token makes no such move. A move out of settled undoes a decision, a move out of proposed ends a proposal and counts a proposed check or plan task as serving its requirement, and a move into proposed takes a requirement's gaps out of the coverage read and the approval request. On an issue Legion runs, a write of the state of a requirement, criterion or check block by a session that is no person and no architect of the issue or of an issue above it is then 403 DOCUMENT_WRITER_NOT_ARCHITECT, and nothing is stored. The write appends one state tuple on each node it moves, written by the caller - a person's as the person it acts for, as the settle's is - and no event, and every read of the node answers the new state at once; a write of the state the node holds appends nothing and takes no caller rule, since it moves nothing. Answers 200 {node: {address, kind, state, visibility}, previous}, previous the state it held before. */
+    /** @description Write the node state of the node {id} names {state}: proposed, overtaken or live on any node the store holds that is not gone but the block of an :::ask block of a document, and gone only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block. gone is final: any write on a gone node is 409 NODE_GONE, naming the node. The write that takes a lens, a finding, a risk or a constraint to gone takes its whole part_of subtree to gone in the same write, at every depth and whatever each node's kind - a finding or a risk under a lens, a lens invoked on a lens, a finding, a risk or a constraint, and all that stands under each - those the caller may not see included, so no read by its own address answers one of them once the node above it is gone. A block of an ask, a comment or a message is no node the store holds: every read answers it live, and every value on it is 409 NODE_STATE_NOT_WRITABLE, saying so. A write on the block of an :::ask block of a document is 409 ASK_HOLDS_STATE and writes nothing, naming the ask whose node holds the question's state (the block's own ask or the source ask for a copy) by its dispatch://<KEY>/ask/<uuid> address, or saying no ask holds the question yet. A caller who holds no person scope that sets a person's decision - an answered ask's own node, or a decision a person decided - overtaken or live is 409 ANSWERED_ASK_KEPT, quoting the ask's question or the decision's words and naming the node; on an answered ask's own node proposed is refused too, before the settle's caller rule; nothing is stored. {id} is the node's store address under the issue (`<ref_key>#<block id>` for a block of a document, `lens/<uuid>`, or its whole dispatch:// address), percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND, gone or not. The value is checked first: a word that is none of live, gone, proposed, settled and overtaken is 400 INVALID_ATTRIBUTE_VALUE, naming the attribute state and the word, and nothing is stored. settled is 409 NODE_STATE_NOT_WRITABLE, since POST /api/v1/issues/{key}/nodes/{id}/settle alone settles a proposed node, and so is gone on a block of a document or an issue, a document, an ask, a comment or a message, each naming the node's kind, its state and the value asked for. A move of a lens, a finding, a risk or a constraint into gone is a person's alone - a browser's cookie, or a token holding the person scope - since it takes what the caller may not see: any other caller, the node's own author included, is 403 STATE_NOT_PERMITTED naming the node, in the same words whatever stands under it, and an agent marks a node it wrote overtaken instead. Any other move of a node into or out of proposed or settled, other than the settle itself, takes the settle's caller rule: a person makes it on any node, and any other caller only on a node whose recorded author is the author its credential proves, by the one author rule the settle reads; any other is 403 STATE_NOT_PERMITTED, naming the node, and nothing is stored, so the deployment's shared agent token makes no such move. A move out of settled undoes a decision, a move out of proposed ends a proposal and counts a proposed check or plan task as serving its requirement, and a move into proposed takes a requirement's gaps out of the coverage read and the approval request. On an issue Legion runs, a write of the state of a requirement, criterion or check block by a session that is no person and no architect of the issue or of an issue above it is then 403 DOCUMENT_WRITER_NOT_ARCHITECT, and nothing is stored. The write appends one state tuple on each node it moves, written by the caller - a person's as the person it acts for, as the settle's is - and no event, and every read of the node answers the new state at once; a write of the state the node holds appends nothing and takes no caller rule, since it moves nothing. Answers 200 {node: {address, kind, state, visibility}, previous}, previous the state it held before. */
     post: operations["postApiV1IssuesByKeyNodesByIdState"];
     delete?: never;
     options?: never;
@@ -2707,10 +2708,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. */
+    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the open issues in backlog or icebox whose own row names a live priority no issue above them carries (a child that only inherits a priority, or restates one an issue above it carries, is no such fault), each as a whole count, the same count by project or by each priority so named, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. */
     get: operations["getApiV1Priorities"];
     put?: never;
-    /** @description Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over 200 characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. */
+    /** @description Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT. id is the caller's; a body that names none takes the title written as a slug (lowercase ASCII letters and digits, each other run of characters one hyphen), and a slug over 200 characters is cut to its longest start of at most 200 characters that ends at the end of a word, or to its first 200 characters when its first word is longer, so a long title is written whole under a cut id. A title with no ASCII letter or digit, or one the cut leaves as none or any, takes the id priority- and the first 12 lower-case hex characters of the SHA-256 of the title's UTF-8 bytes instead, so every title gives an id. A given id that is no slug of lowercase letters, digits and single hyphens, a given id over 200 characters, and a given id of none or any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any) are each 400 PRIORITY_INPUT; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. */
     post: operations["postApiV1Priorities"];
     delete?: never;
     options?: never;
@@ -2732,7 +2733,7 @@ export interface paths {
     delete: operations["deleteApiV1PrioritiesById"];
     options?: never;
     head?: never;
-    /** @description Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND. */
+    /** @description Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?, expected?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND. expected is {title?, description?}, the value the writer's edit of each started from, for the title and the description this same write writes; owner and rank take none. An expected naming an attribute the write does not write is 400 PRIORITY_INPUT. One that differs from the value the priority stores now (the title compared with the stored title exactly, which is stored trimmed, so a writer sends the title it read; the description exactly) is 409 PRIORITY_CHANGED, whose message names each attribute that differs and its value now, quoted and cut past 200 characters with a trailing …; that write writes nothing and appends no priority.updated. The compare and the write are one transaction holding the priority's row, so a write naming expected waits for any other write of the priority in flight and compares against what that one wrote. A body with no expected writes over whatever is stored. */
     patch: operations["patchApiV1PrioritiesById"];
     trace?: never;
   };
@@ -2901,7 +2902,7 @@ export interface paths {
     /** @description List a project's documents. */
     get: operations["getApiV1ProjectsByKeyArtifacts"];
     put?: never;
-    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
+    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1ProjectsByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -2952,7 +2953,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, and an edit of a retired document 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/edits answers them. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, and an edit of a retired document, which only its slug finds, 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/edits answers them. */
     post: operations["postApiV1ProjectsByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -3003,7 +3004,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Name the current version of a project document, by slug or unambiguous filename. A retired document is 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/versions answers it. */
+    /** @description Name the current version of a project document, by slug or unambiguous filename. A retired document, which only its slug finds, is 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/versions answers it. */
     post: operations["postApiV1ProjectsByKeyArtifactsBySlugVersions"];
     delete?: never;
     options?: never;
@@ -3643,9 +3644,10 @@ export interface components {
       version: number;
     };
     AnchorInput: {
-      artifact: string;
+      artifact?: string;
       block_id?: string;
       mark_id?: string;
+      node?: string;
       occurrence?: number;
       quote?: string;
     };
@@ -4568,8 +4570,14 @@ export interface components {
       session_id: null | string;
       target: string;
     };
+    CommentNodeAnchor: {
+      node: components["schemas"]["IssueTreeAnchorNode"];
+      occurrence: null | number;
+      orphaned: boolean;
+      quote: string;
+    };
     CommentRead: {
-      comment: components["schemas"]["CommentWithTrees"];
+      comment: components["schemas"]["CommentWithNodeAnchor"];
       replies: components["schemas"]["CommentWithTrees"][] | null;
     };
     CommentReplyInput: {
@@ -4579,6 +4587,40 @@ export interface components {
       error?: null | string;
       reply_to_block?: null | string;
       target?: null | string;
+    };
+    CommentWithNodeAnchor: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answers: null | string;
+      artifact_id: null | string;
+      ask_id: null | string;
+      author: components["schemas"]["Actor"];
+      body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
+      deliveries: components["schemas"]["CommentDelivery"][] | null;
+      edited_at: null | string;
+      id: string;
+      issue_key: null | string;
+      mentions: components["schemas"]["CommentMention"][] | null;
+      node_anchor?: components["schemas"]["CommentNodeAnchor"];
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
+      reply_to: null | string;
+      resolved: boolean;
+      resolved_at: null | string;
+      resolved_by: components["schemas"]["Actor"] | null;
+      suggestion: components["schemas"]["Suggestion"] | null;
+      turn: null | string;
     };
     CommentWithTrees: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -4979,6 +5021,11 @@ export interface components {
     DeclineAskInput: {
       actor?: components["schemas"]["Actor"] | null;
       note?: null | string;
+    };
+    DeleteCountMoved: {
+      code: string;
+      count: number;
+      error: string;
     };
     DeliveryComponent: {
       parent: null | string;
@@ -6177,6 +6224,22 @@ export interface components {
       offset: number;
       total: number;
     };
+    IssueTreeAnchor: {
+      artifact_id?: string;
+      block_id?: string;
+      mark_id?: string;
+      node?: components["schemas"]["IssueTreeAnchorNode"];
+      occurrence?: number;
+      orphaned: boolean;
+      quote: string;
+      version?: number;
+    };
+    IssueTreeAnchorNode: {
+      id: string;
+      kind: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+    };
     IssueTreeAsk: {
       answer?: null | string;
       /** Format: date-time */
@@ -6242,7 +6305,7 @@ export interface components {
       kind: string;
     };
     IssueTreeNode: {
-      anchor?: components["schemas"]["Anchor"];
+      anchor?: components["schemas"]["IssueTreeAnchor"];
       ask?: components["schemas"]["IssueTreeAsk"];
       attributes: {
         [key: string]: string;
@@ -6294,10 +6357,12 @@ export interface components {
     };
     IssueTreePlan: {
       cycle: boolean;
+      docs?: string[];
       done?: components["schemas"]["IssueTreePlan"];
       needs: components["schemas"]["IssueTreeHalfEnd"][] | null;
       position: null | number;
       size: null | string;
+      skills?: string[];
       start?: components["schemas"]["IssueTreePlan"];
     };
     IssueTreeRead: {
@@ -6870,6 +6935,9 @@ export interface components {
       label: string;
       session: string;
     };
+    NodeDeleted: {
+      count: number;
+    };
     NodeLenses: {
       chains: components["schemas"]["LensChain"][] | null;
       lens: components["schemas"]["LensRead"] | null;
@@ -6991,9 +7059,14 @@ export interface components {
       started_at: string;
       state: string;
     };
+    PatchPriorityExpected: {
+      description?: null | string;
+      title?: null | string;
+    };
     PatchPriorityInput: {
       actor?: components["schemas"]["Actor"] | null;
       description?: null | string;
+      expected?: components["schemas"]["PatchPriorityExpected"] | null;
       owner?: null | string;
       rank?: components["schemas"]["IssueRankInput"] | null;
       title?: null | string;
@@ -7156,6 +7229,8 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      /** @description Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is. */
+      description_tree_exact?: boolean;
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -7196,6 +7271,8 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      /** @description Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is. */
+      description_tree_exact?: boolean;
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -10241,6 +10318,7 @@ export interface operations {
   getApiV1CommentsById: {
     parameters: {
       query?: {
+        node_anchor?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -11509,6 +11587,7 @@ export interface operations {
         closed_before?: string;
         priority?: string[];
         advances?: string[];
+        own?: boolean;
         moved?: boolean;
         route_status?: string;
         open?: boolean;
@@ -12302,6 +12381,7 @@ export interface operations {
     parameters: {
       query?: {
         artifact?: string;
+        node_anchor?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -12319,7 +12399,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["CommentWithTrees"][];
+          "application/json": components["schemas"]["CommentWithNodeAnchor"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12866,6 +12946,61 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MessageRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1IssuesByKeyNodesById: {
+    parameters: {
+      query?: {
+        dry_run?: boolean;
+        expected_count?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: {
+        /** @description the node's placement_seq, the seq of its current part_of that the tree read answers on every node, as a quoted entity tag ("123"), which the delete itself must send: none is 428 PRECONDITION_REQUIRED, and a tag that is no longer the node's placement_seq is 412 PRECONDITION_FAILED; the dry run (dry_run=true) reads none */
+        "If-Match"?: string;
+      };
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeDeleted"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["DeleteCountMoved"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -17167,8 +17302,10 @@ export type ClaimedIssue = components["schemas"]["ClaimedIssue"];
 export type Comment = components["schemas"]["Comment"];
 export type CommentDelivery = components["schemas"]["CommentDelivery"];
 export type CommentMention = components["schemas"]["CommentMention"];
+export type CommentNodeAnchor = components["schemas"]["CommentNodeAnchor"];
 export type CommentRead = components["schemas"]["CommentRead"];
 export type CommentReplyInput = components["schemas"]["CommentReplyInput"];
+export type CommentWithNodeAnchor = components["schemas"]["CommentWithNodeAnchor"];
 export type CommentWithTrees = components["schemas"]["CommentWithTrees"];
 export type CommentWriteResponse = components["schemas"]["CommentWriteResponse"];
 export type ConstraintInput = components["schemas"]["ConstraintInput"];
@@ -17210,6 +17347,7 @@ export type DecisionLink = components["schemas"]["DecisionLink"];
 export type DecisionReading = components["schemas"]["DecisionReading"];
 export type DecisionResponse = components["schemas"]["DecisionResponse"];
 export type DeclineAskInput = components["schemas"]["DeclineAskInput"];
+export type DeleteCountMoved = components["schemas"]["DeleteCountMoved"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];
 export type DeliveryDailyPoint = components["schemas"]["DeliveryDailyPoint"];
 export type DeliveryDeployFlagCounts = components["schemas"]["DeliveryDeployFlagCounts"];
@@ -17330,6 +17468,8 @@ export type IssueRoleHoldersInput = components["schemas"]["IssueRoleHoldersInput
 export type IssueSteps = components["schemas"]["IssueSteps"];
 export type IssueSummary = components["schemas"]["IssueSummary"];
 export type IssueSummaryPage = components["schemas"]["IssueSummaryPage"];
+export type IssueTreeAnchor = components["schemas"]["IssueTreeAnchor"];
+export type IssueTreeAnchorNode = components["schemas"]["IssueTreeAnchorNode"];
 export type IssueTreeAsk = components["schemas"]["IssueTreeAsk"];
 export type IssueTreeCheck = components["schemas"]["IssueTreeCheck"];
 export type IssueTreeDecision = components["schemas"]["IssueTreeDecision"];
@@ -17398,6 +17538,7 @@ export type NearCopyCheckCandidate = components["schemas"]["NearCopyCheckCandida
 export type NearCopyChecksPage = components["schemas"]["NearCopyChecksPage"];
 export type NewIssueSettings = components["schemas"]["NewIssueSettings"];
 export type NewIssueSettingsInput = components["schemas"]["NewIssueSettingsInput"];
+export type NodeDeleted = components["schemas"]["NodeDeleted"];
 export type NodeLenses = components["schemas"]["NodeLenses"];
 export type NodeMoveInput = components["schemas"]["NodeMoveInput"];
 export type NodeMoved = components["schemas"]["NodeMoved"];
@@ -17416,6 +17557,7 @@ export type ParentStatusConflictIssue = components["schemas"]["ParentStatusConfl
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
+export type PatchPriorityExpected = components["schemas"]["PatchPriorityExpected"];
 export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
 export type PersonNode = components["schemas"]["PersonNode"];
 export type PersonNodes = components["schemas"]["PersonNodes"];

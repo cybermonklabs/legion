@@ -70,9 +70,9 @@ func proposedRefs(read issueProposed) []string {
 // newestStateTuple is the newest state tuple the store holds of the node it keys by kind and id.
 func newestStateTuple(t *testing.T, database *store.Store, kind, id string) graphstore.Tuple {
 	t.Helper()
-	history, err := graphstore.History(context.Background(), database.Pool, kind, id, graphstore.AttributeState)
-	if err != nil || len(history) == 0 {
-		t.Fatalf("read the state history of %s %s: %d tuples, %v", kind, id, len(history), err)
+	history := stateHistoryOfNode(t, database, kind, id)
+	if len(history) == 0 {
+		t.Fatalf("the store holds no state tuple of %s %s", kind, id)
 	}
 	return history[len(history)-1]
 }
@@ -548,10 +548,7 @@ func TestAStateWriteKeepsTheCauseOfTheBlockItMoves(t *testing.T) {
 			t.Fatalf("after the write of %s the requirement's row is caused by event %d, want %d, the event that caused it", state, got, caused)
 		}
 	}
-	history, err := graphstore.History(ctx, rig.database.Pool, refs.BlockNodeKind, rig.requirementNode, graphstore.AttributeState)
-	if err != nil {
-		t.Fatalf("read the requirement's state tuples: %v", err)
-	}
+	history := stateHistoryOfNode(t, rig.database, refs.BlockNodeKind, rig.requirementNode)
 	if len(history) != 1+len(moves) {
 		t.Fatalf("the requirement holds %d state tuples %+v, want the one its first write stated and one for each of %v", len(history), history, moves)
 	}

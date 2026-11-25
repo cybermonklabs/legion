@@ -12,7 +12,7 @@ import (
 
 // blockProjections are the census's kinds of the document blocks (projections): a block against
 // its document_blocks row, the links out of a block against its block_refs rows, and the rank
-// and the text every block holds (dispatch://INFRA-1253/spec#b-r-one-tree), each against the
+// and the text every block holds (R1 of the issue-tree spec, `r-one-tree`), each against the
 // block's row, and the size every plan node holds against the opening line of its block's text,
 // the document each block of an issue room is in against its issue_room_blocks row (room_block),
 // and who wrote each block whose node records its authors against the version that first held it
@@ -23,7 +23,7 @@ import (
 // states, whose band its rank stands in and under whose top a top-level block hangs; every other
 // row's document is its own artifact. A row of a room any artifact of which owes its block index
 // (roomOwed) is counted owed, on neither side of the block, rank and text kinds, since the
-// reconciliation indexes the room whole (T12a of dispatch://INFRA-1253's plan).
+// reconciliation indexes the room whole (T12a of the issue-tree plan).
 var blockProjections = []projection{{
 	name:     "block",
 	nodeKind: refs.BlockNodeKind,
@@ -136,6 +136,29 @@ var blockProjections = []projection{{
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	emptyAgrees: true,
 }, {
+	name:     "block_type",
+	nodeKind: refs.BlockNodeKind,
+	table:    "document_blocks",
+	note: "the type of every block of a document that owes no block index, which its node's supertag holds" +
+		" (R26 of the issue-tree spec, `r-block-type-supertag`): the row side is each row that names its node, and" +
+		" the digest is the supertag the row's type gives - the type itself for a typed block of the block schema," +
+		" block for any other kind, and for a reading block unless it stands in a decision or in an ask block whose" +
+		" ask holds an answer (refs.BlockTypeSupertagSQL) - against the supertag its node carries, so a typed block" +
+		" whose node carries block, and a paragraph whose node carries a type, are each a difference; a block of a" +
+		" document still owed its index, or of an issue room any artifact of which is, is on neither side, since the" +
+		" reconciliation restates its node, and a census of documents that all owe theirs reads none of this kind",
+	rows: `
+		select 'block_type ' || d.node_id, d.node_kind, d.node_address, md5(d.node_id || '|' || ` + refs.BlockTypeSupertagSQL("d") + `)
+		from document_blocks d
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id"),
+	nodes: `
+		select n.id, md5(n.id || '|' || n.supertag)
+		from graph_nodes n
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
+	pastBound: `
+		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	emptyAgrees: true,
+}, {
 	name:     "block_text",
 	nodeKind: refs.BlockNodeKind,
 	table:    "document_block_texts",
@@ -149,7 +172,7 @@ var blockProjections = []projection{{
 		" converted which no pass of this build's rule has stated, as the release before leaves every document it" +
 		" indexed, is on neither side and counted as unstated_rows, since only this build's pass writes its text",
 	// The projection of a text value is the newest document_block_texts row of its block (R15 of
-	// dispatch://INFRA-1253), and text_sha256 only for a block no row of that table records the
+	// the issue-tree spec), and text_sha256 only for a block no row of that table records the
 	// text of.
 	rows: `
 		select 'block_text ' || d.node_id, d.node_kind, d.node_address,
@@ -343,7 +366,7 @@ var blockFirstAuthors = `
 var blockVersionAuthors = `select author.kind, author.id, v.created_at` + blockFirstAuthors
 
 // blockAuthorProjection is the census's kind of each block's authors (T7 of
-// dispatch://INFRA-1253's plan), held triple by triple over the blocks blockAuthorsHeld reads: each
+// the issue-tree plan), held triple by triple over the blocks blockAuthorsHeld reads: each
 // row is an authored_by of such a block's node to one author of the version that first held the
 // block (blockFirstAuthors), against every authored_by such a block's node states now while it is
 // present. So an authored node of a document that owes nothing and states no authored_by is a row

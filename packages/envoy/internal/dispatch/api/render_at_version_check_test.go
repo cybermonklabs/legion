@@ -327,11 +327,24 @@ func renderAtVersionQuiet(t *testing.T, database *store.Store, key, specID strin
 	})
 }
 
+// renderAtVersionAtCreate and renderAtVersionOnceOpened are the words a version of the decisions
+// query of renderAtVersionDecisionsSpec stores. Version 1, the create's, stores the rendering of
+// the query's answer at the create (R15: "Each of its versions stores the readable rendering of
+// the decisions query's answer: version 1, which the issue create writes, and each later version,
+// which ReviseQueries writes"), and that answer holds the two decisions and not the ask: the
+// query takes an ask by its own node, never by the block that shows it, and the spec's settlement
+// opens the ask a1, which gives it its node, only once the create has committed (R8, R10). Every
+// version written once the ask is open stores its question too.
+var (
+	renderAtVersionAtCreate   = []string{renderAtVersionRollout, renderAtVersionLogging}
+	renderAtVersionOnceOpened = []string{renderAtVersionQuestion, renderAtVersionRollout, renderAtVersionLogging}
+)
+
 // requireRenderAtVersionDecisionsVersion reports, through t.Errorf, unless version number of the
-// decisions query decisions holds a version_renders row with a time and a seq, stores the ask and
-// the two decisions of renderAtVersionDecisionsSpec, and renders from the tree as its stored bytes,
-// byte for byte. It answers the version's stored markdown and its row.
-func requireRenderAtVersionDecisionsVersion(t *testing.T, database *store.Store, decisions renderAtVersionDocument, number int) (string, renderAtVersionRow) {
+// decisions query decisions holds a version_renders row with a time and a seq, stores each of
+// words, and renders from the tree as its stored bytes, byte for byte. It answers the version's
+// stored markdown and its row.
+func requireRenderAtVersionDecisionsVersion(t *testing.T, database *store.Store, decisions renderAtVersionDocument, number int, words []string) (string, renderAtVersionRow) {
 	t.Helper()
 	address := graphstore.VersionID(decisions.refKey, number)
 	row := renderAtVersionRowOf(t, database, decisions.id, number)
@@ -340,9 +353,9 @@ func requireRenderAtVersionDecisionsVersion(t *testing.T, database *store.Store,
 		t.Errorf("the version_renders row of %s holds the time %s and the seq %s, want a time and a seq", address, at, readSeq)
 	}
 	stored := renderAtVersionStored(t, database, decisions.id, number)
-	for _, words := range []string{renderAtVersionQuestion, renderAtVersionRollout, renderAtVersionLogging} {
-		if !strings.Contains(stored, words) {
-			t.Errorf("version %d of %s stores %q, want the ask and the two decisions in it: it holds no %q", number, decisions.refKey, stored, words)
+	for _, held := range words {
+		if !strings.Contains(stored, held) {
+			t.Errorf("version %d of %s stores %q, want %q in it", number, decisions.refKey, stored, held)
 		}
 	}
 	requireRenderAtVersionFromTree(t, database, decisions.refKey, decisions.id, number, stored)
@@ -383,9 +396,11 @@ func renderAtVersionMove(t *testing.T, handler http.Handler, key, id, tag, paren
 // second issue the test creates first, so the decisions query's answer holds nodes at the create.
 // Version 1 of the issue's decisions query node, the create's, holds a version_renders row with a
 // time and a seq, and docs.RenderVersion answers it from the source tree as its stored bytes, byte
-// for byte, which hold the ask and the two decisions. Alice answers the ask through POST
-// /api/v1/asks/{id}/answer, which changes the query's answer, so the query takes a version written
-// for it, of which the test reads the same. She then moves the second decision's block under the
+// for byte, which hold the two decisions: the ask has no node until the spec's settlement opens it
+// after the create (renderAtVersionAtCreate). Every version written once the ask is open holds its
+// question too. Alice answers the ask through POST /api/v1/asks/{id}/answer, which changes the
+// query's answer, so the query takes a version written for it, of which the test reads the same.
+// She then moves the second decision's block under the
 // criterion through PATCH /api/v1/issues/{key}/nodes/{id}, with the body {parent} and an If-Match
 // naming the block's placement_seq: that changes the decision's place in the tree, before the ask
 // in the tree's order, and not its made_at or its id. The move moves the query's record, so the
@@ -413,7 +428,7 @@ func TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow(t *testing.T) {
 	decisions := renderAtVersionDecisionsOf(t, database, key, project)
 
 	// Version 1, the create's.
-	requireRenderAtVersionDecisionsVersion(t, database, decisions, 1)
+	requireRenderAtVersionDecisionsVersion(t, database, decisions, 1, renderAtVersionAtCreate)
 	asks := readingAsksOpened(t, handler, key, map[string]string{"a1": renderAtVersionQuestion})
 	renderAtVersionQuiet(t, database, key, issue.PrimaryArtifactID)
 
@@ -426,7 +441,7 @@ func TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow(t *testing.T) {
 		t.Errorf("the answer of the ask a1 leaves %s at version %d, the version before it, want a version written for the changed answer", decisions.refKey, answered)
 	}
 	for number := unanswered + 1; number <= answered; number++ {
-		requireRenderAtVersionDecisionsVersion(t, database, decisions, number)
+		requireRenderAtVersionDecisionsVersion(t, database, decisions, number, renderAtVersionOnceOpened)
 	}
 
 	// The move of the second decision under the criterion moves the query's record and no byte of
@@ -447,7 +462,7 @@ func TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow(t *testing.T) {
 		t.Errorf("the move of %s leaves %s at version %d, the version before it, want a version written for the moved record", decision, decisions.refKey, movedTo)
 	}
 	for number := answered + 1; number <= movedTo; number++ {
-		stored, row := requireRenderAtVersionDecisionsVersion(t, database, decisions, number)
+		stored, row := requireRenderAtVersionDecisionsVersion(t, database, decisions, number, renderAtVersionOnceOpened)
 		if stored != before {
 			t.Errorf("version %d of %s, written for the move of %s, differs from version %d from byte %d",
 				number, decisions.refKey, decision, answered, renderAtVersionFirstDifference(stored, before))

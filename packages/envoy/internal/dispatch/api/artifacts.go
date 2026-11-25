@@ -726,7 +726,7 @@ func (s *server) queueNewArtifact(
 		Ref:     refs.ArtifactRef(artifact.IssueKey, artifact.Project, artifact.SessionID, artifact.Slug, artifact.Kind, artifact.Primary),
 		Project: deref(project), Session: deref(session),
 		Band: refs.DocumentBand(target.IssueKey, kind, false, role, slug),
-	}, query != "")
+	}, query)
 	return artifact, documentNode, queueExec(ledger, `
 		insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at, node_kind, node_address)
 		values ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10, $11, $12)
@@ -934,7 +934,7 @@ func (s *server) storeArtifact(
 	// and stated under the event the upload appends, or at the sentinel where its owner records
 	// none (agentArtifactTarget.ownsEvents). It states beside it the facts the row projects: its
 	// part_of the issue that owns it, and an image's or a file's bytes (R16 of
-	// dispatch://INFRA-1253); a project's document and a conversation's file hang under no issue.
+	// the issue-tree spec); a project's document and a conversation's file hang under no issue.
 	// The row names the node in the same transaction. A ref_key past the store's address bound is
 	// no node of it (graphstore.AddressFits), as every writer of the store leaves such an address
 	// out, and its row names none. An image's or a file's later version states its bytes on the
@@ -1531,15 +1531,21 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 // describeBlocks writes onto each block what the document's rows say about it, which its
 // rendering does not hold: the comments and asks anchored to it, a table's folded in from the
 // cells it holds, and where meaning search stands on it. The windows of a document's blocks are
-// written under the artifact id; a block the live document holds and no window covers - a block
-// inside another, whose text its parent's window already holds, and every block of a version the
-// indexer has not windowed yet - reads as model.BlockNotEmbedded.
+// written under the room it is edited in (refs.DocumentWindowOwner): its issue's tree artifact
+// once it is converted into its issue's room, else its own artifact id. A block the live document
+// holds and no window covers - a block inside another, whose text its parent's window already
+// holds, and every block of a version the indexer has not windowed yet - reads as
+// model.BlockNotEmbedded.
 func (s *server) describeBlocks(ctx context.Context, artifactID string, blocks []model.ArtifactBlock) error {
 	references, err := s.blockReferences(ctx, artifactID)
 	if err != nil {
 		return err
 	}
-	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, refs.DocumentWindowKind, artifactID)
+	owner, err := refs.DocumentWindowOwner(ctx, s.deps.Store.Pool, artifactID)
+	if err != nil {
+		return err
+	}
+	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, refs.DocumentWindowKind, owner)
 	if err != nil {
 		return err
 	}
@@ -2408,7 +2414,7 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 // readsAsDocument reports whether an artifact is read and edited as a document: a markdown
 // document, or an issue's tree artifact, whose own fragment of the issue's room holds the nodes
 // written into the issue rather than into a document, and which the text read and the edit route
-// take as they take a document (dispatch://INFRA-1253 R8).
+// take as they take a document (R8 of the issue-tree spec).
 func readsAsDocument(artifact model.Artifact) bool {
 	return artifact.Kind == "doc" || artifact.Kind == "tree"
 }
@@ -3488,7 +3494,7 @@ func (s *server) nextArtifactSlug(ctx context.Context, q queryer, target artifac
 const issueTreeName = "tree"
 
 // createIssueTree creates, in tx, the tree artifact id of the issue key in project
-// (dispatch://INFRA-1253 R5, D3 and D14 of its plan): an artifacts row of kind tree, whose Yjs
+// (R5 of the issue-tree spec, D3 and D14 of its plan): an artifacts row of kind tree, whose Yjs
 // document is the issue's room, under slug, a slug of its own among the issue's documents
 // (nextArtifactSlug, read with the id in the create's read phase, planConvertedIssueRoom); its
 // node (graphstore.ArtifactNode) with its part_of to the issue (graphstore.ArtifactPartOf),
@@ -3547,7 +3553,7 @@ func (s *server) quiesceDocuments(w http.ResponseWriter, r *http.Request) {
 
 // issueTreeOf is the tree artifact of the issue issueKey, whose Yjs document is the issue's room,
 // where the issue is converted - born so (createIssue) or by the conversion - and "" where it holds
-// none (issue_trees, D14 of dispatch://INFRA-1253's plan).
+// none (issue_trees, D14 of the issue-tree plan).
 func issueTreeOf(ctx context.Context, q queryer, issueKey string) (string, error) {
 	var tree string
 	err := q.QueryRow(ctx, `select artifact_id::text from issue_trees where issue_key = $1`, issueKey).Scan(&tree)
@@ -3576,7 +3582,7 @@ var nodesOfOtherIssuesStatement = `
 // operations name, in block or as an anchor's `block:<id>`, a node of another issue by its store
 // address, `<ref_key>#<block id>`, the address the issue's tree read names each node by: a node
 // whose parent is a node of an issue above lives in its own issue's room, and the issue above
-// answers it read-only (D3 of dispatch://INFRA-1253's plan), so a write addressed through that
+// answers it read-only (D3 of the issue-tree plan), so a write addressed through that
 // issue is sent to the node's own, which the refusal names. An operation that names its block by
 // its bare id, as every edit does, is the document's own to answer.
 func refuseNodesOfOtherIssues(ctx context.Context, q queryer, artifact model.Artifact, ops []model.EditOp) error {

@@ -296,6 +296,7 @@ func (read commentsOnTextRead) requireCommentPage(t *testing.T, want []string, n
 // ?kind=requirement&kind=comment answers it, while GET /api/v1/issues/{key}/comments lists it
 // with its quote and orphaned true, and lists every comment the test wrote on both issues.
 func TestEveryTreeReadCarriesTheCommentsOnItsNodesText(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "TEXT")
@@ -482,7 +483,10 @@ func TestEveryTreeReadCarriesTheCommentsOnItsNodesText(t *testing.T) {
 		t.Fatalf("%s %s states the anchored_in %+v (%v) before the person's edit, want the one to the node it quotes: this case proves nothing",
 			first.name, first.id, anchored, err)
 	}
-	editSpec(t, handler, key, []map[string]any{{"op": "replace", "find": first.quote, "with": "then by when it was asked"}})
+	// The replace finds more words than the anchor quotes: a replace that finds the quoted words
+	// alone writes its words inside the anchor, which then quotes them (docs' applyReplace), so
+	// only a wider one drops the quote from r1's text.
+	editSpec(t, handler, key, []map[string]any{{"op": "replace", "find": "first, " + first.quote, "with": "first, then by when it was asked"}})
 	if _, orphaned := storedCommentAnchor(t, database, first.id); !orphaned {
 		t.Errorf("the edit of the words of r1 leaves the anchor of %s %s standing in the store, want it marked orphaned", first.name, first.id)
 	}

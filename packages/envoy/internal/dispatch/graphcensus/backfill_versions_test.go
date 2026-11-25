@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// TestTheVersionBatchTakesTheStoreLockOrder holds writeVersionBatch (dispatch://INFRA-1253) to the
+// TestTheVersionBatchTakesTheStoreLockOrder holds writeVersionBatch (the issue-tree spec) to the
 // store's lock order, as TestEveryBackfillBatchTakesTheStoreLockOrder holds the other batches: the
 // owner row its version's document stands under, the issue's row, first, then the version's node
 // row. A version's row names no node in a column of its own, so the batch writes no projection row.

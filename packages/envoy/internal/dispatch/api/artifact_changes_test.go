@@ -820,8 +820,21 @@ func TestTheChangeSetReadsEachVersionAsTheOneRendererAnswersIt(t *testing.T) {
 		"# Notes\n\nA draft.\n",
 		"# Notes\n\n## Open\n\nOne question.\n",
 		"# Notes\n\n## Open\n\nTwo questions.\n")
-	// No route stores a document version with no markdown, so version 1's is taken away by SQL. It
+	// An upload no role names renders from the tree too (R15: a version of a document no query
+	// record covers holds a version_renders row with a time and no digest), so each version of
+	// notes.md first renders from the tree. The renderer's other branches answer a version that
+	// holds no row - one written before the cutover - by its stored bytes, so the rows are taken
+	// away by SQL, as c-render-at-version deletes a row and reads the stored markdown answered. No
+	// route stores a document version with no markdown, so version 1's is taken away by SQL too. It
 	// is not the newest version, which the document's settlement reads as a text.
+	for number := 1; number <= 3; number++ {
+		if rendering := renderedVersion(t, database, notes, number); rendering.Source != docs.RenderedFromTree {
+			t.Fatalf("version %d of notes.md answers %q from %s, want a render from the tree (R15)", number, rendering.Markdown, rendering.Source)
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `delete from version_renders where artifact_id = $1`, notes); err != nil {
+		t.Fatalf("take the version_renders rows of notes.md away: %v", err)
+	}
 	if _, err := database.Pool.Exec(ctx, `update artifact_versions set markdown = null where artifact_id = $1 and number = 1`, notes); err != nil {
 		t.Fatalf("take the markdown of version 1 of notes.md away: %v", err)
 	}

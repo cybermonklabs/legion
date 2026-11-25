@@ -170,19 +170,19 @@ func edgeFrom(alias string) string {
 // target no row holds through its moved_to tuples (refs.BlockLinks), the block it reaches there.
 //
 // A row that names its node is the tuple arm's (migration 20261109215947): a mention is listed
-// whatever its target's type, and a pointer only while block_ref_listed holds of the targets the
-// attribute node declares now (block_pointer_targets), so a change of an attribute's targets
-// reaches every link of that attribute at its next read, with no pass over documents nobody
-// edits. A row that names no node, which a build before the store wrote, is the old block_refs
-// arm's, whose test reads the to_types the index copied into the row: such a row follows a
-// change of the targets only once a version is indexed again. Beyond a mention it tests no row's
-// kind, as the view does not, so a decision's decided_by and from_ask, whose attributes declare no
-// targets, are listed as graph_edges lists them; the references read admits only mentions and the
-// pointer kinds the schema declares (blockRefLinked).
+// whatever its target's type, and a pointer only while block_node_listed holds of the targets the
+// attribute node declares now (block_pointer_targets), reading the target's type off its node, so
+// a change of an attribute's targets reaches every link of that attribute at its next read, with
+// no pass over documents nobody edits. A row that names no node, which a build before the store
+// wrote, is the old block_refs arm's, whose test reads the to_types the index copied into the
+// row: such a row follows a change of the targets only once a version is indexed again. Beyond a
+// mention it tests no row's kind, as the view does not, so a decision's decided_by and from_ask,
+// whose attributes declare no targets, are listed as graph_edges lists them; the references read
+// admits only mentions and the pointer kinds the schema declares (blockRefLinked).
 func blockRefListed(alias, target string) string {
 	return `(case when ` + alias + `.node_kind is null
 		then ` + alias + `.to_types is null or block_ref_listed(` + alias + `.to_types, ` + target + `)
-		else ` + alias + `.kind = 'mentions' or block_ref_listed(block_pointer_targets(` + alias + `.from_node, ` + alias + `.kind), ` + target + `) end)`
+		else ` + alias + `.kind = 'mentions' or block_node_listed(block_pointer_targets(` + alias + `.from_node, ` + alias + `.kind), ` + target + `) end)`
 }
 
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
@@ -374,7 +374,7 @@ func blockLinkArms(toKind string) []string {
 // node_address), a block's link or an answered ask's shaped, and while the row stands the view
 // answers the edge from that node, as the tuple states it: while the newest tuple of its relation
 // asserts (graphstore.CurrentTupleRead, the reading currentTuple makes), while the node is not
-// gone, as the view's join to graph_nodes keeps it, and, for a pointer, while block_ref_listed
+// gone, as the view's join to graph_nodes keeps it, and, for a pointer, while block_node_listed
 // lists its target among the targets its attribute declares now. Its time and its sequence are
 // that tuple's, as the view answers them. The source's visibility is the read's filter of a
 // source, as for every other arm.
@@ -387,7 +387,7 @@ func keyedTupleArm(blockKind string) string {
 					and t.to_kind = b.to_kind and t.to_id = b.to_id and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 				) newest
 				where b.to_kind = '` + blockKind + `' and b.to_id = k.node_id and b.node_kind is not null and newest.asserted
-				and (b.kind = 'mentions' or block_ref_listed(block_pointer_targets(b.node_address, b.kind), b.to_id))
+				and (b.kind = 'mentions' or block_node_listed(block_pointer_targets(b.node_address, b.kind), b.to_id))
 				and exists (select 1 from graph_nodes live
 					where live.kind = b.node_kind and live.id = b.node_address and live.state <> '` + graphstore.StateGone + `')`
 }
@@ -1304,7 +1304,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // current blocks of their documents' latest indexed versions. A block no current version holds
 // has no row and resolves to nothing, so every edge at it is omitted until a version holds its
 // id again. A block is made by the authors its node records, the who of each authored_by it states
-// now in their sequence order (T7 of dispatch://INFRA-1253's plan), and where it states none by the
+// now in their sequence order (T7 of the issue-tree plan), and where it states none by the
 // authors of the version that first held it, when Dispatch knows that version
 // (blockFirstVersion); it is made at that version's time. Its last change is its changed version,
 // by that version's authors. It belongs to its document at its changed version. A block of an

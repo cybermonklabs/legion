@@ -55,7 +55,7 @@ func (s *servedSockets) done(id string) <-chan struct{} {
 // applies every update the room sends, and reconnects with the document it kept. It edits the
 // fragment the artifact read answers for its document (model.Artifact.Fragment), as the page binds
 // it: the document's own fragment of its issue's room for a converted document, the room's own
-// fragment otherwise (dispatch://INFRA-1253 R5, D3 of its plan).
+// fragment otherwise (R5 of the issue-tree spec, D3 of its plan).
 type syncedPeer struct {
 	wsURL      string
 	sockets    *servedSockets

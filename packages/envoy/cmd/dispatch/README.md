@@ -191,10 +191,15 @@ It is presented under RFC 9449's DPoP scheme
 — `Authorization: DPoP <token>` with a `DPoP:` proof header signed by the key the token is bound to
 — because that RFC refuses a DPoP-bound token presented under any other scheme;
 the server decides a request by its scheme before it reads any token, so such a presentation is never retried as a bearer, and a bearer is never sent to this check.
-The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries, with `DISPATCH_SERVER_URL` as the origin the proof's `htu` must name.
-No setting of its own configures it.
+The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
+The proof's `htu` must name one of the origins Dispatch is reached at, plus the request's path:
+`DISPATCH_SERVER_URL`'s origin, or one `DISPATCH_PROOF_ORIGINS` adds, a comma-separated list of origins such as the in-cluster address pods and daemons call, since a client signs the URL it calls.
+Unset, `DISPATCH_SERVER_URL`'s origin is the only one.
+An entry that is not an absolute http(s) URL with no path, query, fragment or user refuses the start, naming it, and an entry equal to `DISPATCH_SERVER_URL`'s origin or to another entry is taken once.
+A proof naming an origin neither setting names is refused as any wrong target is, and a proof is spent once whichever origin it names.
+That list is the one setting of its own this credential takes.
 A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
@@ -1474,7 +1479,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   A change to the stream's `MaxAge`, `Duplicates` or subjects, or to a durable's config, takes a new generation (`streamConfigGeneration` in `internal/bus/stream.go`, `consumerConfigGeneration` in `internal/dispatch/delivery/intake.go`, each pinned by a test row).
   A build that finds a higher generation deployed leaves the stream as it is and recreates a durable with the deployed config, so build N never reverts what build N+1 set.
   Dispatch keeps the stream's deployed replica count, and keeps its deployed consumer cap where that is higher than its own (`streamMaxConsumers`): the cap, like the replica count and the byte limit, is only ever raised, so it takes no generation and the two builds never lower each other's.
-  Every ensure keeps a deployed subject it does not know, unless it overlaps a subject of its own, and each client publishes a topic on the transport the deployed stream's subjects call for (`bus.Client.UsesCoreTransport`), so build N publishes a topic under a subject only build N+1 adds to the stream too, with its message id.
+  Every ensure keeps a deployed subject it does not know, unless it overlaps a subject of its own, and each client publishes a topic on the transport the deployed stream's subjects call for (`bus.Client.UsesCoreTransport`), so build N publishes a topic under a subject only build N+1 adds to the stream too, with its message id; a topic build N stores itself is never sent over core NATS, and while the deployed stream does not capture it the publish sends nothing and fails with `bus.ErrSubjectNotDeployed`, so the queue of a message to a session no listener holds settles failed and the build announcer leaves its announcement unpublished for the next pass.
   No subject is retired while a running build publishes to it: retiring one is an operator step (`internal/bus/stream.go`, `streamReconciliation`).
   Each delivery durable has one intake holder at a time, the process that holds its `duty.Hold` (above).
 
@@ -1673,7 +1678,7 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   Migration `20261123080000` adds `plan_task`'s `steps` attribute node and moves every block type to version 5 (#4611).
   It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
   Migration `20261123174700` is the second, written the same way: it makes `decision` and `reading` block types, adds their attribute nodes and `ask`'s `shaped`, and moves every block type to version 6.
-  Migration `20261123174800` is the third, written the same way: it makes `criterion` a block type, adds the `parent` attribute nodes of `criterion`, `requirement`, `plan_task` and `check`, `requirement`'s `serves` and `plan_task`'s `size`, widens `plan_task`'s `needs` to take an issue, and moves every block type to version 7, the version `pmdoc/schema/blocks.json` declares.
+  Migration `20261123174800` is the third, written the same way: it makes `criterion` a block type, adds the `parent` attribute nodes of `criterion`, `requirement`, `plan_task` and `check`, `requirement`'s `serves` and `plan_task`'s `size` (kind `minutes`), `skills` and `docs`, widens `plan_task`'s `needs` to take an issue, and moves every block type to version 7, the version `pmdoc/schema/blocks.json` declares.
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
   A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
   A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
@@ -2723,21 +2728,10 @@ the keyset cursor (`artifact_id`, the highest document the pass has covered, the
 It writes no `document_search` row and reads no large table, so it locks only the table it creates and commits in milliseconds.
 Its census answers `0`: a new table, whose one row the migration inserts.
 
-The fill itself is `store.FillDocumentSearch`, which the boot runs immediately after the migrations and before the server serves (`cmd/dispatch/main.go`), not a migration.
-A migration is one transaction, and the single statement this used to be
-— `insert … select distinct on (artifact_id) … from artifact_versions where markdown is not null order by artifact_id, number desc` — measured 35.5 s on a production-shaped database (`artifact_versions` 3337 MB, 200,000 versions, 40,000 documents), with every row it wrote uncommitted for those 35.5 s.
-`20261101182454`'s trigger is live by then, so a version write to a document the statement had already written ran its own `insert … on conflict (artifact_id) do update` on that key and waited for the whole statement;
-that writer holds its issue's owner lock (`store.LockOwner`) and its document's room for the whole wait, every other write on that issue queues behind it, and an API writer sets no `lock_timeout`.
-Each batch is instead one short transaction that takes the next `store.DocumentSearchFillBatch` documents by keyset above the cursor, writes their latest versions under the same write guard as `20261101182454`'s trigger (`on conflict (artifact_id) do update … where excluded.number >= document_search.number`, so a row the trigger wrote while the pass runs is never replaced by an older one), moves the cursor and commits.
-The batch is 1,000 documents, about 0.9 ms a document on the shape above, so a batch is about a second and the pass about forty of them, and a writer that meets a key the pass holds waits for one batch rather than for the whole fill.
-The cursor is taken from the ids the batch read and never from the insert's `returning`, because a row the guard skips returns nothing and the cursor would stall on it;
-the pass is finished when a batch takes no further id, and each batch is idempotent, so running it twice, or from two processes at once, writes the same table.
-A boot after the pass has finished reads that one row and stops, so it costs no read of `artifact_versions` at all.
-A failure stops the boot (`slog.Error`, then exit 1), unlike the `asks_anchor_artifact_id` count beside it:
-this release's search reads `document_search` alone, so a process serving with the table unfilled would answer a search with documents missing.
-The rolling deploy keeps that correct — the release before this one serves every request until the new process has filled the table and begins serving
-— and the operator follow-up is that wait:
-a pod of this release takes the fill's time (about 35 s on production's shape) to become ready on the first boot after the deploy, and the boot logs each batch and the total.
+The fill was `store.FillDocumentSearch`, which the releases before the issue tree ran at each boot, immediately after the migrations and before the server served.
+This build neither runs it nor reads `document_search` (requirement `r-search-key` of the issue-tree spec): search, the near-copy gate and the related terms read `node_search`, one row for each block node with the text its newest text tuple holds (migration `20261125160000_issue_tree_node_search`), which `graphstore.QueueHeads` writes in the transaction that writes the text.
+`document_search`, `document_search_backfill`, the trigger `artifact_versions_document_search` and its function stay through this release, since a process of the release before reads `document_search` for search, duplicates and related terms and only that trigger fills it; the root's pull request drops them.
+A process of this build reads none of them, so a rollback from the root reaches a build that never reads a table the root dropped.
 
 Migration `20261101182508_search_term_queue` creates `search_term_queue`, the items whose search text has changed since each project's word counts were last written.
 The related-terms refresh counted every issue, document, comment, ask and message of every project every ten minutes, 1,882 s of database time in the 24 hours to 2026-10-30;
@@ -3647,7 +3641,7 @@ The kinds are:
   A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every block node not `gone` that states a link now of a kind `refs.IndexBlocks` writes into `block_refs`, whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
   Those kinds are `mentions` and the name of every `block[]` attribute node the store holds, at any state (`refs.BlockRefKindsSQL`), but a decision's `shaped`, `from_ask` and `decided_by`, read inside the census's own snapshot rather than from the schema the process installed: a build older than the store installs no attribute above its version, and an attribute node stated `gone` is installed by none, while the `block_refs` rows of that kind stand until their documents are indexed again.
   A tuple of any other kind out of a block — its `in_document` and `part_of`, or one another writer states of it, such as a requirement's `constrained_by` — is in neither side of `block_ref`.
-  Nor is a `block_refs` row of another kind, a decision's `shaped`, `from_ask` and `decided_by`, or a row an ask's node holds, an ask block's `shaped`: the kinds of dispatch://INFRA-1150 below hold those, and `block_ref` holding a decision's `shaped` too would read a correct row of a drifted decision as a difference.
+  Nor is a `block_refs` row of another kind, a decision's `shaped`, `from_ask` and `decided_by`, or a row an ask's node holds, an ask block's `shaped`: the kinds of the decisions-tree spec below hold those, and `block_ref` holding a decision's `shaped` too would read a correct row of a drifted decision as a difference.
   A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
 
 - `interaction` against `going_requests` and `frame` against `going_events`, a run of the command bar and its frames (cybermonklabs/legion#4193).
@@ -3668,7 +3662,7 @@ The kinds are:
   An address past the store's bound is no part of the store on purpose: a role name longer than the bound is no node and no page, a comment anchored to or owned by a document whose `ref_key` is longer states no such tuple, and a session named past it is no node either.
   The census leaves each such address out of both comparisons and counts it as a class of its own, reporting the count as `addresses_past_bound` on the kind's line rather than as a difference, in both directions.
 
-- `artifact` against `artifacts`, and `version` against `artifact_versions` (dispatch://INFRA-1253, R16): every document, query and version of an issue, a project or a conversation is a node.
+- `artifact` against `artifacts`, and `version` against `artifact_versions` (R16 of the issue-tree spec): every document, query and version of an issue, a project or a conversation is a node.
   A document's row names its node in `node_kind` and `node_address` (migration `20261116092210`), and its digest is its `ref_key`, the issue `issue_key` names as its node's `part_of`, and, for an image or a file, its newest version's `mime`, `size` and `sha256`, held against its node's supertag (`document`, or `query` once a query replaces the document), its current `part_of` tuples and its current `mime`, `size` and `sha256` values.
   A version's row names no node in a column of its own: its node is `<ref_key>@v<number>`, so a version with no node reads as a row naming a node the store does not hold.
   Its digest is its `number`, its `created_at`, its document's project or conversation and its document as its node's `part_of`, held against its node's supertag (`document version` or `query version`), its current `number` and `created_at` values, project or parties, and current `part_of` tuples.
@@ -3732,6 +3726,11 @@ The kinds are:
   `--verbose` adds one `census: dangling_citation set=<moved|returning> from=<kind>:<id> to=<address>` line for each citation counted.
   `census: collisions issue=<KEY> block=<id>` names, once for each issue, each block id of an ask the restore owes that a block of the spec already holds, which the restore must change.
   Neither line refuses the census: the returning set counts before the restore by design, and a citation of the moved set is a finding the driver that watches it holds to zero, since a decisions document may hold a citation of a section an edit deleted before this release.
+
+- Every block citation whose address resolves to no node (requirement `r-move-safe` of the issue-tree spec), over `refs`, `block_refs`, `ask_block_refs`, `comment_block_refs` and `message_block_refs`, a node that cites one address from its text and from its blocks counted once.
+  `census: unresolved_citations n=<n>` counts them: an address resolves as `moved_to_reach` reads it, directly or through a `moved_to` tuple, and an address in a document that still owes its block index by either mark (`version` null or `store_owed_at` set), or whose issue room owes one, is left out.
+  It is no whole-instance zero, since an instance already holds prose `#b-` citations of blocks no version holds, so it refuses nothing; a move adds nothing to it.
+  `--verbose` adds one `census: unresolved_citation from=<kind>:<id> to=<address>` line for each citation counted.
 
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
 A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a tie kind of decisions, readings and asks that holds no row, no node and no unmarked row, and for a kind a deployment can hold none of (a run, its frames, and each `<kind>_visibility_state`), whose line adds that it refuses nothing.
@@ -3850,7 +3849,7 @@ A tick with nothing owed and no other build live reads the live processes, the n
 `DISPATCH_TEST_HOLD_DECISIONS_STEP=1`, under `DISPATCH_TEST_HOOKS=1`, keeps a process from running any phase, so a test driver runs this command or one of the two above first; `/healthz` answers `decisions_step_owed`, one number, the total the step's last count found owed, once a tick of the step has counted, and no such member before; each count logs the three parts beside it (`decisions step counted what it owes`, with `decisions_documents`, `answers_left_spec` and `gated_steps_lists`).
 `DISPATCH_TEST_HOLD_BOOT_BACKFILL=1` and `DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT`, under the same flag, hold every boot's own run of the whole backfill and replace that run's 30 s bound (the end of this section).
 
-It then writes the node of every version an older build stored with none (dispatch://INFRA-1253, R16), after the passes above, so every document a version hangs under holds its node: kind `version` at `<ref_key>@v<number>`, supertag `document version`, or `query version` where its document is a query node, with its base attributes, its `part_of` its document, and its `number` and `created_at` as values.
+It then writes the node of every version an older build stored with none (R16 of the issue-tree spec), after the passes above, so every document a version hangs under holds its node: kind `version` at `<ref_key>@v<number>`, supertag `document version`, or `query version` where its document is a query node, with its base attributes, its `part_of` its document, and its `number` and `created_at` as values.
 `artifact_versions` takes no marker column, so the node itself is the marker: the pass finds a version owed by an anti-join on `graph_nodes`, batch by batch on `(artifact_id, number)`, reads each row's number, `created_at` and first author and, for an image's or a file's newest version, its `mime`, `size` and `sha256`, and never its markdown or its bytes.
 A version node held `gone` counts as missing: a removal states a version's node gone in the transaction that deletes its row, so a row standing at a gone node's address is a later row at a freed address — the first version of a document made again under a removed one's name — that an older build wrote with no node, and the pass restates that node live with the row's `number` and `created_at`.
 Each node and its facts are dated at the row's `created_at`, made by the version's first author (or by the run, where the row names none), and caused by no event; a version that is its image's or file's newest states its bytes on its document's node beside its node.
@@ -4009,8 +4008,8 @@ The class is tested before the block-reference class, so a requirement block's `
 
 It also adds one arm over the current tuples: every relation of the class `store` out of a finding of a lens — a block node whose id names its lens, `lens/<uuid>#<block id>` — answered with the literal from_kind `lens_block`, the kind the read registry and every reference know a finding by, at the finding's own id, by the tuple arm's own rules.
 The tuple arm's class `store` leaves out a tuple out of such a block, so no relation is answered twice; no finding exists before this release writes one, so the arm drops no row a build of the release before reads, and the read registry maps the predicate of `lens_block` onto the store's `block` row at that id.
-Migration `20261116094101_graph_edges_asks` (dispatch://INFRA-1150) re-states the view from the text before both of these for an ask's relations, and `20261117020856` keeps every one of its arms;
-`20261116184707_issue_tree_graph_edges_both_arms` (dispatch://INFRA-1253), which sorts between the two, states the same view `20261117020856` states, the class `store` and its guard against a finding tested where `20261117020856` tests them and the finding arm last, so a database that applied either holds the view the other states.
+Migration `20261116094101_graph_edges_asks` (the decisions-tree spec) re-states the view from the text before both of these for an ask's relations, and `20261117020856` keeps every one of its arms;
+`20261116184707_issue_tree_graph_edges_both_arms` (the issue-tree spec), which sorts between the two, states the same view `20261117020856` states, the class `store` and its guard against a finding tested where `20261117020856` tests them and the finding arm last, so a database that applied either holds the view the other states.
 
 The two changes are one migration because a migrate pass applies each file in its own transaction, in version order, and applies a file below a version the database already holds: a re-statement from an arm list without `20261116094101`'s would leave a database already at `20261116094101` without the `node_kind is null` tests on the two `asks` arms and the `ask_followers` arm and the tuple arm's cases for an ask's relations, which a live build reads, until a later file put them back.
 
@@ -5267,7 +5266,7 @@ Each item below names a path with its method and identity, then its purpose.
   The dashboard offers "A new version is available" only when `live` holds exactly one entry and it is not the tab's own, so no tab is told to reload while a rolling update or a rollback still runs two builds.
   An older process answers `404`, which the dashboard reads as no new version.
 
-- `/api/v1/issues?project=&status=&parent=&priority=&advances=&updated_since=&closed_since=&closed_before=&route_status=&moved=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues?project=&status=&parent=&priority=&advances=&own=&updated_since=&closed_since=&closed_before=&route_status=&moved=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   List issue summaries: every matching issue as an array, or, with `limit` (1–250) or `offset` (0 or more;
   alone it pages 50), one page `{issues, total, limit, offset}` cut after every filter, `total` counting the issues they match.
@@ -5281,15 +5280,17 @@ Each item below names a path with its method and identity, then its purpose.
   `priority` repeats (`priority=0&priority=1`), each value `0`–`3` or `none` for an issue with no priority; any other value is `400 INVALID_PRIORITY`.
   `status` repeats (`status=todo&status=in_progress`) and keeps the issues standing in any status named; no `status`, or only blank ones, is every status.
   A value is matched as written and never refused, so a status the lifecycle does not hold, or one in another case, alone answers the empty list, as a lone `status` always has, and beside another status adds nothing.
-  `advances` repeats too, each value a priority id (the issues that advance that priority, by their own relation or one an issue above them states, in any project), `none` (the issues that advance no live priority) or `any` (the issues that advance one, every issue `none` leaves out);
-  several are a union, so `advances=none&advances=any` is every issue, and an id no live priority carries matches no issue rather than refusing.
-  A blank `advances` is `400 INVALID_ADVANCES`.
-  `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
-  `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the parked fault of `GET /api/v1/priorities` reads them;
-  a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
   `route_status` (`live`, `no_holder` or `unknown`;
   anything else is `400 INVALID_ROUTE_STATUS`) keeps the open issues whose route is in that state, whatever their priority;
   `live` or `no_holder` is `503 ENVOY_REFILLING` with the listener's `Retry-After` while the listener refuses its list as refilling, and `503 ENVOY_UNAVAILABLE` when it does not answer.
+
+  - `advances` repeats, each value a priority id (the issues that advance that priority, by their own relation or one an issue above them states, in any project), `none` (the issues that advance no live priority) or `any` (the issues that advance one, every issue `none` leaves out);
+    several are a union, so `advances=none&advances=any` is every issue, and an id no live priority carries matches no issue rather than refusing.
+    A blank `advances` is `400 INVALID_ADVANCES`.
+    `own=true` keeps, of the issues the `advances` values answer, those whose own row names a priority a value matches and no issue above them carries it: a child that only inherits a priority, or restates one an issue above it carries, is left out, and `none`, which matches no priority, keeps nothing; without an `advances` value it filters nothing.
+    `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&own=true&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
+    `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the second fault of `GET /api/v1/priorities` reads them;
+    a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
 
   - Summaries contain `key`, `title`, `status`, `priority`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
     Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the process's one copy of the listener's `GET /v1/sessions`, stored in no table:

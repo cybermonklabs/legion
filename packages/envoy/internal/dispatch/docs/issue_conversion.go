@@ -719,8 +719,8 @@ func (c *issueConversion) writeTree(ctx context.Context) error {
 		return err
 	}
 	node := graphstore.Created(graphstore.ArtifactNode(c.treeRef, c.issue.project, "", ConversionActor, at))
-	if err := graphstore.Write(ctx, c.tx, []graphstore.Node{node},
-		[]graphstore.Tuple{graphstore.ArtifactPartOf(c.treeRef, c.key, ConversionActor, at)}); err != nil {
+	treeTuples := []graphstore.Tuple{graphstore.ArtifactPartOf(c.treeRef, c.key, ConversionActor, at)}
+	if err := graphstore.Write(ctx, c.tx, []graphstore.Node{node}, treeTuples); err != nil {
 		return fmt.Errorf("write the node of the tree of %s: %w", c.key, err)
 	}
 	if err := writeExec(ctx, c.tx, "create the issue's tree", `
@@ -730,6 +730,11 @@ func (c *issueConversion) writeTree(ctx context.Context) error {
 		return err
 	}
 	if err := writeExec(ctx, c.tx, "record the issue's tree", `insert into issue_trees (issue_key, artifact_id) values ($1, $2)`, c.key, c.tree); err != nil {
+		return err
+	}
+	// The tree's head row, written once its artifacts row names it, as every other writer of a
+	// node of an issue's tree writes its own.
+	if err := graphstore.WriteHeads(ctx, c.tx, graphstore.HeadsOf([]graphstore.Node{node}, treeTuples)); err != nil {
 		return err
 	}
 	// A child holding no requirement of its own is a view on its ancestor's spec (R23); the
@@ -775,6 +780,9 @@ func (c *issueConversion) writeQueries(ctx context.Context) error {
 	if err := graphstore.Write(ctx, c.tx, nodes, tuples); err != nil {
 		return fmt.Errorf("make the documents of %s query nodes: %w", c.key, err)
 	}
+	if err := graphstore.WriteHeads(ctx, c.tx, graphstore.HeadsOf(nodes, tuples)); err != nil {
+		return err
+	}
 	if err := writeExec(ctx, c.tx, "clear the roles of the issue's documents",
 		`update artifacts set role = null where issue_key = $1 and role is not null`, c.key); err != nil {
 		return err
@@ -812,8 +820,8 @@ func (c *issueConversion) writeDecisionsQuery(ctx context.Context) error {
 		return err
 	}
 	node := graphstore.Created(graphstore.QueryNode(refKey, c.issue.project, graphstore.QueryDecisions, ConversionActor, at))
-	if err := graphstore.Write(ctx, c.tx, []graphstore.Node{node},
-		graphstore.AttributeFacts([]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, c.key, ConversionActor, at)}, node)); err != nil {
+	queryTuples := graphstore.AttributeFacts([]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, c.key, ConversionActor, at)}, node)
+	if err := graphstore.Write(ctx, c.tx, []graphstore.Node{node}, queryTuples); err != nil {
 		return fmt.Errorf("write the decisions query of %s: %w", c.key, err)
 	}
 	if err := writeExec(ctx, c.tx, "create the decisions query", `
@@ -839,7 +847,13 @@ func (c *issueConversion) writeDecisionsQuery(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("index the decisions query of %s: %w", c.key, err)
 	}
-	return graphstore.Caused(ctx, c.tx, graphstore.Joined(versionNode, indexed), graphstore.NoEvent)
+	stated := graphstore.Joined(versionNode, indexed)
+	if err := graphstore.Caused(ctx, c.tx, stated, graphstore.NoEvent); err != nil {
+		return err
+	}
+	// The query's head row, written once its artifacts row names it, and those of what its
+	// version states.
+	return graphstore.WriteHeads(ctx, c.tx, append(graphstore.HeadsOf([]graphstore.Node{node}, queryTuples), graphstore.HeldHeads(stated)...))
 }
 
 // writeSeed appends the room's first update, its version 1, under the tree's own key.
@@ -1007,7 +1021,7 @@ func (c *issueConversion) writeMoves(ctx context.Context) error {
 	if err := graphstore.Write(ctx, c.tx, nodes, tuples); err != nil {
 		return fmt.Errorf("state the moves of the blocks of %s: %w", c.key, err)
 	}
-	return nil
+	return graphstore.WriteHeads(ctx, c.tx, graphstore.HeadsOf(nodes, tuples))
 }
 
 // documentMoveType is the type of the block whose old address is from among moves, "" for none.

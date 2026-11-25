@@ -19,7 +19,7 @@ import (
 // On an issue that Legion runs, a version of the issue's spec (its primary document) or of its
 // Verification document is written only by a person, by an architect of the issue, or by an
 // architect of an issue above it: the session of an architect row of issue_role_holders on the
-// issue's parent chain (dispatch://INFRA-4764/spec, R1 and R2). Every route that writes such a
+// issue's parent chain (R1 and R2 of the spec-writer spec). Every route that writes such a
 // version calls refuseSpecWriter inside its transaction, after the owner's lock and before its
 // first document call and its first write, so a write it refuses with 403
 // DOCUMENT_WRITER_NOT_ARCHITECT stores nothing and appends no event; the source guard

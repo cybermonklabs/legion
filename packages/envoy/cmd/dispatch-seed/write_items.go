@@ -445,11 +445,12 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // commentStoreWrite is what the comments from..to are in the node and tuple store: each
 // comment's node - project-visible, live, made by the seed's author at the row's own time - and
 // the artifact the comment is anchored to and the artifact that owns it, each stated only where
-// the comment has one (graphstore.CommentFacts), the block an anchored comment's anchor names
-// (graphstore.AnchoredIn: a seeded document is its own room, so the block's node is the
-// document's ref_key, '#' and the block id), and who wrote the comment. The node write states the
-// two base attributes every node carries (graphstore.QueueWrite). All of it is drawn from the plan
-// alone, so the batch can state it before it writes a row.
+// the comment has one (graphstore.CommentFacts), the block an anchored comment's anchor names and,
+// for a comment that answers nothing, its part_of to that block (graphstore.AnchorTuples: a seeded
+// document is its own room, so the block's node is the document's ref_key, '#' and the block id),
+// and who wrote the comment. The node write states the two base attributes every node carries
+// (graphstore.QueueWrite). All of it is drawn from the plan alone, so the batch can state it before
+// it writes a row.
 //
 // Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
 // graphstore.QueueAuthored writes for a comment of the server's: the comment's authored_by tuple
@@ -481,8 +482,8 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent,
 			anchor, owner, r.itemProject(comment.Issue, comment.Document), nil)
 		if anchor != "" {
-			tuples = append(tuples, graphstore.AnchoredIn(comment.ID, anchor+"#"+r.commentAnchorBlock(comment), true,
-				seedAuthor, comment.CreatedAt, graphstore.NoEvent))
+			tuples = graphstore.AnchorTuples(tuples, comment.ID, refs.BlockNodeKind, anchor+"#"+r.commentAnchorBlock(comment),
+				comment.ReplyTo < 0, true, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
 		}
 		nodes = append(nodes, node)
 		made, facts, _ := graphstore.AuthorFacts(graphstore.KindComment, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)

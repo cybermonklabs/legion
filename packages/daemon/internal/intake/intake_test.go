@@ -725,7 +725,7 @@ func TestADispatchIssueEventCarriesTheKeysItIsBlockedBy(t *testing.T) {
 	}
 }
 
-// A Dispatch of dispatch://INFRA-1253's release on sends an issue's waits as needs beside
+// A Dispatch of the issue-tree spec's release on sends an issue's waits as needs beside
 // blocked_by on every issue event, and one of the release before sends blocked_by alone, which a
 // retained event or a new daemon beside an old Dispatch still delivers. The decoder reads needs
 // where the event carries it, whatever blocked_by holds beside it, and blocked_by where it does

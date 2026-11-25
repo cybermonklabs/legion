@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  An agent's write on any path (an edit, an upload, the state route, a node move or delete) that
+  would change a person's decision - an answered ask or a decision a person decided - is refused
+  409 ANSWERED_ASK_KEPT. A `plan_task`'s `size` is minutes (`45m`, `2h`, `1h30m`, at most 10000
+  minutes), and a task takes `skills` and `docs` lists.
+time: 2026-11-25T12:22:16Z
+custom:
+    Issue: pr4180

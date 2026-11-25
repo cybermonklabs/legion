@@ -1163,7 +1163,7 @@ type reasoningProbe struct {
 
 // reasoningCrossProject is the request each route of cybermonklabs/legion#4193 under /issues/{key}
 // is sent under the other project's issue, about owned's objects, and so is the move of a node
-// (PATCH /api/v1/issues/{key}/nodes/{id}, R7 of dispatch://INFRA-1253). Every route
+// (PATCH /api/v1/issues/{key}/nodes/{id}, R7 of the issue-tree spec). Every route
 // that pull request adds gets one, so each gets all three of threeBadRequests' requests
 // (Verification's c-no-reach): crossProjectPath answers none of the routes that take only {key}
 // and gives a /nodes/{id} route a bare uuid, which decodeNodeAddress refuses before any issue is
@@ -1190,6 +1190,7 @@ func reasoningCrossProject(owned crossProject) map[string]reasoningProbe {
 			body: map[string]any{}},
 		"PATCH /api/v1/issues/{key}/nodes/{id}": {target: strings.TrimSuffix(node(owned.tradeoff, ""), "/"), refused: "NOT_FOUND",
 			body: map[string]any{"parent": "issue/" + owned.otherIssue}},
+		"DELETE /api/v1/issues/{key}/nodes/{id}": {target: strings.TrimSuffix(node(owned.tradeoff, ""), "/") + "?dry_run=true", refused: "NOT_FOUND"},
 		"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert": {
 			target: under + "/artifacts/" + owned.slug + "/premortem-convert", refused: "ARTIFACT_NOT_FOUND",
 			body: map[string]any{"prevented_by": []any{}, "dry_run": true},

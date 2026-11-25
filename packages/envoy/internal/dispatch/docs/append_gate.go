@@ -35,7 +35,7 @@ type documentCursor interface {
 var ErrRoomBehindHead = fmt.Errorf("%w: the document's room is behind its durable head", ErrServiceUnavailable)
 
 // ErrRoomMoved refuses an append addressed to a room whose document was converted into its
-// issue's room (dispatch://INFRA-1253 R5): the document_rooms row names another room, and the
+// issue's room (R5 of the issue-tree spec): the document_rooms row names another room, and the
 // rows of the room from before the conversion stay as they are. It is ErrServiceUnavailable, and
 // the room's own refusal fails the room (servicePersistenceAdapter.StoreUpdateContext), which
 // closes its sockets: each browser connects again, and its admission resolves the document to the

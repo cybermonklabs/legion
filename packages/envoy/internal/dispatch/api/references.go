@@ -766,7 +766,7 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 			// An issue's wait on an issue is blocked_by in graph_edges through this release, the
 			// kind a process of the release before reads it by, and needs in this read's answer
 			// (answerIssueWaitsAsNeeds), so needs reads that edge as well as a plan node's needs,
-			// and blocked_by reads it too (R10 of dispatch://INFRA-1253).
+			// and blocked_by reads it too (R10 of the issue-tree spec).
 			if kind == model.EdgeKindNeeds {
 				query.Kinds = append(query.Kinds, blockedByMember)
 			}
@@ -800,7 +800,7 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 }
 
 // answerIssueWaitsAsNeeds names each edge of an issue's wait on an issue needs, the one relation an
-// issue and a plan node wait by (R10 of dispatch://INFRA-1253): graph_edges names it blocked_by in
+// issue and a plan node wait by (R10 of the issue-tree spec): graph_edges names it blocked_by in
 // both its arms through this release, which a process of the release before reads, and this
 // build's references read answers it as the store states it.
 func answerIssueWaitsAsNeeds(edges []model.GraphEdge) {

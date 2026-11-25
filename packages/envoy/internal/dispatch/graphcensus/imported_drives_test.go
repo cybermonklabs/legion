@@ -420,7 +420,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}, {
 		// A comment anchored to the notes, whose mention resolves to the held session: the
 		// listener holds that send, so what the comment's create appends is read before its settle
-		// runs.
+		// runs. It answers nothing, so beside its anchored_in it states its part_of to the same
+		// block (graphstore.AnchorTuples), which the term anchor_block counts with it.
 		Name: "api/comment_create.go#createCommentFor, anchored to a document, mentioning a session", Database: r.database,
 		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated"),
 		Drive: func(t *testing.T) {
@@ -441,6 +442,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
 			{graphstore.KindComment, graphstore.TupleAnchoredIn}:     {"anchor_block"},
+			{graphstore.KindComment, graphstore.TuplePartOf}:         {"anchor_block"},
 		},
 	}, {
 		Name: "api/comment_delivery.go#completeCommentDelivery", Database: r.database,

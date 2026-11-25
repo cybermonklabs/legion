@@ -62,7 +62,7 @@ type versionWrite struct {
 	// roomIndexed is set by an issue room's settlement for each document version it writes
 	// (settlement.commitRoomVersions): the room's one index pass, under its tree artifact, indexes
 	// every fragment at the version written for its document, so the version write indexes
-	// nothing of its own (T12a of dispatch://INFRA-1253's plan).
+	// nothing of its own (T12a of the issue-tree plan).
 	// Nor does it carry an approval: the settlement carries one to the version once that pass has
 	// stated it.
 	roomIndexed bool
@@ -868,7 +868,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		}
 		// A repair is a whole new document, held to every ask's content rule and to the bound
 		// an ask's wording shares, as RebuildDocument holds supplied markdown, and it keeps
-		// every open ask block, and every answered one where its writer is not a person.
+		// every open ask block.
 		if repairing {
 			if err := validateWrittenAskBlocks(target); err != nil {
 				return &ErrInvalidAskBlock{Reason: err}
@@ -880,16 +880,21 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 			if err := refuseChangedAsks(current, target, readWrittenAskBlockStrictly, newAskMarkdown()); err != nil {
 				return &ErrInvalidAskBlock{Reason: err}
 			}
-			// A writer that is not a person may not take an answered ask's block out of the
-			// document or retype it (refuseDroppedAnsweredAsks), and a person's own upload that
-			// does records it as their removal (holdRemovals). Only the ask blocks this upload
-			// drops are read for one, so an upload that keeps every ask block reads no ask.
+			// A person's own upload that takes an answered ask's block out of the document
+			// records it as their removal (answerDroppedAnsweredAsks). Only the ask blocks this
+			// upload drops are read for one, so an upload that keeps every ask block reads no ask.
 			if dropped := droppedAskBlocks(current, target); len(dropped) > 0 {
-				if err := answerDroppedAnsweredAsks(ctx, s.queryFrom(ctx), documentAsksOf(artifactID), target, droppedBlock(dropped), by, false); err != nil {
+				if err := answerDroppedAnsweredAsks(ctx, s.queryFrom(ctx), documentAsksOf(artifactID), droppedBlock(dropped), by, false); err != nil {
 					return err
 				}
 			}
 			roomRead = current
+		}
+		// R32: a writer that is not a person changes no person's decision of the document - takes
+		// none out, retypes none, changes the words of none; a repair, whose current is nil, is
+		// held to the block index (refuseDroppedAnsweredAsks).
+		if err := refuseDroppedAnsweredAsks(ctx, s.queryFrom(ctx), artifactID, current, target, by); err != nil {
+			return err
 		}
 		var offsets []pmdoc.BlockOffset
 		var layout *pmdoc.Layout
@@ -1134,10 +1139,10 @@ func WithPersonScope(ctx context.Context) context.Context {
 
 // writtenByPerson reports whether a write is a person's own: its actor is a person (kind user: a
 // signed-in person at a browser, since a write route records every bearer as a session), or its
-// route marked it as the write of a credential holding the person scope (WithPersonScope). Every
-// other writer - an agent's session, a pod's service account, the deployment's shared token -
-// holds no person scope, and may not take an answered ask's block out of a document
-// (refuseDroppedAnsweredAsks).
+// route marked it as the write of a credential holding the person scope (WithPersonScope), the
+// test CallerIsPerson makes of a credential. Every other writer - an agent's session, a pod's
+// service account, the deployment's shared token - holds no person scope, and may not change,
+// move or remove a person's decision of a document (refuseDroppedAnsweredAsks, R32).
 func writtenByPerson(ctx context.Context, actor model.Actor) bool {
 	if actor.Kind == "user" {
 		return true
@@ -1158,14 +1163,13 @@ func writtenByPerson(ctx context.Context, actor model.Actor) bool {
 // settlement retracts the open ask of a block that leaves the document there, and records the
 // person's removal of an answered one (holdRoomRemovals).
 //
-// holder is whose asks it reads (documentAsksOf, roomAsksOf), and by who writes it (dropperOf). A
-// write that is not a person's own is refused for an answered ask too, whose block the block index
-// held and the written tree does not hold as an ask block (refuseDroppedAnsweredAsks). The refusal
-// is ErrInvalidAskBlock for an open ask, which comes first, and ErrAnsweredAskKept for an answered
-// one. A person's own write is taken, and records as that person's removal each answered ask whose
-// block the block index held and the written tree does not (holdRemovals). The index is what the
-// document held before this write, so an ask whose block an earlier write took out is neither
-// refused to an agent nor a removal of a person's.
+// holder is whose asks it reads (documentAsksOf, roomAsksOf), and by who writes it (dropperOf). The
+// refusal is ErrInvalidAskBlock for an open ask. A person's own write is taken, and records as that
+// person's removal each answered ask whose block the block index held and the written tree does
+// not (answerDroppedAnsweredAsks). The index is what the document held before this write, so an ask
+// whose block an earlier write took out is no removal of a person's. A write that is not a person's
+// own is refused for an answered ask by its caller, after this (refuseDroppedAnsweredAsks, which a
+// repair reads against the block index too).
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, holder askHolder, target *pmdoc.Node, by dropper) error {
 	q := s.queryFrom(ctx)
 	open, err := openAskBlocksIn(ctx, q, holder)
@@ -1179,7 +1183,7 @@ func (s *Service) refuseDroppedAskBlocks(ctx context.Context, holder askHolder, 
 	if err := refuseLostAskBlocks(open); err != nil {
 		return &ErrInvalidAskBlock{Reason: err}
 	}
-	return answerDroppedAnsweredAsks(ctx, q, holder, target, func(blockID string) bool {
+	return answerDroppedAnsweredAsks(ctx, q, holder, func(blockID string) bool {
 		_, kept := held[blockID]
 		return !kept
 	}, by, true)
@@ -1190,11 +1194,11 @@ func (s *Service) refuseDroppedAskBlocks(ctx context.Context, holder askHolder, 
 // reading (ApplyOps, applyOpsUnconditional): a document can carry an open ask row whose block went
 // before this batch ran, and a batch that did not touch that block is not the write that lost it,
 // so refusing on it would name the caller a block they never wrote, with advice they cannot act
-// on. A batch that is not a person's own (by, dropperOf) is refused for the answered asks of
-// those blocks too, after, the tree the batch leaves, being what tells a retyped block from a
-// removed one (refuseDroppedAnsweredAsks); a person's own batch records each as that person's
-// removal (holdRemovals).
-func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID string, dropped map[string]struct{}, after *pmdoc.Node, by dropper) error {
+// on. A person's own batch records each answered ask of those blocks as that person's removal
+// (answerDroppedAnsweredAsks); a batch that is not a person's own is refused for them by its caller
+// (finishBatch's refuseDroppedAnsweredAsks), which reads the whole batch, a word change or a
+// decision's among it.
+func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID string, dropped map[string]struct{}, by dropper) error {
 	q := s.queryFrom(ctx)
 	open, err := openAskBlocksIn(ctx, q, documentAsksOf(artifactID))
 	if err != nil {
@@ -1208,7 +1212,7 @@ func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID st
 	if err := refuseLostAskBlocks(open); err != nil {
 		return &ErrInvalidAskBlock{Reason: err}
 	}
-	return answerDroppedAnsweredAsks(ctx, q, documentAsksOf(artifactID), after, droppedBlock(dropped), by, false)
+	return answerDroppedAnsweredAsks(ctx, q, documentAsksOf(artifactID), droppedBlock(dropped), by, false)
 }
 
 // droppedBlock answers whether a block is among dropped, the ask blocks a write dropped itself
@@ -1294,106 +1298,114 @@ func refuseLostAskBlocks(lost map[string]struct{}) error {
 	)
 }
 
-// ErrAnsweredAskKept refuses a write that is not a person's own (writtenByPerson) when it would
-// take the block of an answered ask out of its document, or retype that block: a person's answered
-// decision stays in the document they decided it in, and only a person's own write moves it.
+// ErrAnsweredAskKept refuses a write that is not a person's own (writtenByPerson) where it would
+// change a person's decision of the document it writes (R32, person_kept.go): an answered ask,
+// whose block the document holds, or a decision a person decided. The write would take it out of
+// the document, which is also the one way a text write moves it out of the spec or the project
+// document that holds it, retype it, or change its words. A person's decision stays as the person
+// decided it, in the document they decided it in, and only a person's own write changes it.
 // Nothing of the write is written.
 type ErrAnsweredAskKept struct {
-	// Asks are the answered asks the write would lose, in the order of their block ids.
-	Asks []KeptAsk
+	// Asks are the answered asks the write would change, in the order of their block ids, and
+	// Decisions the decisions a person decided that it would change, in the order of theirs.
+	Asks      []KeptAsk
+	Decisions []KeptDecision
 }
 
-// KeptAsk is one answered ask a refused write would lose: Ask, the address of its node
+// KeptAsk is one answered ask a refused write would change: Ask, the address of its node
 // (`dispatch://KEY/ask/<id>`); Question, its question as its row holds it; Block, the address of
-// its block; and RetypedTo, the type the write gives that block, or "" for a write that removes it.
+// its block; RetypedTo, the type the write gives that block, "" for a write that keeps its type or
+// removes it; and Reworded, a write that keeps it an ask block and changes its words
+// (refs.AskWords). A write that neither retypes nor rewords the block removes it.
 type KeptAsk struct {
 	Ask, Question, Block, RetypedTo string
+	Reworded                        bool
+}
+
+// KeptDecision is one decision a person decided that a refused write would change: Block, the
+// address of its block; Words, its words as the refusal quotes them (decisionQuote); and RetypedTo
+// and Reworded as a KeptAsk's, a decision's words being refs.DecisionWords'.
+type KeptDecision struct {
+	Block, Words, RetypedTo string
+	Reworded                bool
 }
 
 func (e *ErrAnsweredAskKept) Error() string {
-	refusals := make([]string, len(e.Asks))
-	for index, ask := range e.Asks {
-		if ask.RetypedTo != "" {
-			refusals[index] = fmt.Sprintf("ask %s, asking %q, is answered; an agent cannot retype its ask block %s to %s",
-				ask.Ask, ask.Question, ask.Block, ask.RetypedTo)
-			continue
+	refusals := make([]string, 0, len(e.Asks)+len(e.Decisions))
+	for _, ask := range e.Asks {
+		answered := fmt.Sprintf("ask %s, asking %q, is answered; ", ask.Ask, ask.Question)
+		switch {
+		case ask.RetypedTo != "":
+			refusals = append(refusals, answered+fmt.Sprintf("an agent cannot retype its ask block %s to %s", ask.Block, ask.RetypedTo))
+		case ask.Reworded:
+			refusals = append(refusals, answered+fmt.Sprintf("an agent cannot change the words of its ask block %s", ask.Block))
+		default:
+			refusals = append(refusals, answered+fmt.Sprintf("an agent cannot remove its ask block %s from this document", ask.Block))
 		}
-		refusals[index] = fmt.Sprintf("ask %s, asking %q, is answered; an agent cannot remove its ask block %s from this document",
-			ask.Ask, ask.Question, ask.Block)
+	}
+	for _, decision := range e.Decisions {
+		decided := fmt.Sprintf("the decision %s, %q, is a person's decision; ", decision.Block, decision.Words)
+		switch {
+		case decision.RetypedTo != "":
+			refusals = append(refusals, decided+fmt.Sprintf("an agent cannot retype it to %s", decision.RetypedTo))
+		case decision.Reworded:
+			refusals = append(refusals, decided+"an agent cannot change its words")
+		default:
+			refusals = append(refusals, decided+"an agent cannot remove it from this document")
+		}
 	}
 	return strings.Join(refusals, ". ")
 }
 
-// refuseDroppedAnsweredAsks refuses a write that is not a person's own with ErrAnsweredAskKept for
-// each answered ask of holder whose block the write loses, or answers nil where it loses none.
-// lost answers whether the write loses the block of one id. after is the tree the write leaves:
-// one that still holds a block under that id, as another type, is a write that retyped the block,
-// and the refusal says so. standing narrows it to the asks whose block the block index holds as an
-// ask block, as it narrows a person's removals (answerDroppedAnsweredAsks), for a write that
-// replaces the document whole: an answered ask whose block a person removed earlier, or one the
-// decisions step's restore still owes, is no block this write drops. The asks are read with the
-// address of the document holding each block (refs.AskBlockDocumentSQL), in the one statement, so
-// the refusal names each ask's node and its block's address and quotes its question.
-func refuseDroppedAnsweredAsks(ctx context.Context, q Queryer, holder askHolder, after *pmdoc.Node, lost func(blockID string) bool, standing bool) error {
-	rows, err := q.Query(ctx, `
-		select k.id::text, k.block_id, k.question, k.issue_key,
-		       d.issue_key, coalesce(d.project_key, ''), d.session_id, d.slug, d.kind, d.is_primary
-		from asks k
-		join artifacts d on d.id = `+refs.AskBlockDocumentSQL("k")+`
-		where `+holder.predicate("k", "$1::uuid")+` and k.state = 'answered' and k.block_id is not null
-		  and (not $2 or exists (
-			select 1 from document_blocks b
-			where b.artifact_id = k.block_artifact_id and b.block_id = k.block_id and b.type = 'ask'))
-		order by k.block_id
-	`, holder.id, standing)
-	if err != nil {
-		return fmt.Errorf("read answered ask blocks: %w", err)
-	}
-	defer rows.Close()
-	var kept []KeptAsk
-	var blockIDs []string
-	for rows.Next() {
-		var askID, blockID, question, project, slug, kind string
-		var askIssue, documentIssue, session *string
-		var primary bool
-		if err := rows.Scan(&askID, &blockID, &question, &askIssue, &documentIssue, &project, &session, &slug, &kind, &primary); err != nil {
-			return fmt.Errorf("scan answered ask block: %w", err)
-		}
-		if !lost(blockID) {
-			continue
-		}
-		ask := text.Ref{Project: project, Document: slug, ID: askID}
-		if askIssue != nil {
-			ask.IssueKey = *askIssue
-		}
-		kept = append(kept, KeptAsk{
-			Ask:      refs.AskRef(ask),
-			Question: question,
-			Block:    refs.BlockRef(refs.ArtifactRef(documentIssue, project, session, slug, kind, primary), blockID),
-		})
-		blockIDs = append(blockIDs, blockID)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read answered ask blocks: %w", err)
-	}
-	if len(kept) == 0 {
+// refuseDroppedAnsweredAsks is R32 on the edit routes and the upload (finishBatch, ReplaceText): a
+// write that is not a person's own (by, dropperOf) is refused with ErrAnsweredAskKept where it would
+// change a person's decision of the document artifactID - take it out of the document, retype it
+// or change its words (typedBlockChanges) - and answered nil otherwise. A person's decision here is
+// an answered ask whose block the document holds (keptAsksOf) and a decision whose node's current
+// decided_by names a person (keptDecisionsOf), PersonDecisionOf's rule over the document's own
+// blocks. A person's own write is never refused, and holds each answered ask it takes out as their
+// removal (answerDroppedAnsweredAsks). before is the tree the write starts from and after the tree
+// it leaves. So an agent may still move a person's decision inside its document - reorder the
+// blocks around it, take it into a callout or a list item or out of one - insert its own reading
+// into it, since a reading it closes with is no word of it, and retype it to its own type writing
+// another `shaped`, which is no word of it either (refs.DecisionWords); and it may change, move or
+// take out any other block a person wrote, and replace a whole document a person wrote that holds
+// no person's decision. Only the blocks the write changes are read for, so a write that changes no
+// ask and no decision sends no statement. Every node it names is a block of the document the
+// caller writes, or that block's ask, and both are visible to every caller who may write the
+// document, so the refusal names each.
+//
+// A nil before is a repair's, whose document holds a tree outside the schema and so reads no tree
+// of what it held: the write is held to the block index instead, refused for each answered ask
+// whose block the index holds as an ask block and each decision of a person the index holds where
+// after holds no block of its id or holds it as another type (standingChange). An ask whose block an
+// earlier write took out, a person's removal or an agent's drop the decisions step's restore still
+// owes, is then no block this write takes out. A repair has no tree to read a decision's words off
+// before it, so its words are compared with none.
+func refuseDroppedAnsweredAsks(ctx context.Context, q Queryer, artifactID string, before, after *pmdoc.Node, by dropper) error {
+	if by.person {
 		return nil
 	}
-	retyped := make(map[string]string, len(blockIDs))
-	for _, blockID := range blockIDs {
-		retyped[blockID] = ""
+	standing := before == nil
+	changes, err := typedBlockChanges(before, after)
+	if err != nil {
+		return err
 	}
-	pmdoc.Walk(after, func(node *pmdoc.Node) bool {
-		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-		if held, wanted := retyped[id]; wanted && held == "" && node.Type != "ask" {
-			retyped[id] = node.Type
+	var kept ErrAnsweredAskKept
+	if standing || len(changes.asks) > 0 {
+		if kept.Asks, err = keptAsksOf(ctx, q, artifactID, changes.asks, standing, after); err != nil {
+			return err
 		}
-		return true
-	})
-	for index, blockID := range blockIDs {
-		kept[index].RetypedTo = retyped[blockID]
 	}
-	return &ErrAnsweredAskKept{Asks: kept}
+	if standing || len(changes.decisions) > 0 {
+		if kept.Decisions, err = keptDecisionsOf(ctx, q, artifactID, changes.decisions, standing, after); err != nil {
+			return err
+		}
+	}
+	if len(kept.Asks) == 0 && len(kept.Decisions) == 0 {
+		return nil
+	}
+	return &kept
 }
 
 // droppedAskBlocks is each ask block before held that after does not, which is what a batch owes
@@ -1967,6 +1979,12 @@ func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor 
 	if !changed && readsAs(latest.markdown, rendered.markdown) {
 		return VersionResult{Version: latest.Version}, nil
 	}
+	// No version Dispatch stores is one its own parser refuses (R25): a rendering that does not
+	// read back is stored as no version, the document's newest version stays the last one that
+	// reads back, and the room keeps the edit for the next version whose tree reads back.
+	if !readsBackAsVersion("snapshot", artifactID, rendered.markdown) {
+		return VersionResult{Version: latest.Version}, nil
+	}
 	mergeAuthor(capture.authors, actor)
 	// The owner's lock holds the issue's state under this write, and a closed issue refuses it -
 	// except the version a comment's anchor is pinned to, which a closed issue takes like the
@@ -2297,9 +2315,11 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 // applyOpsUnconditional): the block ids the result still lacks, the ask rules it is held to, and
 // the outcome the route answers with, read back where the batch changed the document. tree is the
 // document the batch started from, the one this edit stamped the missing ask block ids on, and the
-// document returned is the one the route stores. by is who writes the batch (dropperOf): one that
-// is not a person's own may not drop or retype an answered ask's block either, and a person's own
-// records each it drops or retypes as their removal (refuseBatchDroppedAskBlocks).
+// document returned is the one the route stores. by is who writes the batch (dropperOf): a person's
+// own batch records each answered ask's block it drops or retypes as their removal
+// (refuseBatchDroppedAskBlocks), and one that is not a person's own changes no person's decision of
+// the document: it takes none out, retypes none and changes the words of none (R32,
+// refuseDroppedAnsweredAsks).
 func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdoc.Node, batch editBatch, ops int, by dropper) (EditOutcome, pmdoc.ValidDocument, error) {
 	next := batch.tree
 	pmdoc.EnsureBlockIDs(next)
@@ -2307,9 +2327,12 @@ func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdo
 		return EditOutcome{}, pmdoc.ValidDocument{}, &ErrInvalidAskBlock{Reason: err}
 	}
 	if dropped := droppedAskBlocks(batch.beforeTree, next); len(dropped) > 0 {
-		if err := s.refuseBatchDroppedAskBlocks(ctx, artifactID, dropped, next, by); err != nil {
+		if err := s.refuseBatchDroppedAskBlocks(ctx, artifactID, dropped, by); err != nil {
 			return EditOutcome{}, pmdoc.ValidDocument{}, err
 		}
+	}
+	if err := refuseDroppedAnsweredAsks(ctx, s.queryFrom(ctx), artifactID, batch.beforeTree, next, by); err != nil {
+		return EditOutcome{}, pmdoc.ValidDocument{}, err
 	}
 	// A child that is a view on its ancestor's spec takes no requirement of its own, and an edit
 	// let through holding one marks its issue's spec its own (R23).
@@ -2543,6 +2566,16 @@ func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, 
 	rendered, capture, err := s.captureLiveTextAndAuthors(ctx, artifactID, &actor)
 	if err != nil {
 		return VersionResult{}, err
+	}
+	// No version Dispatch stores is one its own parser refuses (R25): a rendering that does not
+	// read back is stored as no version, and the write answers the document's newest version, the
+	// last one that read back; the room keeps the edit for the next version whose tree reads back.
+	if !readsBackAsVersion("named version", artifactID, rendered.markdown) {
+		latest, err := latestVersion(ctx, tx, artifactID)
+		if err != nil {
+			return VersionResult{}, err
+		}
+		return VersionResult{Version: latest.Version}, nil
 	}
 	// The room's removals no settlement holds yet, as SnapshotVersion holds them (holdRoomRemovals).
 	if err := holdRoomRemovals(ctx, tx, artifactID, roomReadTree(ctx, artifactID, rendered.tree), capture.roomAuthors()); err != nil {
@@ -3099,11 +3132,12 @@ type renderedTree struct {
 // and the carry's reads and the anchor refresh's walk. Its writes go through write in this order -
 // the version's insert, the task counts, the index, the move, the carry, the anchors - so a
 // transaction whose writes are queued runs them in its write phase, and the ledger records the
-// version as it will stand (latestVersion). The carry's writes wait for the second part of the
-// write phase where the index's pass gives the version its version_renders row in this transaction
-// (carryAfterRender), so the review it inserts pins the digest that row records, but for a carry
-// to a version that restores the approved text, whose writes keep their place behind a row of the
-// approval's digest, under a savepoint the write phase takes before the version's insert
+// version as it will stand (latestVersion). The carry's writes keep their place, before the
+// version's artifact.version, which its caller appends after this returns (R14): its review pins
+// the digest of the version's stored markdown, which artifact_version_text_sha256 answers while
+// the version's record digest is owed, and the fill after the COMMIT repins it to the record
+// (fillOwedDigests). A carry to a version that restores the approved text writes behind a row of
+// the approval's digest, under a savepoint the write phase takes before the version's insert
 // (carryRestored); a version an issue room's settlement writes takes its carry after the room's
 // pass (commitRoomVersions).
 func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID string, rendered renderedTree, actor model.Actor, spec *versionWrite) (versionWriteResult, error) {
@@ -3154,7 +3188,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	if err != nil {
 		return versionWriteResult{}, err
 	}
-	// The row is the projection of its version node (R16 of dispatch://INFRA-1253), written in the
+	// The row is the projection of its version node (R16 of the issue-tree spec), written in the
 	// row's transaction after the block nodes, so its node rows stay in ascending (kind, id), and
 	// caused by the event the caller appends for the version, with the block index's facts.
 	versionNode, err := WriteVersionNode(ctx, tx, owner, version.Number, actor, version.CreatedAt)
@@ -3188,13 +3222,11 @@ func (s *Service) finishVersionWrite(ctx context.Context, tx pgx.Tx, artifactID 
 		// rules: every ask block of the version agrees with its node, and the version holds the
 		// approved text again or every difference from it is one of the carry cases
 		// (carryVerdict). It runs after the move, so an open request already names this version
-		// when the carry answers it in the approver's name, and after the index, whose pass gives
-		// the version its version_renders row, before which none of its writes runs
-		// (carryAfterRender), or, for a restore, behind the row it writes itself (carryRestored).
+		// when the carry answers it in the approver's name, and its writes keep their place,
+		// before the version's artifact.version (R14), or, for a restore, behind the row it writes
+		// itself (carryRestored).
 		if !spec.roomIndexed {
-			if err := carryAfterRender(ctx, tx, artifactID, version.Number, func() error {
-				return s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, eventSink(ctx))
-			}); err != nil {
+			if err := s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, eventSink(ctx)); err != nil {
 				return versionWriteResult{}, err
 			}
 		}
@@ -3264,7 +3296,7 @@ func ReadVersionOwner(ctx context.Context, q Queryer, artifactID string) (graphs
 	ledger := ledgerFrom(ctx)
 	if address, pending := ledger.PendingDocument(artifactID); pending {
 		owner := graphstore.VersionOwner{RefKey: address.RefKey, Project: address.Project, Session: address.Session}
-		if ledger.pendingQuery(artifactID) {
+		if ledger.pendingQuery(artifactID) != "" {
 			owner.Query, owner.DefinitionVersion = true, graphstore.QueryDefinitionVersion
 		}
 		return owner, nil

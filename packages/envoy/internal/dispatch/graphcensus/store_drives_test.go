@@ -599,8 +599,8 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			}
 		},
 		// The comments, as the comment path states one, in their project, each anchored one's
-		// anchored_in its anchor's block, their one author's node, and the messages' nodes, which
-		// the seed writes after its comments.
+		// anchored_in its anchor's block and, for one that answers nothing, its part_of there (R31),
+		// their one author's node, and the messages' nodes, which the seed writes after its comments.
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
@@ -608,6 +608,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
 			{graphstore.KindComment, graphstore.TupleAnchoredIn}:     {"anchor_block"},
+			{graphstore.KindComment, graphstore.TuplePartOf}:         {"anchor_block"},
 			{graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
 			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
 			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},

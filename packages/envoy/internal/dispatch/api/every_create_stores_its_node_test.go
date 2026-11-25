@@ -341,6 +341,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/nodes/{id}/state":                           noObject,
 	"POST /api/v1/issues/{key}/nodes/{id}/settle":                          noObject,
 	"PATCH /api/v1/issues/{key}/nodes/{id}":                                noObject,
+	"DELETE /api/v1/issues/{key}/nodes/{id}":                               noObject,
 	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert":         noObject,
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": noObject,
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                noObject,

@@ -20,27 +20,69 @@ const (
 	TupleOwnedBy    = "owned_by"
 )
 
-// TupleAnchoredIn is the relation from a comment to the block its anchor names (T17b of
-// dispatch://INFRA-1253's plan), beside anchored_to, which names the anchor's document alone: the
-// block comments.anchor's block_id names in that document, addressed as the block index addresses
-// it (AnchorBlockAddressSQL). comments.anchor's block_id is its projection while the anchor is not
-// orphaned: an anchor whose mark the refresh found gone stands in no block. It is a kind
-// refs.TupleKinds does not list, so graph_edges answers nothing under it.
+// TupleAnchoredIn is the relation from a comment to the node its anchor quotes (T17b of
+// the issue-tree plan, its spec R31), beside anchored_to, which names the anchor's
+// document alone: for a document anchor, the block comments.anchor's block_id names in that
+// document, addressed as the block index addresses it (AnchorBlockAddressSQL); for a node anchor,
+// the lens, finding, risk, constraint or result comments.node_anchor names. Each column is its
+// projection while the anchor is not orphaned: an anchor whose mark the refresh found gone, or
+// whose quote a write of the node's text dropped, stands in no node. It is a kind refs.TupleKinds
+// does not list, so graph_edges answers nothing under it.
+//
+// A comment that answers nothing - no answers, no reply_to and no ask_id - holds beside it a
+// part_of to the same node (AnchorPartOf), which places it under the node it quotes in the issue's
+// tree, and every writer of its anchored_in states or retracts that part_of in the same write
+// (AnchorTuples). A comment that answers something takes its part_of from what it answers, never
+// from its anchor.
 const TupleAnchoredIn = "anchored_in"
 
 // AnchoredIn is the anchored_in tuple of comment id to the block node at address block, stating
 // the relation where asserted and retracting it otherwise, dated at at, written by who and caused
 // by event.
 func AnchoredIn(id, block string, asserted bool, who model.Actor, at time.Time, event int64) Tuple {
+	return AnchorRelation(TupleAnchoredIn, id, blockKind, block, asserted, who, at, event)
+}
+
+// AnchorPartOf is the part_of tuple of comment id, one that answers nothing, to the node its
+// anchor quotes, kind and address as the store keys it, stating it where asserted and retracting
+// it otherwise, dated at at, written by who and caused by event.
+func AnchorPartOf(id, kind, address string, asserted bool, who model.Actor, at time.Time, event int64) Tuple {
+	return AnchorRelation(TuplePartOf, id, kind, address, asserted, who, at, event)
+}
+
+// AnchorTuples appends to tuples what one write states or retracts of comment id's anchor on the
+// node kind and address name: its anchored_in to that node and, where the comment answers
+// nothing (answersNothing), its part_of to the same node (R31), each asserted or retracted alike,
+// dated at at, written by who and caused by event. It is the one statement of the pair, which
+// every writer of a comment's anchored_in appends.
+func AnchorTuples(tuples []Tuple, id, kind, address string, answersNothing, asserted bool, who model.Actor, at time.Time, event int64) []Tuple {
+	tuples = append(tuples, AnchorRelation(TupleAnchoredIn, id, kind, address, asserted, who, at, event))
+	if answersNothing {
+		tuples = append(tuples, AnchorPartOf(id, kind, address, asserted, who, at, event))
+	}
+	return tuples
+}
+
+// AnchorRelation is the tuple of relation, anchored_in or part_of, from comment id to the node its
+// anchor quotes, kind and address as the store keys it: a writer that levels one relation of the
+// pair at a time (graphcensus's backfill) writes it so.
+func AnchorRelation(relation, id, kind, address string, asserted bool, who model.Actor, at time.Time, event int64) Tuple {
 	return Tuple{
-		FromKind: KindComment, FromID: id, Kind: TupleAnchoredIn, ToKind: blockKind, ToID: block,
+		FromKind: KindComment, FromID: id, Kind: relation, ToKind: kind, ToID: address,
 		At: at, Who: who, SourceEvent: event, Asserted: asserted,
 	}
 }
 
+// CommentAnswersNothingSQL is whether the comments row aliased alias answers nothing, as SQL text
+// answering a boolean: it names no comment in answers or reply_to and no ask in ask_id, so the
+// part_of its anchor states places it (AnchorTuples).
+func CommentAnswersNothingSQL(alias string) string {
+	return `(` + alias + `.answers is null and ` + alias + `.reply_to is null and ` + alias + `.ask_id is null)`
+}
+
 // RoomRefKeySQL is the ref_key of the room the document artifact (SQL text answering a uuid) is
 // edited in, as SQL text: the issue's tree artifact its document_rooms row names, for a document of
-// an issue room (T12a of dispatch://INFRA-1253's plan), and the document's own ref_key otherwise.
+// an issue room (T12a of the issue-tree plan), and the document's own ref_key otherwise.
 // The block index keys a room's blocks under that tree (refs.IndexBlocks), so a block's node
 // address starts with it.
 func RoomRefKeySQL(artifact string) string {
@@ -64,13 +106,25 @@ func AnchorBlockAddressSQL(alias string) string {
 }
 
 // CommentAnchoredInSQL is the far end of the anchored_in the comments row aliased alias states,
-// as SQL text answering text: its anchor's block (AnchorBlockAddressSQL) while the anchor is not
-// orphaned, and null for an orphaned anchor, an anchor that names no block, and a row with no
-// anchor. It is the one reading of what a row states that the census of the tuple and its backfill
-// read; an address past the store's bound is no node, which each of them leaves out.
+// as SQL text answering text: where the row holds a document anchor, its anchor's block
+// (AnchorBlockAddressSQL) while that anchor is not orphaned, and null for an orphaned anchor and an
+// anchor that names no block; else its node anchor's node (comments.node_anchor's node_id) while
+// that anchor is not orphaned; and null for a row with neither. Its kind is
+// CommentAnchoredInKindSQL. It is the one reading of what a row states that the census of the
+// tuple and its backfill read; an address past the store's bound is no node, which each of them
+// leaves out.
 func CommentAnchoredInSQL(alias string) string {
-	return `(case when not coalesce((` + alias + `.anchor->>'orphaned')::boolean, false)
-		then ` + AnchorBlockAddressSQL(alias) + ` end)`
+	return `(case when ` + alias + `.anchor is not null then
+			case when not coalesce((` + alias + `.anchor->>'orphaned')::boolean, false) then ` + AnchorBlockAddressSQL(alias) + ` end
+		when not coalesce((` + alias + `.node_anchor->>'orphaned')::boolean, false) then ` + alias + `.node_anchor->>'node_id'
+		end)`
+}
+
+// CommentAnchoredInKindSQL is the kind of the far end CommentAnchoredInSQL answers for the
+// comments row aliased alias, as SQL text answering text: a block for a document anchor, the
+// node anchor's node_kind for a node anchor, and null for a row with neither.
+func CommentAnchoredInKindSQL(alias string) string {
+	return `(case when ` + alias + `.anchor is not null then '` + blockKind + `' else ` + alias + `.node_anchor->>'node_kind' end)`
 }
 
 // CommentFacts is what this store holds of one comment beside who wrote it (AuthorFacts): its

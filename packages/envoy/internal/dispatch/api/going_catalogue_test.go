@@ -32,6 +32,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/artifacts/{id}",
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 	"DELETE /api/v1/delivery/session-groups/{id}",
+	"DELETE /api/v1/issues/{key}/nodes/{id}",
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 	"DELETE /api/v1/me/agent-tokens/{id}",
 	"DELETE /api/v1/me/asks/{id}/snooze",

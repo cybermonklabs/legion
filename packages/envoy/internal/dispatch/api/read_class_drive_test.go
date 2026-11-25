@@ -128,7 +128,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/dashboard/builds":        {target: "/api/v1/dashboard/builds", statement: statementOf(`\bfrom\s+dashboard_builds\b`)},
 	"GET /api/v1/priorities":              {target: "/api/v1/priorities", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+state\b`)},
 	"GET /api/v1/priorities/{id}/history": {target: "/api/v1/priorities/$priority/history", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+id\b`)},
-	"GET /api/v1/issues":                  {target: "/api/v1/issues?project=$project", statement: statementOf(`\bwith\s+recursive\s+advances_stated\s+as\b`)},
+	"GET /api/v1/issues":                  {target: "/api/v1/issues?project=$project", statement: statementOf(`\bwith\s+recursive\s+advances_relations\s+as\b`)},
 	"GET /api/v1/issues/resolve":          {target: "/api/v1/issues/resolve?ref=$issue", statement: statementOf(`\bselect\s+key\s+from\s+issues\s+where\s+key\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}":            {target: "/api/v1/issues/$issue", statement: statementOf(`\bfrom\s+design_gates\s+where\s+issue\b`)},
 	"GET /api/v1/issues/{key}/summary":    {target: "/api/v1/issues/$issue/summary", statement: statementOf(`\bselect\s+key,\s*project_key,\s*title,\s*status\s+from\s+issues\b`)},
@@ -194,6 +194,10 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/broadcasts/{id}":        {target: "/api/v1/broadcasts/$broadcast", statement: statementOf(`\bfrom\s+broadcasts\s+where\s+id\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}/asks":      {target: "/api/v1/issues/$issue/asks?thread=1", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*any\b`)},
 	"GET /api/v1/issues/{key}/decisions": {target: "/api/v1/issues/$issue/decisions", statement: statementOf(`\bfrom\s+decision_keeps\b`)},
+	// The tree read's one read of the issue's tree artifact and role documents
+	// (issueTreeIssueStatement), which every page of every read sends for the issue read.
+	"GET /api/v1/issues/{key}/tree": {target: "/api/v1/issues/$issue/tree",
+		statement: statementOf(`\bwith\s+tree\s+as\s*\(\s*select\s+t\.artifact_id::text\s+as\s+id\s+from\s+issue_trees\s+t\s+where\s+t\.issue_key\s*=\s*\$1\s*\)`)},
 	"GET /api/v1/asks/open": {target: "/api/v1/asks/open?project=$project", statement: statementOf(`\bwith\s+mine\s+as\b`),
 		volatile: []volatileMember{{"as_of", readTime}, {"asks.*.age_seconds", "each ask's age, counted to the moment of the read"}}},
 	"GET /api/v1/asks/{id}":             {target: "/api/v1/asks/$ask", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*\$1\b`)},

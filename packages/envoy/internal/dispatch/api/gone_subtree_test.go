@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A node taken to gone takes its whole part_of subtree with it, transitively and in one write,
@@ -144,16 +145,6 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 
 	settle := newSettleRig(t)
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	// stateHistory is every state tuple the store holds of the node at address, oldest first.
-	stateHistory := func(address string) []graphstore.Tuple {
-		t.Helper()
-		node := storedNodeOf(t, settle.database, address)
-		history, err := graphstore.History(context.Background(), settle.database.Pool, node.Kind, node.ID, graphstore.AttributeState)
-		if err != nil {
-			t.Fatalf("read the state history of %s: %v", address, err)
-		}
-		return history
-	}
 	// takeGone is alice's gone on the node name names at address, an error unless it is taken.
 	takeGone := func(name, address string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -202,7 +193,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 		if node.hidden {
 			hiddenFromAlice(node.name, node.address)
 		}
-		treeTuples[node.name] = len(stateHistory(node.address))
+		treeTuples[node.name] = len(stateHistoryOf(t, settle.database, node.address))
 	}
 	taken := takeGone("L1", l1.Address)
 	wantTaken := nodeStateWritten{
@@ -212,7 +203,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	if answer := decodeBody[nodeStateWritten](t, taken); answer != wantTaken {
 		t.Errorf("alice's gone on L1 answers %+v, want %+v: L1 alone, moved from live to gone", answer, wantTaken)
 	}
-	l1History := stateHistory(l1.Address)
+	l1History := stateHistoryOf(t, settle.database, l1.Address)
 	takenAt := l1History[len(l1History)-1].At
 	for _, node := range tree {
 		if strings.Contains(taken.Body.String(), node.address) || strings.Contains(taken.Body.String(), node.id) {
@@ -225,7 +216,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 		}
 		// One state tuple more, written by alice at the time of L1's own, which is the time of the
 		// transaction that wrote it.
-		history := stateHistory(node.address)
+		history := stateHistoryOf(t, settle.database, node.address)
 		newest := history[len(history)-1]
 		if len(history) != treeTuples[node.name]+1 || newest.ToID != graphstore.StateGone || !newest.Who.SameAs(alice) || !newest.At.Equal(takenAt) {
 			t.Errorf("%s %s holds %d state tuples, the newest %s written by %+v at %s; want %d, the newest gone written by alice at %s, in L1's own write",
@@ -269,7 +260,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	// it answers the refusal with id, the node's own, written <node>.
 	refusedGone := func(name, address, id string) string {
 		t.Helper()
-		held, tuples := storedNodeOf(t, settle.database, address).State, len(stateHistory(address))
+		held := storedStateOf(t, settle.database, address)
 		response := settle.asFirst(http.MethodPost, statePath(settle.issue.Key, address, "state"), map[string]any{"state": graphstore.StateGone})
 		t.Logf("%s: status=%d body=%s", name, response.Code, response.Body.String())
 		refused := response.Code == http.StatusForbidden
@@ -281,11 +272,12 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 			t.Errorf("%s answers %d %s, want 403 %s naming %s: a person alone takes a lens, a finding, a risk or a constraint to gone, its author included",
 				name, response.Code, response.Body.String(), codeStateNotPermitted, address)
 		}
-		if state := storedNodeOf(t, settle.database, address).State; state != held {
-			t.Errorf("%s left %s at %s, want the %s it held", name, address, state, held)
+		after := storedStateOf(t, settle.database, address)
+		if after.state != held.state {
+			t.Errorf("%s left %s at %s, want the %s it held", name, address, after.state, held.state)
 		}
-		if after := len(stateHistory(address)); after != tuples {
-			t.Errorf("%s left %s with %d state tuples, want the %d it held", name, address, after, tuples)
+		if after.tuples != held.tuples {
+			t.Errorf("%s left %s with %d state tuples, want the %d it held", name, address, after.tuples, held.tuples)
 		}
 		return strings.ReplaceAll(response.Body.String(), id, "<node>")
 	}
@@ -549,4 +541,38 @@ func TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused(t *testing.T) {
 	if written := decodeBody[lensFinding](t, unasked); written.Visibility != graphstore.VisibilityAuthor {
 		t.Errorf("a finding asked for no visibility under the author-only lens %s is %q, want author, its lens's", lens.Address, written.Visibility)
 	}
+}
+
+// stateHistoryOf is every state tuple the store holds of the node at address, oldest first.
+func stateHistoryOf(t *testing.T, database *store.Store, address string) []graphstore.Tuple {
+	t.Helper()
+	node := storedNodeOf(t, database, address)
+	return stateHistoryOfNode(t, database, node.Kind, node.ID)
+}
+
+// stateHistoryOfNode is every state tuple the store holds of the node it keys by kind and id,
+// oldest first.
+func stateHistoryOfNode(t *testing.T, database *store.Store, kind, id string) []graphstore.Tuple {
+	t.Helper()
+	history, err := graphstore.History(context.Background(), database.Pool, kind, id, graphstore.AttributeState)
+	if err != nil {
+		t.Fatalf("read the state history of %s %s: %v", kind, id, err)
+	}
+	return history
+}
+
+// storedState is a node's stored state and its count of state tuples.
+type storedState struct {
+	state  string
+	tuples int
+}
+
+// storedStateOf is what the store holds of the node at address: the state its row holds and the
+// count of its state tuples, read by the kind and the id of that row, so the row is read once
+// (storedNodeOf). It requires that row, so the states compared before and after a write are the
+// store's own, not a default for a node the store has not recorded.
+func storedStateOf(t *testing.T, database *store.Store, address string) storedState {
+	t.Helper()
+	node := storedNodeOf(t, database, address)
+	return storedState{state: node.State, tuples: len(stateHistoryOfNode(t, database, node.Kind, node.ID))}
 }

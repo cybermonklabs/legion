@@ -1,7 +1,7 @@
 // project_proven_sessions_test.go holds the behavior tests of a project's proven-sessions setting
-// (project_proven_sessions.go, R2 of INFRA-4764): a new project has it off, any credential that may
-// write the project turns it on, only a person turns it off, and the project.updated event a
-// gated-steps publication appends carries the setting as the row stores it.
+// (project_proven_sessions.go, R2 of the spec-writer spec): a new project has it off, any
+// credential that may write the project turns it on, only a person turns it off, and the
+// project.updated event a gated-steps publication appends carries the setting as the row stores it.
 package api
 
 import (

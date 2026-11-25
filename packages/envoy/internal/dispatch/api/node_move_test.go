@@ -76,37 +76,57 @@ func blockAddressOf(t testing.TB, database *store.Store, key, blockID string) st
 
 // nodePlacementOperation is one operation at /api/v1/issues/{key}/nodes/{id} the contract test
 // reads (TestNodePlacementRoutesMatchTheGeneratedContract): its method, the body members it takes
-// and the answer members it returns, by schema name, the query parameters it declares and those it
-// must not, and the codes its description names.
+// and the answer members it returns, by schema name, whether its If-Match header is required, the
+// query parameters it declares and those it must not, the codes its description names, and, by
+// status, the members a refusal's body declares beside its code and its message.
 type nodePlacementOperation struct {
 	method, operationID   string
 	request, response     string
 	takes, answers        []string
+	ifMatchRequired       bool
 	query, notQuery       []string
 	codes                 []string
+	refusals              map[string][]string
 	generatedHeaderMember string
 }
 
-// nodePlacementOperations are the operations the node's own resource serves (R7): the move. The
-// delete's row is the delete's to add, with its dry_run, expected_count and count.
+// nodePlacementOperations are the operations the node's own resource serves (R7): the move, whose
+// If-Match every request sends, and the delete with its dry run, whose If-Match the delete itself
+// sends and the dry run does not, and whose 409 DELETE_COUNT_MOVED carries the count now.
 var nodePlacementOperations = []nodePlacementOperation{{
 	method: "patch", operationID: "patchApiV1IssuesByKeyNodesById",
 	request: "NodeMoveInput", response: "NodeMoved",
 	takes: []string{"parent", "after"}, answers: []string{"parent", "after", "placement_seq"},
-	notQuery: []string{"dry_run", "expected_count"},
+	ifMatchRequired: true,
+	notQuery:        []string{"dry_run", "expected_count"},
 	codes: []string{
 		"400 INVALID_POINTER", "400 NODE_NOT_MOVABLE", "400 MOVE_INPUT", "403 DOCUMENT_WRITER_NOT_ARCHITECT",
 		"409 ANSWERED_ASK_KEPT", "409 PARENT_NOT_REACHED", "409 PARENT_DOCUMENT_REMOVABLE", "409 PARENT_CONTENDED",
 		"409 CONTAINER_WOULD_EMPTY", "412 PRECONDITION_FAILED", "428 PRECONDITION_REQUIRED",
 	},
 	generatedHeaderMember: `"If-Match": string;`,
+}, {
+	method: "delete", operationID: "deleteApiV1IssuesByKeyNodesById",
+	request: "ActorInput", response: "NodeDeleted",
+	takes: []string{"actor"}, answers: []string{"count"},
+	query: []string{"dry_run", "expected_count"},
+	codes: []string{
+		"400 NODE_NOT_DELETABLE", "400 DELETE_INPUT", "403 DOCUMENT_WRITER_NOT_ARCHITECT", "403 STATE_NOT_PERMITTED",
+		"409 NODE_HOLDS_RESULT", "409 ANSWERED_ASK_KEPT", "409 DELETE_COUNT_MOVED", "409 PARENT_CONTENDED",
+		"409 CONTAINER_WOULD_EMPTY", "412 PRECONDITION_FAILED", "428 PRECONDITION_REQUIRED",
+	},
+	refusals:              map[string][]string{"409": {"code", "error", "count"}},
+	generatedHeaderMember: `"If-Match"?: string;`,
 }}
 
 // TestNodePlacementRoutesMatchTheGeneratedContract reads the committed contract of the node's own
 // resource, /api/v1/issues/{key}/nodes/{id} (R7): packages/contracts/schemas/dispatch-openapi.json
 // and packages/contracts/src/dispatch-api.generated.ts. Each operation of nodePlacementOperations
-// declares its body's members and its answer's, a required If-Match header, the query parameters
-// it takes and none of those it must not, and names each code of its refusals in its description;
+// declares its body's members and its answer's, an If-Match header (required on the move, which
+// every request sends, and not on the delete, whose dry run sends none), the query parameters it
+// takes and none of those it must not, each refusal body richer than a code and a message (the
+// delete's 409 DELETE_COUNT_MOVED and its count), and names each code of its refusals in its
+// description;
 // the generated TypeScript holds the operation, its If-Match member and each member of its body
 // and its answer; and every node of the tree read declares placement_seq, the tag a move's If-Match
 // names. A failure names the operation and the member or the code it cannot find.
@@ -184,8 +204,8 @@ func TestNodePlacementRoutesMatchTheGeneratedContract(t *testing.T) {
 		}
 		members(name+"'s 200 answer", want.response, want.answers)
 		ifMatch := slices.IndexFunc(declared.Parameters, func(p parameter) bool { return p.In == "header" && p.Name == "If-Match" })
-		if ifMatch < 0 || !declared.Parameters[ifMatch].Required {
-			t.Errorf("%s declares no required If-Match header: %+v", name, declared.Parameters)
+		if ifMatch < 0 || declared.Parameters[ifMatch].Required != want.ifMatchRequired {
+			t.Errorf("%s declares no If-Match header required %t: %+v", name, want.ifMatchRequired, declared.Parameters)
 		}
 		for _, query := range want.query {
 			if !slices.ContainsFunc(declared.Parameters, func(p parameter) bool { return p.In == "query" && p.Name == query }) {
@@ -200,6 +220,24 @@ func TestNodePlacementRoutesMatchTheGeneratedContract(t *testing.T) {
 		for _, code := range want.codes {
 			if !strings.Contains(declared.Description, code) {
 				t.Errorf("%s's description names no %s", name, code)
+			}
+		}
+		for status, declares := range want.refusals {
+			schema := declared.Responses[status].Content["application/json"].Schema
+			shapes := []string{refOf(schema)}
+			for _, union := range []string{"oneOf", "anyOf"} {
+				arms, _ := schema[union].([]any)
+				for _, arm := range arms {
+					if held, ok := arm.(map[string]any); ok {
+						shapes = append(shapes, refOf(held))
+					}
+				}
+			}
+			if !slices.ContainsFunc(shapes, func(shape string) bool {
+				properties := document.Components.Schemas[shape].Properties
+				return shape != "" && !slices.ContainsFunc(declares, func(member string) bool { _, held := properties[member]; return !held })
+			}) {
+				t.Errorf("%s's %s answer declares no body with %v among %v", name, status, declares, shapes)
 			}
 		}
 		operationAt := strings.Index(string(generated), "\n  "+want.operationID+": {")
@@ -366,6 +404,15 @@ func queryVersionMarkdown(t *testing.T, database *store.Store, artifactID string
 // that backend to queue behind A (storetest.WaitForQueuedBehind), at the statement that takes an
 // owner's lock (lockstep.RequireStoppedAt). It then commits A. B answers 409
 // PARENT_DOCUMENT_REMOVABLE naming Q, L and U, and Q's part_of is the one it had.
+//
+// In its subtest comment, the parent's chain holds a comment, which stands under the issue its row
+// names wherever its part_of places it. Alice writes, in K2, a child of K1, a comment on the text of
+// a lens of K2, and moves the lens under K1's node through PATCH: the comment keeps its issue, K2,
+// and its part_of to the lens. The test holds K2's owner lock in A, then sends move B of a paragraph
+// of K3, a child of K2, under the comment, through PATCH /api/v1/issues/{K3}/nodes/{id}: B waits at
+// the statement that takes an owner's lock, since the comment's row names K2, and once A commits B
+// is taken, the paragraph stands under the comment, and the comment's part_of still names the lens:
+// no request moves the comment itself.
 func TestAMoveUnderALensOfAParentIssueWaitsForThatIssuesLock(t *testing.T) {
 	t.Parallel()
 	t.Run("criterion", func(t *testing.T) {
@@ -421,6 +468,61 @@ func TestAMoveUnderALensOfAParentIssueWaitsForThatIssuesLock(t *testing.T) {
 		}
 		if now, _ := placementOf(t, database, "block", q); now.Seq != held.Seq {
 			t.Errorf("the refused move of %s changed its part_of to %s %s", q, now.ToKind, now.ToID)
+		}
+	})
+	t.Run("comment", func(t *testing.T) {
+		handler, database, deps := newTestServer(t, testServerOptions{})
+		ctx := context.Background()
+		createReferenceAPIProject(t, handler, "LOCKCM")
+		k1 := createDigestIssue(t, handler, database, "LOCKCM", "The parent", "The parent's paragraph.\n", false)
+		k2 := createDigestChild(t, handler, database, "LOCKCM", "The child", ":::criterion{#c2}\nThe child's store answers in time.\n:::\n", k1.Key, false)
+		k3 := createDigestChild(t, handler, database, "LOCKCM", "The grandchild", "The grandchild's paragraph moves under the comment.\n", k2.Key, false)
+		lens := decodeBody[lensInvoked](t, created(t, "invoke a lens on K2's criterion", dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/issues/"+k2.Key+"/lenses", map[string]any{"on": "dispatch://" + k2.Key + "/spec#b-c2", "kind": "trade-off", "verdict": "The read path holds one cache."}, "alice")))
+		lensNode := graphstore.KindLens + "/" + lens.ID
+		comment := decodeBody[model.Comment](t, created(t, "alice's comment on the lens's text", dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/issues/"+k2.Key+"/comments", map[string]any{"body": "Which cache is it?", "anchor": map[string]any{"node": lensNode, "quote": "one cache"}}, "alice")))
+		_, lensTag := placementOf(t, database, graphstore.KindLens, lens.ID)
+		if response := patchNode(t, handler, k2.Key, lensNode, lensTag, map[string]any{"parent": graphstore.KindIssue + "/" + k1.Key}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("the move of the lens %s under %s answered %d %s, want 200", lens.ID, k1.Key, response.Code, response.Body.String())
+		}
+		var commentIssue string
+		if err := database.Pool.QueryRow(ctx, `select coalesce(issue_key, '') from comments where id = $1::uuid`, comment.ID).Scan(&commentIssue); err != nil {
+			t.Fatalf("read the issue of the comment %s: %v", comment.ID, err)
+		}
+		onLens, _ := placementOf(t, database, graphstore.KindComment, comment.ID)
+		if commentIssue != k2.Key || onLens.ToKind != graphstore.KindLens || onLens.ToID != lens.ID {
+			t.Fatalf("the comment %s stands in %s under %s %s after the move of its lens, want in %s under the lens %s", comment.ID, commentIssue, onLens.ToKind, onLens.ToID, k2.Key, lens.ID)
+		}
+		paragraph := blockWithText(t, database, "The grandchild's paragraph")
+		held, tag := placementOf(t, database, "block", paragraph)
+
+		writeHandler, writePID := oneConnectionHandler(t, deps)
+		owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+			Name: "issue " + k2.Key + "'s owner lock", Step: lockstep.StepOwner, Taken: true, Statement: lockstep.OwnerLockStatement,
+		}, store.IssueOwner(k2.Key))
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			answered <- patchNode(t, writeHandler, k3.Key, paragraph, tag, map[string]any{"parent": graphstore.KindComment + "/" + comment.ID}, "alice")
+		}()
+		if early, answeredEarly := storetest.WaitForQueuedBehind(t, owner.Tx, writePID, answered); answeredEarly {
+			_ = owner.Tx.Commit(ctx)
+			t.Fatalf("the move of %s under the comment %s did not wait for the owner lock of %s, the issue the comment's row names: it answered %d %s",
+				paragraph, comment.ID, k2.Key, early.Code, early.Body.String())
+		}
+		lockstep.RequireStoppedAt(t, ctx, database, writePID, "the move of "+paragraph, owner)
+		if err := owner.Tx.Commit(ctx); err != nil {
+			t.Fatalf("commit A: %v", err)
+		}
+		response := testwait.Receive(t, "the move of "+paragraph+" under the comment "+comment.ID, answered)
+		if response.Code != http.StatusOK {
+			t.Fatalf("the move of %s under the comment %s answered %d %s once %s's owner lock was released, want 200", paragraph, comment.ID, response.Code, response.Body.String(), k2.Key)
+		}
+		if now, _ := placementOf(t, database, "block", paragraph); now.ToKind != graphstore.KindComment || now.ToID != comment.ID || now.Seq == held.Seq {
+			t.Errorf("the move of %s left it under %s %s, want the comment %s", paragraph, now.ToKind, now.ToID, comment.ID)
+		}
+		if still, _ := placementOf(t, database, graphstore.KindComment, comment.ID); still.ToKind != graphstore.KindLens || still.ToID != lens.ID {
+			t.Errorf("the comment %s stands under %s %s after the move under it, want the lens %s: no request moves the comment itself", comment.ID, still.ToKind, still.ToID, lens.ID)
 		}
 	})
 }
