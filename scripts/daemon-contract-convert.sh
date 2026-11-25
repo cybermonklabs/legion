@@ -78,14 +78,17 @@
 #                 run this with --base naming it. A branch stacked on a base branch that main then
 #                 took as a squash, which GitHub retargets to main, still carries that branch's
 #                 entries, and main holds them as entry files: an entry whose text opens an entry
-#                 file of the ref is refused, naming that file; run this with --base naming the base
-#                 branch's last commit before the squash, then merge main. A branch with more than
-#                 one merge base with a ref that holds the cutover, which merged a commit of the
-#                 ref's history apart from the ref, is refused, naming them: which entries are the
-#                 branch's own would hang on the one git picks. Merge into the branch the ref as it
-#                 was before it merged the cutover; where that leaves more than one merge base,
-#                 rebase the branch's own commits onto that commit instead, which leaves it the one.
-#                 A ref that has not merged the cutover is refused for that first.
+#                 file of the ref, or whose constant an entry file of the ref declares (a text edited
+#                 after the conversion keeps that name), is refused, naming that file; run this with
+#                 --base naming the base branch's last commit before the squash, then merge main. An
+#                 entry whose text changed after its conversion and that declares no constant, or
+#                 whose constant was renamed too, is not caught. A branch with more than one merge
+#                 base with a ref that holds the cutover, which merged a commit of the ref's history
+#                 apart from the ref, is refused, naming them: which entries are the branch's own
+#                 would hang on the one git picks. Merge into the branch the ref as it was before it
+#                 merged the cutover; where that leaves more than one merge base, rebase the
+#                 branch's own commits onto that commit instead, which leaves it the one. A ref that
+#                 has not merged the cutover is refused for that first.
 #   --report      steps 1 to 4 read and nothing done: no file written, no merge, no Go toolchain,
 #                 and no git read but of commits, trees, the blobs of the files the branch changed
 #                 and those of the ref's entry files, so it runs in a blobless clone. It prints, for
@@ -175,6 +178,8 @@ ENTRY_FILE = re.compile(rf"(?:^|/)contract_\d{{14}}_{SLUG_WORDS}(?:_test)?\.go$"
 HEADER = re.compile(r"^// (\d+): (.*)$")
 # The first line of an entry file's text, as entry_file and scripts/daemon-contract-entry.sh write it.
 ENTRY_HEADER = re.compile(rf"^// \d{{14}} {SLUG_WORDS}:(?: (.*))?$")
+# An entry file's declaration of its entry's constant, whose value is the entry's id.
+ENTRY_CONST = re.compile(r"^const (\w+) = \d{14}$", re.M)
 CONST_LINE = re.compile(r"^const DaemonAPIVersion = (\d+)\s*$", re.M)
 
 # Each frozen table of the base, by the variable it is (or, for the rows enumeratedFields()
@@ -566,32 +571,40 @@ def summary(entry):
 
 
 def held_in_entry_files(ref, entries):
-    """The path of the entry file of ref whose text opens with each entry's summary, by the entry's
-    number: the entry file writes the entry's text verbatim after `// <id> <slug>: `."""
+    """The entry file of ref that holds each entry, by the entry's number, as (path, None) where its
+    text opens with the entry's summary (an entry file writes the entry's text verbatim after `// <id>
+    <slug>: `), else as (path, constant) where it declares the constant the entry declares, whose name
+    an edit of the text after the conversion leaves as it was."""
     paths = [p for p in git("ls-tree", "--name-only", ref, f"{API}/").decode().split("\n")
              if ENTRY_FILE.search(p) and not p.endswith("_test.go")]
     texts = read_blobs([f"{ref}:{p}" for p in paths])
-    openings = []
+    files = []
     for path in paths:
         text = texts[f"{ref}:{path}"]
         if text is None:
             die(f"cannot read {path} at {ref[:10]}")
         lines = text.split("\n")
         first = next((i for i, line in enumerate(lines) if ENTRY_HEADER.match(line)), None)
-        if first is None:
-            continue
-        rest = []
-        for line in lines[first + 1:]:
-            if not line.startswith("//"):
-                break
-            rest.append(line[2:])
-        openings.append((path, joined([ENTRY_HEADER.match(lines[first]).group(1) or ""] + rest)))
+        opening = None
+        if first is not None:
+            rest = []
+            for line in lines[first + 1:]:
+                if not line.startswith("//"):
+                    break
+                rest.append(line[2:])
+            opening = joined([ENTRY_HEADER.match(lines[first]).group(1) or ""] + rest)
+        files.append((path, opening, set(ENTRY_CONST.findall(text))))
     held = {}
     for e in entries:
         want = summary(e)
-        path = next((p for p, text in openings if text == want or text.startswith(want + " ")), None)
+        path = next((p for p, opening, _ in files
+                     if opening is not None and (opening == want or opening.startswith(want + " "))), None)
         if path:
-            held[e["number"]] = path
+            held[e["number"]] = (path, None)
+            continue
+        path = next((p for p, _, consts in files if e["const"] in consts), None)
+        if path:
+            held[e["number"]] = (path, e["const"])
     return held
 
 
@@ -774,21 +787,9 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
             f": the branch carries a change {main_name} already holds. Merge {before_cutover(main_name)} into the "
             "branch first, then convert it")
     entries = [e for e in entries if summary(e) not in on_main]
-    # An entry whose text opens an entry file of main is a change main took after the cutover: the
-    # entry of a base branch this branch was stacked on, converted and taken as a squash, after which
-    # GitHub retargets the branch to main. Over its merge base with main the branch would convert it
-    # again under another id, as a second entry file of one change.
-    held = held_in_entry_files(main, entries) if entries else {}
-    for number, path in sorted(held.items()):
-        print(f"onmain {number} {path}")
-    if held and mode == "convert":
-        die("; ".join(f"entry {n} of this branch is {path} of {main_name}" for n, path in sorted(held.items())) +
-            f": the branch carries the entries of a base branch that {main_name} took as a squash after the "
-            "cutover, and would convert them again under other ids. Run this with --base naming the base "
-            f"branch's last commit before the squash, then merge {main_name}")
-    entries = [e for e in entries if e["number"] not in held]
+    nothing = f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert"
     if not entries:
-        print(f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert")
+        print(nothing)
         return None
 
     go_paths = [p for p in changed_paths(base, head, "packages/daemon") if p.endswith(".go")]
@@ -846,8 +847,28 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
                     else:
                         start, end, doc = decl.start, decl.end, decl.doc_lines()
                     entry.update(const=code[0][1], const_path=path, const_line=src.line(src.tokens[first][2]),
-                                 doc=[re.sub(r"^\s*", "", line) for line in doc])
-                    edits[path].replace(start, end)
+                                 const_span=(start, end), doc=[re.sub(r"^\s*", "", line) for line in doc])
+    # An entry an entry file of main holds is a change main took after the cutover: the entry of a base
+    # branch this branch was stacked on, converted and taken as a squash, after which GitHub retargets
+    # the branch to main. Over its merge base with main the branch would convert it again under another
+    # id, as a second entry file of one change.
+    held = held_in_entry_files(main, entries)
+    for number, (path, _) in sorted(held.items()):
+        print(f"onmain {number} {path}")
+    if held and mode == "convert":
+        die("; ".join(f"entry {n} of this branch declares {const}, which {path} of {main_name} declares too" if const
+                      else f"entry {n} of this branch is {path} of {main_name}" for n, (path, const) in sorted(held.items())) +
+            f": the branch carries the entries of a base branch that {main_name} took as a squash after the "
+            "cutover, and would convert them again under other ids. Run this with --base naming the base "
+            f"branch's last commit before the squash, then merge {main_name}")
+    entries = [e for e in entries if e["number"] not in held]
+    if not entries:
+        print(nothing)
+        return None
+    numbers = {e["number"]: e for e in entries}
+    for e in entries:
+        if e["const_path"]:
+            edits[e["const_path"]].replace(*e["const_span"])
     taken = set()
     for e in entries:
         if e["const"]:
