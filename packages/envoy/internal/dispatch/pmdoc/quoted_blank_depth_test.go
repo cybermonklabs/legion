@@ -16,6 +16,7 @@ import (
 // divergence this change closes. A reader that answers spread at every depth closes one and three
 // and breaks two, which is what this test is here to catch.
 func TestAnUnclosedTypedBlocksTabBlankLinesFollowTheBrowserAtEveryQuoteDepth(t *testing.T) {
+	t.Parallel()
 	const callout = ":::callout{#c1 kind=\"note\" title=\"T\"}"
 	for _, test := range []struct {
 		name   string

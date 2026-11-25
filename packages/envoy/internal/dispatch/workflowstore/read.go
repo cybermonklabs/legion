@@ -7,6 +7,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -121,6 +123,47 @@ func compareRuns(left, right Step) int {
 	return cmp.Compare(left.ID, right.ID)
 }
 
+// IssueRunsRevision answers the revision of one issue's runs: the count of the workflow_tuples rows
+// of every run a `part_of` tuple ties to the issue, 0 for an issue Legion never ran. Nothing updates
+// a tuple and nothing deletes one, and every write that moves a run appends one or more (putNode),
+// so the count rises with each commit of such a write and never falls. The live view of the issue's
+// Legion state carries it, and moves on RunsChannel, which the same writes signal.
+//
+// It is a count and not the newest seq of those tuples, which would miss a run: two writes of one
+// issue's runs hold the issue's owner lock shared (api/steps.go's lockRecordedIssue), so neither
+// waits for the other, and seq is a bigserial drawn before the commit, so the write that drew the
+// earlier seq can commit after the one that drew the later. A read between the two commits sees
+// the later seq, and the newest seq then stays where it was when the other write lands.
+//
+// It reads the `part_of` tuples into the issue through workflow_tuples_inbound, as IssueSteps
+// does, and each run's own tuples through the two partial indexes that key a node's tuples by the
+// node: workflow_tuples_values its attributes and workflow_tuples_current its relations, the
+// literal to_kind of each half implying its index's predicate. A join that named no to_kind would
+// imply neither predicate and read the whole table. So it costs the issue's own runs' tuples and
+// nothing else.
+func IssueRunsRevision(ctx context.Context, q Queryer, issue string) (int64, error) {
+	rows, err := q.Query(ctx, `
+		select count(*)
+		from workflow_tuples t, lateral (
+			select 1 from workflow_tuples v
+			where v.from_kind = t.from_kind and v.from_id = t.from_id and v.to_kind = '`+KindValue+`'
+			union all
+			select 1 from workflow_tuples r
+			where r.from_kind = t.from_kind and r.from_id = t.from_id and r.to_kind <> '`+KindValue+`'
+		) tuples
+		where t.to_kind = '`+KindIssue+`' and t.to_id = $1 and t.kind = '`+RelationPartOf+`'
+			and t.from_kind = '`+KindStep+`' and t.asserted
+	`, issue)
+	if err != nil {
+		return 0, fmt.Errorf("read the runs' revision of %s: %w", issue, err)
+	}
+	revision, err := pgx.CollectExactlyOneRow(rows, pgx.RowTo[int64])
+	if err != nil {
+		return 0, fmt.Errorf("read the runs' revision of %s: %w", issue, err)
+	}
+	return revision, nil
+}
+
 // ProjectPlans answers each finished issue of project, an issue whose status is done and whose
 // closed_at is set, newest close first, its close within window ([Since, Until), each nil for no
 // bound, each rounded up to the microsecond). Each issue carries its plan (the node of its newest
@@ -154,7 +197,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 	type gathering struct {
 		issue IssuePlan
 		runs  []Step
-		plan  *madePlan
+		plan  *MadePlan
 	}
 	var issues []gathering
 	for rows.Next() {
@@ -183,7 +226,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 			if err != nil {
 				return nil, err
 			}
-			if candidate := (madePlan{plan: plan, made: *made}); candidate.newerThan(last.plan) {
+			if candidate := (MadePlan{Plan: plan, Made: *made}); candidate.newerThan(last.plan) {
 				last.plan = &candidate
 			}
 		}
@@ -196,7 +239,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 	for _, gathered := range issues {
 		issue := gathered.issue
 		if gathered.plan != nil {
-			issue.Plan = &gathered.plan.plan
+			issue.Plan = &gathered.plan.Plan
 		}
 		slices.SortFunc(gathered.runs, compareRuns)
 		for _, step := range gathered.runs {
@@ -218,25 +261,84 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 	return finished, nil
 }
 
-// madePlan is a plan with the moment its node was made, which picks between two plans of one
-// generation.
-type madePlan struct {
-	plan Plan
-	made time.Time
+// MadePlan is a plan with the moment its node was made, which is when the run's work started and
+// which picks between two plans of one generation.
+type MadePlan struct {
+	Plan Plan
+	Made time.Time
 }
 
 // newerThan answers whether candidate is newer than held (nil for none): of a higher generation,
 // or of the same generation and made later, or made at the same moment with the greater id, so the
 // read picks one plan whatever order the rows came in.
-func (candidate madePlan) newerThan(held *madePlan) bool {
+func (candidate MadePlan) newerThan(held *MadePlan) bool {
 	if held == nil {
 		return true
 	}
-	if order := cmp.Compare(candidate.plan.Generation, held.plan.Generation); order != 0 {
+	if order := cmp.Compare(candidate.Plan.Generation, held.Plan.Generation); order != 0 {
 		return order > 0
 	}
-	if order := candidate.made.Compare(held.made); order != 0 {
+	if order := candidate.Made.Compare(held.Made); order != 0 {
 		return order > 0
 	}
-	return candidate.plan.ID > held.plan.ID
+	return candidate.Plan.ID > held.Plan.ID
+}
+
+// IssuesPlans answers, by issue, each version of the plan of each run of each issue of keys, with
+// the moment that version's write made it, oldest first in newerThan's order. One run keeps one
+// plan node, whose made_at is its first write's, and a later version replaces the node's tasks
+// whole (planFact); every write of the tasks appends a value tuple of them, stamped with the
+// write's moment (putNode). So each version is read from its tuple, with its document version from
+// the tuple the same write appended, and the metrics' fallback timeline reads each mark by the
+// version in force at that mark, not the whole run by the newest. An issue Legion never ran answers
+// none. It reads the `part_of` tuples into those issues (workflow_tuples_inbound, whose predicate
+// the literal to_kind implies), joins each to its node row and the node's own tasks tuples, so it
+// costs their plans alone.
+func IssuesPlans(ctx context.Context, q Queryer, keys []string) (map[string][]MadePlan, error) {
+	rows, err := q.Query(ctx, `
+		select t.to_id, n.id,
+			n.attributes || coalesce(jsonb_build_object('`+AttributeTasks+`', v.to_id::jsonb), '{}'::jsonb)
+				|| coalesce(jsonb_build_object('`+AttributeVersion+`', w.to_id::bigint), '{}'::jsonb),
+			coalesce(v.at, n.made_at)
+		from workflow_tuples t join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
+		left join workflow_tuples v on v.from_kind = n.kind and v.from_id = n.id and v.kind = '`+AttributeTasks+`'
+			and v.to_kind = '`+KindValue+`' and v.asserted
+		left join workflow_tuples w on w.from_kind = n.kind and w.from_id = n.id and w.kind = '`+AttributeVersion+`'
+			and w.to_kind = '`+KindValue+`' and w.asserted and w.at = v.at
+		where t.to_kind = '`+KindIssue+`' and t.to_id = any($1) and t.kind = '`+RelationPartOf+`'
+			and t.from_kind = '`+KindPlan+`' and t.asserted
+	`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the plans of %d issues: %w", len(keys), err)
+	}
+	defer rows.Close()
+	plans := map[string][]MadePlan{}
+	for rows.Next() {
+		var issue, id string
+		var attributes []byte
+		var made time.Time
+		if err := rows.Scan(&issue, &id, &attributes, &made); err != nil {
+			return nil, fmt.Errorf("read the plans of %d issues: %w", len(keys), err)
+		}
+		plan, err := planFrom(id, attributes)
+		if err != nil {
+			return nil, err
+		}
+		plans[issue] = append(plans[issue], MadePlan{Plan: plan, Made: made.UTC()})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the plans of %d issues: %w", len(keys), err)
+	}
+	for _, held := range plans {
+		slices.SortFunc(held, func(a, b MadePlan) int {
+			switch {
+			case b.newerThan(&a):
+				return -1
+			case a.newerThan(&b):
+				return 1
+			}
+			return 0
+		})
+	}
+	return plans, nil
 }

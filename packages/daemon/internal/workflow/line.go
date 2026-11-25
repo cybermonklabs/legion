@@ -238,6 +238,17 @@ func (w Walk) MovesBack(row Row) bool {
 	return row.ToPlace.Kind != "" && placeRank(row.ToPlace) < placeRank(row.FromPlace)
 }
 
+// standsPast says whether w's task, standing where its issue stands in at (placeIn), stands past
+// the place of p on its line (PlaceOf): a move from there to p would move it back (MovesBack). A
+// phase the line does not hold has no place, so no task stands past it. The merge forward reads
+// it: whether the task stands past its implementing (mergeForwardOnEntry), and whether its
+// reviewer step already ran (mergeForwardLanded).
+func (w Walk) standsPast(at, p phase.Phase) bool {
+	from, _ := w.placeIn(at)
+	to, _ := w.PlaceOf(p)
+	return w.MovesBack(Row{From: at, To: p, FromPlace: from, ToPlace: to})
+}
+
 // issuePhaseOf is the phase w's task derives at place in state, which an issue of that one task
 // stands in: done for a task that is done or left the workflow before it was done
 // (record.TaskLeft), whatever its place, which is the phase of an issue out of the workflow; retro

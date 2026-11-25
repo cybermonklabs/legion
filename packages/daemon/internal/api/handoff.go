@@ -646,28 +646,29 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 }
 
 // implementationPullRequest is the implementer's completion's read of GitHub: in implementing, a
-// completion moves its issue to testing only on a pull request recorded open or merged for it
-// (workflow's TriggerImplementationReady), and only the opened webhook, or the daemon's per-issue
-// read standing in for one that webhook lost (readIssuePullRequest), records one open. So before
-// the completion is applied, the open pull request on the branch of the completion's task
-// (position.branch: the task's own, record.PlanTask.BranchOf, and the issue's, claim.IssueBranch,
-// for an issue with no plan rows, completionPosition), is read as the implement App, minted for the
-// owner of the issue's repository in GitHub's spelling (record.Issue.GitHubRepo, which the
-// webhook's facts name it by), and it says whether the completion goes on:
+// completion moves its issue to its task's next step (testing, in the default steps) only on a
+// pull request recorded open or merged for it (workflow's TriggerImplementationReady), and only
+// the opened webhook, or the daemon's per-issue read standing in for one that webhook lost
+// (readIssuePullRequest), records one open. So before the completion is applied, the open pull
+// request on the branch of the completion's task (position.branch: the task's own,
+// record.PlanTask.BranchOf, and the issue's, claim.IssueBranch, for an issue with no plan rows,
+// completionPosition), is read as the implement App, minted for the owner of the issue's
+// repository in GitHub's spelling (record.Issue.GitHubRepo, which the webhook's facts name it
+// by), and it says whether the completion goes on:
 //
 //   - one open against the base the plan gives the task (position.base, record.StoredPlan.BaseOf),
 //     or against any base where none is read (an issue with no plan rows): when the record does
 //     not already hold it open, the intake.PullRequestOpened its webhook would have carried is
 //     applied first, a reopen when the record holds the same pull request closed, under the
-//     read's stable id (intake.OpenedRead). The completion then moves the issue to testing. A
-//     failure to apply it is FACT_APPLY_FAILED, with the completion not applied.
+//     read's stable id (intake.OpenedRead). The completion then moves the issue to its task's
+//     next step. A failure to apply it is FACT_APPLY_FAILED, with the completion not applied.
 //   - one open against another base: HANDOFF_PULL_REQUEST_BASE, 409, naming the task's base and
 //     the command that sets it, and nothing is applied. Legion merges no task's work into a base
 //     the plan does not give, and the review of the task reads its pull request, which against
 //     another base shows work that is not the task's.
 //   - none, with the record holding the pull request merged: the completion is applied and moves
-//     the issue to testing. The work landed, its merge told the architect (pr-merged), and the
-//     workflow runs on.
+//     the issue to its task's next step. The work landed, its merge told the architect
+//     (pr-merged), and the workflow runs on.
 //   - none otherwise: HANDOFF_NO_PULL_REQUEST, 409, and nothing is applied, so the completion at
 //     the same commit is applied once the pull request is open. When the record holds the pull
 //     request closed without merging, the refusal names it: the close told the architect, which

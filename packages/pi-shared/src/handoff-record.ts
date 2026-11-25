@@ -172,7 +172,7 @@ export function paneLatestHandoff(
   fetchImpl: typeof fetch = fetch
 ): LatestHandoff {
   return async (issue, word) => {
-    const { dispatch } = sessionDispatchSettings(file, env, { cwd, session });
+    const { dispatch } = await sessionDispatchSettings(file, env, { cwd, session });
     if (!dispatch.enabled) {
       throw new Error(`Dispatch is off for this pane: ${dispatch.error ?? dispatch.notice}`);
     }
@@ -397,7 +397,7 @@ const STANDING = ["log", "-r", "@-", "--no-graph", "-T", "commit_id"] as const;
 
 /** A commit as a handoff record names it: 40 lower-case hexadecimal characters, the shape every
  * role's prompt asks for and the one the daemon compares a completion's head against. */
-const RECORD_HEAD = /^[0-9a-f]{40}$/;
+export const RECORD_HEAD = /^[0-9a-f]{40}$/;
 
 /** The head a handoff record's `body` names, the commit the work that record reports was done
  * against, or `undefined` when the body is no JSON object, carries no `head`, or carries one of
@@ -417,7 +417,7 @@ function recordHead(body: string): string | undefined {
 
 /** The head of `step`'s branch at origin, as `ready_for_update` reports it: the commit the pane's
  * jj reads for that branch at the remote, and `""` when the branch is not on the remote at all — a
- * planner before its first push has none, which is no error. */
+ * planner step that runs before the branch's first push has none, which is no error. */
 export async function findPushedBranchHead(input: {
   readonly step: StepCopy;
   readonly jj?: JjRunner;

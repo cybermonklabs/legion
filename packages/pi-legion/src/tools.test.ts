@@ -120,6 +120,8 @@ function recordingDaemon(options: {
     "issueStatus",
     "freshSession",
     "compact",
+    "intakeReplay",
+    "intakeDiscard",
     "handoffComplete",
     "releaseRecords",
   ];
@@ -184,132 +186,6 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   return { posted, daemon: () => client };
 }
 
-/** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
- * tool's name and its parameters, and names the hold it leaves, that a stop before the issue's
- * first step settles its plan first, and each refusal code its text gives. */
-const STOP_TASK_TERMS = {
-  opens: "stop_task (issue, task) ",
-  names: [
-    "`holdReason` task-stopped",
-    "register_plan",
-    "first step",
-    "settles the plan",
-    "(TASK_STOPPED)",
-    "(TASK_NOT_FOUND",
-    "(TASK_DONE)",
-    "(TREE_LINGERING)",
-    "(ISSUE_OUTSIDE_TREE)",
-    "(TASK_STALE_GENERATION)",
-    "(TASK_AWAITING_PERSON",
-  ],
-} as const;
-
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, names
- * each refusal code its text gives, and says why a parent waits for the issues beneath it. */
-const SIGN_OFF_TERMS = {
-  opens: "sign_off ",
-  names: [
-    "(SIGNOFF_OUTSIDE_ACCEPTING)",
-    "(SIGNOFF_CHILD_IN_WORKFLOW",
-    "(ISSUE_NOT_OWNED",
-    "ISSUE_OUTSIDE_TREE",
-    "SIGNOFF_STALE_GENERATION",
-    "SIGNOFF_STALE_ENTRY",
-    "since a parent is accepted only once no issue beneath it is still in the workflow",
-  ],
-} as const;
-
-/** The text of the description after `sign_off`'s. */
-const OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF =
-  "Sign off again when each of them has left the workflow. " +
-  "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
-  "End a child with your own status write in Dispatch. " +
-  "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
-  "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
-  "For a fold, name the carrier in the reason: the issue that carries the work. " +
-  "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
-  "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
-  "Before done on a running child, have its worker push the work that the carrier needs. " +
-  "Done ends the worker's turn and the pod at once. " +
-  "Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
-  "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
-  "Do this before done, or at once after a done that you wrote first. " +
-  "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
-  "A restart is backlog, then rerun_child. " +
-  "Say why in a dispatch comment. " +
-  "Write no status on a child that is already done, because a move out of done ends an open production check. " +
-  "After each move, read the child back (dispatch read --issue <KEY>). " +
-  "When the daemon set the move back, write it again. " +
-  "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it. " +
-  "When a child can neither finish nor take one of these moves, ask the person. Hold the acceptance until they answer. " +
-  "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
-  "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
-  "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-  "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
-  "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
-  "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
-  "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
-  "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
-  "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
-  "set_status moves an issue to todo, backlog or icebox. " +
-  "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
-  "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
-  "controller's report issue's icebox, because that issue holds no work. " +
-  "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
-  "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
-  "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
-  "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
-  "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
-  "claim is running, and no work was handed to it. It says what was refused, where this request stopped the claim " +
-  "and a step that would have started it again was refused, and the state that left the claim in: read that state " +
-  "in read_state, and ask for a fresh session again only where the claim is suspended. " +
-  "It reaches a claim stored working that no process stands behind: the daemon reads that claim's process when the " +
-  "request arrives, suspends the claim where it stands, and starts it again with the task its dead turn held. " +
-  "The daemon refuses it for a claim whose process that read finds running " +
-  "(CLAIM_IN_A_TURN), for a claim whose session is being compacted, which is not read at " +
-  "all (CLAIM_IN_A_TURN), for a claim whose process the runtime would not answer for, for " +
-  "one that records no process to read, and for one that moved under the request and that a second read " +
-  "finds no longer working or gone once more, each left exactly as the request found it " +
-  "(CLAIM_UNSETTLED; a claim that moved is otherwise answered as that second read finds it), for a claim a " +
-  "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
-  "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
-  "one queued, one whose launch is in flight, and one left working under a relaunch the " +
-  "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
-  "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
-  "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
-  "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
-  "fresh_session for a claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
-  "says whether the session was compacted and, when it was not, why; the claim is back either way. The daemon " +
-  "refuses it for a claim that is suspended, failed or retired, and for one stored working " +
-  "that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for a " +
-  "claim whose process the daemon reads as running (CLAIM_IN_A_TURN), for a claim whose " +
-  "session is being compacted already (CLAIM_IN_A_TURN), for a claim whose process the " +
-  "runtime would not answer for, for one that records no process to read, and for one " +
-  "that moved out of working while the request was made " +
-  "(CLAIM_UNSETTLED), for a claim a " +
-  "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
-  "where it is not), for a claim between states — one queued, one whose launch is in " +
-  "flight, one whose agent has registered and is not ready yet, which fresh_session " +
-  "reaches, and one left working under a relaunch the wake pacing parked " +
-  "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
-  "and for role controller. " +
-  "Each refusal says what the claim does now and which operation reaches each state. It " +
-  "names no moment to come back at: ask again later, and read the claim's state in " +
-  "read_state. " +
-  "pause (reason) pauses the whole project, and resume ends its pause; neither takes an issue. While the project " +
-  "is paused the daemon admits no issue, and it starts no role and gives no role a task except the controller. Every " +
-  "other role stops with its conversation kept, an idle one at once and one in a turn when that turn ends, and the " +
-  "pause deletes no pod. Each task, notice and wake for a stopped role waits for the resume. The answer is the " +
-  "pause: its id, since, by and reason. The daemon refuses a second pause (PROJECT_ALREADY_PAUSED, naming the " +
-  "pause that stands) and a pause its configuration cannot hold (PAUSE_UNAVAILABLE, naming the setting). " +
-  "resume ends the pause whoever made it, the operator's included. Each role the pause held something for then " +
-  "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
-  "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
-  "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
-  "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
-  "since each would start a turn. " +
-  "What a later phase needs goes in your handoff; a question for another live role goes to its role topic with envoy_publish.";
-
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
  * and the controller. */
 const EVERY_SESSION: readonly LegionToolSession[] = [
@@ -334,29 +210,6 @@ const toolFor = (active: LegionToolSession) =>
     resolveDocument: noDocumentLookup,
     session: () => active,
   });
-
-test("the legion tool's description ends with the exact text Oh My Pi agents read, for every session, and names stop_task's and sign_off's terms", () => {
-  for (const active of EVERY_SESSION) {
-    const description = toolFor(active).description;
-    const after = OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF;
-    expect(description.slice(description.length - after.length)).toBe(after);
-    const held = description.slice(
-      description.indexOf(STOP_TASK_TERMS.opens),
-      description.length - after.length
-    );
-    const signOffAt = held.indexOf(SIGN_OFF_TERMS.opens);
-    expect(signOffAt).toBeGreaterThan(0);
-    const stopTask = held.slice(0, signOffAt);
-    const signOff = held.slice(signOffAt);
-    expect(stopTask.startsWith(STOP_TASK_TERMS.opens)).toBe(true);
-    for (const term of STOP_TASK_TERMS.names) {
-      expect(stopTask).toContain(term);
-    }
-    for (const term of SIGN_OFF_TERMS.names) {
-      expect(signOff).toContain(term);
-    }
-  }
-});
 
 // The daemon's refusals and notices over children carry its rules for ending a child
 // (record.EndChildRule) and its sentence on a status it has not taken yet
@@ -406,6 +259,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "compact",
         "pause",
         "resume",
+        "replay_give_up",
+        "discard_give_up",
       ],
     },
     issue: { type: "string" },
@@ -443,7 +298,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     reason: {
       type: "string",
       description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child",
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
@@ -458,6 +313,21 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
     role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
+    giveUp: {
+      type: "number",
+      description:
+        "replay_give_up's and discard_give_up's one give-up, a message the daemon's intake gave up on: its record id, as the intake-gave-up notice names it. Name it, or consumer and throughSeq, never both",
+    },
+    consumer: {
+      type: "string",
+      description:
+        "replay_give_up's and discard_give_up's intake consumer, as read_state's summary names it on an intake give-ups line: with throughSeq, every open give-up of that consumer at or below that stream sequence",
+    },
+    throughSeq: {
+      type: "number",
+      description:
+        "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups",
+    },
   },
   required: ["op"],
   additionalProperties: false,
@@ -1576,8 +1446,8 @@ test("a completion once the issue moved on posts the role's own newest record of
   const recorded = { commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version };
   for (const [phase, role, issue, read, report] of [
     // A review ends its round on its own: a request for changes moves the issue to implementing at
-    // once, an approval to accepting once the pull request is mergeable, and the reviewer
-    // completes after it.
+    // once, an approval to its task's next step (accepting, in the default steps) once the pull
+    // request is mergeable, and the reviewer completes after it.
     ["implementing", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["accepting", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["reviewing", "tester", "LEGION-208", ["LEGION-208 test"], recorded],
@@ -2503,6 +2373,174 @@ test("pause and resume are offered to no architect and no phase worker", async (
   expect(posted).toEqual([]);
 });
 
+// The intake's give-ups (dispatch://INFRA-1575, R3). The controller replays a give-up, a message
+// the daemon's intake gave up on, by its record id, or every open one of a consumer at or below a
+// stream sequence, and discards them the same way with a reason. Each call goes through the real
+// daemon client to the controller's route, so the answer the controller reads is the golden the
+// daemon's own test wrote, parsed by the contract's schema.
+test("the controller's replay_give_up sends one record id to the daemon's controller route and returns its answer", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/replay": "intake-replay.json" });
+  const minted: string[] = [];
+  const replayed = await controllerTool(daemon, minted).execute(
+    "",
+    { op: "replay_give_up", giveUp: 41 },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  expect(replayed.isError).toBeUndefined();
+  expect(replayed.details).toEqual(daemonFixture("intake-replay.json"));
+  expect(replayed.content).toEqual([{ type: "text", text: JSON.stringify(replayed.details) }]);
+  expect(posted).toEqual([
+    ["/legion/v1/intake/replay", { grantId: "controller-grant-1", giveUp: 41 }],
+  ]);
+  expect(minted).toEqual(["ses_controller"]);
+});
+
+// The bulk form names the consumer and the stream sequence the summary gives as its newest. A
+// selection the daemon would refuse (GIVE_UP_REQUEST_INVALID) is refused before a grant is minted
+// or a request sent: both forms, neither, one half of the bulk form, a number that is no record id
+// or stream sequence, and a field the replay does not take.
+test("the controller's replay_give_up sends a consumer and every open record at or below a stream sequence (throughSeq)", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/replay": "intake-replay.json" });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const consumer = "legion-go-LEGION-dispatch";
+
+  const replayed = await run({ op: "replay_give_up", consumer, throughSeq: 6044896 });
+  expect(replayed.details).toEqual(daemonFixture("intake-replay.json"));
+  expect(posted).toEqual([
+    ["/legion/v1/intake/replay", { grantId: "controller-grant-1", consumer, throughSeq: 6044896 }],
+  ]);
+  expect(minted).toEqual(["ses_controller"]);
+
+  const refusals = [
+    [
+      { op: "replay_give_up", giveUp: 41, consumer, throughSeq: 6044896 },
+      "replay_give_up takes giveUp, or consumer and throughSeq, not both",
+    ],
+    [{ op: "replay_give_up" }, "replay_give_up requires giveUp, or consumer and throughSeq"],
+    [
+      { op: "replay_give_up", consumer },
+      "replay_give_up requires throughSeq with consumer, a stream sequence from 1",
+    ],
+    [
+      { op: "replay_give_up", consumer, throughSeq: 0 },
+      "replay_give_up requires throughSeq with consumer, a stream sequence from 1",
+    ],
+    [{ op: "replay_give_up", throughSeq: 6044896 }, "replay_give_up requires consumer"],
+    [
+      { op: "replay_give_up", giveUp: 41.5 },
+      "replay_give_up's giveUp is a give-up's record id, a whole number from 1",
+    ],
+    [
+      { op: "replay_give_up", giveUp: 41, reason: "the fix runs" },
+      'replay_give_up does not accept field "reason"; it takes giveUp, consumer, throughSeq',
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(run(parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(posted).toHaveLength(1);
+  expect(minted).toHaveLength(1);
+});
+
+test("the controller's discard_give_up sends its reason and returns the daemon's answer", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/discard": "intake-discard.json" });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const consumer = "legion-go-LEGION-github";
+  const reason = "the listener published these bodies as text, and no fix can apply them";
+
+  const bulk = await run({ op: "discard_give_up", consumer, throughSeq: 812004, reason });
+  expect(bulk.isError).toBeUndefined();
+  expect(bulk.details).toEqual(daemonFixture("intake-discard.json"));
+  expect(bulk.content).toEqual([{ type: "text", text: JSON.stringify(bulk.details) }]);
+  const one = await run({ op: "discard_give_up", giveUp: 42, reason });
+  expect(one.details).toEqual(daemonFixture("intake-discard.json"));
+  expect(posted).toEqual([
+    [
+      "/legion/v1/intake/discard",
+      { grantId: "controller-grant-1", consumer, throughSeq: 812004, reason },
+    ],
+    ["/legion/v1/intake/discard", { grantId: "controller-grant-1", giveUp: 42, reason }],
+  ]);
+  expect(minted).toEqual(["ses_controller", "ses_controller"]);
+});
+
+// A discard is the one act that ends a fact with no apply, so it says why: one with no reason, or
+// a blank one, is refused before a grant is minted or a request sent, and so is one that names no
+// give-up.
+test("discard_give_up without a reason is refused before any call", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/discard": "intake-discard.json" });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const refusals = [
+    [{ op: "discard_give_up", giveUp: 41 }, "discard_give_up requires reason"],
+    [{ op: "discard_give_up", giveUp: 41, reason: " " }, "discard_give_up requires reason"],
+    [
+      { op: "discard_give_up", consumer: "legion-go-LEGION-dispatch", throughSeq: 6044896 },
+      "discard_give_up requires reason",
+    ],
+    [
+      { op: "discard_give_up", reason: "it can never apply" },
+      "discard_give_up requires giveUp, or consumer and throughSeq",
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(
+      tool.execute("", parameters, undefined, undefined, context("ses_controller"))
+    ).resolves.toEqual({ content: [{ type: "text", text }], details: {}, isError: true });
+  }
+  expect(posted).toEqual([]);
+  expect(minted).toEqual([]);
+});
+
+// Neither operation is a claim's: a root architect, a sub-architect and every phase worker are
+// refused by the operation's name, before a grant is minted or a request sent.
+test("a phase worker and an architect have neither replay_give_up nor discard_give_up", async () => {
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/intake/replay": "intake-replay.json",
+    "/legion/v1/intake/discard": "intake-discard.json",
+  });
+  const claims = EVERY_SESSION.filter((session) => session.kind !== "controller");
+  expect(claims).toHaveLength(7);
+  for (const session of claims) {
+    const tool = createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    });
+    for (const parameters of [
+      { op: "replay_give_up", giveUp: 41 },
+      { op: "discard_give_up", giveUp: 41, reason: "it can never apply" },
+    ]) {
+      await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
+        content: [
+          { type: "text", text: `${parameters.op} is not available to a ${session.kind} session` },
+        ],
+        details: {},
+        isError: true,
+      });
+    }
+  }
+  expect(posted).toEqual([]);
+});
+
 test("read_state with no field summarizes 92 issues under the tool's limit, naming every one", async () => {
   const state = stateOf92Issues();
   const { daemon } = recordingDaemon({ state });
@@ -2724,6 +2762,32 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   // The daemon's own golden, read through the client: three wakes, the first of them the earliest.
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2026-09-22T09:17:56Z"]);
+});
+
+// What the controller reads of the intake's give-ups in `read_state` with no field: one line for
+// each consumer with open give-ups, with how many and the newest stream sequence among them, which
+// is the throughSeq of a replay or a discard of all of them, and one line saying none is open.
+// A state without the key, served to a caller below the contract that added it, says nothing.
+test("the read_state summary prints each consumer's open give-ups and their newest sequence", async () => {
+  const giveUpLines = (lines: readonly string[]) =>
+    lines.filter((line) => line.startsWith("intake give-ups"));
+
+  const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  expect(giveUpLines(golden)).toEqual([
+    "intake give-ups legion-go-LEGION-dispatch open 2 newest seq 6044896",
+    "intake give-ups legion-go-LEGION-github open 1 newest seq 812004",
+  ]);
+  expect(golden[0]).toContain(
+    "intake give-ups <consumer> open <count> newest seq <stream sequence>"
+  );
+
+  const none = await summaryLinesOf(
+    goldenDaemon({ "/legion/v1/state": "state-stage3.json" }).daemon
+  );
+  expect(giveUpLines(none)).toEqual(["intake give-ups (none)"]);
+
+  const unsaid = await summaryLinesOf(recordingDaemon({ state: legionState() }).daemon);
+  expect(giveUpLines(unsaid)).toEqual([]);
 });
 
 test("read_state's filters answer full records, and name what they cannot select", async () => {

@@ -252,7 +252,7 @@ func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root rec
 // ArchitectHearsSlotted is ArchitectHears for a root the caller already knows waits for no
 // admission slot, which reads nothing: record.WaitsForSlot answers false for such a root, so what
 // is left is the rest of that one reading. Admission asks it of the roots its selection holds
-// (admit's readSlotHolders, through architectServed): each holds a slot, stands past its review
+// (admit's readSlotHolders, through architectServed): each holds a slot, stands in accepting, retro or merging
 // in a tree that runs, or was released for a wait in a tree that runs, and no queued root is one
 // of those.
 func ArchitectHearsSlotted(root record.Issue) bool {
@@ -278,6 +278,24 @@ func stepRef(key string, step record.DesignStep) string {
 		return dispatch.DocumentRef(key, dispatch.VerificationSlug, false)
 	}
 	return dispatch.DocumentRef(key, "", true)
+}
+
+// ChangesSuperseded says whether notice, a design-changes-requested notice on issue, is no longer
+// the changes request the gate of its document records as told, issue's gates being gates: the
+// gate records another (record.DesignGate.ToldChangesVersion and ToldChangesReason). The gate
+// records every changes request it applies as told (applyArtifact), and tells one a newer review
+// already replaced without recording it, as the person's words, when no approval followed it; so a
+// notice the gate's record does not match is of a request the person has since replaced. The
+// outbox's parkDecision relays no such notice to the controller: kept, it would take the place of
+// the newer decision kept under the same document's ref, and of the claim a start holds on it. A
+// gate that records no request, or no gate of the notice's document, says nothing against it.
+func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue string, notice record.Notice) bool {
+	for step, gate := range gates {
+		if stepRef(issue, step) == notice.Ref {
+			return gate.ToldChangesVersion != nil && (*gate.ToldChangesVersion != notice.Version || gate.ToldChangesReason != notice.Reason)
+		}
+	}
+	return false
 }
 
 // itemRef is the Dispatch reference of an ask or comment of an issue.

@@ -287,8 +287,8 @@ func nothingChanged(item NewsChange) string {
 
 // holderRule is the closing paragraph of a holder's news: the rule its role's prompt carries for
 // answering it. The architect holding an issue in accepting answers by its sign-off or a move
-// back (acceptingAnswer). The planner revises its plan when it is stale, since planning has no
-// earlier phase to move back to (prompts/go/planner.md), and comments when it is current. Every
+// back (acceptingAnswer). The planner revises its plan in place when it is stale, since the plan is
+// its own work wherever its task places its step (prompts/go/planner.md), and comments when it is current. Every
 // other phase worker moves back when its work is stale, and comments when it is current.
 func holderRule(issue string, p phase.Phase) string {
 	switch p {
@@ -296,8 +296,8 @@ func holderRule(issue string, p phase.Phase) string {
 		return "As your prompt says, read each named section and check at the new version, then " + acceptingAnswer(issue) +
 			", with a reason that names the version and the change."
 	case phase.Planning:
-		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. Planning has no earlier phase, "+
-			"so a stale plan does not move back. If your plan is stale, revise `plan.md` in place to match the new version of the design, "+
+		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. A stale plan is your own work "+
+			"wherever your task places your step, so it does not move back. If your plan is stale, revise `plan.md` in place to match the new version of the design, "+
 			"then run the plan review again. If your plan is current, write a `dispatch comment` on %s that names the version and why.", issue)
 	}
 	return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version: if your work is stale, "+

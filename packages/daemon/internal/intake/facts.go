@@ -51,6 +51,10 @@ type DispatchIssue struct {
 	Rank   string
 	// HandedOver is whether the event's own labels carried dispatch.LegionLabel.
 	HandedOver bool
+	// Priority is the issue's own Dispatch priority as the observation showed it: an event's
+	// payload, the listing's or the detail's (record.DispatchPriority over Dispatch's 0 to 3 or
+	// null). The record takes it wherever it takes the observation's rank.
+	Priority record.Priority
 	// Labels is the issue's labels as the observation showed them, in Dispatch's order. The copy
 	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
 	// nothing else reads them: a decision reads HandedOver.
@@ -154,7 +158,7 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 }
 
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
-// Dispatch has run to: its status, title, parent, rank, labels, hand-over, blockers and
+// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers and
 // repository, with no event's type or actor, since no one event wrote that state.
 // release_children's todo child and an unrecorded issue's admission event are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
@@ -163,8 +167,8 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
-		ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
+		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
 }
 
 // OwnStatusWrite is the event the daemon's own status write makes, as the Dispatch consumer
@@ -190,8 +194,16 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
 		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
+}
+
+// dispatchPriority is level, the priority a Dispatch read serves, as the record keeps it. The
+// listing and the detail answer no event's fields the decoder could report, and Dispatch writes
+// no level outside 0 to 3, so a level it could not read is none here (record.DispatchPriority).
+func dispatchPriority(level *int) record.Priority {
+	priority, _ := record.DispatchPriority(level)
+	return priority
 }
 
 // Handover is the outbox's direct completion of a hand-over whose Dispatch state is already todo
@@ -277,10 +289,17 @@ type DispatchArtifact struct {
 	// Issue is Dispatch's view of the issue the review is on, read when the fact is prepared by
 	// the daemon's workflowRuntime.prepareArtifact, for a person's approval that is not a carried
 	// one (CarriedApproval), outside the fact lock; nil for every other fact, a seed's or the boot
-	// catch-up's among them. The workflow reads its parent, label, status and primary document to
+	// catch-up's among them. MayQueueHandover reads its parent, label, status and primary document,
+	// for the preparation to decide whether to read the issue's event log and for the workflow to
 	// decide whether the approval queues the root: a nil view queues nothing and is never an
 	// error, since nothing but that decision reads it.
 	Issue *dispatch.Issue
+	// StatusChangedSeq is the sequence of the first issue event of the issue's Dispatch event log
+	// after the approval (Mark.Seq) that carries another status than the issue event before it
+	// (WithStatusChange), set when the daemon prepares a person's approval that needs the log
+	// (NeedsEventLog). It is 0 when no later event changed the status, and for every fact
+	// nothing read the log for.
+	StatusChangedSeq int64
 }
 
 func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
@@ -310,6 +329,21 @@ func (a DispatchArtifact) CarriedApproval() bool {
 // side and the deciding side test one predicate.
 func (a DispatchArtifact) PersonApproval() bool {
 	return a.Kind == DispatchArtifactApproved && a.Actor.Person() && !a.CarriedApproval()
+}
+
+// MayQueueHandover says whether the review is a person's approval (PersonApproval) of the primary
+// document of a root that Dispatch's view (Issue) shows parked: no parent, the legion label, status
+// backlog or icebox. Such an approval queues the root as the person's handover unless the root's
+// tree is live or its status changed after the approval (StatusChangedSeq), which the workflow
+// decides. The daemon reads the issue's event log for it when it prepares the fact (NeedsEventLog),
+// and the workflow decides from it, so the read side and the deciding side test one predicate.
+func (a DispatchArtifact) MayQueueHandover() bool {
+	if a.Issue == nil || !a.PersonApproval() {
+		return false
+	}
+	view := a.Issue
+	parked := view.Status == "backlog" || view.Status == "icebox"
+	return view.Parent == nil && view.HandedOver && parked && view.PrimaryArtifactID == a.ArtifactID
 }
 
 // GateAboveDispatch is the gate seed of a generation (Generation) finding the document at a version
@@ -528,9 +562,11 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 // pass: the pause held every promotion, and the pass runs now rather than at the next fact or
 // tick. Admission promotes on it as on every fact that is not a Dispatch issue
 // (admit.Admission.applyFact); the workflow engine and the blockers mirror do nothing for it.
-// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass leaves
-// free wakes the controller as any fact's pass does (admit.Admission.wakeForFreeSlot), and
-// nothing else.
+// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass's own
+// release leaves free wakes the controller as any fact's pass does
+// (admit.Admission.wakeForFreeSlot), and nothing else. The rows a re-admission freed while the
+// pause held (admit's releaseTreeSlots) wake nothing; the resume's notice tells the controller
+// of that capacity.
 //
 // It carries nothing, as EntrySweep carries nothing: the pass reads the whole project. Its event
 // is keyed on the pause the resume ended (internal/daemon's applyResumePass), so a resume applies
@@ -806,7 +842,8 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
 // an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round in accepting, and any other state leaves the
+// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
+// (accepting, in the default steps); any other state leaves the
 // approval standing where it is and tells the architect and the reviewer so (workflow's
 // reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
 // one GitHub would merge now, which Mergeable cannot.
@@ -1201,7 +1238,8 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // route read them from Dispatch at that version and held them to plan.Supported and plan.Validate,
 // so a plan either check refuses never reaches the workflow. Generation is the issue's generation
 // the route read, and 0 for an issue the daemon has not recorded, whose plan waits at generation 0
-// until the issue's first step takes the newest plan its owner gave. GivenBy is the claim whose
+// until the issue's first step takes the newest plan its owner gave, or, where the issue's
+// experiment's group takes no plan from its owner, passes it over. GivenBy is the claim whose
 // grant gave it: an architect's, which is how the first step tells its owner's plan from an earlier
 // owner's, or a sub-owner's (SubOwner), whose version is its owner's plan.
 //
@@ -1221,12 +1259,13 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // in which a fresh agent would need the name of its role that another agent of the plan holds from
 // an earlier version, refused before anything is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
-// PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
-// refusals unspent (Result.Unspent). The route names one registration by the issue, the
-// generation, the document and the version, so a version refused while its task ran is the same
-// fact when the owner gives it again after stop_task, and must apply then. Whether a give is one
-// already applied is the record's to say, not its id's (ApplyFact): a give is a duplicate where
-// the store holds its version, and applies where a first step passed that version over since.
+// PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE, PLAN_NOT_TAKEN (an issue whose experiment's group
+// takes no plan from its owner) and TREE_LINGERING, and it leaves each of those refusals unspent
+// (Result.Unspent). The route names one registration by the issue, the generation, the document
+// and the version, so a version refused while its task ran is the same fact when the owner gives
+// it again after stop_task, and must apply then. Whether a give is one already applied is the
+// record's to say, not its id's (ApplyFact): a give is a duplicate where the store holds its
+// version, and applies where a first step passed that version over since.
 type PlanGiven struct {
 	Issue      string
 	Generation uint64
@@ -1246,10 +1285,12 @@ func (f PlanGiven) SubOwner() (claim.Agent, bool) {
 // claim of the architect whose grant asked for it, at Generation, the issue's generation the route
 // read. The workflow judges the stop again in the fact's own transaction: an architect that owns
 // the issue no longer is refused ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a stop of a run the
-// issue has left TASK_STALE_GENERATION (TaskStaleGeneration), each left unspent. It then stops the
-// task, or answers TaskNotFound or TaskDone; a stop of a task already stopped changes nothing and
-// is no refusal. Each request is its own fact, so a task the owner stops, starts again with a
-// later version and stops once more is stopped twice.
+// issue has left TASK_STALE_GENERATION (TaskStaleGeneration), each left unspent. It then answers
+// TaskNotStopped for every task of an issue whose experiment's group takes no plan from its owner,
+// whatever state the task stands in, and for any other issue stops the task or answers
+// TaskNotFound or TaskDone; a stop of a task already stopped changes nothing and is no refusal.
+// Each request is its own fact, so a task the owner stops, starts again with a later
+// version and stops once more is stopped twice.
 type TaskStopped struct {
 	Issue, Task string
 	By          claim.Token
@@ -1981,6 +2022,36 @@ func PlanDocumentChanged(issue, artifact string) *Refusal {
 		"the plan in force of %s is document %s; give a later version of that document.", issue, artifact)}
 }
 
+// GroupClause is the one text of a group: the sentence that names the variant of the experiment
+// issue was drawn into (group, the issue's row of the experiment that sets how it is done),
+// whose issues run the project's default steps, the one group of this release that takes no plan
+// from an issue's owner (workflow's takesNoPlan). The refusals of register_plan and stop_task
+// (PlanNotTaken, TaskNotStopped) and the plan-not-taken notice of the issue's first step each
+// call it, and no other text states a group.
+func GroupClause(issue string, group record.Assignment) string {
+	return fmt.Sprintf("%s is in the variant %s of the experiment %s, whose issues run the project's default steps.", issue, group.Variant, group.Experiment)
+}
+
+// PlanNotTaken is the 409 PLAN_NOT_TAKEN answer to a plan given for issue, whose group (its row
+// of the experiment that sets how it is done) names the arm's `plan` `default`: the experiment
+// decides how the issue is done, so Legion takes no plan from its owner, and a plan it stored and
+// did not carry out would be dropped in silence. It is no refusal of a plan's content, so it
+// carries no reasons and its code is not PLAN_REFUSED. The workflow leaves the fact unspent, as
+// each refusal of a plan, so the same registration sent again gets this same answer.
+func PlanNotTaken(issue string, group record.Assignment) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
+		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
+}
+
+// TaskNotStopped is the 409 PLAN_NOT_TAKEN refusal of stop_task for a task of issue, whose group
+// names the arm's `plan` `default`: the experiment decides how the issue is done, so Legion takes
+// no stop of one of its tasks from its owner either, and the code is the one register_plan
+// answers for the same issue.
+func TaskNotStopped(issue string, group record.Assignment) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
+		" Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}
+}
+
 // StartedBeforePlans is the reason a plan is refused for issue, which the daemon recorded with no
 // plan rows at its generation and whose work has started: it ran before Legion took plans, and it
 // walks today's line to its end. It names no task, and it does not end with "This release
@@ -2163,7 +2234,7 @@ func stoppedSentence(issue, task, reason string) string {
 }
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
-// a parent whose plan has no acceptance step, waits before its retro for the issues beneath it,
+// a parent whose last step is not the owner's acceptance, waits before its retro for the issues beneath it,
 // beneath (record.HoldForChildren): the last of them to leave starts the retro.
 func RetryOfHeldParent(issue string, beneath []string) *Refusal {
 	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForChildren(issue, beneath) + " This retry changed nothing."}
@@ -2462,7 +2533,9 @@ func PlanRatingUnexpected(what string) *Refusal {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer). The fact commits through store.Transact, so a fact whose
+// last message it applied (openConsumer). A fact a replay applies (withReplayClose) closes the
+// give-up it was stored in, in the same transaction too, as applied or, for a duplicate, as
+// already applied (closeReplayed). The fact commits through store.Transact, so a fact whose
 // commit's reply is lost is reported by what the store says of it.
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
@@ -2477,6 +2550,16 @@ func PlanRatingUnexpected(what string) *Refusal {
 // is cross-tree lock ordering, which is a deadlock a daemon supervising long-lived agents would
 // hold until a human noticed. Serial facts are a throughput cost; that is the trade being made.
 //
+// A fact takes its pool's turn (factTurns, store.Pool.FactTurn) before it asks the pool for a
+// connection, and hands it on at its COMMIT, as the first of its commit hooks (store.OnCommit), so
+// the turn is held exactly as long as the fact lock plus the wait for a connection, and no later
+// hook holds it; a fact that does not commit hands it on when store.Transact returns. The facts of
+// one process then wait for each other outside the pool rather than each on a connection of its
+// own, so a burst of facts leaves the rest of the pool to every other read. A fact whose ctx ends
+// while it waits for the turn leaves the line holding nothing. A fact applied inside a transaction
+// already open on ctx joins that transaction (store.TransactWith) and needs no connection, so it
+// takes no turn: taking one there could wait on the very fact whose transaction it joins.
+//
 // Before anything else, source, eventID and every string fact carries are given through the
 // store's own rule (storetext.Text, storetext.Strings), so MarkProcessed, settleObserved and every
 // handler see the fact as the store keeps it. A handler compares what the fact says with what the
@@ -2489,8 +2572,20 @@ func PlanRatingUnexpected(what string) *Refusal {
 // Reconcile.
 func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
+	turn := func() {}
+	if turns, ok := pool.(factTurns); ok && !store.CommitScoped(ctx) {
+		release, err := turns.FactTurn(ctx)
+		if err != nil {
+			return Result{}, fmt.Errorf("wait for the pool's turn to apply fact %s/%s: %w", source, eventID, err)
+		}
+		turn = release
+	}
+	defer turn()
 	var result Result
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		// The turn's release is the fact's first commit hook, so the next fact's turn starts at
+		// this one's COMMIT, as its wait on the fact lock does, and no later hook holds it.
+		store.OnCommit(ctx, turn)
 		if err := SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
 		}
@@ -2521,7 +2616,7 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		}
 		if !fresh {
 			result = Result{Duplicate: true}
-			return nil
+			return closeReplayed(ctx, tx, record.IntakeAlreadyApplied)
 		}
 
 		fact, apply, err := settleObserved(ctx, tx, fact)
@@ -2556,13 +2651,22 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		// refused handoff apply on its next delivery, which those refusals exist to stop.
 		_, report := fact.(CheckReport)
 		if (report && result.Refusal != nil) || result.Unspent {
-			return record.NewStore().ForgetProcessed(ctx, tx, source, eventID)
+			if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
+				return err
+			}
 		}
-		return nil
+		return closeReplayed(ctx, tx, record.IntakeApplied)
 	}); err != nil {
 		return Result{}, err
 	}
 	return result, nil
+}
+
+// factTurns is a pool that gives one fact at a time its turn to apply (store.Pool.FactTurn): a
+// release that is safe to call more than once, or ctx's error once ctx ends first. A pool without
+// it, such as a test's own pgx pool, gives every fact its turn at once.
+type factTurns interface {
+	FactTurn(ctx context.Context) (release func(), err error)
 }
 
 // Applied is which of eventIDs from source ApplyFact has already applied, read in one read-only

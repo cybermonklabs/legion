@@ -100,33 +100,34 @@ func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
 	}
 }
 
-// Decision 12 and departure 4 of dispatch://INFRA-3759: a release whose save has not run when the
-// pause begins is cancelled at its save, for the pause; a save that ran before the pause acts, and
-// the release's role stop after the pause still acts, since only the save reads the pause.
-func TestAReleaseSaveIsCancelledWhileTheProjectIsPaused(t *testing.T) {
+// Under a project pause, a release whose workspace check has not run
+// when the pause begins is cancelled at its check, for the pause; a check that ran before the
+// pause acts, and the release's role stop after the pause still acts, since only the check reads
+// the pause.
+func TestAReleaseCheckIsCancelledWhileTheProjectIsPaused(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
 	first, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
 
-	before, err := st.IssueReleaseSave(ctx, "legion", rootIssue, first)
+	before, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
 	if err != nil || before.Act != ReleaseActs {
-		t.Fatalf("the save before the pause = %s, %v; want it to act", before.Act, err)
+		t.Fatalf("the check before the pause = %s, %v; want it to act", before.Act, err)
 	}
 	pauseLegion(t, st, pausedAt)
-	paused, err := st.IssueReleaseSave(ctx, "legion", rootIssue, first)
+	paused, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
 	if err != nil || paused.Act != ReleaseCancel || paused.Cause != ReleaseCausePaused {
-		t.Fatalf("the save while paused = %s for %s, %v; want %s for %s", paused.Act, paused.Cause, err, ReleaseCancel, ReleaseCausePaused)
+		t.Fatalf("the check while paused = %s for %s, %v; want %s for %s", paused.Act, paused.Cause, err, ReleaseCancel, ReleaseCausePaused)
 	}
 	if stop, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary); err != nil || stop.Act != ReleaseActs {
-		t.Fatalf("the role stop while paused = %s, %v; want it to act: a release that saved finishes", stop.Act, err)
+		t.Fatalf("the role stop while paused = %s, %v; want it to act: a release whose check ran finishes", stop.Act, err)
 	}
 }
 
 // otherIssue is an issue of another project whose pod this project's daemon runs: the operator's
 // spawn (`legion claims spawn`) makes a claim of any issue key under the daemon's own project
 // token, and such a claim is part of this project's pause as every other claim is. No production
-// row reaches a release's save or its cancel for such an issue (IssueReleaseSave,
+// row reaches a release's check or its cancel for such an issue (IssueReleaseCheck,
 // CancelIssueRelease): a release's rows are keyed by its issue, the release queues no row keyed by
 // another project's issue (insertOutboxRow, claim.KeyOfProject) and so marks no release of it, and
 // the daemon's outbox runs only the rows of its own project's keys. The tests below write the mark
@@ -138,34 +139,34 @@ const otherIssue = "OTHER-5"
 // role stop.
 const otherFirst, otherBoundary = 18, 20
 
-// Decision 12 of dispatch://INFRA-3759, for the pod of another project's issue: the save of its
+// For the pod of another project's issue, the check of its
 // release reads the pause of the project whose release it is, never the pause of the issue key's
 // project, so it is cancelled while LEGION is paused.
-func TestASaveOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPaused(t *testing.T) {
+func TestACheckOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPaused(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
 	pauseLegion(t, st, pausedAt)
 
-	saved, err := st.IssueReleaseSave(ctx, "legion", otherIssue, otherFirst)
-	if err != nil || saved.Act != ReleaseCancel || saved.Cause != ReleaseCausePaused {
-		t.Fatalf("the save of %s's release while LEGION is paused = %s for %s, %v; want %s for %s: the pause saves no workspace and deletes no pod",
-			otherIssue, saved.Act, saved.Cause, err, ReleaseCancel, ReleaseCausePaused)
+	checked, err := st.IssueReleaseCheck(ctx, "legion", otherIssue, otherFirst)
+	if err != nil || checked.Act != ReleaseCancel || checked.Cause != ReleaseCausePaused {
+		t.Fatalf("the check of %s's release while LEGION is paused = %s for %s, %v; want %s for %s: the pause deletes no pod",
+			otherIssue, checked.Act, checked.Cause, err, ReleaseCancel, ReleaseCausePaused)
 	}
 }
 
 // The inversion of the test above: a pause of the issue key's project is not this project's, so
-// the save of the same release acts while only OTHER is paused and LEGION runs.
-func TestASaveOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t *testing.T) {
+// the check of the same release acts while only OTHER is paused and LEGION runs.
+func TestACheckOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
 	pauseProject(t, st, "OTHER", pausedAt)
 
-	saved, err := st.IssueReleaseSave(ctx, "legion", otherIssue, otherFirst)
-	if err != nil || saved.Act != ReleaseActs {
-		t.Fatalf("the save of %s's release while only OTHER is paused = %s for %s, %v; want it to act: LEGION runs",
-			otherIssue, saved.Act, saved.Cause, err)
+	checked, err := st.IssueReleaseCheck(ctx, "legion", otherIssue, otherFirst)
+	if err != nil || checked.Act != ReleaseActs {
+		t.Fatalf("the check of %s's release while only OTHER is paused = %s for %s, %v; want it to act: LEGION runs",
+			otherIssue, checked.Act, checked.Cause, err)
 	}
 }
 

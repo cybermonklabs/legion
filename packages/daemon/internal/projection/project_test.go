@@ -112,14 +112,28 @@ func (s projectionStore) HeldRows(context.Context, pgx.Tx, string, string, time.
 func (s projectionStore) StartsWaitingForPod(context.Context, pgx.Tx, string) (map[string][]claim.Role, error) {
 	return s.waitingForPod, nil
 }
+
+// OpenIntakeGiveUps answers no give-up open: the projection's reading of real records is
+// intake_giveups_test.go's, on PostgreSQL.
+func (projectionStore) OpenIntakeGiveUps(context.Context, pgx.Tx, string, int) (record.IntakeGiveUps, error) {
+	return record.IntakeGiveUps{}, nil
+}
 func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]record.PhaseRow, error) {
 	return s.phases[issue], nil
 }
 
-// MergePullRequest is each issue's one pull request the fake holds, which is its merge's, and
-// TaskPullRequests that same row as the issue's only one.
-func (s projectionStore) MergePullRequest(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
-	return s.pullRequests[issue], nil
+// PullRequestsOf answers the pull request of each of issues the store holds, by key, as the real
+// store reads them in one statement: an issue it holds none for has no entry. The fake's one pull
+// request of an issue is its merge's, and TaskPullRequests answers that same row as the issue's
+// only one.
+func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []string) (map[string]record.PullRequest, error) {
+	of := make(map[string]record.PullRequest, len(issues))
+	for _, issue := range issues {
+		if pr := s.pullRequests[issue]; pr != nil {
+			of[issue] = *pr
+		}
+	}
+	return of, nil
 }
 func (s projectionStore) TaskPullRequests(_ context.Context, _ pgx.Tx, issue string) ([]record.PullRequest, error) {
 	if pr := s.pullRequests[issue]; pr != nil {
@@ -950,11 +964,13 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 
 // admission.active is every issue the slots table holds a row for: the projection names the row
 // holders it finds and reads no phase of its own. An issue holds one of the cap's rows from the
-// moment the daemon starts it until its work is past its review (record.KeepsSlot), except while
-// it waits on another issue before then, when it gives the row back and is not named here
+// moment the daemon starts it while it stands in a phase that keeps one (record.KeepsSlot),
+// except while it waits on another issue there, when it gives the row back and is not named here
 // (admit's releaseSlotsForWaits), so a root waiting on a person is named there though no worker
-// of it is running this second. An issue with no row of its own waits for nothing here: it
-// stands in neither list.
+// of it is running this second. The fixture gives a row to an issue in accepting and one in
+// merging as well, which keep none and whose rows admission's release would take back; the
+// projection names them all the same, since it reads the rows. An issue with no row of its own
+// waits for nothing here: it stands in neither list.
 func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
 	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}
@@ -1077,9 +1093,9 @@ func TestProjectShowsATasksCountsAndAnIssueWithNoPlanRowsItsImplementersRow(t *t
 // Every issue of a live tree is served that tree's quiet time (contract 111): `treeMovedAt`, the
 // newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long the tree
 // has been still at the instant the state is measured at. The pair is the tree's, so the root
-// and a child of it past its own review carry the same two values, though that child holds no
-// admission slot and the root holds one: what has stopped is the tree, and an issue past its
-// review is measured like every other member of it. The child's own record is the newest
+// and a child of it in retro carry the same two values, though that child holds no admission
+// slot, since retro keeps none, and the root holds one: what has stopped is the tree, and an
+// issue in retro is measured like every other member of it. The child's own record is the newest
 // movement here, which is what makes the two values the tree's rather than each issue's.
 //
 // An issue whose tree has left the workflow carries neither key: it is the root of no live tree,
@@ -1108,7 +1124,7 @@ func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
 		t.Fatalf("admission.trees = %v, want LEGION-10 alone: the tree that left the workflow must be no live root, or this test proves nothing", trees)
 	}
 	if got.Issues["LEGION-10"].Slot == nil || got.Issues["LEGION-11"].Slot != nil {
-		t.Fatalf("the root holds slot %+v and the child past its review holds %+v, want a row on the root and none on the child; this test proves nothing",
+		t.Fatalf("the root holds slot %+v and the child in retro holds %+v, want a row on the root and none on the child; this test proves nothing",
 			got.Issues["LEGION-10"].Slot, got.Issues["LEGION-11"].Slot)
 	}
 	for _, key := range []string{"LEGION-10", "LEGION-11"} {

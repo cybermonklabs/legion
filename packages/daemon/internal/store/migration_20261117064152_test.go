@@ -385,7 +385,8 @@ func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *t
 		s.row(key, "step", 4, "ended")
 		s.row(key, "step", 5, "open")
 	}
-	// LEGION-281 ran its retro and its merge once before, and a conflict sent it back.
+	// LEGION-281 ran its retro and its merge once before, and a move back brought it to
+	// accepting again.
 	s.row("LEGION-281", "retro", 0, "ended")
 	s.row("LEGION-281", "merge", 0, "ended")
 	s.wayBack()

@@ -39,7 +39,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -58,7 +57,8 @@ import (
 // measure this test process's own allocations (TestBlockPathsOfTheHeaviestTablesStayWithinTheMemoryBound
 // and TestTableRowsOfSpannedTablesShareOneSpanBudget) do not call t.Parallel, so go test runs
 // them before any parallel test starts. At most testlimits.MaxProcessesAtOnce servers run at once
-// (serverSlots), the count the lane's Postgres is sized for.
+// (dispatchSlots), the count the lane's Postgres is sized for, and a test that runs two at once
+// reserves both before its first start (dispatchSlots.reserve).
 
 const memoryTestToken = "memory-test-token"
 
@@ -179,34 +179,13 @@ func collectOnSignal() {
 	}()
 }
 
-// serverSlots holds one token for each Dispatch server running in this test binary, at most
-// testlimits.MaxProcessesAtOnce: the most the lane's Postgres is sized to serve at once, which
-// requireConnectionCeiling refuses a start past. A start past it waits here for a server to exit
-// instead, so tests that run at the same time share the servers the lane can serve.
-var serverSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
-
-// takeServerSlot waits for a slot of serverSlots and answers the call that gives it back, which
-// the test's cleanup also runs, for a start that never ran a process; only the first call counts.
-// A test holds a slot for each of its servers that is running, so a test that waits for one while
-// it holds another (TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound's reader beside its
-// writer) waits for a server of another test, which never waits for a slot while it holds one:
-// every other test stops its server before it starts the next.
-func takeServerSlot(t *testing.T) (release func()) {
-	t.Helper()
-	serverSlots <- struct{}{}
-	var once sync.Once
-	release = func() { once.Do(func() { <-serverSlots }) }
-	t.Cleanup(release)
-	return release
-}
-
 // start starts a Dispatch server on a loopback port the kernel chose and the test holds from that
 // moment, which the server inherits as DISPATCH_LISTEN_FD and serves on, so no other program can
 // take the port before it serves. It takes the server's slot before the drain, so what the drain
 // leaves owed is what the server meets.
 func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	t.Helper()
-	releaseSlot := takeServerSlot(t)
+	releaseSlot := dispatchSlots.take(t)
 	held := cmdtest.HoldPort(t)
 	port := strconv.Itoa(held.Port)
 	h.drainBeforeStart(t, port)
@@ -279,12 +258,11 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		time.Sleep(50 * time.Millisecond)
 	}
 	// The idle is read after a collection that gives the heap's free memory back to the system.
-	// Every boot compiles the pg_query WebAssembly module its migrations parse with
-	// (pgmigrate.Load, wazero), which holds about 220 MiB of the heap until it is done, and whether
-	// a collection frees that before /healthz answers is the luck of where the boot's collections
-	// fall: read at once, the idle was about 90 MiB on one server and about 330 MiB on the next,
-	// and a request then reused the dead pages, so its peak above idle read up to about 240 MiB
-	// low, and below zero (INFRA-3904).
+	// Whether a collection had freed what a boot left dead before /healthz answered was the luck of
+	// where the boot's collections fell: read at once, the idle was about 90 MiB on one server and
+	// about 330 MiB on the next, and a request then reused the dead pages, so its peak above idle
+	// read up to about 240 MiB low, and below zero (INFRA-3904). Most of that dead heap was the
+	// migrations' libpg_query parse, which a start no longer runs (pgmigrate.LoadBuilt).
 	server.collect(t)
 	server.idle = server.resident(t, "VmRSS")
 	return server

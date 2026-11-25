@@ -11,10 +11,10 @@ import (
 const releaseKindVersion = 20261111001612
 
 // A release's mark says which of the two rules wrote it. The idle rule releases a pod whose
-// roles are all quiet, saves the workspace's unpushed work from the shim of the role its mark
+// roles are all quiet, checks the workspace through the shim of the role its mark
 // names and suspends each live claim; the second rule (workflow.UnownedPodRelease)
 // releases a pod whose every claim is already failed, retired or suspended, which suspends no
-// role and saves no bundle, so its mark has no role to name. role is not null under a check
+// role and checks no workspace, so its mark has no role to name. role is not null under a check
 // naming the six workflow roles, so that mark could not be written at all before this
 // migration: the negative control is that refusal, read before it.
 //

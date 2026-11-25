@@ -250,8 +250,9 @@ func standingText(issue record.Issue, dir func(record.Issue, string) string, w W
 
 // pullRequestPart is what the worker of issue's phase is told of pr, the pull request of its task
 // (Standing.pull): ` Pull request: #<n>.`, nothing where its task has none. A merger in merging at
-// the head a merge forward landed past the review, while the review that landing asked of the
-// reviewer stands for that head (mergeForwardReviewOwed), is told after it to merge that head only
+// the head a merge forward landed on where the task's reviewer step already ran
+// (mergeForwardLanded), while the review that landing asked of the reviewer stands for that head
+// (mergeForwardReviewOwed), is told after it to merge that head only
 // once the reviewer's approval of it is on the pull request: the daemon records no decision outside
 // reviewing, so the approval is the merger's to read on GitHub. A merger resumed in a fresh
 // session is told the same as one started at retro's completion, the one move into merging, or at

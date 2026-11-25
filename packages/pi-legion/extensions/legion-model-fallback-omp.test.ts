@@ -11,6 +11,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  deleteRelayCapturingStreams,
   type LegionPane,
   messageStream,
   ompNatsGuard,
@@ -81,7 +82,8 @@ const TWO_STEPS: readonly string[] = [
 /**
  * The first wait a refusal of one selector buys, through `LEGION_REFUSAL_COOLDOWN_MS`
  * (`fallbackCooldownLimits`): seconds here, an hour in a deployment, so every case below runs
- * inside the pi-legion job's ten minutes.
+ * well inside the pi-legion job's limit (timeout-minutes: 28,
+ * .github/workflows/ci-job-pi-legion.yaml).
  */
 const COOLDOWN_MS = 4_000;
 
@@ -368,6 +370,9 @@ async function fallbackPane(options: {
             whileUp: async (rpc: Rpc) => {
               const nc = await connect({ servers: nats });
               cleanup.push(() => nc.close());
+              // No stream another suite left on this server may answer the frames
+              // (`deleteRelayCapturingStreams`).
+              await deleteRelayCapturingStreams(nc);
               await whileUp(idleLife(rpc, nc));
             },
           }),

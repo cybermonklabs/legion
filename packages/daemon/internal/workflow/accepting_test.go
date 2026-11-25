@@ -29,11 +29,12 @@ func seedAccepting(t *testing.T, pool *pgxpool.Pool) {
 		Decision: &record.ReviewDecision{State: "approved", Head: "head"}})
 }
 
-// R2: the reviewer's approval moves the issue into accepting and starts no worker, though
-// accepting is a phase phase.RoleFor answers the architect for. The board already reads
-// needs_review, so no status is written; the architect that owns the issue is already live, so no
-// worker is started, no architect phases row is written and no entry is raised (a start is what
-// raises one); the reviewer's phase-finished is the architect's cue to accept.
+// R2: the reviewer's approval moves the issue to its task's next step, accepting in the default
+// steps this issue walks, and starts no worker, though accepting is a phase phase.RoleFor answers
+// the architect for. The board already reads needs_review, so no status is written; the
+// architect that owns the issue is already live, so no worker is started, no architect phases row
+// is written and no entry is raised (a start is what raises one); the reviewer's phase-finished
+// is the architect's cue to accept.
 func TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
@@ -88,10 +89,11 @@ func TestSignOffIsRefusedOutsideAccepting(t *testing.T) {
 	}
 }
 
-// The architect's sign_off in accepting moves the issue to retro with the status retro and starts
-// the implementer there, its task naming the phase, the review's handoff record (the reviewer's
-// completion seeded here reported no commit) and the pull request; the architect that just acted is
-// told nothing.
+// The architect's sign_off in accepting moves the issue to retro, since the acceptance is the
+// last step of the default steps this issue walks, with the status retro and starts the
+// implementer there, its task naming the phase, the review's handoff record (the reviewer's
+// completion seeded here reported no commit) and the pull request; the architect that just acted
+// is told nothing.
 func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -139,10 +141,11 @@ func TestTheArchitectsCompletionInAcceptingIsRefused(t *testing.T) {
 	}
 }
 
-// The send-back from accepting to implementing or testing, by the architect that owns the issue, is
-// a backward move it requests: that phase's role is started with the reason, and the implementer
-// is counted a pass, as every move back into an earlier phase counts one. The review rounds are
-// untouched, since no review requested changes. The move writes no architect phase row.
+// The send-back from accepting to implementing or testing, the phases of two earlier steps of
+// the default steps this issue walks, by the architect that owns the issue, is a backward move it
+// requests: that phase's role is started with the reason, and the implementer is counted a pass,
+// as every move back to an earlier step of the task counts one. The review rounds are untouched,
+// since no review requested changes. The move writes no architect phase row.
 func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsAPass(t *testing.T) {
 	for _, tc := range []struct {
 		to     phase.Phase

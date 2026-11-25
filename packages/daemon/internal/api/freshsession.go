@@ -235,8 +235,8 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	s.writeAnswer(w, r, AnswerFreshSession, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
 }
 
-// roleList names the roles a claim can be on: Legion's six, in the order the workflow reaches
-// them, and each role the deployment defines, which a claim of an issue's step is on.
+// roleList names the roles a claim can be on: Legion's six, in claim.Roles' order, and each role
+// the deployment defines, which a claim of an issue's step is on.
 func roleList() string {
 	names := make([]string, 0, len(claim.Roles))
 	for _, role := range claim.Roles {
@@ -718,7 +718,7 @@ func relaunchWaits(view supervise.ClaimView) bool {
 // the suspended claim, the retry for a failed or retired one, which a resume is refused for
 // (supervise's onResume and onOperatorRetry rows) — and freshSession picks between the two.
 func startsAgain(state supervise.ClaimState) bool {
-	return state == supervise.StateSuspended || failedOrRetired(state)
+	return state == supervise.StateSuspended || supervise.FailedOrRetired(state)
 }
 
 // agentRunning is whether a claim runs an agent that is in no turn: one registered, ready or

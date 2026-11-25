@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -152,11 +153,11 @@ const PodUpdateContract = 46
 // last of them is no post at all. The controller's claim is posted uncredited because its wake
 // is outside the pacing (reserveWake), and the guard spares it rather than asking for it. A
 // claim the pass read in a turn is posted uncredited because its relaunch takes no wake now
-// (holdStaleRelaunch, R2); the credit such a post does carry is the window where the pass's
-// snapshot and this machine disagree — a claim read idle that has started a turn since — and the
-// end of this decision gives it back (endRefreshLane). And the relaunch that hold left waiting
-// comes back through here at the turn's end, with no credit of its own and the claim in whatever
-// state that end left it (afterTurn).
+// (holdStaleRelaunch, R2); the credit such a post does carry is the window where the claim the
+// pass read (Machine.Published) and this machine disagree — a claim read idle that has started a
+// turn since — and the end of this decision gives it back (endRefreshLane). And the relaunch that
+// hold left waiting comes back through here at the turn's end, with no credit of its own and the
+// claim in whatever state that end left it (afterTurn).
 func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *RefreshCredit) error {
 	if credit != nil {
 		if m.refreshCredit != nil {
@@ -208,13 +209,13 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *Ref
 // fleet whose stale claims are mostly working, the lane would admit its whole minute of the
 // pacing and relaunch nobody.
 //
-// The daemon's own pass posts such a claim with no credit at all, reading the state its
-// snapshot of the claims holds (refreshStalePlugins in internal/daemon). That snapshot and this
-// machine can disagree — the claim it read idle can have started a turn by the time the post is
-// decided here, and one it read working can have ended its turn — so a post that reaches this
-// call carrying a credit is exactly that window, and the end of this decision gives the credit
-// straight back, since it leaves no refresh wake waiting (endRefreshLane). The window costs the
-// claim one sweep, which is what an imperfect skip costs the pass everywhere else it makes one.
+// The daemon's own pass posts such a claim with no credit at all, reading the state the claim's
+// machine last published (Machine.Published, refreshStalePlugins in internal/daemon). That read and
+// this decision can disagree — a decision that lands between them can start the turn of a claim
+// read idle, or end the turn of one read working — so a post that reaches this call carrying a
+// credit is exactly that window, and the end of this decision gives the credit straight back,
+// since it leaves no refresh wake waiting (endRefreshLane). The window costs the claim one sweep,
+// which is what an imperfect skip costs the pass everywhere else it makes one.
 func (m *Machine) holdStaleRelaunch(trigger string) {
 	if m.staleRelaunch == nil {
 		m.log.Info("supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end",
@@ -279,7 +280,7 @@ func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger stri
 // suspended, with nothing relaunched and the mark exactly as it found it, and the next
 // stale-plugin pass raises the relaunch again (refreshPlugin, the daemon's refreshStalePlugins).
 // The mark costs no write of its own either: the launch that commits it writes the claim as it
-// starts (launchNow).
+// starts (commitPluginRelaunch, launchTries).
 //
 // The intent names one launch and no other: a later launch of this machine, raised by something
 // else, marks nothing for this relaunch. The launch that took it holds it by then — the gate
@@ -485,7 +486,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	}
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin)
+		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin, time.Time{})
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
 	}

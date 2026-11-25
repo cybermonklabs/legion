@@ -390,8 +390,8 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	artifactID := strings.ToLower(req.ArtifactID)
 	grant, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
-	// The gate is the tree root's: it opens planning for the whole tree, so a child's document
-	// cannot stand in for the root's review.
+	// The gate is the tree root's: its opening lets each issue of the whole tree start its task's
+	// first step, so a child's document cannot stand in for the root's review.
 	if !ok || !s.rootArchitectOf(w, r, grant, recorded, gateRoute) {
 		return
 	}

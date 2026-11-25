@@ -8,13 +8,13 @@ The merger's steps are all in its role prompt.
 
 1. Read CI on GitHub and the issue's results with `dispatch results --issue <issue>`, never from a handoff.
 2. When the diff the round reads touches runtime code (the whole change, or the difference from the commit your task names), run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result: each runs as a job of its own.
-   Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change.
+   Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change, or, for a merge of the base, the merge's resolution (`git show --remerge-diff <merge>`) and this change's own commits since that commit.
    The last two sentences of your task, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, are the daemon's; your role prompt says how to read them.
 3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript.
    Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict.
    When you can do neither, that half of the round has no review: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on until it answers.
 4. A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand.
-   Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code.
+   Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code, or no `Thermo` line on a docs-only pull request.
 
 ### What the base requires
 
@@ -53,7 +53,7 @@ Never approve a head while a required item has no run; sort it in this order.
 Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on.
 
 1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first.
-   `DIRTY` takes a forward merge, the implementer's before the review and the merger's in `merging`: the daemon asks for it and names the new head.
+   `DIRTY` takes a forward merge, the implementer's before `merging` and the merger's in it: the daemon asks for it and names the new head.
    `UNKNOWN`: read each minute for up to five minutes, then report it to the architect as a refused read.
 2. A fork head whose runs stand `action_required` waits on a maintainer.
    Never close and reopen it.
@@ -74,17 +74,12 @@ Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WA
 
 - Approval is gated by the issue's own `before_merge` checks, as your role prompt says;
   a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says.
-  With no tester step, the implementer's evidence for each is what you read.
+  With no earlier tester step, the implementer's evidence for each is what you read.
   A check whose `run` is a whole test suite with no pass standing is a finding for the architect: wait for its rewrite, and request no changes for it.
 
 ### A merge of the base is reviewed for what it changed
 
-After a forward merge, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since your last submitted review's footer `head`.
-This lists your session's reviews, oldest first; no line, or `no head` on the last one, means you read the whole diff:
-
-```bash
-gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
-```
+After a forward merge, read the merge and this change's own commits since your last submitted review's footer `head` (`skill://legion-worker/references/conflicts-and-rewrites.md#reading-a-merge-of-the-base`, which lists your reviews).
 
 ## The production check after the close
 

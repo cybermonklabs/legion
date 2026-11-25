@@ -1,5 +1,7 @@
 package admit
 
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot reads the captured event through ../intake/testdata
+
 import (
 	"bytes"
 	"context"
@@ -249,8 +251,8 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 // would not be counted here anyway.
 //
 // The testing child's start waits for its issue's admission slot and the retro child's does not:
-// an issue past its review holds no slot (record.KeepsSlot), so the mark the start carries is
-// the phase the start is for (workflow.StartOrOwe) and the retro row is claimable at once.
+// retro keeps no slot (record.KeepsSlot), so the mark the start carries is the phase the start
+// is for (workflow.StartOrOwe) and the retro row is claimable at once.
 func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -744,10 +746,10 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 // neither posts a READY with no packet nor moves the child on.
 func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testing.T) {
 	pool := migratedPool(t)
-	// Two slots: the cap counts the issues at work, and this tree has two of them — the carried
-	// child, whose merger resumes with the re-admission, and the root, whose planning starts when
-	// its new gate opens. With one slot the child, whose work came back, would hold it and the
-	// root would wait, which is the line's own order and not what this test is about.
+	// Two slots, so the cap holds nothing back here: the root, whose planning starts when its new
+	// gate opens, takes one at its re-admission, and the carried child, whose merger resumes with
+	// the re-admission, takes none, since it stands in merging, which keeps no slot
+	// (record.KeepsSlot).
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const key, artifact = "LEGION-LINGER", "4f2a9c1e-8b3d-4e7f-9a60-2c5d8e1b7f34"

@@ -1,11 +1,14 @@
 package config
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // A file that names `hooks:` runs the hooks it names and no default beside them, read whole and
@@ -102,5 +105,38 @@ func TestAHookNamesAMoveOfAnyOrder(t *testing.T) {
 	want := `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two workflow phases, which differ but in step-step`
 	if err == nil || err.Error() != want {
 		t.Fatalf("Load(moves: [testing-testing]) error = %v, want %q", err, want)
+	}
+}
+
+// A hook that names a move no task's line makes back would never fire, so the loader refuses it,
+// naming the move: each step phase to retro or to merging, the phase step among them, and retro
+// to merging, since the retro and the merge end every line; and implementing to testing,
+// reviewing or accepting, since every tester, reviewer and acceptance step comes after the
+// implementer's. These 16 are written out here, not read from the code under test. The twin: each
+// of the other 41 pairs the daemon counts loads, a move back of today's line, one of another order
+// and one that leaves or reaches the step of a role the deployment defines alike.
+func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
+	never := []string{
+		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro", "step-retro",
+		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging", "step-merging",
+		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+	}
+	loaded := 0
+	for _, move := range phase.MovePairs() {
+		_, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: ["+move+"], roles: [tester], prompt: Words.}")), noEnv)
+		if !slices.Contains(never, move) {
+			if err != nil {
+				t.Errorf("Load(moves: [%s]): %v, want the move back loaded", move, err)
+			}
+			loaded++
+			continue
+		}
+		want := fmt.Sprintf(`hooks[0].moves names %q, which no task's line makes as a move back, so the hook would never fire: retro and merging end every line, and every tester, reviewer and acceptance step comes after the implementer's`, move)
+		if err == nil || err.Error() != want {
+			t.Errorf("Load(moves: [%s]) error = %v, want %q", move, err, want)
+		}
+	}
+	if loaded != 41 {
+		t.Errorf("%d pairs were read as moves back, want 41", loaded)
 	}
 }

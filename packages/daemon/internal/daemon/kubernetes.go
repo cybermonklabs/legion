@@ -6,13 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net"
 	"net/http"
 	"strconv"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -59,8 +56,8 @@ var workerImageTools = sandbox.Tools{
 // imageProbeRetry is how often the daemon tries its worker image again after an attempt that said
 // nothing definitive: the daemon's backoff, bounded like `legion probe-image`'s at six attempts.
 // Its transient outcomes (a pod that never finished, a kubelet failure, a probe that exited
-// bootprobe.NoVerdictExit because a TLS run or a check had no verdict) can repeat for a reason no
-// wait changes, such as a memory limit too small for Oh My Pi or a client that never answers, so
+// bootprobe.NoVerdictExit because a check had no verdict) can repeat for a reason no wait
+// changes, such as a memory limit too small for Oh My Pi or a command that never answers, so
 // an unbounded retry would hold a deterministic refusal as a boot that never ends. A probe pod
 // the pool has no room for is no such outcome: it is waited on at the policy's longest interval,
 // outside the six (bootprobe.Run, Outcome.Waiting), since a full pool is the pool's state and not
@@ -266,43 +263,20 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 
 // probeReservation is the image probe pod's own reservation, fixed: `legion probe-image` starts
 // one Oh My Pi at a time, each briefly (pi.agents, the plugin's load, the session-storage
-// setting), runs no lane, holds its TLS clients and headless Chromium to the chains its own server
-// serves and to two public test sites, and exits. It reserves 500m so the probe ends at least 60 s
-// inside its 240 s command budget at the defaults where the public test sites answer or refuse at
-// once. Five runs of `legion probe-image --skip-agent-models` at 1 CPU under gVisor (2026-11-18)
-// took 51.9–76.2 s, 19.40–35.99 s of it on CPU. Predicted at 250m (CPU time × 4, plus the wall time
-// off CPU), the worst takes 184 s, 56 s inside the budget, short of the 60 s; at 500m (CPU time × 2)
-// it takes 112 s, 128 s inside. The runs are at 1 CPU because the builds namespace refuses a Job
-// under 1 CPU, so the 500m figures are predictions. Once the probe served its own TLS chains
-// (2026-11-20), its runs in the worker image of 1c7c825367 in a CPU-quota scope on a development
-// host took 121.9–147.3 s at 500m (eleven runs, 44.0–56.6 s on CPU), 93 s inside the budget at the
-// slowest, and 73.5–104.4 s at 1 CPU (sixteen runs), with a peak of 374 MiB; on that host main's
-// probe took 66.5–91.1 s at 1 CPU, slower than under gVisor. A public test site that hangs, as a
-// blackhole does, costs at most one run at each of the two, a client's, or the site's positive
-// control's where it hangs from the start, since no client asks a site that gave no verdict
-// (probeTLSClients). While the served copies of the public chains are asked, only node, CodeGraph's
-// node, wget and git ask the public sites, each with a 20 s limit, so such a run stops at 20 s, up
-// to procgroup.StopGrace and procgroup.WaitDelay more for the stop, and the two add at most 44 s,
-// which would end the slowest run above at about 191 s, 49 s inside the budget, short of the 60 s
-// but inside it, so it takes no exit 75. Once a served copy is unasked, as every one is once its
-// leaf has expired (2027-05-03 for the leaves vendored on 2026-11-20; the probe warns of a leaf 30
-// days before its end), every client asks that public site, so a site that starts to hang at bq's
-// turn costs 60 s and at Chromium's 90 s, each up to 2 s more: at Chromium's turn at both sites
-// that ends the slowest run near 331 s and at bq's near 271 s, past the budget, so the probe's
-// deadline cuts it and it exits 75. On 2026-11-21, on the same host at 500m and a one-minute load
-// of 660 to 1,079 on 288 CPUs, a run whose public sites moved to a blackhole once their positive
-// controls passed took 264.6 s and one beside it with the sites left alone 245.5 s: the blackhole
-// cost 19 s, since node, the first client asked, gave up at each after its own 10 s connect
-// timeout; at that load neither run, which had no probe budget, kept inside 240 s, so the pair
-// measures the hung site's cost, not the margin. None of these runs met a cold image: a TLS run its
-// own limit stops at a site an earlier run reached runs once more at two times that limit
-// (probeTLSClients), which adds up to two times the limit for each such run to a probe on a node
-// where the image is new, and a probe its deadline cuts exits 75, which the daemon reads as a
-// transient attempt.
-// Five fresh runs at 250m / 1Gi, before the probe held gcloud, bq, az, mise, wget, git, go,
-// kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation
-// still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk
-// and a 1Gi disk request. The probe runs at every boot, before anything is served, and a probe that
+// setting), checks the image's capability rows and the roles' overlays, runs no lane, and exits.
+// Its 500m CPU was set while the command also ran a TLS check of the image's clients, the longest
+// part of its run, which it no longer makes, and every timing measured for the value came from a
+// probe that ran that check: five runs at 250m / 1Gi, before that check held gcloud, bq, az, mise,
+// wget, git, go, kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe; five
+// runs of `legion probe-image --skip-agent-models` at 1 CPU under gVisor (2026-11-18) took
+// 51.9–76.2 s, 19.40–35.99 s of it on CPU; and runs in the worker image of 1c7c825367 in a
+// CPU-quota scope on a development host took 121.9–147.3 s at 500m (eleven runs) and
+// 73.5–104.4 s at 1 CPU (sixteen runs), with a peak of 374 MiB, against the 240 s command budget
+// of the defaults. No run without the TLS check has been measured, so the value is kept until the
+// command's other checks are audited, and a measurement of the probe as it then runs sizes it.
+// The reservation still fits a pool that cannot place a controller or issue pod. It has a 5Gi
+// bound on node disk and a 1Gi disk request. The probe runs at every boot, before anything is
+// served, and a probe that
 // reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue pod's 3 CPU and 19Gi —
 // could leave the daemon unable to boot on a pool full enough to place nothing that large (stage
 // 4b's daemon-controller-liveness restart, whose controller reservation no node can hold, met
@@ -630,9 +604,8 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (repositories.serving, the repository state's own, so a configured rename's mint follows the
 // owner whose installation holds the repository now), with the repositories the project works as
 // the ones its repository caches follow (cached: those of its live issue records and of the
-// launches since their last read, workflowRuntime.cacheRepositories), with the store's own
-// workspace bundles as what a replacement pod's launcher is sent and what its restore drops, and
-// registers its launcher acceptor on the stream listener. A daemon with no GitHub Apps hands it no
+// launches since their last read, workflowRuntime.cacheRepositories), and registers its launcher
+// acceptor on the stream listener. A daemon with no GitHub Apps hands it no
 // tokens, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
 // one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
@@ -651,20 +624,6 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
-		// The two halves of the release's saved work: an idle release puts the issue's unpushed
-		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
-		// replaces the released one before any role of that pod starts. The confirmation deletes
-		// the bundle of the release the launcher's report names and no other, so a report that
-		// arrives late takes no newer release's work with it. The read is the bundle's one restore
-		// attempt: the first pod that is not the one the work came off takes it, whether the
-		// bundle is sent or that pod is refused as no newer than the save, and nothing is
-		// answered for that bundle again.
-		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
-		// A pod whose Sandbox owns the issue's kept volume, and was created before the save,
-		// mounts the volume the work was taken off. The runtime asks this drop first for such a
-		// pod, and the store deletes the bundle the take would answer, without its body, so the
-		// pod is sent nothing and the bundle holds the issue's pod no longer.
-		opts.HeldWorkspaceBundle = heldWorkspaceBundle(st, opts.Project)
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the
@@ -704,58 +663,6 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		}
 		listener.SetLauncherResolver(rt.LauncherResolver())
 		return rt, nil
-	}
-}
-
-// savedWorkspaceBundle is st's take of a release's saved work for a pod of project, the runtime's
-// project token (sandbox.Options.Project), in the shape the runtime calls it
-// (runtime.SavedWorkspaceBundle). A bundle is project's only where project records its issue
-// (store.Store.TakeWorkspaceBundleForRestore): on a database shared with another project's
-// daemon, a bundle of that project's issue is that daemon's, whatever pod of this daemon asks.
-//
-// The pod is sent the working copy of each task whose branch a task of the plan the issue runs
-// now holds (record.PlanTask.BranchOf), and of no other: a task a later version of the plan
-// removed has no working copy to come back to, so its copy lives at most as long as the disk of
-// the pod that made it, which the daemon does not reach (the outbox's removeTaskCopy). Its commits
-// stay heads of the bundle with the rest of the saved work. The plan is read before the take, which
-// spends the bundle's one attempt, so a read that fails sends nothing and leaves the attempt.
-func savedWorkspaceBundle(st *store.Store, project string) runtime.SavedWorkspaceBundle {
-	records := record.NewStore()
-	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-		held := map[string]bool{}
-		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-			recorded, err := records.Issue(ctx, tx, issue)
-			if err != nil || recorded == nil {
-				return err
-			}
-			stored, err := records.Plan(ctx, tx, issue, recorded.Generation)
-			if err != nil || stored == nil {
-				return err
-			}
-			for _, task := range stored.Tasks {
-				held[task.BranchOf(issue)] = true
-			}
-			return nil
-		}); err != nil {
-			return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the plan of %s for the restore of its saved work: %w", issue, err)
-		}
-		bundle, take, err := st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated)
-		if err != nil {
-			return bundle, take, err
-		}
-		maps.DeleteFunc(bundle.WorkingCopies, func(branch, _ string) bool { return !held[branch] })
-		return bundle, take, nil
-	}
-}
-
-// heldWorkspaceBundle is st's drop of a release's saved work that the kept volume of a pod of
-// project already holds, in the shape the runtime calls it (runtime.HeldWorkspaceBundleDrop).
-// project is the runtime's project token (sandbox.Options.Project). The drop follows the take's
-// project rule (store.Store.DropHeldWorkspaceBundle): a bundle of an issue that project does not
-// record is another project's daemon's, and a pod of this daemon drops none of it.
-func heldWorkspaceBundle(st *store.Store, project string) runtime.HeldWorkspaceBundleDrop {
-	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
-		return st.DropHeldWorkspaceBundle(ctx, project, issue, podUID, keptSince)
 	}
 }
 

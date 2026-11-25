@@ -249,7 +249,7 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // work stands and its own pull request (standingPart). Where the start that waited was a start
 // again of the task at its first step or a move back (Walk.StartReason), the task is told why, and
 // its entry counts as a move back, as that start's own would have had it waited for nothing
-// (restartTask, transition). said is the log line, which names the issue, the task, its place and
+// (startAtFirstStep, transition). said is the log line, which names the issue, the task, its place and
 // role, and args. A task at its parts that now waits for nothing lets its parts that wait start:
 // this one place of the three doors runs startReadyNow for it.
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
@@ -584,7 +584,7 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 			return true, err
 		}
 	}
-	gates, err := e.store.GatesOf(ctx, tx, root.Key)
+	lifecycle, gate, err := record.RootFacts(ctx, e.store, tx, *root, e.cfg.Steps)
 	if err != nil {
 		return false, err
 	}
@@ -593,7 +593,7 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 		return false, err
 	}
 	holds := slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == root.Key })
-	return !record.AwaitsPromotion(*root, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
+	return !record.AwaitsPromotion(*root, lifecycle, gate, holds), nil
 }
 
 // mergeCanLand says whether the merge of s's task, which awaits its landing in the tree root

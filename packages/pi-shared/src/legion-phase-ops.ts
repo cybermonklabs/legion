@@ -330,7 +330,8 @@ export const PHASE_OP_SENTENCES = {
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-    "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing. That move counts no review round. ",
+    "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
+    "That move counts no review round: only a review that requests changes counts one. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -410,7 +411,8 @@ export function legionToolDescription(host: {
     "`gh pr edit`); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
-    "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
+    "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
+    "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
     "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
     "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +

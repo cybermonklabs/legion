@@ -52,6 +52,8 @@ type keywordVersion struct {
 	specArtifact *string
 	specVersion  *int32
 	search       string
+	// deletedAt is the relation's deleted_at: the post's own delete mark, whatever the time.
+	deletedAt *time.Time
 	// The event's: its type, seq, created_at, issue and project as the log names them, the item it
 	// is of (an issue event's issue, else its payload's id), and whether it cut the post's body.
 	// eventType is "" for an event the log does not hold.
@@ -91,15 +93,16 @@ func (h *keywordHistory) keepInside(step string, backend int32) {
 }
 
 // keepAt keeps a time as keep does while the transactions of the backends open may be open: a
-// time inside their window when open names any.
+// time inside their window when open names any. Its wait for that moment has one bound, the test
+// binary's deadline (testwait.UntilPolling).
 func (h *keywordHistory) keepAt(step string, open []int32) {
 	h.t.Helper()
 	var kept keptTime
-	testwait.WithinPolling(h.t, 30*time.Second, 20*time.Millisecond,
-		fmt.Sprintf("a moment within 30 s after %s at which no other transaction of the database is open", step), func() bool {
+	testwait.UntilPolling(h.t, 20*time.Millisecond,
+		fmt.Sprintf("a moment after %s at which no other transaction of the database is open", step), func() (bool, bool) {
 			var quiet bool
 			kept, quiet = h.read(open)
-			return quiet
+			return quiet, quiet
 		})
 	kept.step, kept.inside = step, len(open) > 0
 	h.kept = append(h.kept, kept)
@@ -194,7 +197,7 @@ func (h *keywordHistory) read(open []int32) (keptTime, bool) {
 // with the table's own row of each version, for its body_from, and with the event that started it.
 const keywordVersionsQuery = `
 	select v.kind, v.id, v.issue_key, v.project_key, v.event_id, v.event_seq, v.started_at, v.body, t.body_from,
-	       v.spec_artifact_id::text, v.spec_version, v.search::text,
+	       v.spec_artifact_id::text, v.spec_version, v.search::text, v.deleted_at,
 	       coalesce(e.type, ''), coalesce(e.seq, -1), coalesce(e.created_at, 'epoch'::timestamptz), e.issue_key,
 	       coalesce(e.project_key, ei.project_key, ea.project_key, ''),
 	       coalesce(case when e.type like 'issue.%' or e.type = 'artifact.version' then e.issue_key
@@ -228,7 +231,7 @@ func (h *keywordHistory) verify() {
 			var key keywordItem
 			var v keywordVersion
 			if err := rows.Scan(&key.kind, &key.id, &v.issueKey, &v.projectKey, &v.eventID, &v.eventSeq, &v.startedAt, &v.body,
-				&v.bodyFrom, &v.specArtifact, &v.specVersion, &v.search, &v.eventType, &v.eventSeqOf, &v.eventAt, &v.eventIssue,
+				&v.bodyFrom, &v.specArtifact, &v.specVersion, &v.search, &v.deletedAt, &v.eventType, &v.eventSeqOf, &v.eventAt, &v.eventIssue,
 				&v.eventProject, &v.eventItem, &v.truncated); err != nil {
 				h.t.Fatalf("read the relation at the time kept after %s: %v", kept.step, err)
 			}
@@ -247,17 +250,23 @@ func (h *keywordHistory) verify() {
 		}
 	}
 	later := h.laterWords()
+	marks := h.deleteMarks()
 	for index, kept := range h.kept {
-		for key := range h.versions[index] {
+		for key, got := range h.versions[index] {
 			if _, existed := kept.items[key]; !existed {
 				fail("after %s: the relation holds a version of %s %s, which did not exist then", kept.step, key.kind, key.id)
+			}
+			for _, v := range got {
+				if want := marks[key]; !keywordSameTime(v.deletedAt, want) {
+					fail("after %s: %s %s's version (event %d) answers deleted_at %v; the item's own delete mark is %v",
+						kept.step, key.kind, key.id, v.eventID, keywordValue(v.deletedAt), keywordValue(want))
+				}
 			}
 		}
 		for key, item := range kept.items {
 			h.check(fail, index, key, item, later[key][index])
 		}
 	}
-	h.checkLast(fail)
 	var directRows int
 	if err := h.database.Pool.QueryRow(ctx, `
 		select count(*) from search_text_versions v join messages m on m.id::text = v.id
@@ -363,6 +372,38 @@ func (h *keywordHistory) checkLast(fail func(string, ...any)) {
 	}
 }
 
+// deleteMarks reads the delete mark of each deleted comment and message as it stands now, which
+// the relation answers on every version of the post at every time (store.TextVersions).
+func (h *keywordHistory) deleteMarks() map[keywordItem]*time.Time {
+	h.t.Helper()
+	rows, err := h.database.Pool.Query(h.t.Context(), `
+		select 'comment', id::text, deleted_at from comments where deleted_at is not null
+		union all
+		select 'message', id::text, deleted_at from messages where deleted_at is not null`)
+	if err != nil {
+		h.t.Fatalf("read the posts' delete marks: %v", err)
+	}
+	defer rows.Close()
+	marks := map[keywordItem]*time.Time{}
+	for rows.Next() {
+		var key keywordItem
+		var at time.Time
+		if err := rows.Scan(&key.kind, &key.id, &at); err != nil {
+			h.t.Fatalf("read a post's delete mark: %v", err)
+		}
+		marks[key] = &at
+	}
+	if err := rows.Err(); err != nil {
+		h.t.Fatalf("read the posts' delete marks: %v", err)
+	}
+	return marks
+}
+
+// keywordSameTime is whether a and b are both nil or name the same instant.
+func keywordSameTime(a, b *time.Time) bool {
+	return (a == nil) == (b == nil) && (a == nil || a.Equal(*b))
+}
+
 // laterWords answers, for each item and kept time, the words its texts at later kept times hold
 // that none of its texts up to that time held: the text written after the time.
 func (h *keywordHistory) laterWords() map[keywordItem]map[int][]string {
@@ -416,22 +457,18 @@ func (h *keywordHistory) requireVersion(step string, key keywordItem, want func(
 	}
 }
 
-// keywordAwaitReach waits up to 30 s for the keyword table's reach to come to at, the latest time
-// the test reads the relation at.
+// keywordAwaitReach waits for the keyword table's reach to come to at, the latest time the test
+// reads the relation at. Its one bound is the test binary's deadline (testwait.UntilPolling),
+// whose failure prints the reach last read.
 func keywordAwaitReach(t *testing.T, database *store.Store, at time.Time) {
 	t.Helper()
-	var reach time.Time
-	var reached bool
-	if !testwait.Holds(30*time.Second, 100*time.Millisecond, func() bool {
-		var err error
-		if reach, reached, err = database.TextVersionsReach(t.Context()); err != nil {
+	testwait.UntilPolling(t, 100*time.Millisecond, "the keyword table's reach to come to the last kept time, "+at.Format(time.RFC3339Nano)+" (the reach last read)", func() (string, bool) {
+		reach, reached, err := database.TextVersionsReach(t.Context())
+		if err != nil {
 			t.Fatalf("read the keyword table's reach: %v", err)
 		}
-		return reached && !reach.Before(at.Truncate(time.Microsecond))
-	}) {
-		t.Fatalf("the keyword table's reach is %s (reached %v) 30 s on; the last kept time is %s",
-			reach.Format(time.RFC3339Nano), reached, at.Format(time.RFC3339Nano))
-	}
+		return fmt.Sprintf("%s (reached %v)", reach.Format(time.RFC3339Nano), reached), reached && !reach.Before(at.Truncate(time.Microsecond))
+	})
 }
 
 // keywordSameBody is whether v's body is text: the same words for a body read from a comment's

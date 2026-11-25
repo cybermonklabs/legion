@@ -93,7 +93,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // covered by a queued start of its phase (queuedRowCovers). The silence repair reads no
 // suspended claim and no claim a queued start covers (unpromptedPhaseWorker). A later start
 // through StartOrOwe that carries the same slot mark, which a start of merging or of another
-// phase past the review does, takes the owed start out while it is still queued and unleased
+// phase that holds no slot (accepting, retro) does, takes the owed start out while it is still queued and unleased
 // (held by a closed design gate, or not yet run) and writes its own in its place
 // (Store.EnqueueStart). A later start of a phase that holds a slot, such as implementing after the
 // merger's own move back, leaves it queued, and the outbox's phase fence ends it, since it serves

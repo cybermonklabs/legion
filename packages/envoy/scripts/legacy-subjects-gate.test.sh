@@ -91,6 +91,13 @@ cat >"$root/bin/kubectl" <<'EOF'
 # after a line of another message.
 set -u
 printf '%s\n' "$*" >>"$FAKE/calls"
+# fields ROW splits one tab-separated row of the Job log into leg, arg, rc, out and err with the
+# shell's own read, a field left empty included: tab is a whitespace character to read, which joins
+# runs of it, so the row is read with the unit separator, which no row holds, in its place. A cut
+# per field would start four processes per row on every read of the log.
+fields() {
+  IFS=$'\x1f' read -r leg arg rc out err <<<"${1//$'\t'/$'\x1f'}"
+}
 args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -110,15 +117,16 @@ case "$*" in
     # @CENSUS_NAME@ in the fixture, then its end line unless census.cut says the log was cut short.
     census=$(jq -r '[.spec.template.spec.containers[0].env[]? | select(.name == "CENSUS_NAME") | .value] | first // "no-census-name"' "$FAKE/created-census-job.json" 2>/dev/null)
     while IFS= read -r row; do
-      [ "$(cut -f1 <<<"$row")" = census ] || continue
-      out=$(cut -f4 <<<"$row" | base64 -d | sed "s/@CENSUS_NAME@/${census:-no-census-name}/g" | base64 -w 0)
-      printf '%s\t%s\t%s\t%s\t%s\n' census "$(cut -f2 <<<"$row")" "$(cut -f3 <<<"$row")" "$out" "$(cut -f5 <<<"$row")"
+      fields "$row"
+      [ "$leg" = census ] || continue
+      out=$(printf '%s' "$out" | base64 -d | sed "s/@CENSUS_NAME@/${census:-no-census-name}/g" | base64 -w 0)
+      printf '%s\t%s\t%s\t%s\t%s\n' census "$arg" "$rc" "$out" "$err"
     done <"$FAKE/job.log"
     [ -e "$FAKE/census.cut" ] || printf 'end\t-\t0\t\t\n' ;;
   "-n envoy logs job/"*)
     # The listener-identity Job's log: the fixture's rows but the census's.
     while IFS= read -r row; do
-      [ "$(cut -f1 <<<"$row")" = census ] || printf '%s\n' "$row"
+      [ "${row%%$'\t'*}" = census ] || printf '%s\n' "$row"
     done <"$FAKE/job.log" ;;
   "-n envoy get statefulset envoy-nats -o json")
     [ ! -e "$FAKE/statefulset.fail" ] || { echo 'Error from server (NotFound): statefulsets.apps "envoy-nats" not found' >&2; exit 1; }
@@ -515,10 +523,13 @@ reading() {
 # replace_row LEG ARG [LINE...] replaces, in the case's Job log, the one row that is the read LEG of
 # ARG with the lines given (none deletes it), failing the case unless exactly one row is that read.
 replace_row() {
-  local leg=$1 arg=$2 row matched=0
+  local leg=$1 arg=$2 row row_leg row_arg matched=0
   shift 2
   while IFS= read -r row; do
-    if [ "$(cut -f1 <<<"$row")" = "$leg" ] && [ "$(cut -f2 <<<"$row")" = "$arg" ]; then
+    row_leg=${row%%$'\t'*}
+    row_arg=${row#*$'\t'}
+    row_arg=${row_arg%%$'\t'*}
+    if [ "$row_leg" = "$leg" ] && [ "$row_arg" = "$arg" ]; then
       matched=$((matched + 1))
       [ "$#" = 0 ] || printf '%s\n' "$@"
     else

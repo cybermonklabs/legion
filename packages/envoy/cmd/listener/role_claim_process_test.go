@@ -98,6 +98,7 @@ func (r *roleClaimProcessRig) holdingProcessOf(t *testing.T, role string) string
 // A claim from the very process the standing claim names is granted at once, however recently
 // that claim was renewed: it is that process's own role, and a claim is how it says so again.
 func TestARoleClaimUnderOneSessionIdIsGrantedToTheProcessTheClaimNames(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"
@@ -119,6 +120,7 @@ func TestARoleClaimUnderOneSessionIdIsGrantedToTheProcessTheClaimNames(t *testin
 // it is and the claimant reads the 409 that names the holder - and the route logs the refusal
 // with both processes, so an operator sees the second one being held off.
 func TestASecondProcessOfOneSessionIdIsRefusedTheRoleWhileTheHoldersClaimIsRenewed(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"
@@ -145,6 +147,7 @@ func TestASecondProcessOfOneSessionIdIsRefusedTheRoleWhileTheHoldersClaimIsRenew
 // role: the holder it names has stopped renewing it, and a claim stale by that much is the one
 // thing that frees a role still claimed under the id the claimant is registering as its own.
 func TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheClaimsRenewalIsOlderThanTheWindow(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"
@@ -168,6 +171,7 @@ func TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheClaimsRenewalIsOlderThan
 // stored claim then names that second process. The soft claim refused first, at the same moment,
 // is what shows the claim was made inside the window.
 func TestAClaimWithoutSoftFromASecondProcessOfOneSessionIdTakesTheRole(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"
@@ -196,6 +200,7 @@ func TestAClaimWithoutSoftFromASecondProcessOfOneSessionIdTakesTheRole(t *testin
 // the live holder's role to the second process. The claim fails closed instead, with the 503 the
 // route answers every read that did not answer with, and writes nothing.
 func TestASecondProcessOfOneSessionIdIsRefusedTheRoleWhileTheRoleClaimViewCannotAnswer(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"
@@ -220,6 +225,7 @@ func TestASecondProcessOfOneSessionIdIsRefusedTheRoleWhileTheRoleClaimViewCannot
 // claimant waits out, and a registration by the holder landing inside it is what would keep the
 // role where it is.
 func TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheRoleClaimViewAnswersAgain(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"
@@ -249,6 +255,7 @@ func TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheRoleClaimViewAnswersAgai
 // takes nothing from it: this is the holder's own process re-claiming its role after the listener
 // restart that left the view refilling, and refusing it would strand it until the refill ended.
 func TestARoleClaimFromTheProcessTheClaimNamesIsGrantedWhileTheRoleClaimViewCannotAnswer(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"
@@ -272,6 +279,7 @@ func TestARoleClaimFromTheProcessTheClaimNamesIsGrantedWhileTheRoleClaimViewCann
 // (store.RoleClaim.LastAnsweredAt): the role is kept while that moment is inside the window and
 // granted once it is older, which is how a claim standing from before this build is taken over.
 func TestARoleClaimRecordThatNamesNoProcessIsWeighedByTheMomentItWasClaimed(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"
@@ -302,6 +310,7 @@ func TestARoleClaimRecordThatNamesNoProcessIsWeighedByTheMomentItWasClaimed(t *t
 // and takes the role once nobody answers for it. That is a client predating the field claiming a
 // role held under its own session id.
 func TestARoleClaimThatStatesNoProcessIsWeighedByTheStandingClaimsRenewal(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"
@@ -335,6 +344,7 @@ func TestARoleClaimThatStatesNoProcessIsWeighedByTheStandingClaimsRenewal(t *tes
 // send the holder of such a claim a soft claim it does not need and a 409 naming itself. The body
 // is decoded into a map, because a member decoded into a *string field reads null as absent.
 func TestTheRoleLookupAnswersTheProcessTheHoldersClaimNames(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_shared_id"
 	rig := newRoleClaimProcessRig(t, sessionID)
 	for name, tc := range map[string]struct{ role, instance string }{
@@ -369,6 +379,7 @@ func TestTheRoleLookupAnswersTheProcessTheHoldersClaimNames(t *testing.T) {
 // role reaper takes it, so a client reading this answer still needs to know which process holds
 // it. The holder here has left the session bucket, which is what makes the lookup a 404.
 func TestTheRoleLookupAnswersALapsedHoldersProcess(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"
@@ -401,6 +412,7 @@ func TestTheRoleLookupAnswersALapsedHoldersProcess(t *testing.T) {
 // each row first reads the record it lapses. The body is decoded into a map, because
 // listenerwire.RoleRefusal's string member cannot tell an empty field from no field.
 func TestTheRoleLookupOfALapsedClaimThatNamesNoProcessLeavesTheFieldOut(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_shared_id"
 		role      = "legion-controller"

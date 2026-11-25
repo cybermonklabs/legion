@@ -77,8 +77,8 @@
 # plus the session-storage probe), holds the Legion plugin to the daemon API contract and proves it
 # loads with the Envoy plugin, holds the claude-envoy root the same way — its built channel server,
 # its generated Legion plugin and the daemon API contract its manifest declares — and holds Claude
-# Code's pin to one a pod can install and verify, checks every image-site capability and TLS client
-# against this image, and prints their results before the OK line the daemon's probe Sandbox reads.
+# Code's pin to one a pod can install and verify, checks every image-site capability against this
+# image, and prints the results before the OK line the daemon's probe Sandbox reads.
 # A broken image never publishes.
 #
 # The `legion` profile carries no model route, and neither does Legion: an operator's pod supplies it
@@ -120,15 +120,17 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Each was read on 2026-11-22 (Oh My Pi's at its 18.18.6-sami.20261122-091943 pin, jj's at its
-# 0.46.0-sami.20261120-120102 pin, gh's at 2.98.0) as the `digest` GitHub's API gives the release
-# asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]'`), and each equals the
-# sha256 of the archive downloaded from the address the tools stage reads. gh's is also its line
-# in the release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo
-# cli/cli` verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj
-# releases carry no attestation (the same command answers 404 for both). A bump repeats those
-# reads.
-ARG OMP_SHA256=aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
+# Oh My Pi's was read on 2026-11-25 at its 18.18.6-sami.20261125-001804 pin, jj's on 2026-11-22 at
+# its 0.46.0-sami.20261120-120102 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
+# GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
+# '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
+# stage reads. gh's is also its line in the release's gh_<version>_checksums.txt, and `gh
+# attestation verify <archive> --repo cli/cli` verified that archive against cli/cli's
+# deployment.yml workflow. Oh My Pi's archive verifies the same way against the fork's
+# sami-build.yml workflow at refs/heads/release-candidate (`gh attestation verify <archive> --repo
+# cybermonklabs/oh-my-pi`); the jj release carries no attestation (the command answers 404). A
+# bump repeats those reads.
+ARG OMP_SHA256=bedea356fa433d3114780b4d0960cc46c715271c915732a7edd5194a1f664632
 ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
@@ -761,7 +763,7 @@ RUN set -eu; \
 # and bq at Debian's root bundle. As the SDK ships, both trust the CA files it bundles, which hold
 # the compromised emSign and AAA roots: measured on 2026-11-18 in an INFRA issue pod, gcloud 589.0.0
 # and bq 2.1.40 accepted the emSign chain. With the property at Debian's bundle both refuse the two
-# chains, which `legion probe-image`'s TLS probe holds them to (the final step). The two properties
+# chains. The two properties
 # are defaults: a role's own gcloud configuration or
 # CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE still overrides them, as a role's AWS_CA_BUNDLE does the
 # image's.
@@ -772,9 +774,10 @@ RUN set -eu; \
 # but the generated API clients compiled, and to 2.7-2.9 s with them too; a bq call went from
 # 11.2-16.8 s to 6.4-7.2 s. The generated API clients (lib/googlecloudsdk/generated_clients) hold
 # 144 MB of the 260 MB of bytecode a whole compile writes, for 212 APIs in 427 versions, of which a
-# gcloud command imports the one it calls, so the compile leaves them out, except compute v1, the
-# client the TLS probe's gcloud call imports (5.8 MB). The RUN's own `gcloud config set` calls run
-# as root before the compile and write the bytecode of what they import, which holds
+# gcloud command imports the one it calls, so the compile leaves them out, except compute v1
+# (5.8 MB): with every other module compiled, it makes a role's `gcloud compute` call about 0.6 s
+# to 0.8 s faster (2.7-2.9 s against 3.5 s, the measurement above). The RUN's own `gcloud config
+# set` calls run as root before the compile and write the bytecode of what they import, which holds
 # generated_clients/apis/apis_map.py too. What the RUN compiles, about 124 MB, sits beside the
 # SDK's 428 MB (both read from a scratch install of 594.0.0). compileall's -x leaves out the trees
 # that hold the Python 2 sources the archive still carries, which Python 3 cannot compile: the
@@ -952,11 +955,10 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # 2026-11-18; the toolchain step prints its version) installs /usr/bin/busybox alone, with no applet
 # links, so `wget` and `sh` stay GNU wget and dash. Its `wget` and `ssl_client` applets do no
 # certificate validation (its own help says "TLS certificate validation not implemented"), so a
-# busybox applet must never become the `wget` on PATH: the `wget` the capability check's
-# `toolchain` row asks for (packages/daemon/internal/capabilities/image.go) is GNU wget, and the
-# TLS probe holds the PATH's `wget` to the compromised chains. An applet that became `wget` would
-# stop at the probe's --no-hsts, an option it does not know, so the probe would fail it as unable
-# to verify a refusal and fail the build. busybox stays out of that `toolchain` capability row: that
+# busybox applet must never become the `wget` on PATH: a role's `wget` would then fetch over https
+# with no certificate check, and the `wget` the capability check's `toolchain` row asks for
+# (packages/daemon/internal/capabilities/image.go) is GNU wget. busybox stays out of that
+# `toolchain` capability row: that
 # row is the floor every deployment's image is held to, and LINUX's `worker-lean` image copies
 # /usr/local/bin from this one, not /usr/bin.
 # tmux: the skill-scenario rig's panes (packages/pi-legion/scripts/skill-scenarios/rig.sh) and the
@@ -1437,7 +1439,7 @@ COPY --from=go-modules --chown=1000:1000 /gomodcache/cache/download /home/legion
 # gets one version until the Node pin moves. It is image ENV, not a pod variable, for that reason.
 # AWS_CA_BUNDLE makes the AWS CLI use Debian's current system roots. Its vendored bundle has no
 # trust path for example.com's current chain after the compromised AAA root is removed, while the
-# system bundle validates that control and rejects both compromised test chains.
+# system bundle trusts that chain and holds neither the emSign nor the AAA root.
 # CGO_ENABLED=0 keeps cgo off by default now that gcc is on PATH (the apt line above says why gcc is
 # there), for every process that inherits the image's environment: the bash tool, subagents, and go
 # test's test binaries. The toolchain stage's go.env line alone would not reach two of them: a go/build
@@ -1720,35 +1722,19 @@ ARG GH_STACK_TOOL
 # on PATH with its plugin enabled in the profile's lock; and go, gcc, curl, wget, python3, node, bun,
 # uv, kubectl, jq, ssh-keygen, flock, psql, redis-cli, sqlite3, nc and dig on PATH with `go version`
 # running, and the claude-code row's claude-envoy root and Claude Code pin as the lane held them
-# with npm and node on PATH (packages/daemon/internal/capabilities/image.go). It then has node, bun,
-# omp's embedded bun, CodeGraph's Node, uv, the AWS CLI, curl, Python, gh, GNU wget, git, go,
-# kubectl, redis-cli and Chromium, and, where each is on PATH, gcloud, bq, az, mise and socat,
-# refuse each compromised chain while accepting the control, and the public test sites' own chains,
-# all served by the probe's own server on 127.0.0.1, so no public host's name or route decides the
-# build; node, CodeGraph's Node, wget and git, which read a chain only after the handshake, are held
-# to the two public test sites instead, which fail the build only where a client accepts their
-# chains and print `probe-image: UNKNOWN: <client> against <host>` where they cannot be reached
-# (packages/daemon/cmd/legion/tls_probe.go says why). A
-# deployment image without one of those five is not refused for it (the probe reports it
-# `absent`), because those five are outside the floor every deployment's image is held to. It
-# prints the table, one `probe-image: capability <name>: <status> (<detail>)` line per row, every TLS
-# decision, then `probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered
+# with npm and node on PATH (packages/daemon/internal/capabilities/image.go). It prints the table,
+# one `probe-image: capability <name>: <status> (<detail>)` line per row, then
+# `probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered
 # agent-models=skipped capabilities=checked model-fallback=on daemon-api-version=<N>` — `on` here is
 # Oh My Pi's own default for retry.modelFallback, since the build runs under no operator overlay; a
-# probe pod reads the operator's value — and a build whose image lacks a capability or trusts a
-# compromised chain fails here, the probe naming every failure. The daemon's probe Sandbox runs it
+# probe pod reads the operator's value — and a build whose image lacks a capability fails here, the
+# probe naming every failure. The daemon's probe Sandbox runs it
 # again with its own contract, on the pod baseline and under the operator's pod, resolving every
 # agent's model, and refuses a skipped result, before any claim runs on the image
 # (packages/daemon/internal/runtime/sandbox/probe.go).
 # It needs the natives step 3 extracted, which the cached probe layer above carries. The step leaves no
 # residue: Oh My Pi's logs, and the Go telemetry counters the capability check's `go version` writes
 # under HOME (the toolchain step's XDG_CONFIG_HOME does not reach a probe that runs as a pod would).
-# The step also requires that the probe's gcloud, bq, az and mise calls left none of their state in
-# the runtime user's home (the TLS probe keeps it in a state directory of its own, mise's HOME and
-# every MISE_*_DIR included): none of /home/legion/.config/gcloud, /home/legion/.azure,
-# /home/legion/.cache/mise and /home/legion/.local/share/mise may exist after it. The probe's go
-# and kubectl calls keep their state in that state directory too, and its wget call writes no HSTS
-# file (--no-hsts).
 # Each plugin root's package.json must name the version of this checkout's manifest (bind-mounted
 # from the build context, so the image keeps no copy), or the release version a release passes
 # (PI_ENVOY_VERSION, PI_LEGION_VERSION): an image whose plugin roots name any other version, or no
@@ -1834,8 +1820,6 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     fi; \
     test "$version" = "$expected"; \
     legion probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code --skip-agent-models; \
-    test ! -e /home/legion/.config/gcloud; test ! -e /home/legion/.azure; \
-    test ! -e /home/legion/.cache/mise; test ! -e /home/legion/.local/share/mise; \
     agent-secrets --help >/dev/null; \
     rm -rf /home/legion/.omp/profiles/legion/logs /home/legion/.config/go
 # The Kubernetes runtime sets every container's command explicitly

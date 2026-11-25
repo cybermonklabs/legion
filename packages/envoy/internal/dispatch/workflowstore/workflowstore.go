@@ -16,7 +16,9 @@
 // one fact, which a write of a higher version replaces whole and any other write leaves (PutPlan).
 // The reads of an issue answer each run with its attempt, which no write stores (IssueSteps), and
 // the plan of its newest run (NewestPlan); the read of a project (ProjectPlans) answers each of its
-// finished issues with its plan, its ratings, its time and its count of failed steps.
+// finished issues with its plan, its ratings, its time and its count of failed steps. A run's write
+// that appends a tuple signals its issue on RunsChannel at its commit, and IssueRunsRevision counts
+// the tuples of an issue's runs, which each such commit raises.
 //
 // The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
 // internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column
@@ -119,7 +121,7 @@ const (
 )
 
 // The two sources of a plan: the owner's document, or the default steps of an issue whose owner
-// gave none.
+// gave none, or whose experiment's group takes none from its owner.
 const (
 	PlanSourceDefault = "default"
 	PlanSourceOwner   = "owner"

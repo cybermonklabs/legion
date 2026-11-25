@@ -30,6 +30,7 @@ type API interface {
 	TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error)
 	BlockPath(ctx context.Context, artifactID, blockID string) (model.BlockPath, error)
 	SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error)
+	SettleVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error)
 	SettleIssueDocuments(ctx context.Context, issueKey string) error
 	WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error)
 	MarkReopenOwedAskDocuments(ctx context.Context, issueKey string) error
@@ -46,6 +47,7 @@ type API interface {
 	SuggestionKind(ctx context.Context, artifactID, id string) (string, error)
 	AcceptSuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor) error
 	RejectSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error
+	RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) (string, error)
 	ProjectMark(ctx context.Context, artifactID, markID string, record MarkRecord, actor model.Actor) error
 	Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger)
 	JoinWrite(ctx context.Context, artifactID string) error

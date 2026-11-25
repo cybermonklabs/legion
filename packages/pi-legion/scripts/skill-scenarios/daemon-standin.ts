@@ -28,8 +28,10 @@
  * mintedGrantId?, handoffId?, handoffVersion?}`, the run's record of what reached the daemon; a
  * completion's line carries the record it named.
  *
- * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>`
- * The state document holds that one issue, in the phase its role works. Prints
+ * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>
+ * <repository> <default branch>`
+ * The state document holds that one issue, in the phase its role works, on that repository and
+ * its default branch (rig.sh's tester-proof world). Prints
  * `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's pick).
  */
 import { randomUUID } from "node:crypto";
@@ -46,17 +48,20 @@ import pkg from "../../package.json";
 import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
 
 const GRANT_TTL_MS = 60_000;
-const [portArg, logFile, bootTokenFile, project, issue, role] = Bun.argv.slice(2);
+const [portArg, logFile, bootTokenFile, project, issue, role, repository, defaultBranch] =
+  Bun.argv.slice(2);
 if (
   portArg === undefined ||
   logFile === undefined ||
   bootTokenFile === undefined ||
   project === undefined ||
   issue === undefined ||
-  role === undefined
+  role === undefined ||
+  repository === undefined ||
+  defaultBranch === undefined
 ) {
   console.error(
-    "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>"
+    "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role> <repository> <default branch>"
   );
   process.exit(2);
 }
@@ -76,10 +81,11 @@ const startedAt = new Date().toISOString();
 /** The phase the role works and the word of the handoff record it ends with, empty when none. */
 const [PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phase", role]).split("\n");
 /** `GET /legion/v1/state`: the one issue the worker holds, admitted in the phase its role works
- * (`workflow.RoleFor`, through daemon-pane.go), on the rig's one repository. `capabilities` is the
- * deployment's capability report, `strandedClaims` the claims nothing will wake, `heldOutboxRows`
- * the lifecycle rows held behind their issues' running ones, `consumers` the lag of the daemon's
- * durable consumers and `repositories` the repositories the live records name, each of which the reader requires;
+ * (`workflow.RoleFor`, through daemon-pane.go), on the repository and default branch the rig
+ * names. `capabilities` is the deployment's capability report, `strandedClaims` the claims
+ * nothing will wake, `heldOutboxRows` the lifecycle rows held behind their issues' running ones,
+ * `consumers` the lag of the daemon's durable consumers and `repositories` the repositories the
+ * live records name, each of which the reader requires;
  * the rig has no deployment to report on, its one claim runs, it has no outbox and no NATS, so
  * the first four are the empty lists the daemon's MarshalJSON emits when there is none.
  * `wakesWaiting`, the wakes the pacing holds until their turn, is optional to the reader; the rig
@@ -96,8 +102,8 @@ const STATE = LegionStateResponse.parse({
       phase: PHASE,
       status: "in_progress",
       tree: issue,
-      repo: "sjawhar/legion-smoke",
-      defaultBranch: "main",
+      repo: repository,
+      defaultBranch,
       workers: {},
     },
   },
@@ -107,7 +113,7 @@ const STATE = LegionStateResponse.parse({
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    live: [{ repo: "sjawhar/legion-smoke", apps: { implement: true, review: true } }],
+    live: [{ repo: repository, apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },

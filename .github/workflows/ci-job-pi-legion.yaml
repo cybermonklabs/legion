@@ -1,18 +1,36 @@
 name: CI job pi-legion
 
-# The steps of ci.yaml's `pi-legion` job, in a file of its own.
-# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# The steps of ci.yaml's `pi-legion` and `pi-legion-build` jobs, in a file of their own.
+# ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
+# file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
+# whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
+# that is. The two share a file because ci.yaml already calls as many reusable workflows as
+# .github/scripts/check-workflow-files.sh allows it
+# (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 #
-# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
-# these steps selects this job alone, where a change to ci.yaml selects every job.
+# The split is for the filters. Each job's filter names this file beside ci.yaml, so a change to
+# these steps selects these two jobs alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# The two are the halves of what was one job, and each runs every one of its steps wherever it
+# runs. pi-legion-build typechecks the plugin and packs it as the release does, which a pull
+# request runs. pi-legion runs the plugin's test suite, a slow suite (the one job took 14.8
+# minutes at the 90th percentile of the pull-request runs of 2026-11-22): its `pi_legion` output
+# is held back on a pull request without the label full-ci or lane:pi_legion, so it runs in the
+# merge queue
+# (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+#
+# Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
+      job:
+        description: >-
+          The id of ci.yaml's job that calls this file, `pi-legion` or `pi-legion-build`: the job
+          of this file of that id runs, and the other is skipped.
+        type: string
+        required: true
       ci-ok-changes:
         description: >-
           ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
@@ -31,14 +49,16 @@ env:
 
 jobs:
   pi-legion:
+    if: inputs.job == 'pi-legion'
     runs-on: ubuntu-24.04
     # The budget, added up part by part from the slowest run this job can have rather than
-    # copied from another job: the job's set-up with the NATS service started and the checkout
-    # (15 s), setup-bun (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache
-    # restore (26), the workspace install and contracts' build (14), the lint and the typecheck
-    # (16), the test step (300), the pack, the upload and the ci-ok report (4), the post steps
-    # with the containers stopped (5), and the seconds the job's own clock holds over the sum of
-    # its steps (5). That is 396 s, 6 m 36 s, the floor a ceiling here has to clear.
+    # copied from another job, when it also ran the typecheck and the pack that pi-legion-build
+    # runs now: the job's set-up with the NATS service started and the checkout (15 s), setup-bun
+    # (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache restore (26), the
+    # workspace install and contracts' build (14), the lint and the typecheck (16), the test step
+    # (300), the pack, the upload and the ci-ok report (4), the post steps with the containers
+    # stopped (5), and the seconds the job's own clock holds over the sum of its steps (5). That
+    # is 396 s, 6 m 36 s, a floor this job, without the typecheck and the pack, stays under.
     # The test step runs the package's files in one worker per CPU (`bun test --parallel`,
     # package.json), so it lasts as long as its slowest worker, which runs
     # legion-stall-watchdog-omp.test.ts alone: its eight cases took 241.3 s, 281.5 s and 296.4 s
@@ -98,14 +118,55 @@ jobs:
       - name: Build contracts for pi-legion
         run: bun run build
         working-directory: packages/contracts
-      - name: Typecheck pi-legion
-        run: bun run typecheck
-        working-directory: packages/pi-legion
       - name: Test pi-legion
         run: bun run test
         working-directory: packages/pi-legion
         env:
           LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: pi-legion
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  pi-legion-build:
+    if: inputs.job == 'pi-legion-build'
+    # arm64, as every job of ci.yaml that needs no x86_64 machine runs: what kept pi-legion on
+    # ubuntu-24.04 is the pinned Oh My Pi build, whose release ships linux-x64 alone, and this job
+    # installs none (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs,
+    # "Runners").
+    runs-on: ubuntu-24.04-arm
+    # The parts of pi-legion's budget above this job runs, at their slowest: the set-up and the
+    # checkout (15 s, with the NATS service it no longer starts), setup-bun (2), the workspace
+    # install and contracts' build (14), the typecheck (16), the pack, the upload and the ci-ok
+    # report (4), the post steps (5) and the job's own clock over its steps (5): 61 s, measured on
+    # ubuntu-24.04. Ten minutes is about ten times that, room for a slow runner and a cold Bun
+    # download, and it still cuts off a hung pack long before pi-legion's 28.
+    timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for pi-legion
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Typecheck pi-legion
+        run: bun run typecheck
+        working-directory: packages/pi-legion
+      # The skills' guard: every skill within its budget, every link resolving and every pinned
+      # sentence present. It is a text check of under a second, so a pull request runs it here
+      # rather than leave it to pi-legion's suite in the merge queue
+      # (.github/ci-notes/ci.md#the-pi-legion-plugins-suite-and-its-build). It runs before the pack,
+      # which rewrites package.json.
+      - name: Check the skills against their guard
+        run: bun test src/skills-guard.test.ts
+        working-directory: packages/pi-legion
       # The release's pack (release.yaml's pi_legion_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
       # legion.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
@@ -137,6 +198,6 @@ jobs:
         if: always()
         uses: ./.github/actions/ci-ok-report
         with:
-          job: pi-legion
+          job: pi-legion-build
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}

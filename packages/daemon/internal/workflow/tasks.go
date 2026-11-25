@@ -245,7 +245,7 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 					}
 				}
 			}
-			if err := e.mergeForwardOnEntry(ctx, tx, s, from, pr); err != nil {
+			if err := e.mergeForwardOnEntry(ctx, tx, s, pr); err != nil {
 				return record.Issue{}, err
 			}
 			atParts = atParts || first.Kind == record.PlaceParts

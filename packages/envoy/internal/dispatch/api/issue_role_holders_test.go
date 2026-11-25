@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -123,15 +122,22 @@ func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
 // not change keeps the time that Dispatch first recorded it.
 func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 	t.Parallel()
-	handler, _, _ := newTestServer(t, testServerOptions{})
+	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
 	first := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(first.Holders) != 1 || first.Holders[0].RecordedAt.IsZero() {
 		t.Fatalf("the first publish answered %#v, want tester ses-a with its time", first)
 	}
-	// Each write is its own transaction, so a write that sets now() again sets a later time.
-	time.Sleep(5 * time.Millisecond)
+	// Each write is its own transaction, so a write that sets now() again sets a later time once the
+	// database's clock reads past the first one's: the wait ends on that clock.
+	waitUntil(t, "the database's clock to read past the first publish's time", func() bool {
+		var past bool
+		if err := database.Pool.QueryRow(context.Background(), `select clock_timestamp() > $1`, first.Holders[0].RecordedAt).Scan(&past); err != nil {
+			t.Fatalf("read the database's clock against the first publish's time: %v", err)
+		}
+		return past
+	})
 	again := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(again.Holders) != 1 || !again.Holders[0].RecordedAt.Equal(first.Holders[0].RecordedAt) {
 		t.Fatalf("the second publish answered %#v, want the time %s of the first", again, first.Holders[0].RecordedAt)
@@ -224,9 +230,10 @@ func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
 // A role the deployment defines holds a role of an issue as Legion's six do (legionclaim.IsRole):
 // a set naming checker and linter beside the tester is stored whole, and the read the results route
 // makes finds the checker's session. A role is a name of the role grammar, so one of 32 characters
-// is taken too. The set reads back with Legion's six in the order the workflow reaches them, then
-// every other role by name. The controller, a name with a capital and a name of 33 characters are
-// each refused 400 INVALID_ROLE_HOLDER naming the grammar, and the stored set stays as it was.
+// is taken too. The set reads back with Legion's six in the order of legionclaim.Roles, the order of
+// the default steps, then every other role by name. The controller, a name with a capital and a name
+// of 33 characters are each refused 400 INVALID_ROLE_HOLDER naming the grammar, and the stored set
+// stays as it was.
 func TestARoleTheDeploymentDefinesHoldsARoleOfAnIssue(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -272,8 +279,9 @@ func TestARoleTheDeploymentDefinesHoldsARoleOfAnIssue(t *testing.T) {
 	}
 }
 
-// The set reads back in the order the workflow reaches the roles, whatever order the publication
-// named them in. The PUT answers in that order too.
+// The set reads back in the order of legionclaim.Roles, the order of the default steps (each
+// task names its own), whatever order the publication named them in. The PUT answers in that
+// order too.
 func TestTheRoleHoldersOfAnIssueReadInWorkflowOrder(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})

@@ -58,18 +58,18 @@ import (
 //
 // Whatever the departure, the issue carries no mark of a slot released for a wait afterwards.
 // The mark is the daemon's answer to "this issue was started and its row is gone because it
-// waits on another issue" (record.Issue.ReleasedForWaitAt), and this write is the third of the
-// three that clear it: the other two are the grant of a slot and admission's release, which
-// reads the project's live issues alone (admit's releaseSlots), and a child this function parks
-// at phase.Done is in neither half of that read (record.Postgres.LiveIssues), so without this
-// write nothing would ever clear it. Left standing, a person's later todo would re-enter the
-// issue carrying it, and the line would stand it among the issues whose work came back, at a
-// moment from before the leave, rather than among the issues whose first phase can start, which
-// are ordered by Dispatch rank (record.Waiting). The write is made whatever the record in hand
-// says, because that copy may have been read before the release wrote the mark, and a departure
-// is rare enough that one statement costs nothing.
+// waits on another issue" (record.Issue.ReleasedForWaitAt, which lists every write that clears
+// it). Admission's release reads the project's live issues alone (admit's releaseSlots), and a
+// child this function parks at phase.Done is in neither half of that read
+// (record.Postgres.LiveIssues) and may never see its tree re-admitted, so without this write
+// nothing would ever clear it. Left standing, a person's later todo would
+// re-enter the issue carrying it, and the line would stand it among the issues whose work came
+// back, at a moment from before the leave, rather than among the issues whose first phase can
+// start, which are ordered by Dispatch rank (record.Waiting). The write is made whatever the
+// record in hand says, because that copy may have been read before the release wrote the mark,
+// and a departure is rare enough that one statement costs nothing.
 //
-// Nor does its pull request keep a merge forward (clearMergeForward): the ask, its landing and
+// Nor does its pull request keep a merge forward (clearMergeForwards): the ask, its landing and
 // the review it asked for are of the run that is leaving, and a run that comes back asks about a
 // conflict afresh. This is the one place an issue leaves the workflow, so it is the one clear of
 // a departure.
@@ -174,7 +174,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	// record is read again rather than taken from the snapshot above, because closing the
 	// nearest one leaves (transition's own leave) and may close the ones above it on the way.
 	// The same departure may be the last one an ancestor held before its retro waited for, a
-	// parent whose plan has no acceptance step (record.HoldForChildren): the fact's settle starts
+	// parent whose last step is not the owner's acceptance (record.HoldForChildren): the fact's settle starts
 	// its retro (releaseHeldParents), as it does for every other change of what stands beneath
 	// it.
 	for _, ancestor := range above {

@@ -15,13 +15,23 @@
 export const WORKSPACE_RECREATED_VARIABLE = "LEGION_WORKSPACE_RECREATED";
 
 /**
- * How the same launcher says whether the pod's one workspace-bundle restore put the released
- * workspace's unpushed work back (`LEGION_WORKSPACE_RESTORED`, `launcher.WorkspaceRestoredVariable`).
- * A workspace recreated because the daemon released an idle pod holds the work its session
- * remembers; one recreated by anything else holds only what was pushed, and the agent is told
- * which of the two it has.
+ * What the notice says of a workspace made again, in the words of the task the daemon gives a role
+ * its idle release woke (`WorkspaceAfterRelease` in packages/daemon/internal/workflow/wake.go): what
+ * the idle release keeps (a commit on a working copy or a bookmark that no remote branch or tag
+ * holds, or a working-copy change, keeps the pod), what a workspace made again holds, and the one
+ * work the release can take, a commit no working copy and no bookmark reaches. The daemon keeps no
+ * copy of a workspace, so neither text says that unpushed work was kept, nor that nothing unpushed
+ * was lost. The launcher cannot tell an idle release from any other end of the pod, so the notice
+ * says this beside what any other end costs.
+ * `workspace-recreated.test.ts` holds this text to the daemon's data file
+ * `packages/daemon/internal/workflow/workspace-after-release.txt`.
  */
-export const WORKSPACE_RESTORED_VARIABLE = "LEGION_WORKSPACE_RESTORED";
+export const WORKSPACE_AFTER_RELEASE =
+  "The idle release does not take a pod whose workspace holds a commit on a working copy or a bookmark " +
+  "that no remote branch or tag holds, or a working-copy change: such work stays in the pod. " +
+  "When the pod's disk goes with it, the next pod's workspace is made again from what was pushed to this issue's branch " +
+  "(the repository's default branch if nothing was). " +
+  "A commit that no working copy and no bookmark reaches, such as one left on a side head with jj new, is not kept.";
 
 /**
  * One process's notice: its text, and the id every copy it sends carries (`details.id`), which
@@ -49,23 +59,15 @@ export function workspaceRecreatedNotice(
   issue: string
 ): WorkspaceRecreatedNotice | undefined {
   if (!workspaceRecreated(environment)) return undefined;
-  if (environment[WORKSPACE_RESTORED_VARIABLE] === "true") {
-    return {
-      id: crypto.randomUUID(),
-      content:
-        `Your workspace was made again since your last turn: the daemon released this issue's idle ` +
-        `pod and gave its CPU and memory back. It holds what was pushed to legion/${issue} and the ` +
-        "tracked work you had not pushed, which the daemon saved and put back. What is gone is what " +
-        "no commit held: the files your scratch directory held, files git ignores, and anything you " +
-        "started that was running. Check the workspace against what you remember doing before you " +
-        "continue.",
-    };
-  }
   return {
     id: crypto.randomUUID(),
     content:
-      `Your workspace was recreated since your last turn: it holds what was pushed to legion/${issue} ` +
-      "(or, if nothing was, the base that branch started from), and anything you had not pushed is gone. " +
+      `Your workspace was recreated since your last turn, from what was pushed to legion/${issue}. ` +
+      `${WORKSPACE_AFTER_RELEASE} ` +
+      "If anything else ended your pod (an eviction, a pod update, a reset, or an idle release made by a " +
+      "Legion release before this one), work you had not pushed is gone. " +
+      "What no commit held is gone in every case: the files your scratch " +
+      "directory held, files git ignores, and anything you started that was running. " +
       "Before you continue, check the workspace against what you remember doing and re-read the " +
       `last handoff recorded on ${issue} with \`dispatch handoff-read --issue ${issue} --phase <phase>\` ` +
       "(plan, implement, test or review); Dispatch keeps it, whatever the workspace lost.",

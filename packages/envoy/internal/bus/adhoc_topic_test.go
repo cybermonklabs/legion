@@ -22,6 +22,7 @@ const grantedTopic = "notifications.lxspec.granted"
 // lane of an agent subject and of a team topic and no other lane, so the lane of any other
 // captured topic takes core NATS.
 func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCapture(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		topic string
 		core  bool
@@ -59,6 +60,7 @@ func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCaptur
 // captures takes core NATS. A role lane and its exception lane take core NATS even from a stream
 // that still captures them.
 func TestUsesCoreTransportDecidesByTheDeployedSubjectsOnceItHasReadThem(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		deployed []string
 		topic    string
@@ -85,6 +87,7 @@ func TestUsesCoreTransportDecidesByTheDeployedSubjectsOnceItHasReadThem(t *testi
 // StreamCaptures reads each stream subject as a literal prefix and `.>`; a subject of any other
 // shape needs a matcher that splits tokens.
 func TestEveryStreamSubjectIsALiteralPrefixAndWildcard(t *testing.T) {
+	t.Parallel()
 	for _, subject := range streamCarriedSubjects {
 		prefix, ok := strings.CutSuffix(subject, ".>")
 		if !ok || prefix == "" || strings.ContainsAny(prefix, "*>") {

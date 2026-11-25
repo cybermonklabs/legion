@@ -1,5 +1,7 @@
 package textcheck
 
+//ci:builds packages/envoy/infra ./gcp TestTheHubCompilesNoAWSPackage moduleDeps, whose go list -deps ./gcp runs in ../.. (core_imports_test.go:33-34)
+
 import (
 	"strings"
 	"testing"

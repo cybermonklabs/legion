@@ -173,6 +173,16 @@
       "jj": true
     },
     {
+      "script": "experiment.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "evidence_variable": "EXPERIMENT_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/experiment.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch, the daemon and legion itself, and it reaches no outside service; a measured run took about 40 seconds with a warm Go build cache",
+      "jj": true
+    },
+    {
       "script": "stage1-skeleton.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["tmux"],
@@ -322,12 +332,12 @@
     },
     {
       "script": "provider-error-retry.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
+      "needs": "the pinned Oh My Pi executable (LEGION_OMP_PATH), which the hosted runner does not provide, plus loopback PostgreSQL (LEGION_TEST_PG_DSN), bash, go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
     },
     {
       "script": "refusal-fallback-omp.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), go, which it builds its own natsd with, bun with this repository's node_modules, and about fifteen minutes of wall clock, which is longer than any job of ci.yaml holds",
-      "timeout_minutes": 25
+      "needs": "the pinned Oh My Pi executable (LEGION_OMP_PATH), which the hosted runner does not provide, plus bash, go to build its NATS server, bun with this repository's node_modules and twenty-one minutes plus setup for its four sessions",
+      "timeout_minutes": 30
     },
     {
       "script": "role-prompt-rule.sh",
@@ -359,7 +369,7 @@
     },
     {
       "script": "step-records-read.sh",
-      "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, and the key of one issue a deployed Legion ran to done after the release that records each step; it reads that issue's step records and starts nothing"
+      "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, and the key of one issue a deployed Legion ran to done after the release that records each step; it reads that issue's step records and its project's plans, and starts nothing"
     },
     {
       "script": "verifiers-staging-token.sh",

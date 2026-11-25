@@ -16,9 +16,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// defaultTask is the id of the one task of an issue whose owner gives no plan (plan.DefaultTask):
-// the task of the project's default steps, and of today's steps of a run with no plan rows
-// (todaysSteps), under which the steps of each are recorded.
+// defaultTask is the id of the one task of an issue whose owner gives no plan, or whose
+// experiment's group takes none (plan.DefaultTask): the task of the project's default steps, and
+// of today's steps of a run with no plan rows (todaysSteps), under which the steps of each are
+// recorded.
 const defaultTask = plan.DefaultTask
 
 // StepAgent is what the daemon reads of a step's agent where it writes the step's end, the one
@@ -440,7 +441,7 @@ func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Iss
 // store records it, and a claim whose start is only queued does not hold its role yet
 // (record.HoldsRole). Two moves queue such a start in the transaction that starts accepting: the
 // move into accepting, which starts a failed child architect again (reviveArchitect), and a
-// re-admission's promotion, which brings back a member's suspended architect (admit's
+// re-admitted tree's first run, which brings back a member's suspended architect (admit's
 // startMidPhaseMembers). Once that start runs, the child's own architect owns the child, and it
 // signs it off. The start is one of no phase or of accepting (architectStartQueued).
 //

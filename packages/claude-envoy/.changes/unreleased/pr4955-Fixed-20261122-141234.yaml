@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The `open-asks` hook ends once its summary is out. With no bearer token set and a secrets broker
+  (or the metadata server, workload identity pool or sign-in issuer it asks first) that never
+  answers, it used to keep running until its credential's background trade gave up: 30 s on a
+  pod's projected token, past the 20 s Claude Code gives the hook, which then killed it. A hook
+  whose process holds the machine's device-login lock is still left to finish its trade, whether
+  the login is where `AGENT_SECRETS_DEVICE_LOGIN_FILE` names or at
+  `$HOME/.config/legion/device-login.json`: the hook's own exit never cuts a refresh, so it loses
+  no refresh token the broker rotated. Claude Code's 20 s still applies to such a hook, and a
+  refresh still under way when Claude Code kills the hook is cut as before. A named pipe or a link
+  at the lock's path is read as no lock, so it cannot hold the hook open.
+time: 2026-11-22T14:12:34Z
+custom:
+    Issue: pr4955

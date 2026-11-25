@@ -266,7 +266,7 @@ func copyRuntime(t *testing.T, pool *store.Pool, board *copyBoard, slots int) *w
 		Projects: map[string]config.Project{"CAPTURE": {}}}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", workflowDispatchToken, nil, newRepositories(cfg.Project, cfg.RepositoryRenames),
-		appauth.NewInstalled(), slog.New(slog.NewTextHandler(io.Discard, nil)), tokens, repositoriesGitHub(t), nil, time.Now)
+		appauth.NewInstalled(), slog.New(slog.NewTextHandler(io.Discard, nil)), tokens, repositoriesGitHub(t), nil, time.Now, nil, nil)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}

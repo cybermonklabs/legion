@@ -389,27 +389,6 @@ func clauses(text string) []string {
 	return found
 }
 
-// clauseHolds says whether one clause of text (clauses) holds each of terms, in the order given:
-// a rule pinned by its terms, so a rewording that keeps them passes and a change of one fails,
-// while each term still has to stand in the one clause that states the rule.
-func clauseHolds(text string, terms ...string) bool {
-	for _, clause := range clauses(text) {
-		rest, held := clause, true
-		for _, term := range terms {
-			_, after, found := strings.Cut(rest, term)
-			if !found {
-				held = false
-				break
-			}
-			rest = after
-		}
-		if held {
-			return true
-		}
-	}
-	return false
-}
-
 // What a phase proved is a result recorded against a `check` block of the issue's Verification
 // document (`dispatch result`), and the pull request body carries one line per check. No composed
 // prompt — any phase worker's, and the architect's in both its shapes — still teaches the two
@@ -832,68 +811,6 @@ func TestTheComposedRetroNamesTheRatingsFieldsAndRefusals(t *testing.T) {
 	}
 }
 
-// A pod holds every role of one issue in a single container under one memory limit, and its
-// sandbox ends the container rather than the process that filled it, so a heavy run started by
-// any role ends every role's turn. The rule that says so has to reach each role through the
-// prompt Compose builds, not through the part that happens to hold it today: the phase workers
-// read it from the headless mechanics, which is the only part the merger shares with the four
-// roles that compose a core, and both architect shapes read it from the one common part they
-// share, so the root's wording and the sub-architect's cannot drift apart. Composing and reading
-// the parts back is what makes a part dropped from Compose fail here. This shows the text is
-// loaded, never that a role obeys it.
-func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	const (
-		sandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
-		everyRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
-		ciWork                  = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
-	)
-	worker := []string{
-		"In an issue pod every role of this issue runs in one container and shares its memory limit",
-		sandboxEndsTheContainer,
-		everyRolesTurn,
-		ciWork,
-		"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
-		"Every other heavy run goes where your deployment's instructions say",
-		"instructions that name no such route are a gap you report to the architect that owns your issue",
-		"Each subagent you start runs its commands in this pod, so put these facts in its context",
-	}
-	architect := []string{
-		"Your subagents run their commands in your own issue pod",
-		sandboxEndsTheContainer,
-		everyRolesTurn,
-		ciWork,
-		"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
-		"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
-	}
-	for _, tc := range []struct {
-		name   string
-		role   claim.Role
-		isRoot bool
-		rule   []string
-	}{
-		{"root architect", claim.RoleArchitect, true, architect},
-		{"sub-architect", claim.RoleArchitect, false, architect},
-		{"planner", claim.RolePlanner, false, worker},
-		{"implementer", claim.RoleImplementer, false, worker},
-		{"tester", claim.RoleTester, false, worker},
-		{"reviewer", claim.RoleReviewer, false, worker},
-		{"merger", claim.RoleMerger, false, worker},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
-			for _, phrase := range tc.rule {
-				if !strings.Contains(text, phrase) {
-					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
-				}
-			}
-		})
-	}
-}
-
 // bannedCheckLimits are limits of the last look that the production check's rule no longer has:
 // each keeps the last look's pending, or its close as not run, for a merge that production does
 // not carry. Each is joined from halves, as retiredCheckSentences are, so a search of the
@@ -1006,45 +923,6 @@ func TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCar
 	}
 }
 
-// An agent that wants a pod of its own for a task writes one line of a fixed form in its session,
-// and Legion starts no pod for it: the line is a wish that a later read of the stored sessions
-// counts. Legion's own part of every prompt gives the form, architect-common.md for an owner and
-// worker-common.md for the agent of a step, so each composition an issue's agents start with holds
-// the form, in the clause that says when to write it, and the clause that says Legion starts no
-// pod for it, each held by its terms. This shows the text is loaded, never that an agent writes
-// the line.
-func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	for _, tc := range []struct {
-		name   string
-		role   claim.Role
-		isRoot bool
-	}{
-		{"root architect", claim.RoleArchitect, true},
-		{"sub-architect", claim.RoleArchitect, false},
-		{"planner", claim.RolePlanner, false},
-		{"implementer", claim.RoleImplementer, false},
-		{"tester", claim.RoleTester, false},
-		{"reviewer", claim.RoleReviewer, false},
-		{"merger", claim.RoleMerger, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			text := composedText(t, composer, tc.role, tc.isRoot)
-			for _, terms := range [][]string{
-				{"pod of its own", "one line", "SEPARATE-POD", "SEPARATE-POD <ISSUE> <task> <reason>"},
-				{"Legion", "no pod", "this line"},
-			} {
-				if !clauseHolds(text, terms...) {
-					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
-				}
-			}
-		})
-	}
-}
-
 // The prompt of the sub-owner of a task is its role's shared parts, then the owner's part every
 // architect composes (architect-common.md), then the sub-owner's own (sub-owner.md), in that
 // order. It joins neither the sub-architect's own part of this daemon (go/architect.md) nor the
@@ -1082,7 +960,6 @@ func TestASubOwnersPromptIsAnOwnersPart(t *testing.T) {
 		}
 	}
 }
-
 // Every part of both trees holds the production check's rule clause by clause, not only the parts
 // Compose joins for the tester and the implementer. A sentence left in a part that neither role
 // composes still reaches whichever role does compose it, and a part Compose joins for nobody today

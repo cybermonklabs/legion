@@ -16,9 +16,12 @@ import (
 
 // A backward move between two phases that show the same Dispatch status writes no status row, so
 // the reason goes as a message row of its own: carried only on a status row, it would reach no
-// issue, and the issue would show nothing of the move. The three such pairs are the implementer
-// asking for a new plan (in_progress), the architect sending accepting back to reviewing
-// (needs_review) and the merger sending merging back to retro (retro).
+// issue, and the issue would show nothing of the move. In the default steps the three such pairs
+// are the implementer asking for a new plan (in_progress), the architect sending accepting back
+// to reviewing (needs_review) and the merger sending merging back to retro (retro); a task whose
+// planner stands after its implementer, or whose reviewer stands after its acceptance, moves back
+// between the same two statuses the other way, planning to implementing or reviewing to
+// accepting.
 func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
 	for _, tc := range []struct {
 		from, to phase.Phase

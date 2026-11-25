@@ -677,7 +677,7 @@ func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
 // A turn the daemon ended whose replacement the store would not write reaches its owner all the
 // same, and the notice says what is true of it: the worker's process was stopped, the launch
 // that replaces it was not written, and the daemon tries that launch again at its probe
-// interval (supervise's launchNow, relaunchLater) — with the ends that can come instead named,
+// interval (supervise's launchTries, relaunchLater) — with the ends that can come instead named,
 // since a retry can be refused for a reserved cleanup, meet a suspension that arrived
 // meanwhile, or run the claim's launch budget out (relaunchRefused, relaunchAgain, fail). It is
 // the store's transient refusal that this exists for — the one a sweep sees often enough to
@@ -804,7 +804,7 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 // The charge clause over the common shape of all: one start the runtime refused inside the
 // replacement, and the next one taken. The end is the relaunch that worked — the session is
 // back, the task is owed to it, and nothing about that end says a budget was spent — and the
-// claim was charged the launch failure all the same (supervise's launchNow). An owner reading
+// claim was charged the launch failure all the same (supervise's launchTries). An owner reading
 // that nothing was charged has a sentence the claim's own budgets contradict, which is why
 // the clause is read from what the machine says this replacement charged and not from the row
 // (stallChargeClause).
@@ -842,7 +842,7 @@ func TestTheStallBackstopCountsALaunchFailureChargedOnTheWayToARelaunch(t *testi
 
 // The same charge where the replacement never started: one start the runtime refused, and then
 // a write the store would not take, which leaves the launch still to make (supervise's
-// launchNow, relaunchLater). The end is the relaunch pending, and the failure charged on the
+// launchTries, relaunchLater). The end is the relaunch pending, and the failure charged on the
 // way to it is charged whatever the end was.
 func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *testing.T) {
 	t.Parallel()
@@ -892,7 +892,7 @@ func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *te
 // (supervise's wakeNow, endHeld), a lifecycle recheck refuses the launch when it comes due and
 // keeps the process (runWake, relaunchRefused), a tree close drops the wake with the process
 // (letGo), the take-back the launch itself makes can be refused by the store (runWake), the
-// launch can fail its own write or its start (launchNow, relaunchLater, fail), and an
+// launch can fail its own write or its start (launchTries, relaunchLater, fail), and an
 // operator's task can run the launch before it is due (runParkedLaunchNow). None of them
 // writes this owner a second notice. And the wait is the wake's own due time, which the
 // machine carries on its report (supervise.StallBackstopStop.WakeDue), not a guess at how long
@@ -901,7 +901,7 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 	t.Parallel()
 	rig := newBackstopRig(t)
 	limiter := pacedWakes()
-	rig.sup.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	rig.sup.deps.WakePace = wakePaceOf(limiter)
 	// The burst's one token is spent before the sweep, so the backstop's own relaunch is parked
 	// rather than run where it is raised (supervise's reserveWake).
 	for range testWakeBurst {
@@ -962,6 +962,80 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 	}
 }
 
+// A replacement whose launch waits at its issue pod's gate, while another role of the issue's
+// pod loads its session, is told as that (supervise.EndRelaunchWaitsForPod): the stalled turn
+// ended and its process stopped where the launch parked (supervise's askPod), the task still
+// owed, and the replacement starting when the gate grants it its start, behind whichever roles
+// of the issue start or load before it, one load at a time. The claim alone —
+// launching, with no process — reads as the relaunch still to make, and an owner told that no
+// replacement was started would wait for a retry nobody makes.
+func TestTheStallBackstopTellsAReplacementWaitingForItsIssuePod(t *testing.T) {
+	rig := newBackstopRig(t)
+	podGated(rig.sup)
+	const issue = "LEGION-227"
+	stalled := rig.claim(claim.RoleImplementer, issue, backstopBound+time.Hour, true)
+	claims := rig.supervising(stalled)
+	// The issue's tester starts its process and loads its session, which holds the pod's start
+	// for as long as the test runs: the rig's clock fires no timer, so that load ends neither at
+	// its settle nor at its bound.
+	ctx := context.Background()
+	tester := mustClaimToken(t, issue, claim.RoleTester)
+	loading, _, err := rig.sup.Create(ctx, supervise.Claim{Token: tester, Project: "legion", Tree: issue, Issue: issue,
+		Role: claim.RoleTester, State: supervise.StateQueued}, "")
+	if err != nil {
+		t.Fatalf("create the tester: %v", err)
+	}
+	if err := loading.Handle(ctx, supervise.RequestSpawn{Claim: tester}); err != nil {
+		t.Fatalf("start the tester: %v", err)
+	}
+
+	rig.sweep(claims)
+
+	notices := rig.awaitNotices(issue, 1)
+	if told := rig.reported(); told != 1 {
+		t.Fatalf("the machines' reports = %d, want the one end the backstop made", told)
+	}
+	if resumes := rig.resumes(stalled.Token); len(resumes) != 0 {
+		t.Fatalf("resumes = %d, want none: the replacement waits for the tester's load", len(resumes))
+	}
+	m, ok := rig.sup.Machine(stalled.Token)
+	if !ok {
+		t.Fatal("the stalled claim is not supervised")
+	}
+	if c := m.Claim(); c.State != supervise.StateLaunching || c.Locator != nil {
+		t.Fatalf("the claim is %s with locator %+v, want it launching with no process while its replacement waits at the gate", c.State, c.Locator)
+	}
+	var stopped bool
+	for _, call := range rig.rt.CallsOf("Suspend") {
+		stopped = stopped || call.Locator == *stalled.Locator
+	}
+	if !stopped {
+		t.Fatalf("the runtime's stops = %+v, want the stalled process stopped where its replacement parked", rig.rt.CallsOf("Suspend"))
+	}
+	for _, want := range []string{
+		"the daemon ended the implementer's turn and queued the replacement launch at its issue's start gate",
+		"still owed",
+		"the launch that replaces it waits at its issue's start gate behind the roles of the issue that start or load their sessions before it, one load at a time",
+		"the replacement starts when the gate grants it its start",
+		"nothing was charged to the claim",
+		stallProcessStopped,
+	} {
+		if !strings.Contains(notices[0].Reason, want) {
+			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
+		}
+	}
+	for _, never := range []string{
+		"did not get a replacement started",
+		"has not started",
+		"brought back",
+		stallProcessNotStopped,
+	} {
+		if strings.Contains(notices[0].Reason, never) {
+			t.Errorf("the notice says %q, which claims %q: the replacement is queued at the gate and the stalled process was stopped", notices[0].Reason, never)
+		}
+	}
+}
+
 // The notice's wording walked by the machine's own classification rather than by the ends
 // anyone remembered (supervise.ProcessEnds): every end that tells its owner has an opening and
 // a sentence of its own, no end that tells nobody has either, and the relaunch is claimed by
@@ -988,7 +1062,7 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 //     says nowhere that nothing was charged. Every end is read both ways because every end is
 //     reachable both ways: a start the runtime refuses inside the replacement is charged and
 //     the loop tries again, so the relaunch that worked and the relaunch still pending carry
-//     charges as readily as the claim that failed (supervise's launchNow).
+//     charges as readily as the claim that failed (supervise's launchTries).
 //
 // Each is read against the clauses themselves rather than against phrasings of them. That is
 // what it buys to have those clauses be every statement the notice makes about those subjects:
@@ -1100,7 +1174,7 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 			chargedStop := supervise.StallBackstopStop{Bound: backstopBound, End: end, WakeDue: time.Now(), LaunchFailures: charged}
 			withCharge := stallBackstopRecord(rigClaim(), chargedStop, time.Hour)
 			if !strings.Contains(withCharge, reading) {
-				t.Errorf("the notice of %q over a replacement that charged %d reads %q, which does not say %q: a launch failure charged on the way to this end is charged to the claim like any other (supervise's launchNow)", end, charged, withCharge, reading)
+				t.Errorf("the notice of %q over a replacement that charged %d reads %q, which does not say %q: a launch failure charged on the way to this end is charged to the claim like any other (supervise's launchTries)", end, charged, withCharge, reading)
 			}
 			if strings.Contains(withCharge, stallNothingCharged) {
 				t.Errorf("the notice of %q over a replacement that charged %d reads %q, which says %q all the same: the claim's own budgets say otherwise, and this is the notice its owner acts on", end, charged, withCharge, stallNothingCharged)

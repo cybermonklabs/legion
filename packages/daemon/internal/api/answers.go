@@ -7,6 +7,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -46,12 +47,22 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// The entries from shapedAnswersContract through tasksContract use the constants named by
-// their entries; checksContract likewise records the arrival of each issue's open checks. A
-// renumber moves the entry, its shaping threshold and this list together. The other numbered
-// entries remain the released records named in version.go; 288, a task's sub-owner's, moves no
-// shape, so no threshold reads it and it stands here as its number.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, deploymentRolesContract, strandedTokenContract, tasksContract, checksContract, 288}
+// 193, 202, 205, 213, 219, 220, 221, 222, 224, 228, 246, 250, 256 and 267 are constants rather
+// than their numbers, because the entries that added them name them (shapedAnswersContract, the
+// shaped answers' entry; repositoriesLiveContract, dispatch://INFRA-4401's;
+// childRouteRemovedContract, dispatch://INFRA-3178's; cachesSourceContract,
+// dispatch://INFRA-4036's; OwnerPlanContract, the owner's plan's; assignmentPlanContract, the
+// experiment group's; deploymentRolesContract, the deployment's roles'; strandedTokenContract, the
+// stranded claims' tokens'; tasksContract, the plan's tasks'; intakeGiveUpsContract,
+// dispatch://INFRA-1575's; podHoldContract, the pod hold's; priorityContract, the waiting line's
+// priority's; causeTimesContract, the claim views' cause times, #5349's; and checksContract, each
+// issue's open checks'): a renumber of any of those entries moves its constant and this list with
+// it, and moving one of the two alone would describe a shape at a contract no entry declares. The
+// other entries above 193 follow them as numbers: 199 is version.go's entry for INFRA-4605, 217
+// its entry for dispatch://INFRA-3531 and dispatch://INFRA-4567, 232 its entry for
+// dispatch://INFRA-4508, and 288 a task's sub-owner's, which moves no shape, so no threshold reads
+// it.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, deploymentRolesContract, strandedTokenContract, tasksContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, checksContract, 288}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -78,6 +89,8 @@ const (
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
 	AnswerPlanRegister       AnswerID = "plan-register"
+	AnswerIntakeReplay       AnswerID = "intake-replay"
+	AnswerIntakeDiscard      AnswerID = "intake-discard"
 )
 
 // Answer is one response schema a plugin parses, with every route that answers it and the
@@ -134,7 +147,8 @@ var typedSettings = []TypedSetting{
 }
 
 // Answers is one row per answer a plugin parses. The operator's claim answers, the operator's
-// pause and resume answers (`legion project pause|resume`) and the controller's secret and
+// pause and resume answers (`legion project pause|resume`), the operator's replay and discard of
+// the intake's give-ups (`legion intake replay|discard`) and the controller's secret and
 // credential answers are no rows: no plugin parses them.
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
@@ -206,6 +220,13 @@ var Answers = []Answer{
 	// version.go's 219: the plan register_plan took (`api.PlanRegisterResponse`). The route
 	// arrives with the answer, so no contract below 219 records either.
 	{ID: AnswerPlanRegister, Routes: []string{"POST /legion/v1/plans/register"}, Since: OwnerPlanContract},
+	// version.go's 228: what the controller's replay of the intake's give-ups did, record by
+	// record, and how many of the selection are left (`api.IntakeReplayResponse`). The route
+	// arrives with the answer, so no contract below 228 records either.
+	{ID: AnswerIntakeReplay, Routes: []string{"POST /legion/v1/intake/replay"}, Since: intakeGiveUpsContract},
+	// version.go's 228: the ids the controller's discard of the intake's give-ups closed
+	// (`api.IntakeDiscardResponse`), arrived with its route as the replay's answer did.
+	{ID: AnswerIntakeDiscard, Routes: []string{"POST /legion/v1/intake/discard"}, Since: intakeGiveUpsContract},
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,
@@ -282,7 +303,7 @@ type EnumeratedValue struct {
 var EnumeratedFields = enumeratedFields()
 
 // enumeratedFields is every row the table holds: the state's own, the record's taken from them,
-// and the registration's, in that order.
+// the registration's and the replay's, in that order.
 //
 // The record's rows are taken rather than written, because the record route answers the very
 // value the whole-project body holds under `issues.<key>` (shaping.go's shapeIssue): every
@@ -305,9 +326,14 @@ func enumeratedFields() []EnumeratedField {
 		}
 		fields = append(fields, EnumeratedField{Answer: AnswerIssueRecord, KeyPath: path, Values: field.Values, Until: field.Until})
 	}
-	// `role` of the claim a registration issued (claim.RegisterResponse.Role). The controller's
-	// registration answers `controller` under a `z.literal` and is no row.
-	return append(fields, EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles, Until: deploymentRolesContract})
+	return append(fields,
+		// `role` of the claim a registration issued (claim.RegisterResponse.Role). The
+		// controller's registration answers `controller` under a `z.literal` and is no row.
+		EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles, Until: deploymentRolesContract},
+		// `outcome` of one record the controller's replay took, how its replay ended
+		// (api.ReplayedGiveUpView.Outcome, intake.ReplayOutcome). The answer arrived whole at
+		// intakeGiveUpsContract, so no older caller is served a value of it.
+		EnumeratedField{Answer: AnswerIntakeReplay, KeyPath: "replayed.*.outcome", Values: replayOutcomes})
 }
 
 // issueKeyPath is the path the whole-project body writes one issue's fields under. The record
@@ -316,7 +342,7 @@ func enumeratedFields() []EnumeratedField {
 const issueKeyPath = "issues.*."
 
 // stateEnumeratedFields is every enumerated field of the state, the answer that carries all but
-// one of them. Each row under issueKeyPath is a row of the record answer too (enumeratedFields).
+// two of them. Each row under issueKeyPath is a row of the record answer too (enumeratedFields).
 var stateEnumeratedFields = []EnumeratedField{
 	// `phase` of an issue, where the workflow holds it (api.Issue.Phase, LEGION_PHASES). Its list
 	// grew: `step` arrived at deploymentRolesContract, and an issue at step is served as
@@ -444,6 +470,11 @@ var stateEnumeratedFields = []EnumeratedField{
 	// which added `task-stopped` and `children`; an issue held for either is served without
 	// its `holdReason` below that contract (shaping.go's withoutUnadmittedHoldReason).
 	{Answer: AnswerState, KeyPath: "issues.*.holdReason", Values: holdReasons},
+	// `reason` of one open give-up of the intake, why it gave the message up (api.IntakeGiveUpView,
+	// record.IntakeGiveUpReason). It arrived with `intakeGiveUps`, which is served down below that
+	// contract whole (shaping.go's withoutIntakeGiveUps), so no body below 228 carries a value of
+	// it.
+	{Answer: AnswerState, KeyPath: "intakeGiveUps.newest.*.reason", Values: intakeGiveUpReasons},
 }
 
 // valuesFrom is every value of a field whose list has not moved since the field arrived: each
@@ -569,11 +600,12 @@ var lineKinds = []EnumeratedValue{
 }
 
 // heldReasons is every word of a held row's `reason`. The field arrived at heldContract with
-// eleven words, and its list grew once: `children_before_retro`, a parent whose plan has no
-// acceptance step held before its retro for the issues beneath it, and `task_stopped`, a task its
-// owner stopped, arrived at OwnerPlanContract (version.go's 219). So it is written out value by
-// value, sorted by value, as waitAnswers is. It names each constant rather than reading
-// record.HeldReasons, because a word added to the ladder later arrives at its own contract.
+// eleven words, and its list grew once: `children_before_retro`, a parent whose task's last step
+// is not the owner's acceptance, held before its retro for the issues beneath it, and
+// `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). So
+// it is written out value by value, sorted by value, as waitAnswers is. It names each constant
+// rather than reading record.HeldReasons, because a word added to the ladder later arrives at
+// its own contract.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},
@@ -591,7 +623,7 @@ var heldReasons = []EnumeratedValue{
 }
 
 // holdReasons is every reason an issue's hold can carry (record.HoldReason). `escalated` is older
-// than the floor; `children`, a parent whose plan has no acceptance step waiting before its retro
+// than the floor; `children`, a parent whose last step is not the owner's acceptance, waiting before its retro
 // for the issues beneath it, and `task-stopped`, a task its owner stopped, arrived at
 // OwnerPlanContract. Written out value by value, sorted by value, as waitAnswers is.
 var holdReasons = []EnumeratedValue{
@@ -712,3 +744,18 @@ var cacheStates = valuesFrom(ServingFloor, "starting", "cloning", "ready", "fail
 // each live entry's cache takes: no `live` is served below that contract at all (shaping.go's
 // withoutRepositoriesLive), so the values arrived with the key.
 var liveCacheStates = valuesFrom(repositoriesLiveContract, "starting", "cloning", "ready", "failing", "refused")
+
+// intakeGiveUpReasons is every word of an open give-up's `reason`, recorded at
+// intakeGiveUpsContract, the contract `intakeGiveUps` arrived at. It names each of the record
+// package's constants, so a reason added there later is no value of this list until the contract
+// that adds it records it here.
+var intakeGiveUpReasons = valuesFrom(intakeGiveUpsContract,
+	record.GiveUpBound, record.GiveUpDidNotEnd, record.GiveUpRetention, record.GiveUpUndecodable,
+	record.GiveUpConsumerMovedPast)
+
+// replayOutcomes is every way the replay of one give-up can end, the `outcome` of each record
+// the controller's replay answers, recorded at intakeGiveUpsContract, the contract that answer
+// arrived at (AnswerIntakeReplay). It names each constant for the reason intakeGiveUpReasons
+// does.
+var replayOutcomes = valuesFrom(intakeGiveUpsContract,
+	intake.ReplayApplied, intake.ReplayAlreadyApplied, intake.ReplayNoFact, intake.ReplayFailed)

@@ -142,6 +142,10 @@ type Runtime struct {
 	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
 	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
 	keptVolumeBound time.Duration
+	// helloBindBound is how long a binding of a pod's launchers at a hello may hold the pod's
+	// launch turn (bindCurrentPod): apiTimeout, the longest a hello waits for it, which a test sets
+	// short.
+	helloBindBound time.Duration
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// issue pods' guard off.
@@ -231,6 +235,18 @@ type Runtime struct {
 	// its record would read the same before a strand and after its unstrand; a write for another
 	// issue's name costs a read of this one an Uncertain, answered again a tick later.
 	strandedGen uint64
+	// taken is, by Sandbox name, what one of this runtime's own writes took from a Sandbox before
+	// the informer's store shows it (sandboxTaken): a delete (deleteSandbox, deleteFenced), or a
+	// release's record that it deleted the Secrets of a Sandbox it kept (secretsReleasedAnnotation,
+	// endIssuePod). Each is written once the API has answered the write, while the store still
+	// holds that object as it was before it, and dropped at the first informer event that finds the
+	// store holding the write's outcome or no object of that uid (notify), or by a launch that
+	// takes the release's record off again (forgetTaken). The API answers a write before the watch
+	// carries it to the store, so for a moment the store holds the Sandbox as it was; IssueSandbox
+	// reads this to answer such a Sandbox absent in that gap, so the release of a pod no claim owns
+	// does not release the same pod a second time (INFRA-3149). It names an object by uid, so a
+	// Sandbox made again under the same name answers present. Every read and write under mu.
+	taken map[string]sandboxTaken
 	// occupiedCaches are the cache names RepositoryCache found held by another repository's cache and
 	// has logged, so each is logged once.
 	occupiedCaches map[string]bool
@@ -446,7 +462,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
-		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, registrationIntervals: opts.RegistrationIntervals,
+		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace, len(issueRoles)),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
@@ -456,6 +472,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
+		taken:       map[string]sandboxTaken{},
 		sessions:    map[claim.Token]launchedSession{},
 		launchedApp: map[slotKey]string{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
@@ -470,12 +487,12 @@ func configureProber(opts Options) (*Runtime, error) {
 	if r.log == nil {
 		r.log = slog.Default()
 	}
-	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
-	// before any of its roles start, take its memory guard's kill reports, an issue pod's and the
-	// controller pod's, and its cache trimmer's sweep reports, and log what they could not carry or
-	// record, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.HeldWorkspaceBundle,
-		opts.MemoryGuardKilled, opts.ControllerMemoryGuardKilled, opts.VolumeReported, r.log)
+	// The launchers carry the shared public leak check to a pod before any of its roles start,
+	// take its memory guard's kill reports, an issue pod's and the controller pod's, and its cache
+	// trimmer's sweep reports, and log what they could not carry or record, so they are built once
+	// the runtime's log is settled.
+	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.MemoryGuardKilled, opts.ControllerMemoryGuardKilled,
+		opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.
@@ -695,24 +712,31 @@ func (r *Runtime) synced() bool {
 }
 
 // notify wakes every wait and marks every watched claim whose Sandbox or pod changed for the
-// running Observe. A pod is named after its Sandbox, so one name finds both.
+// running Observe. A pod is named after its Sandbox, so one name finds both. An event of a Sandbox
+// drops what is kept of this runtime's write to that name once the store shows it (dropCaughtUp):
+// the informer writes its store before it hands the event on, so the store read there is never
+// older than the event.
 func (r *Runtime) notify(obj any) {
 	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 		obj = tombstone.Obj
 	}
 	var name string
+	var event *unstructured.Unstructured
 	switch o := obj.(type) {
 	case *corev1.Pod:
 		name = o.Name
 	case *corev1.Service:
 		name = o.Name
 	case *unstructured.Unstructured:
-		name = o.GetName()
+		name, event = o.GetName(), o
 	default:
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if event != nil {
+		r.dropCaughtUp(name, event)
+	}
 	close(r.changed)
 	r.changed = make(chan struct{})
 	if r.observer == nil {
@@ -1118,48 +1142,17 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 	return nil
 }
 
-var _ runtime.WorkspaceBundler = (*Runtime)(nil)
-
-// BundleWorkspace has the shim of the claim token names bundle the unpushed work of the issue
-// workspace every claim of the issue shares, over that claim's connection, for a release about to
-// take the pod and its disk away. The claim must be one whose process runs in the issue's own
-// running pod (runningClaimConn): its shim builds the bundle in the workspace it already works in,
-// so a claim with no locator, one whose pod is not the recorded one, and one with no connection are
-// each a refusal rather than an empty bundle. The claim is named by its token rather than derived
-// from a role, since a keyed agent works a step of another role in the claim it started.
-//
-// It is the claim's shim that answers, never its launcher, so a release has to ask before it
-// stops the claim's process: the idle release's save is a row of its own ahead of its stops
-// (record.IssueBundle, the daemon's idleReleaseRows), and asking after them refuses with "holds
-// no role process to bundle it".
-func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceBundle, error) {
-	conn, loc, err := r.runningClaimConn(ctx, issue, token, "bundle")
-	if err != nil {
-		return runtime.WorkspaceBundle{}, err
-	}
-	bundle, err := conn.BundleWorkspace(ctx, issue, runtime.WorkspaceBundleTimeout)
-	if err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over %s: %w", issue, token, err)
-	}
-	// The shim knows nothing of the pod it runs in, and the row the save writes has to: the pod
-	// this work came off is the one pod the restore refuses by name, so that a role relaunched
-	// in it before the teardown is answered nothing and leaves the bundle's one attempt for the
-	// pod that replaces it (store.TakeWorkspaceBundleForRestore). It is the pod runningClaimConn
-	// checked, the running pod the claim's locator records.
-	bundle.PodUID = loc.Sandbox.PodUID
-	return bundle, nil
-}
-
 var _ runtime.WorkspaceWorkReader = (*Runtime)(nil)
 
 // WorkspaceWork has the shim of the claim token names read whether the issue workspace every claim
 // of the issue shares holds work that no branch or tag on origin holds, over that claim's
-// connection. It makes BundleWorkspace's checks (runningClaimConn): the claim must be one whose
-// process runs in the issue's own running pod, since its shim reads the workspace it already works
-// in, so a claim with no locator, one whose pod is not the recorded one, and one with no connection
-// are each a refusal rather than an answer of no work.
+// connection. The claim must be one whose process runs in the issue's own running pod
+// (runningClaimConn), since its shim reads the workspace it already works in, so a claim with no
+// locator, one whose pod is not the recorded one, and one with no connection are each a refusal
+// rather than an answer of no work. The claim is named by its token rather than derived from a
+// role, since a keyed agent works a step of another role in the claim it started.
 func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceWork, error) {
-	conn, _, err := r.runningClaimConn(ctx, issue, token, "read")
+	conn, err := r.runningClaimConn(ctx, issue, token)
 	if err != nil {
 		return runtime.WorkspaceWork{}, err
 	}
@@ -1170,32 +1163,30 @@ func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, token claim.T
 	return work, nil
 }
 
-// runningClaimConn finds the process of the claim token names for a request its shim answers in
-// the issue's workspace (BundleWorkspace, WorkspaceWork), and makes the one rule for such a request
-// one rule for such a request (runningProcessConn) of it. It answers the connection to that
-// claim's shim and the locator of its process, read from the store. A claim with no locator is a
-// refusal, and so is each refusal of the rule. verb is what the caller does to the workspace
-// ("bundle", "read"), and every refusal opens with it: "<verb> <issue>'s workspace: ", and a claim
-// with no locator holds "no role process to <verb> it".
-func (r *Runtime) runningClaimConn(ctx context.Context, issue string, token claim.Token, verb string) (runtime.Conn, runtime.Locator, error) {
+// runningClaimConn finds the process of the claim token names for the workspace read its shim
+// answers in the issue's workspace (WorkspaceWork), and makes the one rule for such a request
+// (runningProcessConn) of it. It answers the connection to that claim's shim, read from the store.
+// A claim with no locator is a refusal, and so is each refusal of the rule. Every refusal opens
+// with "read <issue>'s workspace: ", and a claim with no locator holds "no role process to read
+// it".
+func (r *Runtime) runningClaimConn(ctx context.Context, issue string, token claim.Token) (runtime.Conn, error) {
 	claims, err := r.store.Claims(ctx)
 	if err != nil {
-		return nil, runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
+		return nil, fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
 	index := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == token })
 	if index < 0 || claims[index].Locator == nil {
-		return nil, runtime.Locator{}, fmt.Errorf("%s %s's workspace: %s holds no role process to %s it", verb, issue, token, verb)
+		return nil, fmt.Errorf("read %s's workspace: %s holds no role process to read it", issue, token)
 	}
-	loc := *claims[index].Locator
-	conn, err := r.runningProcessConn(loc)
+	conn, err := r.runningProcessConn(*claims[index].Locator)
 	if err != nil {
-		return nil, runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
+		return nil, fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
-	return conn, loc, nil
+	return conn, nil
 }
 
 // runningProcessConn is the one rule for a request a role's shim answers in the issue's workspace
-// (AdoptWorkingCopy, and BundleWorkspace and WorkspaceWork through runningClaimConn): the process
+// (AdoptWorkingCopy, and WorkspaceWork through runningClaimConn): the process
 // loc records must run in the issue's own running pod, since the shim of loc's claim works in that
 // workspace. It answers the connection to that claim's shim. A locator this runtime did not mint,
 // a pod that is not the recorded one or not running, and a claim with no connection are each a
@@ -1432,7 +1423,8 @@ func (r *Runtime) controllerOwned(ctx context.Context, name string) (bool, error
 }
 
 // deleteFenced deletes s once, fenced to the object the caller read, and
-// forgets its launchers' credentials. Its caller holds the pod's launch turn.
+// forgets its launchers' credentials and keeps that this runtime's delete
+// took it (noteTaken). Its caller holds the pod's launch turn.
 // One already gone is gone; a conflict keeps its replacement for the next
 // orphan sweep. Deletion is foreground, so a Sandbox and the volume it owns
 // remain until garbage collection has removed the volume. The session-volume
@@ -1449,9 +1441,11 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	switch {
 	case err == nil:
 		r.forgetLauncherCredentials(name)
+		r.noteTaken(name, sandboxTaken{uid: uid})
 		r.log.Info(msg, append([]any{"sandbox", name, "uid", uid}, attrs...)...)
 	case apierrors.IsNotFound(err):
 		r.forgetLauncherCredentials(name)
+		r.noteTaken(name, sandboxTaken{uid: uid})
 	case apierrors.IsConflict(err):
 		r.log.Info("sandbox runtime: kept a sandbox written since its delete was decided; the orphan sweep decides it again",
 			append([]any{"sandbox", name, "uid", uid, "error", err}, attrs...)...)

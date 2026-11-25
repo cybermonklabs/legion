@@ -199,9 +199,10 @@ test("a role of the deployment reports the commit the workspace stands on, and r
 });
 
 test("a reviewer whose review moved its issue on reports its own newest review record and the head it names", async () => {
-  // A request for changes moves the issue to implementing at once, an approval to accepting once
-  // the pull request is mergeable, and the reviewer completes after it: the daemon records that
-  // completion on reviewing, the phase the reviewer left, and reads its review record back.
+  // A request for changes moves the issue to implementing at once, an approval to its task's next
+  // step once the pull request is mergeable (accepting, in the default steps, which this test
+  // reads), and the reviewer completes after it: the daemon records that completion on reviewing,
+  // the phase the reviewer left, and reads its review record back.
   for (const phase of ["implementing", "accepting"] as const) {
     const { jj, calls } = fakeJj();
     const { latestHandoff, reads } = recordingDispatch();
@@ -807,7 +808,7 @@ test("the branch head is the issue bookmark at origin, and empty when the remote
   };
   await expect(answer(TIP)).resolves.toBe(TIP);
   expect(calls).toEqual([["log", "-r", REMOTE, "--no-graph", "-T", "commit_id"]]);
-  // A planner before its first push: no branch at the remote, and no error.
+  // A planner step that runs before the branch's first push: no branch at the remote, and no error.
   await expect(answer("")).resolves.toBe("");
 
   // The issue key names the branch, and a worker sets its own environment.

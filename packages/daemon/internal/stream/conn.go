@@ -33,7 +33,7 @@ var (
 )
 
 // RefusedError is the far side answering a request with a refusal — OMP's `{success:false}`, or
-// a shim's failed adoption, enrollment, token read, bundle or workspace read. The connection is
+// a shim's failed adoption, enrollment, token read or workspace read. The connection is
 // fine; the agent said no.
 //
 // A refused prompt is runtime.ErrPromptRefused, which is what the supervisor charges a prompt
@@ -281,41 +281,6 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 		}
 	}
 	return fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
-}
-
-// BundleWorkspace asks the shim to bundle the unpushed work of the workspace it runs in. The shim
-// runs its jj reads and its `git bundle create` within timeout; the answer is awaited for that
-// plus the RPC timeout, the round trip, and crosses as an rpc_chunk sequence when the bundle is
-// larger than one line.
-func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (runtime.WorkspaceBundle, error) {
-	id := rand.Text()
-	frame := shimwire.BundleWorkspace{
-		ID: id, Issue: issue, MaxBytes: runtime.MaxWorkspaceBundleBytes, TimeoutMs: int(timeout.Milliseconds()),
-	}
-	if err := frame.Validate(); err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
-	}
-	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
-	if err != nil {
-		return runtime.WorkspaceBundle{}, err
-	}
-	switch answer := answer.(type) {
-	case shimwire.BundleWorkspaceResult:
-		if err := answer.Validate(); err != nil {
-			return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
-		}
-		if !answer.OK {
-			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
-		}
-		return runtime.BundleOf(answer.Saved()), nil
-	case shimwire.Response:
-		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
-		// it does not know.
-		if !answer.Success {
-			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
-		}
-	}
-	return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeBundleWorkspace, answer.FrameType())
 }
 
 // WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag on
@@ -591,8 +556,6 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 	case shimwire.AgentSecretsEnrollmentResult:
 		c.answerShim(frame.ID, frame)
 	case shimwire.AgentSecretsTokenResult:
-		c.answerShim(frame.ID, frame)
-	case shimwire.BundleWorkspaceResult:
 		c.answerShim(frame.ID, frame)
 	case shimwire.WorkspaceWorkResult:
 		c.answerShim(frame.ID, frame)

@@ -2,6 +2,7 @@ package plan
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -247,5 +248,49 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	// A document with no task block is read, as a plan with no task, which Validate refuses.
 	if p, err := FromBlocks("ACME-1", "plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}}); err != nil || len(p.Tasks) != 0 {
 		t.Fatalf("FromBlocks(no task block) = %+v, %v, want a plan with no task and no error", p, err)
+	}
+}
+
+// MovesBackPairs is every pair phase.MovePairs holds but the 16 no line of a task Supported takes
+// makes as a move back, written out here rather than read from the checks: each step phase, step
+// among them, to retro or to merging, and retro to merging, since the retro and the merge end every
+// line, and implementing to testing, reviewing or accepting, since the steps that read the
+// implementer's pull request come after it. Among the 41: a move back of another order than
+// today's (testing-reviewing, on implementer reviewer tester), a planner's move back to the
+// implementer (planning-implementing, on implementer planner), the merge's move back to the retro,
+// and the moves back that leave or reach the step of a role the deployment defines, step-step (two
+// such roles) among them. CanMoveBack answers each pair as the list holds it, and the list is a
+// fresh slice.
+func TestMovesBackPairsAreTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
+	never := []string{
+		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro", "step-retro",
+		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging", "step-merging",
+		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+	}
+	var want []string
+	for _, pair := range phase.MovePairs() {
+		if !slices.Contains(never, pair) {
+			want = append(want, pair)
+		}
+	}
+	got := MovesBackPairs()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("MovesBackPairs() = %q (%d), want %q (%d)", got, len(got), want, len(want))
+	}
+	for _, pair := range []string{"testing-reviewing", "planning-implementing", "merging-retro", "step-implementing", "implementing-step", "step-step", "retro-step"} {
+		if !slices.Contains(got, pair) {
+			t.Errorf("MovesBackPairs() leaves out %s", pair)
+		}
+	}
+	for _, pair := range phase.MovePairs() {
+		from, to, _ := phase.ParsePair(pair)
+		fires := !slices.Contains(never, pair)
+		if can := CanMoveBack(from, to); can != fires {
+			t.Errorf("CanMoveBack(%s, %s) = %t, want %t", from, to, can, fires)
+		}
+	}
+	got[0] = "rubbish"
+	if MovesBackPairs()[0] == "rubbish" {
+		t.Fatal("MovesBackPairs returned the stored slice, which a caller can overwrite")
 	}
 }

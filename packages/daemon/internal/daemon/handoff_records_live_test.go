@@ -1094,12 +1094,7 @@ func startHandoffDispatch(t *testing.T, root string) *handoffDispatch {
 	t.Helper()
 	options := scratchDispatchOptions{root: root}
 	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
-		file, err := os.OpenFile(filepath.Join(filepath.Dir(daemonLog), "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			t.Fatalf("open Dispatch's log: %v", err)
-		}
-		t.Cleanup(func() { file.Close() })
-		options.log = file
+		options.log = evidenceFile(t, filepath.Join(filepath.Dir(daemonLog), "dispatch.log"))
 	}
 	return &handoffDispatch{scratchDispatch: startScratchDispatchOn(t, options), client: &http.Client{Timeout: 10 * time.Second}}
 }

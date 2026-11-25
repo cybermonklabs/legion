@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The tmux runtime's orphan sweep (`ReconcileOrphans`) reads its clock after each tmux listing
+  instead of before it. tmux gives a window's last activity in whole seconds, so an orphan whose
+  pane printed while the listing ran could read as younger than a grace of 0, and the sweep at
+  boot left it running.
