@@ -10,19 +10,20 @@ import { useLayoutEffect, useRef } from "react";
 import { type Location, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 
 import { api, writeRequest } from "../../../api/client";
-import { issueTreeKey } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import { parseIssuePath } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
-import { issueAddress } from "../issue-address";
+import { issueAddress, presetPath } from "../issue-address";
 import { LENS_WORDS } from "../page-words";
-import { dropViews } from "../tree-read/tree-read";
+import { dropViews, type Outline, outlineOf, outlineQuery } from "../tree-read/tree-read";
 import { outlineRowPath } from "./store-link";
 
 /**
  * The one module of the issue page that names the lens read, the lens catalogue and the
  * invocation of a lens. Both reads sit outside the issue's own keys, so no event refresh of the
- * issue reads them again: each is read once in a load. The app's retries stand.
+ * issue reads them again: each is read once in a load. The app's retries stand. It also says
+ * which outline an address opens (`lensPlaceOf`) and where a row of each outline is
+ * (`rowPathIn`), which the Lens act and the chips of a lens line read.
  */
 
 /** What makes a read held once in a load: an answer never goes stale or is let go, and the
@@ -98,36 +99,51 @@ export function useStandingAddress(): StandingAddress {
   return standing;
 }
 
-/** The issue an address names and whether its preset is the outline, read as the page's slots
- *  read their address: what `TreeRows` offers the Lens act by, and the one address a landing
- *  moves. Undefined for an address that names no issue. */
+/** The issue an address names and the outline it opens, read as the page's slots read their
+ *  address: Conversation or Graph, and none in a filter or any other view (`outline`), beside
+ *  which the page may hold Conversation's read but draws no outline (`outlineOf`). What `TreeRows`
+ *  offers the Lens act by, what a chip links by, and the one address a landing moves. Undefined
+ *  for an address that names no issue. */
 export function lensPlaceOf(
   pathname: string,
   search: string
-): { readonly issueKey: string; readonly outline: boolean } | undefined {
+): { readonly issueKey: string; readonly outline: Outline | undefined } | undefined {
   const route = parseIssuePath(pathname, search);
-  return route === undefined
-    ? undefined
-    : {
-        issueKey: route.key,
-        outline: issueAddress(route, search, "", undefined).preset === "conversation",
-      };
+  if (route === undefined) return undefined;
+  const { preset } = issueAddress(route, search, "", undefined);
+  const outline = outlineOf(preset);
+  return { issueKey: route.key, outline: outline === preset ? outline : undefined };
+}
+
+/** The address of the row of the node whose id in the tree read is `readId` in `outline` of the
+ *  issue `key`, after the words filter `filter` (`?q=`) where one is given: Conversation's on the
+ *  issue's own address (`outlineRowPath`), and Graph's on Graph's own (`presetPath`) with the same
+ *  query, so `outlineRowPath` stays the one builder of a row's `?node=` (R7, R9). */
+export function rowPathIn(outline: Outline, key: string, readId: string, filter?: string): string {
+  const path = outlineRowPath(key, readId, filter);
+  if (outline === "conversation") return path;
+  return `${presetPath(key, "graph")}${path.slice(path.indexOf("?"))}`;
 }
 
 /**
- * Reads the tree of the issue `issueKey` again through the app's refresh scheduler
- * (`refreshQueries`), drops every view of the issue the cache holds (`dropViews`), and answers
- * once the tree has been read: when the first read of it that begins from the refresh on has
- * settled. The scheduler answers nothing itself and may begin that read later than its call: once
- * a read already out has settled, or a second after the last read began. Where nothing observes
- * the tree, the scheduler reads nothing and only marks it stale, to be read when a page draws it,
- * and an observer that holds its answer for good (`isStatic`) reads nothing either, so this
- * answers at once; and it answers as soon as the tree is let go, or its last observer goes, while
- * it waits, since no read comes then. It never answers with a timer of its own.
+ * Reads again the outline read the page holds for `outline` of the issue `issueKey`, Graph's or
+ * Conversation's (`outlineQuery`), through the app's refresh scheduler (`refreshQueries`), drops
+ * every view of the issue the cache holds (`dropViews`), and answers once that read is done: when
+ * the first read of it that begins from the refresh on has settled. The scheduler answers nothing
+ * itself and may begin that read later than its call: once a read already out has settled, or a
+ * second after the last read began. Where nothing observes the read, the scheduler reads nothing
+ * and only marks it stale, to be read when a page draws it, and an observer that holds its answer
+ * for good (`isStatic`) reads nothing either, so this answers at once; and it answers as soon as
+ * the read is let go, or its last observer goes, while it waits, since no read comes then. It
+ * never answers with a timer of its own. The other outline's read is left as it is (R6).
  */
-function readTreeAgain(queryClient: QueryClient, issueKey: string): Promise<void> {
+function readTreeAgain(
+  queryClient: QueryClient,
+  issueKey: string,
+  outline: Outline
+): Promise<void> {
   const cache = queryClient.getQueryCache();
-  const tree: RefreshTarget = { exact: true, queryKey: issueTreeKey(issueKey) };
+  const tree: RefreshTarget = { exact: true, queryKey: outlineQuery(issueKey, outline).queryKey };
   const query = cache.find(tree);
   const { promise, resolve } = Promise.withResolvers<void>();
   if (query === undefined || !query.isActive() || query.isStatic()) {
@@ -168,7 +184,8 @@ export interface LensInvocation {
 }
 
 /**
- * Invokes lenses on the node at the address `on`, on the issue `issueKey`. Each pick is one
+ * Invokes lenses on the node at the address `on`, on the issue `issueKey`, from the outline
+ * `outline` the address opens as the menu is drawn, Conversation or Graph. Each pick is one
  * write, under a key minted at the pick and in the reader's name (`useKeyedWrite`), and sends
  * `on` and `kind` and nothing more. It answers the lens made, `null` where Dispatch made it and
  * kept no answer, or throws the refusal (`ApiError`). The menu says a refusal itself, so the
@@ -182,24 +199,25 @@ export interface LensInvocation {
  * write as out from the pick's own task, before its first await, and a menu drawn again while
  * the write is out reads it.
  *
- * A landing reads the tree again through the app's refresh scheduler, as the page does for a
- * write it sees, so it never calls off a read already out and keeps to one start a second: the
- * write and the event it raises read the tree once or twice, never more. It drops every view of
- * the issue the cache holds, since a view read before the write does not hold the lens it made
- * and would be drawn older than the tree; the one an observer draws is read again. It waits for
- * the tree's read (`readTreeAgain`), so the tree holds the lens's row when the address names it.
- * Then, where Dispatch answered the lens it made and the reader still stands on this issue's
- * outline, it replaces the address with the outline's own at that lens's row (`?node=`,
- * `outlineRowPath`), keeping the words filter (`?q=`) and dropping every other part of the
- * address, so the page lands on the new row and a reload lands there too. The address is the one
- * that stands as the read answers (`standing`), whichever row has the focus then. A reader who
- * has left the outline, for another page, another issue or one of this issue's views, is left
- * where they went, and so is one who has come back to it since: the outline drawn again keeps an
- * address of its own.
+ * A landing reads the outline's read again through the app's refresh scheduler, as the page does
+ * for a write it sees, so it never calls off a read already out and keeps to one start a second:
+ * the write and the event it raises read the open view's tree once or twice, never more, and the
+ * other outline's not at all (R6). It drops every view of the issue the cache holds, since a view
+ * read before the write does not hold the lens it made and would be drawn older than the tree;
+ * the one an observer draws is read again. It waits for the outline's read (`readTreeAgain`), so
+ * the outline holds the lens's row when the address names it. Then, where Dispatch answered the
+ * lens it made and the reader still stands on this issue in the same outline, it replaces the
+ * address with that outline's row of the lens (`?node=`, `rowPathIn`), keeping the words filter
+ * (`?q=`) and dropping every other part of the address, so the page lands on the new row and a
+ * reload lands there too. The address is the one that stands as the read answers (`standing`),
+ * whichever row has the focus then. A reader who has left the outline, for another page, another
+ * issue, the other outline or one of this issue's views, is left where they went, and so is one
+ * who has come back to it since: the outline drawn again keeps an address of its own.
  */
 export function useInvokeLens(
   issueKey: string,
   on: string,
+  outline: Outline,
   standing: StandingAddress
 ): LensInvocation {
   const queryClient = useQueryClient();
@@ -234,13 +252,14 @@ export function useInvokeLens(
     },
     invoke: async (kind) => {
       const invoked = await made.mutateAsync(kind);
-      await readTreeAgain(queryClient, issueKey);
+      await readTreeAgain(queryClient, issueKey, outline);
       const now = standing.current;
       const place =
         now === undefined ? undefined : lensPlaceOf(now.location.pathname, now.location.search);
-      if (invoked !== null && now !== undefined && place?.issueKey === issueKey && place.outline) {
+      const same = place?.issueKey === issueKey && place.outline === outline;
+      if (invoked !== null && now !== undefined && same) {
         const filter = new URLSearchParams(now.location.search).get("q") ?? undefined;
-        now.navigate(outlineRowPath(issueKey, lensReadId(invoked), filter), { replace: true });
+        now.navigate(rowPathIn(outline, issueKey, lensReadId(invoked), filter), { replace: true });
       }
       return invoked;
     },

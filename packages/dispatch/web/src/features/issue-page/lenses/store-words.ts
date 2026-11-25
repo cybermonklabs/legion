@@ -1,17 +1,10 @@
 import type { DisplayTree } from "../../../api/types";
 import { referenceSpans } from "../../refs/reference-spans";
-import { parseIssuePath } from "../../refs/routes";
 import { storeAddressReference } from "../../refs/store-address";
 import { wordsOf } from "../../refs/tree-fragment";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { storedReading } from "../stored-reading";
-import {
-  addressesAsShortForms,
-  type Draft,
-  plainWords,
-  storeKindOf,
-  storeKindWord,
-} from "../tree-drafts";
+import { addressesAsShortForms, type Draft, plainWords, storeKindWord } from "../tree-drafts";
 import type { TreeDraftContext } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import {
@@ -22,16 +15,14 @@ import {
   factText,
   kindOf,
   type LensChip,
-  type LensType,
   lensChipWords,
   lensStoreAddress,
   lensTypeOf,
   plainRuns,
-  storeAddressOf,
   storedFacts,
   storedRowWords,
 } from "./lens-drafts";
-import { outlineRowPath } from "./store-link";
+import { outlineRowPath, type StoreKind } from "./store-link";
 
 /**
  * A store address in a row's words on the issue page (decision 388): `dispatch://lens/<uuid>`,
@@ -41,7 +32,8 @@ import { outlineRowPath } from "./store-link";
  * (`tree-drafts.ts`'s `addressesAsShortForms`). Where the tree read holds the node and a step
  * drafted its row, a row's words read it by the node's name instead, linked to that row
  * (`?node=`). `storeWords` is the mark of `tree-read/tree-nodes.ts`'s `treeDraftMarks` that
- * writes them so, and `storeLinkPath` the check a row makes before it follows such a link.
+ * writes them so, and `store-link.ts`'s `storeLinkPath` the check a row makes before it follows
+ * such a link.
  *
  * Every fact comes from the tree read; nothing here sends a request. This module imports only
  * types from `tree-read/`, which imports it, so no import cycle closes (`biome.json`'s
@@ -146,7 +138,7 @@ function storeIndex(answer: TreeAnswer, context: TreeDraftContext): StoreIndex {
  *  finding by its row's line (`TreeDraftContext.lineOf`), and the page's word for its kind where
  *  those hold none. Each is read as the one-line words read it, so an address in it reads as its
  *  kind's word or its short form, and no name holds another node's. */
-function nameOf(node: TreeAnswerNode, type: LensType, context: TreeDraftContext): string {
+function nameOf(node: TreeAnswerNode, type: StoreKind, context: TreeDraftContext): string {
   if (type === "lens") return lensChipWords(addressesAsShortForms(kindOf(node, context))).words;
   const words =
     type === "risk"
@@ -481,57 +473,4 @@ function linkedAddress(link: DisplayTree): string | undefined {
   if (link.type !== "link") return undefined;
   const href = (link.attrs as { readonly href?: unknown } | undefined)?.href;
   return typeof href === "string" ? lensStoreAddress(href) : undefined;
-}
-
-/** Where the page stands, as the router holds it (`useLocation`). */
-interface PageAddress {
-  readonly pathname: string;
-  readonly search: string;
-}
-
-/**
- * The path a link in a row's words to the store address `href` opens (`RowText.tsx`'s link
- * pass): its link mark's `title`, `title`, only where that is the very path a name's link holds
- * (`namedRuns`) - the outline of the issue the page's address `page` names, read as the page's
- * slots read it (`parseIssuePath`), at the `?node=` of the node `href` names (`outlineRowPath`).
- * Undefined for any other title, so an author's own title on a link to a store address opens
- * nothing, and for any other address.
- */
-export function storeLinkPath(href: string, title: string, page: PageAddress): string | undefined {
-  const address = storeAddressReference(href);
-  const issueKey = parseIssuePath(page.pathname, page.search)?.key;
-  const query = title.indexOf("?");
-  if (address === undefined || issueKey === undefined || query === -1) return undefined;
-  const readId = new URLSearchParams(title.slice(query + 1)).get("node");
-  return readId !== null && namesNode(address, readId) && title === outlineRowPath(issueKey, readId)
-    ? title
-    : undefined;
-}
-
-/**
- * Whether `readId`, a node's id in the tree read, is that of the node the store address `address`
- * names, as `addressOf` builds an address from a read id (`storeAddressOf`) for the kind the
- * address names (`storeKindOf`): with a leading `<kind>/` taken off, the address's id
- * (`dispatch://<kind>/<id>`) for a lens, a risk and a constraint. For a finding
- * (`dispatch://lens/<id>#b-<block>`), the block id is the part after the read id's last `#`, or
- * the whole read id where it holds none, and where it holds one the part before it is the lens's
- * id; a read id of the block id alone names no lens, as `addressOf` takes the lens from the
- * finding's parent.
- */
-function namesNode(address: string, readId: string): boolean {
-  const kind = storeKindOf(address);
-  switch (kind) {
-    case undefined:
-      return false;
-    case "finding": {
-      const hash = readId.lastIndexOf("#");
-      const lens =
-        hash === -1
-          ? address.slice("dispatch://lens/".length, address.indexOf("#"))
-          : readId.slice(0, hash);
-      return storeAddressReference(storeAddressOf(kind, readId, lens)) === address;
-    }
-    default:
-      return storeAddressReference(storeAddressOf(kind, readId)) === address;
-  }
 }

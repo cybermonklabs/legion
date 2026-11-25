@@ -45,7 +45,8 @@ import type {
   NodeFact,
   NodeOption,
 } from "./issue-tree";
-import type { LensFacts, LensType } from "./lenses/lens-drafts";
+import type { LensFacts } from "./lenses/lens-drafts";
+import { storeKindOf } from "./lenses/store-link";
 import {
   type AskState,
   type CheckState,
@@ -543,19 +544,10 @@ export function addressesAsShortForms(words: string): string {
   return shortened + words.slice(cursor);
 }
 
-/** The kind of node the store address `address` names, written as `storeAddressReference`
- *  answers it: `finding` for a block of a lens, else `lens`, `risk` or `constraint` as its kind
- *  segment names it. Undefined for an interaction's and a lens kind's address. */
-export function storeKindOf(address: string): LensType | undefined {
-  if (address.includes("#")) return "finding";
-  const kind = address.slice("dispatch://".length, address.lastIndexOf("/"));
-  return kind === "constraint" || kind === "lens" || kind === "risk" ? kind : undefined;
-}
-
-/** The page's word for the kind of node the store address `address` names (`storeKindOf`): what
- *  a place reads such an address by where it knows no name for the node: `lens`, `risk`,
- *  `constraint`, and `finding` for a block of a lens. Undefined for an interaction's and a lens
- *  kind's address. */
+/** The page's word for the kind of node the store address `address` names
+ *  (`lenses/store-link.ts`' `storeKindOf`): what a place reads such an address by where it knows
+ *  no name for the node: `lens`, `risk`, `constraint`, and `finding` for a block of a lens.
+ *  Undefined for an interaction's and a lens kind's address. */
 export function storeKindWord(address: string): string | undefined {
   const kind = storeKindOf(address);
   return kind === undefined ? undefined : NODE_TYPE_NAMES[kind];

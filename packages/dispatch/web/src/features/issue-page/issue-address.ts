@@ -37,8 +37,9 @@ export type AddressTarget =
    *  (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string }
   /** One node, by its id in the tree read, which `?node=` names: the row a chip of a lens line
-   *  links to, and the row of a lens the reader just invoked. Only the outline reads it, on an
-   *  address that opens no document (`issueAddress`). */
+   *  links to, and the row of a lens the reader just invoked. Conversation reads it on the issue's
+   *  own address and Graph on its own, each on an address that opens no document
+   *  (`issueAddress`, R7). */
   | { readonly kind: "node"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
    *  `t h`) names the first row of their group in the outline, which the page unfolds the path
@@ -198,8 +199,8 @@ export function issueAddress(
   const version = pinnedVersion(search) ?? (route.kind === "artifact" ? route.version : undefined);
   const addressed = routeDocument(route, specSlug);
   // `?node=` names a node by its id in the tree read. It is read only on an address whose
-  // preset is the outline and which opens no document, and there it wins over `#b-`, `?ask=`
-  // and `?comment=`.
+  // preset is Conversation or Graph and which opens no document, so a filter's reads none, and
+  // there it wins over `#b-`, `?ask=` and `?comment=`.
   const nodeId = query.get("node") ?? "";
   if (nodeId !== "" && ROUTE_PRESETS[route.kind] === undefined && addressed === undefined) {
     return {
@@ -210,6 +211,20 @@ export function issueAddress(
       preset: "conversation",
       target: { id: nodeId, kind: "node" },
       version,
+    };
+  }
+  // On Graph's own address `?node=` names the node Graph lands on, as the issue's own address
+  // names Conversation's (R7). A zoom address (`/graph/<node id>`) keeps its zoom.
+  if (nodeId !== "" && route.kind === "graph") {
+    return {
+      document: undefined,
+      documentItem: undefined,
+      filter: query.get("q") ?? "",
+      nodeMenu: false,
+      preset: "graph",
+      target: { id: nodeId, kind: "node" },
+      version,
+      ...(route.node === undefined ? {} : { zoom: route.node }),
     };
   }
   const marked = query.get("mark") ?? "";

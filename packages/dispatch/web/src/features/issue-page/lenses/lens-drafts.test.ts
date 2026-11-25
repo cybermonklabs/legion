@@ -1304,9 +1304,11 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
 
 // A risk's row draws its heading, its early warning and its prevention, each read to
 // plain words, and a chip for each check its `prevented_by` names, named by that check's whole
-// text in the tree, not by the first block its row draws a line from, and linked to its row; a
-// risk no check prevents has none.
-test("a check's chip takes its words from its node", () => {
+// text in the tree - both its blocks, past the 32 characters part G cuts a chip at, with no cut -
+// not by the first block its row draws a line from, and linked to its row; a risk no check
+// prevents has none.
+test("a check's chip takes its words whole from its node", () => {
+  const whole = "C1. The index builds concurrently. Then it is checked.";
   const { root } = drawn(
     answer(
       [
@@ -1355,7 +1357,7 @@ test("a check's chip takes its words from its node", () => {
         id: `${KEY}/verification-md#c1`,
         state: "live",
         visibility: "project",
-        words: "C1. The index builds concurrently. Then it is checked.",
+        words: whole,
       },
     ],
   });
@@ -1364,38 +1366,60 @@ test("a check's chip takes its words from its node", () => {
   );
   expect(checkRow.reference).toBe(`dispatch://${KEY}/verification#b-c1`);
   expect(factsOf(rowOf(root, "risk-a")).preventedBy).toEqual([]);
+  expect(whole.length, "the check's text fits a cut chip").toBeGreaterThan(32);
 });
 
-// Each constraint of the issue is a row at the top level, in the read's order, its
-// words a standard's or a measurement's, its reference or its place on its own line, each read
-// to plain words; a statement with a `constrained_by` tuple carries a chip for each, linked to
-// its row.
-test("a constraint is a top-level row and its statement carries its chip", () => {
+// From Graph's answer each constraint of the issue is a row at the top level, in the read's
+// order, its words a standard's or a measurement's, its reference or its place on its own line,
+// each read to plain words; a statement with a `constrained_by` tuple carries a chip for each,
+// linked to its row. Conversation's answer holds the issue's constraints only as context, and
+// one a lens stands on as that lens's ancestor: only that one is a row there, with the lens under
+// it. The statement still carries a chip of each, and the one Conversation draws no row of links
+// Graph's row of it (`graphOnly`).
+test("a constraint is a top-level row in Graph, and in Conversation only as a lens's parent, and its statement carries its chip", () => {
   const standard = "constraint/d4000000-0000-4000-8000-000000000004";
   const measured = "e5000000-0000-4000-8000-000000000005";
+  /** The issue's two constraints, each with the role `role` in the answer. */
+  const constraints = (role: TreeAnswerNode["role"]) => [
+    bare(standard, "constraint", KEY, {
+      attributes: {
+        reference: "section 9.2.2, as dispatch://CORE-2 reads it",
+        standard: "RFC **9110**",
+      },
+      made_at: "2026-11-05T09:00:00Z",
+      role,
+    }),
+    bare(measured, "constraint", KEY, {
+      attributes: {
+        measurement: "p99 write latency",
+        taken_where: "staging, 2026-11-15",
+        value: "41 ms",
+      },
+      made_at: "2026-11-05T10:00:00Z",
+      role,
+    }),
+  ];
+  const constrained = [
+    tuple("constrained_by", "r1", standard),
+    tuple("constrained_by", "r1", measured),
+  ];
   const { root } = drawn(
-    answer(
-      [
-        block("r1", "requirement", KEY, SPEC, 0),
-        bare(standard, "constraint", KEY, {
-          attributes: {
-            reference: "section 9.2.2, as dispatch://CORE-2 reads it",
-            standard: "RFC **9110**",
-          },
-          made_at: "2026-11-05T09:00:00Z",
-        }),
-        bare(measured, "constraint", KEY, {
-          attributes: {
-            measurement: "p99 write latency",
-            taken_where: "staging, 2026-11-15",
-            value: "41 ms",
-          },
-          made_at: "2026-11-05T10:00:00Z",
-        }),
-      ],
-      [tuple("constrained_by", "r1", standard), tuple("constrained_by", "r1", measured)]
-    )
+    answer([block("r1", "requirement", KEY, SPEC, 0), ...constraints("tree")], constrained)
   );
+  const standardChip = {
+    address: "dispatch://constraint/d4000000-0000-4000-8000-000000000004",
+    id: standard,
+    state: "live",
+    visibility: "project",
+    words: "RFC 9110",
+  };
+  const measuredChip = {
+    address: `dispatch://constraint/${measured}`,
+    id: measured,
+    state: "live",
+    visibility: "project",
+    words: "p99 write latency: 41 ms",
+  };
 
   expect(childIds(root)).toEqual([blockNodeId("spec", "r1"), standard, measured]);
   expect(
@@ -1420,25 +1444,35 @@ test("a constraint is a top-level row and its statement carries its chip", () =>
     { ...NO_FACTS, reference: "section 9.2.2, as CORE-2 reads it" },
     { ...NO_FACTS, takenWhere: "staging, 2026-11-15" },
   ]);
-  expect(factsOf(rowOf(root, blockNodeId("spec", "r1")))).toEqual({
-    ...NO_FACTS,
-    constrainedBy: [
-      {
-        address: "dispatch://constraint/d4000000-0000-4000-8000-000000000004",
-        id: standard,
-        state: "live",
-        visibility: "project",
-        words: "RFC 9110",
-      },
-      {
-        address: `dispatch://constraint/${measured}`,
-        id: measured,
-        state: "live",
-        visibility: "project",
-        words: "p99 write latency: 41 ms",
-      },
-    ],
-  });
+  expect(factsOf(rowOf(root, blockNodeId("spec", "r1"))).constrainedBy).toStrictEqual([
+    standardChip,
+    measuredChip,
+  ]);
+
+  const conversation = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        ...constraints("context"),
+        lens(FIRST, measured),
+        PRE_MORTEM,
+      ],
+      [...constrained, tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  ).root;
+  expect(childIds(conversation), "Conversation draws the constraints no lens stands on").toEqual([
+    blockNodeId("spec", "r1"),
+    measured,
+  ]);
+  expect(childIds(rowOf(conversation, measured))).toEqual([FIRST]);
+  expect([rowOf(conversation, measured).text, factsOf(rowOf(conversation, measured))]).toEqual([
+    "p99 write latency: 41 ms",
+    { ...NO_FACTS, takenWhere: "staging, 2026-11-15" },
+  ]);
+  expect(factsOf(rowOf(conversation, blockNodeId("spec", "r1"))).constrainedBy).toStrictEqual([
+    { ...standardChip, graphOnly: true },
+    measuredChip,
+  ]);
 });
 
 // A lens on an ask's block stands under the ask, which the server stores it under the
@@ -1605,6 +1639,40 @@ test("a lens chip, a check's chip, a constraint's chip and a lens's place hold w
   ]);
 });
 
+// A lens's tag draws its kind's words, which its row carries (`LensFacts.kind`), capitalised as
+// `lensChipWords` names a lens, and a chip that names the lens - here the "Triggered by" chip of
+// the lens it triggered - draws the same words. Both are whole however long a kind's words run:
+// 129 characters here, past the 32 characters part G cuts a chip at.
+test("a lens's chip and tag draw its kind's words whole", () => {
+  const words =
+    "pre-mortem: imagine the work failed a year from now, then name each warning the team missed and say why nobody acted on it at all";
+  expect(words).toHaveLength(129);
+  const long = lensKind("long-pre-mortem", { words });
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1", "2026-11-05T09:00:00Z"),
+        lens(SECOND, "r1", "2026-11-05T10:00:00Z"),
+        long,
+        TRADE_OFF,
+      ],
+      [
+        tuple("has_kind", FIRST, long.id),
+        tuple("has_kind", SECOND, TRADE_OFF.id),
+        tuple("triggered_by", SECOND, FIRST),
+      ]
+    )
+  );
+  const kind = factsOf(rowOf(root, FIRST)).kind;
+  const [chip] = factsOf(rowOf(root, SECOND)).triggeredBy;
+
+  expect(kind, "the tag's words are cut").toBe(words);
+  expect(lensChipWords(kind)).toEqual({ words: kindWords(words) });
+  expect(chip?.words, "the chip's words are cut").toBe(kindWords(words));
+  expect(chip?.words).toHaveLength(129);
+});
+
 // `?node=` with the id the 201 of an invocation gives (`lensReadId`) opens the path to that
 // lens's row, and the row's reference, which Copy reference copies, is the lens's address. A
 // statement's and a check's read ids, which their tree ids (`<slug>#b-<id>`) are not, open the
@@ -1662,6 +1730,54 @@ test("a lens row is reached by its ?node= id", () => {
 
     expect(target).toEqual({ id: readId, kind: "node" });
     expect(pathToTarget(root, target)?.map((one) => one.id)).toEqual([...chain]);
+  }
+});
+
+// R7: Graph's own address names a lens's row by `?node=` as the issue's own address does, with
+// the preset Graph and the words filter kept, and a zoom address (`/graph/<node id>`) keeps its
+// zoom. A filter's address reads no node from `?node=`: it opens its own view, on no node.
+test("Graph's address names a row by its ?node= id, and a filter's address names none", () => {
+  const { root } = drawn(
+    answer(
+      [block("r1", "requirement", KEY, SPEC, 0), lens(FIRST, "r1"), TRADE_OFF],
+      [tuple("has_kind", FIRST, TRADE_OFF.id)]
+    )
+  );
+  const search = `?q=region&node=${encodeURIComponent(FIRST)}`;
+  const graph = issueAddress({ key: KEY, kind: "graph" }, search, "", "spec");
+  const zoomed = issueAddress(
+    { key: KEY, kind: "graph", node: blockNodeId("spec", "r1") },
+    search,
+    "",
+    "spec"
+  );
+
+  expect(graph).toStrictEqual({
+    document: undefined,
+    documentItem: undefined,
+    filter: "region",
+    nodeMenu: false,
+    preset: "graph",
+    target: { id: FIRST, kind: "node" },
+    version: undefined,
+  });
+  expect([zoomed.preset, zoomed.zoom, zoomed.target]).toEqual([
+    "graph",
+    blockNodeId("spec", "r1"),
+    { id: FIRST, kind: "node" },
+  ]);
+  for (const address of [graph, zoomed]) {
+    expect(pathToTarget(root, address.target)?.map((one) => one.id)).toEqual([
+      KEY,
+      blockNodeId("spec", "r1"),
+      FIRST,
+    ]);
+  }
+  for (const kind of ["spec", "verification", "plan", "decisions"] as const) {
+    const filter = issueAddress({ key: KEY, kind }, search, "", "spec");
+    expect(filter.preset, `/${kind}?node= opens another view`).toBe(kind);
+    expect(filter.target, `/${kind}?node= names a node`).toBeUndefined();
+    expect(filter.document, `/${kind}?node= opens a document`).toBeUndefined();
   }
 });
 

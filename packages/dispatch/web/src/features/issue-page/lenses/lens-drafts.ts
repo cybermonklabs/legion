@@ -2,9 +2,10 @@ import type { DisplayTree } from "../../../api/types";
 import { storeAddressReference } from "../../refs/store-address";
 import { wordsOf } from "../../refs/tree-fragment";
 import { NODE_TYPE_NAMES, sentenceCase } from "../page-words";
-import { blank, type Draft, plainWords, storeKindOf, withShortAddresses } from "../tree-drafts";
+import { blank, type Draft, plainWords, withShortAddresses } from "../tree-drafts";
 import type { TreeDraftContext } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
+import { type StoreKind, storeAddressOf, storeKindOf } from "./store-link";
 
 /**
  * What a row of a lens, a finding, a risk or a constraint carries beyond a `TreeNode`'s own
@@ -31,8 +32,14 @@ export interface LensChip {
   /** Set only where `words` are the page's and not the author's: the page's word for a lens,
    *  which names a lens whose kind has no words (`lensChipWords`). */
   readonly chrome?: true;
-  /** The target's id in the tree read, only where a step drafted it: the link's `?node=`. */
+  /** The target's id in the tree read, where a view draws its row: where a step drafted it, and
+   *  for a constraint of the issue, which Graph draws, where none did (`graphOnly`). The link's
+   *  `?node=`. */
   readonly id?: string;
+  /** Set where Graph alone draws the target's row: a constraint of the issue that no step drafted
+   *  from the answer, as from Conversation's, which holds the issue's constraints as context
+   *  (R5). The chip links Graph's row of it, from every view (`NodeLink.tsx`, R7). */
+  readonly graphOnly?: true;
   /** The target's state and visibility, as the tree read gives them, for the node marks. */
   readonly state?: string;
   readonly visibility?: string;
@@ -102,9 +109,6 @@ export function filled<Line extends string | FactParts>(line: Line | undefined):
   return line !== undefined && factText(line) !== "";
 }
 
-/** The four kinds `lensDrafts` draws, as the tree names them. */
-export type LensType = "constraint" | "finding" | "lens" | "risk";
-
 /** The chip lists of a draft before `lensChips` fills them. */
 const NO_CHIPS: Pick<LensFacts, "constrainedBy" | "preventedBy" | "triggered" | "triggeredBy"> = {
   constrainedBy: [],
@@ -123,7 +127,7 @@ type StoredFact = "earlyWarning" | "prevention" | "reference" | "takenWhere";
 /** One fact line of a lens row whose words one stored attribute holds. */
 interface StoredWords {
   /** The kind of node that holds it. */
-  readonly type: LensType;
+  readonly type: StoreKind;
   /** The attribute's name, as the tree read gives it. */
   readonly attribute: string;
   /** The fact line its words are, by its `LensFacts` member. */
@@ -172,7 +176,7 @@ export function storedRowWords(node: TreeAnswerNode, type: "lens" | "risk"): str
  *  it names a node - where it has words to draw (`filled`). */
 export function storedFacts(
   node: TreeAnswerNode,
-  type: LensType,
+  type: StoreKind,
   read: (markdown: string) => string | FactParts = plainWords
 ): Partial<Pick<LensFacts, StoredFact>> {
   const facts: { [fact in StoredFact]?: string | FactParts } = {};
@@ -187,7 +191,9 @@ export function storedFacts(
 /**
  * The draft of a lens, a finding, a risk or a constraint of the issue; undefined for any other
  * node, which the tree read's other steps are asked for. A catalogue node drafts no row: a
- * `lens_kind`, and a constraint the read marks as context or whose parent is not the issue.
+ * `lens_kind`, and a constraint whose parent is not the issue. Nor does a constraint the read
+ * marks as context, as Conversation's answer holds each of the issue's (R5), but where a lens of
+ * the answer stands under it: that answer holds it as the lens's ancestor (`issueConstraint`).
  *
  * It stands under its parent's row (`parentsOf`), with its address as its reference
  * (`addressOf`), and its author and time as the other steps give a turn's. Its words: a lens's
@@ -199,11 +205,11 @@ export function storedFacts(
  */
 export function lensDrafts(
   node: TreeAnswerNode,
-  _answer: TreeAnswer,
+  answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   const type = lensTypeOf(node, context);
-  if (type === undefined || (type === "constraint" && !issueConstraint(node, context))) {
+  if (type === undefined || (type === "constraint" && !issueConstraint(node, answer, context))) {
     return undefined;
   }
   const parents = parentsOf(node, context);
@@ -244,8 +250,9 @@ export function lensDrafts(
 /**
  * The chips of `draft`, once every node has been offered to the steps, from the answer's tuples
  * in the answer's order. Each chip carries its target's address, its state and its visibility,
- * and its id in the tree read only where a step drafted the target, which makes it a link to
- * that row (`?node=`).
+ * and its id in the tree read only where a view draws the target's row, which makes it a link to
+ * that row (`?node=`): where a step drafted the target, and for a constraint of the issue, which
+ * Graph draws (`constraintChip`).
  *
  * - A lens: a chip for each lens its `triggered_by` tuples name (`triggeredBy`) and for each lens
  *   whose `triggered_by` names it (`triggered`), only for a lens the read holds, each named by its
@@ -254,8 +261,9 @@ export function lensDrafts(
  * - A risk: a chip for each check its `prevented_by` tuples name, named by that check's whole
  *   words (`wholeWords`).
  * - Any draft with a `constrained_by` tuple, a statement above all: a chip for each constraint it
- *   names, by the constraint's whole words. A catalogue constraint is no row, so its chip is no
- *   link. A draft of another step gains lens facts only where it has such a chip.
+ *   names, by the constraint's whole words (`constraintChip`). One of the issue's links its row,
+ *   in Graph where only Graph draws it; a catalogue constraint is no row, so its chip is no link.
+ *   A draft of another step gains lens facts only where it has such a chip.
  */
 export function lensChips(
   draft: Draft,
@@ -266,9 +274,7 @@ export function lensChips(
   const constrainedBy = uniqueChips(
     targetsOf(node, "constrained_by", context).flatMap((target) => {
       const address = target.supertag === "constraint" ? addressOf(target, context) : undefined;
-      return address === undefined
-        ? []
-        : [chipTo(target, address, { words: constraintWords(target) }, context)];
+      return address === undefined ? [] : [constraintChip(target, address, context)];
     })
   );
   if (draft.lens === undefined && constrainedBy.length === 0) return;
@@ -310,7 +316,7 @@ export function lensChips(
  *  finding a block whose read parent is a lens, since the server gives a finding no kind of its
  *  own (`graphstore/reasoning.go`). Its supertag is read as `block` (`8bdd1621fb`) and as
  *  `lens_block` (`5c85ffdc1b`), the two spellings of its kind in the model. */
-export function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): LensType | undefined {
+export function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): StoreKind | undefined {
   switch (node.supertag) {
     case "constraint":
     case "lens":
@@ -326,14 +332,39 @@ export function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): Len
   }
 }
 
-/** Whether `constraint` is one of the issue's own: under the issue, and not the context
- *  the read brings in for a catalogue constraint a tuple names. */
-function issueConstraint(constraint: TreeAnswerNode, context: TreeDraftContext): boolean {
+/** Whether `constraint` is one of the issue's own that draws a row: under the issue
+ *  (`underIssue`), and not context the read brings in, but where a lens of `answer` stands under
+ *  it (`lensParents`): Conversation's answer holds the issue's constraints as context, and one a
+ *  lens stands under as that lens's ancestor, which it draws whole (R5). A catalogue constraint
+ *  a tuple names is context too, and stands under no issue. */
+function issueConstraint(
+  constraint: TreeAnswerNode,
+  answer: TreeAnswer,
+  context: TreeDraftContext
+): boolean {
   return (
-    constraint.role !== "context" &&
-    constraint.parent !== null &&
-    context.treeIdOf(constraint.parent.id) === context.key
+    underIssue(constraint, context) &&
+    (constraint.role !== "context" || lensParents(answer).has(constraint.id))
   );
+}
+
+/** Whether the read parent of `node` is the issue. */
+function underIssue(node: TreeAnswerNode, context: TreeDraftContext): boolean {
+  return node.parent !== null && context.treeIdOf(node.parent.id) === context.key;
+}
+
+/** The read id of each node a lens of the answer stands under, one set per answer. */
+const lensParentSets = new WeakMap<TreeAnswer, ReadonlySet<string>>();
+
+function lensParents(answer: TreeAnswer): ReadonlySet<string> {
+  const held = lensParentSets.get(answer);
+  if (held !== undefined) return held;
+  const parents = new Set<string>();
+  for (const node of answer.nodes ?? []) {
+    if (node.supertag === "lens" && node.parent !== null) parents.add(node.parent.id);
+  }
+  lensParentSets.set(answer, parents);
+  return parents;
 }
 
 /**
@@ -342,24 +373,14 @@ function issueConstraint(constraint: TreeAnswerNode, context: TreeDraftContext):
  * finding's its lens's with its block id (`dispatch://lens/<uuid>#b-<block id>`),
  * `dispatch://risk/<uuid>` and `dispatch://constraint/<uuid>`; undefined for any other node.
  *
- * The tree read answers no address per node, so this builds one from the node's read id until
- * the server serves that read: a node's read id is its store id, bare or after its kind
- * (`lens/<uuid>`), and a finding's is its lens's and its block id after a `#`
- * (`lens/<uuid>#<block id>`, as the server writes one), or its block id alone.
+ * The tree read answers no address per node, so this builds one from the node's read id
+ * (`store-link.ts`'s `storeAddressOf`) until the server serves that read: a node's read id is its
+ * store id, bare or after its kind (`lens/<uuid>`), and a finding's is its lens's and its block
+ * id after a `#` (`lens/<uuid>#<block id>`, as the server writes one), or its block id alone.
  */
 export function addressOf(node: TreeAnswerNode, context: TreeDraftContext): string | undefined {
   const type = lensTypeOf(node, context);
   return type === undefined ? undefined : storeAddressOf(type, node.id, node.parent?.id);
-}
-
-/** The `dispatch://` address of the node of kind `type` whose read id is `readId`, as `addressOf`
- *  builds it: its store id after its kind, and for a finding its lens's, whose read id is
- *  `lens`, with the block id after the last `#` of its own. A store link's path is checked
- *  against it (`store-words.ts`'s `storeLinkPath`). */
-export function storeAddressOf(type: LensType, readId: string, lens = ""): string {
-  if (type !== "finding") return `dispatch://${type}/${storeId(readId, type)}`;
-  const block = readId.slice(readId.lastIndexOf("#") + 1);
-  return `dispatch://lens/${storeId(lens, "lens")}#b-${block}`;
 }
 
 /** The store address `value` names, as `storeAddressReference` writes it, where that address is
@@ -367,11 +388,6 @@ export function storeAddressOf(type: LensType, readId: string, lens = ""): strin
 export function lensStoreAddress(value: string): string | undefined {
   const address = storeAddressReference(value);
   return address === undefined || storeKindOf(address) === undefined ? undefined : address;
-}
-
-/** `id` without the kind its store address starts with (`lens/`), where it carries one. */
-function storeId(id: string, kind: string): string {
-  return id.startsWith(`${kind}/`) ? id.slice(kind.length + 1) : id;
 }
 
 /**
@@ -502,6 +518,21 @@ function chipTo(
     visibility: target.visibility,
     ...named,
   };
+}
+
+/** The chip naming the constraint `constraint` at `address` by its whole words
+ *  (`constraintWords`): linked by its read id where a step drafted it (`chipTo`), and else, where
+ *  it is one of the issue's (`underIssue`), linked by it to Graph's row, which only Graph draws
+ *  then (`graphOnly`). A catalogue constraint is no row, so its chip is no link. */
+function constraintChip(
+  constraint: TreeAnswerNode,
+  address: string,
+  context: TreeDraftContext
+): LensChip {
+  const chip = chipTo(constraint, address, { words: constraintWords(constraint) }, context);
+  return chip.id !== undefined || !underIssue(constraint, context)
+    ? chip
+    : { ...chip, graphOnly: true, id: constraint.id };
 }
 
 /** `chips` with a later chip of an address an earlier one holds left out. */

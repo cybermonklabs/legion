@@ -25,6 +25,7 @@ import { dialogOpen } from "../../shell/useDialog";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, type NodeType } from "../page-words";
+import type { Outline } from "../tree-read/tree-read";
 import { lensStoreAddress } from "./lens-drafts";
 import {
   lensKindsQuery,
@@ -35,30 +36,31 @@ import {
 } from "./lens-reads";
 
 /**
- * What a focused row needs to offer the Lens act: the issue the page is on, whether the
- * address's preset is the outline, the one place the act is drawn, and where the reader stands
- * now, which a pick's answer reads as it lands. `TreeRows.tsx` provides it (`useLensAct`); a
- * route that names no issue provides none, and `LensMenu` then draws no act.
+ * What the focused row needs to offer the Lens act: the issue the page is on, the outline the
+ * address opens - Conversation or Graph, the two places the act is drawn, and none in a filter or
+ * any other view (R4) - and where the reader stands now, which a pick's answer reads as it lands.
+ * `TreeRows.tsx` provides it (`useLensAct`); a route that names no issue provides none, and
+ * `LensMenu` then draws no act.
  */
 export interface LensAct {
   readonly issueKey: string;
-  readonly outline: boolean;
+  readonly outline: Outline | undefined;
   readonly standing: StandingAddress;
 }
 
 export const LensActContext = createContext<LensAct | undefined>(undefined);
 
 /**
- * The Lens act a focused row offers, as `TreeRows.tsx` provides it to its rows: the issue the
- * address names and whether its preset is the outline, read as the page's slots read their
- * address (`lensPlaceOf`), and where the reader stands now. A route that names no issue offers
- * no act. One value while the address stands, so no row draws again.
+ * The Lens act the focused row offers, as `TreeRows.tsx` provides it to its rows: the issue the
+ * address names and the outline it opens, read as the page's slots read their address
+ * (`lensPlaceOf`), and where the reader stands now. A route that names no issue offers no act.
+ * One value while the address stands, so no row draws again.
  */
 export function useLensAct(): LensAct | undefined {
   const { pathname, search } = useLocation();
   const place = lensPlaceOf(pathname, search);
   const issueKey = place?.issueKey;
-  const outline = place?.outline === true;
+  const outline = place?.outline;
   // Where the reader stands now, which a pick's answer reads as it lands, kept for as long as
   // the caller is drawn: the rows, not the menu that made the pick, which goes with its row's
   // focus.
@@ -97,24 +99,25 @@ const INVOKED_ON: Readonly<Record<NodeType, boolean>> = {
 };
 
 /**
- * Whether a row offers the Lens act: in the outline alone, on a node of a kind the invoke route
- * takes, whose address names this issue - `dispatch://<key>` and then `/` or `#`, so a key that
- * merely starts with this one is another issue - or is a uuid address of the node store that the
- * route takes: a lens, a block of a lens (a finding), a risk or a constraint (`lensStoreAddress`),
- * so not an interaction's or a lens kind's. A child issue, a result, the issue, a document, a
- * handoff and a node of another issue get none. A closed issue keeps the act: the server decides.
+ * Whether a row offers the Lens act: in Conversation and in Graph alone (`LensAct.outline`), on a
+ * node of a kind the invoke route takes, whose address names this issue - `dispatch://<key>` and
+ * then `/` or `#`, so a key that merely starts with this one is another issue - or is a uuid
+ * address of the node store that the route takes: a lens, a block of a lens (a finding), a risk
+ * or a constraint (`lensStoreAddress`), so not an interaction's or a lens kind's. A child issue, a
+ * result, the issue, a document, a handoff and a node of another issue get none. A closed issue
+ * keeps the act: the server decides.
  */
 export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey" | "outline">): boolean {
   const reference = node.reference;
-  if (!act.outline || !INVOKED_ON[node.type] || reference === undefined) return false;
+  if (act.outline === undefined || !INVOKED_ON[node.type] || reference === undefined) return false;
   const issue = `dispatch://${act.issueKey}`;
   if (reference.startsWith(`${issue}/`) || reference.startsWith(`${issue}#`)) return true;
   return lensStoreAddress(reference) !== undefined;
 }
 
 /**
- * The Lens act of a focused row and the menu of lens kinds it opens, on a row that offers the
- * act (`lensActFor`); on any other row, nothing.
+ * The Lens act of the focused row and the menu of lens kinds it opens, on a row that offers the
+ * act (`lensActFor`); on any other row, nothing. `RowActs` draws it on the focused row alone.
  *
  * The act is one of `RowActs`' controls, drawn the way they are and out of the tab order unless
  * `tabStops` holds, so `f` reaches it as a control no key presses (`useTreeKeymap.ts`'s
@@ -133,18 +136,30 @@ export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey" | "outl
  * ends, Enter or a press picks, Escape closes it and gives the focus back to the row, Tab closes
  * it, and so does a press outside it.
  *
- * A pick sends the node's address and the kind's id, nothing more (`useInvokeLens`). A refusal
- * closes the menu, gives the focus back to the row and says so after the act until the menu
- * opens again on that node. The refusal, and whether the pick's write is out, are kept with the
- * node's invocations, not in the menu, since the row losing the focus unmounts `RowActs`: a row
- * that lost the focus while its pick was out says the refusal once it is focused again, and,
- * while the write is still out, its menu says the pick is out and takes no other.
+ * A pick sends the node's address and the kind's id, nothing more (`useInvokeLens`), and lands
+ * in the outline it was made in. A refusal closes the menu, gives the focus back to the row and
+ * says so after the act until the menu opens again on that node. The refusal, and whether the
+ * pick's write is out, are kept with the node's invocations, not in the menu, since the row
+ * losing the focus takes the act and its menu away: a row that lost the focus while its pick was
+ * out says the refusal once it is focused again, and, while the write is still out, its menu says
+ * the pick is out and takes no other.
  */
 export function LensMenu({ node, tabStops }: { node: TreeNode; tabStops: boolean }): ReactNode {
   const act = useContext(LensActContext);
   const on = node.reference;
-  if (act === undefined || on === undefined || !lensActFor(node, act)) return null;
-  return <ActAndMenu act={act} on={on} tabStops={tabStops} />;
+  const outline = act?.outline;
+  if (act === undefined || outline === undefined || on === undefined || !lensActFor(node, act)) {
+    return null;
+  }
+  return (
+    <ActAndMenu
+      issueKey={act.issueKey}
+      on={on}
+      outline={outline}
+      standing={act.standing}
+      tabStops={tabStops}
+    />
+  );
 }
 
 /** What a refused invocation says: the node is gone (404, or 409 `NODE_GONE`), or anything else. */
@@ -159,15 +174,19 @@ function refusalOf(error: Error | undefined): Refusal | undefined {
 }
 
 function ActAndMenu({
-  act,
+  issueKey,
   on,
+  outline,
+  standing,
   tabStops,
 }: {
-  act: LensAct;
+  issueKey: string;
   on: string;
+  outline: Outline;
+  standing: StandingAddress;
   tabStops: boolean;
 }): ReactNode {
-  const invocation = useInvokeLens(act.issueKey, on, act.standing);
+  const invocation = useInvokeLens(issueKey, on, outline, standing);
   const refusal = refusalOf(invocation.refusal);
   const [open, setOpen] = useState(false);
   // Whether a pick is out, as the menu's line says it and as `pick` reads it. On the menu that
@@ -200,8 +219,9 @@ function ActAndMenu({
   // which takes no focus - and leaves the focus to the press. Escape is read in the capture
   // phase, as `IssuePresets.tsx`'s menu reads it, so it is marked before any other listener of
   // the page's: the tree's own Escape passes a marked key by (`keymap.ts`). A dialog over the
-  // page takes its own presses and its own Escape, wherever the focus is: whether one is open is
-  // `useDialog`'s registry's answer (`dialogOpen()`), as `IssuePresets.tsx`'s menu asks it.
+  // page takes its own presses and its own Escape, wherever the focus is - on the dialog, which
+  // takes it as it opens, or on the page after a press on the dialog's words: whether one is open
+  // is `useDialog`'s registry's answer (`dialogOpen()`), as `IssuePresets.tsx`'s menu asks it.
   useEffect(() => {
     if (!open) return;
     const inDialog = (target: EventTarget | null) =>
@@ -247,9 +267,9 @@ function ActAndMenu({
   const pick = (kind: string) => {
     if (examining) return;
     setPicked(true);
-    // By the time `useInvokeLens` answers, it has read the tree again and, where Dispatch
-    // answered the lens it made and the reader still stands on the outline, moved the address
-    // to the new lens's row.
+    // By the time `useInvokeLens` answers, it has read the outline again and, where Dispatch
+    // answered the lens it made and the reader still stands in the outline of the pick, moved
+    // the address to the new lens's row.
     void invocation.invoke(kind).then(answered, answered);
   };
 
@@ -260,7 +280,7 @@ function ActAndMenu({
   // shortcuts, zoom and reload among them. Tab closes the menu: the focus goes back to the act
   // first, so Tab moves on from the act, as from the row's other controls. Escape is the capture
   // listener's above, which marks it as it closes the menu, or leaves it, unmarked, to a dialog
-  // open over the page, in the frame after it opens too, while the focus is still in the menu.
+  // open over the page, wherever the focus is.
   const walk = (event: KeyboardEvent<HTMLElement>) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === "Tab") {

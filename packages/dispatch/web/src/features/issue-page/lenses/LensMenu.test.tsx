@@ -17,7 +17,7 @@ import {
 import { realClock, tick } from "../../../__tests__/fake-clock";
 import { answerRequests } from "../../../__tests__/network";
 import { userOnFakeClock } from "../../../__tests__/user";
-import { issueTreeKey } from "../../../api/queries";
+import { conversationTreeKey } from "../../../api/queries";
 import { trackQueryFetches } from "../../../api/query-refresh";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -241,13 +241,18 @@ function treeAnswer(lenses: number): TreeAnswer {
 }
 
 /** Answers every tree read of this issue, the first with its statement alone and each one after
- *  it with one lens more, and counts them. Each read after the first answers once `later` has
- *  settled, where the test holds them back. */
-function answerTreeReads(later?: Promise<void>): { readonly reads: number } {
-  const asked = { reads: 0 };
+ *  it with one lens more, and counts them, keeping the kinds each read names (`?kind=`):
+ *  Conversation's read names its kinds, and Graph's none. Each read after the first answers once
+ *  `later` has settled, where the test holds them back. */
+function answerTreeReads(later?: Promise<void>): {
+  readonly kinds: string[][];
+  readonly reads: number;
+} {
+  const asked: { kinds: string[][]; reads: number } = { kinds: [], reads: 0 };
   answerRequests(
-    http.get(`/api/v1/issues/${KEY}/tree`, async () => {
+    http.get(`/api/v1/issues/${KEY}/tree`, async ({ request }) => {
       asked.reads += 1;
+      asked.kinds.push(new URL(request.url).searchParams.getAll("kind"));
       const lenses = asked.reads - 1;
       if (lenses > 0) await later;
       return Response.json(treeAnswer(lenses));
@@ -674,8 +679,8 @@ test("a pick on a gone node says it is no longer here", async () => {
 });
 
 // A 201 that comes after the reader left this issue's outline moves nothing: the reader stays
-// where they went, on a page that is no issue's, on another issue's outline or on one of this
-// issue's views, whose own query stands.
+// where they went, on a page that is no issue's, on another issue's outline, on one of this
+// issue's views, whose own query stands, or on its other outline, Graph.
 test("a 201 after the reader left the outline leaves them where they went", async () => {
   const user = userEvent.setup();
   answerCatalogue(() => Response.json(schema(CATALOGUE)));
@@ -684,7 +689,12 @@ test("a 201 after the reader left the outline leaves them where they went", asyn
     await out.promise;
     return Response.json(invoked("pre-mortem"), { status: 201 });
   });
-  for (const away of ["/inbox?filter=mine", "/issues/CORE-2?q=notices", `/issues/${KEY}/spec`]) {
+  for (const away of [
+    "/inbox?filter=mine",
+    "/issues/CORE-2?q=notices",
+    `/issues/${KEY}/spec`,
+    `/issues/${KEY}/graph`,
+  ]) {
     out = Promise.withResolvers<void>();
     const sent = bodies.length;
     const address: Address = { at: "", go: undefined };
@@ -822,10 +832,15 @@ test("a 201 on a tree read already marked stale reads it again and lands", async
     const control = await focusedAct(view, read.id);
     const rows = view.container.querySelectorAll("[data-node-row]").length;
     expect(tree.reads).toBe(1);
+    // Conversation's read, which the page holds in Conversation (`outlineQuery`).
     await act(() =>
-      client.invalidateQueries({ exact: true, queryKey: issueTreeKey(KEY), refetchType: "none" })
+      client.invalidateQueries({
+        exact: true,
+        queryKey: conversationTreeKey(KEY),
+        refetchType: "none",
+      })
     );
-    expect(client.getQueryState(issueTreeKey(KEY))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(conversationTreeKey(KEY))?.isInvalidated).toBe(true);
     expect(tree.reads, "marking the tree stale read it again").toBe(1);
 
     await user.click(control);
@@ -836,6 +851,50 @@ test("a 201 on a tree read already marked stale reads it again and lands", async
     expect(client.getQueryData(viewKey(KEY, "spec")), "the held view outlived the 201").toBe(
       undefined
     );
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows + 1)
+    );
+    expect(menuOf(view)).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// In Graph the act is offered too, and a 201 reads Graph's tree once - the tree read with no
+// view, which names no kind - and never Conversation's read, which Graph does not draw (R6). The
+// page lands on Graph's own address of the new lens's row, keeping the words filter, so the lens
+// is drawn in the view it was invoked in (R4, R7).
+test("an invocation made in Graph reads Graph's tree once and lands on Graph's ?node=", async () => {
+  const user = userEvent.setup();
+  const [read] = buildIssueTree({ issue: ISSUE, tree: treeAnswer(0) }).children;
+  if (read?.reference === undefined) throw new Error("the tree read draws no statement");
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const tree = answerTreeReads();
+  const bodies = answerInvocations(() => Response.json(invoked("trade-off"), { status: 201 }));
+  const client = signedIn();
+  trackQueryFetches(client);
+  const address: Address = { at: "", go: undefined };
+  const view = renderAt(
+    <>
+      <TreeReadRows />
+      <Where address={address} />
+    </>,
+    `/issues/${KEY}/graph?q=notices`,
+    client
+  );
+  try {
+    const control = await focusedAct(view, read.id);
+    const rows = view.container.querySelectorAll("[data-node-row]").length;
+    expect(tree.reads).toBe(1);
+    await user.click(control);
+    await user.click((await drawnItems(view))[0] as HTMLElement);
+    await waitFor(() =>
+      expect(address.at).toBe(`/issues/${KEY}/graph?q=notices&node=${invoked("trade-off").id}`)
+    );
+    expect(bodies).toEqual([{ kind: "trade-off", on: read.reference }]);
+    await letRequestsSettle();
+    expect(tree.reads, "the 201 did not read the tree once").toBe(2);
+    expect(tree.kinds, "a read was Conversation's").toEqual([[], []]);
     await waitFor(() =>
       expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows + 1)
     );
@@ -985,10 +1044,10 @@ function DialogOverTheRows({ opener }: { opener: DialogOpener }): ReactNode {
 
 // A dialog open over the menu takes its own Escape wherever the focus is, whether or not the
 // dialog names itself modal: whether one is open is `useDialog`'s registry's answer
-// (`dialogOpen()`), as `IssuePresets.tsx`'s menu asks it. The focus is still on the menu's kind
-// in the frame after the dialog opens, before the dialog moves it in, and on the page after a
-// press on the dialog's words. The menu under the dialog stays open, and leaves the key's
-// default alone.
+// (`dialogOpen()`), as `IssuePresets.tsx`'s menu asks it. The focus is on the dialog itself in
+// the frame after the dialog opens, which `useDialog` gives it as the dialog opens, before its
+// control takes it, and on the page after a press on the dialog's words. The menu under the
+// dialog stays open, and leaves the key's default alone.
 test("Escape with a dialog open over the menu closes the dialog alone", async () => {
   const user = userEvent.setup();
   answerCatalogue(() => Response.json(schema(CATALOGUE)));
@@ -1015,14 +1074,15 @@ test("Escape with a dialog open over the menu closes the dialog alone", async ()
     const [first] = await drawnItems(view);
     expect(document.activeElement, "the menu's first kind took no focus").toBe(first);
 
-    // The dialog moves the focus into itself a frame after it opens; with that frame held, the
-    // Escape lands on the menu's kind.
+    // The dialog takes the focus itself as it opens, and gives it to its control a frame later;
+    // with that frame held, the Escape lands on the dialog itself.
     const frames = jest.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       act(() => opener.open?.());
       expect(dialog(), "the dialog did not open").not.toBeNull();
-      expect(document.activeElement, "the dialog took the focus in its first frame").toBe(first);
-      await escapeClosesTheDialog("on the menu's kind");
+      expect(document.activeElement, "the dialog took no focus as it opened").toBe(dialog());
+      await escapeClosesTheDialog("on the dialog itself");
+      expect(document.activeElement, "the dialog gave the focus back elsewhere").toBe(first);
     } finally {
       frames.mockRestore();
     }
@@ -1098,50 +1158,71 @@ const NOT_TAKEN = [
   "dispatch://lens/not-a-uuid",
 ];
 
-// The act is drawn in the outline alone, on a node of this issue the invoke route takes; a
-// view draws none, and neither does a route that names no issue. A closed issue keeps it.
-test("the Lens act is offered in the outline alone, on the kinds the route takes", async () => {
-  const outline = { issueKey: KEY, outline: true };
-  const view = { issueKey: KEY, outline: false };
-  const elsewhere = { issueKey: "CORE-2", outline: true };
+/** Whether the statement's row, focused at `path`, draws the Lens act, once it draws its acts:
+ *  the rows read the act from the address. */
+async function drawsLensAct(path: string, isClosed = false): Promise<boolean> {
+  const drawn = renderAt(<Rows isClosed={isClosed} nodes={[statement]} />, path);
+  try {
+    act(() => rowOf(drawn).focus());
+    await waitFor(() => expect(drawn.container.querySelector("[data-row-copy]")).not.toBeNull());
+    return lensAct(drawn) !== null;
+  } finally {
+    drawn.unmount();
+  }
+}
+
+// The act is drawn in Conversation and in Graph alone, on a node of this issue the invoke route
+// takes; a route that names no issue draws none. A closed issue keeps it.
+test("the Lens act is offered in Conversation and in Graph alone, on the kinds the route takes", async () => {
+  const conversation = { issueKey: KEY, outline: "conversation" } as const;
+  const graph = { issueKey: KEY, outline: "graph" } as const;
+  const view = { issueKey: KEY, outline: undefined };
+  const elsewhere = { issueKey: "CORE-2", outline: "conversation" } as const;
   for (const type of NODE_TYPES) {
     const takes = OFFERED.includes(type);
-    expect(lensActFor(node({ id: "n", type }), outline), `${type} with no address`).toBe(false);
+    expect(lensActFor(node({ id: "n", type }), conversation), `${type} with no address`).toBe(
+      false
+    );
     for (const reference of OF_THIS_ISSUE) {
       const drawn = node({ id: "n", reference, type });
-      expect(lensActFor(drawn, outline), `${type} at ${reference}`).toBe(takes);
+      expect(lensActFor(drawn, conversation), `${type} at ${reference}`).toBe(takes);
+      expect(lensActFor(drawn, graph), `${type} at ${reference} in Graph`).toBe(takes);
       expect(lensActFor(drawn, view), `${type} at ${reference} in a view`).toBe(false);
       expect(lensActFor(drawn, elsewhere), `${type} at ${reference} of another issue`).toBe(false);
     }
     for (const reference of OF_THE_STORE) {
       const drawn = node({ id: "n", reference, type });
-      expect(lensActFor(drawn, outline), `${type} at ${reference}`).toBe(takes);
+      expect(lensActFor(drawn, conversation), `${type} at ${reference}`).toBe(takes);
+      expect(lensActFor(drawn, graph), `${type} at ${reference} in Graph`).toBe(takes);
       expect(lensActFor(drawn, view), `${type} at ${reference} in a view`).toBe(false);
     }
     for (const reference of NOT_TAKEN) {
       const drawn = node({ id: "n", reference, type });
-      expect(lensActFor(drawn, outline), `${type} at ${reference}`).toBe(false);
+      expect(lensActFor(drawn, conversation), `${type} at ${reference}`).toBe(false);
     }
   }
 
-  // The rows read the act from the address.
-  const drawsAct = async (path: string, isClosed = false) => {
-    const drawn = renderAt(<Rows isClosed={isClosed} nodes={[statement]} />, path);
-    try {
-      act(() => rowOf(drawn).focus());
-      await waitFor(() => expect(drawn.container.querySelector("[data-row-copy]")).not.toBeNull());
-      return lensAct(drawn) !== null;
-    } finally {
-      drawn.unmount();
-    }
-  };
-  expect(await drawsAct(`/issues/${KEY}`), "the outline").toBe(true);
-  expect(await drawsAct(`/issues/${KEY}?q=notices`), "the outline under a words filter").toBe(true);
-  expect(await drawsAct(`/issues/${KEY}`, true), "a closed issue's outline").toBe(true);
+  expect(await drawsLensAct(`/issues/${KEY}`), "Conversation").toBe(true);
+  expect(await drawsLensAct(`/issues/${KEY}?q=notices`), "Conversation under a words filter").toBe(
+    true
+  );
+  expect(await drawsLensAct(`/issues/${KEY}`, true), "a closed issue's Conversation").toBe(true);
+  expect(await drawsLensAct(`/issues/${KEY}/graph`), "Graph").toBe(true);
+  expect(await drawsLensAct(`/issues/${KEY}/graph?node=${STATEMENT_ID}`), "Graph at a node").toBe(
+    true
+  );
+  expect(await drawsLensAct("/"), "a route that names no issue").toBe(false);
+});
+
+// No filter's address offers the act, whatever it holds beside its view: a words filter, or a
+// `?node=`, which a filter's address reads no node from. The row still draws its other acts.
+test("a filter's address offers no Lens act", async () => {
   for (const preset of ["spec", "verification", "plan", "decisions"]) {
-    expect(await drawsAct(`/issues/${KEY}/${preset}`), `the ${preset} view`).toBe(false);
+    for (const search of ["", "?q=notices", `?node=${encodeURIComponent(STATEMENT_ID)}`]) {
+      const path = `/issues/${KEY}/${preset}${search}`;
+      expect(await drawsLensAct(path), `the ${preset} view at ${path}`).toBe(false);
+    }
   }
-  expect(await drawsAct("/"), "a route that names no issue").toBe(false);
 });
 
 // While the menu is open every key but Tab is its own and has its default prevented, so
