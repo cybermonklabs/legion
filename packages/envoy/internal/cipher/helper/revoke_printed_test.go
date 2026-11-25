@@ -28,6 +28,7 @@ import (
 // connection. Control: the address itself and the route still print, and so does the system's
 // reason.
 func TestARevokeThatCannotReachTheBrokerPrintsNoID(t *testing.T) {
+	t.Parallel()
 	const typed = "hunter2pw-enrollment-id-7b31"
 	closed := closedBroker(t)
 	key, err := proof.NewKey()
@@ -52,6 +53,7 @@ func TestARevokeThatCannotReachTheBrokerPrintsNoID(t *testing.T) {
 // prints it. The revoke's route, with the id left out, is all that prints of it: the class of
 // the failure under it must not carry the URL back. Control: the route and the class print.
 func TestARevokeAnsweredWithBrokenHTTPPrintsNoID(t *testing.T) {
+	t.Parallel()
 	const typed = "hunter2pw-typed-enrollment-tn7"
 	key, err := proof.NewKey()
 	if err != nil {
@@ -77,6 +79,7 @@ func TestARevokeAnsweredWithBrokenHTTPPrintsNoID(t *testing.T) {
 // refuses the connection and for one that answers a status line HTTP cannot read. Control: every
 // line names the route and the class.
 func TestNoLineMadeFromARevokesFailurePrintsItsID(t *testing.T) {
+	t.Parallel()
 	const typed = "hunter2pw-typed-walk-3c9"
 	credentialed := cipheraddr.New("http://" + "walkuser" + ":" + "hunter2pwADDR" + "@127.0.0.1:1")
 	for _, row := range []struct {
@@ -183,6 +186,7 @@ func brokenHTTPBroker(t *testing.T) string {
 // either. The broker's own refusal beside a clean address still prints its code and its words:
 // the control.
 func TestAnAnswerUnderClassIsNotTheBrokersRefusal(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2pw-answer-4d81"
 	addr := cipheraddr.New("https://broker.example")
 	foreign := &oauth2.RetrieveError{
@@ -212,6 +216,7 @@ func TestAnAnswerUnderClassIsNotTheBrokersRefusal(t *testing.T) {
 // one (a BrokerError whose text is withheld) and not as a request whose outcome it does not know.
 // Control: beside a clean address the same refusal prints its code and words.
 func TestARefusalBesideAnAddressWithACredentialIsStillARefusal(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2pw-refusal-5e21"
 	refusal := &oauth2.RetrieveError{
 		Response:  &http.Response{StatusCode: http.StatusBadRequest},

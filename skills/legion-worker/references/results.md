@@ -27,6 +27,7 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
   An issue with no pull request has no such head, so a plain `dispatch results --issue <issue>` shows no pass standing there.
   Read it with `--at <head>`, which compares every check with that one commit.
   So after a push, record each `before_merge` check with no `ci_check` again.
+  Run it again only when the change since its pass can affect what it drives; otherwise record its earlier pass at the new head with `--observed 'carried from <old sha>: <why the change cannot affect it>'`.
 
 ## The rules every phase's evidence follows
 
@@ -34,8 +35,7 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
   Lint, types and the unit and integration suites are CI's: read them on GitHub at the pull request's head, where the issue has one.
   Rerun no lane as evidence, and wait for none.
 
-- After a forward merge, the tester reruns each check the merge can reach (`skill://legion-worker/references/conflicts-and-rewrites.md`) and records each other check with no `ci_check` at the new head unrun, its `--observed` naming the earlier pass and why the merge misses it.
-  A class search that finds an instance, or a parent's last round, takes a full test round.
+- On a new head, the tester reruns each check the change since the head it last tested can reach (for a merge of the base, `skill://legion-worker/references/conflicts-and-rewrites.md#reading-a-merge-of-the-base`) and records each other check with no `ci_check` at the new head unrun, its `--observed` naming the earlier pass and why the merge misses it.
 
 ## Never waiting on CI
 

@@ -1,5 +1,8 @@
 package tmux
 
+//ci:builds packages/daemon ./cmd/legion standins go build .../daemon/cmd/legion
+//ci:reads packages/daemon/cmd/legion/testdata/gh-help/** TestRealTmuxPaneResolvesThisDaemonsLegionCLI
+
 // The real-tmux tests. Each test gets a private tmux server of its own (its own socket name under
 // its own TMUX_TMPDIR), the real `legion worker-shim` built from cmd/legion, the stand-in OMP built
 // from testdata, an httptest daemon serving the two claim routes the stand-in calls, and a
@@ -79,7 +82,10 @@ func requireTmux(t *testing.T) {
 }
 
 // standins builds the real `legion` (whose worker-shim every pane runs) and the stand-in OMP (as
-// `omp`), once per run.
+// `omp`), once per run. The `legion` links leakguardtest.NoCurl as its guards' curl
+// (leakguardtest.NoCurlLinked): a pane's `legion gh` here runs a stand-in gh, and a guard whose
+// bound stopped that gh's REST read would otherwise read through the system's /usr/bin/curl, with
+// a token of the rig's bundle (INFRA-3904).
 func standins(t *testing.T) (legion, omp string) {
 	t.Helper()
 	standinOnce.Do(func() {
@@ -87,7 +93,11 @@ func standins(t *testing.T) (legion, omp string) {
 			return
 		}
 		for name, source := range map[string]string{"legion": "github.com/sjawhar/legion/daemon/cmd/legion", "omp": "testdata/omp-standin.go"} {
-			if out, err := exec.Command("go", "build", "-o", filepath.Join(standinDir, name), source).CombinedOutput(); err != nil {
+			args := []string{"build", "-o", filepath.Join(standinDir, name)}
+			if name == "legion" {
+				args = append(args, "-ldflags", leakguardtest.NoCurlLinked)
+			}
+			if out, err := exec.Command("go", append(args, source)...).CombinedOutput(); err != nil {
 				standinErr = fmt.Errorf("build %s: %v\n%s", source, err, out)
 				return
 			}
@@ -422,8 +432,8 @@ func (c *stubConn) Compact(context.Context, string, time.Duration) error {
 	return errors.New("the stream stub does not compact sessions")
 }
 
-func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runtime.WorkspaceBundle, error) {
-	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
+func (c *stubConn) WorkspaceWork(context.Context, string, time.Duration) (runtime.WorkspaceWork, error) {
+	return runtime.WorkspaceWork{}, errors.New("the stream stub reads no workspace")
 }
 
 func (c *stubConn) AgentSecretsEnrollment(context.Context, string) error {
@@ -491,12 +501,24 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	if err := os.WriteFile(r.instructions, []byte("# Deployment instructions (demo)\n\nRun the checks.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The daemon's HOME is an empty directory of the rig's own. tmux reads ~/.tmux.conf from the
+	// HOME of the client that starts its server, and the runtime hands every tmux client the
+	// daemon's HOME (PaneEnvironment), so the operator's own configuration ran in each rig's
+	// server, and the new-session that starts it returned only once that file had run: a `run`
+	// line in it (tpm's, which calls tmux again for each option of each plugin) took 4 to 13 s
+	// on a loaded machine, against 0.1 s with no file, and past the CommandTimeout below the
+	// new-session of a Spawn or a Resume failed. What an operator configures is no part of what
+	// these tests prove.
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "TMUX_TMPDIR=") {
+		if !strings.HasPrefix(entry, "TMUX_TMPDIR=") && !strings.HasPrefix(entry, "HOME=") {
 			r.environ = append(r.environ, entry)
 		}
 	}
-	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion))
+	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "HOME="+home, "LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion))
 	watchdog := armOrphanWatchdog(t, "legion-"+r.project, r.environ)
 	r.daemon = newFakeDaemon()
 	r.stream = newStreamStub(t, filepath.Join(dir, "stream.sock"), r.daemon)
@@ -581,8 +603,9 @@ func (r *rig) mustTmux(args ...string) string {
 // distinguishable from the daemon's, and an Envoy secret.
 func (r *rig) spec(tree, issue string, role claim.Role) runtime.SpawnSpec {
 	r.t.Helper()
-	// The token is the role's own agent's (claim.NewToken), as the daemon mints it for a step of no
-	// key; runtime.ValidateSpawnSpec holds every spec to the token of an agent of its issue.
+	// The token is the role's own agent's (claim.NewToken), as the daemon mints it for an agent with
+	// no key that holds its role's name (a second agent of one role holds `<role>-2`, a token of its
+	// own); runtime.ValidateSpawnSpec holds every spec to the token of an agent of its issue.
 	derived, err := claim.NewToken(r.project, issue, role)
 	if err != nil {
 		r.t.Fatalf("claim token for %s/%s: %v", issue, role, err)

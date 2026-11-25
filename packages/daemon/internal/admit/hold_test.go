@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -433,16 +434,58 @@ func TestANewerEventThatCreatesNoRecordRefreshesTheHeldSummary(t *testing.T) {
 	assertSlots(t, pool, nil)
 }
 
+// A todo event newer than a held, unrecorded key's summary that records nothing because its
+// repository is unread (a person's edit of the issue's repository, applied before GitHub has
+// answered for the new one) is newer information all the same: release finds the held summary
+// older than that event in the copy of Dispatch's issues, which the event wrote first, and records
+// nothing from it. The issue waits for its new repository's recovery. Before, release admitted the
+// issue on the repository the held summary named, and the edit reached no record. The release says
+// so at Info, naming the issue, so a change that ever leaves such an issue with no trace shows.
+func TestAHeldSummaryOlderThanAnAppliedEventRecordsNothingAtItsRelease(t *testing.T) {
+	pool := migratedPool(t)
+	var logs bytes.Buffer
+	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	mirror := blockers.NewMirror(record.NewStore(), testProject)
+
+	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
+		{Key: "LEGION-EDIT", ResolvedRepo: "acme/widgets", Title: "edit", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
+	}, 10, 0, false)
+	if !admission.Held() {
+		t.Fatal("Held() = false after a labelled todo summary behind the stream, want it held")
+	}
+	edit := intake.DispatchIssue{Key: "LEGION-EDIT", ResolvedRepo: "acme/unread", Seq: 3, Type: "issue.updated", Status: "todo", Title: "edit", Rank: "A", HandedOver: true}
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "repository-edited", edit, mirror, admission.engine, admission); err != nil {
+		t.Fatalf("ApplyFact repository-edited: %v", err)
+	}
+	if got := maybeIssue(t, pool, "LEGION-EDIT"); got != nil {
+		t.Fatalf("LEGION-EDIT recorded by an event on a repository GitHub has not been read for = %#v, want none", got)
+	}
+
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10},
+		mirror, admission.engine, admission); err != nil {
+		t.Fatalf("ApplyFact position-reached: %v", err)
+	}
+	if got := maybeIssue(t, pool, "LEGION-EDIT"); got != nil {
+		t.Fatalf("released LEGION-EDIT = %#v, want it unrecorded: the held summary at sequence 2 is older than the edit at sequence 3 the daemon applied", got)
+	}
+	assertSlots(t, pool, nil)
+	const said = "level=INFO msg=\"admission: a held summary is older than an issue fact of the issue the daemon applied after it was held"
+	if line := logs.String(); !strings.Contains(line, said) || !strings.Contains(line, "issue=LEGION-EDIT") {
+		t.Fatalf("the release logged\n%s\nwant an Info line naming LEGION-EDIT whose held summary it found older than an applied fact", line)
+	}
+}
+
 // A root held back from a boot's admission pass keeps the place the line's own order gives it —
-// among the issues whose work came back, oldest first, where its work came back, and by its
-// tree's root's Dispatch rank where it never ran, as this one never did —
+// within its priority, among the issues whose work came back, oldest first, where its work came
+// back, and within its priority by its tree's root's Dispatch rank where it never ran, as this one
+// never did —
 // and nothing ranked behind it takes the slot it is waiting for: a hold says the daemon does not
 // yet know enough to decide that root, not that the root has lost its turn. Letting the next root
 // through would hand the cap's only slot to the lower-ranked one and leave the held root waiting
 // behind it for a slot that is no longer free, inverting the order Dispatch's own ranking sets —
-// and nothing later puts it back, since the root that took the slot keeps it until its work is
-// past its review or its tree ends, unless it gives it back for a wait on another issue
-// (record.KeepsSlot, blockers.waitsOf).
+// and nothing later puts it back, since the root that took the slot keeps it while it stands in a
+// phase that keeps one and its tree runs, unless it gives it back for a wait on another issue
+// (record.KeepsSlot, blockers.waitsOf); accepting, retro and merging keep none.
 // Each hold a boot can place is exercised on its own — the one Reconcile places for the Dispatch
 // consumer to reach the stream position it measured, and the one the boot's catch-up places before
 // the pass — and then the two together, where release's own promote bypasses the consumer hold but

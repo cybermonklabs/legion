@@ -60,9 +60,8 @@
 with witnessed as (
   select s.issue, s.task, s.kind, s.place, s.run, s.record, r.tree, r.taken_at, r.witness as was,
     step_run_witness(r.issue, r.tree) as now,
-    -- The role whose entry each start of the place raised under the release that records each
-    -- step, whose places were today's five steps (its workflow's stepOf): accepting's, the
-    -- architect's, raised none.
+    -- The role whose entry each start of the place raises (workflow's stepOf): accepting's, the
+    -- architect's, raises none.
     case s.kind when 'merge' then 'merger' when 'retro' then 'implementer'
       else (array['planner', 'implementer', 'tester', 'reviewer'])[s.place] end as worker,
     -- The phase of a place whose start may raise no entry.

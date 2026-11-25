@@ -27,15 +27,12 @@
 -- rollback, which writes that record's end where an earlier release ended its run; null on a row
 -- only an end of an uncounted run wrote, which is ended.
 --
--- The count is keyed by task (the daemon wrote the one task, default, of today's fixed phases until
--- 20261117034837_issue_plans; a run with plan rows writes its plan's tasks), and a re-admission
--- does not clear it (record.Store.ClearGeneration keeps it): the generation is part of the id
--- already, and the count only rises. A step running when this release deploys has no row: the
--- daemon's boot writes one, open, at the count 0, with the agent its start would have named and its
--- moment where its role's phase entry records one (null where the issue's architect works the step,
--- whose entry the boot does not read: accepting on an issue with no plan rows or at
--- `acceptance:owner`, and each step and retro of the key owner), and its end then reads that row as
--- it reads a start's (workflow's OpenUncountedRuns).
+-- The count is keyed by task (the daemon writes the one task, default, of today's fixed phases), and a
+-- re-admission does not clear it (record.Store.ClearGeneration keeps it): the generation is part of
+-- the id already, and the count only rises. A step running when this release deploys has no row:
+-- the daemon's boot writes one, open, at the count 0, with the agent its start would have named and
+-- its moment where its role's phase entry records one (null where none does: accepting's), and its
+-- end then reads that row as it reads a start's (workflow's OpenUncountedRuns).
 --
 -- An earlier release reads and writes none of this, so after a rollback it moves issues, and starts
 -- and ends their steps, with each row standing as this release left it. step_starts_rollback is

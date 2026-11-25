@@ -39,7 +39,7 @@ func connectChecking(t *testing.T, g *rig, token claim.Token, checks bool, hosts
 	l.hosts.Store(hosts)
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{
+	session := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{
 		LauncherID: "checking-" + string(token), PodUID: string(pod.UID), CredentialWait: true, CredentialCheck: checks,
 	})
 	t.Cleanup(func() { _ = client.Close() })

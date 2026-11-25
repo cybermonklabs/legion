@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -80,15 +81,15 @@ const cutoverOldContract = 68
 const cutoverStoredSeq = 5
 
 // cutoverWait bounds each wait of this test on the daemon's own work: a boot, a launch, a
-// registration, an outbox row's tries, an idle pass. The longest of those is a merger's start
-// that a closed design gate held: once the gate opens the test makes the row due at once, and the
-// outbox's sweep, every outboxLease (30 seconds), wakes the row's lane to run it. A try of that
-// row that read the gate closed just before the test opened it can still record its retry after
-// the test made the row due, which puts the row back on its backoff, up to the outbox's 64
-// seconds (record.RetryBackoff), so the bound stays above that. It is the bound a fault is
-// reported at, so a slow machine is no failure, and a start that never comes fails here rather
-// than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a read
-// of the daemon's claims over its API or of its database.
+// registration, an outbox row's tries, an idle pass, the record of a design's news. The longest of
+// those is a merger's start that a closed design gate held: once the gate opens the test makes the
+// row due, and the row's backoff timer or the outbox's sweep, every outboxLease (30 seconds), runs
+// it. A try of that row that read the gate closed just before the test opened it can still record
+// its retry after the test made the row due, which puts the row back on its backoff, up to the
+// outbox's 64 seconds (record.RetryBackoff), so the bound stays above that. It is the bound a
+// fault is reported at, so a slow machine is no failure, and a start that never comes fails here
+// rather than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a
+// read of the daemon's claims over its API or of its database.
 const (
 	cutoverWait = 90 * time.Second
 	cutoverPoll = 100 * time.Millisecond
@@ -98,6 +99,14 @@ const (
 // production minute): the idle release of the second half is read from the claim rows the test
 // back-dates (releaseAgain), so the tick buys nothing but the wait for it.
 const cutoverIdleTick = 250 * time.Millisecond
+
+// cutoverEntrySweep is how often this test's daemon runs its entry sweep (overrides.entrySweep,
+// the production minute). The test opens E's design gate by writing the gate's row, where a
+// person's approval arrives as a fact that queues the reconcile of the news it carries; with no
+// such fact the reconcile is queued by the sweep's backstop (queueOwedDesignNews), and E's merger
+// start waits for that news to be recorded (mergerWaitsForTheDesignGate). At the production minute
+// that wait was most of this test's time.
+const cutoverEntrySweep = time.Second
 
 // TestTheCutoverStartsTheMergersTheOldBuildLeftStopped holds that the first boot of this release on
 // a record legion-v19.57.3 left gives a merging task to each merger nothing else would start
@@ -119,7 +128,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 // merging, and the merger's claim carries the same token as the one its worker took. Then
 // Store.Migrate applies the rest of this head's migrations, as a deployment's roll does:
 // 20261029120700 moves the issues in `awaiting_merge` to merging, 20261110233602 takes the slot
-// mark off every queued start of a phase past the review, and the fill of 20261111225552 puts
+// mark off every queued start of accepting, retro or merging, and the fill of 20261111225552 puts
 // each merger at entry 1, given and served, which is where a merger that took its merging task
 // stands after the upgrade. The fill records no task for that entry: it reads only a start that
 // still carries the slot mark, and S's (below), the one start the old record still holds, has
@@ -199,8 +208,11 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     takes the mark the slot rule gives `merging` and no mark of the repair's own (decision D9
 //     of dispatch://INFRA-3274's plan), which is no mark, since `merging` holds no slot
 //     (record.KeepsSlot), so it is claimable at once, as any start of `merging` is.
-//   - E's merger is not started while its gate is closed, and gets exactly one task once the test
-//     opens the gate.
+//   - E's merger is not started while its gate is closed, and gets exactly one merging task once
+//     the test opens the gate. The opening approves version 2 of the spec over the version 1 the
+//     upgrade recorded the merger's phase as having taken (20261119203047_design_news), so the
+//     merger also gets the news of that version once (dispatch://INFRA-175), and its start waits
+//     until what changed is recorded (mergerWaitsForTheDesignGate).
 //   - A's merger is relaunched and gets exactly one task, the merging task; G's merger claim is
 //     resumed and gets exactly one task, the same merging task. That is the architect's case,
 //     decision D8 of the plan: no start the boot makes gives either a second merging task. The
@@ -227,6 +239,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 // has received exactly one cutover message on G and one on E over both boots, and none on A, D,
 // O, B, N, C, T or S.
 func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
+	t.Parallel()
 	rig := newCutoverRig(t)
 	ctx := context.Background()
 
@@ -301,7 +314,8 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 		}
 	}
 
-	// E: the gate holds the start the repair owed, and the start goes on once the gate opens.
+	// E: the gate holds the start the repair owed, and the start goes on once the gate opens and
+	// what changed in the version it approved is recorded.
 	rig.await(t, "E's merger start held by its tree's closed design gate", func() bool {
 		return strings.Contains(rig.startWaits(t, rig.e.key), "design gate")
 	})
@@ -312,13 +326,16 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: rig.e.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + rig.e.key,
 		LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
 	// The held start waits on its row's backoff, up to the outbox's 64 seconds
-	// (record.RetryBackoff): made due now, it runs at the outbox's next sweep.
+	// (record.RetryBackoff). Made due here, behind the daemon, it runs when its lane wakes: at the
+	// backoff timer the lane armed for the old due time, or at the outbox's next sweep. It then waits
+	// for the news of version 2 to be recorded, which the entry sweep's backstop queues
+	// (cutoverEntrySweep).
 	if _, err := rig.pool.Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'supervise'", rig.e.key); err != nil {
 		t.Fatalf("let the backoff of E's merger start go: %v", err)
 	}
 	rig.connect(t, rig.e)
 	rig.settled(t, rig.e)
-	rig.toldOnce(t, rig.e)
+	rig.toldOnceWithNews(t, rig.e, 2)
 
 	// D's merger, every role of G and E but the merger, and T's tester: nothing starts them.
 	rig.notStarted(t, rig.d.merger, "D's merger has nothing to do: its pull request merged")
@@ -340,10 +357,11 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.releaseAgain(t, rig.g)
 	rig.matchesTheSelection(t, rig.g)
 	// The whole first boot gave each merger one task: the release that stopped G's merger, and
-	// everything this daemon did after the counts above, gave none.
+	// everything this daemon did after the counts above, gave none. E's merger was told the news
+	// of the version its opening approved besides, once.
 	rig.toldOnce(t, rig.a)
 	rig.toldOnce(t, rig.g)
-	rig.toldOnce(t, rig.e)
+	rig.toldOnceWithNews(t, rig.e, 2)
 	rig.toldTheQueuedTask(t, rig.s)
 	rig.keptItsReady(t, rig.s, "S's merger: the start the old record queued for it already covers it (StartFor)")
 	rig.daemon.stop()
@@ -541,6 +559,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 	rig.o.workflowTokens = &workflowTokenRecorder{}
 	rig.o.githubAPI = rig.github(t)
 	rig.o.idleTick = cutoverIdleTick
+	rig.o.entrySweep = cutoverEntrySweep
 	relaunchable := true
 	rig.o.pluginRelaunchable = &relaunchable
 	return rig
@@ -753,7 +772,7 @@ func cutoverSlotRepairTask(issue string) string {
 func (r *cutoverRig) startOrOweMark(t *testing.T) bool {
 	t.Helper()
 	ctx := context.Background()
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -894,6 +913,34 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	want := resumeTaskOf(t, r.pool, r.engine, issue.key)
 	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
+	}
+}
+
+// toldOnceWithNews holds that issue's merger was given exactly two tasks over its whole life in
+// this test, in either order: its merging task once, as toldOnce reads it, and once the news of
+// the approved design its phase is owed, which names the command that reads version of the
+// issue's spec. The start the repair owed hands the merger work it was already on, so it carries
+// no news (record.SuperviseRequest.Entry); the reconcile's news-only start
+// (record.SuperviseRequest.News) is what tells it, and the two run in whichever order the
+// outbox's backoff gives them. The daemon's own delivery of a relaunch's record is no task and is
+// not counted (cutoverAgent.told); a news-only start that takes its place carries the record's
+// sentence in front of the news, and is counted as the news.
+func (r *cutoverRig) toldOnceWithNews(t *testing.T, issue cutoverIssue, version int) {
+	t.Helper()
+	task := resumeTaskOf(t, r.pool, r.engine, issue.key)
+	read := fmt.Sprintf("dispatch doc-read --issue %s --artifact spec-%s --version %d", issue.key, issue.key, version)
+	told := r.tasks(issue.merger)
+	merging, news := 0, 0
+	for _, given := range told {
+		switch {
+		case given == task:
+			merging++
+		case strings.Contains(given, read):
+			news++
+		}
+	}
+	if len(told) != 2 || merging != 1 || news != 1 {
+		t.Fatalf("%s's merger was given the tasks %q, want its merging task %q once and once the news that names %q", issue.key, told, task, read)
 	}
 }
 

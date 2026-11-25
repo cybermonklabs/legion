@@ -79,6 +79,10 @@ var envoyKnownKeys = map[string]struct{}{
 	// natsAuth names the credential a session's NATS connection presents; the session's own
 	// client reads it (packages/envoy-client, envoySettings), and Dispatch only holds it a string.
 	"natsAuth": {},
+	// inbound names how a session takes its inbound messages (`nats` or `listener`, the listener's
+	// relay socket); the session's own client reads it (packages/envoy-client, envoySettings), and
+	// Dispatch only holds it a string.
+	"inbound": {},
 }
 
 // InvalidConfigError reports an envoy.json file that failed validation — an
@@ -453,7 +457,7 @@ func parseEnvoy(raw json.RawMessage) (EnvoySection, []string) {
 		}
 		out.NatsURLs = natsURLs
 	}
-	for _, key := range []string{"token", "natsSeed", "natsAuth"} {
+	for _, key := range []string{"token", "natsSeed", "natsAuth", "inbound"} {
 		if v, ok := m[key]; ok {
 			var s string
 			issues = append(issues, checkType("envoy."+key, "string", v, &s)...)

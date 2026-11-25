@@ -1,8 +1,6 @@
 -- 20261119003157_conflict_reads_and_merge_forward.up.sql — a head that conflicts with its base is
--- read twice before the daemon acts on it, and the act asks the agent of the task's last step of
--- the type implementation at or before the issue's place, else the task's last such step (the
--- implementer, or the issue's architect where that step is its own), to merge the base forward
--- while the issue keeps its phase, rather than sending the issue back to implementing
+-- read twice before the daemon acts on it, and the act asks the implementer to merge the base
+-- forward while the issue keeps its phase, rather than sending the issue back to implementing
 -- (dispatch://INFRA-4374 R1, R2).
 --
 -- The outbox kind check takes two new kinds. conflict_confirm is the second read of a pull request
@@ -10,10 +8,9 @@
 -- (record.PullRequest.ConflictRead). The fact that made the first read is acknowledged once its
 -- transaction commits, so the second read is a durable row rather than a read held in memory, as
 -- merge_queue_read is (20261114031356). merge_forward is one message to one role about a confirmed
--- conflict the daemon acted on (record.PullRequest.MergeForward): the ask to that agent of the
--- implementation step, the hold to the worker of the phase the issue stays in, and, once a new head
--- lands, the word that it landed and, where the task has a reviewer step, the reviewer's ask to
--- read the merge.
+-- conflict the daemon acted on (record.PullRequest.MergeForward): the ask to the implementer, the
+-- hold to the worker of the phase the issue stays in, and, once a new head lands, the word that it
+-- landed and the reviewer's ask to read the merge.
 --
 -- The check is one list, so the migration that sets it names every kind, as 20261117023932 did:
 -- that migration's twenty-seven kinds, plan_record among them, and these two. Its version stands
@@ -45,12 +42,10 @@ delete from outbox where kind = 'phase_ended';
 -- pull_requests.conflict_read is record.PullRequest.ConflictRead: the first CONFLICTING read of
 -- the record's head that no second read has confirmed or released yet, with the head, the base
 -- branch and the time of that read. pull_requests.merge_forward is record.PullRequest.MergeForward:
--- the daemon's ask that the agent of the task's last step of the type implementation at or before
--- the issue's place, else the task's last such step, merge the base forward onto a head whose
--- conflict was confirmed, with that head and base, the phase the issue stays in, why the daemon
--- acted, when it asked, the first head that landed after the ask, whether the reviewer was asked to
--- read the merge, and each merge forward that landed before it while the issue stayed out of
--- implementing.
+-- the daemon's ask that the implementer merge the base forward onto a head whose conflict was
+-- confirmed, with that head and base, the phase the issue stays in, why the daemon acted, when it
+-- asked, the first head that landed after the ask, whether the reviewer was asked to read the
+-- merge, and each merge forward that landed before it while the issue stayed out of implementing.
 -- Both are nullable jsonb, null where the record holds none, which is every row the table
 -- holds now: no release before this one read a conflict twice or asked for a merge forward, so
 -- nothing fills them. A new generation clears merge_forward, an ask of the run before, and keeps

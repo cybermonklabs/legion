@@ -397,7 +397,7 @@ test("a run whose evidence and owner's notice were not written does not reach th
     readRecord: async () => {
       throw new Error("the daemon is not asked for the controller's own notice");
     },
-    publisher: () => undefined,
+    publisher: async () => undefined,
     appendEntry: () => {
       throw new Error("this session's transcript is closed");
     },

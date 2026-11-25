@@ -33,7 +33,7 @@ func approvedGrant(t *testing.T, m *Machine, audience, enr string, key *ecdsa.Pr
 	t.Helper()
 	m.Audience = audience
 	defer func() { m.Audience = testAudience }()
-	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked of "+audience, names...), "", nil)
+	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked of "+audience, names...), "")
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(%v) on %s = %+v, %v; want a pending request with a record", names, audience, req, err)
 	}
@@ -116,7 +116,7 @@ func TestAReleaseOfAGrantWhoseChainFailsIsLogged(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	stale, grantID := approvedGrant(t, m, anotherBroker, enr, key, approver, "DEEL_API_KEY")
 
-	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if !errors.Is(err, ErrGrantChainInvalid) || release.Values != nil {
 		t.Fatalf("Values of a grant signed for %s = %v, %v; want ErrGrantChainInvalid and no value", anotherBroker, release.Values, err)
 	}
@@ -135,7 +135,7 @@ func TestReusingAGrantWhoseChainFailsIsLoggedAndAsksAfresh(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	stale, grantID := approvedGrant(t, m, anotherBroker, enr, key, approver, "DEEL_API_KEY")
 
-	again, err := m.Create(t.Context(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "", nil)
+	again, err := m.Create(t.Context(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "")
 	if err != nil || again.ID == stale.ID || again.State != "pending" || again.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want a new pending request, not the grant of %s", again, err, stale.ID)
 	}
@@ -170,7 +170,7 @@ func TestAGrantOfThisBrokerLogsNoFailedChain(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("DEEL_API_KEY", "")}})
 	own, grantID := approvedGrant(t, m, testAudience, enr, key, fixtureOperator, "DEEL_API_KEY")
 
-	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil || release.Airlock == nil {
 		t.Fatalf("Values = %+v, %v; want DEEL_API_KEY released behind the airlock", release, err)
 	}
@@ -179,7 +179,7 @@ func TestAGrantOfThisBrokerLogsNoFailedChain(t *testing.T) {
 		t.Fatalf("AirlockValues = %v, %v; want DEEL_API_KEY's value", values, err)
 	}
 	compact := signRequest(t, m, key, "asked again", "DEEL_API_KEY")
-	again, err := m.Create(t.Context(), enr, compact, "", nil)
+	again, err := m.Create(t.Context(), enr, compact, "")
 	if err != nil || again.ID != own.ID || again.GrantID == nil || *again.GrantID != grantID {
 		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want the grant %s handed back", again, err, grantID)
 	}
@@ -209,11 +209,11 @@ func TestADatabaseFailureInTheChainCheckLogsNoFailedChain(t *testing.T) {
 	}
 	m.Chain = &chain
 
-	if release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); !errors.Is(err, unreachable) || errors.Is(err, ErrGrantChainInvalid) || release.Values != nil {
+	if release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); !errors.Is(err, unreachable) || errors.Is(err, ErrGrantChainInvalid) || release.Values != nil {
 		t.Fatalf("Values while the record cannot be read = %v, %v; want that error and not ErrGrantChainInvalid", release.Values, err)
 	}
 	compact := signRequest(t, m, key, "asked again", "DEEL_API_KEY")
-	if again, err := m.Create(t.Context(), enr, compact, "", nil); !errors.Is(err, unreachable) || errors.Is(err, ErrGrantChainInvalid) {
+	if again, err := m.Create(t.Context(), enr, compact, ""); !errors.Is(err, unreachable) || errors.Is(err, ErrGrantChainInvalid) {
 		t.Fatalf("Create(DEEL_API_KEY) again while the record cannot be read = %+v, %v; want that error and not ErrGrantChainInvalid", again, err)
 	}
 	if lines := chainLines(t, capture); len(lines) != 0 {
@@ -242,7 +242,7 @@ func TestReuseTakesTheNewestGrantAndPassesOverOneWhoseChainFails(t *testing.T) {
 		t.Helper()
 		compact := signRequest(t, m, key, "asked again", "DEEL_API_KEY")
 		compacts = append(compacts, compact)
-		again, err := m.Create(t.Context(), enr, compact, "", nil)
+		again, err := m.Create(t.Context(), enr, compact, "")
 		if err != nil || again.ID != own.ID || again.GrantID == nil || *again.GrantID != ownGrant {
 			t.Fatalf("Create(DEEL_API_KEY) %s = %+v, %v; want this broker's grant %s handed back", round, again, err, ownGrant)
 		}

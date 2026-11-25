@@ -1,5 +1,7 @@
 package legion
 
+//ci:reads packages/contracts/fixtures/daemon-api/state.json TestTheDecodeReadsTheStateDocumentTheDaemonWrote os.ReadFile (goldenStatePath, ../../../../contracts/fixtures/daemon-api): the state document the daemon's own internal/api/state_golden_test.go writes, which the sampler's decode must read
+
 import (
 	"os"
 	"path/filepath"
@@ -67,5 +69,21 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 		if strings.HasPrefix(field, "pull_request") || field == "status" {
 			t.Errorf("a read of the golden observes %s, want nothing of the issue's status or its pull request: neither the board nor the metrics reads either", field)
 		}
+	}
+
+	// The role of the running step of an issue at step, a role the deployment defines, which
+	// metric 2 puts that step's hours on: the golden's LEGION-240 stands at the checker's step, and
+	// LEGION-241 is held from it, its step's role kept. An issue at no such step observes none.
+	roles := map[string]string{}
+	for _, observation := range state.Observations() {
+		if observation.Field == FieldStepRole {
+			roles[observation.IssueKey] = JSONString(observation.Value)
+		}
+	}
+	if roles["LEGION-240"] != "checker" || roles["LEGION-241"] != "checker" {
+		t.Errorf("the step roles observed = %v, want the checker for LEGION-240 and LEGION-241", roles)
+	}
+	if fields[FieldStepRole] != len(state.Issues) {
+		t.Errorf("step_role observations = %d, want one per issue (%d), null where it runs no such step", fields[FieldStepRole], len(state.Issues))
 	}
 }

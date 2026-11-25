@@ -198,6 +198,7 @@ func createAsAnEarlierBuild(t *testing.T, consumers *SessionConsumers, sessionID
 // before its create, after the publishes of the cases before it and after its own source's, since
 // the record's source stores a message of its own.
 func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
+	t.Parallel()
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	for i := range 5 {
@@ -330,6 +331,7 @@ func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
 // retry that succeeds writes exactly one, so each line is one consumer created at the stream's
 // first sequence.
 func TestAFaultedCreateOfAClampedStartWritesNoLine(t *testing.T) {
+	t.Parallel()
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	const session = "ses_past_end_faulted"
@@ -384,6 +386,7 @@ func TestAFaultedCreateOfAClampedStartWritesNoLine(t *testing.T) {
 // the subjects each path is passed (createAsAnEarlierBuild), so only its start can make a path
 // restart it; a consumer created the same way at the sequence after the stream's last is kept.
 func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequence(t *testing.T) {
+	t.Parallel()
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	for i := range 3 {
@@ -509,6 +512,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequen
 // end, and the read that says so is the real one. A sequence past the stream's real end is the
 // control: it is past the end, from that same second read.
 func TestASequencePastAStaleStreamReadIsJudgedAgainstASecondRead(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	for i := range 3 {

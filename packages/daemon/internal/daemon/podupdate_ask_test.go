@@ -21,12 +21,14 @@ const (
 	askedText  = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
 )
 
-// The three lines the executor writes, one for each way a row ends without an error. The first
+// The five lines the executor writes, one for each way a row ends without an error. The first
 // is the line the production check reads (requirement R8).
 const (
 	askPublishedLine = "outbox update ask published to the role topic"
 	askNoHolderLine  = "outbox update ask finished undelivered: no live session holds the role"
 	askLeftLine      = "outbox update ask finished without a publish: the claim no longer records its round"
+	askSuspendedLine = "outbox update ask finished without a publish: the daemon suspended the claim"
+	askAnsweredLine  = "outbox update ask finished without a publish: the role has answered its round"
 )
 
 // askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a
@@ -62,6 +64,7 @@ func askRow(t *testing.T, id int64, role claim.Role) record.OutboxRow {
 // executor writes the one line the production check greps for, with the row, the issue, the round,
 // the pod, the claim, the role and the topic.
 func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
+	t.Parallel()
 	for i, role := range []claim.Role{claim.RoleTester, claim.RoleArchitect} {
 		t.Run(string(role), func(t *testing.T) {
 			publisher := &outboxPublisher{}
@@ -102,6 +105,7 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 // finishes with one Info line and writes no published line. The claim here records no ask mark,
 // and an undelivered ask writes none; podupdate_undelivered_ask_test.go holds the sweep's ask again.
 func TestPodUpdateAskNobodyHoldsFinishesTheRow(t *testing.T) {
+	t.Parallel()
 	publisher := &outboxPublisher{err: fmt.Errorf("publish to the tester's topic: %w", notify.ErrNoHolder)}
 	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleTester: askedRound})
 	row := askRow(t, 73, claim.RoleTester)
@@ -122,6 +126,7 @@ func TestPodUpdateAskNobodyHoldsFinishesTheRow(t *testing.T) {
 // supervises no claim of the role — the row finishes with one Info line and publishes nothing:
 // a role is never asked about a round that is not its own.
 func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
+	t.Parallel()
 	for i, tc := range []struct {
 		name    string
 		rounds  map[claim.Role]string
@@ -156,6 +161,7 @@ func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
 // NATS grant denies goes through once an operator changes that grant. No published line is
 // written for any of them.
 func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
+	t.Parallel()
 	publisher := &outboxPublisher{}
 	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleImplementer: askedRound})
 	row := askRow(t, 77, claim.RoleImplementer)
@@ -198,12 +204,18 @@ func (w *wakeCountingTrees) taken() int {
 	return w.takes
 }
 
-// The ask wakes nothing (dispatch://INFRA-2981 R1). A role whose pod an idle release took holds
-// no live session, so its topic answers notify.ErrNoHolder and the row finishes there: no pod
-// wake is taken, no process is resumed, and the claim stays released. The round ends at its
-// bound whether or not that role answers. The negative control is c-one-channel's: an executor
-// that called wakeForDelivery first, as hookPrompt does, takes a wake and resumes the claim here.
+// The ask wakes nothing and publishes nothing to a role whose pod an idle release took
+// (dispatch://INFRA-2981 R1, dispatch://INFRA-4109 R1). The machine refuses the ask of a claim the
+// daemon suspended (supervise's Claim.PassedOverByRound), a released claim included, so it ends
+// the row at UpdateAskSuspended before any publish, and the row finishes with one Info line of its
+// own. No publish reaches the listener, which raises a role wake for every publish to a role with
+// no holder. No pod wake is taken, no process is resumed, and the claim stays released. The sweep
+// asks a claim only once its agent is ready (askRound reads supervise.SaidReady), and a released
+// claim is not ready, so this row stands for one that the sweep queued before the release. The
+// negative control is c-one-channel's: an executor that called wakeForDelivery first, as
+// hookPrompt does, takes a wake and resumes the claim here.
 func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
@@ -216,7 +228,10 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	}
 	trees := &wakeCountingTrees{outboxTrees: rig.runner.trees}
 	rig.runner.trees = trees
-	rig.runner.notices = &outboxPublisher{err: fmt.Errorf("publish to the implementer's topic: %w", notify.ErrNoHolder)}
+	publisher := &outboxPublisher{}
+	rig.runner.notices = publisher
+	logs := &syncBuffer{}
+	rig.runner.log = jsonLogger(logs)
 	resumes := len(rig.rt.CallsOf("Resume"))
 
 	row := mustOutboxRow(t, rig.issue.Key, record.UpdateAsk{Role: claim.RoleImplementer, Round: askedRound, Pod: askedPod, Text: askedText}, time.Now())
@@ -225,14 +240,22 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 		t.Fatalf("the ask to a released role = %v, want the row finished", err)
 	}
 
+	lines := loggedLines(t, logs.String(), `"msg":"`+askSuspendedLine+`"`)
+	if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) ||
+		lines[0]["round"] != askedRound || lines[0]["claim"] != string(rig.token) {
+		t.Errorf("lines %q = %v in\n%s\nwant one Info line naming row %d, its round and the claim %s", askSuspendedLine, lines, logs.String(), row.ID, rig.token)
+	}
+	if published := publisher.publishes(); len(published) != 0 {
+		t.Errorf("the ask published %+v, want no publish: a publish to a role with no holder raises a role wake", published)
+	}
 	if n := trees.taken(); n != 0 {
 		t.Errorf("the ask took %d pod wakes, want none: a released pod is not brought back to be asked", n)
 	}
 	if n := len(rig.rt.CallsOf("Resume")) - resumes; n != 0 {
 		t.Errorf("the ask resumed %d processes, want none", n)
 	}
-	if got := rig.machine.Claim(); !got.Released() {
-		t.Errorf("the claim after the ask = %s by %s, want it still released", got.State, got.SuspendedBy)
+	if got := rig.machine.Claim(); !got.Released() || got.UpdateTaskedAt != nil {
+		t.Errorf("the claim after the ask = %s by %s, asked at %v; want it still released and not asked", got.State, got.SuspendedBy, got.UpdateTaskedAt)
 	}
 	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, rig.token); err != nil || open {
 		t.Errorf("the role's open resume after the ask = %t, %v; want none", open, err)

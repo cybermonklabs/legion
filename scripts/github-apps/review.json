@@ -12,5 +12,5 @@
     "security_events": "write",
     "statuses": "read"
   },
-  "description": "Legion architect, planner, tester, reviewer, acceptance and controller, and each other role a plan or the deployment gives this App: reviews pull requests and posts check runs. While the architect does a step of its plan itself, it acts as the App of that step's role, so as the implement App at an implementer step."
+  "description": "Legion architect, planner, tester, reviewer, acceptance and controller, and each role a plan or a deployment gives this App: reviews pull requests and posts check runs. While the architect does a step of its plan itself, it acts as the App of that step's role, so as the implement App at an implementer step."
 }

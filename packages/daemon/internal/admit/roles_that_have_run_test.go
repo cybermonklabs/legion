@@ -20,8 +20,8 @@ import (
 // design_gates, phases and issues), and a claim's token carries no generation (claim.AgentToken),
 // so the row outlives the generation that wrote it — which is why every state here asserts that
 // the rows it seeded are still there after the re-admission. A role that no stored claim holds
-// gets no start of its own: whatever ran it ran in a stored claim, a keyed agent's or its own,
-// and that claim comes back under its own token; a session started for the role's own claim
+// gets no start of its own: whatever ran it ran in a stored claim, its own or another agent's, and
+// that claim comes back under its own token; a session started for the role's own claim
 // would hold no transcript and no task, so nothing but a message could ever wake it.
 //
 // The four states are the member mid-phase, the member in a phase with no worker of its own, the
@@ -147,7 +147,7 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, nil)
 		seedTree(t, pool, phase.Testing, "in_progress")
-		// The member has run three of its six roles: the tester, whose phase it stands in, and two
+		// The member has run three of Legion's six roles: the tester, whose phase it stands in, and two
 		// that have handed their phases on. The reviewer, the merger and its own sub-architect
 		// have never run.
 		tokens := hasRun(t, pool, member, claim.RoleTester, claim.RolePlanner, claim.RoleImplementer)

@@ -21,7 +21,8 @@ import (
 
 // ImageEnv are the variables the worker image's final stage sets (packages/daemon/docker/
 // worker.Dockerfile, ENV), which every container inherits, and which a pod's env therefore may not
-// override: AWS_CA_BUNDLE holds the AWS CLI to the system root bundle the image probe verifies;
+// override: AWS_CA_BUNDLE points the AWS CLI at Debian's system root bundle (the Dockerfile's ENV
+// comment says why);
 // CGO_ENABLED=0 keeps cgo off by default in every process that inherits the image's environment,
 // the image's gcc on PATH notwithstanding, so a role opts in per command (`CGO_ENABLED=1 go test
 // -race …`) rather than a deployment for every build; COREPACK_DEFAULT_TO_LATEST=0 keeps the
@@ -34,8 +35,7 @@ import (
 // (launchers.serveLeakCheck); it is the image's pin and no deployment's to move;
 // PATH, which the runtime sets as well; and USER, the runtime user's name, legion, which the
 // skill-scenario rig's scripts read. TestImageEnvIsWhatTheWorkerImageSets holds the list to
-// the Dockerfile. cmd/legion's TLS probe keeps these variables, but gives each client a HOME of
-// its own (tls_probe.go).
+// the Dockerfile.
 var ImageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH", "USER"}
 
 // setter is who sets a variable a worker's Oh My Pi starts with, and whether the operator's pod

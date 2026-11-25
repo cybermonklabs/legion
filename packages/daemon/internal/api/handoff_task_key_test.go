@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // taskStanding is where one task of a seeded plan stands: its state, its place (a step's place
@@ -29,10 +30,10 @@ func seedTaskPlan(t *testing.T, h *harness, key string, s taskStanding) {
 	v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-" + key, Source: record.PlanSourceOwner,
 		GivenBy: "owner", GivenAt: time.Date(2026, 11, 17, 6, 0, 0, 0, time.UTC)}
 	tasks := []record.PlanTask{{Issue: key, Generation: 1, Task: s.task, PlanVersion: 1, BlockText: "Task " + s.task + ".", State: record.TaskWaiting}}
-	steps := record.NameAgents(nil, nil, []record.PlanStep{
+	steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 		{Issue: key, Generation: 1, Task: s.task, Position: 1, Role: "implementer", Type: "implementation"},
 		{Issue: key, Generation: 1, Task: s.task, Position: 2, Role: "tester", Type: "testing"}})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPlan(ctx, tx, v, tasks, steps); err != nil {
 			return err
 		}
@@ -57,7 +58,7 @@ func seedTaskPlan(t *testing.T, h *harness, key string, s taskStanding) {
 func seedImplementerPass(t *testing.T, h *harness, key string, pass int) {
 	t.Helper()
 	ctx := context.Background()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutReturnCounts(ctx, tx, key, 1, "", record.ReturnCounts{Pass: pass})
 	}); err != nil {
 		t.Fatalf("seed the implementer's pass of %s: %v", key, err)
@@ -69,7 +70,7 @@ func seedImplementerPass(t *testing.T, h *harness, key string, pass int) {
 func holdForTheStop(t *testing.T, h *harness, key string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		issue, err := records.Issue(ctx, tx, key)
 		if err != nil {

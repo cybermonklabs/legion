@@ -299,7 +299,7 @@ test("register_gate waits out a restarting daemon", async () => {
   expect(updates).toHaveLength(1);
 });
 
-// The owner's plan (contract 211): a registration is keyed by its issue, generation, document and
+// The owner's plan (contract 219): a registration is keyed by its issue, generation, document and
 // version, and a stop of a task already stopped changes nothing, so each waits out a restart.
 test("register_plan and stop_task wait out a restarting daemon", async () => {
   const plan = "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11";
@@ -330,7 +330,7 @@ test("register_plan and stop_task wait out a restarting daemon", async () => {
   }
 });
 
-// The owner's report of its own step (contract 227) waits out a restart too, the whole attempt
+// The owner's report of its own step (contract 302) waits out a restart too, the whole attempt
 // again: the record that says which role's report it carries, that report, a fresh grant and the
 // post, which goes through the contract's request schema to the route with the step it names. A
 // repeat after a report that landed finds the step no longer running and changes nothing.

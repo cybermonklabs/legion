@@ -10,7 +10,7 @@ Read it also when a retro reports to you.
   Where the task has no such step, or that step's key is `owner`, it is yours: you do it as `skill://legion-retro` says.
 
 - A retro that reports a defect holds its completion until you say whether it moves the issue back.
-  Only retro can do that while it holds the phase.
+  Only retro can do that in its phase.
 
 - Retro's output is in `skill://legion-retro`, steps 3 to 5.
   When it reports that it cannot compute, read or write the pull request body, it is still in its phase.
@@ -48,7 +48,7 @@ Read it also when a retro reports to you.
   It starts no worker.
   While an `owner-step` of that run is still on its way to you, the retry tells you nothing more.
 
-- Where the task's implementation step is yours, the daemon's ask to merge the base forward comes to you, in any phase.
+- Where the task's implementation step is yours, the daemon's ask to merge the base forward comes to you, in any phase before `merging`, where the merger is asked instead.
   That merge is the implementer's act, so your slot holds the implement App until the ask ends.
   It ends when its merge lands, or the pull request closes or merges.
   It also ends when the issue moves into its implementation step, leaves, is held, or its task stops.
@@ -95,7 +95,7 @@ Read it also when a retro reports to you.
 
 - A review you leave on the pull request decides nothing of the step.
   It serves the repository's own merge rule, such as a required approving review, which you give yourself.
-  After a forward merge in `accepting`, `retro` or `merging`, the daemon asks you to approve the new head on GitHub.
+  After a forward merge where your reviewer step already ran (in the default steps, in `accepting`, `retro` or `merging`), the daemon asks you to approve the new head on GitHub.
   GitHub refuses an approval from the pull request's author, so that ask waits until your slot holds the review App.
   While your slot holds the implement App, it waits for the end of your retro or of the merge forward asked of you.
   A merger that enters `merging` while that approval is owed waits for it.

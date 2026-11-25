@@ -59,11 +59,11 @@ func TestACarriedRootHoldingItsRowStandsInTheLineAndOpensItsTree(t *testing.T) {
 	assertWaiting(t, pool, nil)
 }
 
-// A root another tree handed to Legion in a phase past its review holds no row of that tree:
-// the release takes it back before the hand-over writes the root of its own, and no pass grants
-// it another (record.KeepsSlot). It reaches the line as the other half of the same branch — a
-// queued root holding no row — and its promotion opens its tree whatever the cap says, which is
-// the whole of what the rule costs such a root.
+// A root another tree handed to Legion in accepting, retro or merging holds no row of that tree,
+// since those phases keep none: the release takes it back before the hand-over writes the root of
+// its own, and no pass grants it another (record.KeepsSlot). It reaches the line as the other
+// half of the same branch — a queued root holding no row — and its promotion opens its tree
+// whatever the cap says, which is the whole of what the rule costs such a root.
 func TestACarriedRootPastItsReviewHoldsNoRowAndStillOpensItsTree(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
@@ -78,7 +78,7 @@ func TestACarriedRootPastItsReviewHoldsNoRowAndStillOpensItsTree(t *testing.T) {
 	tick(t, pool, admission, "tick")
 
 	if !treeOpen(t, pool, carried) {
-		t.Fatalf("the tree of the carried root %s is closed after the pass: a candidate standing past its review takes no row, "+
+		t.Fatalf("the tree of the carried root %s is closed after the pass: a candidate standing in accepting takes no row, "+
 			"so the cap holds it back for nothing", carried)
 	}
 	if got := issue(t, pool, carried); got.Status != "in_progress" {

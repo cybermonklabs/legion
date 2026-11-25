@@ -20,6 +20,7 @@ import (
 // with nothing claimed carry no dead_letter key at all, and a body with no dead_letter key decodes
 // with no reason.
 func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		written bus.KeptRoleCursor
 		body    string
@@ -74,6 +75,7 @@ func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 // says, and its clock is not even read, since the listener's walk counts the reads it makes of
 // its own clock (cmd/listener/role_keep.go, walkKeptRole).
 func TestAKeptRoleCursorsClaimIsOutstandingOnlyWhileItIsYoungerThanTheWindow(t *testing.T) {
+	t.Parallel()
 	stored := time.Now()
 	claimed := bus.KeptRoleCursor{Kept: 4, Claiming: 5}
 	for _, age := range []time.Duration{0, bus.KeptRoleClaimWindow - time.Millisecond} {
@@ -107,6 +109,7 @@ func TestAKeptRoleCursorsClaimIsOutstandingOnlyWhileItIsYoungerThanTheWindow(t *
 // how old the claim it carries is. A lane no walk has written a cursor for is no error but the
 // zero cursor, since every copy on such a lane is past it.
 func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
+	t.Parallel()
 	client := keptClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

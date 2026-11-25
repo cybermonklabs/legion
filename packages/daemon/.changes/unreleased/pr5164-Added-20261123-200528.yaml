@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  A deployment defines roles of its own under `roles` in `legion.yaml`. Each holds its `type` and
+  `prompt_file`, and may hold its `model` and `github_app`. `role_types` adds types to Legion's
+  five. `worker_backends`, `role_config_files`, `worker_stall_backstop_hours`, each hook's `roles`
+  and `projects.<KEY>.default_steps` take such a role, and `legion config check` prints one line
+  for each. An owner's plan names such a role as a step. The step runs in the phase `step`, on the
+  role's prompt, model, backend and App. Its completion reports pass or fail
+  and the commit its workspace stands on, and a fail may name `return_to`, the place of an earlier
+  step of the task. A move back counts no review round. A review's request for changes counts one,
+  and so does the fail of a review step whose agent is not the owner. A hook's `moves` may name
+  each of the 41 moves back that some task's order makes, the moves of a step among them, and the
+  loader refuses the other 16 pairs. A task whose role the deployment no longer defines stops, and
+  a todo does not start it again while the role is gone. The daemon API contract is 258. State
+  names the role of a running step (`stepRole`) and the roles that wait for the issue's pod
+  (`startWaitsForPod`), and a caller below 258 reads `step` as `implementing`.
+
+  The migration `20261124192838_deployment_roles` widens the role and phase checks, and an
+  earlier release cannot read a row at `step` or of such a role. Before a rollback past this
+  release, finish or stop each issue whose plan names such a role. `docs/kubernetes.md`, "Rolling
+  back the release whose deployment defines roles", gives the way back.
+time: 2026-11-23T20:05:28Z
+custom:
+    Issue: pr5164

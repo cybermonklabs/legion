@@ -30,10 +30,11 @@ import (
 func noAppOwners(context.Context, appauth.AppRole, claim.Role) []string { return nil }
 
 // A role the deployment defines launches with its own prompt file between the headless mechanics
-// and Legion's worker part (prompts.ComposeStep), so it is told the SEPARATE-POD line every phase
-// worker is told, and with the model its settings give it; one of Legion's roles names no model;
-// a role neither the deployment nor the issue's plan defines is refused, with no prompt and no panic.
+// and Legion's worker part (prompts.ComposeStep), and with the model its settings give it; one of
+// Legion's roles names no model; a role neither the deployment nor the issue's plan defines is
+// refused, with no prompt and no panic.
 func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -72,10 +73,8 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	own, line := strings.Index(prompt, "Run the checks and report pass or fail."), strings.Index(prompt, "SEPARATE-POD <ISSUE> <task> <reason>")
-	if own < 0 || line < own || !strings.Contains(prompt, "Legion starts no pod for this line") {
-		t.Errorf("the checker's composed prompt holds its own text at %d and the SEPARATE-POD line at %d, want the text first and the line after it, with %q",
-			own, line, "Legion starts no pod for this line")
+	if !strings.Contains(prompt, "Run the checks and report pass or fail.") {
+		t.Errorf("the checker's composed prompt lacks the text of its own prompt file:\n%s", prompt)
 	}
 
 	tester, err := launch(claim.RoleTester)
@@ -367,7 +366,11 @@ func TestTheStalePluginRuleReadsThePlanOnlyForAClaimItsContractFindsStale(t *tes
 // told the steps: a child's spec is never gated. A two-step deployment and one on `root-issues`
 // give their root architects different prompts, so what a launch is told follows the
 // configuration rather than a policy word that says nothing about which steps hold its tree.
+// Every architect's addressing then ends with the project's production check
+// (ProductionCheckFragment), the root's after the steps, which
+// TestEveryArchitectIsToldTheProjectsProductionCheck reads for both settings.
 func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -383,8 +386,11 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 		steps []record.DesignStep
 		line  string
 	}{
-		{"two steps", []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, "Design gate steps: `decisions`, `spec`."},
-		{"root-issues", config.DesignGateRootIssues.Steps(), "Design gate steps: `spec`."},
+		{"two steps", []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec},
+			"Design gate steps: `decisions`, `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
+		{"root-issues", config.DesignGateRootIssues.Steps(),
+			"Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
+		{"the criteria and the spec", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`."},
 		{"off", config.DesignGateOff.Steps(), "Design gate steps: none."},
 	} {
 		for _, tc := range []struct {
@@ -406,8 +412,12 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 				if err != nil {
 					t.Fatalf("SpawnSpec: %v", err)
 				}
-				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+deployment.line); told != tc.root || !tc.root && strings.Contains(spec.Prompt.Addressing, "Design gate steps") {
-					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, deployment.line, tc.root)
+				check := " " + ProductionCheckFragment("")
+				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+deployment.line+check); told != tc.root || !tc.root && strings.Contains(spec.Prompt.Addressing, "Design gate steps") {
+					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, deployment.line+check, tc.root)
+				}
+				if architect := tc.role == claim.RoleArchitect; strings.HasSuffix(spec.Prompt.Addressing, check) != architect {
+					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, check, architect)
 				}
 				if !tc.root {
 					return
@@ -435,11 +445,77 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 	}
 }
 
+// Every architect, the root's and a sub-architect's, is told the project's `production_check`
+// last in its addressing: `Production check: tester.` where the project gives the check to the
+// tester, and `Production check: off.` where it opens none, which is the line its composed prompt
+// reads to decide whether it writes an `after_merge` check for the production check
+// (dispatch://INFRA-175 R7). No phase worker is told it: none of them writes a Verification
+// document.
+func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	for _, setting := range []struct {
+		name  string
+		check claim.Role
+		line  string
+	}{
+		{"tester", claim.RoleTester, "Production check: tester."},
+		{"off", "", "Production check: off."},
+	} {
+		if got := ProductionCheckFragment(setting.check); got != setting.line {
+			t.Errorf("ProductionCheckFragment(%s) = %q, want %q", setting.name, got, setting.line)
+		}
+		for _, tc := range []struct {
+			name, issue string
+			role        claim.Role
+			told        bool
+		}{
+			{"the root architect", "S1-1", claim.RoleArchitect, true},
+			{"a sub-architect", "S1-2", claim.RoleArchitect, true},
+			{"a tester on the root", "S1-1", claim.RoleTester, false},
+		} {
+			t.Run(setting.name+"/"+tc.name, func(t *testing.T) {
+				token, err := claim.NewToken("s1", tc.issue, tc.role)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateRootIssues.Steps(),
+					productionCheck: setting.check, appOwners: noAppOwners}
+				spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: tc.issue, Tree: "S1-1", Role: tc.role})
+				if err != nil {
+					t.Fatalf("SpawnSpec: %v", err)
+				}
+				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+setting.line); told != tc.told || !tc.told && strings.Contains(spec.Prompt.Addressing, "Production check") {
+					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, setting.line, tc.told)
+				}
+				if !tc.told {
+					return
+				}
+				var prompt strings.Builder
+				for _, path := range spec.Prompt.RolePromptPaths {
+					part, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatalf("read role prompt part %s: %v", path, err)
+					}
+					prompt.Write(part)
+				}
+				if want := "`Production check` line"; !strings.Contains(prompt.String(), want) {
+					t.Errorf("the %s's composed prompt never names the %s its addressing ends with", tc.name, want)
+				}
+			})
+		}
+	}
+}
+
 // A role worker_backends puts on claude, where the plan of the claim's issue defines no role of its
 // name, is launched on Claude Code and told the Claude Code part
 // after its role's parts; every other role, and every role when the daemon names no backend, on Oh
 // My Pi with its parts alone.
 func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -509,6 +585,7 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 // repository. A deployment whose Apps are installed nowhere is told the App is installed on
 // none, as the controller's addressing is.
 func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -583,6 +660,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 // no git identity and neither App login: it works Dispatch, never a checkout or GitHub, and
 // commits nothing.
 func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (Unset).
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -635,6 +713,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 // environment's LEGION_SLACK_CHANNELS is the runtime's to set (sandbox.Options.ControllerSlackChannels),
 // never the spec's, which the runtime would refuse.
 func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -655,13 +734,15 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 	if _, set := spec.Env["LEGION_SLACK_CHANNELS"]; set {
 		t.Errorf("the spec sets LEGION_SLACK_CHANNELS (%v), the runtime's variable", spec.Env)
 	}
-	want := "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository. Slack channels: `C00000000`, `G00000001`: " +
+	want := "Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too. " +
+		"Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository. Slack channels: `C00000000`, `G00000001`: " +
 		"your session hears each one's app mentions while it holds the controller role; answer each in its thread, " +
 		"and nothing from any other channel (skill://legion-controller/references/slack-mentions.md)."
 	if spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
-	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository." {
+	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. A root that registers its Verification document as `criteria` "+
+		"is held on that step too. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository." {
 		t.Errorf("with no channel: addressing %q, want no Slack line", none.Prompt.Addressing)
 	}
 }
@@ -675,6 +756,7 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 // (resolveClaimRole, appauth.AppRoleFor) and the daemon answers for the controller role
 // (plan.appOwners).
 func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -770,6 +852,7 @@ func TestTheControllersLaunchRunsOnTheHarnessItsRoleResolvesTo(t *testing.T) {
 // launch, naming the issue. What an issue works, its record's repository or, unrecorded, the
 // project's default, is the workflow's (TestAnUnrecordedIssueWorksTheProjectsDefaultRepository).
 func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -817,6 +900,7 @@ func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
 // deployment's configured repository_renames — so a claim on the name a transfer moved a
 // repository away from stamps exactly as one on the name the project wrote.
 func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -890,6 +974,7 @@ func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
 // runtime/sandbox's mainEnvironment of issuePod.agentEnv. So a Claude Code launch carries
 // LEGION_ISSUE_TRAILER into its pane exactly as an Oh My Pi one does.
 func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -933,6 +1018,7 @@ func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
 // already at the daemon's contract, or a daemon that knows no plugin pair (LEGION-164's degraded
 // mode) — and always with Contract already api.DaemonAPIVersion.
 func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -978,6 +1064,7 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 
 // The daemon's own controller (`controller: daemon`) is covered the same way as any claim.
 func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -1004,6 +1091,7 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 // (controllerSpawnSpec). Both runtimes forward Env verbatim, so this is where they reach a pane
 // and a pod alike.
 func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it unsets environment variables of the whole process (Unset).
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -1077,6 +1165,7 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 // the same shape is installed for as before, the daemon's own controller among them: it runs on
 // Oh My Pi whatever worker_backends names for a phase worker.
 func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -1140,6 +1229,7 @@ func withContract(c supervise.Claim, contract int) supervise.Claim {
 // provisions its own (a Sandbox pod), nothing is asked of the host. The controller works no
 // checkout.
 func TestAHostLaunchProvisionsItsWorkspaceFirst(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)

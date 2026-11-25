@@ -3,8 +3,9 @@
 // DSNFileVariable points at, libpq's own name for a unix socket, and the two URL spellings of one
 // unix-socket endpoint). The table is Oh My Pi's own (sql-session-storage.ts at
 // the release .omp-pin names): it creates and migrates omp_session_files and
-// omp_session_files_parts, and from that release on the lease table omp_session_leases, when it
-// starts, keys a session by the path its file would have had (the
+// omp_session_files_parts, the lease table omp_session_leases, and the blob and reference tables
+// omp_session_files_blobs and omp_session_files_refs, when it starts, keys a session by the path
+// its file would have had (the
 // session file a claim records), and reads a session as the row's content followed by its parts in
 // offset order. Legion reads it to hold a resume to a session the table holds (Written, the role
 // launcher's check) and to find the file of a session named by its id alone (FindByID, the same
@@ -43,12 +44,13 @@ const (
 // createTables are Oh My Pi's own Postgres statements for its two session tables at the pinned
 // release (buildQueries' createTable and createPartsTable), except that they name each table bare,
 // as every other statement of this package does, so the connecting login's search_path picks its
-// schema, where Oh My Pi names each table public.<table> and runs its statements under SET LOCAL
-// search_path = pg_catalog, pg_temp (PG_SCHEMA and PG_SEARCH_PATH, sql-session-storage.ts at the
-// pinned tag). Each is IF NOT EXISTS, so they change nothing Oh My Pi already made, which it
-// migrates itself when it starts. The pinned release makes a third table, its lease table
-// omp_session_leases, which Legion writes nothing to and leaves to Oh My Pi and the database's
-// owner.
+// schema, where Oh My Pi names each table public.<table> and runs its statements under
+// search_path = pg_catalog, pg_temp (PG_SCHEMA in sql-session-storage.ts and the search_path
+// entry of sql-session-postgres-settings.ts, at the pinned tag). Each is IF NOT EXISTS, so they
+// change nothing Oh My Pi already made, which it migrates itself when it starts. The pinned
+// release makes three more tables, its lease table omp_session_leases and its blob and reference
+// tables omp_session_files_blobs and omp_session_files_refs, which Legion writes nothing to and
+// leaves to Oh My Pi and the database's owner.
 var createTables = []string{
 	"CREATE TABLE IF NOT EXISTS omp_session_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, mtime_ms BIGINT NOT NULL, " +
 		"title TEXT, title_source TEXT, title_updated_at TEXT, byte_len BIGINT)",

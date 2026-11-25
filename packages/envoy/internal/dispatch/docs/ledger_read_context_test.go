@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -15,13 +16,15 @@ import (
 // (refs.Pending). The same read under the context the route holds answers from the stored rows
 // alone, which is what a reader that trusted the context it was passed would see.
 func TestLedgerReadContextResolvesARowTheLedgerHasOnlyQueued(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	tx, ledger := joinProbe(t, service)
 	// The insert of the issues row is queued with the transaction's other writes, so no read of
 	// the issues table answers for it yet (RegisterPendingIssue).
 	ledger.RegisterPendingIssue("LEDGER-7")
 	mentions := func(ctx context.Context) []text.Located {
-		reader := refs.NewReader(ctx, tx, "comment", "4a7f3b22-0f1c-4a6b-9a1e-2b7c8d9e0f11", service.serverURL)
+		// The comment is no row, so its author is nobody; the text writes no short id either.
+		reader := refs.NewReader(ctx, tx, model.Actor{}, "comment", "4a7f3b22-0f1c-4a6b-9a1e-2b7c8d9e0f11", service.serverURL)
 		return reader.Mentions("LEDGER-7 is where this lands")
 	}
 	if located := mentions(context.Background()); len(located) != 0 {

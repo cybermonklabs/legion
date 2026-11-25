@@ -149,9 +149,11 @@ func TestAnOutsiderCannotRevokeAPersonsGrantOfAPrivateProject(t *testing.T) {
 // operator as its enrollment's, so both already know it exists, and a revoke only takes access
 // away: the person rule is not asked for either (hideUnseenGrant), as the session rule is not
 // asked for the session that holds a row. While Dispatch cannot answer, carol ends the first and
-// the operator the second, and Dispatch is asked nothing; once PRIV's list names neither of them,
-// carol ends the third and the operator the fourth. Before, the first two were answered
-// ErrProjectAccessUnavailable and the last two pgx.ErrNoRows, and none was revoked.
+// the operator the second, and Dispatch is asked nothing of a project; carol's revoke, an
+// approver's, asks only what kind of member she is (revokeApproves), since a restricted member is
+// no approver of a secret, and goes ahead while Dispatch cannot say. Once PRIV's list names
+// neither of them, carol ends the third and the operator the fourth. Before, the first two were
+// answered ErrProjectAccessUnavailable and the last two pgx.ErrNoRows, and none was revoked.
 func TestAGrantsApproverAndOperatorRevokeItWhateverDispatchAnswers(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	grants := map[string]string{}
@@ -171,9 +173,13 @@ func TestAGrantsApproverAndOperatorRevokeItWhateverDispatchAnswers(t *testing.T)
 	down := answerFrom(t, m, dispatchRows(publicTeam))
 	down.SetDown(true)
 	t.Run("its approver while Dispatch is down", func(t *testing.T) { ends(t, grants["approver-down"], insider) })
+	before := down.Calls()
 	t.Run("its operator while Dispatch is down", func(t *testing.T) { ends(t, grants["operator-down"], fixtureOperator) })
-	if calls := down.Calls(); calls != 0 {
-		t.Errorf("the revokes by the grants' approver and operator asked the down Dispatch %d times; want none", calls)
+	if calls := down.ProjectCalls(); calls != 0 {
+		t.Errorf("the revokes by the grants' approver and operator asked the down Dispatch %d project questions; want none", calls)
+	}
+	if calls := down.Calls() - before; calls != 0 {
+		t.Errorf("the revoke by the grant's operator asked the down Dispatch %d times; want none", calls)
 	}
 
 	answerFrom(t, m, map[string]projectaccesstest.Row{
@@ -201,7 +207,7 @@ func TestAnUntaggedGrantStaysWithItsOperatorOnceTheyLeaveItsProject(t *testing.T
 		privProject: {Visibility: "private", Owner: otherPerson, Listed: []string{insider}},
 		teamProject: publicTeam,
 	})
-	if released, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil || released.Values["AUTO_TOKEN"] == "" {
+	if released, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil || released.Values["AUTO_TOKEN"] == "" {
 		t.Fatalf("Values(the AUTO_TOKEN grant) once PRIV's list no longer names %s = %+v, %v; want it released: the grant lives on", fixtureOperator, released.Values, err)
 	}
 	listed := func(login string) bool {
@@ -228,7 +234,7 @@ func TestAnUntaggedGrantStaysWithItsOperatorOnceTheyLeaveItsProject(t *testing.T
 		if err := m.RevokeByApprover(t.Context(), grantID, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
 			t.Fatalf("RevokeByApprover(the AUTO_TOKEN grant, %s, its operator) = %v; want it ended", fixtureOperator, err)
 		}
-		if released, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+		if released, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 			t.Fatalf("Values(the AUTO_TOKEN grant) after its operator's revoke = %+v, %v; want ErrGrantNotLive", released.Values, err)
 		}
 	})

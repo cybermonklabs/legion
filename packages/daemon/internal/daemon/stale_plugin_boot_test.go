@@ -28,7 +28,7 @@ func TestTheBootsStalePluginPassHoldsTheBootForOneBoundWhateverTheFleet(t *testi
 	s.claims = staleProbers(t, 2)
 
 	began := time.Now()
-	s.bootStalePlugins()
+	s.bootStalePlugins(s.claims)
 	held := time.Since(began)
 
 	if held >= stalePluginBootBound+stalePluginBootBound/2 {

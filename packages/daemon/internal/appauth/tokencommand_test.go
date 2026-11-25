@@ -22,13 +22,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// fakeBroker is a token_command that answers as `agent-secrets <NAME> [--github-owner O
-// [--github-read-only]] -- sh -c 'printf %s "$NAME"'` does: the release of every installation it
-// holds, or of the owner LEGION_GITHUB_OWNER names alone (a non-zero exit, as the broker's
-// refusal, for an owner it holds none on), each token naming the owner and whether it is
-// read-only. An owner its narrowing cannot be served for is refused as the broker refuses one
-// GitHub answered 422 (refusesNarrowing). Every run appends its owner and read-only flag to
-// calls.
+// fakeBroker is a token_command that answers as docs/deployment.md's profile form does,
+//
+//	P=<NAME>${LEGION_GITHUB_READ_ONLY:+_READ}; agent-secrets "$P" ${LEGION_GITHUB_OWNER:+--target "$LEGION_GITHUB_OWNER"} -- printenv "$P"
+//
+// the release of every installation the profile holds, or of the owner LEGION_GITHUB_OWNER names
+// alone (a non-zero exit, as the broker's refusal, for an owner it holds none on), each token
+// naming the owner and whether it is the read profile's. An owner whose profile the broker cannot
+// serve is refused as the broker refuses one GitHub answered 422 (refusesNarrowing). Every run
+// appends its owner and read-only flag to calls.
 type fakeBroker struct {
 	dir     string
 	command string
@@ -57,7 +59,7 @@ if [ -n "$FAKE_BROKER_NONE" ]; then
   echo "agent-secrets: github app has no installation on $LEGION_GITHUB_OWNER" >&2; exit 1
 fi
 if [ -n "$FAKE_BROKER_NARROW" ] && [ "$FAKE_BROKER_NARROW" = "$LEGION_GITHUB_OWNER" ]; then
-  echo "agent-secrets: the narrowing cannot be served: github app 12345: GitHub answered HTTP 422 to the narrowed token for $LEGION_GITHUB_OWNER: the installation does not hold the permissions asked for; the caller fixes the narrowing" >&2; exit 1
+  echo "agent-secrets: the narrowing cannot be served: github app 12345: GitHub answered HTTP 422 to the profile's token for $LEGION_GITHUB_OWNER: likely a permission it asks for that the installation does not hold" >&2; exit 1
 fi
 owner=$(printf %%s "$LEGION_GITHUB_OWNER" | tr A-Z a-z)
 case "$owner" in
@@ -91,11 +93,51 @@ func (b fakeBroker) uninstall(t *testing.T) {
 	t.Setenv("FAKE_BROKER_NONE", "1")
 }
 
-// refusesNarrowing makes the fake broker refuse owner's narrowing, as it refuses one GitHub
-// answered 422; an owner it is not told of is served every narrowing it is asked for.
+// refusesNarrowing makes the fake broker refuse owner's profile, as it refuses one whose token
+// GitHub answered 422; an owner it is not told of is served every profile it is asked for.
 func (b fakeBroker) refusesNarrowing(t *testing.T, owner string) {
 	t.Helper()
 	t.Setenv("FAKE_BROKER_NARROW", owner)
+}
+
+// endedContext is a caller's context that has already ended, as one whose deadline passed while
+// its token_command ran: runTokenCommand starts the run or joins it first, and then answers the
+// caller ErrCommandPending while the run goes on, so the test chooses when the caller gives up
+// rather than a timer.
+func endedContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+// runsEnded waits until every token_command run of tokens has ended (Manager.runs), which a run
+// does once its command exits and its result is kept.
+func runsEnded(t *testing.T, tokens *Manager) {
+	t.Helper()
+	ended := make(chan struct{})
+	go func() {
+		tokens.runs.Wait()
+		close(ended)
+	}()
+	testwait.Receive(t, "every token_command run to end", ended)
+}
+
+// watchedContext is a caller's context that never ends and says when the caller first watched for
+// its end: watched closes the first time Done is asked for. Manager.lease asks for it first where
+// a caller waits on another caller's pending mint, so a closed watched is a caller waiting there.
+type watchedContext struct {
+	context.Context
+	once    sync.Once
+	watched chan struct{}
+}
+
+func newWatchedContext() *watchedContext {
+	return &watchedContext{Context: context.Background(), watched: make(chan struct{})}
+}
+
+func (c *watchedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.watched) })
+	return c.Context.Done()
 }
 
 // fakeTokenGitHub answers what token mode asks of GitHub under an installation token: GraphQL's
@@ -215,6 +257,67 @@ func TestTokenModeMintsTheOwnersEntryAndRefreshes(t *testing.T) {
 	}
 }
 
+// A daemon on the implement App's token_command of docs/deployment.md reads the release of the
+// profile it names as the role's tokens, one for each account: the release of every account the
+// profile holds when it asks for no owner (InstalledOwners, AppLogin), the owner's entry of the
+// write profile for a Token and of the read profile for a ReadToken, each narrowed with --target.
+// An account outside the profile, which the broker refuses as a target, is an App not installed
+// there, once a release of every account has said which accounts the App's profile holds.
+func TestTokenModeReadsAProfileReleaseForEachAccount(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	calls := stubAgentSecrets(t, []string{"acme", "example-user"}, now.Add(time.Hour))
+	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
+	tokens := New(config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "12345", TokenCommand: deploymentDocTokenCommands(t)[Implement]},
+	}, Options{BaseURL: github.serve(t).URL, Now: func() time.Time { return now }, Stderr: &bytes.Buffer{}})
+	defer tokens.Close()
+
+	if owners, err := tokens.InstalledOwners(context.Background(), Implement); err != nil || !slices.Equal(owners, []string{"acme", "example-user"}) {
+		t.Fatalf("InstalledOwners = %q, %v; want every account of the profile's release", owners, err)
+	}
+	if login, err := tokens.AppLogin(context.Background(), Implement); err != nil || login != "legion-implementer[bot]" {
+		t.Fatalf("AppLogin = %q, %v; want legion-implementer[bot] from the release of every account", login, err)
+	}
+	for _, want := range []struct {
+		read         bool
+		owner, token string
+	}{
+		{false, "Acme", "ghs_acme_legion_implement_app"},
+		{false, "example-user", "ghs_example-user_legion_implement_app"},
+		{true, "acme", "ghs_acme_legion_implement_app_read"},
+		{true, "example-user", "ghs_example-user_legion_implement_app_read"},
+	} {
+		mint := tokens.Token
+		if want.read {
+			mint = tokens.ReadToken
+		}
+		lease, err := mint(context.Background(), Implement, want.owner)
+		if err != nil || lease.Token != want.token || !lease.ExpiresAt.Equal(now.Add(time.Hour)) {
+			t.Errorf("the lease of %s (read %v) = %+v, %v; want the profile's token %s", want.owner, want.read, lease, err, want.token)
+		}
+	}
+	if _, err := tokens.Token(context.Background(), Implement, "stranger"); !errors.Is(err, ErrNotInstalled) {
+		t.Errorf("Token for an account outside the profile = %v, want ErrNotInstalled", err)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const reason = " --reason=legion-daemon-github-app-token "
+	want := []string{
+		"LEGION_IMPLEMENT_APP" + reason + "-- printenv LEGION_IMPLEMENT_APP",
+		"LEGION_IMPLEMENT_APP" + reason + "-- printenv LEGION_IMPLEMENT_APP",
+		"LEGION_IMPLEMENT_APP" + reason + "--target Acme -- printenv LEGION_IMPLEMENT_APP",
+		"LEGION_IMPLEMENT_APP" + reason + "--target example-user -- printenv LEGION_IMPLEMENT_APP",
+		"LEGION_IMPLEMENT_APP_READ" + reason + "--target acme -- printenv LEGION_IMPLEMENT_APP_READ",
+		"LEGION_IMPLEMENT_APP_READ" + reason + "--target example-user -- printenv LEGION_IMPLEMENT_APP_READ",
+		"LEGION_IMPLEMENT_APP" + reason + "--target stranger -- printenv LEGION_IMPLEMENT_APP",
+	}
+	if got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); !slices.Equal(got, want) {
+		t.Errorf("agent-secrets ran\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // A refresh whose release carries another App's token is refused, though the App's identity was
 // read before: the check runs on every release, never from the cache.
 func TestTokenModeRefusesAnotherAppsTokenOnRefresh(t *testing.T) {
@@ -322,7 +425,7 @@ func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	}
 
 	huge := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "yes ghs_secret_value_padding"}}, Options{Now: func() time.Time { return now }})
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancel()
 	_, err = huge.runTokenCommand(ctx, huge.apps.Implement, mintRequest{role: Implement, owner: "acme"})
 	if err == nil || !strings.Contains(err.Error(), "printed more than") || ctx.Err() != nil {
@@ -475,12 +578,52 @@ func TestTheInstallationReadOfARefusedNarrowingIsAnErrorAndNotNotInstalled(t *te
 }
 
 // `agent-secrets` exits 75 while its request still waits for approval: transient, never the
-// configuration's answer.
+// configuration's answer, and a grant that waits (ErrApprovalPending, Pending).
 func TestTokenModeAPendingApprovalIsTransient(t *testing.T) {
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "echo 'still waiting for approval' >&2; exit 75"}}, Options{})
 	var transient *TransientError
-	if _, err := tokens.Token(context.Background(), Implement, "acme"); !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) {
-		t.Fatalf("Token on exit 75 = %v, want a transient error", err)
+	_, err := tokens.Token(context.Background(), Implement, "acme")
+	if !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) || !errors.Is(err, ErrApprovalPending) || !Pending(err) {
+		t.Fatalf("Token on exit 75 = %v, want a transient error that is ErrApprovalPending", err)
+	}
+}
+
+// A human-tier profile's grant is reused, and its waiting request joined, only for the same
+// target, so while the review App's request for one owner waits on a person, the request for a
+// second owner is refused REQUEST_PENDING, `agent-secrets` exiting 1. That refusal is no answer
+// about the App or the owner: it is transient, as exit 75 is, and a grant that waits
+// (ErrApprovalPending). It is not GitHub's trouble, so it holds no other owner's permission read
+// (internal/daemon's reviewAppClient); it is no answer about the installation either, so a gh
+// bundle that needs the second owner fails as it does on GitHub's trouble (credential.go's
+// leaveOutReason) and is minted again at its next refresh. The stand-in answers the first owner's
+// release and refuses the second's as the broker does; any other exit 1 stays the configuration's
+// answer, and so does the refusal's text from a command that exits otherwise, which is no refusal
+// `agent-secrets` made.
+func TestTokenModeAPendingRequestOfAnotherTargetIsTransient(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	command := fmt.Sprintf(`case "$LEGION_GITHUB_OWNER" in
+  alpha) printf '{"installations":{"alpha":{"installation_id":1,"token":"ghs_alpha","expires_at":"%s"}}}' ;;
+  beta) echo "agent-secrets: a request for one or more of these secrets is already pending: request 0123abcd is still pending (REQUEST_PENDING) (answer 0f0f0f0f); asked the broker AGENT_SECRETS_URL names (AWS Secrets Manager)" >&2; exit 1 ;;
+  delta) echo "wrapper: the client said (REQUEST_PENDING) and the wrapper failed" >&2; exit 3 ;;
+  *) echo "agent-secrets: no agent secret has this name (UNKNOWN_SECRET)" >&2; exit 1 ;;
+esac`, now.Add(time.Hour).Format(time.RFC3339))
+	github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890"}
+	tokens := New(config.GitHubApps{Review: config.GitHubApp{AppID: "67890", TokenCommand: command}},
+		Options{BaseURL: github.serve(t).URL, Now: func() time.Time { return now }, Stderr: &bytes.Buffer{}})
+	defer tokens.Close()
+	if lease, err := tokens.Token(context.Background(), Review, "alpha"); err != nil || lease.Token != "ghs_alpha" {
+		t.Fatalf("Token(alpha) = %+v, %v; want the first owner's release", lease, err)
+	}
+	var transient *TransientError
+	_, err := tokens.Token(context.Background(), Review, "beta")
+	if !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "REQUEST_PENDING") || !errors.Is(err, ErrApprovalPending) || !Pending(err) {
+		t.Fatalf("Token(beta) while another target's request waits = %v, want a transient ErrApprovalPending carrying REQUEST_PENDING", err)
+	}
+	if _, err := tokens.Token(context.Background(), Review, "gamma"); err == nil || errors.As(err, &transient) || Pending(err) {
+		t.Fatalf("Token(gamma) refused UNKNOWN_SECRET = %v, want the configuration's answer, not a transient error", err)
+	}
+	if _, err := tokens.Token(context.Background(), Review, "delta"); err == nil || errors.As(err, &transient) || Pending(err) {
+		t.Fatalf("Token(delta), REQUEST_PENDING's text from a command that exited 3 = %v, want the configuration's answer, not a transient error", err)
 	}
 }
 
@@ -541,39 +684,38 @@ func TestTokenModeAnInstalledOwnersCallerPastItsDeadlineIsToldTheCommandIsPendin
 		owners, err := tokens.InstalledOwners(context.Background(), Implement)
 		joined <- answer{owners, err}
 	}()
-	// The second caller joins the run still going before the command may print.
+	// The second caller most often joins the run still going before the command may print; one the
+	// machine holds until the run has ended takes the release the run keeps for it
+	// (finishedRunKeep), which answers the same, so this pause decides no verdict.
 	time.Sleep(50 * time.Millisecond)
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case got := <-joined:
-		if got.err != nil || !slices.Equal(got.owners, []string{"acme"}) {
-			t.Fatalf("the caller that joined the read = %v, %v; want acme, the release of the command still running", got.owners, got.err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the caller that joined the read was never answered")
+	if got := testwait.Receive(t, "the answer of the caller that joined the read", joined); got.err != nil || !slices.Equal(got.owners, []string{"acme"}) {
+		t.Fatalf("the caller that joined the read = %v, %v; want acme, the release of the command still running", got.owners, got.err)
 	}
 	if data, _ := os.ReadFile(runs); strings.Count(string(data), "run") != 1 {
 		t.Fatalf("the command ran %d times, want once", strings.Count(string(data), "run"))
 	}
 }
 
-// A caller whose deadline ended before the command finished, and who comes back only after it
+// A caller whose context ended before the command finished, and who comes back only after it
 // finished, gets the finished run's release; the command does not run again.
 func TestTokenModeACallerAfterTheRunFinishedGetsItsResult(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
-	runs := filepath.Join(t.TempDir(), "runs")
-	command := fmt.Sprintf(`echo run >>%q; sleep 0.5; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
-		runs, now.Add(time.Hour).Format(time.RFC3339))
+	dir := t.TempDir()
+	runs, gate := filepath.Join(dir, "runs"), filepath.Join(dir, "gate")
+	command := fmt.Sprintf(`echo run >>%q; while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
+		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
-	short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	if _, err := tokens.runTokenCommand(short, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.Is(err, ErrCommandPending) {
-		t.Fatalf("a caller past its deadline = %v, want ErrCommandPending", err)
+	if _, err := tokens.runTokenCommand(endedContext(), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.Is(err, ErrCommandPending) {
+		t.Fatalf("a caller whose context ended = %v, want ErrCommandPending", err)
 	}
-	time.Sleep(800 * time.Millisecond)
-	later, cancelLater := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runsEnded(t, tokens)
+	later, cancelLater := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancelLater()
 	got, err := tokens.runTokenCommand(later, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"})
 	if err != nil || got["acme"].token != "ghs_x" {
@@ -593,32 +735,31 @@ func TestTokenModeACallerAfterTheRunFinishedGetsItsResult(t *testing.T) {
 // for once more.
 func TestTokenModeAnInstalledOwnersCallerBackAfterTheRunFinishedGetsItsRelease(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	runs := filepath.Join(t.TempDir(), "runs")
-	command := fmt.Sprintf(`echo run >>%q; sleep 0.5; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
-		runs, now.Add(time.Hour).Format(time.RFC3339))
+	dir := t.TempDir()
+	runs, gate := filepath.Join(dir, "runs"), filepath.Join(dir, "gate")
+	command := fmt.Sprintf(`echo run >>%q; while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
+		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
 	defer tokens.Close()
-	short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	if _, err := tokens.InstalledOwners(short, Implement); !errors.Is(err, ErrCommandPending) {
+	if _, err := tokens.InstalledOwners(endedContext(), Implement); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("InstalledOwners past its deadline = %v, want ErrCommandPending", err)
 	}
-	// The command finishes while no caller waits: the run the first call started ends.
+	// The command finishes while no caller waits: the run the first call started ends once the
+	// gate opens.
 	tokens.mu.Lock()
 	run := tokens.commands[leaseScope(false, Implement, "")]
 	tokens.mu.Unlock()
 	if run == nil {
 		t.Fatal("no token_command run goes on after the caller past its deadline left")
 	}
-	testwait.Eventually(t, "the token_command's run to end", func() bool {
-		select {
-		case <-run.done:
-			return true
-		default:
-			return false
-		}
-	})
-	later, cancelLater := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testwait.Receive(t, "the token_command's run to end", run.done)
+	// The caller comes back under no deadline but the test binary's: a deadline of its own that
+	// passed while a loaded machine held the caller before it asked would meet the run's end in
+	// one select, which may answer either.
+	later, cancelLater := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancelLater()
 	owners, err := tokens.InstalledOwners(later, Implement)
 	if err != nil || !slices.Equal(owners, []string{"acme"}) {
@@ -683,6 +824,129 @@ func TestTokenModeAppLoginReadsTheViewerAndChecksTheAppID(t *testing.T) {
 	var transient *TransientError
 	if _, err := fresh.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
 		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	}
+}
+
+// A login read in token mode that failed after it took its release (GitHub's 502 on the viewer
+// read) reads again under the same release, so the command, each run of which asks the secrets
+// broker for a release that may wait on a person's approval, runs once for it. The release is
+// kept while more than twenty minutes of it are left (refreshWindow), as a lease is served; past
+// that the next read runs the command again.
+func TestTokenModeAppLoginKeepsItsReleaseUntilItReadsTheLogin(t *testing.T) {
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+	github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890", viewerErr: http.StatusBadGateway}
+	var stderr bytes.Buffer
+	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+	defer tokens.Close()
+	viewer := func(status int) {
+		github.mu.Lock()
+		github.viewerErr = status
+		github.mu.Unlock()
+	}
+	var transient *TransientError
+	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	}
+	viewer(0)
+	if login, err := tokens.AppLogin(context.Background(), Review); err != nil || login != "legion-reviewer[bot]" {
+		t.Fatalf("AppLogin after the 502 = %q, %v; want legion-reviewer[bot]", login, err)
+	}
+	if got := broker.runs(t); len(got) != 1 {
+		t.Fatalf("the command ran %d times for a login read GitHub answered 502 and the read after it (%q), want once: the read after the 502 ran the command again", len(got), got)
+	}
+
+	// A new read takes a new release and keeps it: 21 minutes of it left, it is read under again.
+	viewer(http.StatusBadGateway)
+	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	}
+	now = now.Add(39 * time.Minute)
+	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	}
+	if got := broker.runs(t); len(got) != 2 {
+		t.Fatalf("the command ran %d times (%q), want 2: the release kept with 21 minutes left was not read under", len(got), got)
+	}
+	// 19 minutes left: the next read runs the command again.
+	now = now.Add(2 * time.Minute)
+	viewer(0)
+	if login, err := tokens.AppLogin(context.Background(), Review); err != nil || login != "legion-reviewer[bot]" {
+		t.Fatalf("AppLogin with the kept release near its expiry = %q, %v; want legion-reviewer[bot]", login, err)
+	}
+	if got := broker.runs(t); len(got) != 3 {
+		t.Fatalf("the command ran %d times (%q), want 3: a release kept within twenty minutes of its expiry was read under", len(got), got)
+	}
+}
+
+// A token GitHub refuses on the login read in token mode is a refusal, not GitHub's trouble: a
+// viewer read answered 401 or 403, and a token whose App is not the configured app_id, each answer
+// AppLogin with an error that is no TransientError, so the boot stops at once (internal/daemon's
+// appAttempt) rather than wait it out and read under the kept release again (loginRelease).
+func TestTokenModeAppLoginRefusesATokenGitHubRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		viewerErr int
+		role      AppRole
+		want      string
+	}{
+		{"viewer 401", http.StatusUnauthorized, Review, "read the review App's bot login (GraphQL viewer) failed (401)"},
+		{"viewer 403", http.StatusForbidden, Review, "read the review App's bot login (GraphQL viewer) failed (403)"},
+		{"another App's token", 0, Implement, "released a token of App 67890 (legion-reviewer), not of the configured app_id 12345"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+			broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+			github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890", viewerErr: tc.viewerErr}
+			var stderr bytes.Buffer
+			tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+			defer tokens.Close()
+			_, err := tokens.AppLogin(context.Background(), tc.role)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("AppLogin = %v, want the refusal %q", err, tc.want)
+			}
+			var transient *TransientError
+			if errors.As(err, &transient) {
+				t.Errorf("AppLogin = %v, a TransientError: the boot would wait out a token GitHub refused and read under it again, want a refusal that stops the boot", err)
+			}
+		})
+	}
+}
+
+// A refusal under the release AppLogin kept is a refusal too: GitHub answers the first viewer read
+// 502, so AppLogin keeps the release it took (loginRelease), and then refuses the read under that
+// same release (401, 403). The second read uses the kept release, so the command runs once, and
+// its error is no TransientError, so the boot stops at once rather than wait the refused token out
+// across its attempts and read under it again. Found by Tester4958-2: the rows above use a fresh
+// release each, and a refusal made transient only for a kept release passed them all.
+func TestTokenModeAppLoginRefusesATokenGitHubRefusesUnderTheReleaseItKept(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("viewer %d", status), func(t *testing.T) {
+			now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+			broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+			github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890", viewerErr: http.StatusBadGateway}
+			var stderr bytes.Buffer
+			tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+			defer tokens.Close()
+			var transient *TransientError
+			if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+				t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+			}
+			github.mu.Lock()
+			github.viewerErr = status
+			github.mu.Unlock()
+			_, err := tokens.AppLogin(context.Background(), Review)
+			if got := broker.runs(t); len(got) != 1 {
+				t.Fatalf("the command ran %d times (%q), want once: the read after the 502 did not use the release it kept", len(got), got)
+			}
+			want := fmt.Sprintf("read the review App's bot login (GraphQL viewer) failed (%d)", status)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("AppLogin under the kept release = %v, want the refusal %q", err, want)
+			}
+			if errors.As(err, &transient) {
+				t.Errorf("AppLogin under the kept release = %v, a TransientError: the boot would wait out the refused token and read under it again, want a refusal that stops the boot", err)
+			}
+		})
 	}
 }
 
@@ -821,66 +1085,95 @@ func TestTokenModeACommandSeesNoLegionGitHubVariableButTheTwoItIsTold(t *testing
 	}
 }
 
-// A caller waiting on another's mint, which ended only because that caller's deadline did, joins
+// A caller waiting on another's mint, which ended only because that caller's context did, joins
 // the command still running under its own context and gets its lease.
 func TestTokenModeAWaiterOutlivesTheInitiatorsDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
-	gate := filepath.Join(dir, "gate")
-	command := fmt.Sprintf(`while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_waited","expires_at":"%s"}}}'`,
-		gate, now.Add(time.Hour).Format(time.RFC3339))
+	runs, gate := filepath.Join(dir, "runs"), filepath.Join(dir, "gate")
+	command := fmt.Sprintf(`echo run >>%q; while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_waited","expires_at":"%s"}}}'`,
+		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
 	server := github.serve(t)
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: command}},
 		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
-	short, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
+	short, endInitiator := context.WithCancel(context.Background())
+	defer endInitiator()
 	initiator := make(chan error, 1)
 	go func() {
 		_, err := tokens.Token(short, Implement, "acme")
 		initiator <- err
 	}()
-	time.Sleep(100 * time.Millisecond)
+	// The initiator's mint is pending (Manager.lease) once its command runs.
+	testwait.WithinPolling(t, testwait.Remaining(t), testwait.Poll, "the initiator's token_command to start", func() bool {
+		data, _ := os.ReadFile(runs)
+		return strings.Count(string(data), "run") == 1
+	})
+	watched := newWatchedContext()
 	waiter := make(chan Lease, 1)
 	go func() {
-		lease, err := tokens.Token(context.Background(), Implement, "acme")
+		lease, err := tokens.Token(watched, Implement, "acme")
 		if err != nil {
 			t.Errorf("the waiter = %v, want the lease", err)
 		}
 		waiter <- lease
 	}()
-	if err := <-initiator; !errors.Is(err, ErrCommandPending) {
+	// The initiator's context ends once the waiter waits on its mint, as its deadline would.
+	testwait.Receive(t, "the waiter to wait on the initiator's pending mint", watched.watched)
+	endInitiator()
+	if err := testwait.Receive(t, "the initiator's answer once its context ended", initiator); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("the initiator = %v, want ErrCommandPending", err)
 	}
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case lease := <-waiter:
-		if lease.Token != "ghs_waited" {
-			t.Fatalf("the waiter's lease = %+v, want the running command's token", lease)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the waiter never got the lease")
+	if lease := testwait.Receive(t, "the waiter's lease once the command finished", waiter); lease.Token != "ghs_waited" {
+		t.Fatalf("the waiter's lease = %+v, want the running command's token", lease)
+	}
+	// The waiter joined the command still running: a waiter that ran the command again would get
+	// the same token, so the count of runs is what tells the two apart.
+	if data, _ := os.ReadFile(runs); strings.Count(string(data), "run") != 1 {
+		t.Fatalf("the command ran %d times, want once: the waiter ran it again rather than join the run still going", strings.Count(string(data), "run"))
 	}
 }
 
-// Close ends a command still running and waits for it; a later mint is refused.
+// Close ends a command still running and waits for it; a later mint is refused. The command
+// ignores SIGTERM, so it ends only at the SIGKILL Close's stop sends a grace later
+// (procgroup.StopGrace). Its run ends only once the command has exited and been reaped
+// (execTokenCommand's Run), and Close waits for every run (Manager.runs), so the run has ended by
+// the time Close returns. A Close that stopped the command without waiting for it would return a
+// whole grace before that. The row reads the run's end, which Close's wait guarantees, rather than
+// the command's pid, which a quick exit and reap would show gone whether Close waited or not.
 func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "pid")
-	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: fmt.Sprintf(`echo $$ >%q; sleep 600`, pidFile)}}, Options{})
-	short, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	if _, err := tokens.Token(short, Implement, "acme"); !errors.Is(err, ErrCommandPending) {
+	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: fmt.Sprintf(`trap '' TERM; echo $$ >%q; sleep 600`, pidFile)}}, Options{})
+	if _, err := tokens.Token(endedContext(), Implement, "acme"); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("Token = %v, want ErrCommandPending", err)
 	}
-	closed := make(chan struct{})
-	go func() { tokens.Close(); close(closed) }()
-	select {
-	case <-closed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Close did not end the running command")
+	testwait.WithinPolling(t, testwait.Remaining(t), testwait.Poll, "the token_command to run", func() bool {
+		pid, _ := os.ReadFile(pidFile)
+		return strings.TrimSpace(string(pid)) != ""
+	})
+	tokens.mu.Lock()
+	run := tokens.commands[leaseScope(false, Implement, "acme")]
+	tokens.mu.Unlock()
+	if run == nil {
+		t.Fatal("no token_command run goes on after the caller past its deadline left")
+	}
+	// Whether the run had ended is read on Close's own goroutine the moment Close returns.
+	ended := make(chan bool, 1)
+	go func() {
+		tokens.Close()
+		select {
+		case <-run.done:
+			ended <- true
+		default:
+			ended <- false
+		}
+	}()
+	if !testwait.Receive(t, "Close to end the running command", ended) {
+		t.Fatal("Close returned before the command it ended had exited: its run was still going")
 	}
 	if _, err := tokens.Token(context.Background(), Implement, "acme"); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("Token after Close = %v, want a refusal", err)
@@ -888,9 +1181,9 @@ func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 }
 
 // The command is told the owner whose installation token the daemon wants and whether it wants
-// a read-only one, and nothing else: an operator's command maps those onto --github-owner and
-// --github-read-only. It is told no repository, since the token reaches every repository the
-// installation holds (INFRA-2543).
+// a read-only one, and nothing else: an operator's command maps those onto --target and the read
+// profile's name. It is told no repository, since the token reaches every repository the
+// installation holds.
 func TestTokenModeTellsTheCommandTheOwnerAndTheReadOnlyFlag(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))
@@ -923,9 +1216,7 @@ func TestTokenModeTheReadAndWriteScopesOfOneOwnerDoNotShareOneRun(t *testing.T) 
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
 	defer tokens.Close()
 	for _, read := range []bool{true, false, true} {
-		short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		_, err := tokens.runTokenCommand(short, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme", read: read})
-		cancel()
+		_, err := tokens.runTokenCommand(endedContext(), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme", read: read})
 		if !errors.Is(err, ErrCommandPending) {
 			t.Fatalf("the run for read=%v = %v, want ErrCommandPending while it goes on", read, err)
 		}
@@ -933,6 +1224,8 @@ func TestTokenModeTheReadAndWriteScopesOfOneOwnerDoNotShareOneRun(t *testing.T) 
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Every run goes on to its end once the gate opens, so each has written its line by then.
+	runsEnded(t, tokens)
 	tokens.Close()
 	data, _ := os.ReadFile(runs)
 	if ran := strings.Count(string(data), "run"); ran != 2 {

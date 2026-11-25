@@ -76,6 +76,7 @@ func knownMatchedIDs(known *session.KnownSessions, topic string) []string {
 // stream subject captures, a team topic among them, so the record counts exactly the sessions a
 // stored publish reaches.
 func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	team := "notifications.team.deploy-squad"
 	rig.subscribe(t, "ses_registered", []string{team, "notifications.github.sjawhar.legion.pr.1"})
@@ -119,6 +120,7 @@ func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *test
 // would skip, and a `last_seen` minutes before the stop is what a send to the stopped session
 // would then answer.
 func TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	team := "notifications.team.deploy-squad"
 	rig.subscribe(t, "ses_stopping", []string{team})
@@ -153,6 +155,7 @@ func TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen(t *testing.T) {
 // writes the key took, and the heartbeats run through the registration route itself on a clock
 // this test moves.
 func TestAHundredUnchangedHeartbeatsWriteTheRecordAtMostTwice(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	topics := []string{"notifications.team.deploy-squad"}
 	const heartbeats = 100
@@ -190,6 +193,7 @@ func TestAHundredUnchangedHeartbeatsWriteTheRecordAtMostTwice(t *testing.T) {
 // filter to what is left. Neither waits on the other, so the record is right whatever the consumer
 // call did.
 func TestARefollowWritesTheKnownSessionRecord(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	kept, dropped := "notifications.team.deploy-squad", "notifications.team.other-squad"
 	rig.subscribe(t, "ses_refollow", []string{kept, dropped})
@@ -233,6 +237,7 @@ func TestARefollowWritesTheKnownSessionRecord(t *testing.T) {
 // that route is the unsubscribe's other call site, and a record left naming the topics the
 // session no longer follows would keep telling a publish that it gets the message.
 func TestRemovingASessionsInterestsThroughTheAdminRouteEmptiesItsRecord(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	team := "notifications.team.deploy-squad"
 	rig.subscribe(t, "ses_admin_removed", []string{team})
@@ -270,6 +275,7 @@ func TestRemovingASessionsInterestsThroughTheAdminRouteEmptiesItsRecord(t *testi
 // runs on a nil store - answers a registration and a clean stop 200: the routes that write a
 // record carry no check of their own for the store.
 func TestTheRoutesServeAListenerWithNoKnownSessionStore(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	if rig.deps.known != nil {
 		t.Fatal("the deps hold a known-session store, so this test is not the listener without one")
@@ -304,7 +310,7 @@ func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing
 	harness := newListenerDeliveryHarnessOn(t, client)
 	deps := harness.publishDeps(t)
 	deps.known = known
-	recipients, connected := recipientCounts(deps, "notifications.team.deploy-squad", "ses_sender")
+	recipients, connected := recipientCounts(t.Context(), deps, "notifications.team.deploy-squad", "ses_sender")
 	if recipients != nil || connected != nil {
 		t.Errorf("the counts are %v and %v, want both left out while the bucket is not open", recipients, connected)
 	}

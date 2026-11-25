@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -51,7 +52,7 @@ func putPreviousRun(t *testing.T, cfg config.Config, run previousRun) {
 	}
 	records := record.NewStore()
 	now := time.Now().UTC()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		// A slot's index is unique across every project's slots, so this run's take indices above
 		// any the shared database already holds.
 		taken, err := records.Slots(ctx, tx)
@@ -207,6 +208,7 @@ func keysOf(state map[string]json.RawMessage) []string {
 // start is still queued. A slot whose worker has neither is not stranded but repaired, since
 // admission starts that worker's phase again on its first pass (admit's resumeSlottedWorkers).
 func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	key := func(n string) string { return cfg.Project + "-" + n }
 	implementing, reviewing, tested, lingering, lingeringChild, planning := key("1"), key("2"), key("3"), key("4"), key("5"), key("6")
@@ -275,7 +277,7 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 		t.Fatalf("the boot's line = %v, want an error for project %s naming %q to resume, %q as suspended workers, %q to retry and %q needing a workflow start",
 			line, cfg.Project, resume, workers, retry, workflowStart)
 	}
-	// Each entry names its claim's token (contract 222's `strandedClaims.*.token`): two claims of
+	// Each entry names its claim's token (contract 259's `strandedClaims.*.token`): two claims of
 	// one issue can hold one role, so the issue and the role do not name the claim.
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -305,6 +307,7 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 // phase was over or before it began, and the members of a lingering tree, its architect included —
 // reports nothing: no line, and an empty list in the state.
 func TestABootWithOnlyIdleSuspendedClaimsReportsNothing(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	key := func(n string) string { return cfg.Project + "-" + n }
 	root, lingering, lingeringChild := key("1"), key("2"), key("3")
@@ -364,6 +367,7 @@ func awaitStrandedReport(t *testing.T, reported <-chan struct{}) {
 // the same boot-cycle deadlock unfinished relaunches used to cause. Holding `issues` exclusively
 // makes the report's read wait on a real Postgres connection; /healthz must still answer.
 func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, cfg.PostgresDSN)
@@ -374,7 +378,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the store: %v", err)
 	}
-	lock, err := st.Pool().Begin(ctx)
+	lock, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the report lock: %v", err)
 	}
@@ -429,6 +433,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 // worker view says `retired` and the report names it, since only a start of its phase relaunches
 // it and no rule queues one.
 func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
 	retiredIssue := cfg.Project + "-2"
@@ -480,7 +485,7 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 	}
 	view := &source{
 		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap,
-		startedAt: time.Now(), deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+		startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports: func() map[claim.Token]capabilities.Report { return nil },
 	}
 	state, _, err := view.State(ctx, tx)
@@ -505,6 +510,7 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 // turn: that claim is stranded, and the role's own claim, which nothing woke, waits for a delivery
 // as a released claim is meant to.
 func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
 	released := func(c supervise.Claim) supervise.Claim {
@@ -529,7 +535,7 @@ func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The tester's one row takes the keyed agent's claim and its step, or is written where none
-	// stands: the primary key of phases holds the step (20261122062637), so an upsert keyed on it
+	// stands: the primary key of phases holds the step (20261125044726), so an upsert keyed on it
 	// would add a second tester row beside one of no step rather than move that one to the step.
 	if _, err := st.Pool().Exec(ctx, `with moved as (update phases set claim = $2, step_task = 'a', step_place = 2
 		where issue = $1 and role = 'tester' returning 1)
@@ -553,23 +559,23 @@ func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 	}
 	stranded := func() []claim.Token {
 		t.Helper()
-		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-		if err != nil {
-			t.Fatalf("begin the state snapshot: %v", err)
-		}
-		defer tx.Rollback(ctx)
 		view := &source{
 			store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap,
-			startedAt: time.Now(), deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+			startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 			reports: func() map[claim.Token]capabilities.Report { return nil },
 		}
-		state, _, err := view.State(ctx, tx)
-		if err != nil {
-			t.Fatalf("State: %v", err)
-		}
 		var tokens []claim.Token
-		for _, c := range state.StrandedClaims {
-			tokens = append(tokens, c.Token)
+		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			state, _, err := view.State(ctx, tx)
+			if err != nil {
+				return err
+			}
+			for _, c := range state.StrandedClaims {
+				tokens = append(tokens, c.Token)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("State: %v", err)
 		}
 		return tokens
 	}

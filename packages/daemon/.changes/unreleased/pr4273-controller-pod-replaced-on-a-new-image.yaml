@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+    A relaunch that installs a new release's plugins into the project controller's running pod now
+    replaces that pod when it was built on another image, so the release's own `legion launcher`
+    and Oh My Pi run in the controller's pod with no operator step. A controller pod whose other
+    settings alone changed is still kept and the plugins installed into it, and an issue pod keeps
+    its pod at such a relaunch as before.
+time: 2026-11-17T05:04:08Z
+custom:
+    Issue: pr4273

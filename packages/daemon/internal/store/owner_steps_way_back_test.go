@@ -51,7 +51,7 @@ func ownerStepsWayBack(t *testing.T) string {
 // foreign key on issue_plans. A rollback undoes its newest migration first, so a rollback past
 // this release runs that migration's way back before ownerStepsWayBack, as its header and
 // docs/kubernetes.md say: the drop of issue_plans is refused while plan_roles stands.
-const planRolesMigration = "20261117201743_plan_roles.up.sql"
+const planRolesMigration = "20261125114700_plan_roles.up.sql"
 
 // runPlanRolesWayBack runs the way back the header of planRolesMigration carries, its psql block
 // (headerWayBackOf), on store, as an operator runs it before this release's block.
@@ -151,7 +151,7 @@ func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRea
 			{name: "the notice of an owner's stop", newKind: true, payload: record.Notice{Kind: "task-stopped", Role: claim.RoleTester, Phase: phase.Testing,
 				StoppedBy: stopper, Reason: "task a of " + key + " was stopped by its owner"}},
 			{name: "the notice of a stop no step could return from", newKind: true, payload: record.Notice{Kind: "task-stopped", Role: claim.RoleTester,
-				Phase: phase.Testing, Reason: "task a of " + key + " was stopped: step 1 (tester) failed"}},
+				Phase: phase.Testing, Reason: "task a of " + key + " was stopped: step 2 (tester) failed and no earlier step of the type implementation can take the work"}},
 			{name: "the notice of a retro held for the issues beneath", newKind: true, payload: record.Notice{Kind: "retro-held",
 				Role: claim.RoleImplementer, Phase: phase.Retro, Reason: key + " passed its last step"}},
 			{name: "the notice of a plan not taken", newKind: true, payload: record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect,
@@ -287,7 +287,7 @@ func TestTheOwnerStepsWayBackClearsItsProjectsTwoNewHoldReasons(t *testing.T) {
 				project := strings.SplitN(h.key, "-", 2)[0]
 				issue := record.Issue{Key: h.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: h.key, Project: project,
 					Title: h.key, Phase: phase.Held, Hold: &hold, Generation: 1, Status: "testing", Rank: "U"}
-				if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error { return record.NewStore().PutIssue(ctx, tx, issue) }); err != nil {
+				if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().PutIssue(ctx, tx, issue) }); err != nil {
 					t.Fatalf("seed %s: %v", h.key, err)
 				}
 			}

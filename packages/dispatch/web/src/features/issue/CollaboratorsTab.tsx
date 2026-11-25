@@ -27,7 +27,7 @@ import { Timestamp } from "../refs/Timestamp";
  *  order, then every role the deployment defines, by name) and then newest first, then the rest
  *  newest first, and people newest first. */
 export interface CollaboratorSections {
-  /** Legion agents by role: the six in workflow order (`LEGION_ROLES`), then each role the
+  /** Legion agents by role: the six in the order of the default steps (`LEGION_ROLES`), then each role the
    *  deployment defines by name, each role's newest first. */
   readonly legion: readonly {
     readonly role: LegionStepRole;

@@ -22,7 +22,9 @@ import (
 // by the route, the field and the contract, unless requests.go's AcceptedByName declares the
 // field. At this daemon's own contract the record of each route equals the type's field paths
 // less the fields AcceptedByName declares for it, so a field the type reads that neither the
-// record holds nor a row declares fails there too.
+// record holds nor a row declares fails there too. A record of a route that this daemon reads no
+// body at fails the same test, unless requests.go's RemovedRoutes declares the route removed at
+// a contract above the record's.
 //
 // A field path is written as a key path of an answer is (keyPathRule): the dotted path from the
 // body's root, with a map's key and a list's index written as `*`.
@@ -68,10 +70,11 @@ var pluginRequests = map[string]reflect.Type{
 	"POST /legion/v1/signoff":                 reflect.TypeFor[SignOffRequest](),
 	"POST /legion/v1/steps/complete":          reflect.TypeFor[CompleteStepRequest](),
 	"POST /legion/v1/roots/close":             reflect.TypeFor[RootCloseRequest](),
-	"POST /legion/v1/children/park":           reflect.TypeFor[ChildRequest](),
 	"POST /legion/v1/children/rerun":          reflect.TypeFor[ChildRequest](),
 	"POST /legion/v1/project/pause":           reflect.TypeFor[ProjectPauseRequest](),
 	"POST /legion/v1/project/resume":          reflect.TypeFor[ProjectResumeRequest](),
+	"POST /legion/v1/intake/replay":           reflect.TypeFor[IntakeReplayRequest](),
+	"POST /legion/v1/intake/discard":          reflect.TypeFor[IntakeDiscardRequest](),
 }
 
 // sameBuild is why a route whose body the `legion` command sends needs no record: the command is
@@ -90,6 +93,8 @@ var routesWithNoPluginBody = map[string]string{
 	"POST /legion/v1/operator/claims/{token}/forget-session": sameBuild + " (`legion claims forget-session`)",
 	"POST /legion/v1/operator/project/pause":                 sameBuild + " (`legion project pause`)",
 	"POST /legion/v1/operator/project/resume":                sameBuild + " (`legion project resume`)",
+	"POST /legion/v1/operator/intake/replay":                 sameBuild + " (`legion intake replay`)",
+	"POST /legion/v1/operator/intake/discard":                sameBuild + " (`legion intake discard`)",
 }
 
 // routesReadingNoBody is every POST route the server registers that decodes no body at all, so
@@ -102,6 +107,8 @@ var routesReadingNoBody = map[string]bool{
 	"POST /legion/v1/operator/claims/{token}/compact":       true,
 	"POST /legion/v1/operator/claims/{token}/release-names": true,
 	"POST /legion/v1/operator/claims/{token}/close":         true,
+	// The route park_child called, which answers every call with its refusal (RemovedRoutes).
+	"POST /legion/v1/children/park": true,
 }
 
 // requestFieldPaths is every field path typ declares, read from its json tags as an answer's key
@@ -209,20 +216,29 @@ func updatedRequestShapes(onFile, fresh []requestShape) []requestShape {
 //     `-update` writes (requestShapesAt), the type's field paths less the declared ones, and a
 //     run without the flag holds it to exactly that, as the answers' records are held to what
 //     the daemon serves;
-//   - a recorded route that no row of pluginRequests reads;
+//   - a recorded route that no row of pluginRequests reads, unless a row of removed declares the
+//     route removed at a contract above the record's;
 //   - a row of declared whose field the route's request type does not read by name, so the body
 //     the row is written for is refused as an unknown member;
 //   - a row of declared whose route is no route of pluginRequests, or whose LeftAt is not a
 //     contract above the floor and at or below current, or which says nothing of what ignoring
-//     the field means.
-func requestShapeProblems(onFile []requestShape, walked map[string][]string, declared []AcceptedField, current int) []string {
+//     the field means;
+//   - a route of removed whose contract is not one above the floor and at or below current.
+func requestShapeProblems(onFile []requestShape, walked map[string][]string, declared []AcceptedField, removed map[string]int, current int) []string {
 	problems := []string{}
 	for _, record := range onFile {
 		read, routed := walked[record.Route]
 		if !routed {
-			problems = append(problems, fmt.Sprintf(
-				"contract %d sends a body to %s, and no route of this daemon reads one there: a plugin of that contract is answered \"no route\"",
-				record.Contract, record.Route))
+			switch leftAt, isRemoved := removed[record.Route]; {
+			case !isRemoved:
+				problems = append(problems, fmt.Sprintf(
+					"contract %d sends a body to %s, and no route of this daemon reads one there: a plugin of that contract is answered \"no route\"",
+					record.Contract, record.Route))
+			case leftAt <= record.Contract:
+				problems = append(problems, fmt.Sprintf(
+					"contract %d sends a body to %s, and requests.go's RemovedRoutes says the route left at %d, at or below that contract: correct its contract",
+					record.Contract, record.Route, leftAt))
+			}
 			continue
 		}
 		for _, field := range record.FieldPaths {
@@ -274,6 +290,13 @@ func requestShapeProblems(onFile []requestShape, walked map[string][]string, dec
 				"%s: requests.go's AcceptedByName declares `%s` and does not say what ignoring it means", row.Route, row.Field))
 		}
 	}
+	for _, route := range slices.Sorted(maps.Keys(removed)) {
+		if leftAt := removed[route]; leftAt <= ServingFloor || leftAt > current {
+			problems = append(problems, fmt.Sprintf(
+				"requests.go's RemovedRoutes says %s left at %d, which is no contract above the floor %d and at or below this daemon's %d",
+				route, leftAt, ServingFloor, current))
+		}
+	}
 	return problems
 }
 
@@ -306,7 +329,7 @@ func TestEveryRecordedRequestFieldIsReadByName(t *testing.T) {
 	if !written {
 		t.Fatalf("%s is not written yet: run `go test ./internal/api/ -update` once to write it", requestShapesFixture)
 	}
-	for _, problem := range requestShapeProblems(onFile, walkedRequests(t), AcceptedByName, DaemonAPIVersion) {
+	for _, problem := range requestShapeProblems(onFile, walkedRequests(t), AcceptedByName, RemovedRoutes, DaemonAPIVersion) {
 		t.Error(problem)
 	}
 	routes := map[string]bool{}
@@ -356,7 +379,7 @@ func TestTheRequestGateCatchesARemovedField(t *testing.T) {
 		if !slices.Contains(holding, DaemonAPIVersion) {
 			t.Fatalf("the record of contract %d in %s holds no `%s` at %s; removing it proves nothing", DaemonAPIVersion, requestShapesFixture, field, route)
 		}
-		problems := requestShapeProblems(onFile, without, AcceptedByName, next)
+		problems := requestShapeProblems(onFile, without, AcceptedByName, RemovedRoutes, next)
 		if len(problems) != len(holding) {
 			t.Fatalf("the gate reported %d problems, want one naming the field for each recorded contract whose request holds it, %v:\n%s",
 				len(problems), holding, strings.Join(problems, "\n"))
@@ -378,7 +401,7 @@ func TestTheRequestGateCatchesARemovedField(t *testing.T) {
 
 	t.Run("a field leaves the contract and the type reads it by name with a declaration", func(t *testing.T) {
 		declared := append(slices.Clone(AcceptedByName), AcceptedField{Route: route, Field: field, LeftAt: next, Ignoring: "a scratch row"})
-		if problems := requestShapeProblems(onFile, walked, declared, next); len(problems) != 0 {
+		if problems := requestShapeProblems(onFile, walked, declared, RemovedRoutes, next); len(problems) != 0 {
 			t.Errorf("the gate reported problems for a declared field the type still reads:\n%s", strings.Join(problems, "\n"))
 		}
 		for _, record := range requestShapesAt(walked, declared, next) {
@@ -390,7 +413,7 @@ func TestTheRequestGateCatchesARemovedField(t *testing.T) {
 
 	t.Run("a declared field the type does not read by name", func(t *testing.T) {
 		declared := append(slices.Clone(AcceptedByName), AcceptedField{Route: route, Field: field, LeftAt: next, Ignoring: "a scratch row"})
-		problems := requestShapeProblems(onFile, without, declared, next)
+		problems := requestShapeProblems(onFile, without, declared, RemovedRoutes, next)
 		if len(problems) != 1 || !strings.Contains(problems[0], "does not read it by name") {
 			t.Fatalf("the gate reported %q, want the one problem saying the type does not read `%s` by name", problems, field)
 		}
@@ -432,7 +455,7 @@ func TestTheRequestGateCatchesAReadFieldItsRecordDoesNotHold(t *testing.T) {
 			t.Fatalf("requests.go's AcceptedByName declares no `%s` on %s; deleting the row proves nothing", field, route)
 		}
 		declared := slices.DeleteFunc(slices.Clone(AcceptedByName), func(row AcceptedField) bool { return row.Route == route && row.Field == field })
-		wantNamed(t, requestShapeProblems(onFile, walked, declared, DaemonAPIVersion), route, field)
+		wantNamed(t, requestShapeProblems(onFile, walked, declared, RemovedRoutes, DaemonAPIVersion), route, field)
 	})
 
 	t.Run("a field of this contract the record does not hold yet", func(t *testing.T) {
@@ -442,7 +465,86 @@ func TestTheRequestGateCatchesAReadFieldItsRecordDoesNotHold(t *testing.T) {
 		}
 		with := maps.Clone(walked)
 		with[route] = slices.Sorted(slices.Values(append(slices.Clone(walked[route]), field)))
-		wantNamed(t, requestShapeProblems(onFile, with, AcceptedByName, DaemonAPIVersion), route, field)
+		wantNamed(t, requestShapeProblems(onFile, with, AcceptedByName, RemovedRoutes, DaemonAPIVersion), route, field)
+	})
+}
+
+// What the request gate catches of a removed route, shown by scratch copies of RemovedRoutes. The
+// park route is the route that table names: records on file hold its body, and no row of
+// pluginRequests reads one there. Without its entry, each such record is a plugin answered "no
+// route"; an entry whose contract is at or below a recorded contract is wrong for that record;
+// and an entry whose contract is above this daemon's own would let this daemon's own record carry
+// the route.
+func TestTheRequestGateCatchesARemovedRouteItDoesNotDeclare(t *testing.T) {
+	if *updateGolden {
+		t.Skip("the fixture is being rewritten; run the suite again without -update")
+	}
+	onFile, written := readRequestShapes(t)
+	if !written {
+		t.Fatalf("%s is not written yet: run `go test ./internal/api/ -update` once to write it", requestShapesFixture)
+	}
+	const route = "POST /legion/v1/children/park"
+	if _, isRemoved := RemovedRoutes[route]; !isRemoved {
+		t.Fatalf("requests.go's RemovedRoutes declares no %s; deleting its entry proves nothing", route)
+	}
+	var holding []int
+	for _, record := range onFile {
+		if record.Route == route {
+			holding = append(holding, record.Contract)
+		}
+	}
+	if len(holding) == 0 {
+		t.Fatalf("%s holds no record of %s; removing its entry proves nothing", requestShapesFixture, route)
+	}
+	walked := walkedRequests(t)
+
+	t.Run("the removal is not declared", func(t *testing.T) {
+		removed := maps.Clone(RemovedRoutes)
+		delete(removed, route)
+		problems := requestShapeProblems(onFile, walked, AcceptedByName, removed, DaemonAPIVersion)
+		if len(problems) != len(holding) {
+			t.Fatalf("the gate reported %d problems, want one for each recorded contract that sends %s a body, %v:\n%s",
+				len(problems), route, holding, strings.Join(problems, "\n"))
+		}
+		// The gate reads the records in the order of the file, and so does holding.
+		for i, contract := range holding {
+			t.Logf("the gate reported: %s", problems[i])
+			for _, want := range []string{route, fmt.Sprintf("contract %d", contract), `"no route"`} {
+				if !strings.Contains(problems[i], want) {
+					t.Errorf("the problem reads %q, want it to name %s", problems[i], want)
+				}
+			}
+		}
+	})
+
+	t.Run("the entry says the route left at a recorded contract", func(t *testing.T) {
+		last := holding[len(holding)-1]
+		removed := map[string]int{route: last}
+		problems := requestShapeProblems(onFile, walked, AcceptedByName, removed, DaemonAPIVersion)
+		if len(problems) != 1 {
+			t.Fatalf("the gate reported %d problems, want the one naming the record of contract %d:\n%s", len(problems), last, strings.Join(problems, "\n"))
+		}
+		t.Logf("the gate reported: %s", problems[0])
+		for _, want := range []string{route, fmt.Sprintf("contract %d", last), fmt.Sprintf("left at %d", last), "correct its contract"} {
+			if !strings.Contains(problems[0], want) {
+				t.Errorf("the problem reads %q, want it to name %s", problems[0], want)
+			}
+		}
+	})
+
+	t.Run("the entry names a contract above this daemon's own", func(t *testing.T) {
+		above := DaemonAPIVersion + 1
+		removed := map[string]int{route: above}
+		problems := requestShapeProblems(onFile, walked, AcceptedByName, removed, DaemonAPIVersion)
+		if len(problems) != 1 {
+			t.Fatalf("the gate reported %d problems, want the one naming the entry's contract %d:\n%s", len(problems), above, strings.Join(problems, "\n"))
+		}
+		t.Logf("the gate reported: %s", problems[0])
+		for _, want := range []string{route, fmt.Sprintf("left at %d", above), "no contract above the floor"} {
+			if !strings.Contains(problems[0], want) {
+				t.Errorf("the problem reads %q, want it to name %s", problems[0], want)
+			}
+		}
 	})
 }
 
@@ -474,6 +576,13 @@ func TestEveryPostRouteIsARequestRowOrSaysWhyNot(t *testing.T) {
 		slices.Collect(maps.Keys(routesReadingNoBody))) {
 		if !registered[route] {
 			t.Errorf("%s is no route NewServer registers", route)
+		}
+	}
+	// A removed route answers every call with its refusal and reads no body, so no body an older
+	// plugin sends it is refused as an unknown member.
+	for route := range RemovedRoutes {
+		if !routesReadingNoBody[route] {
+			t.Errorf("requests.go's RemovedRoutes declares %s removed, and routesReadingNoBody does not hold it: a removed route reads no body", route)
 		}
 	}
 }

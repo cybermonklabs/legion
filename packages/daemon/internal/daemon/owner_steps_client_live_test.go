@@ -217,12 +217,11 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	// claim's recorded contract is set to the release before's while no daemon runs, as that release
 	// left it, and within that one turn its client, of that release's tree, reads this daemon's
 	// answers. The daemon serves each client the shape of the contract its request states
-	// (api's shapeAnswer and valueStrips). register_plan, stop_task and the two new hold reasons
-	// arrived at api.OwnerPlanContract: a release below it has neither route and reads an issue's
+	// (api's shapeAnswer and valueStrips): a release below api.OwnerPlanContract reads an issue's
 	// holdReason with the one value `escalated`, so its read of the issue held task-stopped must
-	// parse in its own schema and carry no hold reason that arrived there (heldOlder). A release at
-	// or above it, which main's first-parent line holds once that contract has landed there, has
-	// both routes and knows both reasons.
+	// parse in its own schema and carry no hold reason that arrived at api.OwnerPlanContract
+	// (heldOlder). A release at or above it, as main is once the owner's plan has landed there and
+	// this checkout's contract is higher still, knows those reasons and must still parse the read.
 	l.check("older-client-reads", func() {
 		l.on(older)
 		l.givePlan(clientPlan...)
@@ -242,11 +241,11 @@ func TestOwnerStepsClientLive(t *testing.T) {
 			t.Fatalf("the older client's state read of %s, which stands on plan rows in testing, %s", older, state)
 		}
 		l.note("contract %d client's methods: %v", l.oldContract, state.Methods)
-		hasPlanRoutes := l.oldContract >= api.OwnerPlanContract
+		// planRegister and taskStop arrived at api.OwnerPlanContract: the client of a release below
+		// it has neither, and the client of a release at or above it has both.
 		for _, route := range []string{"planRegister", "taskStop"} {
-			if got := slices.Contains(state.Methods, route); got != hasPlanRoutes {
-				t.Fatalf("the contract %d client has %s: %t, want %t: register_plan and stop_task arrived at contract %d",
-					l.oldContract, route, got, hasPlanRoutes, api.OwnerPlanContract)
+			if has, want := slices.Contains(state.Methods, route), l.oldContract >= api.OwnerPlanContract; has != want {
+				t.Fatalf("the contract %d client has %s: %t, want %t, since the route arrived at contract %d", l.oldContract, route, has, want, api.OwnerPlanContract)
 			}
 		}
 		l.note("contract %d client state(): %s", l.oldContract, state)

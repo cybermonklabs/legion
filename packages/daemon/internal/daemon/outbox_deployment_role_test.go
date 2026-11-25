@@ -20,6 +20,7 @@ import (
 // before its new tree starts (stopElsewhere), and a tmux workspace removal waits for the tree's
 // close to retire the checker's claim before it removes the workspace (removeWorkspace).
 func TestTheOldTreeAndTheWorkspaceTakeADeploymentRolesClaim(t *testing.T) {
+	t.Parallel()
 	t.Run("a carried child's old tree", func(t *testing.T) {
 		ctx := context.Background()
 		pool := isolatedOutboxPool(t)

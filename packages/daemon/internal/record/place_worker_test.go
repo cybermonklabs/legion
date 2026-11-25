@@ -24,7 +24,7 @@ func planSteps(t *testing.T, steps string, types ...plan.Type) []PlanStep {
 	for i, step := range parsed {
 		rows[i] = PlanStep{Task: "a", Position: i + 1, Role: step.Role, AgentKey: step.Key, Type: types[i]}
 	}
-	return NameAgents(nil, nil, rows)
+	return NameAgents(nil, nil, nil, rows)
 }
 
 // The one rule of who works a place of a task. At a step it is the step's own role and agent. The

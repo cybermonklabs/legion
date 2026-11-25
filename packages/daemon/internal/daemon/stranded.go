@@ -56,7 +56,7 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 	}
 	wakes := make([]workflow.ReleasedWake, 0, len(resumes))
 	for _, resume := range resumes {
-		wakes = append(wakes, workflow.ReleasedWake{Issue: resume.Issue, Claim: claim.Token(resume.Claim),
+		wakes = append(wakes, workflow.ReleasedWake{Claim: claim.Token(resume.Claim),
 			ClockAt: resume.ClockAt, Stuck: resume.Stuck})
 	}
 	return wakes, nil
@@ -65,8 +65,8 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 // reportStranded logs, once the boot has re-adopted every claim and replayed the failed ones to
 // the workflow, the claims nothing will wake (workflow.Stranded), read from records as the state
 // route reads them: one error line, however many there are, naming each claim by its name
-// (api.StrandedClaim.Name: `<issue> <role>`, with the token beside them for an agent named for
-// another role, so two claims of one role on one issue read apart)
+// (api.ClaimName: `<issue> <role>`, with the token beside them for an agent not named
+// for its role, so two claims of one issue that hold one role read apart)
 // under the move that brings it back, keyed by that move's value (api.StrandedClaim.Move, the one
 // statement of which move each claim takes, which `legion state` groups by too). A fleet a restart
 // did not bring back otherwise looks healthy — its controller registers, the state shows its trees
@@ -79,7 +79,7 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 // the daemon's one clock, which the wakes' stuck clocks are judged against.
 func reportStranded(ctx context.Context, st *store.Store, records record.Store, project, projectToken string, steps []record.DesignStep, clock func() time.Time, log *slog.Logger) {
 	var stranded []supervise.Claim
-	if err := pgx.BeginTxFunc(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		claims, err := st.ClaimsTx(ctx, tx)
 		if err != nil {
 			return err

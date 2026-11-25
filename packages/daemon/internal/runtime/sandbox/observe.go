@@ -223,8 +223,9 @@ func displaced(v view, loc runtime.Locator, obs observation) bool {
 
 // verdict is the observation mapping for one recorded role process, from the stores' view of its
 // Sandbox and pod. The process's slot is its claim's agent (claim.Token.Slot, which reads no role
-// off the token), served by the pod's launcher of the role of that name (launcherOf); its container
-// is its pod's one container, `roles` in an issue pod, whose launcher runs every role of the issue,
+// off the token), served by the pod's launcher of that name (launcherOf), a role's or a plan
+// agent's such as `implementer-2`; its container is its pod's one container, `roles` in an issue
+// pod, whose launcher runs every slot of the issue,
 // and `controller` in the controller's. Pod loss applies to every role in
 // the pod, and so does the one container's end: a launcher that exits takes every role's process
 // with it. A live pod is judged through that role's own launcher state: Ready changes during the

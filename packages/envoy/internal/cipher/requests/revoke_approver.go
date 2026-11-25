@@ -8,11 +8,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 )
@@ -20,26 +22,41 @@ import (
 // RevokeByApprover ends a grant on a person's login: the grant's approver, the person the
 // enrollment that holds it acts for (its operator, operatorOf), or anyone at all for a grant whose
 // approver is record.AnyoneApprover (mayRevoke). A login the grant names, its approver or its
-// operator, ends it whatever Dispatch answers; any other login must be a person the person rule
-// shows the grant to (hideUnseenGrant). A login the
+// operator, ends it whatever Dispatch answers of the grant's projects; any other login must be a
+// person the person rule shows the grant to (hideUnseenGrant). A login the
 // rule hides the grant from is refused pgx.ErrNoRows, the refusal of a grant id no grant has, and
 // a grant Dispatch could not answer for ErrProjectAccessUnavailable, each before the transaction
-// and with nothing written. actor is what every row it writes records as having done it,
-// which the caller proved: "human:<login>" for a revoke Dispatch relays from its signed-in person,
+// and with nothing written. A person Dispatch calls a restricted member is no approver of a
+// secret (restricted_approver.go), and ends a grant only as its operator: a login the grant admits
+// only as an approver, by its own login, record.AnyoneApprover or a group, is asked its member kind
+// after the rule and before the transaction (revokeApproves), and refused ErrNotApprover, in words
+// that say why, when Dispatch calls it a restricted member. While Dispatch does not answer, only
+// the person the grant names as its approver ends it as an approver, since a revoke only takes
+// access away, and one held up by an outage would hold up whoever is ending a grant to stop a leak
+// (RevokeUncheckedMessage). Every revoke through record.AnyoneApprover or a group then, whatever
+// session holds the grant, and every other failure to read the kind, refuses it
+// *projectaccess.MemberKindUncheckable, with nothing written, as it refuses every other read of a
+// person's member kind. A grant on a person's session can still be ended by that person, its
+// operator, who asks Dispatch nothing (namedOnGrant); a grant on a session that acts for no person
+// (a service's pod, a person's pod BROKER_POD_OPERATORS no longer maps, or a machine's own
+// session: operatorOf) is ended through the broker by nobody but its named approver until Dispatch
+// answers. The operator's revoke asks nothing. actor is
+// what every row it writes records as having done it, which the caller proved: "human:<login>" for
+// a revoke Dispatch relays from its signed-in person,
 // "launcher:<credential id>" for one the operator's own machine login makes. When the operator
 // revokes, every name the grant's request got automatically is withheld from the grant's session
-// from then on, and every other live grant of the session that got one of those names
-// automatically ends with it (withhold), so the session asks before it gets the name again
-// (Create). The withhold belongs to the session rather than the grant, so the operator's revoke of
-// a grant already revoked (by its session, or by an earlier withhold, after the operator's Live
-// grants list was loaded) withholds the same names, recorded as a grant.withheld audit row rather
-// than a second grant.revoked. Another person's revoke (an approver's of the grant) ends the grant
-// alone and withholds nothing: the session is not theirs. It locks the session's row before it
-// reads or writes the grant: the order every writer that locks both takes them in, and the one
-// lock Create and ApplyDecision read the withheld names under, so a request deciding on the
-// session as this runs either is written first, and then ended here if it got a withheld name, or
-// decides with the name withheld. A revoke that ends nothing and withholds nothing new succeeds
-// and changes nothing.
+// from then on, and every other live grant of the session that got automatically a name served
+// from the source of one of those names ends with it (withhold), so the session asks before it
+// gets any of them again (Create). The withhold belongs to the session rather than the grant, so
+// the operator's revoke of a grant already revoked (by its session, or by an earlier withhold,
+// after the operator's Live grants list was loaded) withholds the same names, recorded as a
+// grant.withheld audit row rather than a second grant.revoked. Another person's revoke (an
+// approver's of the grant) ends the grant alone and withholds nothing: the session is not theirs.
+// It locks the session's row before it reads or writes the grant: the order every writer that
+// locks both takes them in, and the one lock Create and ApplyDecision read the withheld names
+// under, so a request deciding on the session as this runs either is written first, and then
+// ended here if it got a withheld name, or decides with the name withheld. A revoke that ends
+// nothing and withholds nothing new succeeds and changes nothing.
 // The enrollment it reads the operator off is the enrollment the grants row names now, so an
 // approver's revoke reaches a grant that moved. An operator's withhold writes against that
 // enrollment and every other live or dormant enrollment of the grant's session (revokeJudged), so
@@ -60,10 +77,14 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 		if err != nil {
 			return err
 		}
+		standing, err := m.revokeApproves(ctx, login, judged)
+		if err != nil {
+			return err
+		}
 		if m.testRevokeHook != nil {
 			m.testRevokeHook()
 		}
-		err = m.revokeJudged(ctx, grantID, login, actor, judged)
+		err = m.revokeJudged(ctx, grantID, login, actor, judged, standing)
 		if !errors.Is(err, errGrantMovedSinceJudged) {
 			return err
 		}
@@ -90,7 +111,8 @@ var ErrGrantMoving = errors.New("the grant kept moving to another box while the 
 // a session's process restarts, so a second attempt finds the grant still; a third is margin.
 const revokeJudgeAttempts = 3
 
-// revokeJudged is RevokeByApprover's transaction, for the grant as the person rule judged it. It
+// revokeJudged is RevokeByApprover's transaction, for the grant as the person rule judged it, and
+// standing is whether login may end it as an approver (revokeApproves, mayRevoke). It
 // locks the enrollment the rule judged first, with every other live or dormant enrollment of its
 // session (lockSessionEnrollments), in a statement of its own, and reads the grant in a later one.
 // Every writer that moves a grant off an enrollment locks that enrollment's row before it moves
@@ -117,7 +139,7 @@ const revokeJudgeAttempts = 3
 // is among the locked ones, or is adopted after this commits, and takes the names off the boxes
 // this wrote them on, since a withheld name makes a box a predecessor whatever state it is in
 // (adopt's withheld clause).
-func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string, judged grantJudged) error {
+func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string, judged grantJudged, standing approverStanding) error {
 	tx, err := m.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
@@ -140,8 +162,11 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	// BROKER_POD_OPERATORS no longer maps acts for no person, so its former person is not its
 	// operator here either, and ends its grant only as its approver or as anyone may, withholding
 	// nothing from the pod.
-	allowed, asOperator := mayRevoke(login, approver, m.operatorOf(holder))
-	if !allowed {
+	allowed, asOperator := mayRevoke(login, approver, m.operatorOf(holder), m.Groups, standing.approves)
+	switch {
+	case !allowed && standing.restricted:
+		return errRestrictedRevoker
+	case !allowed:
 		return ErrNotApprover
 	}
 	tag, err := tx.Exec(ctx, `update grants set revoked_at=now(), revoked_by=$2 where id=$1 and revoked_at is null`, grantID, actor)
@@ -152,7 +177,7 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	detail := auditDetail{}
 	var withheld sessionWithhold
 	if asOperator {
-		if withheld, err = withholdOnSession(ctx, tx, boxes, requestID, actor); err != nil {
+		if withheld, err = withholdOnSession(ctx, tx, m.Policy.Get(), boxes, requestID, actor); err != nil {
 			return err
 		}
 		if len(withheld.names) > 0 {
@@ -272,11 +297,12 @@ type endedOn struct {
 }
 
 // withholdOnSession withholds the names request requestID got automatically on each of boxes,
-// the grant's holder first, as lockSessionEnrollments answers them locked: withhold on each.
-func withholdOnSession(ctx context.Context, tx pgx.Tx, boxes []enrollmentRow, requestID, actor string) (sessionWithhold, error) {
+// the grant's holder first, as lockSessionEnrollments answers them locked: withhold on each, with
+// set, the live policy, deciding which names share a source.
+func withholdOnSession(ctx context.Context, tx pgx.Tx, set *policy.Set, boxes []enrollmentRow, requestID, actor string) (sessionWithhold, error) {
 	var w sessionWithhold
 	for i, enr := range boxes {
-		names, ended, err := withhold(ctx, tx, enr.ID, requestID, actor)
+		names, ended, err := withhold(ctx, tx, set, enr.ID, requestID, actor)
 		if err != nil {
 			return sessionWithhold{}, err
 		}
@@ -294,43 +320,77 @@ func withholdOnSession(ctx context.Context, tx pgx.Tx, boxes []enrollmentRow, re
 }
 
 // withhold withholds from enrollmentID every name request requestID, whose grant its operator just
-// revoked, got automatically, and in the same statement ends every other live grant of the session
-// whose request got one of the names it newly withholds automatically, each with a grant.revoked
-// audit row by actor naming those of its names under "withheld". So no grant the session holds
-// goes on releasing a withheld name without someone having approved it there. A name already
-// withheld ends nothing: its first withhold ended every grant that got it without asking, and a
-// grant whose request got it automatically since then was approved by someone the withheld name
-// let approve it (currentPolicyAdmits), which stands. It answers the names it had not withheld
-// before, and the grant.revoked audit row it wrote for each grant it ended, so RevokeByApprover
-// logs one grant-log line per row once the transaction has committed.
+// revoked, got automatically and set did not already withhold from that enrollment, and ends every
+// other live grant of the enrollment whose request got automatically a name those newly withheld
+// names withhold (policy.Set.Withholds, which decides by source), each with a grant.revoked audit
+// row by actor naming those of its names under "withheld". So a revoke of a read profile's grant
+// ends the session's automatic grants of the profile's write sibling and of its source's own
+// name, as a revoke of the source's own name ends those of each of its profiles, and no grant the
+// session holds goes on releasing a name withheld from it without someone having approved it
+// there. Which names share a source is set's, the live policy's, the one reading every reader of
+// what is withheld decides by. A name set already withholds, by itself or by another name of its
+// source, is not written and ends nothing: the first withhold of that source ended every grant
+// that got one of its names without asking, and a grant whose request got one automatically
+// since then was approved by someone the withheld name let approve it (currentPolicyAdmits),
+// which stands. It answers the names it newly withheld, and the grant.revoked audit row it wrote
+// for each grant it ended, so RevokeByApprover logs one grant-log line per row once the
+// transaction has committed.
+// It reads before it writes, in two statements of tx. RevokeByApprover holds every enrollment of
+// the session locked from its first statement on, and Create and ApplyDecision take the
+// enrollment's row for share before they write a grant on it (lockLiveEnrollment), so no grant
+// reaches it between the two.
 // Everything it writes and everything it ends is keyed by enrollmentID, one enrollment of the
 // session RevokeByApprover holds locked: the one the grant hangs off now, or another live or
 // dormant enrollment of the session, which is where the session runs once it left a box that held
 // nothing, or a box whose grants the session's next adoption carries to where it runs.
-func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor string) ([]string, []endedGrant, error) {
+func withhold(ctx context.Context, tx pgx.Tx, set *policy.Set, enrollmentID, requestID, actor string) ([]string, []endedGrant, error) {
+	var asked, before, held []string
+	if err := tx.QueryRow(ctx, `select
+			array(select name from request_secrets where request_id=$2 and decision=$3),
+			array(select name from withheld_secrets where enrollment_id=$1),
+			array(select distinct a.name from grants g join request_secrets a on a.request_id=g.request_id and a.decision=$3
+				where g.enrollment_id=$1 and g.revoked_at is null and `+grantUnexpired("g")+`)`,
+		enrollmentID, requestID, policy.Automatic).Scan(&asked, &before, &held); err != nil {
+		return nil, nil, err
+	}
+	already := policy.Requester{Withheld: before}
+	var fresh []string
+	for _, name := range asked {
+		if !set.Withholds(already, name) {
+			fresh = append(fresh, name)
+		}
+	}
+	if len(fresh) == 0 {
+		return nil, nil, nil
+	}
+	newly := policy.Requester{Withheld: fresh}
+	var covered []string
+	for _, name := range held {
+		if set.Withholds(newly, name) {
+			covered = append(covered, name)
+		}
+	}
 	var names []string
 	var ended []endedGrant
-	err := tx.QueryRow(ctx, `with names as (
-			select name from request_secrets where request_id=$2 and decision=$4
-		), withheld as (
-			insert into withheld_secrets (enrollment_id, name) select $1, name from names
+	err := tx.QueryRow(ctx, `with withheld as (
+			insert into withheld_secrets (enrollment_id, name) select $1, unnest($4::text[])
 			on conflict do nothing
 			returning name
 		), ended as (
-			update grants g set revoked_at=now(), revoked_by=$3
+			update grants g set revoked_at=now(), revoked_by=$2
 			where g.enrollment_id=$1 and g.revoked_at is null and `+grantUnexpired("g")+`
-			and exists (select 1 from request_secrets a where a.request_id=g.request_id and a.decision=$4 and a.name in (select name from withheld))
+			and exists (select 1 from request_secrets a where a.request_id=g.request_id and a.decision=$3 and a.name=any($5::text[]))
 			returning g.id, g.request_id
 		), audited as (
 			insert into audit (kind, enrollment_id, request_id, grant_id, actor, detail)
-			select 'grant.revoked', $1, e.request_id, e.id, $3, jsonb_build_object('withheld', (select jsonb_agg(a.name order by a.name)
-				from request_secrets a where a.request_id=e.request_id and a.decision=$4 and a.name in (select name from withheld)))
+			select 'grant.revoked', $1, e.request_id, e.id, $2, jsonb_build_object('withheld', (select jsonb_agg(a.name order by a.name)
+				from request_secrets a where a.request_id=e.request_id and a.decision=$3 and a.name=any($5::text[])))
 			from ended e
 			returning grant_id, request_id, detail
 		)
 		select coalesce((select jsonb_agg(name order by name) from withheld), '[]'::jsonb),
 			coalesce((select jsonb_agg(jsonb_build_object('grant', grant_id, 'request', request_id, 'detail', detail) order by grant_id) from audited), '[]'::jsonb)`,
-		enrollmentID, requestID, actor, policy.Automatic).Scan(&names, &ended)
+		enrollmentID, actor, policy.Automatic, fresh, covered).Scan(&names, &ended)
 	return names, ended, err
 }
 
@@ -347,16 +407,95 @@ func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor str
 // end: the model judge approved it in anyone's stead, so it names no person who could end it,
 // and GrantsForApprover lists it to everyone the person rule shows it to for that same reason.
 // The revoke is the approver's and not the operator's, since whoever ends it stands in for the
-// record's approver and withholds nothing from a session that is not theirs. The sentinel is no
-// signed-in person itself, and neither is an empty login: neither revokes anything.
-func mayRevoke(login string, approver, operator *string) (allowed, asOperator bool) {
+// record's approver and withholds nothing from a session that is not theirs. A grant whose
+// approver is a group (grantApprover) is each member's to end, as the one owner ends their own,
+// by the members the group's last good read listed however old that read is
+// (record.GroupStanding's listed, read without its freshness): a revoke only takes power away, so
+// a member keeps the power to end the group's grant while the group is stale. A login outside the
+// group ends nothing. The sentinel is no signed-in person itself, and neither is an empty login or
+// one spelled as a group: none of them revokes anything.
+//
+// approves is whether login may stand as the grant's approver at all (revokeApproves): false for a
+// person Dispatch calls a restricted member, who is no approver of a secret
+// (restricted_approver.go), and ends a grant only as its operator, whatever its approver arm.
+func mayRevoke(login string, approver, operator *string, groups record.Groups, approves bool) (allowed, asOperator bool) {
+	if _, loginIsGroup := record.GroupOf(record.CanonicalLogin(login)); loginIsGroup {
+		return false, false
+	}
 	if named, asOperator := namedOnGrant(login, approver, operator); named {
-		return true, asOperator
+		return asOperator || approves, asOperator
 	}
 	login = record.CanonicalLogin(login)
-	anyone := approver != nil && record.CanonicalLogin(*approver) == record.AnyoneApprover
-	return anyone && login != "" && login != record.AnyoneApprover, false
+	if login == "" || login == record.AnyoneApprover || !approves {
+		return false, false
+	}
+	if approver == nil {
+		return false, false
+	}
+	if record.CanonicalLogin(*approver) == record.AnyoneApprover {
+		return true, false
+	}
+	_, listed, _, group := record.GroupStanding(groups, *approver, login)
+	return group && listed, false
 }
+
+// revokeApproves answers mayRevoke's approves for login's revoke of the grant judged describes,
+// read before the transaction: whether Dispatch calls login no restricted member
+// (approvesSecrets), asked only where an approver arm of mayRevoke would admit login and login is
+// not the operator of the enrollment that holds the grant. Everywhere else it approves nothing and
+// asks nothing: the operator's revoke stands on the operator's arm alone, and a login no arm admits
+// is refused whatever it is, so a group read that comes to admit login between this read and the
+// transaction's admits nothing unasked. A machine with no client of Dispatch asks nothing, and
+// every approver stands as before.
+//
+// It fails open only while Dispatch does not answer (projectaccess.Unanswered: the read's bound or
+// deadline passing, a transport failure, a gateway's 502, 503 or 504, one of Dispatch's own codes
+// for its outage, or a 500 naming no code or INTERNAL, which Dispatch answers while its database
+// fails), unlike every other read of a person's member kind, and only for the person the grant
+// names as its approver. It then approves and logs it (RevokeUncheckedMessage). A revoke only
+// takes access away and releases nothing, and a revoke refused through an outage would delay the
+// person ending a grant that leaks; what it costs is that a person Dispatch calls a restricted
+// member could end a grant that names them as its approver while Dispatch does not answer. So it
+// asks Dispatch itself (projectaccess.AskedNow), never answered by a failure an earlier read kept.
+// Every other failure is an answer that lasts until somebody fixes it (Dispatch refusing the
+// broker's own account, a kind this broker does not know, a status, a code or a body it cannot
+// read, a certificate or a name that does not resolve), or a caller that went away, which says
+// nothing of Dispatch; and a grant that admits login only through record.AnyoneApprover or a group
+// is refused while Dispatch does not answer, whatever session holds it. One on a person's session
+// can still be ended by that person, its operator, asking Dispatch nothing (namedOnGrant); one on a
+// session that acts for no person (a service's pod, a person's pod BROKER_POD_OPERATORS no longer
+// maps, or a machine's own session: operatorOf) is ended through the broker by nobody until
+// Dispatch answers, and the way out meanwhile is cluster access (delete the pod). Each is the
+// *projectaccess.MemberKindUncheckable it returns.
+func (m *Machine) revokeApproves(ctx context.Context, login string, judged grantJudged) (approverStanding, error) {
+	if m.Projects == nil {
+		return approverStanding{approves: true}, nil
+	}
+	var approver *string
+	if judged.approver != "" {
+		approver = &judged.approver
+	}
+	if allowed, asOperator := mayRevoke(login, approver, judged.operator, m.Groups, true); !allowed || asOperator {
+		return approverStanding{}, nil
+	}
+	approves, err := m.approvesSecrets(projectaccess.AskedNow(ctx), login)
+	if err == nil {
+		return approvesAsReadBy(approves), nil
+	}
+	if named, _ := namedOnGrant(login, approver, judged.operator); !named || !projectaccess.Unanswered(err) {
+		return approverStanding{}, err
+	}
+	if ctx.Err() == nil {
+		slog.Warn(RevokeUncheckedMessage, "person", record.CanonicalLogin(login), "error", err)
+	}
+	return approverStanding{approves: true}, nil
+}
+
+// RevokeUncheckedMessage is logged, at WARN, for each revoke that goes ahead although Dispatch did
+// not answer whether the revoking person is a restricted member (revokeApproves): a revoke by the
+// person the grant names as its approver, followed by person=<the canonical login> and
+// error=<why it could not ask>.
+const RevokeUncheckedMessage = "broker: a revoke as the grant's approver goes ahead though Dispatch could not say whether the person is a restricted member; a revoke only takes access away"
 
 // namedOnGrant answers whether login is a person a grant names, and whether as the operator of
 // the enrollment that holds it, which is read first: that operator, or the grant's approver, each

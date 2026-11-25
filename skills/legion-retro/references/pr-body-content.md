@@ -6,7 +6,7 @@ A repository can require body lines derived from the changed paths, read by a re
 the body written earlier may not cover every path the pull request now changes, and the merger reports a stale body rather than rewriting it.
 `<owner>/<repo>` and `<n>` are the pull request's repository and number.
 
-1. Read your deployment instructions, the repository's agent guide (`AGENTS.md`, `CLAUDE.md`), its pull request template where it has one (`.github/pull_request_template.md` or `.github/PULL_REQUEST_TEMPLATE/`) and the workflow under `.github/workflows/` that reads the body, for lines they require per changed path.
+1. Read your deployment instructions, the repository's agent guide (`AGENTS.md`, `CLAUDE.md`), its contributing guide (`CONTRIBUTING.md`), its pull request template where it has one (`.github/pull_request_template.md` or `.github/PULL_REQUEST_TEMPLATE/`) and the workflow under `.github/workflows/` that reads the body, for lines they require per changed path.
    When they require none, skip step 2, and stop here unless the task has no reviewer step (step 4 of `skill://legion-retro`).
 
 2. List the paths the pull request changes at `<head>`, the head the task's last step passed (step 1 of `skill://legion-retro`):
@@ -37,3 +37,13 @@ the body written earlier may not cover every path the pull request now changes, 
    ```
 
 When the write is refused, or the check it feeds fails, report it to the architect with the command and its output.
+
+## Merge and review
+
+Read this before starting retro.
+
+Retro commits nothing and pushes nothing of its own: where the issue has a pull request, the merger merges the branch's head, and a push would put a commit above the head the last step passed.
+A merge forward that the daemon's merge-forward message asks of you is no part of retro (`skill://legion-worker/references/conflicts-and-rewrites.md`, *The daemon's ask*).
+Outside a forward merge of the base, no Legion check compares the head that merges with a review's head.
+Where the task has a reviewer step, Legion asks the reviewer to read a merge forward it asked for.
+Whether another push after a review needs a new review is the repository's own rule.

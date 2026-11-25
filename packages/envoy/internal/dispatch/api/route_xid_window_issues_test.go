@@ -72,21 +72,20 @@ var issueRouteXidWindows = []routeXidWindowCase{
 		ready: readyClaimRelease, window: storetest.XidBatchedWindow,
 	},
 	// A patch naming a repository writes it in the issue row's own update and reads or locks no
-	// repo_projects row: an issue's own repository needs no mapping (INFRA-2543 R3,
-	// parseIssueRepo), so this one names a repository no project maps. It closes the issue
-	// too, so its read phase holds the close's document work - the block ask withdrawn and its
-	// block written resolved into the spec (prepareWithdrawal) - and a session's write advice,
-	// none of it inside the window.
+	// other row for it: an issue's own repository is any owner/name GitHub could hold
+	// (parseIssueRepo), so this one names a repository no project names as its default. It
+	// closes the issue too, so its read phase holds the close's document work - the block ask
+	// withdrawn and its block written resolved into the spec (prepareWithdrawal) - and a session's
+	// write advice, none of it inside the window.
 	{
 		name: "the issue patch setting its repository while closing it", route: "PATCH /api/v1/issues/{key} naming a repository (patchIssue, prepareWithdrawal)",
 		ready: readyIssuePatchNamingRepository, window: storetest.XidWindowOf(5,
 			"the issue row's own update, the two reads that load the issue it answers with, "+
 				"the batch withdrawing its asks and its COMMIT"),
 	},
-	// A create naming a repository writes it in the issue row's insert and reads or locks no
-	// repo_projects row (INFRA-2543 R3). Its read phase, under the project's owner lock, holds its
-	// spec's seed, task count and reference index, all of the harness's size, and its write
-	// advice.
+	// A create naming a repository writes it in the issue row's insert and reads or locks no other
+	// row for it. Its read phase, under the project's owner lock, holds its spec's seed, task count
+	// and reference index, all of the harness's size, and its write advice.
 	{
 		name: "the issue create naming a repository", route: "POST /api/v1/issues naming a repository (createIssue)",
 		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(10,
@@ -178,10 +177,10 @@ func readyIssueReopen(t *testing.T, base routeFixture) lockedItemWrite {
 }
 
 // readyIssuePatchNamingRepository drives PATCH /api/v1/issues/{key} by a session that sets the
-// issue's repository to one no project maps and closes it in the same request: the close
-// withdraws the ask settlement opened from the spec's `:::ask` block and writes the block resolved
-// into the spec (prepareWithdrawal), and the session's write advice is read, all before the
-// patch's first write.
+// issue's repository to one no project names as its default and closes it in the same request:
+// the close withdraws the ask settlement opened from the spec's `:::ask` block and writes the
+// block resolved into the spec (prepareWithdrawal), and the session's write advice is read, all
+// before the patch's first write.
 func readyIssuePatchNamingRepository(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	base.spec += "\n" + transportAsk
@@ -207,9 +206,9 @@ func readyIssuePatchNamingRepository(t *testing.T, base routeFixture) lockedItem
 }
 
 // readyIssueCreateNamingRepository drives POST /api/v1/issues by a session naming a repository no
-// project maps as the new issue's repository, with a spec of the harness's size, whose seed,
-// task count and reference index are the create's document work, read before its first write
-// with the session's write advice.
+// project names as its default as the new issue's repository, with a spec of the harness's size,
+// whose seed, task count and reference index are the create's document work, read before its
+// first write with the session's write advice.
 func readyIssueCreateNamingRepository(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Create naming a repository")

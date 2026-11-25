@@ -67,8 +67,8 @@ func TestAgentsLive(t *testing.T) {
 
 // oneKeyRead walks the walk's issue through steps (walkOneKey), holds its step records to the key's
 // (oneKeyHolds), and holds that `dispatch steps --issue <KEY>`, run as the person, prints the agent
-// of each step as the records name it: one agent for steps 1 and 2 when keyed, two when not, and
-// another for step 3.
+// of each step as the records name it (printedFirstRuns): with oneKeyHolds, one agent for steps 1
+// and 2 when keyed, two when not, and another for step 3.
 func (l *ownerStepsLive) oneKeyRead(steps []string, keyed bool) {
 	t := l.t
 	t.Helper()
@@ -79,9 +79,6 @@ func (l *ownerStepsLive) oneKeyRead(steps []string, keyed bool) {
 	l.note("%s walked %s, retro and merging to done; the records name step 1 %s in %s, step 2 %s in %s, step 3 %s in %s",
 		l.key, strings.Join(steps, " "), records[0].Agent, records[0].Session, records[1].Agent, records[1].Session, records[2].Agent, records[2].Session)
 	agents := l.printedFirstRuns(records[:])
-	if (agents[0] == agents[1]) != keyed || agents[2] == agents[0] {
-		t.Fatalf("`dispatch steps --issue %s` prints the agents %q of steps 1 to 3; want steps 1 and 2 one agent = %t, and step 3 another", l.key, agents, keyed)
-	}
 	if !keyed {
 		l.note("control: step 2 ran in %s, an agent of its own beside %s", agents[1], l.token(claim.RoleImplementer))
 	}
@@ -90,7 +87,8 @@ func (l *ownerStepsLive) oneKeyRead(steps []string, keyed bool) {
 // roleTwiceRead walks the walk's issue through `implementer:a reviewer implementer:a` and a failed
 // review (walkRoleTwice), holds its step records to one key's at steps 1 and 3 (roleTwiceHolds),
 // and holds that `dispatch steps --issue <KEY>`, run as the person, prints the agent of each step's
-// first run as the records name it: one agent for steps 1 and 3, and another for step 2.
+// first run as the records name it (printedFirstRuns): with roleTwiceHolds, one agent for steps 1
+// and 3, and another for step 2.
 func (l *ownerStepsLive) roleTwiceRead() {
 	t := l.t
 	t.Helper()
@@ -107,10 +105,7 @@ func (l *ownerStepsLive) roleTwiceRead() {
 			first[run.step] = records[i]
 		}
 	}
-	agents := l.printedFirstRuns([]stepRecordRead{first[1], first[2], first[3]})
-	if agents[0] != agents[2] || agents[1] == agents[0] {
-		t.Fatalf("`dispatch steps --issue %s` prints the agents %q of steps 1 to 3; want steps 1 and 3 one agent, and step 2 another", l.key, agents)
-	}
+	l.printedFirstRuns([]stepRecordRead{first[1], first[2], first[3]})
 }
 
 // secondAgentRead walks the walk's issue through steps, `implementer reviewer implementer` with or

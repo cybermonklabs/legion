@@ -73,7 +73,7 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 		Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", HandedOver: true, LastDispatchSeq: 1}
 	putOutboxIssue(t, pool, records, root)
 	approved := 1
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: doorRoot, ArtifactID: "artifact-1", LatestVersion: 1, ApprovedVersion: &approved})
 	}); err != nil {
 		t.Fatalf("open the root's design gate: %v", err)
@@ -145,10 +145,9 @@ func (r *childArchitectRig) apply(id string, fact intake.Fact) {
 }
 
 // written is a route of the daemon's own write of the child's status in Dispatch — an architect's
-// release_children, park_child or rerun_child — as Dispatch answered it (issue), and the fact
-// the route then applies (api's recordOwnStatusWrite): Dispatch's view of the issue, which applies
-// to an issue the record does not hold, carrying the write's own event, which applies to one it
-// holds.
+// release_children or rerun_child — as Dispatch answered it (issue), and the fact the route then
+// applies (api's recordOwnStatusWrite): Dispatch's view of the issue, which applies to an issue the
+// record does not hold, carrying the write's own event, which applies to one it holds.
 func (r *childArchitectRig) written(id string, issue dispatch.Issue) {
 	r.t.Helper()
 	r.dispatch.issue = issue
@@ -284,6 +283,7 @@ func (r *childArchitectRig) wantChildsArchitectToldItsIssues(want []string) {
 // child and every issue under it. A child that waits for the issue it is held by gets no architect
 // while it waits: the architect starts with the child's first phase and not with its entry.
 func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
+	t.Parallel()
 	t.Run("release_children", func(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		rig.written("release", childAt("todo", 2))

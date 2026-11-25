@@ -11,8 +11,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -27,7 +29,7 @@ const cacheURLEnv = "LEGION_REPOSITORY_CACHE_URL"
 const defaultBranchEnv = "LEGION_DEFAULT_BRANCH"
 
 // fetchClock is the time the fetch's clone retries read and wait on; a test replaces it.
-var fetchClock workspace.Clock = workspace.WallClock{}
+var fetchClock workspace.Clock = clock.Real()
 
 // fetchBound is the fetch's workspace.FetchRequest.Bound, the time each clocked stage of the fetch
 // gets. Zero is workspace.FetchTimeout. A test makes it short, so an attempt runs out of its time.
@@ -55,7 +57,7 @@ func workspaceFetch(ctx context.Context, repo, feed, cacheURL string, stdout io.
 	if err := os.MkdirAll(feed, 0o700); err != nil {
 		return fmt.Errorf("create the feed directory %s: %w", feed, err)
 	}
-	report, err := workspace.Fetch(ctx, workspace.NewRunner(workspace.CommandTimeout, inputs.tools), workspace.FetchRequest{
+	report, err := workspace.Fetch(ctx, workspace.NewRunner(programbound.Of(&commandBudget), inputs.tools), workspace.FetchRequest{
 		Repo: inputs.repository, Token: inputs.token, CredentialDir: os.TempDir(), Feed: feed,
 		Log: func(line string) { fmt.Fprintln(stdout, "workspace-init fetch: "+line) }, Clock: fetchClock, Bound: fetchBound, CacheURL: cacheURL, CacheToken: inputs.cacheToken,
 		RecordedDefault: os.Getenv(defaultBranchEnv),

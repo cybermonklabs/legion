@@ -21,21 +21,20 @@ func TestTheStateServesARolesRowNow(t *testing.T) {
 	implementer := claim.Token("legion-legion-legion-208-implementer")
 	at := func(minute int) time.Time { return time.Date(2026, 11, 22, 7, minute, 0, 0, time.UTC) }
 	for _, tc := range []struct {
-		name   string
-		rows   []record.PhaseRow
-		entry  int64
-		record string
+		name  string
+		rows  []record.PhaseRow
+		entry int64
 	}{
 		{"step 3 runs", []record.PhaseRow{
 			{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer, StepTask: "a", StepPlace: 1, Entry: 1, EntryRaisedAt: at(1),
 				HandoffRecord: "implement-1", HandoffVersion: 1},
 			{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer, StepTask: "a", StepPlace: 3, Entry: 3, EntryRaisedAt: at(3)},
-		}, 3, ""},
+		}, 3},
 		{"step 1 runs again after a return", []record.PhaseRow{
 			{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer, StepTask: "a", StepPlace: 1, Entry: 4, EntryRaisedAt: at(4)},
 			{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer, StepTask: "a", StepPlace: 3, Entry: 3, EntryRaisedAt: at(3),
 				HandoffRecord: "implement-2", HandoffVersion: 2},
-		}, 4, ""},
+		}, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := projectionStore{
@@ -57,8 +56,8 @@ func TestTheStateServesARolesRowNow(t *testing.T) {
 			if !served {
 				t.Fatal("the implementer is served no worker")
 			}
-			if record := worker.HandoffRecord; (record == nil) != (tc.record == "") || (record != nil && record.ID != tc.record) {
-				t.Errorf("the served implementer's handoff record = %+v, want %q, its row now's", record, tc.record)
+			if worker.HandoffRecord != nil {
+				t.Errorf("the served implementer's handoff record = %+v, want none, as its row now holds none", worker.HandoffRecord)
 			}
 		})
 	}

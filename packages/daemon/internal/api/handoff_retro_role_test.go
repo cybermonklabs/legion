@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -28,7 +29,7 @@ func coderDeployment() plan.Deployment {
 func seedCoderAt(t *testing.T, h *harness, key string, at record.TaskPlace) {
 	t.Helper()
 	ctx := context.Background()
-	err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: "legion-legion-" + claim.Token(key) + "-architect"}

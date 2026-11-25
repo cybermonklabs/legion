@@ -222,9 +222,11 @@ function namesOf(records: readonly SignInRecord[]): string {
  * Whether {@link PERSON_TRADE_VAR} turns the person trade off: true for `off`, false where it is
  * unset or blank, and a refusal for any other value, which is a deployment that meant one of the
  * two and wrote neither. The value is trimmed and its case kept, as `DISPATCH_TOKEN_BROKER`'s is
- * (`packages/envoy-client/src/dispatch-config.ts`, `brokerRouteForced`).
+ * (`packages/envoy-client/src/dispatch-config.ts`, `brokerRouteForced`). A sign-in is chosen by
+ * it ({@link chooseSignIn}), and a device login, a person's credential too, is refused by it
+ * (`brokerTokenClient` in `environment.ts`).
  */
-function personTradeOff(env: Environment): boolean {
+export function personTradeOff(env: Environment): boolean {
   const written = (env[PERSON_TRADE_VAR] ?? "").trim();
   if (written === "") return false;
   if (written === "off") return true;

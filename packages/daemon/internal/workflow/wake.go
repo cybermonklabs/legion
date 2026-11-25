@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"slices"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -21,8 +23,8 @@ import (
 
 // A wake brings a released pod back. The release suspended every claim of the pod with the source
 // `released` and deleted the pod, its disk and its Sandbox; a wake resumes one of those claims,
-// which relaunches its session in a fresh pod whose launcher restores the workspace bundle the
-// release saved. Five things wake a pod, and this file holds four of them: the CI settlement, the
+// which relaunches its session in a fresh pod whose workspace is fetched from origin. Five things
+// wake a pod, and this file holds four of them: the CI settlement, the
 // role message and the agent message the Envoy listener reports, and the stored backstop. The
 // fifth — a delivery the daemon already had for a role of the pod — needs nothing here, because a
 // delivery to a suspended claim already resumes it (supervise's deliverResuming) and the delivery
@@ -126,12 +128,35 @@ type WakeStop int
 
 const (
 	// StoppedByRelease: an idle release stopped the session and took its pod, which the wake
-	// brings back as a fresh pod with the workspace the release saved.
+	// brings back as a fresh pod. The release took the pod only because no working copy and no
+	// bookmark of its workspace held a commit origin does not hold and no working-copy change was in
+	// it (WorkspaceAfterRelease).
 	StoppedByRelease WakeStop = iota
 	// StoppedByPause: a project's pause stopped the session and kept its pod, its workspace and
 	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759).
 	StoppedByPause
 )
+
+// WorkspaceAfterRelease is what a role woken after an idle release is told of its workspace, in
+// the daemon's wake task (WakeTask) and in the notice the role's plugin writes when its launcher
+// finds the workspace made again (WORKSPACE_AFTER_RELEASE in
+// packages/pi-shared/src/workspace-recreated.ts). The two say it in the same words, so a woken
+// role reads one account of its workspace, and what they say is what the daemon knows: the
+// release's check keeps a pod whose workspace holds a commit on a working copy or a local bookmark
+// that no branch or tag on origin holds, or a working-copy change (internal/daemon's
+// checkIssueWorkspace, the shim's workspaceWorkRevset), and a pod whose disk went with it comes
+// back with a workspace that provisioning made from the issue's pushed branch. The read does not
+// count a commit that no working copy and no bookmark reaches, a side head a role left with
+// `jj new <base>`, so the release can take one, and the text says so: it never says that nothing
+// unpushed was lost, nor that unpushed work was kept, since the daemon keeps none. A kept volume is
+// the one disk that does not go, which is why the second sentence is conditional. The text is the data file
+// workspace-after-release.txt beside this one, embedded here and read by the plugin's test
+// (packages/pi-shared/src/workspace-recreated.test.ts), which holds its copy to it byte for byte;
+// the file's one line ends in a newline, which the text does not carry.
+var WorkspaceAfterRelease = strings.TrimSuffix(workspaceAfterReleaseFile, "\n")
+
+//go:embed workspace-after-release.txt
+var workspaceAfterReleaseFile string
 
 // WakeTask is the one task a woken role is given, the sentence its first turn reads before
 // anything else: what stopped its session, which wake brought it back and what that wake was
@@ -152,7 +177,7 @@ const (
 // read only when its footer names the entry that stands. The text here names no entry itself.
 func WakeTask(kind, detail string, stop WakeStop) string {
 	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		"Your session, your workspace and any work you had not pushed are as you left them. "
+		WorkspaceAfterRelease + " Your session is as you left it. "
 	away, backstop := "while your pod was gone", "the release's backstop"
 	if stop == StoppedByPause {
 		preamble = "Your project was paused, and its pause stopped your session. This wake started it again. " +
@@ -239,6 +264,15 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // which no delivery of a run carries. A head that settles again as each of its checks finishes
 // wakes the pod no second time, because the role's resume is still open. It answers the claim it
 // woke, which tellChecks tells nothing more, and "" where it woke none.
+//
+// Asking the apply step also keeps a settlement delivered late, or replayed from a message the
+// intake gave up on, however late, from waking anyone where the record will not take it for the
+// pull request's head now (dispatch://INFRA-1575 R1): one of a head the pull request has left, or
+// one of its head older than what the record already took. The apply step weighs it against the
+// fence the record would apply it to (classify.SettlementFor), which is the one the record
+// remembers for the head when its fence was reset, so it is stale exactly where it is with the
+// fence standing, and the woken worker's task would otherwise name a verdict that is no longer
+// the head's.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Token, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil
@@ -382,10 +416,6 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	if err != nil || !fired {
 		return intake.Result{}, err
 	}
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil {
-		return intake.Result{}, err
-	}
 	released, found, err := e.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(fact.Claim))
 	if err != nil || !found {
 		return intake.Result{}, err
@@ -509,7 +539,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 		return false, err
 	}
 	if newest > 0 {
-		e.log.Warn("wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
+		e.warnOnCommit(ctx, "wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
 			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}
 	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, released.Token, kind, at, pause)
@@ -520,11 +550,21 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if stopping != 0 {
 		stop = StoppedByPause
 	}
-	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "claim", released.Token,
+	e.logOnCommit(ctx, "wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "claim", released.Token,
 		"kind", kind, "detail", detail, "pause", pause, "stopped_by_pause", stopping)
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, released.Token, kind, pause, WakeTask(kind, detail, stop)))
 }
 
+// OpenRoleAt is OpenRoleOf of an issue at phase p whose running step's role is stepRole: the reader
+// that holds the two and not the whole issue (pods.IdleView) names the worker of the open phase
+// through it. There is no reading of the phase alone: at step the worker is the role the issue's
+// plan names, so a reader that names it from the phase names none there, and a role of the
+// deployment would get no workspace check and no place first at the pod start gate. It answers
+// which role a workspace check reads through and which live claim of a pod has a phase reminder
+// armed in it. Backstops name their claim through BackstopTarget instead.
+func OpenRoleAt(p phase.Phase, stepRole claim.Role) claim.Role {
+	return OpenRoleOf(record.Issue{Phase: p, StepRole: stepRole})
+}
 // OpenRoleOf is the worker of issue's open phase, and "" where there is none: the role that works
 // the issue at its phase (record.Issue.RoleAt), read with the issue, which is the role of the claim
 // that works its task's place (at step the role of its running step, at accepting acceptance for a
@@ -535,8 +575,9 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 // back to its work reads: which ready claim is sent its phase's task (readyWorkerTask), which
 // suspended claim the boot resumes (suspendedPhaseOwners), which claim the silence repair prompts
 // (phaseWorkerRecord), which role a CI settlement wakes off the owner's place (wakeOnSettlement,
-// which wakes the owner at its own), and which role a release, a pause's stop of a released claim
-// and a cancel of a release while the project is paused arm a backstop for off the owner's place
+// which wakes the owner at its own), which start the pod start gate puts first (internal/daemon's
+// workflowRuntime.phaseRole), and which role a release, a pause's stop of a released claim and a
+// cancel of a release while the project is paused arm a backstop for off the owner's place
 // (BackstopTarget, which the stop and the cancel read through BackstopTargetAt, and which names the
 // owner's backstop where it works its place alone, and none at its acceptance) — an architect gets
 // none there, because nothing of its own is due and a sub-architect woken for nothing would hold a

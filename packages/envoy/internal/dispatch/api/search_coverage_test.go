@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -78,6 +79,7 @@ func requireCoverageIdentity(t *testing.T, report model.SearchCoverage, identity
 // lacking and aged from when it was written, and so is every window waiting for its first
 // vector.
 func TestSearchCoverageCountsItemsWithNoRowAsLacking(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	seedSearchCorpus(t, handler)
@@ -108,6 +110,7 @@ func TestSearchCoverageCountsItemsWithNoRowAsLacking(t *testing.T) {
 // lacking age. A dead row is then counted failed, not lacking; a row embedded at an older text, or
 // by another identity, is lacking.
 func TestSearchCoverageCountsCurrentFailedAndLackingRows(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	corpus := seedSearchCorpus(t, handler)
@@ -158,6 +161,7 @@ func TestSearchCoverageCountsCurrentFailedAndLackingRows(t *testing.T) {
 // current: the rows the issue's trigger and the block-index tick's window arm wrote are never
 // embedded.
 func TestSearchCoverageWithNoEmbedderNamesNoIdentity(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	seedSearchCorpus(t, handler)
 	windowOwedOwners(t, deps)
@@ -176,6 +180,7 @@ func TestSearchCoverageWithNoEmbedderNamesNoIdentity(t *testing.T) {
 // The coverage report admits whoever search admits: an agent's bearer token and a browser
 // session cookie, and refuses a request with no credential exactly as GET /api/v1/search does.
 func TestSearchCoverageAuthentication(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	if agent := agentRequest(t, handler, http.MethodGet, "/api/v1/search/coverage", nil, "agent-token"); agent.Code != http.StatusOK {
@@ -217,9 +222,15 @@ func TestSearchCoverageAuthentication(t *testing.T) {
 // not blocked, and nothing but the coverage statement waits on components, so the count is 1
 // while the request waits and 0 once the bound has ended the statement. It reads this test's
 // database alone, since another test's database on the same server may hold locks of its own, and
-// a backend's state can lag the answer by a moment, so it is read again for a while before it
-// fails.
+// a backend's state can lag the answer by a moment, so it is read again until it holds.
+//
+// The answer's time is held to the bound from both sides: no sooner than the bound after the
+// request began, which load can only lengthen, and no later than well under production's 10 s
+// after pg_stat_activity first showed the statement running, which is the statement's own span,
+// so a slow setup before the statement is not counted against it.
 func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
+	// Not parallel: it shortens embedqueue's coverage statement timeout for the whole process
+	// (embedqueue.ShortenCoverageBoundForTest).
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: &fakeEmbedder{}})
 	ctx := context.Background()
 	const bound = time.Second
@@ -242,8 +253,9 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	acquired := database.Pool.Stat().AcquiredConns()
 
 	type answer struct {
-		response *httptest.ResponseRecorder
-		took     time.Duration
+		response   *httptest.ResponseRecorder
+		took       time.Duration
+		answeredAt time.Time
 	}
 	answered := make(chan answer, 1)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/search/coverage", nil)
@@ -252,26 +264,22 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	go func() {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		answered <- answer{response, time.Since(started)}
+		answeredAt := time.Now()
+		answered <- answer{response, answeredAt.Sub(started), answeredAt}
 	}()
-	showed := testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+	testwait.Until(t, "pg_stat_activity to show the coverage statement blocked by the lock on components while the request waits (the backends blocked)", func() (int, bool) {
 		select {
 		case early := <-answered:
 			t.Fatalf("the route answered (status=%d body=%s after %s) before pg_stat_activity showed its statement blocked",
 				early.response.Code, early.response.Body.String(), early.took)
 		default:
 		}
-		return blocked() == 1
+		count := blocked()
+		return count, count == 1
 	})
-	if !showed {
-		t.Fatal("pg_stat_activity never showed the coverage statement blocked by the lock on components while the request waited")
-	}
-	var got answer
-	select {
-	case got = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the route had not answered 10s after the request, with its statement bound to %s", bound)
-	}
+	// The statement had begun by the time it was seen blocked.
+	running := time.Now()
+	got := testwait.Receive(t, fmt.Sprintf("the route's answer, with its statement bound to %s", bound), answered)
 
 	if got.response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("coverage past its bound: status=%d body=%s, want 503", got.response.Code, got.response.Body.String())
@@ -279,19 +287,18 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	if refusal := decodeBody[apiErrorBody](t, got.response); refusal.Code != "SEARCH_COVERAGE_TIMEOUT" || !strings.Contains(refusal.Error, bound.String()) {
 		t.Errorf("coverage past its bound answered %s, want the code SEARCH_COVERAGE_TIMEOUT and an error naming the %s bound", got.response.Body.String(), bound)
 	}
-	if got.took < bound || got.took > 5*time.Second {
-		t.Errorf("coverage past its bound answered after %s, want at least its %s bound and well under production's 10s", got.took, bound)
+	if got.took < bound {
+		t.Errorf("coverage past its bound answered %s after the request began, want at least its %s bound", got.took, bound)
 	}
-	var conns int32
-	var statements int
-	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
-		conns, statements = database.Pool.Stat().AcquiredConns(), blocked()
-		return conns == acquired && statements == 0
+	if ran := got.answeredAt.Sub(running); ran > 5*time.Second {
+		t.Errorf("coverage past its bound answered %s after its statement was seen running, want its %s bound, well under production's 10s", ran, bound)
+	}
+	type freed struct {
+		conns      int32
+		statements int
+	}
+	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the pool to hold the %d acquired connections it held before the request and no backend to be blocked: the bound frees the coverage statement's backend (acquired connections, blocked backends)", acquired), func() (freed, bool) {
+		now := freed{conns: database.Pool.Stat().AcquiredConns(), statements: blocked()}
+		return now, now.conns == acquired && now.statements == 0
 	})
-	if conns != acquired {
-		t.Errorf("the pool holds %d acquired connections after the answer, want the %d it held before the request", conns, acquired)
-	}
-	if statements != 0 {
-		t.Errorf("pg_stat_activity shows %d backends blocked after the answer, want none: the bound frees the coverage statement's backend", statements)
-	}
 }

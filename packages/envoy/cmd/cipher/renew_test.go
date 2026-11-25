@@ -17,39 +17,35 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// renewTestBound is how long a renewal test waits for any one step before it fails, so a
-// regression that turns a terminal refusal into a retry (or the reverse) fails the test rather
-// than hanging it until go test's own timeout.
-const renewTestBound = 10 * time.Second
-
 // syncWriter is a stderr a renew loop running on its own goroutine writes and a test reads.
 type syncWriter = logtest.Buffer
 
-// receive is the next value from ch, failing the test when none arrives within renewTestBound.
+// receive is the next value from ch, failing the test when none has arrived by the moment the
+// waits of these tests give up (waitsGaveUp). A regression that turns a terminal refusal into a
+// retry (or the reverse) then fails the test with this text, not go test's alarm.
 func receive[T any](t *testing.T, ch <-chan T, what string) T {
 	t.Helper()
-	select {
-	case v := <-ch:
-		return v
-	case <-time.After(renewTestBound):
-		t.Fatalf("no %s within %s", what, renewTestBound)
+	v, ok := received(t, ch)
+	if !ok {
+		t.Fatalf("no %s, %s before the test binary's deadline", what, waitMargin)
 	}
-	var zero T
-	return zero
+	return v
 }
 
 // awaitRetry waits for renewLoop to reach its retry wait and returns that wait's channel. It
 // fails the test at once when the loop exits instead (the refusal was treated as terminal), and
-// when it does neither within renewTestBound.
+// when it has done neither by the moment the waits of these tests give up (waitsGaveUp).
 func awaitRetry(t *testing.T, waits <-chan chan time.Time, result <-chan int, what string) chan time.Time {
 	t.Helper()
+	giveUp := time.NewTimer(untilGiveUp(t))
+	defer giveUp.Stop()
 	select {
 	case wait := <-waits:
 		return wait
 	case code := <-result:
 		t.Fatalf("renew loop exited %d on %s, want it to wait and retry", code, what)
-	case <-time.After(renewTestBound):
-		t.Fatalf("renew loop neither retried nor exited on %s within %s", what, renewTestBound)
+	case <-giveUp.C:
+		t.Fatalf("renew loop neither retried nor exited on %s, %s before the test binary's deadline", what, waitMargin)
 	}
 	return nil
 }
@@ -71,7 +67,7 @@ func renewalSession(t *testing.T, broker string) (*client, Signer, string, strin
 	t.Setenv("AGENT_SECRETS_URL", broker)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", dir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
-	base, enrollmentID, signer, err := sessionContext()
+	base, enrollmentID, signer, err := sessionContext(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

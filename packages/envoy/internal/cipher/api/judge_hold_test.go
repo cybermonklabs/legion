@@ -17,11 +17,11 @@ import (
 
 // withJudge wires a judge to the server's machine, with rules that give it 900 seconds of
 // DEEL_API_KEY, testApprover's own human-tier secret, with guidance, and 300 of SHARED_KEY, which
-// nobody owns and whose entry binds no host.
+// nobody owns.
 func withJudge(d *api.Deps) {
 	d.Machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(900)), Guidance: "grant for the payroll export job"},
-		{Name: "SHARED_KEY", Judge: new(uint32(300))},
+		{Name: "SHARED_KEY", Hosts: []string{"shared.example"}, Judge: new(uint32(300))},
 	}}
 	d.Machine.Judge = func(requests.PendingRequest) {}
 }
@@ -130,8 +130,7 @@ func TestTheDecisionRoutesRefuseARecordOfAnotherAudienceAsBefore(t *testing.T) {
 			enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 			current := ts.machine.Audience
 			ts.machine.Audience = "https://the-old-public-url.example"
-			stale, err := ts.machine.Create(t.Context(), enrollmentID,
-				signAgentSecretRequestFor(t, sessionKey, ts.machine.Audience, "export the payroll", 600, "DEEL_API_KEY"), "", nil)
+			stale, err := ts.machine.Create(t.Context(), enrollmentID, signAgentSecretRequestFor(t, sessionKey, ts.machine.Audience, "export the payroll", 600, "DEEL_API_KEY"), "")
 			ts.machine.Audience = current
 			if err != nil || stale.RecordID == nil || stale.State != "pending" {
 				t.Fatalf("Create under the old audience = %+v, %v; want a pending request", stale, err)

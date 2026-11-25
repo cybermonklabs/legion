@@ -88,6 +88,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { deviceLoginFile, loginLockHeldBy } from "@legion/cipher-client/device-login-file"
 import { scrubProcessStreams } from "@legion/contracts/held-secrets"
 import { urlForText } from "@legion/contracts/log-text"
 import { formatOpenAsksSummary, linkBaseOf } from "@legion/envoy-client/dispatch-execute"
@@ -116,15 +117,17 @@ import {
 } from "@legion/pi-shared/jj-attribution"
 import { z } from "zod"
 import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
+import { procStarted } from "../src/codex/codex-session-record"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
+import { endOnceWritten } from "./end-once-written"
 import { parseHookArguments } from "./hook-arguments"
+import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "./open-asks-bounds"
 
 // Every line this hook writes, the context Claude Code hands the model on stdout included, passes
 // the scrub of the secrets it holds (`@legion/contracts/held-secrets`).
 scrubProcessStreams()
 
-const OPEN_ASKS_TIMEOUT_MS = 3_000
 const OpenAsksInput = z.object({
   session_id: z.string().min(1),
   cwd: z.string().optional(),
@@ -184,20 +187,71 @@ const RefreshOutcome = z.object({
 })
 /** Tests only: the file the answers hook writes its own timing to, `{ began, printed, ended }` in
  *  ms after its process started (when its code began, when it printed or found nothing to print,
- *  and when it exits), so a test can hold the hook to its deadline rather than to bun's start-up.
- *  Unset, as Claude Code runs it, the hook writes nothing. */
+ *  and when it exits), `deadline`, the print deadline it applied, and `waits`, each wait it armed
+ *  on the way (`armedWait`), so a test holds the hook to its deadline by what the hook did rather
+ *  than by the time bun's start-up or the host's scheduling took; and `refresher`, the refresher it
+ *  started (null when it started none), so a test waits on that process's end rather than on a
+ *  scan of every process on the machine. The hook writes the file whole (`writeAtomically`) as
+ *  soon as it started a refresher, naming it, so a test that ended the hook before it exited
+ *  still knows that refresher, and again as it exits.
+ *  Unset, as Claude Code runs it, the hook writes nothing and records nothing. */
 const ANSWERS_TIMING_FILE = "ENVOY_ANSWERS_TIMING_FILE"
+/** The refresher this hook process started, for `ANSWERS_TIMING_FILE`: its pid, and when it
+ *  started (`procStarted`), which a later process given the same pid does not share, or null where
+ *  /proc does not give it at once; null when it started none. */
+let startedRefresher: { readonly pid: number; readonly started: string | null } | null = null
+/** Each wait the answers hook armed, for `ANSWERS_TIMING_FILE`: a look at the refresher's outcome,
+ *  the Dispatch read, or the read left in flight after printing; when it armed it (ms after the
+ *  process started), for how long, and the time it was armed against (`limit`). */
+const armedWaits: {
+  readonly kind: "refresher" | "read" | "settle"
+  readonly at: number
+  readonly ms: number
+  readonly limit: number
+}[] = []
+
+/** How long a wait of `kind` armed at `at` (a `performance.now()` reading, now by default) lasts:
+ *  until `limit`, another such reading, in whole ms because the failure line names the wait, at
+ *  most `capMs` and at least `leastMs`. Recorded for `ANSWERS_TIMING_FILE`. */
+function armedWait(
+  kind: "refresher" | "read" | "settle",
+  limit: number,
+  { capMs = Number.POSITIVE_INFINITY, leastMs = 0, at = performance.now() } = {},
+): number {
+  const ms = Math.max(leastMs, Math.min(capMs, Math.max(0, Math.round(limit - at))))
+  if (process.env[ANSWERS_TIMING_FILE] !== undefined) armedWaits.push({ kind, at, ms, limit })
+  return ms
+}
+
+/** Writes `timing`, `armedWaits` and `startedRefresher` to `ANSWERS_TIMING_FILE` when that is set. */
+function writeAnswersTiming(timing: Record<string, number | null>): void {
+  const timingFile = process.env[ANSWERS_TIMING_FILE]
+  if (timingFile === undefined) return
+  try {
+    writeAtomically(
+      timingFile,
+      JSON.stringify({ ...timing, waits: armedWaits, refresher: startedRefresher }),
+    )
+  } catch {
+    // The tests' seam only: a path it cannot write never changes what the hook printed or its exit.
+  }
+}
+
+/** Names the refresher `pid` in `ANSWERS_TIMING_FILE` at once, when that is set: right after its
+ *  spawn, while it can be no other process's pid. Its start comes from `/proc/<pid>/stat` alone (a
+ *  1 to 3 ms read), never `ps`, which can take seconds (procps `ps -p` reads every process: 0.76 to
+ *  0.98 s unloaded on the dev box, up to 8.2 s under load), time no part of the hook's deadline
+ *  is for. With no /proc the start is null, and the test tells the refresher's end by its pid. */
+function nameRefresher(pid: number): void {
+  if (process.env[ANSWERS_TIMING_FILE] === undefined) return
+  startedRefresher = { pid, started: procStarted(pid) ?? null }
+  writeAnswersTiming({})
+}
 
 const DISPATCH_HOST_LINE = "export DISPATCH_HOST=claude"
 /** What an overlay export line starts with: the one line of the env file this hook replaces
  *  rather than adds to. */
 const JJ_CONFIG_EXPORT = "export JJ_CONFIG="
-/** The bound on resolving jj's own user config chain for the overlay, inside the 20 s hooks.json
- *  gives this hook: 3 s of jj and then 3 s of the Dispatch read (`OPEN_ASKS_TIMEOUT_MS`) still
- *  leave the session its summary. Not `JJ_CONFIG_PATH_TIMEOUT_MS`, which is the Oh My Pi lane's
- *  bound inside the 30 s that harness gives its session-start handler. A jj that never answers
- *  costs the session the export and nothing else. */
-const JJ_BASE_CHAIN_TIMEOUT_MS = 3_000
 
 /** `value` as a single-quoted shell word: Claude Code sources this file before every bash command
  *  of the session, so a path or a config chain holding a space, a quote or a `$` must reach the
@@ -315,7 +369,7 @@ async function openAsks(raw: unknown): Promise<void> {
     { CLAUDE_PROJECT_DIR: process.env["CLAUDE_PROJECT_DIR"] },
     input.cwd ?? process.cwd(),
   )
-  const { dispatch, warnings, missing } = sessionDispatchSettings(chosen, process.env, {
+  const { dispatch, warnings, missing } = await sessionDispatchSettings(chosen, process.env, {
     cwd: directory,
     session: input.session_id,
   })
@@ -343,14 +397,16 @@ async function openAsks(raw: unknown): Promise<void> {
   }
 }
 
-function dispatchFirst(raw: unknown): void {
+async function dispatchFirst(raw: unknown): Promise<void> {
   const input = DispatchFirstInput.parse(raw)
   const directory = claudeProjectDirectory(
     { CLAUDE_PROJECT_DIR: process.env["CLAUDE_PROJECT_DIR"] },
     input.cwd ?? process.cwd(),
   )
   const chosen = sessionConfigFile(HOST, process.env)
-  if (!sessionDispatchSettings(chosen, process.env, { cwd: directory }).dispatch.enabled) return
+  if (!(await sessionDispatchSettings(chosen, process.env, { cwd: directory })).dispatch.enabled) {
+    return
+  }
   const pluginRoot = configuredValue(process.env["CLAUDE_PLUGIN_ROOT"])
   if (pluginRoot === undefined) {
     throw new Error("CLAUDE_PLUGIN_ROOT is unset; Claude Code sets it for every plugin hook")
@@ -365,12 +421,6 @@ function dispatchFirst(raw: unknown): void {
       },
     }),
   )
-}
-
-/** The ms left until `at`, a `performance.now()` reading, in whole ms because the failure line
- *  names the wait. */
-function remainingUntil(at: number): number {
-  return Math.max(0, Math.round(at - performance.now()))
 }
 
 /** Whether a refresher holds `lock`: it exists, is younger than `REFRESH_LOCK_STALE_MS`, and the
@@ -452,12 +502,12 @@ async function refreshedAnswers(
   }
   const lock = join(directory, REFRESH_LOCK)
   if (!refreshLockHeld(lock)) {
-    Bun.spawn([process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST], {
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-      detached: true,
-    }).unref()
+    const refresher = Bun.spawn(
+      [process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true },
+    )
+    refresher.unref()
+    nameRefresher(refresher.pid)
   }
   const file = join(directory, REFRESH_OUTCOME)
   for (;;) {
@@ -476,13 +526,14 @@ async function refreshedAnswers(
         reason: `the refresher read ${read}, not the Dispatch envoy.json names now`,
       }
     }
-    const left = remainingUntil(by)
-    if (left === 0) {
+    // One reading of the clock both decides that the deadline has come and arms the next look.
+    const now = performance.now()
+    if (Math.round(by - now) <= 0) {
       return {
         reason: `a "!" command in envoy.json had not finished ${Math.round(by)} ms after the hook started`,
       }
     }
-    await Bun.sleep(Math.min(REFRESH_POLL_MS, left))
+    await Bun.sleep(armedWait("refresher", by, { capMs: REFRESH_POLL_MS, at: now }))
   }
 }
 
@@ -498,7 +549,7 @@ async function answersMessage(
   by: number,
 ): Promise<{ readonly text: string | undefined; readonly notice?: string | undefined }> {
   const file = sessionConfigFile(HOST, process.env)
-  let { dispatch } = sessionDispatchSettings(file, process.env, {
+  let { dispatch } = await sessionDispatchSettings(file, process.env, {
     cwd,
     commands: "kept",
     session,
@@ -508,7 +559,7 @@ async function answersMessage(
     // The configured URL alone, no command run. With none (envoy.json unreadable, Dispatch off or
     // no URL), no token command can name one either: the hook starts no refresher and carries the
     // failure line naming why, never a list read for some URL.
-    dispatchUrl = sessionDispatchUrl(file, process.env, { cwd })
+    dispatchUrl = await sessionDispatchUrl(file, process.env, { cwd })
     if (dispatchUrl !== undefined) {
       const refreshed = await refreshedAnswers(session, cwd, dispatchUrl, startedAt, by)
       if ("text" in refreshed) return refreshed
@@ -522,7 +573,7 @@ async function answersMessage(
     env: process.env,
     // The read itself always gets the least wait, so a start-up and a resolution that spent the
     // budget on a loaded host never cost a list Dispatch answers at once.
-    deadlineMs: Math.max(ANSWERS_LEAST_WAIT_MS, remainingUntil(by)),
+    deadlineMs: armedWait("read", by, { leastMs: ANSWERS_LEAST_WAIT_MS }),
   })
 }
 
@@ -562,19 +613,12 @@ async function answers(text: string): Promise<never> {
     printed = performance.now()
     await Promise.race([
       sessionAnswersSettled(input.session_id),
-      Bun.sleep(remainingUntil(by + ANSWERS_SETTLE_MS)),
+      Bun.sleep(armedWait("settle", by + ANSWERS_SETTLE_MS)),
     ])
   } catch (error) {
     process.stderr.write(`envoy: people's answers were not added — ${messageFor(error)}\n`)
   }
-  const timingFile = process.env[ANSWERS_TIMING_FILE]
-  if (timingFile !== undefined) {
-    try {
-      writeFileSync(timingFile, JSON.stringify({ began, printed, ended: performance.now() }))
-    } catch {
-      // The tests' seam only: a path it cannot write never changes what the hook printed or its exit.
-    }
-  }
+  writeAnswersTiming({ began, printed, ended: performance.now(), deadline: by })
   // Exits rather than returns: a read still running would hold the process open.
   process.exit(0)
 }
@@ -595,8 +639,8 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
       // before any command runs: when envoy.json moved on since the hook started this refresher, no
       // hook carries what it read, and when the token command fails, the hook for the same URL
       // carries this refresher's failure line naming why.
-      const dispatchUrl = sessionDispatchUrl(file, process.env, { cwd }) ?? null
-      const { dispatch } = sessionDispatchSettings(file, process.env, { cwd, session })
+      const dispatchUrl = (await sessionDispatchUrl(file, process.env, { cwd })) ?? null
+      const { dispatch } = await sessionDispatchSettings(file, process.env, { cwd, session })
       const read = await readSessionAnswers({
         session,
         dispatch,
@@ -617,6 +661,22 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
   process.exit(0)
 }
 
+/** Whether this process holds the machine's device-login lock: `<login>.lock`, beside the login at
+ *  the path cipher-client keeps it (`deviceLoginFile`: `AGENT_SECRETS_DEVICE_LOGIN_FILE`, else
+ *  `$HOME/.config/legion/device-login.json`), whose first word is its holder's pid. cipher-client
+ *  reads it, synchronously (`loginLockHeldBy`, as `endOnceWritten` needs): a named pipe or a link
+ *  there is read as no lock, at once, so it cannot hold the hook open. */
+function holdsDeviceLoginLock(): boolean {
+  let login: string
+  try {
+    login = deviceLoginFile(process.env)
+  } catch {
+    // Neither the variable nor HOME names a place: this machine keeps no login, so holds no lock.
+    return false
+  }
+  return loginLockHeldBy(login, process.pid)
+}
+
 if (mode === "answers-refresh") {
   const [session, cwd] = modeArguments
   if (session === undefined || cwd === undefined) {
@@ -632,5 +692,9 @@ if (mode !== "open-asks" && mode !== "dispatch-first" && mode !== "answers") {
 const text = await Bun.stdin.text()
 if (mode === "answers") await answers(text)
 const input: unknown = JSON.parse(text)
-if (mode === "open-asks") await openAsks(input)
-else dispatchFirst(input)
+if (mode === "open-asks") {
+  await openAsks(input)
+  await endOnceWritten([process.stdout, process.stderr], holdsDeviceLoginLock, (code) =>
+    process.exit(code),
+  )
+} else await dispatchFirst(input)

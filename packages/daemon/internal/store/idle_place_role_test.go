@@ -37,7 +37,7 @@ func TestTheIdleViewAndTheIssueReadOnePlaceRole(t *testing.T) {
 			openRunningTree(t, st)
 			records := record.NewStore()
 			var issue *record.Issue
-			if err := st.Tx(ctx, func(tx pgx.Tx) error {
+			if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				issue, err = records.Issue(ctx, tx, rootIssue)
 				if err != nil || issue == nil {
@@ -52,7 +52,7 @@ func TestTheIdleViewAndTheIssueReadOnePlaceRole(t *testing.T) {
 					steps = append(steps, record.PlanStep{Issue: rootIssue, Generation: issue.Generation, Task: "a", Position: i + 1, Role: role,
 						AgentKey: key, Type: tc.types[i]})
 				}
-				return records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps))
+				return records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, nil, steps))
 			}); err != nil || issue == nil {
 				t.Fatalf("seed the plan %s of %s: %v (issue %v)", tc.steps, rootIssue, err, issue)
 			}
@@ -62,7 +62,7 @@ func TestTheIdleViewAndTheIssueReadOnePlaceRole(t *testing.T) {
 			}
 			for _, place := range places {
 				var read *record.Issue
-				if err := st.Tx(ctx, func(tx pgx.Tx) error {
+				if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 					if err := records.MoveTask(ctx, tx, rootIssue, issue.Generation, "a", place, record.TaskRunning); err != nil {
 						return err
 					}

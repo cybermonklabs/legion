@@ -50,6 +50,8 @@ func (stillTime) Now() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, ti
 
 func (stillTime) AfterFunc(time.Duration, func()) supervise.Cancel { return neverFires{} }
 
+func (stillTime) At(time.Time, func()) supervise.Cancel { return neverFires{} }
+
 func (stillTime) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 type neverFires struct{}
@@ -200,6 +202,54 @@ type seenRequest struct {
 	answer                                   []byte
 }
 
+// recordingDaemon is a daemon's HTTP handler served on a loopback port, with every request that
+// reached it recorded beside what the handler answered (serveRecorded).
+type recordingDaemon struct {
+	url  string
+	port int
+
+	mu   sync.Mutex
+	seen []seenRequest
+}
+
+// serveRecorded serves handler on a loopback port until the test ends, recording each request
+// and the handler's answer before the answer is written back.
+func serveRecorded(t *testing.T, handler http.Handler) *recordingDaemon {
+	t.Helper()
+	d := &recordingDaemon{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read the request body: %v", err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, r)
+		d.mu.Lock()
+		d.seen = append(d.seen, seenRequest{
+			method: r.Method, path: r.URL.Path, authorization: r.Header.Get("Authorization"),
+			contentType: r.Header.Get("Content-Type"), body: body, status: recorder.Code, answer: recorder.Body.Bytes(),
+		})
+		d.mu.Unlock()
+		for name, values := range recorder.Header() {
+			w.Header()[name] = values
+		}
+		w.WriteHeader(recorder.Code)
+		_, _ = w.Write(recorder.Body.Bytes())
+	}))
+	t.Cleanup(server.Close)
+	d.url = server.URL
+	d.port = server.Listener.Addr().(*net.TCPAddr).Port
+	return d
+}
+
+// requests is every request that reached the daemon, in order.
+func (d *recordingDaemon) requests() []seenRequest {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.seen)
+}
+
 // operatorDaemon is the daemon's HTTP surface as `legion claims` reaches it: the real
 // api.NewServer over real claim machines and a fake runtime, on a loopback port, with every
 // request that reached it recorded. Its record is a migrated database of its own that holds no
@@ -207,16 +257,12 @@ type seenRequest struct {
 // recoveries read the worker on a role's step from it (api's workerToken), and refuse on a daemon
 // with no record.
 type operatorDaemon struct {
+	*recordingDaemon
 	t               *testing.T
 	runtime         *fake.Runtime
 	conns           *fake.Conns
 	claimSupervisor *memoryClaims
-	url             string
-	port            int
 	tokenFile       string
-
-	mu   sync.Mutex
-	seen []seenRequest
 }
 
 func newOperatorDaemon(t *testing.T) *operatorDaemon {
@@ -244,29 +290,7 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 	}).Handler
 
 	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read the request body: %v", err)
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, r)
-		d.mu.Lock()
-		d.seen = append(d.seen, seenRequest{
-			method: r.Method, path: r.URL.Path, authorization: r.Header.Get("Authorization"),
-			contentType: r.Header.Get("Content-Type"), body: body, status: recorder.Code, answer: recorder.Body.Bytes(),
-		})
-		d.mu.Unlock()
-		for name, values := range recorder.Header() {
-			w.Header()[name] = values
-		}
-		w.WriteHeader(recorder.Code)
-		_, _ = w.Write(recorder.Body.Bytes())
-	}))
-	t.Cleanup(server.Close)
-	d.url = server.URL
-	d.port = server.Listener.Addr().(*net.TCPAddr).Port
+	d.recordingDaemon = serveRecorded(t, handler)
 	return d
 }
 
@@ -1158,6 +1182,42 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 			claim: api.OperatorClaim{Token: "legion-legion-legion-210-reviewer", Role: "reviewer", Issue: "LEGION-210",
 				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion},
 			want: "legion-legion-legion-210-reviewer reviewer LEGION-210 failed - 2 " + thisBinarysContract + " - - - -\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			writeClaimLine(&out, tc.claim)
+			if out.String() != tc.want {
+				t.Fatalf("claim line = %q, want %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// A claim whose refused launch's fact the store has not taken (api.OperatorClaim.UnrecordedRefusal)
+// prints the cause word `refusal-unrecorded` beside its state, where a claim with no failure record
+// prints `-`: the daemon tries such a fact again for as long as it fails, and nothing else on the
+// listing says that the claim waits on a fact the store does not take. A claim that failed prints
+// the cause it failed with instead, which is why it runs nothing; `--json` carries both.
+func TestClaimLineNamesARefusalTheStoreHasNotRecorded(t *testing.T) {
+	unrecorded := &api.UnrecordedRefusalView{Since: time.Date(2026, 11, 23, 17, 0, 0, 0, time.UTC), Attempts: 4, Error: "the database did not answer"}
+	for _, tc := range []struct {
+		name  string
+		claim api.OperatorClaim
+		want  string
+	}{
+		{
+			name: "suspended for its pod",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-208-tester", Role: "tester", Issue: "LEGION-208",
+				State: "suspended", SuspendedBy: "daemon", Generation: 2, PluginContract: api.DaemonAPIVersion, UnrecordedRefusal: unrecorded},
+			want: "legion-legion-legion-208-tester tester LEGION-208 suspended refusal-unrecorded 2 " + thisBinarysContract + " - - - -\n",
+		},
+		{
+			name: "failed",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-208-tester", Role: "tester", Issue: "LEGION-208",
+				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion, UnrecordedRefusal: unrecorded,
+				Failure: &api.ClaimFailureView{Cause: supervise.CauseLaunchRefused, Detail: "launch failures ran out"}},
+			want: "legion-legion-legion-208-tester tester LEGION-208 failed launch_refused 2 " + thisBinarysContract + " - - - -\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

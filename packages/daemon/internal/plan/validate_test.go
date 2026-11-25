@@ -16,10 +16,12 @@ const yet = " This release of Legion does not carry it out yet."
 var builtin = Deployment{Roles: BuiltinRoles()}
 
 // What no release carries out, as this release checks it: a step that names a role neither the
-// deployment nor the plan defines is refused, naming the step, its task and the role. Legion
-// refuses no plan for a step that it lacks, so each plan of Legion's own roles is taken whatever
-// steps it leaves out. The control is in the second half: a validator that also required a
-// reviewer step would refuse `implementer tester`, and one that required a tester would refuse
+// deployment nor the plan defines is refused, naming the step, its task and the role. Validate
+// refuses no plan for a step that it lacks, so each plan of Legion's own roles passes it whatever
+// steps it leaves out; a task with no implementer step, and a tester, reviewer or acceptance step
+// with no implementer before it, are what this release does not carry out yet, and Supported
+// refuses them. The control is in the second half: a validator that also required a reviewer
+// step would refuse `implementer tester`, and one that required a tester would refuse
 // `implementer reviewer`.
 func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
@@ -33,7 +35,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 			t.Fatalf("%v refused: %+v", taken, r)
 		}
 	}
-	// architect, merger and controller are no roles of a step: the step roles are Legion's five.
+	// architect, merger and controller are no roles of a step: Legion's step roles are five, and a deployment adds its own.
 	for _, role := range []string{"architect", "merger", "controller"} {
 		r := Validate(oneTask("a", "implementer "+role), d)
 		want := Refusal{Task: "a", Reason: "step 2 of task a names the role " + role + ", which neither the deployment nor the plan defines."}
@@ -52,6 +54,47 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	defined.Roles = []PlanRole{{Name: "prober", Type: TypeTesting}}
 	if r := Validate(defined, d); len(r) != 0 {
 		t.Fatalf("Validate(a role the plan defines) = %+v, want none", r)
+	}
+}
+
+// A role the plan defines is never named as a second or later agent of another role
+// (claim.NumberedAgentName), Legion's, the deployment's or the plan's own, and its own such agent
+// is never named as a role of the deployment: an agent of each role would hold one claim. Each
+// cause is refused once, naming the role the plan defines. The control is a plan whose roles only
+// look numbered or hold another role's name, which Validate takes.
+func TestValidateRefusesARoleNamedAsAnotherRolesNumberedAgent(t *testing.T) {
+	withBlocks := func(blocks ...string) Plan {
+		p := oneTask("a", "implementer")
+		for _, name := range blocks {
+			p.Roles = append(p.Roles, PlanRole{Name: name})
+		}
+		return p
+	}
+	held := ", so an agent of each role would hold one claim."
+	for _, tc := range []struct {
+		name string
+		plan Plan
+		d    Deployment
+		want string
+	}{
+		{"a second agent of Legion's planner", withBlocks("planner-2"), builtin,
+			"the plan defines the role planner-2, the name Legion gives a second or later agent of the role planner" + held},
+		{"a second agent of the deployment's role", withBlocks("checker-2"), withRole("checker", TypeTesting),
+			"the plan defines the role checker-2, the name Legion gives a second or later agent of the role checker" + held},
+		{"a third agent of a role the plan defines after it", withBlocks("prober-3", "prober"), builtin,
+			"the plan defines the role prober-3, the name Legion gives a second or later agent of the role prober" + held},
+		{"a role of the deployment named as a second agent of the plan's role", withBlocks("prober"), withRole("prober-2", TypeTesting),
+			"the plan defines the role prober, whose second or later agent Legion would name prober-2, the deployment's role" + held},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if r, want := Validate(tc.plan, tc.d), []Refusal{{Reason: tc.want}}; !reflect.DeepEqual(r, want) {
+				t.Fatalf("Validate =\n%+v\nwant\n%+v", r, want)
+			}
+		})
+	}
+	control := withBlocks("security-reviewer", "planner2", "code-checker", "checker-1", "planner-02")
+	if r := Validate(control, withRole("checker", TypeTesting)); len(r) != 0 {
+		t.Fatalf("Validate(roles no agent of another role takes) = %+v, want none", r)
 	}
 }
 

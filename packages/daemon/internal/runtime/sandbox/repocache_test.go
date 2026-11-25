@@ -1442,12 +1442,17 @@ func TestAnIssuePodsFetchIsToldItsRepositorysCacheAndItsToken(t *testing.T) {
 	}
 }
 
-// RepositoryCaches is every cache the stores hold, by repository, each with what its /healthz
-// answered at the last health read (on the gh refresher's tick): a Ready cache's head, bytes and
-// last fetch, a cache that could not be read with why, and one not Ready with nothing read. A cache
-// of a repository the set no longer holds carries when the sweep retires it.
+// RepositoryCaches is every cache the stores hold, by repository, each with its volume claim's name
+// — the claim the controller makes from its Sandbox's volume template, which an operator grows in
+// place — and with what its /healthz answered at the last health read (on the gh refresher's
+// tick): a Ready cache's head, bytes and last fetch, and its room on its volume with the time its
+// repack last failed for lack of space, a cache that could not be read with why, and one not Ready
+// with nothing read. A cache of a repository the set no longer holds carries when the sweep retires
+// it.
 func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 	fetched := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	repackFailed := time.Date(2026, 11, 19, 2, 15, 33, 0, time.UTC)
+	volume, available := uint64(20<<30), uint64(107374182)
 	var presented atomic.Value
 	presented.Store("")
 	served := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1457,7 +1462,8 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 		}
 		presented.Store(r.Header.Get("Authorization"))
 		w.Header().Set(workspace.CacheRepositoryHeader, "acme/widgets")
-		_ = json.NewEncoder(w).Encode(repocache.Health{Ready: true, Repo: "acme/widgets", Head: "0123abcd", LastFetchAt: fetched, Bytes: 6612345678})
+		_ = json.NewEncoder(w).Encode(repocache.Health{Ready: true, Repo: "acme/widgets", Head: "0123abcd", LastFetchAt: fetched, Bytes: 6612345678,
+			VolumeBytes: &volume, AvailableBytes: &available, RepackOutOfSpaceAt: repackFailed})
 	}))
 	t.Cleanup(served.Close)
 	network := &podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}
@@ -1506,12 +1512,25 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 	if len(caches) != 2 || caches[0].Repo != gadgets || caches[1].Repo != cacheRepo {
 		t.Fatalf("RepositoryCaches = %+v, want acme/gadgets then acme/widgets", caches)
 	}
+	for _, cache := range caches {
+		stored, err := g.r.storedSandbox(cache.Sandbox)
+		if err != nil || stored == nil || len(stored.Spec.VolumeClaimTemplates) != 1 {
+			t.Fatalf("the cache Sandbox %s is %+v (%v), want it stored with its one volume claim template", cache.Sandbox, stored, err)
+		}
+		if want := stored.Spec.VolumeClaimTemplates[0].Metadata.Name + "-" + stored.Name; cache.Claim != want {
+			t.Errorf("the cache of %s names its claim %q, want %q: the claim the controller makes from its Sandbox's volume template", cache.Repo, cache.Claim, want)
+		}
+	}
 	if gadgetsCache := caches[0]; gadgetsCache.Ready || gadgetsCache.Health != nil || gadgetsCache.HealthError != "" || gadgetsCache.RetainedUntil.IsZero() {
 		t.Errorf("the not-Ready cache outside the set is %+v, want nothing read and its retention", gadgetsCache)
 	}
 	widgets := caches[1]
 	if !widgets.Ready || widgets.Health == nil || widgets.Health.Head != "0123abcd" || widgets.Health.Bytes != 6612345678 || !widgets.Health.LastFetchAt.Equal(fetched) || widgets.HealthError != "" {
 		t.Errorf("the Ready cache is %+v (health %+v), want its /healthz", widgets, widgets.Health)
+	}
+	if room := widgets.Health; room == nil || room.VolumeBytes == nil || *room.VolumeBytes != volume || room.AvailableBytes == nil || *room.AvailableBytes != available ||
+		room.VolumeError != "" || !room.FetchOutOfSpaceAt.IsZero() || !room.RepackOutOfSpaceAt.Equal(repackFailed) {
+		t.Errorf("the Ready cache's health is %+v, want its room on its volume and its repack's failure for lack of space as /healthz answered them", room)
 	}
 
 	served.Close()

@@ -46,8 +46,8 @@ const (
 // HasOpenOrMergedPR is whether the issue's pull request record is open or merged. A merged record
 // counts: the work landed, the merge told the architect (pr-merged), and the workflow runs on. Only
 // the implementer's move on reads it (hasOpenOrMergedPR), so that completion never moves an issue on
-// a pull request closed without merging, nor with none recorded; no other step's row asks for one.
-// HasPullRequest is whether the issue has a pull request record in any state, which the retro's
+// a pull request closed without merging, nor with none recorded; no other step's completion reads
+// it. HasPullRequest is whether the issue has a pull request record in any state, which the retro's
 // end reads: a task with one goes to its merge, a task with none is done.
 type Snapshot struct {
 	Phase             phase.Phase
@@ -125,11 +125,12 @@ var stepRows = []struct {
 // merge's own effects, since such a task has no merge (no production check opens either: one
 // opens only on a merged pull request); the merge, out of merging into done; and a backward row
 // from each position of the line to each position before it (backwardRows). A head that conflicts
-// with its base moves no phase (merge_forward.go). A return goes back to implementing where
-// implementing stands before the step
-// that fails, and a step with no implementing before it has none. Each row carries the places of
-// its two positions (placeAt), so a line that holds a phase at two places, two steps of roles the
-// deployment defines, has a row for each. Every row into a phase of the line starts the place it
+// with its base moves no phase (merge_forward.go). A failed step's return is one of those backward
+// rows: to the first step of the type implementation before it (Walk.returnTarget), or to the
+// earlier step its completion names, and a failed step with neither stops its task. Each row
+// carries the places of its two positions (placeAt), so a line that holds a phase at two places,
+// two steps of roles the deployment defines or two steps of one role, has a row for each. Every row
+// into a phase of the line starts the place it
 // enters (startEffects): its agent, or, where that agent is the owner, the owner's step, which
 // starts no claim and tells the owner with an owner-step notice (Engine.start). No row carries a
 // status of its own: every status a row writes is its target phase's, which PhaseStatus holds.

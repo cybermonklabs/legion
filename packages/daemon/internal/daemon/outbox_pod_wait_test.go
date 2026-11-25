@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -60,9 +61,10 @@ func podWaitRunner(t *testing.T, lacks map[claim.Role]string) (*outbox, *supervi
 
 // A start of a role that the issue's pod was built before waits on its row and makes no claim:
 // the launch, not the pod's round or its release, would otherwise decide the pod, and a launch
-// into it would replace it with the issue's disk (ruling 18). Where the pod holds the role, the
+// into it would replace it with the issue's disk. Where the pod holds the role, the
 // same row creates the claim and spawns it.
 func TestAStartOfARoleThePodLacksWaitsAndMakesNoClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		lacks map[claim.Role]string
@@ -110,6 +112,7 @@ func TestAStartOfARoleThePodLacksWaitsAndMakesNoClaim(t *testing.T) {
 // start waits on its row where the pod lacks either, its text naming the one it lacks, and asks
 // the runtime for nothing: a launch refused for the role would be charged as a launch failure.
 func TestAKeyedAgentsStartWaitsWhereThePodLacksItsSlotOrTheRoleOfItsStep(t *testing.T) {
+	t.Parallel()
 	implementer, err := claim.NewToken("legion", "LEGION-208", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -151,6 +154,15 @@ func TestAKeyedAgentsStartWaitsWhereThePodLacksItsSlotOrTheRoleOfItsStep(t *test
 			if notices := outboxPodWaitHeld(t, runner, issue.Key); len(notices) != 1 || !strings.Contains(notices[0], tc.names) {
 				t.Errorf("the pod-wait-held notices = %q, want one that names %q", notices, tc.names)
 			}
+			// The notice names the start as `legion state` names a claim (api.ClaimNameInIssue):
+			// neither claim here is named for the role of its step, so each is named by that role
+			// with its token beside it, and two claims of one role read apart.
+			start := api.ClaimNameInIssue(tc.role, tc.claim)
+			if notices := outboxPodWaitHeld(t, runner, issue.Key); len(notices) == 1 &&
+				!strings.Contains(notices[0], start) {
+				t.Errorf("the pod-wait-held notice %q does not name the start %q", notices[0],
+					start)
+			}
 		})
 	}
 }
@@ -183,10 +195,11 @@ func outboxPodWaitHeld(t *testing.T, runner *outbox, issue string) []string {
 // Under a deployment with no idle release (idle_minutes: 0), main's rule never ends a wait for a
 // pod built before a role, and where no claim records a process in that pod no update round opens
 // over it either: nothing ends the wait until an operator acts, so the controller is told, once
-// for each wait that finds no process in the pod (ruling 19 as the lead corrected it on R3-1).
+// for each wait that finds no process in the pod.
 // Where a claim records a process there, the round asks each role to push and replaces the pod,
 // and the controller is told nothing; where the idle release is on, main's rule ends the wait.
 func TestAWaitUnderADeploymentWithNoIdleReleaseIsToldOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	implementer, err := claim.NewToken("legion", "LEGION-208", claim.RoleImplementer)
 	if err != nil {
@@ -235,6 +248,16 @@ func TestAWaitUnderADeploymentWithNoIdleReleaseIsToldOnce(t *testing.T) {
 			if !strings.Contains(notices[0], want) {
 				t.Errorf("the notice's reason %q does not name %q", notices[0], want)
 			}
+		}
+		// The start names no claim, so it starts the checker's own claim, which the notice names
+		// by its role alone (api.ClaimNameInIssue).
+		own, err := claim.NewToken("legion", "LEGION-208", "checker")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(notices[0], string(own)) {
+			t.Errorf("the notice's reason %q names the checker's own claim by its token %s, "+
+				"want its role alone", notices[0], own)
 		}
 		for _, never := range []string{"remove", "delete"} {
 			if strings.Contains(notices[0], never) {

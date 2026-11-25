@@ -2,8 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -58,9 +56,9 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // the architect there has not ended, whatever step it does then, else the step's while it does a
 // step of its own or the retro of one), else the role its process was launched as, which that
 // launch recorded on the Secret, else the stored claim's role, and its own name's App where no
-// stored claim runs in it (slotAppRole) — so the gh files its container projects (GHConfigDir)
-// carry the tokens the daemon holds now: the kubelet rewrites the projection in place once the
-// Secret changes. It walks the pod store for the pods of this project (every launcher slot holds
+// stored claim runs in it and that name is a role's (slotAppRole) — so the gh files its container
+// projects (GHConfigDir) carry the tokens the daemon holds now: the kubelet rewrites the projection
+// in place once the Secret changes. It walks the pod store for the pods of this project (every launcher slot holds
 // an App's gh bundle, the controller's included; a repository cache's pod names no kind and holds
 // none, so it is passed over, its token refreshCacheTokens') that are Pending or Running and not
 // being deleted —
@@ -147,9 +145,10 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// not the runtime's now: a pod built before a role of the deployment has no Secret of it,
 		// and asking for one would fail at every tick for a role no process of the pod runs. A
 		// slot of an agent of the plan whose name is no role of the runtime, and in which no stored
-		// claim runs yet, names no App to render it for and runs nothing that reads it: its
-		// claim's first launch writes it for that claim's role before its child starts
-		// (writeLaunchCredential).
+		// claim runs yet, names no App to render it for (slotAppRole refuses it), and runs nothing
+		// that reads it: its claim's first launch writes it for that claim's role before its child
+		// starts (writeLaunchCredential). The walk passes over such a slot here, which saves the
+		// warning a refused refresh of it would log at every tick.
 		repo, named := fetchRepository(pod)
 		for _, role := range builtRoles(pod.Spec) {
 			if heldErr != nil && role != claim.RoleController {
@@ -157,7 +156,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 			}
 			// The pod's launcher of each role serves the slot of that role's name.
 			slot := claim.Agent(role)
-			if _, runs := held[slotKey{sandbox: pod.Name, slot: slot}]; !runs && role != claim.RoleController && !slices.Contains(r.issueRoles, role) {
+			if _, runs := held[slotKey{sandbox: pod.Name, slot: slot}]; !runs && !slices.Contains(r.launcherRoles(), role) {
 				continue
 			}
 			r.refreshGitHubCredential(ctx, pod, owner.UID, slot, held, repo, bundles)
@@ -425,8 +424,7 @@ type slotCredential struct {
 // default owner and the digest of the token it holds, as a start names them and a credential check
 // asks of them (shimwire.LauncherGitHubCredential, shimwire.LauncherCredentialCheck).
 func (held slotCredential) launcherCredential() shimwire.LauncherGitHubCredential {
-	sum := sha256.Sum256([]byte(held.token))
-	return shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: hex.EncodeToString(sum[:])}
+	return shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: shimwire.GitHubTokenDigest(held.token)}
 }
 
 // slotWrite is what one write of a slot's Secret is made for (writeSlotCredential). role judges,
@@ -762,16 +760,27 @@ func (r *Runtime) slotHolders(ctx context.Context) (map[slotKey]slotHolder, erro
 // slotAppRole is the role whose App slot of the pod of sandbox holds: runtime.SlotRole of the
 // stored claim that runs in it, for the role its process was launched as where launched, the
 // record a launch's write of the slot's Secret left (launchedRoleAnnotation), is of the stored
-// claim's generation or a later one, and otherwise for that claim's stored role in held; the slot's
-// own name where no stored claim runs in it. A record of a later generation than held's is a launch
-// held was read before, whose role is the one its process runs; a record of an earlier one is of a
-// process a later launch replaced, by a release that leaves no record, whose role the stored claim
-// holds. SlotRole gives the claim's role unless the runtime's ActsAs gives another. It is never the
-// slot's name for a claim that holds another role: a keyed agent's slot is named by its agent.
+// claim's generation or a later one, and otherwise for that claim's stored role in held. A record
+// of a later generation than held's is a launch held was read before, whose role is the one its
+// process runs; a record of an earlier one is of a process a later launch replaced, by a release
+// that leaves no record, whose role the stored claim holds. SlotRole gives the claim's role unless
+// the runtime's ActsAs gives another. A slot is named by its agent, not by the role its claim
+// holds: two claims of one issue can hold one role (record.WorkerClaim).
+//
+// Where no stored claim runs in the slot, it is the slot's own name, and only where that name is a
+// role the runtime writes a slot for with no claim (launcherRoles: its issue roles and the
+// controller), as the refresh walk passes over every other slot that runs no claim. The slot of an
+// agent of the plan whose name is no role (`implementer-2`) names no App, so it is
+// refused: the pod's build writes it for the App of its agent's first step (gitHubBundles), and
+// its claim's launch for that claim's role (writeLaunchCredential).
 func (r *Runtime) slotAppRole(ctx context.Context, held map[slotKey]slotHolder, sandbox string, slot claim.Agent, launched string) (claim.Role, error) {
 	h, ok := held[slotKey{sandbox: sandbox, slot: slot}]
 	if !ok {
-		return launcherOf(slot), nil
+		own := launcherOf(slot)
+		if !slices.Contains(r.launcherRoles(), own) {
+			return "", fmt.Errorf("the slot %s of %s runs no stored claim, and its name is no role, so it names no App", slot, sandbox)
+		}
+		return own, nil
 	}
 	if generation, role, ok := readLaunched(launched); ok && generation >= h.generation {
 		h.role = role

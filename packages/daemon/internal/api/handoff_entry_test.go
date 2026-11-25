@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -35,7 +36,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
@@ -68,14 +69,14 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 
 	// The implementer's second round ends and the issue is in testing again: the tester's second
 	// entry, which its first task's turn knows nothing of.
-	takeStart(t, h, implementer.token, "LEGION-208", claim.RoleImplementer)
+	implementing := takeStart(t, h, implementer.token, "LEGION-208", claim.RoleImplementer)
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "covered the empty list", Commit: "handoff-2",
 		HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}))
 	assertIssuePhase(t, h, phase.Testing)
 	_, secondStart := queuedStart(t, h, "LEGION-208", claim.RoleTester)
-	if secondStart.Entry != firstTesting+1 {
-		t.Fatalf("the second testing start is of entry %d, want the %d after the first: an entry is one above the highest entry of the step's claim, the tester's own here",
-			secondStart.Entry, firstTesting+1)
+	if secondStart.Entry <= implementing || secondStart.Entry <= firstTesting {
+		t.Fatalf("the second testing start is of entry %d, want above the implementer's entry %d and the tester's first entry %d",
+			secondStart.Entry, implementing, firstTesting)
 	}
 	if run := issueGeneration(t, h, "LEGION-208"); run != 1 {
 		t.Fatalf("the issue is on run %d, want 1: the run never moved, which is why it cannot refuse this completion", run)
@@ -92,7 +93,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	before := recordedCompletions(t, h, claim.RoleTester)
 	message := complete()
 	for _, want := range []string{
-		fmt.Sprintf("LEGION-208 handed the tester phase testing again: this completion is of entry %d, which is 1 behind the entry %d the phase is on",
+		fmt.Sprintf("LEGION-208 handed the tester phase testing again: this completion is of entry %d, not the phase's current entry %d",
 			firstTesting, secondStart.Entry),
 		"nothing was recorded",
 		// The second entry's task is queued and no delivery has carried it to this claim, which
@@ -181,7 +182,7 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	for _, want := range []string{
-		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 		"nothing was recorded",
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session",
 		"complete it with a handoff of its own, never this completion's record, commit or verdict",
@@ -215,13 +216,14 @@ func TestStaleEntryInstructionGolden(t *testing.T) {
 	// What decided the refusal stands in the middle of it (intake.BehindEntryClause), so the
 	// instruction is still the text the refusal ends with, whichever clause it carries.
 	decided := intake.BehindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false, false)
+	base := "LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2, and " + decided + "; nothing was recorded"
 	for clause, pending := range map[string]*supervise.Delivery{
-		"the entry 2 the phase is on, and " + decided + "; nothing was recorded":                nil,
-		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session": {ID: "outbox:78", Entry: 2},
+		base: nil,
+		base + ", and your turn began before the daemon's task for entry 2 (outbox:78) reached this session": {ID: "outbox:78", Entry: 2},
 	} {
 		refusal := intake.StaleEntry("LEGION-208", claim.RoleTester, phase.Testing, 2, 1, pending, decided)
-		if refusal.Code != intake.StaleEntryCode || !strings.HasSuffix(refusal.Message, clause+". "+intake.StaleEntryInstruction) {
-			t.Fatalf("intake.StaleEntry with pending %+v = %+v, want code %s, %q and then exactly %q", pending, refusal, intake.StaleEntryCode, clause, intake.StaleEntryInstruction)
+		if want := clause + ". " + intake.StaleEntryInstruction; refusal.Code != intake.StaleEntryCode || refusal.Message != want {
+			t.Fatalf("intake.StaleEntry with pending %+v = %+v, want code %s and message %q", pending, refusal, intake.StaleEntryCode, want)
 		}
 	}
 	golden(t, "stale-entry.json", map[string]string{"code": intake.StaleEntryCode, "instruction": intake.StaleEntryInstruction})
@@ -248,7 +250,7 @@ func TestACompletionIsHeldToItsEntryOnlyWhenBothSidesNameOne(t *testing.T) {
 		{name: "both sides name the entry the phase is on", row: 1, serving: 1},
 		{
 			name: "the claim serves the entry before this phase's", row: 2, serving: 1, refused: true,
-			says: []string{"this completion is of entry 1, which is 1 behind the entry 2 the phase is on"},
+			says: []string{"this completion is of entry 1, not the phase's current entry 2"},
 		},
 		{
 			name: "the claim serves an entry the phase has not raised to", row: 1, serving: 2, refused: true,
@@ -302,7 +304,7 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
@@ -352,13 +354,14 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	}
 }
 
-// The entry says a completion is behind; what the worker reported says whether that matters. A
-// verdict is a fact about a head, and a phase can be handed to its role again at the head the
-// role is already reporting on — the issue left the phase and came back with nothing pushed in
-// between — where the second entry's task asks for the very work this turn did. The phase ends
-// with a handoff record, which names the phase it is of, so the completion is readable as this
-// phase's answer; the commit it names is the head the record holds. It is taken, and the fact it
-// reports moves the issue on to reviewing.
+// The entry says a completion is behind; what the worker reported, and which step the entry is
+// of, say whether that matters. A verdict is a fact about a head, and a phase can be handed to its
+// role again at the head the role is already reporting on — the issue left the phase and came back
+// with nothing pushed in between — where the second entry's task asks for the very work this turn
+// did, since the tester stands at one step here (an entry of another step of a role is refused even
+// at that head, record.OtherStepsEntry). The phase ends with a handoff record, which names the
+// phase it is of, so the completion is readable as this phase's answer; the commit it names is the
+// head the record holds. It is taken, and the fact it reports moves the issue on to reviewing.
 func TestABehindCompletionAtTheRecordedHeadIsTaken(t *testing.T) {
 	h, _, facts := newEntryHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
@@ -418,7 +421,7 @@ func TestABehindCompletionWhoseEntryAMoveBackRaisedIsRefused(t *testing.T) {
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	for _, want := range []string{
-		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 		"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
 		"the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it",
 		"nothing was recorded",
@@ -469,7 +472,7 @@ func TestABehindCompletionAwayFromTheRecordedHeadIsRefused(t *testing.T) {
 			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 				Commit: tc.commit, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 			for _, want := range []string{
-				"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+				"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 				tc.says,
 				"nothing was recorded",
 			} {
@@ -514,7 +517,7 @@ func TestABehindCompletionOfAPhaseWithNoRecordIsRefused(t *testing.T) {
 			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "done", Commit: headSHA}),
 				http.StatusConflict, "HANDOFF_STALE_ENTRY")
 			for _, want := range []string{
-				fmt.Sprintf("LEGION-208 handed the %s phase %s again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on", tc.role, tc.at),
+				fmt.Sprintf("LEGION-208 handed the %s phase %s again: this completion is of entry 1, not the phase's current entry 2", tc.role, tc.at),
 				"this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is",
 				"nothing was recorded",
 			} {
@@ -730,7 +733,7 @@ func seedMovedBackEntry(t *testing.T, h *harness, issue string, role claim.Role,
 func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64, movedBack bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role,
 			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryMovedBack: movedBack})
 	}); err != nil {
@@ -740,8 +743,8 @@ func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int
 
 // queuedStart is the newest start the outbox holds for role on issue, with its row id: the row the
 // outbox runner would deliver next.
-// A phase worker's start is one row, which carries the task and its entry and waits for the
-// issue's admission slot (workflow.StartOrOwe). A start with no task is a role admission brings
+// A phase worker's start is one row, which carries the task and its entry and, in a phase that
+// keeps a slot (record.KeepsSlot), waits for the issue's admission slot (workflow.StartOrOwe). A start with no task is a role admission brings
 // back beside it and is of no entry, so it is not one of these.
 func queuedStart(t *testing.T, h *harness, issue string, role claim.Role) (int64, record.SuperviseRequest) {
 	t.Helper()
@@ -761,10 +764,10 @@ func queuedStart(t *testing.T, h *harness, issue string, role claim.Role) (int64
 	return id, request
 }
 
-// takeStart hands the claim the newest start queued for its role, as the outbox runner does, and
-// answers the entry that start is of. The turn the claim is in ends first, which retires the task
-// it held: the outbox's delivery waits for that anyway, since a machine refuses a second delivery
-// while one is pending.
+// takeStart hands the claim the newest start queued for its role, standing in for the outbox
+// runner, which hands a start to the claim it names, and answers the entry that start is of.
+// The turn the claim is in ends first, which retires the task it held: the outbox's delivery waits
+// for that anyway, since a machine refuses a second delivery while one is pending.
 func takeStart(t *testing.T, h *harness, token claim.Token, issue string, role claim.Role) int64 {
 	t.Helper()
 	row, start := queuedStart(t, h, issue, role)
@@ -822,7 +825,7 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 func holdPhases(h *harness) {
 	h.supervisor.deps.PhaseHolds = func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error) {
 		var issue *record.Issue
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			issue, err = record.NewStore().Issue(ctx, tx, c.Issue)
 			return err

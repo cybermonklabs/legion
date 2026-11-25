@@ -18,7 +18,7 @@ import (
 // the plan in force, each named by the one rule of a stored step (plan.StoredAgentName): the plan in
 // force is the issue's generation's, so a step of an earlier generation names no agent; a step of
 // the key owner names none, whatever it holds; every other step holds its name, which
-// 20261117213545 wrote on each step a release before the column wrote; and each agent carries the
+// 20261124213820 wrote on each step a release before the column wrote; and each agent carries the
 // role of its first step. An issue of another project's record, and one with no plan rows, have
 // none.
 func TestThePlanAgentsAreTheAgentsOfThePlanInForce(t *testing.T) {
@@ -44,7 +44,7 @@ func TestThePlanAgentsAreTheAgentsOfThePlanInForce(t *testing.T) {
 		}
 		return records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps)
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range []record.Issue{issue("LEGION-208", "LEGION", 2), issue("LEGION-209", "LEGION", 1), issue("OTHER-7", "OTHER", 1)} {
 			if err := records.PutIssue(ctx, tx, seeded); err != nil {
 				return err

@@ -29,7 +29,7 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 }
 
 // An issue pod runs every role of the issue in one container, `roles`, whose PID 1 is one
-// `legion launcher` serving all six (multi-role mode: --roles-dir and one --role per role, each
+// `legion launcher` serving every role (multi-role mode: --roles-dir and one --role per role, each
 // role's token and private directory under the roles directory). Each role's per-role volumes are
 // mounted under /var/run/legion/roles/<role>/ — its launcher token and gh files read-only, its
 // private, state and agent-secrets key directories its own — and none at the fixed paths a role

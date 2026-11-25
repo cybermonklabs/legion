@@ -41,9 +41,10 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // (writePermissions, Tokens.Token) — and no directory holds a narrower one. A role's token is
 // its App's installation lease on one account: the account chose what that installation reaches
 // when it installed the App, the daemon asks GitHub to narrow it no further, and there is
-// therefore nothing narrower for a bundle to hold. So a role pushes to, opens a pull request in
-// and reviews a pull request of every repository its App reaches, whichever owner's it is, and
-// which repository its own issue names decides the bundle's default directory and nothing else
+// therefore nothing narrower for a bundle to hold. So a role's bundle reaches every repository its
+// App reaches, whichever owner's it is, at the role's own permissions. An issue pod shows a role
+// only the directories every role of the pod holds (sandbox's ghDirsShared). Which repository the
+// role's own issue names decides the bundle's default directory and nothing else
 // (INFRA-2543 R2). A reading lease in another owner's directory, which this bundle held until
 // that ruling, refused a role the work its App is installed for.
 //

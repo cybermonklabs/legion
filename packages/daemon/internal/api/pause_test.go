@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
@@ -101,12 +102,13 @@ func (h *pauseHarness) pauseOptions(svc PauseService) Options {
 	}
 }
 
-// controllerSession registers ses_controller as the project's controller, as `legion controller
-// start` and the session's registration do, and answers a grant that session minted.
-func (h *pauseHarness) controllerSession() string {
+// controllerSession registers the project's controller as the session the constant
+// controllerSession names, as `legion controller start` and the session's registration do, and
+// answers a grant that session minted.
+func (h *harness) controllerSession() string {
 	h.t.Helper()
-	registration := h.registeredController(h.mintedSecret(), "ses_controller")
-	recorder := h.controllerSessionGrant("ses_controller", registration.Secret)
+	registration := h.registeredController(h.mintedSecret(), controllerSession)
+	recorder := h.controllerSessionGrant(controllerSession, registration.Secret)
 	if recorder.Code != http.StatusOK {
 		h.t.Fatalf("the controller session's grant = %d; body %s", recorder.Code, recorder.Body)
 	}
@@ -703,7 +705,7 @@ func TestPauseStateTxReadsThePauseThroughTheStatesSnapshot(t *testing.T) {
 		t.Helper()
 		var paused *PausedView
 		var last *PauseView
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			paused, last, err = PauseStateTx(ctx, tx, testDispatchProject, h.clock.Now())
 			return err
@@ -722,7 +724,7 @@ func TestPauseStateTxReadsThePauseThroughTheStatesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, start) }); err != nil {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, start) }); err != nil {
 		t.Fatalf("queue a start the pause holds: %v", err)
 	}
 	h.clock.advance(2 * time.Minute)

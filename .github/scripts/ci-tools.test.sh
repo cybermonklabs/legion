@@ -1186,8 +1186,8 @@ run ci_tools_source_name packaged second
 check "for an npm row too" "$(is "$out" "npm")"
 run ci_tools_source_name oddsource second
 check "a word no second source is read from fails" "$(is "$status" 1)"
-check "naming the row, the word and the five" \
-  "$(contains "$out" "^::error::ci-tools: oddsource: the manifest's second_source is 's3', and this file reads github-release, ghcr-mirror, npm, pypi and pulumi-releases$")"
+check "naming the row, the word and the six" \
+  "$(contains "$out" "^::error::ci-tools: oddsource: the manifest's second_source is 's3', and this file reads github-release, ghcr-mirror, npm, pypi, pulumi-releases and helm-releases$")"
 # Each side is the row's own word and neither is the other's default: this row's primary is a
 # service of its own, and `github-release` is its second source, which is a word a row may now
 # write on either side.
@@ -1204,11 +1204,11 @@ check "and a pulumi-releases row's is its own" "$(is "$out" "pulumi-releases")"
 run ci_tools_source_name oddprimary primary
 check "a word no primary is read with fails" "$(is "$status" 1)"
 check "naming the row, the field and the words a primary is written in" \
-  "$(contains "$out" "^::error::ci-tools: oddprimary: the manifest's primary_source is 'ghcr-mirror', and this file reads github-release, pypi and pulumi-releases as a primary$")"
+  "$(contains "$out" "^::error::ci-tools: oddprimary: the manifest's primary_source is 'ghcr-mirror', and this file reads github-release, pypi, pulumi-releases and helm-releases as a primary$")"
 run ci_tools_fetch oddprimary "$work/dest/oddprimary"
 check "and the fetch of that row fails" "$(is "$status" 1)"
 check "with the same sentence" \
-  "$(contains "$out" "^::error::ci-tools: oddprimary: the manifest's primary_source is 'ghcr-mirror', and this file reads github-release, pypi and pulumi-releases as a primary$")"
+  "$(contains "$out" "^::error::ci-tools: oddprimary: the manifest's primary_source is 'ghcr-mirror', and this file reads github-release, pypi, pulumi-releases and helm-releases as a primary$")"
 check "and nothing is at the destination" "$(nothing_at "$work/dest/oddprimary")"
 run ci_tools_source_name tarred both
 check "a mode that is neither primary nor second fails" "$(is "$status" 1)"

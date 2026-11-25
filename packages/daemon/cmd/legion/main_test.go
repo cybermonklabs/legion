@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -34,8 +35,10 @@ import (
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 // testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
-// the leak guard's curl reads run (leakguardCurl), so a test of `legion gh` in a process of its
-// own reaches no network.
+// the leak guard's curl reads run (leakguardCurl). A run that names none has leakguardtest.NoCurl,
+// a path with no file, and so has every guard of this binary's own process unless its test sets
+// leakguardCurl: no guard here runs the system's /usr/bin/curl (INFRA-3904). The `legion` these
+// tests build links the same path (legionBuild).
 const testCurlEnv = "LEGION_CMD_TEST_CURL"
 
 func TestMain(m *testing.M) {
@@ -46,6 +49,9 @@ func TestMain(m *testing.M) {
 	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE"} {
 		os.Unsetenv(name)
 	}
+	// No guard of this binary reads through the system's curl (leakguardtest.NoCurl); a run as
+	// `legion` whose test names a stand-in takes it below.
+	leakguardCurl = leakguardtest.NoCurl
 	if os.Getenv(testMainEnv) == "1" {
 		// A test's stand-in shared check is no copy of the pinned one, so the test names the
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
@@ -59,6 +65,13 @@ func TestMain(m *testing.M) {
 		if curl := os.Getenv(testCurlEnv); curl != "" {
 			leakguardCurl = curl
 		}
+		// The bounds legion sets on a program it starts, at what is left of the deadline of the
+		// test binary that started this run (boundByTheDeadline). Only this test binary reads the
+		// variable; the legion binary has none.
+		if err := boundByTheEnvironment(); err != nil {
+			fmt.Fprintln(os.Stderr, "TestMain:", err)
+			os.Exit(2)
+		}
 		// The environment these tests hand gh beside ghChildEnviron's allowlist
 		// (testGhChildEnviron); the legion binary has no such hook.
 		ghChildTestEnviron = testGhChildEnviron(os.Environ())
@@ -71,6 +84,15 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
+	// The bounds legion sets on a program it starts, at what is left of this binary's deadline,
+	// here and in every run of it as `legion` (boundByTheDeadline). After MustGuard, which takes
+	// LEGION_* variables out of the environment.
+	if deadline, ok := testBinaryDeadline(); ok {
+		if err := boundByTheDeadline(deadline); err != nil {
+			fmt.Fprintln(os.Stderr, "TestMain:", err)
+			os.Exit(1)
+		}
+	}
 	// testpg.Main lets TestPauseCommands clone a migrated database of its own, and drops what it
 	// cloned once the run ends; a run that clones nothing, as every other test here, costs nothing,
 	// and with no LEGION_TEST_PG_DSN the cloning test is skipped (testpg.Clone).
@@ -135,7 +157,9 @@ func legionConfig(t *testing.T, project string, port int) string {
 
 // runningLegion is a live process named `legion`, which is what the registry's pids point at and
 // what registry.Alive answers true for. A copy of sleep: Alive reads argv[0], and a shell
-// script's argv[0] is the shell.
+// script's argv[0] is the shell. It sleeps without end, and the test's cleanup kills it: a probe
+// that ended on its own, once a loaded machine made the test outlast its sleep, would read as a
+// legion that had stopped.
 func runningLegion(t *testing.T) int {
 	t.Helper()
 	sleep, err := exec.LookPath("sleep")
@@ -151,7 +175,7 @@ func runningLegion(t *testing.T) int {
 		t.Fatalf("write the probe: %v", err)
 	}
 
-	probe := exec.Command(path, "300")
+	probe := exec.Command(path, "infinity")
 	if err := probe.Start(); err != nil {
 		t.Fatalf("start the probe: %v", err)
 	}
@@ -159,7 +183,9 @@ func runningLegion(t *testing.T) int {
 		_ = probe.Process.Kill()
 		_, _ = probe.Process.Wait()
 	})
-	if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
+	// The exec is waited for with no span of its own, only what is left of the test binary's
+	// deadline less 30 s (testwait.Bounded): a loaded machine's slow exec passes.
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
 		t.Fatalf("the probe at %s never exec'd", path)
 	}
 	return probe.Process.Pid
@@ -187,7 +213,9 @@ func reapedPID(t *testing.T) int {
 }
 
 // healthzOn serves /healthz on one address and returns the port, so a status can be told to dial
-// somewhere other than 127.0.0.1 and be wrong about it.
+// somewhere other than 127.0.0.1 and be wrong about it. A client's headers have what is left of
+// the test binary's deadline less 30 s to arrive: a status a loaded machine makes slow to write
+// them is still answered.
 func healthzOn(t *testing.T, host string) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
@@ -198,7 +226,7 @@ func healthzOn(t *testing.T, host string) int {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: testwait.Bounded(t, 1<<60, 30*time.Second)}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close() })
 	return listener.Addr().(*net.TCPAddr).Port
@@ -368,12 +396,15 @@ func startOnDescriptor(t *testing.T, config string, descriptor *os.File) (int, s
 		_ = command.Wait()
 		close(exited)
 	}()
+	// The exit is waited for with no span of its own, only what is left of the test binary's
+	// deadline less 30 s (testwait.Bounded): a loaded machine's slow start passes, and one that
+	// never exits is killed and fails by name.
 	select {
 	case <-exited:
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
 		_ = command.Process.Kill()
 		<-exited
-		t.Fatalf("legion start did not exit within 30s; stderr = %q", stderr.String())
+		t.Fatalf("legion start did not exit 30s before the test binary's deadline; stderr = %q", stderr.String())
 	}
 	return command.ProcessState.ExitCode(), stderr.String()
 }
@@ -1446,8 +1477,8 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 // legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
 // gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). When
 // worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
-// whose plugin is the worker image's and never an install: Legion's phase workers in the order of
-// the default steps and the merge, then each role of the deployment in the file's order.
+// whose plugin is the worker image's and never an install: Legion's phase workers in claim.Roles'
+// order, the order of the default steps, then each role of the deployment in the file's order.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	legionState(t)
 	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
@@ -1603,7 +1634,7 @@ func TestConfigCheckWarnsOfAnOperatorVolumeOfASlotsForm(t *testing.T) {
 func TestConfigCheckRefusesAnUnknownCapabilityDecision(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct{ name, extra, want string }{
-		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion config check: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity\n"},
+		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion config check: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room\n"},
 		{"a blank reason", "capabilities: {decided: {secrets: \"\"}}\n", "legion config check: capabilities.decided.secrets must not be empty\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1759,7 +1790,12 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 // An operator reading plain `legion state` is told which agents are in a tool call right now:
 // each by issue and role with the call its stream named and when that call started, read from
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made
-// it is in none; with no agent in a call the line says so.
+// it is in none; with no agent in a call the line says so. Only a working claim's agent is in a
+// turn: a retired or suspended claim keeps the step it was last in on its record, on purpose, so
+// a call open there is no agent in a call, and the line names only the working claims. An issue's
+// other claims (`otherClaims`) are read too, and two claims of one role on one issue are named
+// apart: the role's own claim by its issue and role, and an agent named otherwise by its token
+// beside them, wherever the issue lists either claim.
 func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -1769,11 +1805,53 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 		`"callId":"toolu_impl_3","argsBytes":128,"argsHash":"9b2e45c0d1f8a673","startedAt":"2026-09-23T01:14:00Z"}`
 	ended := `"step":{"at":"2026-09-23T01:12:00Z","turnStartedAt":"2026-09-23T01:10:00Z","tool":"read",` +
 		`"callId":"toolu_arch_2","argsBytes":74,"argsHash":"3f7c1a9d62b40e58","startedAt":"2026-09-23T01:11:00Z","endedAt":"2026-09-23T01:12:00Z"}`
-	stepping := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},` +
-		`"workers":{"implementer":{"claim":{"session":"ses_i","state":"working","pluginContract":0,` + open + `},"rounds":1}}}}`
-	idle := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},"workers":{}}}`
+	// claim is one claim view in a state with a step; issue is LEGION-208 with its architect's
+	// claim and, unless implementer is empty, an implementer's claim on its first round. Each row
+	// below names only its claims' states and steps.
+	claim := func(session, state, step string) string {
+		return `{"session":"` + session + `","state":"` + state + `","pluginContract":0,` + step + `}`
+	}
+	issue := func(architect, implementer string) string {
+		workers := `{}`
+		if implementer != "" {
+			workers = `{"implementer":{"claim":` + implementer + `,"rounds":1}}`
+		}
+		return `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
+			`"architect":` + architect + `,"workers":` + workers + `}}`
+	}
+	stepping := issue(claim("ses_a", "working", ended), claim("ses_i", "working", open))
+	idle := issue(claim("ses_a", "working", ended), "")
+	// The architect's claim is retired and the implementer's working, each with a call that has a
+	// start and no end: the retired claim's call is the one its record kept, not an agent in one.
+	openArchitect := `"step":{"at":"2026-09-22T18:40:00Z","turnStartedAt":"2026-09-22T18:30:00Z","tool":"edit",` +
+		`"callId":"toolu_arch_7","argsBytes":96,"argsHash":"5d0e8a1c7b3f2946","startedAt":"2026-09-22T18:40:00Z"}`
+	retiredBeside := issue(claim("ses_a", "retired", openArchitect), claim("ses_i", "working", open))
+	noneWorking := issue(claim("ses_a", "retired", openArchitect), claim("ses_i", "suspended", open))
+	// A plan of `implementer reviewer implementer` runs its third step in a second agent of the
+	// role, `implementer-2`, beside the role's own agent; the state lists one of the two under
+	// `workers` and the other under `otherClaims`, either way round.
+	const (
+		ownToken    = `"token":"legion-legion-legion-208-implementer",`
+		secondToken = `"token":"legion-legion-legion-208-implementer-2",`
+	)
+	secondOpen := `"step":{"at":"2026-09-23T01:20:00Z","turnStartedAt":"2026-09-23T01:18:00Z","tool":"bash",` +
+		`"callId":"toolu_impl2_5","argsBytes":96,"argsHash":"5d1e0b7a24c9f836","startedAt":"2026-09-23T01:20:00Z"}`
+	twoAgents := func(workerToken, workerStep, otherToken, otherStep string) string {
+		return `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"step","stepRole":"implementer","status":"in_progress",` +
+			`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},` +
+			`"workers":{"implementer":{"claim":{` + workerToken + `"session":"ses_i","state":"working","pluginContract":0,` + workerStep + `},"rounds":1}},` +
+			`"otherClaims":[{"role":"implementer","claim":{` + otherToken + `"session":"ses_i2","state":"working","pluginContract":0,` + otherStep + `}}]}}`
+	}
+	const (
+		ownCall    = "LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\""
+		secondCall = "LEGION-208 implementer (claim legion-legion-legion-208-implementer-2) \"bash toolu_impl2_5 since 2026-09-23T01:20:00Z\""
+	)
+	// The agent of a key, here the implementer's agent, holds the tester's role for a step of the
+	// plan while the tester's own agent also holds it: the state lists the tester's own claim
+	// under `workers` and the other under `otherClaims`, which the line names by its token.
+	keyed := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"testing","status":"in_progress",` +
+		`"workers":{"tester":{"claim":{"token":"legion-legion-legion-208-tester","session":"ses_t","state":"working","pluginContract":0,` + open + `},"rounds":1}},` +
+		`"otherClaims":[{"role":"tester","claim":{"token":"legion-legion-legion-208-implementer","session":"ses_k","state":"working","pluginContract":0,` + secondOpen + `}}]}}`
 	for _, tc := range []struct {
 		name, issues, want string
 	}{
@@ -1782,8 +1860,39 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 			issues: stepping,
 			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
 		},
+		{
+			name:   "a working claim in a call beside a retired claim whose record keeps one",
+			issues: retiredBeside,
+			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
+		},
+		{
+			name:   "open calls only on retired and suspended claims",
+			issues: noneWorking,
+			want:   "agents in a tool call: none\n",
+		},
 		{name: "every call ended", issues: idle, want: "agents in a tool call: none\n"},
 		{name: "no issues", issues: `{}`, want: "agents in a tool call: none\n"},
+		{
+			name:   "a second agent of the role in a call under otherClaims, the role's own agent's call ended",
+			issues: twoAgents(ownToken, ended, secondToken, secondOpen),
+			want:   "agents in a tool call: 1 — " + secondCall + "\n",
+		},
+		{
+			name:   "both agents of the role in a call, the second under otherClaims",
+			issues: twoAgents(ownToken, open, secondToken, secondOpen),
+			want:   "agents in a tool call: 2 — " + ownCall + "; " + secondCall + "\n",
+		},
+		{
+			name:   "both agents of the role in a call, the role's own under otherClaims",
+			issues: twoAgents(secondToken, secondOpen, ownToken, open),
+			want:   "agents in a tool call: 2 — " + ownCall + "; " + secondCall + "\n",
+		},
+		{
+			name:   "an agent of another role's name holding the role under otherClaims",
+			issues: keyed,
+			want: "agents in a tool call: 2 — LEGION-208 tester \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"; " +
+				"LEGION-208 tester (claim legion-legion-legion-208-implementer) \"bash toolu_impl2_5 since 2026-09-23T01:20:00Z\"\n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			served := "{" + daemon + `,"issues":` + tc.issues + "}"
@@ -1802,6 +1911,56 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 			}
 			if !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told each update round an issue has open and every
+// claim of the issue in it, its other claims (`otherClaims`) among them: a pod's round is over
+// every claim of the pod, and a second agent of one role, such as `implementer-2`, holds a slot
+// of its own there, as does the agent of another role's name that holds a role for a step. Each
+// claim is named as the issue's other lines name it, by its role, and by its token beside it for
+// the claim of an agent not named for its role, so two claims of one role read apart; they are
+// listed by role and then by that name, with the head each reported when it answered.
+func TestPlainStateNamesEveryClaimOfAnIssueInAnUpdateRound(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	const round = "pod:0f3c8d21-5b47-4e90-9a16-2c7d5e8b40af"
+	claim := func(token, extra string) string {
+		return `{"token":"legion-legion-legion-208-` + token + `","session":"ses_` + token + `","state":"ready","pluginContract":0` + extra + `}`
+	}
+	inRound := `,"updateRound":"` + round + `"`
+	answered := func(head string) string { return inRound + `,"updateHead":"` + head + `"` }
+	issue := func(architect, implementer, tester, otherImplementer, otherTester string) string {
+		return `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"step","stepRole":"implementer","status":"in_progress",` +
+			`"architect":` + claim("architect", architect) + `,` +
+			`"workers":{"implementer":{"claim":` + claim("implementer", implementer) + `,"rounds":1},` +
+			`"tester":{"claim":` + claim("tester", tester) + `,"rounds":0}},` +
+			`"otherClaims":[{"role":"implementer","claim":` + claim("implementer-2", otherImplementer) + `},` +
+			`{"role":"tester","claim":` + claim("reviewer", otherTester) + `}]}}`
+	}
+	for _, tc := range []struct {
+		name, issues, want string
+	}{
+		{
+			name:   "every claim of the issue in the pod's round",
+			issues: issue(inRound, answered("a1b2c3d"), inRound, answered("5d1e0b7"), inRound),
+			want: "open update rounds: 1 — LEGION-208 on " + round + ": architect, implementer answered at \"a1b2c3d\", " +
+				"implementer (claim legion-legion-legion-208-implementer-2) answered at \"5d1e0b7\", tester, " +
+				"tester (claim legion-legion-legion-208-reviewer)\n",
+		},
+		{
+			name:   "only the second agent of a role in a round",
+			issues: issue("", "", "", inRound, ""),
+			want:   "open update rounds: 1 — LEGION-208 on " + round + ": implementer (claim legion-legion-legion-208-implementer-2)\n",
+		},
+		{name: "no claim in a round", issues: issue("", "", "", "", ""), want: "open update rounds: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := plainStateOf(t, "{"+daemon+`,"issues":`+tc.issues+"}")
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out, tc.want)
 			}
 		})
 	}
@@ -2114,10 +2273,10 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 // it exists to catch. (INFRA-2554.)
 func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 	const (
-		returned = "Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back," +
-			" and it takes the free slots first."
-		starting = "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank," +
-			" and 1 issue whose work came back stands ahead of all of them."
+		returned = "Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back," +
+			" and it takes the free slots before the issues at P1 that have not started."
+		starting = "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank," +
+			" and 1 issue at P1 whose work came back stands ahead of all of them."
 	)
 	waiting := []string{"WIDGETS-14", "WIDGETS-15"}
 	issues := map[string]api.Issue{
@@ -2787,6 +2946,87 @@ func TestPlainStateGivesEachDurableConsumersLag(t *testing.T) {
 				t.Fatalf("consumerLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(tc.want, "\n"))
 			}
 		})
+	}
+}
+
+// An operator reading plain `legion state` is told, one line per consumer with an open give-up,
+// how many it has and the newest stream sequence among them, which `legion intake` takes as
+// --through-seq; then the newest give-ups, at most plainStateGiveUps, each with its id, consumer,
+// subject, sequence, when and after how many deliveries it was given up, why, and the first line of
+// its error. With none open the one line says so.
+func TestPlainStateGivesTheOpenGiveUps(t *testing.T) {
+	gaveUpAt := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	t.Run("none", func(t *testing.T) {
+		if got := intakeGiveUpLines(api.IntakeGiveUpsView{}); !slices.Equal(got, []string{"intake give-ups: none"}) {
+			t.Fatalf("intakeGiveUpLines = %q, want the one line saying none", got)
+		}
+	})
+	t.Run("twelve open across two consumers print the counts and ten records", func(t *testing.T) {
+		giveUps := api.IntakeGiveUpsView{Consumers: []api.IntakeGiveUpCountView{
+			{Name: "legion-go-LEGION-dispatch", Open: 11, NewestSeq: 6044896},
+			{Name: "legion-go-LEGION-github", Open: 1, NewestSeq: 812004},
+		}}
+		for i := range 12 {
+			giveUps.Newest = append(giveUps.Newest, api.IntakeGiveUpView{
+				ID: int64(60 - i), Consumer: "legion-go-LEGION-dispatch", Subject: fmt.Sprintf("notifications.dispatch.issue.LEGION-%d.issue.updated", 300-i),
+				StreamSeq: uint64(6044896 - i), Deliveries: 21, GaveUpAt: gaveUpAt.Add(-time.Duration(i) * time.Minute), Reason: "bound",
+				LastError: "apply the issue event: context deadline exceeded\ngoroutine 7 [running]",
+			})
+		}
+		got := intakeGiveUpLines(giveUps)
+		want := []string{
+			"intake give-ups legion-go-LEGION-dispatch: 11 open, newest seq 6044896",
+			"intake give-ups legion-go-LEGION-github: 1 open, newest seq 812004",
+		}
+		for i := range plainStateGiveUps {
+			want = append(want, fmt.Sprintf("intake give-up %d legion-go-LEGION-dispatch notifications.dispatch.issue.LEGION-%d.issue.updated seq %d gave up %s after 21 deliveries (bound): apply the issue event: context deadline exceeded",
+				60-i, 300-i, 6044896-i, gaveUpAt.Add(-time.Duration(i)*time.Minute).Format(time.RFC3339)))
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("intakeGiveUpLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	})
+}
+
+// A give-up's subject is the publisher's text, which Envoy and NATS refuse only for whitespace,
+// and its error can quote that text. So plain `legion state` writes each character of the subject
+// and of the error that does not print as its Go escape: an ESC or a BEL in them reaches the
+// operator's terminal as text, and does not clear the screen or set the window title. The rest of
+// the line stays as the guides show it.
+func TestPlainStatePrintsNoControlCharacterOfAGiveUp(t *testing.T) {
+	giveUps, err := json.Marshal(api.IntakeGiveUpsView{
+		Consumers: []api.IntakeGiveUpCountView{{Name: "legion-go-LEGION-dispatch", Open: 1, NewestSeq: 48213}},
+		Newest: []api.IntakeGiveUpView{{
+			ID: 412, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.\x1b[2J.issue.updated",
+			StreamSeq: 48213, Deliveries: 1, GaveUpAt: time.Date(2026, 10, 3, 8, 55, 2, 0, time.UTC), Reason: "undecodable",
+			LastError: "issue name \x1b]0;x\x07 is in neither form\ngoroutine 7 [running]",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[],"blocked":[]},"issues":{},"pendingStatusWrites":[],"intakeGiveUps":` + string(giveUps) + `}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	if i := bytes.IndexAny(out.Bytes(), "\x1b\x07"); i >= 0 {
+		t.Fatalf("legion state printed the byte %q of a give-up to the terminal, in %q", out.Bytes()[i], out.String())
+	}
+	want := `intake give-up 412 legion-go-LEGION-dispatch notifications.dispatch.issue.\x1b[2J.issue.updated seq 48213 ` +
+		`gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): issue name \x1b]0;x\a is in neither form` + "\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
 	}
 }
 

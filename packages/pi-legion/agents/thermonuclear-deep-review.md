@@ -25,6 +25,7 @@ Do not report issues in code the change you review leaves unchanged, other than 
 
 - Read a piped command's status with `${PIPESTATUS[0]}`, or with `set -o pipefail` inside a subshell of that one line; never set `-e`, `-u` or `pipefail` at the top level of your shell, where under `pipefail` a later `cmd | head` exits 141 and reads as a failure although it did its job, and under `-e` or `-u` a later command that fails or reads an unset variable ends the call there. Never pipe a write — a `dispatch` command that records something, or any command whose own output tells you what it did — into `head`, `tail` or `grep`: the status you read would be the pager's, and the line that says what happened is the line you cut.
 - Make your own scratch with `mktemp -d` and delete only the paths you made, each by its exact path. Never delete by a glob in a shared directory: every role of this issue writes into the same `$TMPDIR` on the issue's volume, so a sweep like `rm -rf "$TMPDIR"/tmp.*` deletes directories another role has open.
+- If a skill disagrees with the code, a command's output or its `--help`, follow those and say which line of the skill is wrong.
 
 ## Output
 

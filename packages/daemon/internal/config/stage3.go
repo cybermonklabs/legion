@@ -25,6 +25,13 @@ import (
 
 // DesignGate is the word `gates.design` took before it took a list of steps, and which it still
 // accepts in place of one: `root-issues` for the single step spec, `off` for no step at all.
+//
+// The steps a word names are the ones every root must register, which is not every step a root
+// can be held on. Under `root-issues` a root's architect may also register its Verification
+// document as the step criteria, and from then on that root's tree is held on it as on the spec
+// (record.TreeSteps); a root that registers none is held on the spec alone. Under `off` no step
+// holds a tree: a registration records spec whatever step it names, and a criteria row kept
+// from a deployment that gated spec holds nothing.
 type DesignGate string
 
 const (
@@ -58,11 +65,15 @@ type Gates struct {
 	Design []record.DesignStep
 }
 
-// Steps is the design-gate steps the deployment gates, in the order it named them. The daemon
-// keeps one gate record for each step, and every reader of the gate asks this list
-// (classify.RequiredSteps). A nil list is the unset field, which gates the single step spec as
-// the gate did before a deployment could name a list, so a Config built without its Gates field
-// gates rather than waves through; a non-nil empty list is `off` and gates no step.
+// Steps is the design-gate steps the deployment gates, in the order it named them: the steps
+// every root must register before its tree works. The daemon keeps one gate record for each step
+// a root registers, and every reader of the gate asks this list through record.TreeSteps, so a
+// list that names spec and not criteria also holds a tree on criteria once its root's architect
+// registers the Verification document as that step: a tree can be gated on one step more than
+// this list names, never fewer. A nil list is the unset field, which gates the single step spec
+// as the gate did before a deployment could name a list, so a Config built without its Gates
+// field gates rather than waves through; a non-nil empty list is `off` and gates no step, and no
+// step joins it.
 func (g Gates) Steps() []record.DesignStep {
 	if g.Design == nil {
 		return DesignGateRootIssues.Steps()
@@ -122,9 +133,10 @@ var unsetDefaultSteps = func() []plan.Step {
 
 // RunsByDefault is the project's default steps: the steps a task whose plan block names neither
 // steps nor a sub-owner runs, and the steps of the one task `default` of an issue whose owner
-// gives no plan. They are `default_steps`, or today's line up to the owner's acceptance for
-// a project that names none, and for a Project the loader never read, so a configuration built
-// without the field runs today's line rather than no step. The answer is the caller's own.
+// gives no plan or whose experiment's group takes none. They are `default_steps`, or today's line
+// up to the owner's acceptance for a project that names none, and for a Project the loader never
+// read, so a configuration built without the field runs today's line rather than no step. The
+// answer is the caller's own.
 func (p Project) RunsByDefault() []plan.Step {
 	if p.DefaultSteps != nil {
 		return slices.Clone(p.DefaultSteps)
@@ -161,10 +173,11 @@ type GitHubApp struct {
 }
 
 // GitHubApps holds the two App identities Legion needs: the implement App acts for the implementer,
-// the merger and every other role of the type implementation, the review App for every other role,
-// and the architect's slot acts as the App of a step it does itself while it does that step, and
-// through the retro of a task whose last implementation step it did (record.OwnerActsAs), so a
-// review never comes from the account that wrote the change.
+// the merger, each role of the deployment whose github_app is implement and each role of an
+// issue's plan of the type implementation, the review App for every other role, and the
+// architect's slot acts as the App of a step it does itself while it does that step, and through
+// the retro of a task whose last implementation step it did (record.OwnerActsAs), so Legion's
+// reviewer never reviews as the account that wrote the change.
 type GitHubApps struct {
 	Implement GitHubApp
 	Review    GitHubApp
@@ -273,7 +286,12 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		// The block and `experiments.memory` are one experiment spelled two ways, and only here
 		// are both spellings in view: the memory member is read by the mapping's own key rather
 		// than by the block's value, so an empty block counts as written (checkExperimentMemory).
+		// The rules of `plan` come after it, so `plan` on `experiments.memory` gets that check's
+		// one refusal rather than the plan rules' advice to write `unit: issue`.
 		if err := checkExperimentMemory(project.Experiments, fields["memory"] != nil, key); err != nil {
+			return Project{}, nil, err
+		}
+		if err := checkExperimentPlans(project.Experiments, key); err != nil {
 			return Project{}, nil, err
 		}
 	}

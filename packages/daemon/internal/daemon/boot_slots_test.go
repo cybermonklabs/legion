@@ -65,7 +65,7 @@ func readBootAdmission(t *testing.T, pool *store.Pool) bootAdmission {
 	t.Helper()
 	ctx := context.Background()
 	var got bootAdmission
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		var err error
 		if got.slots, err = records.Slots(ctx, tx); err != nil {
@@ -112,6 +112,7 @@ func deliverableStarts(t *testing.T, pool *store.Pool, issue string) int {
 // rule, which is exactly what the boot resumes. The resume's task therefore waits, and what the
 // test watches is a durable row rather than a decision the daemon could make again for free.
 func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -125,7 +126,7 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 		t.Fatal(err)
 	}
 	root, child := bootProject+"-1", bootProject+"-2"
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, bootIssue(root, root, "in_progress", phase.Admitted)); err != nil {
 			return err
 		}
@@ -261,7 +262,7 @@ func applyMigrationsByHand(t *testing.T, st *store.Store, set []migrations.Migra
 	ctx := context.Background()
 	widened := false
 	for _, migration := range set {
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}
@@ -290,11 +291,12 @@ func applyMigrationsByHand(t *testing.T, st *store.Store, set []migrations.Migra
 // because that is the rule the migration was written for — a merger merges the pull request
 // itself, so its phase is work — and the boot's own first pass takes those three rows back: an
 // issue holds a row while it stands in a phase that keeps one, except while it waits on another
-// issue (blockers.waitsOf), and accepting, retro and merging keep none (record.KeepsSlot). The cap
-// then does the draining: the surplus is above it, so the root that never ran takes nothing while
-// the count stands at or above the cap, and takes a row at the first pass where the count is under
-// it.
+// issue (blockers.waitsOf), and accepting, retro and merging keep none (record.KeepsSlot). The
+// cap then does the draining: the surplus is above it, so the root that never ran takes nothing
+// while the count stands at or above the cap, and takes a row at the first pass where the count
+// is under it.
 func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preReleaseStore(t)
 	pool := st.Pool()
@@ -307,7 +309,7 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 	building, testing := bootProject+"-3", bootProject+"-4"
 	heldReady, merging, lingerChild := bootProject+"-5", bootProject+"-6", bootProject+"-8"
 	lingers := time.Now().UTC().Add(time.Hour)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		// A root whose architect is writing its spec, a running tree whose own root waits in
 		// accepting while its children work, and a tree that lingers after its close. Each
 		// root holds the one slot its tree held before the release, and no child holds any.
@@ -377,8 +379,8 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 
 	// The count falls as each issue finishes, and nothing new starts while it stands at the cap:
 	// the loop admits while the holders are under the cap, never at it. The two in merging are
-	// finished first, and neither frees a row: their work stands past its review, so the first
-	// pass above took the rows the migration granted them back.
+	// finished first, and neither frees a row: merging keeps none, so the first pass above took
+	// the rows the migration granted them back.
 	finish(t, pool, records, heldReady)
 	finish(t, pool, records, merging)
 	finish(t, pool, records, building)
@@ -427,7 +429,7 @@ func slotHolders(t *testing.T, pool *store.Pool) []string {
 func finish(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(ctx, tx, key)
 		if err != nil {
 			return err

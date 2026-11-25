@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The channel server's NATS connection, Claude Code's and Codex's, names its build after its name:
+  `legion@<commit>` for a worker image's plugin (its `dist/build-commit` stamp), or
+  `<package>@<version>` for a release installed in the plugin cache, so the hub's census of
+  connections shows which build each channel runs. A checkout names none.
+time: 2026-11-22T02:59:25Z
+custom:
+    Issue: legacy-subjects-gate

@@ -111,8 +111,10 @@ func printResumeAnswer(w io.Writer, answer []byte) error {
 }
 
 // pausedSummary is `legion state`'s line for the project's open pause (api.State.Paused): the
-// pause, who paused, since when and why, and the roles whose stop it still waits on, each by
-// issue and role. It is empty while the project runs, and the caller then prints nothing.
+// pause, who paused, since when and why, and the claims whose stop it still waits on, in the
+// state's order, each by its name (api.ClaimName: its issue and role, and its token beside them
+// for the claim of an agent not named for its role, so two claims of one role on one issue read
+// apart). It is empty while the project runs, and the caller then prints nothing.
 func pausedSummary(paused *api.PausedView) string {
 	if paused == nil {
 		return ""
@@ -120,17 +122,17 @@ func pausedSummary(paused *api.PausedView) string {
 	line := fmt.Sprintf("paused: pause %d since %s by %s: %s", paused.ID, paused.Since.Format(time.RFC3339),
 		pauseActorWords(paused.By), paused.Reason)
 	if len(paused.WaitsOn) == 0 {
-		return line + "; waits on no role"
+		return line + "; waits on no claim"
 	}
-	roles := make([]string, len(paused.WaitsOn))
+	claims := make([]string, len(paused.WaitsOn))
 	for i, stop := range paused.WaitsOn {
-		roles[i] = stop.Issue + " " + string(stop.Role)
+		claims[i] = api.ClaimName(stop.Issue, stop.Role, stop.Claim)
 	}
-	noun := "roles"
-	if len(roles) == 1 {
-		noun = "role"
+	noun := "claims"
+	if len(claims) == 1 {
+		noun = "claim"
 	}
-	return fmt.Sprintf("%s; waits on %d %s — %s", line, len(roles), noun, strings.Join(roles, ", "))
+	return fmt.Sprintf("%s; waits on %d %s — %s", line, len(claims), noun, strings.Join(claims, ", "))
 }
 
 // lastPauseSummary is `legion state`'s line for the project's last pause while it runs

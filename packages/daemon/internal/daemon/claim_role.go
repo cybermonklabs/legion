@@ -42,7 +42,7 @@ func planRoleIn(tx pgx.Tx) planRoleReader {
 // a record (launchVariants).
 func planRoleOf(st *store.Store) planRoleReader {
 	return func(ctx context.Context, issue string, role claim.Role) (defined record.PlanRole, found bool, err error) {
-		err = st.Tx(ctx, func(tx pgx.Tx) error {
+		err = store.TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			defined, found, err = planRoleIn(tx)(ctx, issue, role)
 			return err

@@ -102,6 +102,12 @@ func startedAgainGitHub(t *testing.T) string {
 // runtime that provisions each claim's workspace in the claim's own pod), with the board and the
 // GitHub above, a linger no tree of these subtests outlives, and the shipped production check
 // bound.
+//
+// The board refuses the boot catch-up's read of each root it holds, and the catch-up reads a
+// refused root three times before it skips it; at the production two seconds between reads
+// (catchUpRetryDelay) that cost each boot with two roots to catch up 8 s, every run of the
+// promotion subtest. The reads are a millisecond apart here: no subtest is about the catch-up,
+// which skips each root as it did, and holds none.
 func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime) {
 	t.Helper()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
@@ -109,6 +115,10 @@ func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *f
 	cfg.Linger = time.Hour
 	cfg.ProductionCheckBound = 336 * time.Hour
 	o.githubAPI = startedAgainGitHub(t)
+	o.catchUpRetry = time.Millisecond
+	// A start row that waited for a slot, or for its issue's branch row, runs at the outbox's next
+	// sweep once that slot or row frees, which at outboxLease is up to 30 s of the wall clock.
+	o.outboxSweep = time.Second
 	return pool, cfg, o, rt
 }
 
@@ -171,7 +181,7 @@ func seedSlottedMember(t *testing.T, dsn string, member record.Issue, worker sup
 	}
 	defer st.Close()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, member); err != nil {
 			return err
 		}
@@ -210,7 +220,7 @@ func lingerTree(t *testing.T, pool *store.Pool, records record.Store, key string
 	t.Helper()
 	ctx := context.Background()
 	until := time.Now().Add(time.Hour)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(ctx, tx, key)
 		if err != nil {
 			return err
@@ -288,6 +298,7 @@ func startedAgain(t *testing.T, cfg config.Config, rt *fake.Runtime, kept superv
 // starting this worker again, and the row is the whole of that start. That subtest makes those
 // passes and reads the row still there, and then reads it delivered.
 func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("a backward move into the worker's phase", func(t *testing.T) {
 		pool, cfg, o, rt := startedAgainDaemon(t)
 		project, err := claim.ProjectToken(cfg.Project)
@@ -475,7 +486,7 @@ func seedMergeablePullRequest(t *testing.T, pool *store.Pool, issue string) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue,
 			Repo: startedAgainRepo, Number: 42, Branch: "legion/" + issue, HeadSHA: "head", Failing: []string{}})
 	}); err != nil {
@@ -489,7 +500,7 @@ func mergingPhase(t *testing.T, pool *store.Pool, key string) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(ctx, tx, key)
 		if err != nil {
 			return err

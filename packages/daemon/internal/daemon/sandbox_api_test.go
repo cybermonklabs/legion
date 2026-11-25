@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 )
@@ -80,6 +81,27 @@ type issueSandboxAPI struct {
 	// not write, which requireProjected fails the test on.
 	volumes       string
 	kubeletFaults []string
+	// hold, when set, holds each watch at the first event it picks until release is closed, and
+	// every event behind it with it (holdWatches): a watch the API server is slow to deliver, while
+	// the API already answers the write that event carries.
+	hold    func(resource string, event kubeEvent) bool
+	release <-chan struct{}
+}
+
+// holdWatches has every watch hold at the first event hold picks until release is closed, and
+// every event behind it with it, as withHeldSandboxEvents does for internal/runtime/sandbox's rig.
+func (a *issueSandboxAPI) holdWatches(release <-chan struct{}, hold func(resource string, event kubeEvent) bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.hold, a.release = hold, release
+}
+
+// heldReleaseRecord picks the write of a release's record on a kept Sandbox that its Secrets are
+// deleted (sandbox's secretsReleasedAnnotation), which a Sandbox's MODIFIED event carries.
+func heldReleaseRecord(resource string, event kubeEvent) bool {
+	meta, _ := event.Object["metadata"].(map[string]any)
+	annotations, _ := meta["annotations"].(map[string]any)
+	return resource == "sandboxes" && event.Type == "MODIFIED" && annotations[secretsReleased] != nil
 }
 
 // kubeEvent is one watch event: its type and the object it carries.
@@ -289,9 +311,9 @@ func (a *issueSandboxAPI) launcherTokensLocked(pod string) map[string]string {
 // createPodLocked makes the pod the Sandbox's podTemplate describes, Ready: the controller's own
 // pod, owned by the Sandbox, carrying its labels, with every init container completed and every
 // container running, as sandbox/rig_test.go's createPod and runningStatusOf build it. Its
-// creationTimestamp is the one an API server stamps and serves, to the second: the daemon reads
-// it to decide whether a release's saved work is this pod's to restore, and the pod a wake makes
-// after the save is the one that may take it (store.TakeWorkspaceBundleForRestore).
+// creationTimestamp is the one an API server stamps and serves, to the second: the runtime reads
+// it as the moment an unscheduled pod began to wait when its PodScheduled condition carries no
+// transition time (sandbox's observe).
 func (a *issueSandboxAPI) createPodLocked(name string, sandbox map[string]any) string {
 	spec, _ := sandbox["spec"].(map[string]any)
 	template, _ := kubeClone(spec)["podTemplate"].(map[string]any)
@@ -471,18 +493,34 @@ func (a *issueSandboxAPI) pod(name string) bool {
 	return ok
 }
 
-// podUID is the uid the API stamped on the pod of name, "" while it holds no such pod. It is
-// what a saved workspace bundle's one restore attempt is recorded against, so a test can read
-// which pod the daemon offered the bundle to (store.TakeWorkspaceBundleForRestore).
-func (a *issueSandboxAPI) podUID(name string) string {
+// controllerSandboxPodOf is the pod of name as the API holds it, decoded, with the shape its
+// Sandbox's template records; false while the API holds no such pod. A stored object is never
+// written again (putLocked), so it is encoded under the lock and decoded outside it.
+func (a *issueSandboxAPI) controllerSandboxPodOf(name string) (controllerSandboxPodSeen, bool) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	object, ok := a.objects["pods"][name]
-	if !ok {
-		return ""
+	var shape string
+	if s := a.objects["sandboxes"][name]; s != nil {
+		spec, _ := s["spec"].(map[string]any)
+		template, _ := spec["podTemplate"].(map[string]any)
+		meta, _ := template["metadata"].(map[string]any)
+		annotations, _ := meta["annotations"].(map[string]any)
+		shape, _ = annotations[controllerSandboxShapeKey].(string)
 	}
-	uid, _ := object["metadata"].(map[string]any)["uid"].(string)
-	return uid
+	var encoded []byte
+	var err error
+	if ok {
+		encoded, err = json.Marshal(object)
+	}
+	a.mu.Unlock()
+	if !ok || err != nil {
+		return controllerSandboxPodSeen{}, false
+	}
+	var pod corev1.Pod
+	if err := json.Unmarshal(encoded, &pod); err != nil {
+		return controllerSandboxPodSeen{}, false
+	}
+	return controllerSandboxPodSeen{uid: string(pod.UID), pod: pod, shape: shape}, true
 }
 
 // mode is the Sandbox's operatingMode, "deleted" once the API no longer holds it.
@@ -948,6 +986,16 @@ func (a *issueSandboxAPI) watch(w http.ResponseWriter, r *http.Request, kind kub
 		case event := <-events:
 			if !kubeSelected(event.Object, selector) {
 				continue
+			}
+			a.mu.Lock()
+			hold, release := a.hold, a.release
+			a.mu.Unlock()
+			if hold != nil && hold(kind.resource, event) {
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
 			}
 			if !write(event) {
 				return

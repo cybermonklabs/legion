@@ -18,8 +18,8 @@ const (
 	// AwaitingPerson is a root admitted tree that waits only on a person: its architect asked a
 	// question and handed it to the person. It keeps the admission slot it took when the daemon
 	// started it, and its architect stays live in its own session, reading and answering the
-	// person's comments; the person's answer puts the root in the waiting line as well, among the
-	// issues whose work came back, oldest first, and the pass that reads it delivers the
+	// person's comments; the person's answer puts the root in the waiting line as well, within its
+	// priority, among the issues whose work came back, oldest first, and the pass that reads it delivers the
 	// architect its task, taking no further slot.
 	AwaitingPerson Phase = "awaiting_person"
 	Planning       Phase = "planning"
@@ -52,9 +52,13 @@ var All = []Phase{
 // went nowhere backward. Step is the one phase outside Order that a task of a plan moves back from
 // or to (MovePairs).
 //
-// Both internal/config and internal/workflow read this set: the loader refuses a hook written for
-// a move pair the daemon never counts, and the engine counts the rounds. It lives here, not in
-// internal/workflow, because internal/config cannot import internal/workflow. Measured with
+// Both internal/config and internal/workflow read this set. The loader takes a hook's move as a
+// pair of MovePairs (all 42 ordered pairs of the seven, and the 15 pairs of step) that some task's
+// line makes as a move back (plan.MovesBackPairs, 44 of them), since it reads the file with no
+// plan, and refuses the other 13, which would never fire. The engine counts the pair of each
+// move back the task's own line reads (Walk.MovesBack), and a pass. It
+// lives here, not in internal/workflow, because internal/config cannot import internal/workflow.
+// Measured with
 // `go list`: every test file of package workflow is `package workflow`, and 42 of its 57 test
 // files import internal/config (`go list -f '{{.TestImports}}' ./internal/workflow/` names
 // internal/config), so an edge from internal/config to internal/workflow would close a cycle in
@@ -63,8 +67,10 @@ var All = []Phase{
 // names one package of this repository, internal/claim.
 var Order = []Phase{Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging}
 
-// MovesBack says whether to is a workflow phase before from. Both must stand in Order: a phase
-// outside it is no part of the forward line, so nothing moves back into or out of it.
+// MovesBack says whether to is a phase of today's line, Order, before from. Both must stand in
+// Order. A phase outside it, step among them, is no part of the forward line, so this answers no
+// move into or out of it. A task in another order moves back by its own (workflow's
+// Walk.MovesBack).
 func MovesBack(from, to Phase) bool {
 	toIndex := slices.Index(Order, to)
 	return toIndex >= 0 && toIndex < slices.Index(Order, from)

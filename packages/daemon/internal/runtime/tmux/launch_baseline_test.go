@@ -43,8 +43,9 @@ const (
 	baselineStateDir   = "/state"
 )
 
-// baselineRoles are the roles the baseline covers: Legion's six claim roles, in claim.Roles' order,
-// then the project controller, which is none of them.
+// baselineRoles are the roles the baseline covers: the six of the workflow, in the order of the
+// default steps (claim.Roles; each task names its own), then the project controller, which is
+// none of them.
 func baselineRoles() []claim.Role {
 	return slices.Concat(claim.Roles, []claim.Role{claim.RoleController})
 }
@@ -104,8 +105,8 @@ func pairValue(variables []string, name string) (string, bool) {
 }
 
 // The launch bytes a deployment with no experiment of its own and no `memory` block produces
-// today, whose memory arms name no file, for Legion's six claim roles and the controller (the fresh
-// agent of acceptance and a role the deployment or the plan defines are not in it): the golden
+// today, whose memory arms name no file, for every role Legion launches in a pane where the
+// deployment defines no role of its own: the golden
 // pins two values per role — the pane's PI_CONFIG_FILES, the operator's own overlays first and
 // then the role's own; and the one --append-system-prompt word of the pane's command, the path
 // runtime.WriteSystemPrompt wrote the claim's prompt to under the state directory, written as

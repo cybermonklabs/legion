@@ -35,7 +35,8 @@ const golden = JSON.parse(
     "utf8"
   )
 );
-// The issue pod's workflow roles, in the order the runtime names them (claim.Roles).
+// The issue pod's roles in a run whose deployment defines no role of its own: Legion's six, in the
+// order the runtime names them (claim.Roles).
 const roles = ["architect", "planner", "implementer", "tester", "reviewer", "merger"];
 const goldenStream = "tcp://192.0.2.250:13371";
 // A moved stream: a restart on the run's other port, so the worker stream takes the API's.

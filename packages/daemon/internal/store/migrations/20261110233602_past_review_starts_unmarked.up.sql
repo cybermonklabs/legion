@@ -2,16 +2,16 @@
 -- queued start of a phase that holds no slot any more, so that the cutover leaves no row the
 -- daemon will never run (INFRA-2560).
 --
--- An issue holds one of the admission cap's slots from the moment the daemon starts it until it
--- stands in accepting, retro or merging (in the default steps, past its review), which hold none
--- (record.KeepsSlot). The release before this one kept a slot through all three, so
--- workflow.StartOrOwe marked every start of a phase worker, a retro's and a merger's among them,
--- and the mark is what record.Store's outboxInOrder holds such a row by.
+-- An issue holds one of the admission cap's slots from the moment the daemon starts it until its
+-- work is past its review, and accepting, retro and merging hold none (record.KeepsSlot). The
+-- release before this one kept a slot through all three, so workflow.StartOrOwe marked every
+-- start of a phase worker, a retro's and a merger's among them, and the mark is what
+-- record.Store's outboxInOrder holds such a row by.
 --
 -- Without this statement such a row never runs again. outboxInOrder holds a queued start marked
 -- for a slot unclaimable while the slots table names no row of its issue, and after this change
 -- that issue never holds one: the first admission pass of this release releases the row the
--- issue held, and the rule grants none for accepting, retro or merging. The row would stand in the
+-- issue held, and the rule grants none for a phase past the review. The row would stand in the
 -- outbox for ever, its retro or its merger would never be started, and the tree would stop at
 -- its retro with nothing left to move it.
 --
@@ -21,7 +21,7 @@
 -- phase and generation fences still end a stale one, and record.validateOutboxPayload asks a
 -- task and a phase of a marked row alone, so a payload this leaves unmarked passes it.
 --
--- The statement names those three phases rather than every marked start, so a start of a
+-- The statement names the phases past the review rather than every marked start, so a start of a
 -- phase that still holds a slot keeps its mark and goes on waiting for the row its issue keeps.
 -- It names awaiting_merge beside them, which was the fourth such phase until
 -- 20261029120700_merging_closes_the_issue deleted it: no row of any deployment stands in a phase

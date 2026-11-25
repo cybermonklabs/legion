@@ -274,7 +274,7 @@ test("the retro's handoff_complete sends its rating of the plan as planRating an
 })
 
 // A tester's fail names the step its task returns to through this tool as through every host's
-// (contract 211): `return_to` reaches the daemon as its own `returnTo`.
+// (contract 219): `return_to` reaches the daemon as its own `returnTo`.
 test("a tester's fail sends return_to as returnTo", async () => {
   const { client, requests } = await daemon({ state: stateAtPhase("testing") })
   const tested = "d".repeat(40)
@@ -300,7 +300,7 @@ test("a tester's fail sends return_to as returnTo", async () => {
   })
 })
 
-// A role of the deployment runs on Claude Code as on Oh My Pi (contract 221): its claim reaches
+// A role of the deployment runs on Claude Code as on Oh My Pi (contract 258): its claim reaches
 // the same phase ops, and its completion of the step it works carries its verdict and the commit
 // its workspace stands on, with no handoff record.
 test("a role of the deployment's handoff_complete of its step sends its verdict and commit", async () => {

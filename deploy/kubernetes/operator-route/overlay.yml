@@ -1,13 +1,13 @@
 # An example of the operator's Oh My Pi settings, which pod.yml names in PI_CONFIG_FILES. Legion
 # writes no overlay of its own, so only a role's own overlays and an experiment arm's follow it
 # there. The operator copies it into their own directory with models.yml and applies both with
-# apply.sh. To change the model an Oh My Pi role uses, edit its line under modelRoles and run
-# apply.sh again (README.md beside this file).
+# apply.sh. To change the model of one of Oh My Pi's model roles, edit its line under modelRoles
+# and run apply.sh again (README.md beside this file).
 # modelRoles.default is the model of every role's session that names no model of its own, a resumed
 # one included: such a launch names --model @default, Oh My Pi's own name for that role, and a role
-# whose legion.yaml settings (roles.<name>.model) or plan block names a model starts on that model.
-# A settings set without that key is refused nowhere — the session starts, silently, on one of Oh
-# My Pi's built-in models, which this route does not serve.
+# whose legion.yaml settings (roles.<name>.model) or plan block names a model is launched with
+# --model and that model. A settings set without that key is refused nowhere — the session starts,
+# silently, on one of Oh My Pi's built-in models, which this route does not serve.
 #
 # Every model turn runs on the anthropic provider models.yml routes through the gateway, including a
 # retry on another model (retry below). Oh My Pi falls back from a failing provider without a word,
@@ -53,11 +53,10 @@ modelRoles:
   oracle: anthropic/claude-opus-5:high
   deep: anthropic/claude-fable-5-1:xhigh
 retry:
-  # A failed model call is retried on another model (Sami's decision of 2026-10-08 on
-  # dispatch://LEGION-578): the daemon's image probe reads this key and reports the model-fallback
-  # capability open while a deployment's copy still turns it off. Which model it falls back to is
-  # the repository's to add, as retry.fallbackChains keys (a record), under the models.yml route
-  # above.
+  # A failed model call is retried on another model. The daemon's image probe reads this key and
+  # reports the model-fallback capability open while a deployment's copy still turns it off. Which
+  # model it falls back to is the repository's to add, as retry.fallbackChains keys (a record),
+  # under the models.yml route above.
   modelFallback: true
 extensionHandlers:
   # AskGate (pi-envoy, in every pod) reviews each Dispatch write inside one tool_call handler, and

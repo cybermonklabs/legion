@@ -1,18 +1,16 @@
 package legion
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/sjawhar/envoy/internal/legionclaim"
+)
 
 // session_title.go holds the one reading of a Legion session's title. Both halves of the rule
 // that places an issue in a tree ask it — the read of the issues that carry phase work
 // (phase_work.go: the metrics read it over the whole log, PhaseWorkKeys, and the Legion board for
 // the issues its tree walk can climb onto, PhaseWorkOf) and the metrics' own window reads — so it
 // lives here, beside the walk, rather than in either reader.
-
-// roles are the six roles of the daemon's claim.Roles, in the order the default steps reach them.
-// That list is in the daemon's own module (packages/daemon/internal/claim/token.go), which this
-// module does not import. The fresh agent of acceptance and a role a deployment or a plan defines
-// are not among them. So a title naming one is no Legion session to these readers.
-var roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
 
 // The two shapes a Legion session titles itself (packages/pi-legion/src/session-title.ts): a
 // phase worker or a root architect names its role and its issue, a controller names its project.
@@ -22,8 +20,8 @@ const (
 	legionControllerTitle = "controller"
 )
 
-// SessionTitle is what a session's title says the session is: one of the six roles working one
-// issue, or a project's controller.
+// SessionTitle is what a session's title says the session is: a role working one issue, one of
+// Legion's six or a role the deployment defines, or a project's controller.
 type SessionTitle struct {
 	Role string
 	// Issue is the issue the role works; a root architect's is its tree's root.
@@ -35,9 +33,11 @@ type SessionTitle struct {
 }
 
 // ParseSessionTitle reads a session title as Legion writes it: `Legion <role> · <KEY>` for a root
-// architect or a phase worker, and `Legion controller · <PROJECT>` for a controller. A title of
-// any other shape, or one naming no role of roles, is not a Legion session. So a title of the
-// fresh agent of acceptance, or of a role a deployment or a plan defines, reads as none.
+// architect, a phase worker or a role the deployment defines, and `Legion controller · <PROJECT>`
+// for a controller. The role is a role of an issue by the one rule of Envoy (legionclaim.IsRole:
+// one of Legion's six, or a name of the role grammar but the controller's), so a deployment's
+// checker, or the owner's `acceptance`, is a Legion session as an implementer is. A title of any
+// other shape, or one naming no role of the grammar, is not a Legion session.
 func ParseSessionTitle(title string) (SessionTitle, bool) {
 	rest, isLegion := strings.CutPrefix(strings.TrimSpace(title), legionTitlePrefix)
 	if !isLegion {
@@ -54,12 +54,10 @@ func ParseSessionTitle(title string) (SessionTitle, bool) {
 	if role == legionControllerTitle {
 		return SessionTitle{Role: legionControllerTitle, Project: subject, Controller: true}, true
 	}
-	for _, known := range roles {
-		if role == known {
-			return SessionTitle{Role: role, Issue: subject}, true
-		}
+	if !legionclaim.IsRole(role) {
+		return SessionTitle{}, false
 	}
-	return SessionTitle{}, false
+	return SessionTitle{Role: role, Issue: subject}, true
 }
 
 // Works is whether the session works issue. Every caller asks it of a WorkerTitle, which has

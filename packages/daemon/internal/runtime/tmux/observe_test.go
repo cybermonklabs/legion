@@ -1,9 +1,16 @@
 package tmux
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Owned windows the daemon does not know, from `list-windows -F
@@ -37,5 +44,56 @@ func TestReadUnknownPanes(t *testing.T) {
 	want := []ownedPane{{id: "%1", window: "@1", activity: time.Unix(1790103321, 0)}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("readUnknownPanes = %+v, want %+v", got, want)
+	}
+}
+
+// tmux floors a window's activity to the whole second, and output a pane writes while a sweep's
+// listing runs can move it into a later second than the moment the sweep began. A sweep with grace
+// 0, as boot runs it, still reaps the orphan window and the orphan pane such listings show: each is
+// aged against the runtime's clock read after the listing that showed it. The stand-in tmux server
+// moves the runtime's clock past a second boundary as it answers each listing, and lists the
+// activity as that new second: the window pass in the second after the sweep began, the pane pass
+// in the second after that, so a clock read once for both passes fails the pane pass too.
+func TestAGraceZeroSweepReapsOrphansWhoseActivityIsALaterSecondThanTheSweepBegan(t *testing.T) {
+	const socket = "legion-omp"
+	began := time.Date(2026, 11, 16, 6, 35, 30, 980_000_000, time.UTC)
+	windowsSecond, panesSecond := began.Truncate(time.Second).Add(time.Second), began.Truncate(time.Second).Add(2*time.Second)
+	// The runtime's clock, which only the stand-in server below moves.
+	moment := began
+	r := &Runtime{
+		socket:    socket,
+		now:       func() time.Time { return moment },
+		log:       slog.New(slog.DiscardHandler),
+		tracked:   map[string]*trackedProcess{},
+		displaced: map[claim.Token]runtime.Locator{},
+	}
+	// The pane the runtime watches keeps window @2 known, so the orphan pane %3 beside it is the
+	// pane pass's alone.
+	r.track(runtime.Locator{
+		Runtime: runtime.RuntimeTmux, Claim: "legion-omp-legion-1-architect", Incarnation: "4242:1",
+		Tmux: &runtime.TmuxLocator{Window: "@2", Pane: "%2"},
+	}, "LEGION-1", ghrepo.Repository{}, "", claim.RoleArchitect)
+	var kills [][]string
+	r.run = func(_ context.Context, argv []string) (result, error) {
+		switch verb(argv) {
+		case "list-windows":
+			moment = windowsSecond.Add(10 * time.Millisecond)
+			return result{stdout: fmt.Sprintf("@1\t%[1]s\t%[2]d\n@2\t%[1]s\t%[2]d\n", socket, windowsSecond.Unix())}, nil
+		case "list-panes":
+			moment = panesSecond.Add(10 * time.Millisecond)
+			return result{stdout: fmt.Sprintf("%%2\t@2\t%[1]s\t/bin/sh -c \"legion worker-shim\"\t%[2]d\n"+
+				"%%3\t@2\t%[1]s\t/bin/sh -c \"legion worker-shim\"\t%[2]d\n", socket, panesSecond.Unix())}, nil
+		case "kill-window", "kill-pane":
+			kills = append(kills, argv)
+			return result{}, nil
+		}
+		return result{}, fmt.Errorf("the stand-in tmux server answers no %q", argv)
+	}
+	if err := r.ReconcileOrphans(context.Background(), nil, 0); err != nil {
+		t.Fatalf("ReconcileOrphans: %v", err)
+	}
+	if want := [][]string{killWindowArgv(socket, "@1"), killPaneArgv(socket, "%3")}; !reflect.DeepEqual(kills, want) {
+		t.Errorf("a sweep with grace 0 begun at %s killed %q, want the orphan window listed active at %s and the orphan pane listed active at %s, %q",
+			began.Format(time.RFC3339Nano), kills, windowsSecond.Format(time.RFC3339), panesSecond.Format(time.RFC3339), want)
 	}
 }

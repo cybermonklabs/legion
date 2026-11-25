@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -37,9 +38,15 @@ var _ supervise.Specs = specs{}
 // provisions workspaces itself (a Sandbox pod's init containers) provisions the issue's workspace
 // from them, and under any other the daemon makes sure the workspace is on its own host first.
 type specs struct {
-	stateDir     string
-	project      string
+	stateDir string
+	project  string
+	// instructions is the path of the daemon's copy of the deployment's instructions, "" when the
+	// configuration names none, and copies every copy of an instructions file, which SpawnSpec
+	// reads again before it builds a launch (instructionsCopies.refresh), so an edited file
+	// reaches the next launch. Boot always sets copies; it is nil only in a test whose specs
+	// literal leaves it out, and such a specs launches on whatever the copies hold.
 	instructions string
+	copies       *instructionsCopies
 	secrets      map[string]string
 	prompts      *prompts.Composer
 	// roles are the roles the deployment defines (config.Config.Roles), in the file's order:
@@ -66,6 +73,10 @@ type specs struct {
 	// gates them, which a tree's root architect is told after its addressing
 	// (DesignGateFragment); empty for a deployment that gates no step.
 	designSteps []record.DesignStep
+	// productionCheck is the project's `production_check` (config.Project.ProductionCheck): every
+	// architect is told it after its addressing (ProductionCheckFragment). The empty role, a
+	// test's zero value, reads `off`.
+	productionCheck claim.Role
 	// slackChannels is the project's slack_channels, which the controller is told after the
 	// design gate steps (SlackChannelsFragment); its LEGION_SLACK_CHANNELS is the runtime's to set.
 	slackChannels []string
@@ -162,7 +173,8 @@ func (s specs) ownersOf(ctx context.Context, app appauth.AppRole, role claim.Rol
 
 // SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
 // when the daemon has one), its prompt — the role prompt parts, the addressing sentence, the
-// deployment instructions and the instructions of each arm the claim's unit was drawn into
+// deployment instructions and the instructions of each arm the claim's unit was drawn into, each
+// file read again first (copies), so a launch carries what the operator's files hold now
 // — and its repository with that repository's default branch, whose workspace is on the daemon's
 // host by then when the runtime leaves workspaces to the daemon
 // (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both resolve the
@@ -174,6 +186,7 @@ func (s specs) ownersOf(ctx context.Context, app appauth.AppRole, role claim.Rol
 // Env carries the stall limits the daemon's own environment holds, merged after the fork
 // (stallLimitVariables), so the controller's launch is told them exactly as a worker's is.
 func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
+	s.copies.refresh(ctx)
 	var spec runtime.SpawnSpec
 	var err error
 	if c.Role == claim.RoleController {
@@ -274,7 +287,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		}
 	}
 	addressing := addressingFragment(s.project, c, architect, workers, spec.Repository, spec.DefaultBranch, s.ownersOf(ctx, resolved.app, c.Role)) +
-		ArchitectAddressing(c, s.roles, s.models, s.designSteps)
+		ArchitectAddressing(c, s.roles, s.models, s.designSteps, s.productionCheck)
 	spec.Prompt = runtime.PromptParts{
 		RolePromptPaths:            promptPaths,
 		Addressing:                 addressing,
@@ -345,7 +358,7 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 	if err != nil {
 		return "", err
 	}
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := w.records.Issue(ctx, tx, c.Issue)
 		if err != nil || issue == nil {
 			return err
@@ -399,7 +412,7 @@ func stepWorkersOf(project, issue string, p *record.StoredPlan) ([]stepWorker, e
 // step to name.
 func (w *workflowRuntime) stepWorkers(ctx context.Context, project string, c supervise.Claim) ([]stepWorker, error) {
 	var workers []stepWorker
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := w.records.Issue(ctx, tx, c.Issue)
 		if err != nil || issue == nil {
 			return err
@@ -496,13 +509,13 @@ var refusalCooldownVariables = []string{
 //
 // backend is the launch's, as its resolution of the claim's role named it (resolveClaimRole). A
 // Claude Code launch gets nothing: that install is `@sjawhar/pi-legion` and `@sjawhar/pi-envoy`
-// from npm (runtime/sandbox's plugins.go), no workflow releases claude-envoy, and a Claude
-// worker's plugin is the image's — so a plugin-contract change for such a role is answered by a
-// new image, not by an install. The stale-plugin lane relaunches no such claim under Kubernetes
-// (noPluginInstall): its registration stands, and the update round over its pod brings the new
-// image, whose plugin the image probe holds to the contract. The daemon-launched controller runs
-// on Oh My Pi (runtime.Backends runs Claude Code for phase workers alone), so its launch is
-// covered here exactly as before.
+// from npm (runtime/sandbox's plugins.go), no npm install reaches the image's own claude-envoy,
+// and a Claude worker's plugin is the image's — so a plugin-contract change for such a role is
+// answered by a new image, not by an install. The stale-plugin lane relaunches no such claim under
+// Kubernetes (noPluginInstall): its registration stands, and the update round over its pod brings
+// the new image, whose plugin the image probe holds to the contract. The daemon-launched
+// controller runs on Oh My Pi (runtime.Backends runs Claude Code for phase workers alone), so its
+// launch is covered here exactly as before.
 func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *runtime.PluginInstall {
 	if runtime.Of(backend) == runtime.BackendClaude {
 		return nil
@@ -643,10 +656,10 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // above it, and the sentence names it that way.
 //
 // workers is the agent of each step of the plan c's issue runs (specs.stepWorkers). Two claims of
-// one issue can hold one role — the agent of a key works a step of another role than its name —
-// and a role can stand at two steps, so a topic spelled from a role reaches the agent named for
-// that role, which need not be the one that works the step of that role the reader means: the
-// sentence names the topic of each step's agent, and says what a
+// one issue can hold one role (record.WorkerClaim), and a role can stand at two steps, so a topic
+// spelled from a role reaches the agent named for that role, which need not be the one that works
+// the step of that role the reader means: the sentence names the topic of each step's agent, and
+// says what a
 // role's own topic reaches. An issue with no plan rows names no step, and keeps the rule that
 // spells a sibling's topic from its role, saying the case it holds in: with no plan rows, each role
 // of the issue is its own agent. The line is written at the launch, and the issue can run a plan
@@ -679,7 +692,7 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 			steps[i] = fmt.Sprintf("step %d of task %s (%s) `%s%s`", w.position, w.task, w.role, notify.RoleTopicPrefix, w.token)
 		}
 		siblings = "the agent of each step of your issue's plan is on its topic: " + strings.Join(steps, ", ") +
-			"; your topic with the trailing `-<role>` replaced reaches the agent named for that role, which need not be the one that works the step of that role you mean: write to that step's agent on its topic above."
+			"; your topic with its last part, your agent's name, replaced by a role reaches the agent named for that role, which need not be the one that works the step of that role you mean: write to that step's agent on its topic above."
 	}
 	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; the project's controller is `%s%s`; %s",
 		notify.RoleTopicPrefix, c.Token, owner, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project), siblings)
@@ -787,13 +800,14 @@ func RepositoriesSentence(owners []string) string {
 // says (addressingFragment). Every architect owns a plan, whose steps name the roles of the
 // deployment and whose roles name its listed models, so it is told both (DeploymentRolesFragment
 // over roles, then ModelsFragment over models); the architect of its tree's root is then told the
-// design-gate steps the deployment gates (DesignGateFragment over designSteps), which end its
-// addressing. Each sentence follows a space, so the answer is appended to that first sentence as
-// it stands; a claim of any other role is told none of them, "". It is workerSpawnSpec's own
-// composition of that part, exported for the skill-scenario rig
+// design-gate steps the deployment gates (DesignGateFragment over designSteps), and every
+// architect's addressing ends with the project's production check (ProductionCheckFragment over
+// productionCheck). Each sentence follows a space, so the answer is appended to that first
+// sentence as it stands; a claim of any other role is told none of them, "". It is
+// workerSpawnSpec's own composition of that part, exported for the skill-scenario rig
 // (packages/pi-legion/scripts/skill-scenarios/daemon-pane-architect.go), which composes an
 // architect's prompt by calling it rather than restating it.
-func ArchitectAddressing(c supervise.Claim, roles []config.Role, models []string, designSteps []record.DesignStep) string {
+func ArchitectAddressing(c supervise.Claim, roles []config.Role, models []string, designSteps []record.DesignStep, productionCheck claim.Role) string {
 	if c.Role != claim.RoleArchitect {
 		return ""
 	}
@@ -801,7 +815,7 @@ func ArchitectAddressing(c supervise.Claim, roles []config.Role, models []string
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(designSteps)
 	}
-	return addressing
+	return addressing + " " + ProductionCheckFragment(productionCheck)
 }
 
 // DesignGateFragment is the sentence a tree's root architect is told after its addressing, and
@@ -811,6 +825,11 @@ func ArchitectAddressing(c supervise.Claim, roles []config.Role, models []string
 // nothing would read as a line the daemon failed to fill. What each step asks of the architect,
 // and which document each records, is in its role parts (prompts/roles/architect-root.md and
 // prompts/go/architect-root.md).
+//
+// The steps the line names are the ones every root must register. A deployment that gates spec
+// and not criteria holds a root on criteria too once its architect registers the Verification
+// document as that step (record.TreeSteps), so its line says that as a sentence of its own: a
+// step no root must register, and that holds the root that registers it.
 func DesignGateFragment(steps []record.DesignStep) string {
 	if len(steps) == 0 {
 		return "Design gate steps: none."
@@ -819,7 +838,26 @@ func DesignGateFragment(steps []record.DesignStep) string {
 	for i, step := range steps {
 		quoted[i] = "`" + string(step) + "`"
 	}
-	return fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
+	line := fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
+	if record.JoinsByRegistration(steps, record.DesignStepCriteria) {
+		line += " A root that registers its Verification document as `criteria` is held on that step too."
+	}
+	return line
+}
+
+// ProductionCheckFragment is the sentence every architect, the root's and a sub-architect's alike,
+// is told last in its addressing: the project's `production_check` (check) as the file writes it
+// (config.Project.ProductionCheckWord), the role that works the production check a merge closing
+// one of the project's issues opens, or `off` for the empty role. It is the "Production check" line
+// the architect prompts read (prompts/roles/architect-root.md, prompts/roles/architect.md and
+// prompts/go/architect-common.md): where it names a role, the architect writes one `after_merge`
+// check for that check in each Verification document it writes, while the issue is open, since a
+// closed issue takes no new document; where it reads `off`, it writes none (dispatch://INFRA-175
+// R7). A root architect is told it after the design gate steps, and a sub-architect, which is
+// told no steps, after its addressing. The controller writes no Verification document and is
+// told nothing of it.
+func ProductionCheckFragment(check claim.Role) string {
+	return "Production check: " + config.Project{ProductionCheck: check}.ProductionCheckWord() + "."
 }
 
 // DeploymentRolesFragment is what every architect is told after its addressing: the roles a step

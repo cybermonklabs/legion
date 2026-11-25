@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A reader of the event horizon whose call spans a reset of the horizon no longer gets an answer
+  that leaves out an event committed before its call. The horizon forgets the observation that
+  ended before the reset, and an observation still in flight at the reset is not kept for later
+  readers when it ends. A reader whose observation the reset discarded observes again. Before, such
+  a reader got the horizon of 0 that the reset left, with no gap open above it, so it scheduled no
+  re-read for an event of the new log that committed before its call.
+time: 2026-11-21T09:27:47Z
+custom:
+    Issue: horizon-reset-observation

@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  `bin/dispatch` runs when it is started by a relative path, such as `bin/dispatch` from the
+  plugin's directory, in a shell that exports `CDPATH`. It exited 2 there, saying
+  `dist/dispatch.js` was missing: a `cd` that `CDPATH` resolved printed the directory, which the
+  shim then took as part of its own path.

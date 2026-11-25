@@ -88,9 +88,11 @@ jobs:
     # install of the job started 72 s into that measured run, so its bound ends near 12.7 minutes
     # in, and the limit of 40 is reached first only when the steps before an install take more
     # than about 28 minutes, which is a run already near the worst case above. The reading either
-    # way is a job with a log, which is what the twenty-four installs of tool-fallback cannot give
+    # way is a job with a log, which is what the twenty-six installs of tool-fallback cannot give
     # and why their clock exists.
     timeout-minutes: 40
+    env:
+      JOB_TIMEOUT_MINUTES: 40 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

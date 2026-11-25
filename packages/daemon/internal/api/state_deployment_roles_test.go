@@ -251,7 +251,7 @@ func TestEachClaimLeftOutForAnOlderCallerIsLogged(t *testing.T) {
 // defines to the state. The number is pinned, as OwnerPlanContract's is: a constant left behind at
 // a renumber would serve a plugin that cannot parse step the phase step.
 func TestTheDeploymentRolesContractIsTheContractThatAddedTheRoles(t *testing.T) {
-	const addedDeploymentRoles = 221
+	const addedDeploymentRoles = 258
 	if deploymentRolesContract != addedDeploymentRoles {
 		t.Fatalf("deploymentRolesContract = %d, want %d, the contract whose entry in version.go added the phase step and stepRole",
 			deploymentRolesContract, addedDeploymentRoles)

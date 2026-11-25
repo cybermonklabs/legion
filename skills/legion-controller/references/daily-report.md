@@ -46,7 +46,7 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
   An issue with none is listed with its `## Retro Complete` message instead: a task with no pull request closes at its retro.
 
 - **Closed without a change.**
-  Those with neither a pull request nor a `## Retro Complete` message, each with the reason its closing message gave (the `message.created` just before `issue.closed`).
+  Those with neither a pull request nor a `## Retro Complete` message, each with the reason its closing message gave (the `message.created` before `issue.closed`, with only the close's own settlement and withdrawal lines between them).
 
 - **Running.**
   Each root in `admission.trees` with its phase, and under it each of its issues in `admission.active` with its own;

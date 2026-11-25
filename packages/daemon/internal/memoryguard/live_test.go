@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/termsafe"
 )
 
 // The live test's environment. TestMemoryGuardLiveSandbox runs only where liveEnv is 1, which the
@@ -57,7 +58,8 @@ const (
 	// process.
 	liveHolderBytes = 256 << 20
 	// liveIdleSleeps is how many idle processes the test starts beside the holder, so that a scan
-	// reads about as many processes as an issue pod of six roles holds.
+	// reads about as many processes as an issue pod holds whose deployment defines no role of its
+	// own.
 	liveIdleSleeps        = 50
 	liveSampleEvery       = 100 * time.Millisecond
 	liveSecondsDefault    = 120
@@ -690,7 +692,7 @@ func relayLines(out *liveLog, name string, r *os.File, onLine func(string)) {
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
-		out.printf("%s: %s", name, escaped(line, liveRelayLineBytes))
+		out.printf("%s: %s", name, termsafe.Escaped(line, liveRelayLineBytes))
 		if onLine != nil {
 			onLine(line)
 		}

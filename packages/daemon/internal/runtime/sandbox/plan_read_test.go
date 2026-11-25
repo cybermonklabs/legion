@@ -54,7 +54,7 @@ func TestAPodsDriftReadsNothingOfItsPlan(t *testing.T) {
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	g.store.failPlan(errPlanUnread)
 	before := g.store.planReadCount()
-	if drifted := driftOf(t, g.ctx, g.r, loc); len(drifted) > 0 {
+	if drifted := driftOf(t, g, g.r, loc); len(drifted) > 0 {
 		t.Errorf("PodDrift of a pod built from the configuration now, the plan unread = %q, want nothing", drifted)
 	}
 	if reads := g.store.planReadCount() - before; reads != 0 {

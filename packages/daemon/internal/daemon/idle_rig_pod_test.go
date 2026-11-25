@@ -35,10 +35,11 @@ import (
 // generation as the init of new user, mount, PID and IPC namespaces over the worker image's
 // layout (`legion launcher role-init`, internal/launcher/roleinit_linux.go), and this container
 // has neither that layout nor a way to make its mount points. The daemon's side of the protocol is
-// the same either way: one authenticated launcher connection per role, each reporting its own
-// child's state. The one part of a role's mount namespace a launcher reads, the role's gh files,
-// each launcher gets through its relay to the daemon (relay), which binds them where the rig's
-// kubelet projects them.
+// the same either way: one authenticated launcher connection per slot of the pod (a role's, or a
+// plan agent's whose name no role has, such as implementer-2), each reporting its own child's
+// state. The one part of a role's mount namespace a launcher reads, the role's gh files, each
+// launcher gets through its relay to the daemon (relay), which binds them where the rig's kubelet
+// projects them.
 //
 // Each launcher's generations keep their Oh My Pi session in the rig's Postgres, through the
 // launcher's own session proxy: the runtime is configured with the cloudsql-iam store, so a
@@ -47,8 +48,10 @@ import (
 // upstream dialer is a plain TCP dial of the test database.
 type idleRigPods struct {
 	t *testing.T
-	// address is the worker stream every launcher dials, tcp://host:port.
-	address func() string
+	// launch is how the launchers of a pod run, asked when the pod is Ready: the worker stream
+	// they dial and whether they run as a microVM pod's (launcher.Config's Connect and MicroVM),
+	// or ok false where none of them may start.
+	launch func(pod, podUID string) (connect string, microVM, ok bool)
 	// session is the Cloud SQL session database the launchers proxy to, and dial is its upstream.
 	session ompsessions.Database
 	dial    func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)
@@ -69,15 +72,29 @@ type idleRigPods struct {
 	dirNext int
 }
 
-// idleRigPodProcesses is one pod's launchers: the context that stops them and the wait that their
-// goroutines, and those of their relays to the worker stream (relay), have ended.
+// idleRigPodProcesses is one pod's launchers and what runs beside them (run), their relays to the
+// worker stream (relay) among them: the worker stream the launchers dial, the context that stops
+// them all and the wait that their goroutines have ended.
 type idleRigPodProcesses struct {
-	cancel context.CancelFunc
-	done   sync.WaitGroup
-	dirs   []string
+	connect string
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    sync.WaitGroup
+	dirs    []string
 }
 
-func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Database, dial func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)) *idleRigPods {
+// run runs f on a goroutine of the pod's: f's context ends when the pod is gone, and podGone
+// waits for f to return before it removes the pod's directories. f may call run itself, since
+// the goroutine it runs on is counted until it returns, so the wait cannot end in between.
+func (processes *idleRigPodProcesses) run(f func(ctx context.Context)) {
+	processes.done.Add(1)
+	go func() {
+		defer processes.done.Done()
+		f(processes.ctx)
+	}()
+}
+
+func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect string, microVM, ok bool), session ompsessions.Database, dial func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)) *idleRigPods {
 	t.Helper()
 	// Each launcher's private directory is a numbered subdirectory of this root, and the unix
 	// socket of a generation's session database proxy is `<dir>/g<n>/.s.PGSQL.5432`. A unix
@@ -90,25 +107,32 @@ func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Dat
 	// privateDir runs on the fake Kubernetes server's goroutine, where a t.Fatalf would stop
 	// that goroutine alone and leave the test to run to its deadline.
 	root := testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName))
-	p := &idleRigPods{t: t, address: address, session: session, dial: dial,
+	p := &idleRigPods{t: t, launch: launch, session: session, dial: dial,
 		running: map[string]*idleRigPodProcesses{}, logs: &syncBuffer{}, started: map[string]int{},
 		dirRoot: root}
 	t.Cleanup(p.stopAll)
 	return p
 }
 
-// podReady starts a launcher for each role of the pod, with that role's own launcher token. Each
-// launcher dials the daemon's worker stream through a relay of its own (relay), which binds the
+// podReady starts a launcher for each role of the pod, with that role's own launcher token and
+// the stream and MicroVM launch answers for the pod; a pod launch refuses gets no launcher and
+// counts no start. Before each launcher starts, record is handed its role, its private directory
+// and the pod's processes, beside which record may run its own (idleRigPodProcesses.run). Where
+// gh is given, each launcher dials that stream through a relay of its own (relay), which binds the
 // role's gh directory to gh[role], the directory the rig's kubelet projects that role's gh volume
-// into.
-func (p *idleRigPods) podReady(pod, podUID string, roles, gh map[string]string, record func(role, dir string)) {
+// into; with gh nil each dials the stream itself.
+func (p *idleRigPods) podReady(pod, podUID string, roles, gh map[string]string, record func(role, dir string, processes *idleRigPodProcesses)) {
+	connect, microVM, ok := p.launch(pod, podUID)
+	if !ok {
+		return
+	}
 	p.mu.Lock()
 	if _, live := p.running[pod]; live {
 		p.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	processes := &idleRigPodProcesses{cancel: cancel}
+	processes := &idleRigPodProcesses{connect: connect, ctx: ctx, cancel: cancel}
 	p.running[pod] = processes
 	p.started[pod]++
 	p.mu.Unlock()
@@ -118,25 +142,25 @@ func (p *idleRigPods) podReady(pod, podUID string, roles, gh map[string]string, 
 			p.t.Errorf("make the private directory of %s/%s: %v", pod, role, err)
 			continue
 		}
-		connect, err := p.relay(ctx, processes, pod+"/"+role, gh[role])
-		if err != nil {
-			p.t.Errorf("relay the worker stream for %s/%s: %v", pod, role, err)
-			continue
+		connect := connect
+		if gh != nil {
+			if connect, err = p.relay(processes, pod+"/"+role, gh[role]); err != nil {
+				p.t.Errorf("relay the worker stream for %s/%s: %v", pod, role, err)
+				continue
+			}
 		}
 		processes.dirs = append(processes.dirs, dir)
-		record(role, dir)
+		record(role, dir, processes)
 		cfg := launcher.Config{
-			Connect: connect, Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
+			Connect: connect, MicroVM: microVM, Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
 			Stdout: p.logs, Stderr: p.logs, StopGrace: 10 * time.Second,
 			SessionDatabase: p.session, SessionDialer: p.dial,
 		}
-		processes.done.Add(1)
-		go func() {
-			defer processes.done.Done()
+		processes.run(func(ctx context.Context) {
 			if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(p.logs, "launcher %s/%s: %v\n", pod, role, err)
 			}
-		}()
+		})
 	}
 }
 
@@ -153,7 +177,7 @@ func (p *idleRigPods) podReady(pod, podUID string, roles, gh map[string]string, 
 // each start it moves every value at or under sandbox.GHConfigDir to gh, the directory the rig's
 // kubelet projects the role's gh volume into (issueSandboxAPI.projectLocked). What the launcher
 // sends reaches the daemon unchanged.
-func (p *idleRigPods) relay(ctx context.Context, processes *idleRigPodProcesses, slot, gh string) (string, error) {
+func (p *idleRigPods) relay(processes *idleRigPodProcesses, slot, gh string) (string, error) {
 	if gh == "" {
 		return "", fmt.Errorf("no gh directory is projected for %s", slot)
 	}
@@ -161,30 +185,24 @@ func (p *idleRigPods) relay(ctx context.Context, processes *idleRigPodProcesses,
 	if err != nil {
 		return "", err
 	}
-	context.AfterFunc(ctx, func() { _ = listener.Close() })
-	processes.done.Add(1)
-	go func() {
-		defer processes.done.Done()
+	context.AfterFunc(processes.ctx, func() { _ = listener.Close() })
+	processes.run(func(ctx context.Context) {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			processes.done.Add(1)
-			go func() {
-				defer processes.done.Done()
-				p.relayConn(ctx, conn, slot, gh)
-			}()
+			processes.run(func(ctx context.Context) { p.relayConn(ctx, conn, slot, gh, processes.connect) })
 		}
-	}()
+	})
 	return "tcp://" + listener.Addr().String(), nil
 }
 
-// relayConn is one connection of relay: the launcher's, and the relay's own to the worker stream,
-// both closed when either ends or ctx does.
-func (p *idleRigPods) relayConn(ctx context.Context, conn net.Conn, slot, gh string) {
+// relayConn is one connection of relay: the launcher's, and the relay's own to the worker stream
+// upstream, both closed when either ends or ctx does.
+func (p *idleRigPods) relayConn(ctx context.Context, conn net.Conn, slot, gh, upstream string) {
 	defer conn.Close()
-	address, _ := strings.CutPrefix(p.address(), "tcp://")
+	address, _ := strings.CutPrefix(upstream, "tcp://")
 	stream, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
 		fmt.Fprintf(p.logs, "idle rig relay %s: dial the worker stream %s: %v\n", slot, address, err)
@@ -359,16 +377,18 @@ func idleRigSessionFile(issue, role string) string {
 // fakeOmp. The role process the real launcher starts in a pod is `legion worker-shim … -- <omp
 // argv>`; this stand-in is that whole process, Oh My Pi included: it speaks the worker stream's
 // frames, registers with the daemon, reports ready, claims its role on the Envoy listener, and
-// records every message it is given.
-func idleRigLegionTool(t *testing.T, dir string) string {
+// records every message it is given. The script names the rig that process serves, rigURL, in
+// idleRigURLVariable itself, so the rig's own test process never sets it: each rig writes its own
+// stand-in (toolsDir), and the rigs run beside each other, which a t.Setenv refuses.
+func idleRigLegionTool(t *testing.T, dir, rigURL string) string {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "legion")
-	script := "#!/bin/sh\nexec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' " +
-		"-test.timeout=0 -test.count=1 \"$@\"\n"
+	script := "#!/bin/sh\n" + idleRigURLVariable + "=" + shellQuote(rigURL) + "\nexport " + idleRigURLVariable + "\n" +
+		"exec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' -test.timeout=0 -test.count=1 \"$@\"\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the rig's legion stand-in: %v", err)
 	}
