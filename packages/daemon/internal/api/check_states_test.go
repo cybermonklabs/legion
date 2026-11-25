@@ -68,6 +68,17 @@ func (c liveClaim) writeTestHandoff(version int, serial int64) string {
 	return id
 }
 
+// testerVerdictRefusal and implementerVerdictRefusal are the refusals of a tester's and an
+// implementer's phase completion that names a verdict, written out whole so a change of the
+// route's sentences (verdictNotTaken, verdictRoleForbidden) fails here.
+const (
+	testerVerdictRefusal = "this completion of a testing step names a verdict, and a testing step's completion carries none: " +
+		"Dispatch's check states at the tested head decide the testing phase; send it again without verdict; nothing was recorded"
+	implementerVerdictRefusal = "only the agent of a review step sends a verdict: the reviewer with its handoff_complete, and the owner, " +
+		"whose acceptance is its sign_off (approve) or its request_backward_move (changes). " +
+		"This implementer's completion names one; send it again without verdict; nothing was recorded"
+)
+
 // A phase completion carries no verdict but the reviewer's. A tester's completion naming one, from
 // a plugin at CheckStatesContract, is refused 400 VERDICT_NOT_TAKEN with nothing recorded, and the
 // same completion with none is taken, carrying the check states serial of the record it names.
@@ -87,7 +98,7 @@ func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
 		tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 		written := tester.writeTestHandoff(1, 5)
 		refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "Every check passes.", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
-			http.StatusBadRequest, "VERDICT_NOT_TAKEN", verdictNotTaken)
+			http.StatusBadRequest, "VERDICT_NOT_TAKEN", testerVerdictRefusal)
 		if got := facts.recorded(); len(got) != 0 {
 			t.Fatalf("facts after the refusal = %#v, want none", got)
 		}
@@ -102,7 +113,7 @@ func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
 		implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 		written := implementer.writeHandoff("implement", 1)
 		refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
-			http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", verdictRoleForbidden(claim.RoleImplementer))
+			http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", implementerVerdictRefusal)
 		if got := facts.recorded(); len(got) != 0 {
 			t.Fatalf("facts after the refusal = %#v, want none", got)
 		}
@@ -155,7 +166,7 @@ func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
 		h.makeStale(t, implementer.token, implementer.session, implementer.secret, CheckStatesContract-1)
 		written := implementer.writeHandoff("implement", 1)
 		refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
-			http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", verdictRoleForbidden(claim.RoleImplementer))
+			http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", implementerVerdictRefusal)
 		if got := facts.recorded(); len(got) != 0 {
 			t.Fatalf("facts after the refusal = %#v, want none", got)
 		}
