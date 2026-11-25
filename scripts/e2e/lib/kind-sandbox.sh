@@ -32,7 +32,23 @@
 # EVIDENCE/cluster-at-failure.txt, then deletes the cluster. It does nothing before
 # kind_sandbox_create has named a cluster, or once the cluster is gone.
 #
+# The three install functions each download a file from a host outside this repository: kind and
+# Agent Sandbox's manifest from github.com, gVisor's tarball from storage.googleapis.com. e2e.yaml
+# runs shared-clone-kind.sh, which calls all three, on a GitHub-hosted runner. So each download
+# runs under retry_fetch of .github/scripts/ci-retry.sh, as every download of this repository's CI
+# does (dispatch://INFRA-1545, round 68). retry_fetch makes five attempts, with 10, 20, 40 and
+# 80 s between them. Each attempt is bounded at 60 s, the bound the Retries note of
+# .github/ci-budgets.md gives a release asset or release archive. From an issue pod on 2026-11-25
+# the three took 0.46 s, 0.26 s and 0.66 s, for 10.5 MB, 206 kB and 76.4 MB. The checksum check
+# runs after the retried download, so a corrupt file still fails the run by name. This file
+# sources ci-retry.sh from `root`, the repository root, which every caller sets before it sources
+# this file.
+#
 # LEGION_E2E_KIND names the kind binary when it is not on PATH.
+
+# retry_fetch, for the downloads of the three install functions (the header says why).
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$root/.github/scripts/ci-retry.sh"
 
 kind_bin=${LEGION_E2E_KIND:-kind}
 kind_cluster=
@@ -53,7 +69,7 @@ kind_gvisor_sha512=ce2e1aeb853c104e854dea6644333a1dba0fbc9dd1646af97e1d013fdf810
 kind_k() { kubectl --kubeconfig "$kind_kubeconfig" --context "$kind_context" "$@"; }
 
 kind_sandbox_install_kind() {
-  curl -fsSLo "$1/kind" "$kind_release_url"
+  retry_fetch "kind v0.33.0" 60 -- curl -fsSLo "$1/kind" "$kind_release_url"
   echo "$kind_release_sha256  $1/kind" | sha256sum -c -
   chmod +x "$1/kind"
   kind_bin=$1/kind
@@ -70,14 +86,15 @@ kind_sandbox_create() {
 }
 
 kind_sandbox_install_agent_sandbox() {
-  curl -fsSLo "$1/sandbox.yaml" "$kind_agent_sandbox_url"
+  retry_fetch "Agent Sandbox v1.0.3's sandbox.yaml" 60 -- \
+    curl -fsSLo "$1/sandbox.yaml" "$kind_agent_sandbox_url"
   echo "$kind_agent_sandbox_sha256  $1/sandbox.yaml" | sha256sum -c -
   kind_k apply -f "$1/sandbox.yaml"
   kind_k -n agent-sandbox-system rollout status deployment/agent-sandbox-controller --timeout=300s
 }
 
 kind_sandbox_install_gvisor() {
-  curl -fsSLo "$1/gvisor.tar.zstd" "$kind_gvisor_url"
+  retry_fetch "gVisor release-20261012.0" 60 -- curl -fsSLo "$1/gvisor.tar.zstd" "$kind_gvisor_url"
   echo "$kind_gvisor_sha512  $1/gvisor.tar.zstd" | sha512sum -c -
   mkdir -p "$1/gvisor"
   tar --zstd -xf "$1/gvisor.tar.zstd" -C "$1/gvisor"

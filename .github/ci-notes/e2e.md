@@ -35,12 +35,24 @@ stage1-skeleton.sh and verification-results.sh.
 - Sourcing neither file, directly or through `lib/rig.sh`, through `lib/codex-host.sh`, through
   `lib/model-endpoint.sh` or through the libraries those source: dispatch-claimant-delivery.sh
   and dispatch-broker.sh, 1500 s -> 26 min; nats-callout-sessions.sh, 2100 s -> 36 min; and
-  stage1-skeleton.sh and verification-results.sh, 1200 s -> 21 min; and shared-clone-kind.sh,
-  4500 s -> 76 min.
+  stage1-skeleton.sh and verification-results.sh, 1200 s -> 21 min.
+- shared-clone-kind.sh, whose scripts/e2e/lib/kind-sandbox.sh retries its three downloads at the
+  60 s a release asset or archive gets (the Retries note of .github/ci-budgets.md), kind v0.33.0
+  (10.5 MB) and Agent Sandbox's `sandbox.yaml` (206 kB) from github.com and gVisor's tarball
+  (76.4 MB) from storage.googleapis.com, each under a second from an issue pod on 2026-11-25: its
+  75 minutes plus 3 x (5 x 60 + 150) = 1350 s, 4500 + 1350 = 5850 s -> 98 min. Its two ghcr.io
+  reads, the pull token and the manifest of ghcr.io/cybermonklabs/legion-worker, read this
+  repository's own package and stay bare, under exception (a) of
+  .github/scripts/check-download-retry.sh, whose header names them (dispatch://INFRA-1545, round
+  68).
 
 Those 1050 s are under the retry figures a `jj`, a `bun` or an `apt` row's `timeout_minutes`
 carries, 3866, 3416 and 1400 s, so they size those rows' job limits not at all. A row with none of
-the three, shared-clone-kind.sh's, carries the Go module download's 1050 s, which every row runs.
+the three, shared-clone-kind.sh's, would carry the Go module download's 1050 s, which every row
+runs, but its proof step's own 1350 s is more. So its job carries that step at its full limit and
+the steps before it at their measured time: 38 to 82 s from the job's start to `Run the proof` over
+the 22 jobs of e2e.yaml runs 45694873264, 45694862149, 45694670537 and 45715794138. That is
+82 + 4500 + 1350 = 5932 s -> 99 min, above the step's 98.
 Every row's job limit stays above its step's: `.github/scripts/select-e2e-proofs.sh` refuses one
 that does not, so the pairs are read from `.github/e2e-scripts.json` and not copied here.
 plan-ratings.sh's row had a `timeout_minutes` of 25, its measured figure alone, though its `jj` is
@@ -54,8 +66,8 @@ over 43 (dispatch://INFRA-1545), and main's #4392's dispatch-broker.sh row, adde
 with its `jj` false and its `bun` true, now carries setup-bun's 1500 + 3416 = 4916 s -> 82 min
 over 26 (dispatch://INFRA-1545, round 66). Main's #5385's shared-clone-kind.sh row, added the
 same way with 75 minutes, a `dispatch_only` row whose `jj`, `bun` and `apt` select none of those
-three steps, now carries the Go module download every row runs: 4500 + 1050 = 5550 s -> 93 min
-over 76 (dispatch://INFRA-1545, round 68).
+three steps, now carries its proof step's three retried downloads and the steps before that step:
+82 + 4500 + 1350 = 5932 s -> 99 min over 98 (dispatch://INFRA-1545, round 68).
 
 `.github/scripts/check-download-retry.sh` reads no script outside `.github/scripts/` and no number
 out of an expression (A CEILING WRITTEN AS AN EXPRESSION, under its rule 8), so it prices neither

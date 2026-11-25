@@ -1597,10 +1597,11 @@ HARNESS_LIBRARY = "-test-lib.sh"
 # dispatch://INFRA-1545, round 38). A match is an occurrence and not yet a call: call_of below
 # reads where on its line it is written, and only a path in a recognised call's place is charged
 # (dispatch://INFRA-1545, round 37). WHAT THIS DOES NOT CLAIM IS COVERAGE OF EVERY SCRIPT CI RUNS:
-# a CI job also runs scripts outside that directory, and four of them carry retried fetches this
+# a CI job also runs scripts outside that directory, and five of them carry retried fetches this
 # change wrote -
 # scripts/go-third-party-notices.sh, scripts/e2e/dispatch-session-settings.sh,
-# scripts/e2e/lib/live-daemon-proof.sh and packages/envoy/loadtest/cluster/render-nats.sh. A
+# scripts/e2e/lib/live-daemon-proof.sh, scripts/e2e/lib/kind-sandbox.sh (dispatch://INFRA-1545,
+# round 68) and packages/envoy/loadtest/cluster/render-nats.sh. A
 # call of one of those is a name SCRIPTS does not hold, so this reader does not follow it and
 # the step that runs it is priced by the step's own text. That reach is the one this file's
 # header describes, and widening it is dispatch://INFRA-2899's question rather than a claim to
