@@ -156,13 +156,18 @@ func objectsOf[T any](listed []*T) []map[string]any {
 
 // objectOf is one listed object as the map its readers take: each member the listing declares,
 // under the name that member's json tag gives, written as the member writes itself (scalar.put,
-// objectMember.put), and nothing for a member that holds nothing.
+// objectMember.put), and nothing for a member that holds nothing. It reads exported fields alone:
+// membersOf lists no other, and the read's own IsExported guard is the one the gate's reflection
+// census reads (exported_fields_only).
 func objectOf[T any](listed *T) map[string]any {
-	members := membersOf(reflect.TypeFor[T]())
+	listing := reflect.TypeFor[T]()
+	members := membersOf(listing)
 	object := make(map[string]any, len(members))
 	held := reflect.ValueOf(listed).Elem()
 	for _, m := range members {
-		held.Field(m.at).Addr().Interface().(member).put(object, m.name)
+		if at := m.at; listing.Field(at).IsExported() {
+			held.Field(at).Addr().Interface().(member).put(object, m.name)
+		}
 	}
 	return object
 }
