@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// INFRA-1150, test round 6: no writer that walks an issue's documents writes into a retired one.
+// Test round 6 of this change: no writer that walks an issue's documents writes into a retired one.
 // Each reads the document's retirement under the document owner's lock, the lock
 // docs.RetireDocument takes (docs' retiredUnderOwnerLock), and skips a document it reads retired:
 // it writes nothing into it, refuses nothing, and goes on with the issue's other documents.
