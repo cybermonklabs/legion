@@ -81,6 +81,10 @@ var (
 	// answered 403 APPROVER_REPLACED; nothing is minted and the record stays pending, for an
 	// approval checked again at Dispatch.
 	ErrApprovalCheckedBeforeReplacement = fmt.Errorf("%w: Dispatch checked this approval before another account took the address, so approve it again from Dispatch", ErrApproverReplaced)
+	// ErrKeyBindsReadToken is ApplyDecision's and TokenLogin's refusal of a key a live read token
+	// is bound to (enroll.ErrKeyBindsReadToken): a read token's key signs no launcher proof, so
+	// the machine makes a new key and logs in with it. The record stays pending.
+	ErrKeyBindsReadToken = errors.New("a live read token is bound to this machine login's key, and a key that signs launcher proofs is bound to no read token: make a new key and log in with it")
 	// ErrNotLive is Refreshed's and Live's refusal for a launcher credential that is revoked or
 	// past its expiry: a refresh never revives a login that has ended. It is an
 	// oauth.ErrLoginEnded, so the token endpoint refuses it invalid_grant.
@@ -355,8 +359,9 @@ func personLoginCheck(dpopJKT string) func(record.RequestObject) error {
 // credential — bound to the request object's own key (thumbprint and embedded JWK), with the lifetime
 // its record names (LoginDevice) counted from the decision — in the same transaction that records the
 // decision, so a crash between the two never orphans a credential no decision names. A key that
-// already holds a live credential under another record is ErrKeyHoldsLiveCredential, and the
-// record stays pending.
+// already holds a live credential under another record is ErrKeyHoldsLiveCredential, one that a
+// live read token is bound to (enroll.ErrKeyBindsReadToken) is ErrKeyBindsReadToken, and either
+// way the record stays pending.
 //
 // account is the identity provider's account the deciding human signed in to Dispatch as, which
 // Dispatch relays beside login (the zero value for an older Dispatch, which relays none). An
@@ -507,8 +512,11 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 		}
 		id, err := s.Enroll.MintLauncherCredentialTx(ctx, tx, login, detail.Identifier, obj.Thumbprint, jwk, recordID,
 			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second), account)
-		if store.IsUniqueViolation(err) {
+		if enroll.KeyHeld(err) {
 			return "", "", ErrKeyHoldsLiveCredential
+		}
+		if errors.Is(err, enroll.ErrKeyBindsReadToken) {
+			return "", "", ErrKeyBindsReadToken
 		}
 		if err != nil {
 			return "", "", err

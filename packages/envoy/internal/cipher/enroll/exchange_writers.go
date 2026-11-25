@@ -16,8 +16,10 @@ import (
 // trades that mint one come through here — a machine's own, which carries its fleet's service and
 // no person, and a person's sign-in on such a machine, which carries that person as its operator —
 // so there is one way a credential is minted and not two. A key another live credential holds is
-// oauth.ErrMachineKeyTaken, which the exchange answers invalid_grant. The broker command and the
-// test rig (ciphertest) both install it, so the rig's trades write what the broker's write.
+// oauth.ErrMachineKeyTaken, and a key a live read token is bound to (ErrKeyBindsReadToken) is
+// oauth.ErrMachineKeyBindsReadToken; the exchange answers each invalid_grant with a hint of its
+// own. The broker command and the test rig (ciphertest) both install it, so the rig's trades write
+// what the broker's write.
 func (s *Service) MachineCredentials() oauth.MachineCredentials {
 	return func(ctx context.Context, cred oauth.MachineCredential) (string, error) {
 		tx, ok := oauthstore.TxFrom(ctx)
@@ -34,8 +36,11 @@ func (s *Service) MachineCredentials() oauth.MachineCredentials {
 			JWK:          cred.JWK,
 			Expires:      cred.Expires,
 		})
-		if store.IsUniqueViolation(err) {
+		if KeyHeld(err) {
 			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
+		}
+		if errors.Is(err, ErrKeyBindsReadToken) {
+			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyBindsReadToken, err)
 		}
 		if err != nil {
 			return "", err

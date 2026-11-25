@@ -55,6 +55,12 @@ import (
 // (not_held_until, Unix seconds rounded down), past which the resource server keeps no such answer,
 // and one whose deadline has passed is answered with a not_held_until every clock is past. Any other
 // case the gate cannot tell is *HoldUncheckableError, never an answer.
+//
+// A token narrowed to reading is answered with its narrowed project scope, its scope (read, or
+// read person) and its cut (AsOf), and its end is decided again at every introspection: the store
+// reads it live only while its own row, the launcher credential it names and the machine login's
+// token it was traded from are (oauthstore.Store.GetAccessTokenSession), so a revoke or a retire
+// any broker build made ends it, and the library then reports it inactive.
 func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Introspection, error) {
 	if p.strategy.Enigma.Validate(ctx, token) != nil {
 		return oauthwire.Introspection{}, nil
@@ -94,16 +100,18 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 		}
 		answer.CredentialCreatedAt = unixSeconds(session.Extra[ClaimCredentialCreatedAt])
 	}
+	answer.AsOf, _ = session.Extra[ClaimAsOf].(string)
 	stored, present := session.Extra[ClaimProjects]
 	if !present {
-		if answer.ProjectScope == oauthwire.ProjectScopeNamed {
+		if oauthwire.BaseProjectScope(answer.ProjectScope) == oauthwire.ProjectScopeNamed {
 			// A named token an exchange decided before the list stored its one project under
 			// another claim and none under this one. Read as no projects, it would pass as a named
 			// token naming none, the public-session account's shape, which holds it to no project;
 			// it is answered not live instead, so its holder trades again for a token of this
-			// release. A person token of that release stored no project claim at all, which meant
-			// then what an empty list means now, so it reads as naming none; a machine login's own
-			// token, which no exchange decided, carries neither claim.
+			// release. A narrowed named token is read as its base word, so one stored with no list
+			// is not live either. A person token of that release stored no project claim at all,
+			// which meant then what an empty list means now, so it reads as naming none; a machine
+			// login's own token, which no exchange decided, carries neither claim.
 			return oauthwire.Introspection{}, nil
 		}
 		return p.withHold(ctx, answer, session)

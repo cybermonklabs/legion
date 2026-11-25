@@ -19,7 +19,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,9 +36,6 @@ type signInRig struct {
 	store     SignInStore
 	authority *SignInAuthority
 	signIns   int
-	// clock, set by newRenewalRig, is the Unix nanosecond the rig's clients read as now
-	// (authority.now); nil for a rig on the real clock.
-	clock *atomic.Int64
 }
 
 // newSignInRig is that box, with the broker answering credential ids in turn

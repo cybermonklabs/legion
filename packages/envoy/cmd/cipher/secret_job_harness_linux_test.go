@@ -296,6 +296,34 @@ func (s *promptShell) waitForeground(pid int) {
 	}
 }
 
+// requireForegroundRead is the kernel probe of a test that reads, through the pseudo-terminal's
+// controller (waitForeground), which process group holds the terminal: Linux answers TIOCGPGRP
+// there, and gVisor answers ENOTTY. It asks a fresh pair's controller.
+func requireForegroundRead(t *testing.T) {
+	t.Helper()
+	controller, _ := openPTY(t)
+	fd, err := rawFd(controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group int
+	for {
+		group, err = unix.IoctlGetInt(fd, unix.TIOCGPGRP)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	if err != nil && !errors.Is(err, unix.ENOTTY) {
+		t.Fatalf("TIOCGPGRP on a pseudo-terminal's controller: %v", err)
+	}
+	answered := fmt.Sprintf("group %d", group)
+	if err != nil {
+		answered = err.Error()
+	}
+	requireKernel(t, err == nil, "TIOCGPGRP on a pseudo-terminal's controller to name the process group that holds the terminal",
+		"answered TIOCGPGRP on a fresh pair's controller with "+answered)
+}
+
 func (s *promptShell) noShellValue(markers ...string) {
 	s.t.Helper()
 	s.wait("PROMPT$ ")
@@ -404,16 +432,42 @@ func TestPromptJobHelper(t *testing.T) {
 		}
 		fmt.Println("PROMPT_STARTING")
 		if os.Getenv("AGENT_SECRETS_JOB_AFTER_SHELL_EXIT") != "" {
-			// Reach the prompt only once the shell's exit has taken the terminal from the
-			// session, as a prompt descheduled that long on a loaded machine would.
+			// The interactive bash leads this session, even when a wrapper bash is this
+			// helper's parent. Its PID remains the session ID after it exits. Wait until
+			// exit_notify has made it a zombie (or it was reaped), not merely PF_EXITING:
+			// disassociate_ctty runs between those two points and takes the terminal away.
+			shell, err := unix.Getsid(0)
+			if err != nil || shell <= 0 {
+				t.Fatalf("read the shell's session ID: %d, %v", shell, err)
+			}
 			for ; ; time.Sleep(time.Millisecond) {
-				if _, err := unix.IoctlGetInt(0, unix.TIOCGPGRP); errors.Is(err, unix.ENOTTY) {
+				leader, err := readProcStat(shell)
+				if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ESRCH) ||
+					(err == nil && (leader.state == 'Z' || leader.state == 'X')) {
 					break
 				}
+				if err != nil {
+					t.Fatal(err)
+				}
 				if waitsGaveUp(t) {
-					t.Fatal("the shell's exit never took the terminal")
+					t.Fatal("the session-leader shell never exited")
 				}
 			}
+			var group int
+			for {
+				group, err = unix.IoctlGetInt(0, unix.TIOCGPGRP)
+				if !errors.Is(err, unix.EINTR) {
+					break
+				}
+			}
+			if err == nil {
+				fmt.Printf("TERMINAL_AFTER_SHELL_EXIT=kept (TIOCGPGRP answered group %d)\n", group)
+				return
+			}
+			if !errors.Is(err, unix.ENOTTY) {
+				t.Fatalf("TIOCGPGRP after the session-leader shell exited: %v", err)
+			}
+			fmt.Println("TERMINAL_AFTER_SHELL_EXIT=gone")
 		}
 	}
 	// AGENT_SECRETS_JOB_DEADLINE gives the read a deadline that long after it starts, as a create's
@@ -614,4 +668,23 @@ func signalMaskHas(t *testing.T, pid int, field string, sig syscall.Signal) bool
 	}
 	t.Fatalf("no %s line in /proc/%d/status", field, pid)
 	return false
+}
+
+// requireSignalDispositions is the kernel probe of a test that reads how a process handles a
+// signal from its /proc/<pid>/status (catches, ignores): Linux's has SigCgt and SigIgn lines,
+// and gVisor's has neither. It reads this process's own.
+func requireSignalDispositions(t *testing.T) {
+	t.Helper()
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, field := range []string{"SigCgt:", "SigIgn:"} {
+		if strings.Contains(string(status), "\n"+field) {
+			lines = append(lines, field)
+		}
+	}
+	requireKernel(t, len(lines) == 2, "/proc/<pid>/status to show how the process handles each signal (its SigCgt and SigIgn lines)",
+		fmt.Sprintf("showed %d of those two lines in /proc/self/status %q", len(lines), lines))
 }

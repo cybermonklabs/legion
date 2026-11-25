@@ -14,7 +14,7 @@
 // the token client has said what its trade came to. So the time a row reads is the code's own,
 // to the millisecond, however loaded the machine.
 
-import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import {
   RegistrationPendingError,
   TradeRetryingError,
@@ -32,8 +32,10 @@ beforeEach(() => {
   jest.useFakeTimers();
 });
 
-// A fake clock left behind stops the timers of every file the same worker runs after this one.
+// A fake clock left behind stops the timers of every file the same worker runs after this one, and
+// a system time left moved skews every clock read after it.
 afterEach(() => {
+  setSystemTime();
   jest.useRealTimers();
 });
 
@@ -73,8 +75,8 @@ test("inside the renewal window, a broker that hangs leaves a Dispatch call its 
         renewing = true;
         return await new Promise<Response>(() => {});
       }
-      // Good for 200 s: inside the 5-minute renewal window from the first, and reused until
-      // half its life, 100 s.
+      // Good for 200 s, so the client renews it at its half life (`renewalAt`): the row moves the
+      // clock past that before the second call, while the token is still live.
       return Response.json({
         access_token: fixtureSecret("live"),
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
@@ -100,9 +102,7 @@ test("inside the renewal window, a broker that hangs leaves a Dispatch call its 
       {}
     );
   await call();
-  // Past half the token's life, still live: the next call starts its renewal.
-  jest.advanceTimersByTime(100_001);
-  await turn();
+  setSystemTime(new Date(Date.now() + 150_000));
   const started = performance.now();
   const second = call();
   let answered = false;

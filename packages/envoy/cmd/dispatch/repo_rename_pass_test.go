@@ -44,6 +44,7 @@ func issueRepo(t *testing.T, ctx context.Context, database *store.Store) string 
 // The boot reads the pairs and runs the pass over them: the pass writes the new name and logs
 // its summary at INFO, with the pair and the row it wrote.
 func TestTheBootRenamePassWritesTheNewNameAndLogsItsSummary(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
 	seedRenamedIssue(t, ctx, database)
@@ -64,6 +65,7 @@ func TestTheBootRenamePassWritesTheNewNameAndLogsItsSummary(t *testing.T) {
 // A read of the pairs that failed is one failure of the pass. The pass then has no pairs and
 // writes nothing, the rows left on an old name are unknown, and the summary is at ERROR.
 func TestTheBootRenamePassCountsAFailedReadOfThePairsAsAFailure(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
 	seedRenamedIssue(t, ctx, database)
@@ -83,6 +85,7 @@ func TestTheBootRenamePassCountsAFailedReadOfThePairsAsAFailure(t *testing.T) {
 // A count of the rows left that fails is one failure of the pass, and the summary says the rows
 // left are unknown, at ERROR, while the lines that could write wrote.
 func TestTheBootRenamePassLogsLeftUnknownWhenItsCountFails(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
 	seedRenamedIssue(t, ctx, database)
@@ -108,6 +111,7 @@ func TestTheBootRenamePassLogsLeftUnknownWhenItsCountFails(t *testing.T) {
 // dispatch://INFRA-4411 drops repo_projects. The boot then reads no pairs and no error, and the
 // pass writes nothing and logs its summary at INFO with pairs=0.
 func TestTheBootRenamePassLogsNoPairsOnceRepoProjectsIsDropped(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
 	seedRenamedIssue(t, ctx, database)

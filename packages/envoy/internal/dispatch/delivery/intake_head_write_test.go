@@ -43,7 +43,7 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	withoutBranchCommits(t, ctx, pool)
 
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -130,7 +130,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	process.release = sync.OnceFunc(func() { close(held) })
 	t.Cleanup(process.release)
 
-	process.intake = newIntake(client, second.Pool, process.leases, github, events.NewBroker(),
+	process.intake = newIntake(tuningFor(t), client, second.Pool, process.leases, github, events.NewBroker(),
 		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
