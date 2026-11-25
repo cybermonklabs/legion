@@ -399,21 +399,23 @@ var stateEnumeratedFields = []EnumeratedField{
 	// below that contract whole (shaping.go's withoutMemory).
 	{Answer: AnswerState, KeyPath: "issues.*.memoryGroup", Values: memoryGroups},
 	{Answer: AnswerState, KeyPath: "issues.*.memoryDrawMode", Values: memoryDrawModes},
-	// `state` of one claim nothing will wake (api.StrandedClaim). Its list grew: `retired`
-	// arrived at 56, and an entry carrying it is dropped whole below that contract (shaping.go's
-	// withoutUnadmittedStrandedStates), so no body below 56 carries the value and the gate passes
-	// without a serving-down of its own.
-	{Answer: AnswerState, KeyPath: "strandedClaims.*.state", Values: strandedStates},
-	// `role` of one claim nothing will wake (api.StrandedClaim), of one wake the pacing holds
-	// (api.WakeWaiting.Role), which arrived with `wakesWaiting` and is served down below that
-	// contract whole (shaping.go's withoutWakesWaiting), and of one claim whose stop the
-	// project's open pause waits on (api.PauseStopView.Role), which arrived with `paused` and is
-	// served down below that contract whole (shaping.go's withoutPause). Each keeps Legion's six
-	// roles as its domain at every contract (claimRoles says why). The wake's `kind` and the
-	// pause's `by.kind` and `endedBy.kind` are no rows: the first is an unconstrained string, and
-	// the other two are discriminators read with a `z.literal`.
+	// `role` and `state` of one claim nothing will wake (api.StrandedClaim). The state's list
+	// grew: `retired` arrived at 56, and an entry carrying it is dropped whole below that
+	// contract (shaping.go's withoutUnadmittedStrandedStates), so no body below 56 carries the
+	// value and the gate passes without a serving-down of its own. The role keeps Legion's six
+	// as its domain at every contract, as the wake's and the pause stop's below do (claimRoles
+	// says why).
 	{Answer: AnswerState, KeyPath: "strandedClaims.*.role", Values: claimRoles},
+	{Answer: AnswerState, KeyPath: "strandedClaims.*.state", Values: strandedStates},
+	// `role` of one wake the pacing holds (api.WakeWaiting.Role). It arrived with
+	// `wakesWaiting`, which is served down below that contract whole (shaping.go's
+	// withoutWakesWaiting). The wake's `kind` beside it is no row: the schema leaves it an
+	// unconstrained string, so a lane a later daemon names is read rather than refused.
 	{Answer: AnswerState, KeyPath: "wakesWaiting.*.role", Values: wakeRoles},
+	// `role` of one claim whose stop the project's open pause still waits on
+	// (api.PauseStopView.Role). It arrived with `paused`, which is served down below that
+	// contract whole (shaping.go's withoutPause). The pause's `by.kind` and `endedBy.kind` are no
+	// rows: each is the discriminator of a discriminated union, read with a `z.literal`.
 	{Answer: AnswerState, KeyPath: "paused.waitsOn.*.role", Values: pauseStopRoles},
 	// `runtime` of the registered controller's locator, the runtime this daemon runs under
 	// (api.ControllerLocator.Runtime).
