@@ -66,15 +66,15 @@ type intakeTuning struct {
 // newIntakeTuning is production's tuning, a new one for each call.
 func newIntakeTuning() *intakeTuning {
 	tuning := &intakeTuning{
-		messageTimeout:         intakeMessageTimeout,
-		maxAckPending:          intakeMaxAckPending,
-		stopBudget:             intakeStopBudget,
-		redeliverAfter:         headWriteRedeliverAfter,
-		bindInterval:           durableBindInterval,
-		holdTTL:                intakeHoldTTL,
-		holdRenew:              intakeHoldRenew,
-		holdMargin:             intakeHoldMargin,
-		createDurable:          addDurable,
+		messageTimeout: intakeMessageTimeout,
+		maxAckPending:  intakeMaxAckPending,
+		stopBudget:     intakeStopBudget,
+		redeliverAfter: headWriteRedeliverAfter,
+		bindInterval:   durableBindInterval,
+		holdTTL:        intakeHoldTTL,
+		holdRenew:      intakeHoldRenew,
+		holdMargin:     intakeHoldMargin,
+		createDurable:  addDurable,
 	}
 	tuning.callWait.Store(int64(bus.ConnLockWait))
 	tuning.drainWait.Store(int64(natsgo.DefaultDrainTimeout))

@@ -923,7 +923,6 @@ func (c *comparisonReader) measuredBranches(
 	return branches, true
 }
 
-
 // repositoryOf is checkIssueRepository read once per read of the results: the repository the
 // check's issue resolves to, and whether the resolve answered at all. The memo keeps the three
 // states apart as the resolve states them, so an issue that resolves to none, a resolve that
