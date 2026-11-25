@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -149,6 +150,52 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 		t.Fatalf("facts = %#v, want %#v: one for each version taken, the second registration of version 4 being the first's", got, want)
 	}
 	assertProcessedEvent(t, h, "plan:LEGION-208:1:"+planDoc+":4")
+}
+
+// planReadFailing is the record store whose read of an issue's plan fails while fail is set, as a
+// database that refuses the read would. Every other read and write is the store's own.
+type planReadFailing struct {
+	record.Store
+	fail bool
+}
+
+func (p *planReadFailing) Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*record.StoredPlan, error) {
+	if p.fail {
+		return nil, errors.New("the read of the plan failed")
+	}
+	return p.Store.Plan(ctx, tx, issue, generation)
+}
+
+// A retry of a registration already taken applies nothing, so register_plan reads again where each
+// task of the plan stands (runningAt). When that read fails, the retry is answered
+// 500 RECORD_UNAVAILABLE and records nothing more. The fault is a retry answered 200 without
+// `running`, which would tell the owner that no step of the plan runs. The control is the same
+// retry once the read works again: it is answered 200 with the plan.
+func TestARetryWhoseReadOfTheRecordFailsIsAnsweredRecordUnavailable(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	records := &planReadFailing{Store: record.NewStore()}
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		Handlers: []intake.Handler{facts}, Dispatch: statuses,
+	}).Handler
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 4, taskBlock("a", "implementer reviewer"))
+	const taken = `{"plan":{"version":4,"tasks":[{"id":"a","steps":["implementer","reviewer"]}]}}`
+
+	if first := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4); first.Code != http.StatusOK || strings.TrimSpace(first.Body.String()) != taken {
+		t.Fatalf("register version 4 = %d %s, want 200 with its one task", first.Code, first.Body)
+	}
+	records.fail = true
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4), http.StatusInternalServerError, "RECORD_UNAVAILABLE",
+		"could not read where the tasks of the plan stand")
+	records.fail = false
+	if again := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4); again.Code != http.StatusOK || strings.TrimSpace(again.Body.String()) != taken {
+		t.Fatalf("the retry once the read works = %d %s, want 200 with its one task", again.Code, again.Body)
+	}
+	if got, want := facts.recorded(), []intake.Fact{givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...)}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("facts = %#v, want %#v: the one registration taken, and nothing for either retry", got, want)
+	}
 }
 
 // The reader of 219 takes every field of register_plan's answer as optional, since no plugin code
