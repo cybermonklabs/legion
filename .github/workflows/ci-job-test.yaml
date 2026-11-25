@@ -459,8 +459,17 @@ jobs:
       # after it (check-ci-filters.test.sh alone took 100 s in run 45107561644's test job).
       # nats-image.test.ts is left out: lint's "Check every NATS server a script starts or installs
       # is one the floor takes" runs that file on every run, and lint runs whenever this job does.
+      # The root package.json's test:e2e-lib holds the run, so CI and every local or pod runner use
+      # one command (bun run hands it the --path-ignore-patterns after the script's own words):
+      # --timeout bounds each row, and each beforeEach or afterEach hook, at 200 s, in place of Bun's
+      # default of 5 s (Bun 1.4.4 reads no [test] timeout from bunfig.toml). It is a hang guard only:
+      # each row's verdict is its own assertions. Measured with 8 busy loops on the two CPUs the whole
+      # directory ran on (2026-11-20, main d36289cb84), the slowest row that passed took 98.5 s and 58
+      # rows took more than 5 s; 200 s is about twice the slowest. The rows whose shells wait set
+      # their own bound in their file and give up 20 s inside it, so a wait that gives up still names
+      # what it waited for.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
-        run: bun test scripts/e2e/lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts
+        run: bun run test:e2e-lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts
 
       # The verdict on the script harnesses the steps above queued: it waits for the last of them,
       # prints each one's log in a group of its own with its wall and CPU seconds, and fails naming
