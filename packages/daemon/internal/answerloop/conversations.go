@@ -7,11 +7,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/conversation/claude"
 	"github.com/sjawhar/legion/daemon/internal/conversation/omp"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -42,7 +41,7 @@ var conversationMissing = errors.New("the conversation is no longer kept")
 // table under a database store (OpenSQL, the conversation store's connection; nil under tmux's
 // files store), else the session file at its location; a Claude Code transcript at its path.
 type Harnesses struct {
-	OpenSQL func(ctx context.Context) (*pgx.Conn, func(), error)
+	OpenSQL func(ctx context.Context) (*ompsessions.Conn, func(), error)
 	// OMP is how the conversation's endpoint treats replayed thinking (omp.Options).
 	OMP omp.Options
 }
@@ -102,7 +101,7 @@ func (o ompFileSession) Deliver(_ context.Context, d conversation.Delivery, now 
 func (o ompFileSession) Close() {}
 
 type ompSQLSession struct {
-	conn  *pgx.Conn
+	conn  *ompsessions.Conn
 	close func()
 	path  string
 	s     *omp.Session

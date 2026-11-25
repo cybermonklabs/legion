@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
@@ -36,7 +38,12 @@ func TestAuditBackfillRecordsAnOMPSessionOhMyPiItselfWroteToTheTable(t *testing.
 		t.Fatal(err)
 	}
 	// Oh My Pi under SQL storage keeps the title in the row's column.
-	if _, err := conn.Exec(ctx, "UPDATE omp_session_files SET title = $1, title_source = 'auto' WHERE path = $2",
+	admin, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = admin.Close(context.Background()) })
+	if _, err := admin.Exec(ctx, "UPDATE omp_session_files SET title = $1, title_source = 'auto' WHERE path = $2",
 		"Legion tester · LEGION-7", path); err != nil {
 		t.Fatal(err)
 	}

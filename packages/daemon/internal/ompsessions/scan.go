@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // The custom entries pi-envoy writes into a session (packages/pi-envoy/extensions/envoy.ts):
@@ -204,71 +202,71 @@ type Titled struct {
 // order, since Oh My Pi's own full write leaves the row's content empty and keeps the whole
 // session in its parts (Replace). RoleClaim and ManagedSession are not read: Describe over the
 // session's whole content reads them. A database no Oh My Pi has opened holds none.
-func Titles(ctx context.Context, conn *pgx.Conn) ([]Titled, error) {
-	// A part starting at headBytes or past it is wholly past the head, since the bytes before it
-	// are exactly its start_offset, so the head is the row's content and the parts before that
-	// mark, each cut to the head's length and taken in order.
-	rows, err := conn.Query(ctx,
-		"SELECT path, title, title_source, head FROM ("+
-			"SELECT path, title, title_source, 0 AS kind, 0::bigint AS start_offset, substr(content, 1, $1) AS head FROM omp_session_files "+
-			"UNION ALL "+
-			"SELECT p.path, f.title, f.title_source, 1, p.start_offset, substr(p.content, 1, $1) "+
-			"FROM omp_session_files_parts p JOIN omp_session_files f ON f.path = p.path WHERE p.start_offset < $1"+
-			") pieces ORDER BY path, kind, start_offset", headBytes)
-	if err != nil {
-		if isUndefinedTable(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("list sessions: %w", err)
-	}
-	defer rows.Close()
+func Titles(ctx context.Context, conn *Conn) ([]Titled, error) {
 	var titled []Titled
-	var head bytes.Buffer
-	var path string
-	var title, source *string
-	started := false
-	describe := func() error {
-		if !started {
-			return nil
-		}
-		var d Description
-		if err := (lineScanner{read: headLines(head.Bytes())}).describe(&d, true); err != nil {
+	err := inTransaction(ctx, conn, true, func(p pinned) error {
+		// A part starting at headBytes or past it is wholly past the head, since the bytes before it
+		// are exactly its start_offset, so the head is the row's content and the parts before that
+		// mark, each cut to the head's length and taken in order.
+		rows, err := p.query(ctx,
+			"SELECT path, title, title_source, head FROM ("+
+				"SELECT path, title, title_source, 0 AS kind, 0::bigint AS start_offset, substr(content, 1, $1) AS head FROM public.omp_session_files "+
+				"UNION ALL "+
+				"SELECT p.path, f.title, f.title_source, 1, p.start_offset, substr(p.content, 1, $1) "+
+				"FROM public.omp_session_files_parts p JOIN public.omp_session_files f ON f.path = p.path WHERE p.start_offset < $1"+
+				") pieces ORDER BY path, kind, start_offset", headBytes)
+		if err != nil {
 			return err
 		}
-		if title != nil {
-			d.Title, d.TitleSource = *title, ""
-			if source != nil {
-				d.TitleSource = *source
+		defer rows.Close()
+		var head bytes.Buffer
+		var path string
+		var title, source *string
+		started := false
+		describe := func() error {
+			if !started {
+				return nil
+			}
+			var d Description
+			if err := (lineScanner{read: headLines(head.Bytes())}).describe(&d, true); err != nil {
+				return err
+			}
+			if title != nil {
+				d.Title, d.TitleSource = *title, ""
+				if source != nil {
+					d.TitleSource = *source
+				}
+			}
+			titled = append(titled, Titled{Path: path, Description: d})
+			return nil
+		}
+		for rows.Next() {
+			var rowPath, piece string
+			var rowTitle, rowSource *string
+			if err := rows.Scan(&rowPath, &rowTitle, &rowSource, &piece); err != nil {
+				return err
+			}
+			if !started || rowPath != path {
+				if err := describe(); err != nil {
+					return err
+				}
+				head.Reset()
+				path, title, source, started = rowPath, rowTitle, rowSource, true
+			}
+			if head.Len() < headBytes {
+				head.WriteString(piece)
 			}
 		}
-		titled = append(titled, Titled{Path: path, Description: d})
-		return nil
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return describe()
+	})
+	if isUndefinedTable(err) {
+		return nil, nil
 	}
-	for rows.Next() {
-		var rowPath, piece string
-		var rowTitle, rowSource *string
-		if err := rows.Scan(&rowPath, &rowTitle, &rowSource, &piece); err != nil {
-			return nil, fmt.Errorf("list sessions: %w", err)
-		}
-		if !started || rowPath != path {
-			if err := describe(); err != nil {
-				return nil, err
-			}
-			head.Reset()
-			path, title, source, started = rowPath, rowTitle, rowSource, true
-		}
-		if head.Len() < headBytes {
-			head.WriteString(piece)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		if isUndefinedTable(err) {
-			return nil, nil
-		}
+	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
-	}
-	if err := describe(); err != nil {
-		return nil, err
 	}
 	return titled, nil
 }

@@ -18,11 +18,11 @@ func TestAuditTitlesReadsTheHeaderOfAnOhMyPiWrittenRow(t *testing.T) {
 	if err := Replace(ctx, conn, "/s/omp.jsonl", Absent, []byte(describedSession), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(ctx, "UPDATE omp_session_files SET title = 'Legion tester · INFRA-204', title_source = 'auto' WHERE path = '/s/omp.jsonl'"); err != nil {
+	if _, err := conn.c.Exec(ctx, "UPDATE omp_session_files SET title = 'Legion tester · INFRA-204', title_source = 'auto' WHERE path = '/s/omp.jsonl'"); err != nil {
 		t.Fatal(err)
 	}
 	var contentLen, byteLen int64
-	if err := conn.QueryRow(ctx, "SELECT length(content), byte_len FROM omp_session_files WHERE path = '/s/omp.jsonl'").Scan(&contentLen, &byteLen); err != nil {
+	if err := conn.c.QueryRow(ctx, "SELECT length(content), byte_len FROM omp_session_files WHERE path = '/s/omp.jsonl'").Scan(&contentLen, &byteLen); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("row: length(content)=%d byte_len=%d", contentLen, byteLen)

@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
@@ -718,8 +720,13 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+		admin, err := pgx.Connect(ctx, dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = admin.Close(context.Background()) })
 		var path string
-		if err := conn.QueryRow(ctx, "SELECT path FROM omp_session_files").Scan(&path); err != nil {
+		if err := admin.QueryRow(ctx, "SELECT path FROM omp_session_files").Scan(&path); err != nil {
 			t.Fatalf("the session Oh My Pi wrote to the table: %v", err)
 		}
 		if files, _ := filepath.Glob(filepath.Join(rig.sessions, "*.jsonl")); len(files) != 0 {

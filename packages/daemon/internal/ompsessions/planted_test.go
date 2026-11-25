@@ -282,6 +282,14 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 			_, _, err := Read(ctx, reading, podSessionFile)
 			refused(t, "Read", err)
 		})
+		t.Run("HasTable", func(t *testing.T) {
+			_, err := HasTable(ctx, reading)
+			refused(t, "HasTable", err)
+		})
+		t.Run("Titles", func(t *testing.T) {
+			_, err := Titles(ctx, reading)
+			refused(t, "Titles", err)
+		})
 	})
 
 	// A login with CREATE on public can make a view at each of the tables' own names in a
@@ -346,6 +354,14 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 		t.Run("Read", func(t *testing.T) {
 			_, _, err := Read(ctx, db.conn, podSessionFile)
 			restricted(t, "Read", err)
+		})
+		t.Run("HasTable", func(t *testing.T) {
+			_, err := HasTable(ctx, db.conn)
+			restricted(t, "HasTable", err)
+		})
+		t.Run("Titles", func(t *testing.T) {
+			_, err := Titles(ctx, db.conn)
+			restricted(t, "Titles", err)
 		})
 		t.Run("Replace", func(t *testing.T) {
 			restricted(t, "Replace", Replace(ctx, db.conn, claudeTranscript, Absent, []byte("{}\n"), time.Now()))
@@ -434,6 +450,20 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 			content, found, err := Read(ctx, db.conn, podSessionFile)
 			if err == nil && (!found || string(content) != session) {
 				t.Errorf("Read = %q, %t; want the row's content", content, found)
+			}
+			return err
+		}},
+		{"HasTable", func(t *testing.T) error {
+			held, err := HasTable(ctx, db.conn)
+			if err == nil && !held {
+				t.Errorf("HasTable = false; want the table in public")
+			}
+			return err
+		}},
+		{"Titles", func(t *testing.T) error {
+			titled, err := Titles(ctx, db.conn)
+			if err == nil && (len(titled) != 1 || titled[0].Path != podSessionFile || titled[0].ID != "0001") {
+				t.Errorf("Titles = %+v; want the row's session, %s, with its header's id 0001", titled, podSessionFile)
 			}
 			return err
 		}},

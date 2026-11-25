@@ -84,9 +84,10 @@ const pinSearchPath = "SET LOCAL search_path = pg_catalog, pg_temp"
 
 // refuseRowSecurity is the second statement of every read-only transaction (inTransaction). A
 // row-security policy's expression runs in each reader's session, as that reader, so the tables'
-// owner could make Written, FindByID and Read run its code. With row_security off, a query that
-// a policy would affect fails instead (`query would be affected by row-level security policy`),
-// and no policy runs. Oh My Pi's tables carry no policy, so a read of them is unchanged.
+// owner could make Written, HasTable, FindByID, Read and Titles run its code. With row_security
+// off, a query that a policy would affect fails instead (`query would be affected by row-level
+// security policy`), and no policy runs. Oh My Pi's tables carry no policy, so a read of them is
+// unchanged.
 const refuseRowSecurity = "SET LOCAL row_security = off"
 
 // restrictRelationKinds is a statement of every transaction (inTransaction), after the search_path
@@ -287,8 +288,11 @@ func Written(ctx context.Context, conn *Conn, path string) (at time.Time, ok boo
 // HasTable is whether the database holds the session table, read as the connection's login: false
 // for a database no Oh My Pi has opened yet, whose first Oh My Pi creates it; an error for a table
 // the login may not read, or a database that does not answer.
-func HasTable(ctx context.Context, conn *pgx.Conn) (bool, error) {
-	_, err := conn.Exec(ctx, "SELECT 1 FROM omp_session_files LIMIT 0")
+func HasTable(ctx context.Context, conn *Conn) (bool, error) {
+	err := inTransaction(ctx, conn, true, func(p pinned) error {
+		_, err := p.exec(ctx, "SELECT 1 FROM public.omp_session_files LIMIT 0")
+		return err
+	})
 	switch {
 	case isUndefinedTable(err):
 		return false, nil

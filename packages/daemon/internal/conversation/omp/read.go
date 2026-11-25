@@ -23,8 +23,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
@@ -134,7 +132,7 @@ func ReadFile(path string, opts Options) (*Session, error) {
 
 // ReadSQL reads the session Oh My Pi's session table holds at path (SQL storage); an error that Is
 // os.ErrNotExist when it holds none.
-func ReadSQL(ctx context.Context, conn *pgx.Conn, path string, opts Options) (*Session, error) {
+func ReadSQL(ctx context.Context, conn *ompsessions.Conn, path string, opts Options) (*Session, error) {
 	content, ok, err := ompsessions.Read(ctx, conn, path)
 	if err != nil {
 		return nil, err

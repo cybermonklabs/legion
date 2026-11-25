@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -74,10 +76,11 @@ func (l *logs) logger() *slog.Logger { return slog.New(slog.NewTextHandler(l, ni
 func TestMain(m *testing.M) { os.Exit(testpg.Main("legion_agenthistory_test", m.Run)) }
 
 // migratedStore is a migrated clone opened as the daemon's store, and the clone's URL for Oh My
-// Pi's session table, which the tests read and write through ompsessions.ConnectURL. That is a
-// pgx.Connect, which sends a pgxpool key such as the pool_max_conns testpg.Clone's URL carries
-// (testdb.PoolBounded) to the server as a setting it refuses, so the URL it answers is the clone's
-// with pgxpool's keys taken out (testdb.DatabaseURL).
+// Pi's session table, which the tests read and write through ompsessions.ConnectURL, and through a
+// pgx.Connect of their own for a statement of their own. ConnectURL is a pgx.Connect too. Each
+// sends a pgxpool key such as the pool_max_conns testpg.Clone's URL carries (testdb.PoolBounded)
+// to the server as a setting it refuses, so the URL it answers is the clone's with pgxpool's keys
+// taken out (testdb.DatabaseURL).
 func migratedStore(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	pooled := testpg.Clone(t, "legion_agenthistory_test")
@@ -251,7 +254,12 @@ func TestBackfillRecordsTitledOMPSessionsOfTheTableAndSkipsTheRest(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	if _, err := conn.Exec(ctx, "UPDATE omp_session_files SET title = $1, title_source = 'auto' WHERE path = $2", "Legion tester · LEGION-7", pathOf(cases[0])); err != nil {
+	admin, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = admin.Close(context.Background()) })
+	if _, err := admin.Exec(ctx, "UPDATE omp_session_files SET title = $1, title_source = 'auto' WHERE path = $2", "Legion tester · LEGION-7", pathOf(cases[0])); err != nil {
 		t.Fatal(err)
 	}
 	log := &logs{}

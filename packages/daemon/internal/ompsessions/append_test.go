@@ -27,7 +27,7 @@ func TestAppendWritesOhMyPisPartAndRefusesASessionThatMoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	var byteLen, mtime, offset int64
-	if err := conn.QueryRow(ctx, "SELECT f.byte_len, f.mtime_ms, p.start_offset FROM omp_session_files f JOIN omp_session_files_parts p USING (path) WHERE f.path = $1",
+	if err := conn.c.QueryRow(ctx, "SELECT f.byte_len, f.mtime_ms, p.start_offset FROM omp_session_files f JOIN omp_session_files_parts p USING (path) WHERE f.path = $1",
 		sessionPath).Scan(&byteLen, &mtime, &offset); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestAppendWritesOhMyPisPartAndRefusesASessionThatMoved(t *testing.T) {
 		t.Errorf("an append to a session the table lacks = %v, want ErrMoved", err)
 	}
 	var parts int
-	if err := conn.QueryRow(ctx, "SELECT count(*) FROM omp_session_files_parts").Scan(&parts); err != nil || parts != 1 {
+	if err := conn.c.QueryRow(ctx, "SELECT count(*) FROM omp_session_files_parts").Scan(&parts); err != nil || parts != 1 {
 		t.Errorf("%d parts, %v; want the one append", parts, err)
 	}
 }
@@ -106,7 +106,7 @@ func TestTitlesListsTheColumnOrTheContentsTitle(t *testing.T) {
 	if _, err := Import(ctx, conn, "/s/b.jsonl", []byte(describedSession), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(ctx, "UPDATE omp_session_files SET title = 'Renamed', title_source = 'user' WHERE path = '/s/b.jsonl'"); err != nil {
+	if _, err := conn.c.Exec(ctx, "UPDATE omp_session_files SET title = 'Renamed', title_source = 'user' WHERE path = '/s/b.jsonl'"); err != nil {
 		t.Fatal(err)
 	}
 	titled, err := Titles(ctx, conn)

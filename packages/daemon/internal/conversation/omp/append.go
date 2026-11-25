@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
@@ -155,7 +153,7 @@ func AppendDeliveryFile(path string, s *Session, d conversation.Delivery, now ti
 // AppendSQL appends a to the session Oh My Pi's session table holds at path, which s was read
 // from, with Oh My Pi's own append statement (ompsessions.Append): refused with an error that Is
 // conversation.ErrMoved when the row's length is no longer s's.
-func AppendSQL(ctx context.Context, conn *pgx.Conn, path string, s *Session, a conversation.Append, now time.Time) error {
+func AppendSQL(ctx context.Context, conn *ompsessions.Conn, path string, s *Session, a conversation.Append, now time.Time) error {
 	data, err := s.Encode(a, now)
 	if err != nil {
 		return err
@@ -165,7 +163,7 @@ func AppendSQL(ctx context.Context, conn *pgx.Conn, path string, s *Session, a c
 
 // AppendDeliverySQL appends d to the session Oh My Pi's session table holds at path, which s was
 // read from, through the same statement and under the same refusal as AppendSQL.
-func AppendDeliverySQL(ctx context.Context, conn *pgx.Conn, path string, s *Session, d conversation.Delivery, now time.Time) error {
+func AppendDeliverySQL(ctx context.Context, conn *ompsessions.Conn, path string, s *Session, d conversation.Delivery, now time.Time) error {
 	data, err := s.EncodeDelivery(d, now)
 	if err != nil {
 		return err

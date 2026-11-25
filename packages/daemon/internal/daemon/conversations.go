@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/agenthistory"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
@@ -102,11 +100,11 @@ func newConversationHistory(cfg config.Config, p plan, st *store.Store, environ 
 // for the backfill and the answer loop alike: the URL boot read, or, under cloudsql-iam, a proxy of
 // the daemon's own; nil under a files store, whose conversations are files on the daemon's host.
 // The close it returns ends the connection.
-func conversationStore(answers config.Answers, reads answersReads) func(ctx context.Context) (*pgx.Conn, func(), error) {
+func conversationStore(answers config.Answers, reads answersReads) func(ctx context.Context) (*ompsessions.Conn, func(), error) {
 	switch database := answers.ConversationStore.Database; {
 	case reads.conversationDSN != "":
 		dsn := reads.conversationDSN
-		return func(ctx context.Context) (*pgx.Conn, func(), error) {
+		return func(ctx context.Context) (*ompsessions.Conn, func(), error) {
 			conn, err := ompsessions.ConnectURL(ctx, dsn)
 			if err != nil {
 				return nil, nil, err
@@ -114,7 +112,9 @@ func conversationStore(answers config.Answers, reads answersReads) func(ctx cont
 			return conn, func() { _ = conn.Close(context.Background()) }, nil
 		}
 	case database != (ompsessions.Database{}):
-		return func(ctx context.Context) (*pgx.Conn, func(), error) { return openCloudSQLConversations(ctx, database) }
+		return func(ctx context.Context) (*ompsessions.Conn, func(), error) {
+			return openCloudSQLConversations(ctx, database)
+		}
 	}
 	return nil
 }
@@ -147,7 +147,7 @@ func (h *conversationHistory) start(ctx context.Context) (stop func()) {
 // to it: a session proxy of its own (sessionproxy, the launcher's own) on a socket in a private
 // directory, dialing the instance over the daemon's cloud identity as database's login. The close
 // it returns ends the connection, the proxy and the directory.
-func openCloudSQLConversations(ctx context.Context, database ompsessions.Database) (*pgx.Conn, func(), error) {
+func openCloudSQLConversations(ctx context.Context, database ompsessions.Database) (*ompsessions.Conn, func(), error) {
 	dir, err := os.MkdirTemp("", "legion-conv-")
 	if err != nil {
 		return nil, nil, fmt.Errorf("make the conversation store proxy's directory: %w", err)

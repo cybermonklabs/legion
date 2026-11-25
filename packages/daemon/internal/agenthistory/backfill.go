@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/conversation/claude"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -37,7 +35,7 @@ type Backfill struct {
 // Table backfills from Oh My Pi's session table (omp_session_files) under a database store: each
 // session's title from the row's title column or its content's head (ompsessions.Titles), and its
 // role claim from its whole content, read only for a session whose title and header qualify it.
-func (b Backfill) Table(ctx context.Context, conn *pgx.Conn) error {
+func (b Backfill) Table(ctx context.Context, conn *ompsessions.Conn) error {
 	titled, err := ompsessions.Titles(ctx, conn)
 	if err != nil {
 		return err
