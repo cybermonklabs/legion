@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
-	"slices"
 	"strings"
 )
 
@@ -52,22 +50,25 @@ func (g gitRepo) sidesOf(into string) (here, there string, err error) {
 	return here, there, nil
 }
 
-// startMerge makes the merge this step works in. The step writes route files, takes
-// routes_table.go and routes_shapes.go whole from the new side, and writes conflicts into the
-// index, so it must own the merge: a run over its own output would take those two files again and
-// erase whatever had been carried into them. Afterwards the tree is mid-merge, so another run is
-// refused by refuseATreeThisDidNotStart, with no file content read anywhere.
-//
-// Four guards that read content to answer "has this run already?" each missed a state a person or
-// the step itself can leave. This asks nothing about content.
-func (g gitRepo) startMerge(into, there string) error {
+// defaultRevision is what the step merges when it is given none: main as the remote has it,
+// which jj names main@origin and git origin/main.
+func (g gitRepo) defaultRevision() string {
 	if g.jj {
-		head, err := jjLine(g.root, "log", "--no-graph", "-r", "@", "-T", "commit_id")
-		if err != nil {
-			return err
-		}
-		if _, err := jjOutput(g.root, "new", head, there, "-m", "merge "+into); err != nil {
-			return err
+		return "main@origin"
+	}
+	return "origin/main"
+}
+
+// startMerge makes the merge this step works in, of here (the commit sidesOf read as this
+// checkout's own) and there. The step writes route files, takes routes_table.go and
+// routes_shapes.go whole from the new side, and writes conflicts into the index, so it must own
+// the merge. Afterwards the tree is mid-merge, and refuseATreeThisDidNotStart refuses another
+// run for that reason alone.
+func (g gitRepo) startMerge(into, here, there string) error {
+	if g.jj {
+		// here, not @ read again: the merge must join the commit whose layout the step read.
+		if _, err := jjOutput(g.root, "new", here, there, "-m", "merge "+into); err != nil {
+			return fmt.Errorf("jj new %s %s failed, so nothing is merged: %w", here, there, err)
 		}
 		return nil
 	}
@@ -78,31 +79,75 @@ func (g gitRepo) startMerge(into, there string) error {
 	// A merge that stopped on conflicts is the state this step is for, and git records
 	// MERGE_HEAD for it. A merge that failed for any other reason records none, and writing into
 	// that tree would leave changes nobody asked for, so the failure is answered here.
-	mergeHead, err := g.line("rev-parse", "-q", "--verify", "MERGE_HEAD")
-	if err != nil || mergeHead == "" {
+	mergeHead, err := g.mergeHead()
+	if err != nil {
+		return fmt.Errorf("%w\ngit merge %s ran, and whether it left a merge is unread: if `git status` says a merge is in progress, end it with %s", err, into, g.leaveTheMerge(here, true, false))
+	}
+	if mergeHead == "" {
 		if mergeErr != nil {
-			return fmt.Errorf("git merge %s failed and left no merge in progress, so nothing was adopted: %w", into, mergeErr)
+			return fmt.Errorf("git merge %s failed and left no merge in progress, so nothing is merged and nothing is written: %w", into, mergeErr)
 		}
-		return fmt.Errorf("git merge %s left no MERGE_HEAD, so this step has no merge to resolve and wrote nothing", into)
+		return fmt.Errorf("git merge %s left no MERGE_HEAD (the branch holds %s already, or git made no merge of it), so nothing is merged and nothing is written", into, into)
 	}
 	if mergeHead != there {
-		return fmt.Errorf("git merge %s left MERGE_HEAD at %s, and this step read %s: nothing is adopted into a merge it did not make", into, mergeHead, there)
+		return fmt.Errorf("git merge %s left MERGE_HEAD at %s, and this step read %s: nothing is adopted into a merge it did not make; end it with %s", into, mergeHead, there, g.leaveTheMerge(here, true, false))
 	}
 	return nil
+}
+
+// mergeHead is the commit git's merge in progress merges, and "" where no merge is in progress.
+func (g gitRepo) mergeHead() (string, error) {
+	output, err := g.command("rev-parse", "-q", "--verify", "MERGE_HEAD").Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 && len(output) == 0 {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse -q --verify MERGE_HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// leaveTheMerge is the commands that end the merge in progress and return the tree to the side
+// the merge was made on, for a refusal and for a failure after the step's own merge began.
+//
+// git's `git merge --abort` returns the index and every tracked file. With clean, which only the
+// step's own merge may ask for, it adds a `git clean` of package api: that merge began from a tree
+// git listed nothing in, so an untracked file there is one this step wrote and had not staged.
+//
+// jj's merge is the working-copy commit, and `jj abandon @` alone puts a new working copy on the
+// merge's two parents, which is a merge again. So the second command goes back to the branch
+// side, branchSide, the merge's first parent: `jj edit` where it is empty, as the step's own merge
+// leaves it, since the step began on it, and `jj new` on it where it holds work. jj drops the
+// empty working copy the abandon left as it goes.
+func (g gitRepo) leaveTheMerge(branchSide string, branchSideEmpty, clean bool) string {
+	if g.jj {
+		back := "jj -R " + g.root + " new " + branchSide
+		if branchSideEmpty {
+			back = "jj -R " + g.root + " edit " + branchSide
+		}
+		return fmt.Sprintf("`jj -R %s abandon @`, then `%s`", g.root, back)
+	}
+	if clean {
+		return fmt.Sprintf("`git -C %s merge --abort`, then `git -C %s clean -f -- %s`", g.root, g.root, apiDir)
+	}
+	return fmt.Sprintf("`git -C %s merge --abort`", g.root)
 }
 
 // refuseATreeThisDidNotStart refuses a tree that is mid-merge or holds a change, naming what the
 // person must do and what it costs them, since the step's safety rests on starting from a tree
 // nobody has touched.
 func (g gitRepo) refuseATreeThisDidNotStart() error {
-	const lost = "any resolution you have already made in that merge is lost, this step's route files included; everything committed is untouched"
+	const lost = "any resolution you have already made in that merge is lost, this step's route files included"
 	if g.jj {
-		parents, err := jjOutput(g.root, "log", "--no-graph", "-r", "parents(@)", "-T", `commit_id ++ "\n"`)
+		parents, err := jjOutput(g.root, "log", "--no-graph", "-r", "@", "-T",
+			`parents.map(|c| c.commit_id() ++ " " ++ if(c.empty(), "empty", "changed")).join("\n") ++ "\n"`)
 		if err != nil {
 			return err
 		}
-		if len(strings.Fields(parents)) > 1 {
-			return fmt.Errorf("@ is a merge already, and this step makes the merge itself: abandon it with `jj abandon @` and run this again (%s)", lost)
+		if lines := strings.Split(strings.TrimSpace(parents), "\n"); len(lines) > 1 {
+			first, emptiness, _ := strings.Cut(lines[0], " ")
+			return fmt.Errorf("@ is a merge already, and this step makes the merge itself: return to its first parent, the branch side, with %s, and run this again (%s; every other commit is untouched)", g.leaveTheMerge(first, emptiness == "empty", false), lost)
 		}
 		// jj has no uncommitted state: every change is in @ itself, so "nobody has touched it" is
 		// @ being empty. `jj diff -r @` would answer the commit's own diff against its parent,
@@ -120,10 +165,10 @@ func (g gitRepo) refuseATreeThisDidNotStart() error {
 		}
 		return nil
 	}
-	if _, err := os.Stat(filepath.Join(g.gitDirOf(), "MERGE_HEAD")); err == nil {
-		return fmt.Errorf("a merge is in progress, and this step makes the merge itself: end it with `git merge --abort` and run this again (%s)", lost)
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if mergeHead, err := g.mergeHead(); err != nil {
 		return err
+	} else if mergeHead != "" {
+		return fmt.Errorf("a merge is in progress, and this step makes the merge itself: end it with %s and run this again (%s; everything committed is untouched)", g.leaveTheMerge("", false, false), lost)
 	}
 	changed, err := g.run("status", "--porcelain")
 	if err != nil {
@@ -133,22 +178,6 @@ func (g gitRepo) refuseATreeThisDidNotStart() error {
 		return fmt.Errorf("the tree holds changes, and this step begins from a tree nobody has touched: commit or stash them, then run this again:\n%s", strings.TrimRight(string(changed), "\n"))
 	}
 	return nil
-}
-
-// gitDirOf is the git directory of this checkout: jj's store where jj answers for it, else git's
-// own, which `git rev-parse --git-dir` names.
-func (g gitRepo) gitDirOf() string {
-	if g.gitDir != "" {
-		return g.gitDir
-	}
-	dir, err := g.line("rev-parse", "--git-dir")
-	if err != nil || dir == "" {
-		return filepath.Join(g.root, ".git")
-	}
-	if filepath.IsAbs(dir) {
-		return dir
-	}
-	return filepath.Join(g.root, dir)
 }
 
 // stage records files of package api written or removed: git adds them to its index; jj takes the
@@ -188,76 +217,6 @@ func prefixed(names []string) []string {
 	return paths
 }
 
-// routesNotAdopted names every route this step would still write or delete, which is what "the
-// step has not run on this merge" means. A route counts on two conditions together, and each is
-// needed:
-//
-//   - its file still stands as the merge left it: the new side's bytes, or absent where the new
-//     side has none. Every other state is a run's own work (the branch's text it wrote, or the
-//     conflict markers it wrote) or a person's (a conflict resolved by hand, writing text that is
-//     neither side's). A second run over any of those would take routes_table.go and
-//     routes_shapes.go from the new side again and throw away whatever was carried into them.
-//   - the step would change that file. Three states it leaves alone would otherwise count for
-//     ever: a route main removed and the branch changes, which the step reports for the person to
-//     decide; a route the branch adds or changes exactly as main did, which is already what it
-//     would write; and a route the branch removes that main has changed, another decide.
-//
-// The conditions mirror the loop of adopt, which is why they are written beside its three cases
-// rather than as one predicate over them.
-func routesNotAdopted(dir string, baseFiles, branchFiles map[string][]byte, newSide tree) ([]string, error) {
-	var pending []string
-	for _, name := range slices.Sorted(maps.Keys(baseFiles)) {
-		if _, inBranch := branchFiles[name]; inBranch {
-			continue
-		}
-		// The branch removed the route. The step deletes the file where main left it as the merge
-		// base had it, and reports a decide where main changed it.
-		ours, onNewSide, err := readIfPresent(newSide, name)
-		if err != nil {
-			return nil, err
-		}
-		current, inTree, err := readFileIfPresent(filepath.Join(dir, name))
-		if err != nil {
-			return nil, err
-		}
-		stands := onNewSide == inTree && (!inTree || bytes.Equal(current, ours))
-		if stands && onNewSide && bytes.Equal(ours, baseFiles[name]) {
-			pending = append(pending, name)
-		}
-	}
-	for _, name := range slices.Sorted(maps.Keys(branchFiles)) {
-		branchContent := branchFiles[name]
-		baseContent, inBase := baseFiles[name]
-		if inBase && bytes.Equal(baseContent, branchContent) {
-			continue
-		}
-		ours, onNewSide, err := readIfPresent(newSide, name)
-		if err != nil {
-			return nil, err
-		}
-		current, inTree, err := readFileIfPresent(filepath.Join(dir, name))
-		if err != nil {
-			return nil, err
-		}
-		if stands := onNewSide == inTree && (!inTree || bytes.Equal(current, ours)); !stands {
-			continue
-		}
-		switch {
-		case !inBase:
-			// The branch added the route: the step writes it, unless main added the same bytes.
-			if !onNewSide || !bytes.Equal(branchContent, ours) {
-				pending = append(pending, name)
-			}
-		case onNewSide && !bytes.Equal(branchContent, ours):
-			// The branch changed the route and main still holds a version to write over. Where
-			// main removed the route (no file on the new side), the step reports a decide.
-			pending = append(pending, name)
-		}
-	}
-	slices.Sort(pending)
-	return slices.Compact(pending), nil
-}
-
 // readIfPresent is a file of one tree, and whether the tree holds it.
 func readIfPresent(src tree, name string) ([]byte, bool, error) {
 	content, err := src.read(name)
@@ -270,23 +229,12 @@ func readIfPresent(src tree, name string) ([]byte, bool, error) {
 	return content, true, nil
 }
 
-// readFileIfPresent is a file on disk, and whether it is there.
-func readFileIfPresent(path string) ([]byte, bool, error) {
-	content, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return nil, false, nil
-	case err != nil:
-		return nil, false, err
-	}
-	return content, true, nil
-}
-
 // recordConflict writes one path into git's index as a conflict, in git's own stage order: the
 // merge base at stage 1, HEAD's side at 2 and MERGE_HEAD's at 3, which is what `git merge` leaves
-// for a path it could not merge, and what `git checkout --ours` and `--theirs` read. git then refuses to commit until the person resolves the file and runs `git add`. jj
-// takes the working copy as it is, markers and all, and keeps the file as a conflict of its own,
-// so nothing is written there.
+// for a path it could not merge, and what `git checkout --ours` and `--theirs` read. git then
+// refuses to commit until the person resolves the file and runs `git add`. jj takes the working
+// copy as it is, markers and all, and keeps the file as a conflict of its own, so nothing is
+// written there.
 func (g gitRepo) recordConflict(name string, ours, base, theirs []byte) error {
 	if g.jj {
 		return nil
@@ -329,39 +277,4 @@ func (g gitRepo) hashObject(content []byte) (string, error) {
 		return "", fmt.Errorf("git hash-object: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(stdout.String()), nil
-}
-
-// hasConflictMarkers reports whether a file holds a conflict git or jj wrote into it: a line that
-// begins with seven '<' (git's `<<<<<<< ours`, jj's `<<<<<<< conflict 1 of 1`).
-func hasConflictMarkers(content []byte) bool {
-	for line := range strings.Lines(string(content)) {
-		if strings.HasPrefix(line, "<<<<<<< ") || strings.TrimRight(line, "\n") == "<<<<<<<" {
-			return true
-		}
-	}
-	return false
-}
-
-// sharedFilesInConflict reports whether routes_table.go or routes_shapes.go still stands in
-// conflict, which is how a merge of the two layouts leaves them and what this step resolves by
-// taking them from the new side. A file a person has resolved is not in conflict, and the step's
-// own resolution is not either, so this answers false once either has happened.
-func (g gitRepo) sharedFilesInConflict() (bool, error) {
-	unmerged, err := g.unmerged()
-	if err != nil {
-		return false, err
-	}
-	for _, name := range []string{tableFile, shapesFile} {
-		if slices.Contains(unmerged, path.Join(apiDir, name)) {
-			return true, nil
-		}
-		content, _, err := readFileIfPresent(filepath.Join(g.root, apiDir, name))
-		if err != nil {
-			return false, err
-		}
-		if hasConflictMarkers(content) {
-			return true, nil
-		}
-	}
-	return false, nil
 }

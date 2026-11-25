@@ -92,11 +92,24 @@ func (r *adoptReport) print(w io.Writer) {
 	}
 }
 
+// routeWrite is one file this step writes once the merge is made, with the index stages git
+// records for it where its three-way merge is left in conflict.
+type routeWrite struct {
+	name    string
+	content []byte
+	// stages are the merge base's, HEAD's and MERGE_HEAD's own bytes, nil for a file the merge
+	// settled. They are never the conflict-marked text the working tree holds, so `git checkout
+	// --ours` and `--theirs` answer a side a person can use.
+	stages *[3][]byte
+}
+
 // adopt makes the merge of into and resolves its route layer (see the package comment).
 //
-// Nothing is merged until both sides are read: a tree this cannot adopt is refused before the
-// first write, so a person who runs it on the wrong branch is left where they were rather than
-// mid-merge with a refusal.
+// It reads, then merges, then writes. The tree is refused or accepted, and both sides, the merge
+// base, both splits and every file this writes are read and settled, before the merge begins, so
+// a branch this cannot adopt is refused with the tree as it was. Only the writes, the staging and
+// the report's reading of the merged tree come after the merge, and a failure among them names
+// how to return the tree to the branch side.
 func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	if err := repo.refuseATreeThisDidNotStart(); err != nil {
 		return nil, err
@@ -114,7 +127,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 		return nil, fmt.Errorf("read %s's %s: %w", into, tableFile, err)
 	}
 	report := &adoptReport{}
-	var oldRev, newRev string
+	var oldRev, newRev, hereSide, thereSide string
 	switch {
 	case hereOld && thereOld:
 		return nil, fmt.Errorf("the branch and %s both hold the old route table: neither side has the layout to adopt, and nothing is merged", into)
@@ -123,13 +136,15 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	case hereOld:
 		report.oldSide, report.newSide = "the branch "+here[:12], into+" "+there[:12]
 		oldRev, newRev = here, there
+		hereSide, thereSide = report.oldSide, report.newSide
 	default:
 		report.oldSide, report.newSide = into+" "+there[:12], "the branch "+here[:12]
 		oldRev, newRev = there, here
+		hereSide, thereSide = report.newSide, report.oldSide
 	}
 	base, err := repo.line("merge-base", here, there)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("the branch and %s share no merge base, so there is no old layout to split their routes from, and nothing is merged (%w)", into, err)
 	}
 	report.base = base
 	if baseOld, err := hasOldLayout(gitTree{repo, base}); err != nil {
@@ -145,16 +160,32 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("split %s's routes: %w", report.oldSide, err)
 	}
-	// Everything this needs is read; now the merge.
-	if err := repo.startMerge(into, there); err != nil {
-		return nil, err
+
+	newSide := gitTree{repo, newRev}
+	var writes []routeWrite
+	var remove []string
+	// The inputs and labels of every three-way merge are in git's order, HEAD first and
+	// MERGE_HEAD last, as the index stages are: an editor's "current change" in a route file is
+	// HEAD's, as it is in every file git merged itself.
+	labels := [3]string{"HEAD (" + hereSide + ")", "merge base", into + " (" + thereSide + ")"}
+	merge := func(name string, newContent, baseContent, oldContent []byte) (routeWrite, error) {
+		ours, theirs := oldContent, newContent
+		if oldRev != here {
+			ours, theirs = newContent, oldContent
+		}
+		merged, conflict, err := repo.mergeFile(ours, baseContent, theirs, labels)
+		if err != nil {
+			return routeWrite{}, err
+		}
+		write := routeWrite{name: name, content: merged}
+		if conflict {
+			report.conflicted = append(report.conflicted, name)
+			write.stages = &[3][]byte{baseContent, ours, theirs}
+		} else {
+			report.merged = append(report.merged, name)
+		}
+		return write, nil
 	}
-	// No guard against a second run: startMerge refuses a tree that is mid-merge or holds a
-	// change, so this always begins from a tree nobody has touched, and after it the tree is
-	// mid-merge. A run over this run's own output cannot happen.
-	dir := filepath.Join(repo.root, apiDir)
-	var stage, remove []string
-	labels := [3]string{"main (" + report.newSide + ")", "merge base", "branch (" + report.oldSide + ")"}
 	names := slices.Sorted(maps.Keys(baseFiles))
 	for name := range branchFiles {
 		if _, inBase := baseFiles[name]; !inBase {
@@ -162,66 +193,41 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 		}
 	}
 	slices.Sort(names)
-	// merge is one route's three-way merge, recorded in the report: merged where the two sides
-	// settle, and in conflict where they do not, which the loop then writes into the index.
-	merge := func(name string, ours, base, theirs []byte) ([]byte, error) {
-		merged, conflict, err := repo.mergeFile(ours, base, theirs, labels)
-		if err != nil {
-			return nil, err
-		}
-		if conflict {
-			report.conflicted = append(report.conflicted, name)
-		} else {
-			report.merged = append(report.merged, name)
-		}
-		return merged, nil
-	}
 	for _, name := range names {
 		baseContent, inBase := baseFiles[name]
 		branchContent, inBranch := branchFiles[name]
 		if inBase && inBranch && bytes.Equal(baseContent, branchContent) {
 			continue
 		}
-		file := filepath.Join(dir, name)
-		current, err := os.ReadFile(file)
-		inTree := err == nil
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Only the new side holds route files, so the merge leaves each one as the new side holds
+		// it: reading it there is reading what the merge will leave, before it is made.
+		current, inTree, err := readIfPresent(newSide, name)
+		if err != nil {
 			return nil, err
 		}
-		if hasConflictMarkers(current) {
-			// An earlier run left this route's conflict for the person: merging it again would nest
-			// one conflict inside the other.
-			report.conflicted = append(report.conflicted, name)
-			continue
-		}
+		write := routeWrite{name: name, content: branchContent}
 		switch {
 		case !inBase: // the branch added it
 			switch {
 			case !inTree:
 				report.written = append(report.written, name)
 			case bytes.Equal(current, branchContent):
-				// Written already: main added the same route, or an earlier run wrote it and stopped
-				// before staging. Either way it is staged, so the merge commit holds it.
-				stage = append(stage, name)
-				continue
+				continue // main added the same route, so the merge holds it already
 			default:
-				branchContent, err = merge(name, current, nil, branchContent)
-				if err != nil {
+				if write, err = merge(name, current, nil, branchContent); err != nil {
 					return nil, err
 				}
 			}
 		case !inBranch: // the branch removed it
 			switch {
 			case !inTree:
-				continue
 			case bytes.Equal(current, baseContent):
 				report.removed = append(report.removed, name)
 				remove = append(remove, name)
-				continue
 			default:
 				report.decide = append(report.decide, fmt.Sprintf("the branch removes the route of %s, which main has changed since the merge base: delete it or keep main's", path.Join(apiDir, name)))
-				continue
 			}
+			continue
 		default: // the branch changed it
 			switch {
 			case !inTree:
@@ -230,48 +236,19 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 			case bytes.Equal(current, baseContent):
 				report.updated = append(report.updated, name)
 			default:
-				branchContent, err = merge(name, current, baseContent, branchContent)
-				if err != nil {
+				if write, err = merge(name, current, baseContent, branchContent); err != nil {
 					return nil, err
 				}
 			}
 		}
-		if err := os.WriteFile(file, branchContent, 0o644); err != nil {
-			return nil, err
-		}
-		if !slices.Contains(report.conflicted, name) {
-			stage = append(stage, name)
-			continue
-		}
-		// A conflict this step cannot resolve is written into the index as one, so git refuses to
-		// commit the path until the person resolves it and runs `git add`. Without this, the
-		// version in the working tree sits at stage 0, which a plain `git commit` records.
-		//
-		// The stages are git's own, for a merge of `into` made while the branch is checked out:
-		// stage 1 the merge base, stage 2 HEAD's side, which is the branch, and stage 3
-		// MERGE_HEAD's, which is what the branch merges. So `git checkout --ours` answers the
-		// branch's route and `--theirs` the other side's, as they do for every other path of this
-		// merge. Each is the side's own bytes, never the conflict-marked text the working tree
-		// holds: the branch's route is branchFiles[name], not branchContent, which merge replaced.
-		ours, theirs := branchFiles[name], current
-		if oldRev != here {
-			// The branch holds the route files and `into` the old table: HEAD is the new side.
-			ours, theirs = current, branchFiles[name]
-		}
-		if err := repo.recordConflict(name, ours, baseContent, theirs); err != nil {
-			return nil, err
-		}
+		writes = append(writes, write)
 	}
-
 	for _, name := range []string{tableFile, shapesFile} {
-		mainContent, err := gitTree{repo, newRev}.read(name)
+		content, err := newSide.read(name)
 		if err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), mainContent, 0o644); err != nil {
-			return nil, err
-		}
-		stage = append(stage, name)
+		writes = append(writes, routeWrite{name: name, content: content})
 		carried, err := sharedCodeChange(repo, name, gitTree{repo, base}, gitTree{repo, oldRev})
 		if err != nil {
 			return nil, err
@@ -280,24 +257,55 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 			report.carry = append(report.carry, carried)
 		}
 	}
-
 	if _, err := (gitTree{repo, oldRev}).read(routesFixture); err == nil {
-		if _, err := (gitTree{repo, newRev}).read(routesFixture); err != nil {
+		if _, err := newSide.read(routesFixture); err != nil {
 			remove = append(remove, routesFixture)
 			report.fixtureRemoved = true
 		}
 	}
-	if err := repo.stage(stage, remove); err != nil {
-		return nil, err
-	}
 
-	if report.unmerged, err = repo.unmerged(); err != nil {
+	if err := repo.startMerge(into, here, there); err != nil {
 		return nil, err
 	}
-	if report.stale, err = staleLines(dir); err != nil {
-		return nil, err
+	if err := writeTheMerge(repo, report, writes, remove); err != nil {
+		return nil, fmt.Errorf("%w\nthe merge is made and its route layer only partly written: return the tree to the branch with %s, and run this again", err, repo.leaveTheMerge(here, true, true))
 	}
 	return report, nil
+}
+
+// writeTheMerge writes and stages what adopt settled into the merge it made, and reads the merged
+// tree for what is left.
+func writeTheMerge(repo gitRepo, report *adoptReport, writes []routeWrite, remove []string) error {
+	dir := filepath.Join(repo.root, apiDir)
+	var stage []string
+	for _, write := range writes {
+		if err := os.WriteFile(filepath.Join(dir, write.name), write.content, 0o644); err != nil {
+			return err
+		}
+		if write.stages == nil {
+			stage = append(stage, write.name)
+			continue
+		}
+		// A conflict this step cannot resolve is written into the index as one, so git refuses to
+		// commit the path until the person resolves it and runs `git add`. Without this, the
+		// version in the working tree sits at stage 0, which a plain `git commit` records.
+		//
+		// The stages are git's own: 1 the merge base, 2 HEAD's side and 3 MERGE_HEAD's. For a
+		// branch made before the move HEAD is the branch, so `git checkout --ours` answers the
+		// branch's route and `--theirs` main's, as they do for every other path of the merge.
+		if err := repo.recordConflict(write.name, write.stages[1], write.stages[0], write.stages[2]); err != nil {
+			return err
+		}
+	}
+	if err := repo.stage(stage, remove); err != nil {
+		return err
+	}
+	var err error
+	if report.unmerged, err = repo.unmerged(); err != nil {
+		return err
+	}
+	report.stale, err = staleLines(dir)
+	return err
 }
 
 // sharedCodeChange is the branch's change to one old-layout file outside the entries the route

@@ -14,15 +14,27 @@
 //
 //	go run ./cmd/dispatch-route-adopt [-C <worktree>] [<revision>]
 //
-// It makes the merge itself: do not merge first. <revision> is what to merge, origin/main by
-// default. -C names the worktree to adopt, which a branch made before the move needs, since that
-// branch does not hold this command until the merge brings it in: run it from a checkout of main
-// (or of the branch that adds it) with -C naming the branch's worktree.
+// It makes the merge itself: do not merge first. <revision> is what to merge: main as the remote
+// has it by default, which jj names main@origin and git origin/main. -C names the worktree to
+// adopt, which a branch made before the move needs, since that branch does not hold this command
+// until the merge brings it in: run it from a checkout of main (or of the branch that adds it)
+// with -C naming the branch's worktree.
 //
-// It refuses a tree that is mid-merge or holds a change, naming the command that recovers it and
-// what that costs. A checkout jj answers for (`jj root`) is resolved with jj: it makes the merge
-// commit from a fresh empty `@` (`jj new <branch>` first), commits are read from jj's git store
-// (`jj git root`), nothing is staged, and the conflicts left are the ones `jj file list` reports.
+// It works in three steps, in this order:
+//
+//  1. It refuses a tree that is mid-merge or holds a change, naming the commands that return it
+//     and what they cost: `git merge --abort`; under jj, where the merge is the working-copy
+//     commit, `jj abandon @` and then `jj edit` (or `jj new`) of the merge's first parent, since
+//     `jj abandon @` alone leaves a new working copy on the same two parents.
+//  2. It reads both sides, the merge base and both splits, and settles every file it will write
+//     and every three-way merge, so a branch it cannot adopt is refused with the tree as it was.
+//  3. It makes the merge (`git merge --no-commit --no-ff`; `jj new <branch side> <revision>`),
+//     checks that git left MERGE_HEAD at the revision it read, and writes. A failure after the
+//     merge is made names the commands that return the tree to the branch.
+//
+// A checkout jj answers for (`jj root`) is resolved with jj: it makes the merge commit from a fresh
+// empty `@` (`jj new <branch>` first), commits are read from jj's git store (`jj git root`),
+// nothing is staged, and the conflicts left are the ones `jj file list` reports.
 //
 // One side of the merge holds the old layout and the other the new one, in either order: a branch
 // made before the move merging main, or the move's own branch merging a main that still had the
@@ -31,8 +43,10 @@
 // main's route files, and compares the two splits route by route:
 //
 //   - a route the branch added is written;
-//   - a route the branch changed is merged into the file the new side holds (git merge-file), and
-//     a file the merge leaves in conflict carries git's markers and is named among what is left;
+//   - a route the branch changed is merged into the file the new side holds (git merge-file, HEAD's
+//     side first and MERGE_HEAD's last), and a file the merge leaves in conflict carries git's
+//     markers, is written into git's index in conflict (stage 1 the merge base, 2 HEAD's side, 3
+//     MERGE_HEAD's, each that side's own bytes) and is named among what is left;
 //   - a route the branch removed is deleted, where the new side's file is still the one the
 //     merge base held, and is named among what is left where main has changed it since.
 //
@@ -44,14 +58,10 @@
 // with conflicts, edits to carry by hand, the other paths git still holds in conflict, and every
 // line of package api's other files that still names one of the old maps.
 //
-// It runs once per merge: once routes_table.go and routes_shapes.go are resolved, a second run is
-// refused, since it would overwrite what was carried into them by hand. A route file a run left
-// with conflict markers is never merged again.
-//
 // It exits 0 when nothing is left, 2 when it resolved what it could and something is left for the
 // person, and 1 when it could not run.
 //
-//	go run ./cmd/dispatch-route-adopt [-C <worktree>] [<revision>] split -rev <commit> -out <dir>
+//	go run ./cmd/dispatch-route-adopt split -rev <commit> -out <dir>
 //
 // writes the route files the old layout at <commit> splits into, and nothing else, into <dir>. It
 // is how main's route files were made: splitting main's old table again writes each route's
@@ -100,7 +110,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// The step runs before the merge, so the branch's own tree does not hold this command yet:
 	// it is run from a checkout that has it (main, once this has landed) with -C naming the
 	// branch's worktree.
-	into := "origin/main"
+	into := ""
 	for len(args) > 0 {
 		switch {
 		case args[0] == "-C" && len(args) > 1:
@@ -113,9 +123,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		case !strings.HasPrefix(args[0], "-"):
 			into, args = args[0], args[1:]
 		default:
-			fmt.Fprintf(stderr, "dispatch-route-adopt: unknown argument %q: run it with none to merge origin/main, with `-C <worktree>` for another checkout, with one revision to merge that, or as `split -rev <commit> -out <dir>`\n", args[0])
+			fmt.Fprintf(stderr, "dispatch-route-adopt: unknown argument %q: run it with none to merge main (origin/main; main@origin under jj), with `-C <worktree>` for another checkout, with one revision to merge that, or as `split -rev <commit> -out <dir>`\n", args[0])
 			return 1
 		}
+	}
+	if into == "" {
+		into = repo.defaultRevision()
 	}
 	report, err := adopt(repo, into)
 	if err != nil {

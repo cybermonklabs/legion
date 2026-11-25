@@ -9,8 +9,10 @@ body: |-
   and `envoy-dispatch openapi` print the same bytes as before. A test refuses two declarations of
   one method and pattern. A branch made before this change adopts it with
   `go run ./cmd/dispatch-route-adopt -C <that worktree>`, run from `packages/envoy` of a checkout
-  that holds the command, on a clean tree: the command makes the merge of main itself, with git or
-  jj, and refuses a tree that is mid-merge or holds a change; `testdata/routes.txt`'s lines are `envoy-dispatch routes | jq -r
+  that holds the command, on a clean tree: the command makes the merge of main itself
+  (`origin/main`, or `main@origin` under jj, unless it is given a revision), with git or jj, and
+  refuses a tree that is mid-merge or holds a change, naming the commands that return it.
+  `testdata/routes.txt`'s lines are `envoy-dispatch routes | jq -r
   '.routes[] | "\(.method) \(.path) \(.auth)"'`.
 time: 2026-11-24T15:57:36Z
 custom:
