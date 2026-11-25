@@ -20,6 +20,19 @@ body: |-
   bounded-write admission on a table above 1 GiB, and names this migration: a pending migration
   that creates an extension takes those three from every pending migration after it, because the
   census cannot see whether the extension's script creates an event trigger.
+
+  The census of each later image refuses the same way, because this migration is still pending
+  before the later one. It refuses also where `btree_gin` already exists, because it reads the
+  statement and not the database (`takesLaterExemptions` in `internal/pgmigrate/exempt.go`). So an
+  extension made by hand does not end the refusal. To get out, deploy an image that a push run of
+  `.github/workflows/release-envoy-listener.yaml` on `main` built for a commit that holds this
+  migration and no later migration that needs one of the three. Its boot applies this migration,
+  and after that the census of a later image does not find it pending. The merge's own commit can
+  have no image, because that workflow keeps one waiting run for `main` and replaces it with the
+  next push. A `workflow_dispatch` run does not help: it builds the tip of the branch it runs on,
+  and a consumer accepts only an image that a run on `main` built (the comment above the
+  workflow's `attest` job). Where no such image exists, revert the later migration on `main`,
+  deploy the image of the revert, and merge that migration again after this one is applied.
 time: 2026-11-24T00:27:02Z
 custom:
     Issue: btree-gin-extension
