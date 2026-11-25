@@ -86,9 +86,13 @@
 #                 base with a ref that holds the cutover, which merged a commit of the ref's history
 #                 apart from the ref, is refused, naming them: which entries are the branch's own
 #                 would hang on the one git picks. Merge into the branch the ref as it was before it
-#                 merged the cutover; where that leaves more than one merge base, rebase the
-#                 branch's own commits onto that commit instead, which leaves it the one. A ref that
-#                 has not merged the cutover is refused for that first.
+#                 merged the cutover. Where that leaves more than one merge base, make the branch
+#                 that commit and its own commits, which leaves that commit the one merge base: `git
+#                 rebase -i <that commit>` and drop each commit that came into the branch through a
+#                 merge, or cherry-pick the branch's own commits onto a branch made at that commit.
+#                 A plain `git rebase` replays the commits that came in through a merge too, and
+#                 their numbered entries would read as the branch's own. A ref that has not merged
+#                 the cutover is refused for that first.
 #   --report      steps 1 to 4 read and nothing done: no file written, no merge, no Go toolchain,
 #                 and no git read but of commits, trees, the blobs of the files the branch changed
 #                 and those of the ref's entry files, so it runs in a blobless clone. It prints, for
@@ -768,8 +772,11 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
         die(f"{head[:10]} and {main_name} have {len(bases)} merge bases, {', '.join(b[:10] for b in bases)}: the "
             f"branch merged a commit of the history of {main_name} apart from {main_name} itself, and which entries "
             f"are its own would hang on the one git picks. Merge {before_cutover(main_name)} into the branch, then "
-            "run this again; where that leaves more than one merge base, rebase the branch's own commits onto that "
-            "commit instead, which leaves it the one merge base")
+            "run this again. Where that leaves more than one merge base, make the branch that commit and its own "
+            "commits, which leaves that commit the one merge base: `git rebase -i <that commit>` and drop each commit "
+            "that came into the branch through a merge, or cherry-pick the branch's own commits onto a branch made "
+            "at that commit. A plain `git rebase` replays the commits that came in through a merge too, and their "
+            "numbered entries would read as the branch's own")
     base = bases[0]
     base_version = version_specs[f"{base}:{VERSION_GO}"]
     if base_version is None or not CONST_LINE.search(base_version):
