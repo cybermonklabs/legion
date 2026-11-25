@@ -727,3 +727,51 @@ func TestAFindingWhoseWayOutWouldReadASentencePastItsChargeIsRefusedWithNoWayOut
 		}
 	}
 }
+
+// The judge reads the sentences between two places of a way out only while a piece of ste-lint
+// runs on into them from the first (changedRuns): a sentence that ends its piece, as it stands and
+// as the way out writes it, ends the walk, so the two places are runs of their own and no sentence
+// between them is read. So 60 findings, each of a name that ends a sentence of its own, whose words
+// a closed sentence before it holds in code font, with an open quoted sentence between the two, each
+// give their way out: the open sentences are one text (the same words), and no judgment reads it.
+// Control: the same findings where the sentence of code font is open too, so a piece runs on from it
+// through the open sentence into the name's; then each judgment reads the open sentence, and the
+// findings past its charge (ownReads) say that Dispatch offers no way out (elsewhereNote).
+func TestAWayOutReadsNoSentenceBetweenItsPlacesThatNoPieceJoins(t *testing.T) {
+	const findings, space = 60, "Put a space after the stop"
+	text := func(holder string) string {
+		var sentences []string
+		for index := 1; index <= findings; index++ {
+			sentences = append(sentences, fmt.Sprintf(holder, index), `He said "go."`, fmt.Sprintf("It reads a%d.B now.", index))
+		}
+		return strings.Join(sentences, " ")
+	}
+	ways := func(body string) (offered, refused int) {
+		t.Helper()
+		for _, each := range Check(planted(), Input{Texts: []Text{claimOf(body)}}) {
+			switch {
+			case each.Rule != ruleStopNoSpace:
+			case each.Ways == space:
+				offered++
+			case each.Ways == elsewhereNote:
+				refused++
+			default:
+				t.Errorf("%q: the finding %q gives the ways out %q, want %q or %q", body, each.Detail, each.Ways, space, elsewhereNote)
+			}
+		}
+		if offered+refused != findings {
+			t.Fatalf("%q: %d findings of %s, want %d", body, offered+refused, ruleStopNoSpace, findings)
+		}
+		return offered, refused
+	}
+	closed := text("It keeps `a%d.B` at boot.")
+	if offered, refused := ways(closed); refused != 0 {
+		t.Errorf("%q: %d findings give their way out and %d say %q, want each to give its way out, as no judgment reads the open sentence between its two places", closed, offered, refused, elsewhereNote)
+	}
+	open := text("It keeps `a%d.B` as \"boot.\"")
+	offered, refused := ways(open)
+	t.Logf("the control, a piece from each sentence of code font through the open sentence into the name's: %d findings give their way out, %d say the note", offered, refused)
+	if offered == 0 || refused == 0 {
+		t.Errorf("the control %q: %d findings give their way out and %d say %q, want both, as each judgment reads the open sentence", open, offered, refused, elsewhereNote)
+	}
+}
