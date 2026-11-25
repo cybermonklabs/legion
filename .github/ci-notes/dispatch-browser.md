@@ -95,7 +95,8 @@ ci.yaml runs every suite it holds. The three cost 2,662, 2,450 and 2,494 s, each
 for 1,732 rows: 1.537, 1.415 and 1.440 machine-seconds a row, in own times of 1,235, 1,191 and
 1,216 s - each attempt's binaries job, longest leg and merge job, end to end - and wall times of
 1,425, 1,198 and 1,223 s. Attempts 1 and 3 read no flaky row, and attempt 2 one of its 1,732
-(credential-expired.e2e.ts:115 at dfc51f65, on chromium, a row that compared a time's spelling
+(`packages/dispatch/e2e/credential-expired.e2e.ts#an expired secret request is marked with its deadline, leads to no decision page, is not counted, and Dismiss takes it off for good`
+at dfc51f65, on chromium, a row that compared a time's spelling
 and now compares its moment). The same lane on the default branch that day, every green
 merge-queue full lane of ci.yaml up to 02:17:35Z, is 3 runs of twelve jobs for 1,682 rows that
 cost 3,740 to 3,816 s, a median of 3,763 s and 2.2372 s a row at the median of their per-row
@@ -106,9 +107,11 @@ rows, in own times of 538, 451 and 541 s.
 
 That cost is now held to a budget by the run itself, at the merge job's step "Reading five, the
 lane's machine time": the jobs of a lane, this merge job apart, may cost that lane's committed
-ceiling less that job's own worst case. Both are written in
-.github/scripts/dispatch-browser-run-reads.sh (`bound` and `merge_maximum` in its `machine-time`
-branch). The worst case, `merge_maximum`, is 54 s, job 138031009105 (run 45261148766 attempt 2),
+ceiling less that job's own worst case. Both are written in the
+`.github/scripts/dispatch-browser-run-reads.sh#machine-time)` branch, as
+`.github/scripts/dispatch-browser-run-reads.sh#bound` and
+`.github/scripts/dispatch-browser-run-reads.sh#merge_maximum`. The worst case, `merge_maximum`,
+is 54 s, job 138031009105 (run 45261148766 attempt 2),
 as that branch records with the merge jobs it was read over and the figures it replaced.
 The readings above, taken as the budget takes them, which is each lane less its own merge job,
 are what the merge job's "Reading five" line printed at dfc51f65: 2,629, 2,410 and 2,446 s for
@@ -132,7 +135,7 @@ that step reads a lane, its merge job apart, the full lane's 3,146 s is 27 per c
 tree's worst reading (2,484 s), under one and a half times its median (2,231 s), and under the
 median of the 27 green default-branch full lanes of 2026-11-16 (3,189 s), though 10 of those 27
 read at or under it. The pull-request lane's is 846 s, its 900 s less the same 54 s.
-.github/scripts/dispatch-browser-run-reads.sh's `machine-time` branch
+The `.github/scripts/dispatch-browser-run-reads.sh#machine-time)` branch
 carries the arithmetic and the runs each figure came from. Nothing else in this tree refused
 a run that cost more than the one before it, which is how this suite went from about 25
 runner-minutes to 45 to 49 in three days (dispatch://INFRA-1109, R12).
@@ -362,8 +365,9 @@ of this run serves, and dist/THIRD_PARTY_NOTICES.txt with it: the build fails on
 bundled package whose license cannot be determined, and the listing shows it shipped.
 `bun run build:web-b` writes web/dist-b, the second rollout bundle the multiprocess
 job's two-builds rows read. DISPATCH_BUILD=e2e-b, which that script carries, is what
-gives it a build id of its own: web/vite.config.ts:102-109 defaults the id to
-GITHUB_SHA, and the `test.beforeAll` of e2e/two-builds.multiprocess.e2e.ts fails when the
+gives it a build id of its own: `packages/dispatch/web/vite.config.ts#__DISPATCH_BUILD__`
+defaults the id to GITHUB_SHA, and
+`packages/dispatch/e2e/two-builds.multiprocess.e2e.ts#test.beforeAll` fails when the
 two entries match. It is built on the full lane alone, the only lane that runs the
 multiprocess job, so a pull-request run pays nothing for it.
 
@@ -453,7 +457,7 @@ count and the merged report both read 1,616.
 
 The image this repository builds and publishes for every CI job that can launch WebKit or
 Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
-tag browser-69c3a316): Playwright's own browser host, which bakes Chromium, WebKit and
+tag browser-e07980de): Playwright's own browser host, which bakes Chromium, WebKit and
 Firefox and every host package they need under /ms-playwright - where its
 PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
 binary, jq, python3 with PyYAML - which .github/scripts/ci-tools.sh imports to read a row
@@ -617,13 +621,13 @@ job's.
 ## Why the leg count stands in three places
 
 Two legs. The count is written in the shard job's `matrix`, in the `--shard` denominator of
-the browser step (`--shard=$shard/2` in .github/scripts/dispatch-browser-shard-suite.sh) and
+the browser step (`.github/scripts/dispatch-browser-shard-suite.sh#--shard=$shard/2`) and
 in that step's own name, "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 2)".
 .github/scripts/ci_job_reads.py's BROWSER_SHARD_SPECS copies that name to cite the step by,
 and prose repeats the count, among it the shard script's head (the step's name, and "this
 leg's half of their row time") and its note on the projects it names ("these two machines"),
-docs/testing.md's leg command (`--shard=1/2`) and
-packages/dispatch/e2e/accessibility.e2e.ts's `scannedHere` comment ("one of its two
+docs/testing.md's leg command (`--shard=1/2`) and the comment on
+`packages/dispatch/e2e/accessibility.e2e.ts#scannedHere` ("one of its two
 machines"). So the three move together and those copies with them: a denominator larger than
 the leg list would leave the rows of the missing legs unrun, which the merge job's reading one
 names only once the run has spent its legs (the next paragraph), and a name disagreeing with
@@ -711,7 +715,7 @@ What the binaries job built, in place of this job's own actions/setup-go
 and go-envoy cache restore, which are gone: with no go command left here they bought
 nothing, and the restore was there only for the build run-server.sh no longer does.
 The directory is the one run-broker.sh built the broker's three binaries in, which is
-where packages/dispatch/e2e/real-broker.ts:30-31 runs requestseed from; the server
+the directory `packages/dispatch/e2e/real-broker.ts#requestseed` points into, so the suite runs requestseed from there; the server
 binary rides along in it and is named by path in DISPATCH_E2E_SERVER_BIN (.github/scripts/dispatch-browser-shard-suite.sh).
 
 A BOUND OF ITS OWN AND A SECOND ATTEMPT. In run 44228250420 a read of this artifact took 2
@@ -792,7 +796,7 @@ gitignored - so a checkout that has never built it dies while the config loads, 
 enough: `globalSetup` runs after the config has loaded. A workstation gets the build from
 `bun run e2e`, which carries `build:contracts`; a job that runs Playwright itself needs
 this step. It runs `build:dispatch`, the contracts entries Dispatch imports and no other
-(ci-job-dispatch-ui.yaml's `Build contracts for the suites that spawn Playwright` says
+(`.github/workflows/ci-job-dispatch-ui.yaml#Build contracts for the suites that spawn Playwright` says
 how that list grows), so it compiles no module the dispatch_browser filter's listed
 block leaves out - not ./legion-api, which no row loads. It is the one build left in this
 job: the binaries job builds everything else this job runs, and contracts is not in that
@@ -855,7 +859,7 @@ Playwright's own Node runner needs, for the reason that step gives.
 
 The browser step's body, its command, flags and sampler included, is .github/scripts/dispatch-browser-shard-suite.sh.
 
-`--workers 4` in .github/scripts/dispatch-browser-shard-suite.sh is how many stacks this leg starts, one per Playwright worker, each
+`.github/scripts/dispatch-browser-shard-suite.sh#--workers 4` is how many stacks this leg starts, one per Playwright worker, each
 a harness, a bucket and a Postgres of its own, that last one an initdb and a pg_ctl out
 of DISPATCH_E2E_PG_BIN (e2e/harness-postgres.ts), this image's PostgreSQL 18
 with pgvector. They are set on the command line, not in this step's `env:`, for the
@@ -901,7 +905,7 @@ and the drift are main's, read from main's four-leg runs. How the 32 minutes are
 - The drift: 1.11, main's figure, the worst share of the mean the heaviest leg took under a
   row-time table (packages/dispatch/e2e/shard-weights.json) up to 7 days old, the lane placed
   on four legs. Read on 2026-11-22 with main's own code - each table built by
-  `e2e/tools/shard-weights.ts`'s `weightsOf` from the `report.json` of each run's
+  `packages/dispatch/e2e/tools/shard-weights.ts#weightsOf` from the `report.json` of each run's
   `dispatch-browser-report-1` artifact, the lane placed by `placeUnits` - over two tables:
   - a table of 2026-11-18, 4 days old, from ci.yaml merge-group runs 44409818750, 44418436030,
     44418744571, 44418795005, 44419183723, 44423948511, 44424277368 and 44424671868, placed the
@@ -942,7 +946,7 @@ run 45130540632, and 901 x 1.75 x 1.11 = 1,750 s, 30 minutes, with the shard job
 the same split, 985 s, and that leg is the one above.
 
 What a hang looks like to it. A row cannot hang it: each row ends at its own budget, the 60 s of
-e2e/playwright.config.ts's `testTimeout` or the longer one a row sets, and the leg goes on. What
+`packages/dispatch/e2e/playwright.config.ts#testTimeout` or the longer one a row sets, and the leg goes on. What
 reaches 32 minutes is a leg that has stopped running rows - a stack that never comes up in
 `globalSetup`, a teardown or a blob write that never returns, a worker that stops reporting -
 whose log has stopped gaining rows. The runner cancels the step and names it (`The action
@@ -964,7 +968,7 @@ this job's legs.
 The week is what the guard holds, so each leg says when its table is past it: below its
 placement line it prints a `::warning::` when e2e/shard-weights.json was read more than 7 days
 before the run, or when a tenth of its rows sit in files the table has no entry for
-(packages/dispatch/e2e/shard-split.ts, `tableWarnings`). Either one means
+(`packages/dispatch/e2e/shard-split.ts#tableWarnings`). Either one means
 `bun e2e/tools/shard-weights.ts --main 17` is due; past the week, at 1.21, the share main's
 count split gave the heaviest of its four legs, the 985 s leg on that runner would end near
 2,086 s, past the guard.
@@ -1189,11 +1193,11 @@ machine to itself while its own rows are timed.
 
 No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec this
 job runs is a clock spec, and no clock spec uploads or downloads anything.
-chromium-alone runs both wall-clock specs (`clockSpecNames` in e2e/configurations.ts:
+chromium-alone runs both wall-clock specs (`packages/dispatch/e2e/configurations.ts#clockSpecNames`:
 heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which is
 that project's `testMatch`), firefox-alone and webkit-alone run heavy-bodies alone.
-And e2e/harness-pool.ts's `stackBucket` (:183) makes no bucket at one stack: it
-answers `undefined` on `count === 1` (:190). A store serving nothing would be charged
+And `packages/dispatch/e2e/harness-pool.ts#stackBucket` makes no bucket at one stack: it
+answers `undefined` on `count === 1`. A store serving nothing would be charged
 to the very reading these rows exist for, which is why the `weed` the image carries is
 started on the shard job's machines and not on this one. A clock spec that later
 uploads fails here by name rather than quietly.
@@ -1321,8 +1325,8 @@ WHY THIS JOB HAS NO `postgres:` SERVICE, AND WHAT IT PAYS INSTEAD. It had one un
 dispatch://INFRA-1109 read what it cost: in run 43045412941, the first green full lane at this
 shape, `Initialize containers` took 21 s of this job's 128 s and `Stop containers` 0 s, and
 the same two steps took 22 s and 3 s of the embedder job's 68 s - 46 s of a lane measured at
-2,061 s and now held to the full lane's committed ceiling (`bound` in
-.github/scripts/dispatch-browser-run-reads.sh). A service container is a pull, a network, a
+2,061 s and now held to the full lane's committed ceiling
+(`.github/scripts/dispatch-browser-run-reads.sh#bound`). A service container is a pull, a network, a
 start and then a wait on `--health-interval 10s`, which no first probe can finish sooner than
 that interval.
 
@@ -1392,8 +1396,8 @@ name, for the reason that step gives.
 ## The two dashboards the two-process job serves
 
 Both dashboards this job serves, built once by the binaries job: web/dist is A's and
-web/dist-b is B's, the second rollout bundle with the build id the `test.beforeAll` of
-e2e/two-builds.multiprocess.e2e.ts holds apart from A's. This job runs on the full lane
+web/dist-b is B's, the second rollout bundle with the build id
+`packages/dispatch/e2e/two-builds.multiprocess.e2e.ts#test.beforeAll` holds apart from A's. This job runs on the full lane
 alone, which is the lane that bundle is built on.
 
 ## Why the two-process job sets up no Go
@@ -1427,7 +1431,7 @@ apt source, which it carried only because that source's index intermittently fai
 
 The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
 coedit, cross-build, read-marker-disk-stall, signin and two-builds today
-(`multiprocessSpecs` in e2e/playwright.config.ts matches them by that suffix, so a new
+(`packages/dispatch/e2e/playwright.config.ts#multiprocessSpecs` matches them by that suffix, so a new
 one joins without an edit here) -- and they run
 headless Chromium and compare no screenshot (none holds `toHaveScreenshot` or
 `toMatchSnapshot`), and fonts-liberation and fonts-noto-color-emoji are on the image
@@ -1635,7 +1639,7 @@ is measured from zero rather than defaulted (packages/dispatch/e2e/visual.e2e.ts
 
 Why a `docker run` inside a step and not a job-level `container:`. A `container:` on any job
 of this file drops every `go build` the suite starts out of check-ci-filters.sh's reduction
-(ci_filter_coverage.py's `shell_reason`, "the job runs in a container:"), which then counts
+(`.github/scripts/ci_filter_coverage.py#shell_reason`, "the job runs in a container:"), which then counts
 each as reading every Go file of the repository. The shard and alone jobs do take one,
 since the browsers they run are in it, and the `dispatch_browser` gate answers for them by
 listing no script Run at all and pinning the binaries job's build whole instead
@@ -1962,8 +1966,8 @@ it does not hold - that one, "Reading four, the row durations", which runs one j
 merged report, and "Reading five, the lane's machine time", which runs one jq over the jobs
 file reading one already wrote and makes no request at all - makes 39 s, and 180 + 39 = 219 s.
 The lane's budget takes this job's whole measured maximum off its bound, the 54 s of 2026-11-23
-(job 138031009105) with these steps in it (.github/scripts/dispatch-browser-run-reads.sh,
-`merge_maximum`). The job's budget is above the step's, so the step's own budget fires first and
+(job 138031009105) with these steps in it
+(`.github/scripts/dispatch-browser-run-reads.sh#merge_maximum`). The job's budget is above the step's, so the step's own budget fires first and
 names the step, which is the reason this file's head gives for putting budgets on steps.
 
 What that sample does not hold: no browser step failed in any of those runs, so no blob
@@ -2088,7 +2092,8 @@ lane's budget and dispatch-browser-pr's holds the pull-request lane's to that la
 It is a reading that fails, as reading one does and readings two to four do not: above the
 lane's budget the step exits 1 and the job is red. Each lane's budget is its committed
 ceiling less this job's own worst case, both written in
-.github/scripts/dispatch-browser-run-reads.sh (`bound` and `merge_maximum`), which a job
+`.github/scripts/dispatch-browser-run-reads.sh#bound` and
+`.github/scripts/dispatch-browser-run-reads.sh#merge_maximum`, which a job
 reading inside its own run cannot see of itself: its `completed_at` is null while it runs.
 The script's `machine-time` branch carries that subtraction, the runs the measured 54 s of it
 came from, and why a jobs file it cannot read refuses rather than passes.
@@ -2106,7 +2111,7 @@ which the step after it names as a failed read and passes; the attempt selection
 (.github/scripts/dispatch-browser-latest-blobs.sh) on an artifact whose name is no leg's
 blob report or a call without its two directories; the merge step on no blob to merge or no
 JSON report written; reading one on jobs it could not read
-(.github/scripts/dispatch-browser-run-reads.sh's `jobs` mode), no leg to hold the report
+(`.github/scripts/dispatch-browser-run-reads.sh#jobs)`, its jobs mode), no leg to hold the report
 against, a missing blob, a row of the selection that no shard leg ran or that two ran
 (packages/dispatch/e2e/tools/leg-rows.ts over the legs' row lists), or a merged report that
 dropped rows the legs ran; reading five on a jobs file that is missing, is not a list of jobs
@@ -2123,7 +2128,7 @@ jobs the merge job needs, the embedder job's among them.
 
 ci.yaml's calls only: on a merge-group run whose group the calling job's own result decides it
 posts the failing ci-ok at once, and on every other run it posts nothing, the verdict being
-ci.yaml's `ci-ok` job's own check run (.github/actions/ci-ok-report says how). It reports under
+`.github/workflows/ci.yaml#ci-ok` job's own check run (.github/actions/ci-ok-report says how). It reports under
 the caller's id, the workflow's `job` input, so dispatch-browser and dispatch-browser-pr each
 report for themselves. This is the job that posts for that call: it needs every other job of
 this workflow, and the step is its last, which is the shape

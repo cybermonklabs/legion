@@ -82,10 +82,10 @@ export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-alone.zip"
 #
 # `--workers=1` says the thing the measurement rests on instead of leaning on a
 # default. The configuration's own default is the same one worker (the top-level
-# `workers: 1` of e2e/playwright.config.ts), so this job is green with or without the
+# `packages/dispatch/e2e/playwright.config.ts#workers: 1`), so this job is green with or without the
 # flag today; what the flag adds is that this machine stays one worker wide if that
 # default ever moves. A wider count is refused rather than measured:
-# `refuseASharedRun` in e2e/main-thread-hold.ts fails every row that calls
+# `packages/dispatch/e2e/main-thread-hold.ts#refuseASharedRun` fails every row that calls
 # `measureDraw` when `config.workers` is above one, printing the one-worker command
 # that fixes it. So the guard is what makes the reading honest, and this line is what
 # says what the run is: these three projects and nothing else, one row at a time, in

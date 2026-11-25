@@ -629,7 +629,7 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
     already, and because nothing here imports ci_job_reads: the engine's names are all this
     module takes.
 
-    The manifest is read as .github/scripts/check-bun-workspace-manifests.sh:101-109 reads it,
+    The manifest is read as `.github/scripts/check-bun-workspace-manifests.sh#root_manifest` reads it,
     at every shape, since the two checks are about the same list and a list one of them cannot
     read is not a list the other may pass over: a root manifest that is missing or is not valid
     JSON, and a `workspaces` that is not a list or holds anything but non-empty strings, are

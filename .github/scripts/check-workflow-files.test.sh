@@ -20,6 +20,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # fixture <name>: an empty tree with the script linked in. Echoes its root.
 fixture() {
   local root="$work/$1"
@@ -146,7 +151,7 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names both keys and the line of the second" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=3::.github/workflows/ci.yaml:3: the mapping key 'name' is the key 'name' of line 1 again after upper-casing")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=3::.github/workflows/ci.yaml${colon}3: the mapping key 'name' is the key 'name' of line 1 again after upper-casing")"
 check "says why GitHub refuses it" \
   "$(contains "$out" 'compares keys without regard to case')"
 check "names this check's limit and GitHub's cap, with the file's bytes" \
@@ -169,7 +174,7 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names both keys and the line of the second" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'HTTP_PROXY' is the key 'http_proxy' of line 4 again")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml${colon}5: the mapping key 'HTTP_PROXY' is the key 'http_proxy' of line 4 again")"
 
 echo "case: a mapping an alias repeats, holding http_proxy and HTTP_PROXY, is reported once"
 root=$(fixture folded-aliased)
@@ -194,7 +199,7 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the anchored mapping's second key" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'HTTP_PROXY' is the key 'http_proxy' of line 4 again")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml${colon}5: the mapping key 'HTTP_PROXY' is the key 'http_proxy' of line 4 again")"
 check "reports it once, not once per alias" "$(is "$(errors "$out")" 1)"
 
 echo "case: a key holding a newline and a workflow command, and its upper-case twin"
@@ -216,7 +221,7 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names both keys and the line of the second, each newline escaped" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'A%0A::WARNING TITLE=FORGED::INJECTED' is the key 'a%0A::warning title=forged::injected' of line 4 again")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml${colon}5: the mapping key 'A%0A::WARNING TITLE=FORGED::INJECTED' is the key 'a%0A::warning title=forged::injected' of line 4 again")"
 check "starts no line with ::warning, in either case" "$(is "$(grep -ci '^::warning' <<<"$out" || true)" 0)"
 check "reports it once" "$(is "$(errors "$out")" 1)"
 
@@ -454,15 +459,15 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the job-level value, its line and the job's limit with its line" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=8::.github/workflows/ci.yaml:8: job build sets JOB_TIMEOUT_MINUTES to 30, but its timeout-minutes is 10 (line 6)")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=8::.github/workflows/ci.yaml${colon}8: job build sets JOB_TIMEOUT_MINUTES to 30, but its timeout-minutes is 10 (line 6)")"
 check "names a step-level value too" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=12::.github/workflows/ci.yaml:12: job build sets JOB_TIMEOUT_MINUTES to 12, but its timeout-minutes is 10 (line 6)")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=12::.github/workflows/ci.yaml${colon}12: job build sets JOB_TIMEOUT_MINUTES to 12, but its timeout-minutes is 10 (line 6)")"
 check "reads a job with no timeout-minutes as GitHub's default of 360" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=16::.github/workflows/ci.yaml:16: job plain sets JOB_TIMEOUT_MINUTES to 30, but its timeout-minutes is 360 (GitHub's default, as the job sets none)")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=16::.github/workflows/ci.yaml${colon}16: job plain sets JOB_TIMEOUT_MINUTES to 30, but its timeout-minutes is 360 (GitHub's default, as the job sets none)")"
 check "names a step's STEP_TIMEOUT_MINUTES against that step's timeout-minutes" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=21::.github/workflows/ci.yaml:21: step 1 of job plain sets STEP_TIMEOUT_MINUTES to 5, but its timeout-minutes is 4 (line 19)")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=21::.github/workflows/ci.yaml${colon}21: step 1 of job plain sets STEP_TIMEOUT_MINUTES to 5, but its timeout-minutes is 4 (line 19)")"
 check "and one whose step sets no timeout-minutes at all" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=24::.github/workflows/ci.yaml:24: step 2 of job plain sets STEP_TIMEOUT_MINUTES to 2, but the step sets no timeout-minutes")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=24::.github/workflows/ci.yaml${colon}24: step 2 of job plain sets STEP_TIMEOUT_MINUTES to 2, but the step sets no timeout-minutes")"
 check "says why the two must be one number" "$(contains "$out" "gh-read.sh waits for a spent API budget within")"
 check "refuses those five and nothing else" "$(contains "$out" '^5 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
@@ -514,13 +519,13 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the workflow-level JOB_TIMEOUT_MINUTES" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=4::.github/workflows/ci.yaml:4: the workflow's env sets JOB_TIMEOUT_MINUTES, which stands for no one job's timeout-minutes")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=4::.github/workflows/ci.yaml${colon}4: the workflow's env sets JOB_TIMEOUT_MINUTES, which stands for no one job's timeout-minutes")"
 check "names a job-level STEP_TIMEOUT_MINUTES" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=10::.github/workflows/ci.yaml:10: job build's env sets STEP_TIMEOUT_MINUTES, which stands for no one step's timeout-minutes")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=10::.github/workflows/ci.yaml${colon}10: job build's env sets STEP_TIMEOUT_MINUTES, which stands for no one step's timeout-minutes")"
 check "names the step that runs the reader with a limit and no STEP_TIMEOUT_MINUTES" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=13::.github/workflows/ci.yaml:13: step 1 of job build sets timeout-minutes 3 and reaches gh-read.sh (through reader.sh), but sets no STEP_TIMEOUT_MINUTES")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=13::.github/workflows/ci.yaml${colon}13: step 1 of job build sets timeout-minutes 3 and reaches gh-read.sh (through reader.sh), but sets no STEP_TIMEOUT_MINUTES")"
 check "and the step that uses the action that runs it" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=15::.github/workflows/ci.yaml:15: step 2 of job build sets timeout-minutes 4 and reaches gh-read.sh (through ./.github/actions/report), but sets no STEP_TIMEOUT_MINUTES")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=15::.github/workflows/ci.yaml${colon}15: step 2 of job build sets timeout-minutes 4 and reaches gh-read.sh (through ./.github/actions/report), but sets no STEP_TIMEOUT_MINUTES")"
 check "not the step whose script only mentions the reader" "$(is "$(contains "$out" 'step 3 of job build')" false)"
 check "nor the step that only echoes its path" "$(is "$(contains "$out" 'step 4 of job build')" false)"
 check "nor the one that passes its limit, nor the one with no limit of its own" \
@@ -561,15 +566,15 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the workflow-level STEP_TIMEOUT_MINUTES" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=4::.github/workflows/ci.yaml:4: the workflow's env sets STEP_TIMEOUT_MINUTES, which stands for no one step's timeout-minutes")"
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=4::.github/workflows/ci.yaml${colon}4: the workflow's env sets STEP_TIMEOUT_MINUTES, which stands for no one step's timeout-minutes")"
 check "names the step that uses the action from ./base/" \
-  "$(contains "$out" "line=11::.github/workflows/ci.yaml:11: step 1 of job build sets timeout-minutes 3 and reaches gh-read.sh (through ./base/.github/actions/report)")"
+  "$(contains "$out" "line=11::.github/workflows/ci.yaml${colon}11: step 1 of job build sets timeout-minutes 3 and reaches gh-read.sh (through ./base/.github/actions/report)")"
 check "names the step that runs the reader through bash -c" \
-  "$(contains "$out" "line=13::.github/workflows/ci.yaml:13: step 2 of job build sets timeout-minutes 4 and reaches gh-read.sh (through reader.sh)")"
+  "$(contains "$out" "line=13::.github/workflows/ci.yaml${colon}13: step 2 of job build sets timeout-minutes 4 and reaches gh-read.sh (through reader.sh)")"
 check "names the step that runs it from \${{ github.workspace }}" \
-  "$(contains "$out" "line=15::.github/workflows/ci.yaml:15: step 3 of job build sets timeout-minutes 5 and reaches gh-read.sh (through reader.sh)")"
+  "$(contains "$out" "line=15::.github/workflows/ci.yaml${colon}15: step 3 of job build sets timeout-minutes 5 and reaches gh-read.sh (through reader.sh)")"
 check "names the step whose script sources gh-read.sh by its bare name" \
-  "$(contains "$out" "line=17::.github/workflows/ci.yaml:17: step 4 of job build sets timeout-minutes 6 and reaches gh-read.sh (through bare.sh)")"
+  "$(contains "$out" "line=17::.github/workflows/ci.yaml${colon}17: step 4 of job build sets timeout-minutes 6 and reaches gh-read.sh (through bare.sh)")"
 check "not the step whose bash -c only echoes the path" "$(is "$(contains "$out" 'step 5 of job build')" false)"
 check "refuses those five and nothing else" "$(contains "$out" '^5 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 

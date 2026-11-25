@@ -1,6 +1,6 @@
 name: CI job dispatch-two-builds
 
-# The steps of ci.yaml's `dispatch-two-builds` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#dispatch-two-builds` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -17,19 +17,19 @@ name: CI job dispatch-two-builds
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
       dispatch_two_builds_go:
         description: >-
-          ci.yaml's `needs.changes.outputs.dispatch_two_builds_go`: the Go step below runs when
+          `.github/workflows/ci.yaml#needs.changes.outputs.dispatch_two_builds_go`: the Go step below runs when
           that filter matched.
         type: string
         required: true
@@ -257,8 +257,8 @@ jobs:
       # this job makes the first in the step above and the second here
       # (packages/dispatch/package.json). One build serves both: each would build it from the same
       # tree, and no step sets DISPATCH_BUILD, so its build id is GITHUB_SHA in each
-      # (web/vite.config.ts:102-109). B's is not this tree's: both steps name a B build's own web/
-      # on DISPATCH_E2E_WEB_DIST_B, so this job builds no web/dist-b.
+      # (`packages/dispatch/web/vite.config.ts#__DISPATCH_BUILD__`). B's is not this tree's: both
+      # steps name a B build's own web/ on DISPATCH_E2E_WEB_DIST_B, so this job builds no web/dist-b.
       - name: Build the dashboard
         run: bun run build:web
         working-directory: packages/dispatch

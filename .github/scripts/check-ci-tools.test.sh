@@ -35,6 +35,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # The digests the fixtures use. Made up: nothing fetches them, and what each case reads is the
 # row and the pin they match.
 TOOL=0a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f6071
@@ -563,7 +568,7 @@ helm_row "$root" 3.3.3
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file and the row that answers to it" \
-  "$(contains "$out" '^packages/envoy/loadtest/cluster/render-nats.sh:1: this file is missing or is not readable as text, and the helm row of .github/ci-tools.yaml carries the version its HELM= line pins$')"
+  "$(contains "$out" "^packages/envoy/loadtest/cluster/render-nats.sh${colon}1: this file is missing or is not readable as text, and the helm row of .github/ci-tools.yaml carries the version its HELM= line pins\$")"
 
 echo "case: rule 2 — a helm row and a render-nats.sh with no HELM= line"
 # A comment that names the pin is no pin: the line the gate reads is the assignment the script
@@ -574,7 +579,7 @@ render_nats "$root" '# HELM=helm.sh/helm/v3/cmd/helm@v3.3.3'
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file and the line it lacks" \
-  "$(contains "$out" '^packages/envoy/loadtest/cluster/render-nats.sh:1: this file declares no HELM=helm.sh/helm/v<major>/cmd/helm@v<version> line, and the helm row of .github/ci-tools.yaml carries what it pins$')"
+  "$(contains "$out" "^packages/envoy/loadtest/cluster/render-nats.sh${colon}1: this file declares no HELM=helm.sh/helm/v<major>/cmd/helm@v<version> line, and the helm row of .github/ci-tools.yaml carries what it pins\$")"
 
 echo "case: rule 1 — a second_url that does not hold its row's version"
 # The rule that holds a URL to the row's version reads every URL the row writes, so a second
@@ -1886,7 +1891,7 @@ YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the line the earlier entry is on" \
-  "$(contains "$out" '^.github/ci-tools.yaml:94: this URL is also declined by the no_second_source entry on line 89, and two entries for one URL carry two reasons a reader must choose between. Keep one.$')"
+  "$(contains "$out" "^.github/ci-tools.yaml${colon}94: this URL is also declined by the no_second_source entry on line 89, and two entries for one URL carry two reasons a reader must choose between. Keep one.\$")"
 
 echo "case: rule 4 — a short reference to a tool blob"
 root=$(fixture short-reference)

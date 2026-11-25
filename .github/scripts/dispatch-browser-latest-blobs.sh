@@ -127,7 +127,7 @@ declare -A passed_over=()  # leg -> the other attempts, in the order they were r
 unreadable=()
 while IFS= read -r -d '' path; do
   name=${path##*/}
-  # <attempt> is the trailing run of digits: `${name##*[!0-9]}` drops everything up to the last
+  # <attempt> is the trailing run of digits: the expansion below drops everything up to the last
   # character that is not one. A greedy `(.+)-([0-9]+)$` would read
   # dispatch-browser-blob-shard-1-10 as leg `shard-1-1` at attempt 0.
   attempt=${name##*[!0-9]}
