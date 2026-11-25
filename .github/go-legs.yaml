@@ -6,8 +6,11 @@
 # Each package of a module is in exactly one place here: one leg of one job, or `elsewhere`, a
 # job that runs it outside these legs. .github/scripts/go_legs.py, which each leg's go test step
 # runs for its packages, fails the step first when `go list ./...` prints a package no place names,
-# or names one twice, or when a place names a directory that is no package: so a new package fails
-# every leg until it is added here, and none runs in no job.
+# or names one twice, when a place names a directory that is no package, when a leg lists none, or
+# when the job's legs here are not the legs its matrix runs: so a new package fails every leg until
+# it is added here. A leg sees only its own job, so .github/scripts/ci_job_reads.py's
+# hold_daemon_legs, which the changes job imports, holds this module's job keys to the jobs whose
+# legs run (daemon-go, daemon-go-race) and `elsewhere`; with both, none runs in no job.
 #
 # The legs are balanced from measured times: a leg takes as long as its longest package, or as
 # its packages' sum over the runner's four cores when that is longer, and go test starts its

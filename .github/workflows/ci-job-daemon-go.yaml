@@ -2,7 +2,9 @@ name: CI job daemon-go
 
 # The steps of `.github/workflows/ci.yaml#daemon-go` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# whole `if:` that decides whether these steps run, so no `if:` here selects the suite: the ones
+# this file carries run the steps no leg splits in plain leg 2 alone (`matrix.leg == 2`), and let
+# the jobs daemon-go and daemon-go-race report a failed leg (`!cancelled()`).
 #
 # What runs here is the Go daemon's own tests — the plain step over every package of
 # packages/daemon but the five concurrent ones and the text checks, less the two pure table
@@ -184,7 +186,7 @@ jobs:
       # The NATS tests of the plain step's packages (internal/admit, internal/natsauth,
       # internal/workflow and the testnats package itself) start testnats.Image, the hub's 2.15.1,
       # pulled first for the reason the action gives. The two other images the module's tests
-      # start are the race packages' (daemon-go-race below).
+      # start are the race packages' (daemon-go-race-legs below).
       - name: Pull the NATS test container images
         uses: ./.github/actions/pull-test-images
         with:

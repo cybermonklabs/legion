@@ -44,9 +44,10 @@ So each step runs in legs: one job per leg, all at the same time, each over the 
 sets its time, beside the next three, each on a core of its own; plain leg 2 is the other 87
 packages, about 880 s of package time over four cores, and the steps no leg splits (the
 race-impossible tests, the forced-order tests and Stage 1, 57 s in that job). Race leg 1 is
-internal/daemon alone; race leg 2 the other four, whose time is internal/intake's. The longest leg
-is then race leg 1, about its setup plus internal/daemon's time, where the group waited for
-daemon-go's 940 s.
+internal/daemon alone; race leg 2 the other four, whose time is internal/launcher's (292 s in run
+45601893438; internal/intake took 134 s there, its tests now beside each other). The longest leg
+is then plain leg 1 or race leg 1, each about its setup plus its longest package, where the group
+waited for daemon-go's 940 s.
 
 The rules the legs keep:
 
@@ -57,15 +58,21 @@ The rules the legs keep:
   are not exactly those, since a leg the file has and the matrix does not launch runs in no job,
   and when a leg lists no package, since xargs would then run go test on the module's root. So a
   new package fails every leg until the file names it; `.github/scripts/go-legs.test.sh`, in the
-  test job, holds those failures.
+  test job, holds those failures. A leg sees only its own job's legs, so a package filed under a
+  job key no matrix job runs would pass every leg and run in none:
+  `.github/scripts/ci_job_reads.py#hold_daemon_legs`, which the changes and ci-filters jobs import,
+  refuses any key but daemon-go, daemon-go-race and `elsewhere`, and check-ci-filters.test.sh
+  holds that.
 - **Each leg runs in its step's mode.** A kind's legs are one matrix job with one step text, so
   -race, -skip and -timeout are the step's and no leg's own.
 - **The old check-run names stay.** The jobs daemon-go and daemon-go-race wait for their kind's
   legs and pass only when every leg passed, so `daemon-go / daemon-go` and
-  `daemon-go / daemon-go-race` mean what they meant, and ci-ok, which reads the result of
-  `.github/workflows/ci.yaml#daemon-go`, judges every leg through it. Each leg also ends with the
-  ci-ok report, so a failing leg posts a merge group's failing ci-ok without waiting for the
-  others. The two jobs' error says they restate their legs' result, in the words
+  `daemon-go / daemon-go-race` mean what they meant to a person and to anything outside this run
+  that reads a check run by name. ci-ok does not need them: it reads the result of
+  `.github/workflows/ci.yaml#daemon-go`, which already combines every job of this file, legs
+  included. Each leg also ends with the ci-ok report, so a failing leg posts a merge group's failing
+  ci-ok without waiting for the others.
+  The two jobs' error says they restate their legs' result, in the words
   `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED` holds, and that script passes over
   a check run carrying them: otherwise their own `exit code 1` would read every leg's runner
   shutdown as a failure of the change, and post an early failing ci-ok for it. ci-ok.test.sh holds
@@ -74,7 +81,17 @@ The rules the legs keep:
   a package's time moves, move packages between legs so no leg is longer than it has to be, and
   keep each leg's longest first.
 
-What it costs: each leg repeats its setup, about 70 s for a plain leg and 100 s for a race leg,
-and a leg's runner sits partly idle when one package sets its time, so two legs a kind use more
-runner minutes than one job did. Standard runners on this public repository bill no money; the
-cost is runner concurrency.
+What it costs:
+
+- each leg repeats its setup, about 70 s for a plain leg and 100 s for a race leg, and a leg's
+  runner sits partly idle when one package sets its time, so two legs a kind use more runner
+  minutes than one job did: 1,705 runner seconds (29 billed minutes) in merge group 45553934471,
+  1,939 and 2,135 s (37 and 39 billed minutes) in this change's runs 45586895835 and 45601893438;
+- each of the two jobs that keep the old names is a second wait for a runner, after its kind's
+  last leg and before ci-ok can start: in run 45601893438 `daemon-go / daemon-go-race` waited 79 s
+  for a runner after the race legs ended at 11:23:39Z, then ran 6 s, and ci-ok started after it,
+  so that run's daemon jobs ended 86 s after its last leg. That wait is the price of keeping the
+  two names; dropping the two jobs and the restating marker would remove it and the names with it.
+
+Standard runners on this public repository bill no money; the cost is runner concurrency and that
+wait.

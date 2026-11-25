@@ -19,8 +19,11 @@ file, when a package is in more than one place, when a place names a directory g
 print as a package, when a leg lists no package (xargs would then run go test on the module's
 root), and when the job's legs in the file are not exactly legs 1 to <legs>, the legs its matrix
 runs (a leg the file has and the matrix does not would run in no job). So a leg never runs while
-a package of its module runs in no job or in two, whichever leg it is: a new package fails every
-leg until the file names it. It exits 2 on a usage error, and when the file has no such module,
+a package of its module runs in two places or in no place, or in a leg its own job's matrix does
+not launch, whichever leg it is: a new package fails every leg until the file names it. A leg
+sees only its own job, so a package filed under a job key no matrix job runs is ci_job_reads.py's
+to refuse (hold_daemon_legs, which the changes job imports). It exits 2 on a usage error, and when
+the file has no such module,
 job or leg. Everything but the packages goes to standard error, the problems as GitHub error
 annotations on the file, so nothing else reaches the go test the packages are piped to.
 

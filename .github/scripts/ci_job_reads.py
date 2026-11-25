@@ -1020,18 +1020,40 @@ DAEMON_RACE_LEGS_JOB = "daemon-go-race-legs"
 GO_LEGS = go_legs.LEGS
 GO_LEGS_SCRIPT = ".github/scripts/go_legs.py"
 DAEMON_LEGS = go_legs.module_entry(DAEMON, Path(GO_LEGS))
-DAEMON_PLAIN_PACKAGES = [p for leg in DAEMON_LEGS.get(DAEMON_PLAIN_JOB, {}).values() for p in leg]
-DAEMON_RACE_LEG_PACKAGES = [p for leg in DAEMON_LEGS.get(DAEMON_RACE_JOB, {}).values() for p in leg]
-# The race legs run the race packages, each once, and the text checks are the text-check job's:
-# go_legs.py holds the whole file to go list at run time, and this holds the parts the gates and
-# ci-caches.yaml's race fill read from DAEMON_RACE_PACKAGES to the same file.
-if sorted(DAEMON_RACE_LEG_PACKAGES) != sorted(DAEMON_RACE_PACKAGES):
-    raise ValueError(f"{GO_LEGS}'s {DAEMON_RACE_JOB} legs run {sorted(DAEMON_RACE_LEG_PACKAGES)}, and "
-                     f"DAEMON_RACE_PACKAGES here is {sorted(DAEMON_RACE_PACKAGES)}: make them one set, each "
-                     f"package once")
-if DAEMON_LEGS.get(go_legs.ELSEWHERE) != {TEXT_CHECK_PACKAGE: "text-checks"}:
-    raise ValueError(f"{GO_LEGS} runs {DAEMON}'s packages elsewhere as {DAEMON_LEGS.get(go_legs.ELSEWHERE)}, "
-                     f"and the one package no leg of it runs is {TEXT_CHECK_PACKAGE}, the text-checks job's")
+
+
+def hold_daemon_legs(entry: dict) -> None:
+    """Refuse a go-legs.yaml entry for packages/daemon that a leg of ci-job-daemon-go.yaml would not
+    run as written. go_legs.py, in each leg, holds the whole entry to `go list ./...` and the
+    running job's legs to its matrix, but it sees only its own job: a package filed under a job key
+    no matrix job runs (a typo, a job since renamed) is in the file once, passes every leg, and
+    runs in no job. So the entry's keys are exactly the two jobs whose legs run here and
+    `elsewhere`; the race legs run the race packages, each once, the set the gates and
+    ci-caches.yaml's race fill read from DAEMON_RACE_PACKAGES; and the text checks, the
+    text-check job's, are the one package no leg runs. check-ci-filters.sh imports this table in
+    the changes and ci-filters jobs, so a refusal here fails the run that brings the entry."""
+    problems = []
+    keys = set(entry)
+    wanted = {DAEMON_PLAIN_JOB, DAEMON_RACE_JOB, go_legs.ELSEWHERE}
+    if keys != wanted:
+        problems.append(f"its keys are {', '.join(sorted(keys))}, and the jobs whose legs ci-job-daemon-go.yaml runs "
+                        f"are {DAEMON_PLAIN_JOB} and {DAEMON_RACE_JOB}, beside {go_legs.ELSEWHERE}: a package under "
+                        f"{', '.join(sorted(keys - wanted)) or 'a missing key'} runs in no job, so file it under one "
+                        f"of those")
+    race = sorted(p for leg in (entry.get(DAEMON_RACE_JOB) or {}).values() for p in leg or [])
+    if race != sorted(DAEMON_RACE_PACKAGES):
+        problems.append(f"its {DAEMON_RACE_JOB} legs run {race}, and DAEMON_RACE_PACKAGES here is "
+                        f"{sorted(DAEMON_RACE_PACKAGES)}: make them one set, each package once")
+    if entry.get(go_legs.ELSEWHERE) != {TEXT_CHECK_PACKAGE: "text-checks"}:
+        problems.append(f"it runs packages elsewhere as {entry.get(go_legs.ELSEWHERE)}, and the one package no leg "
+                        f"runs is {TEXT_CHECK_PACKAGE}, the text-checks job's")
+    if problems:
+        raise ValueError(f"{GO_LEGS}'s entry for {DAEMON}: " + "; ".join(problems))
+
+
+hold_daemon_legs(DAEMON_LEGS)
+DAEMON_PLAIN_PACKAGES = [p for leg in DAEMON_LEGS[DAEMON_PLAIN_JOB].values() for p in leg]
+DAEMON_RACE_LEG_PACKAGES = [p for leg in DAEMON_LEGS[DAEMON_RACE_JOB].values() for p in leg]
 
 
 def daemon_legs_script(job, flags):

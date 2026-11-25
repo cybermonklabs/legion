@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Tests for go_legs.py: the packages it prints for a leg, and each way a legs file fails to run
 # every package of its module exactly once in the legs the job's matrix launches (a package in no
-# leg or in two, a leg naming no package, a leg the matrix does not run, a leg with no package),
-# which stops the leg before its go test runs.
+# leg or in two, a leg naming a directory that is no package, a leg the matrix does not run, a leg
+# with no package), which stops the leg before its go test runs. A job key no matrix job runs is
+# ci_job_reads.py's hold to refuse (hold_daemon_legs), since a leg sees only its own job's legs;
+# check-ci-filters.test.sh holds that one.
 #
 # Each case builds a small repository: a copy of go_legs.py (which reads the repository it sits
 # in), a .github/go-legs.yaml, and a Go module `mod` with no requirement, so `go list ./...` runs
