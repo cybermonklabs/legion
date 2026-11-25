@@ -113,6 +113,12 @@ func withUnread(in Inputs) Inputs {
 	return in
 }
 
+// withUnanswered is in where GitHub gave no answer to the read of the change's commits.
+func withUnanswered(in Inputs) Inputs {
+	in.Unanswered, in.Commits = true, nil
+	return in
+}
+
 // withChange is in with the change of commits.
 func withChange(in Inputs, commits ...Commit) Inputs {
 	in.Commits = commits
@@ -179,6 +185,10 @@ func TestDecideIsR4sTable(t *testing.T) {
 			madeBy("c2", reviewerSession, ownerSession, testerSession)), testerSession), Failure, NoReader},
 		{"a Legion head: the change's commits could not be read", withUnread(defaultSteps(allYes, approves, accepts)), Failure, ChangeUnread},
 		{"a Legion head: the change's commits not read at all", withChange(defaultSteps(allYes, approves, accepts)), Failure, ChangeUnread},
+		{"a Legion head: GitHub gave no answer to the read of the change", withUnanswered(defaultSteps(allYes, approves, accepts)), Undecided, ""},
+		{"a Legion head: a person's request for changes while GitHub gave no answer", withReviews(withUnanswered(defaultSteps(allYes, approves, accepts)),
+			refusedBy("a-writer", true, h)), Failure, ""},
+		{"a Legion head: no answer to the read, and a check not yet yes", withUnanswered(defaultSteps(checks(""), approves, accepts)), None, ""},
 		{"a Legion head: a commit no agent read, and a check not yet yes", withChange(defaultSteps(checks(""), approves, accepts),
 			madeBy("c1", reviewerSession, ownerSession)), None, ""},
 
