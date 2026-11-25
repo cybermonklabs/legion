@@ -1186,14 +1186,15 @@ func (m *Machine) adoptionWaits() (claim.Token, bool) {
 // pending task that would adopt the working copy waits for that merge to land (takeable), since
 // the merge writes the working copy between runs no turn of the issue covers. A daemon with no
 // workflow supplies no answer, and no merge is owed. A read that fails is the caller's to answer:
-// it decides nothing.
+// it decides nothing. Its error is the reader's as it came, which names the read
+// (workflowRuntime.mergeForwardOwed in internal/daemon).
 func (m *Machine) mergeForwardOwed(ctx context.Context) (claim.Role, bool, error) {
 	if m.deps.MergeForwardOwed == nil || m.claim.Issue == "" {
 		return "", false, nil
 	}
 	role, owed, err := m.deps.MergeForwardOwed(ctx, m.claim.Issue)
 	if err != nil {
-		return "", false, fmt.Errorf("read whether a merge forward of %s is owed: %w", m.claim.Issue, err)
+		return "", false, err
 	}
 	return role, owed, nil
 }

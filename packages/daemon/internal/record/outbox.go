@@ -1971,6 +1971,23 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // that carries no read time - one the release before this one queued, which knows neither key, or
 // one written from a record that holds no dated read of Head - says both are unknown.
 //
+// Launch and SentLaunch are what a row of an ask carries of the launches of the asked role's claim
+// the record's ask was told (MergeForward.SentLaunch, dispatch://INFRA-2811 decision 11).
+// SentLaunch is the ask's SentLaunch as the row was queued, before the queueing wrote any: the
+// launch last told, which the delivery tells nothing again, nor any launch below it (the daemon's
+// mergeForwardMessage), so the row a reopen queues (workflow's askAtReopen) skips a live launch
+// that was told the ask before the close. Launch is the launch the row was queued for, which the
+// queueing wrote as the ask's SentLaunch (workflow's askAgain, at that launch's ready), and 0 for a
+// row queued for no launch: the act's ask (mergeForward) and the reopen's. A row that ends
+// undelivered sets the ask's SentLaunch back to the row's SentLaunch where the ask is still the
+// row's own and still names Launch (workflow's MergeForwardAskEnded), so a launch whose row was
+// refused is told at the reopen. A row of another step carries neither, nor does a row of an ask a
+// release before these fields queued, which the delivery then tells whatever launch holds the role,
+// as it did. The release before them decodes a merge-forward row strictly and knows neither key,
+// so the way back to it takes both out of every queued merge-forward row, with MergeState and
+// StateReadAt (the rollback block of migration 20261113175649_task_numbers, which
+// docs/kubernetes.md carries too).
+//
 // It is a row of its own kind rather than a RoleMessage, because a RoleMessage ends undelivered on
 // a released claim, and a released implementer must still be woken for the merge; its executor
 // follows the merge-queue removal's (MergeQueueRemoval).
@@ -1985,6 +2002,8 @@ type MergeForwardMessage struct {
 	Why         ConflictWhy      `json:"why,omitempty"`
 	MergeState  MergeState       `json:"mergeState,omitempty"`
 	StateReadAt time.Time        `json:"stateReadAt,omitzero"`
+	Launch      uint64           `json:"launch,omitempty"`
+	SentLaunch  uint64           `json:"sentLaunch,omitempty"`
 }
 
 func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }

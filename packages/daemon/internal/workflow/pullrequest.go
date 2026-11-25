@@ -152,7 +152,10 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // head run, which are facts about commits. A reopen at
 // another head than the recorded one - commits pushed while the pull request was closed, which no
 // synchronize reports - is judged as a synchronize to that head would be
-// (classify.AdvancePullRequestHead). A new generation
+// (classify.AdvancePullRequestHead). A reopen keeps the record's merge forward too, and at a head
+// its open ask was not made of records the merge landing, as that synchronize would
+// (mergeForwardLanded); where the merge of the head is still owed it queues the ask once for the
+// asked role's live launch, which the close may have kept it from (askAtReopen). A new generation
 // deletes a pull request that is not open, and all of them with it. An issue that waits to close on
 // its recorded merge (awaitsMerge) keeps that merge: GitHub never sends the merge again, so a pull
 // request opened from its branch is not recorded, while an issue set back to todo reruns and its
@@ -204,6 +207,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 			"issue", issue.Key, "merged", recorded.Number, "opened", fact.Number)
 		return intake.Result{}, nil
 	}
+	reopened := false
 	if recorded != nil && e.sameRepository(recorded.Repo, fact.Repo) && recorded.Number == fact.Number {
 		// GitHub sends opened once per pull request, so an opened for one already recorded is a
 		// redelivery whatever its clock; a reopen's clock is left to the fence above. GitHub never
@@ -236,9 +240,31 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 			pr.Base = recorded.Base
 		}
 		pr.HeadUpdatedAt = classify.LatestClock(recorded.HeadUpdatedAt, fact.UpdatedAt)
+		// The reopen keeps the record's merge forward (record.PullRequest.MergeForward): the ask, the
+		// merges that landed before it in the same stretch of work (Earlier), which the completion
+		// fence reads, and the launch it was last told (SentLaunch), which the delivery of its next
+		// row reads. A close does not stop a merge already running in the workspace, so the ask stays
+		// owed through the close and the take hold with it (MergeForwardOwed); dropped here, the
+		// reopen would end the hold with the merge possibly still running and leave the next
+		// conflicting read to ask a second time (plan review round 153).
+		pr.MergeForward = recorded.MergeForward
+		reopened = true
 	}
 	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err
+	}
+	if reopened {
+		// A reopen at a head the open ask was not made of - commits pushed while the pull request
+		// was closed - is that merge landing, as a synchronize to the head records it: Landed, the
+		// landed message, the review asked where the reviewer's step already ran, Earlier kept, and
+		// the end of the hold. Where the merge of the head is still owed, the ask goes once to the
+		// asked role's launch it may not have reached while the pull request was closed.
+		if err := e.mergeForwardLanded(ctx, tx, *issue, &pr); err != nil {
+			return intake.Result{}, err
+		}
+		if err := e.askAtReopen(ctx, tx, *issue, pr); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	if issue.Phase != phase.Implementing {
 		// A reopen lands under whatever phase the issue stands in, a reviewing round with an

@@ -7,10 +7,17 @@ body: |-
   and left an empty commit on it. A take that adopts nothing is not held. The hold is read from the
   record at each such take (`Deps.MergeForwardOwed`), so a restarted daemon holds the same take, and
   a read that fails leaves the take undecided and its value written again, never accepted. When the
-  merge lands, is withdrawn or is cleared, or a move leaves the ask owed to nobody, the daemon
-  posts the issue's claims the event a turn's end posts, so each held value is written again at
-  once. The ask is sent again to a relaunched asked role, so the hold never waits on a process that
+  merge lands or is cleared, or a move leaves the ask owed to nobody, the daemon posts the issue's
+  claims the event a turn's end posts, so each held value is written again at once. The ask is sent
+  again to a relaunched asked role, so the hold never waits on a process that
   was never told the merge: at the ready of a later launch of that role, while the merge is owed
   and no row of the ask is queued for it, the ask is sent once and that launch recorded
   (`sentLaunch` in `pull_requests.merge_forward`); the end of a row of the ask records the launch
-  it reached and sends the ask to a later launch it did not reach, under the fact lock.
+  it reached and sends the ask to a later launch it did not reach, under the fact lock. A close of
+  the pull request at the same head does not stop a merge already running, so the hold stands
+  through it and the architect is told `pr-closed-unmerged`. A reopen at the same head keeps the
+  ask, which it used to drop, and sends it once more where it did not reach the asked role's live
+  launch: the row it queues carries the launch the ask was last told (`sentLaunch` in the
+  merge-forward outbox row), its delivery tells only a later launch, and a row of the ask the close
+  refused sets the recorded launch back to the one before it. A reopen at a head pushed while the
+  pull request was closed records the merge landing, as a synchronize to that head would.

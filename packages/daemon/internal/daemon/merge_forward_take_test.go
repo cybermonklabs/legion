@@ -392,7 +392,9 @@ func TestTakeAskDeliveredWhileItsRoleIsRelaunchedIsSentToTheNewLaunch(t *testing
 // wired as the daemon wires it - the phase and merge-forward readers (workflowRuntime.phaseHolds and
 // mergeForwardOwed), the App identity and the turn answer, a task bucket - behind the workflow
 // whose end of a merge forward's hold reaches the issue's claims through the daemon's own path
-// (Config.MergeForwardEnded, workflowRuntime.mergeForwardEnded, supervisor.wakeIssueClaims).
+// (Config.MergeForwardEnded, workflowRuntime.mergeForwardEnded, supervisor.wakeIssueClaims). Its
+// outbox (runner) runs the rows the workflow queues, publishing through publisher, which takes
+// every publish.
 type takeRig struct {
 	t           *testing.T
 	ctx         context.Context
@@ -404,6 +406,8 @@ type takeRig struct {
 	values      *supervisetest.TaskValues
 	implementer claim.Token
 	machine     *supervise.Machine
+	runner      *outbox
+	publisher   *outboxPublisher
 }
 
 const takePhaseTask = "Continue Workflow. Issue: LEGION-208. Phase: implementing."
@@ -437,10 +441,12 @@ func newTakeRig(t *testing.T) *takeRig {
 	w.handlers = []intake.Handler{engine}
 	sup.OnDurableState(w.terminal)
 	trees := outboxTreeStore(t, pool, issue.Key)
-	w.outboxWake.Store(&outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion",
-		stateDir: t.TempDir(), tokens: outboxTokens{}, notices: &outboxPublisher{}, handlers: w.handlers, now: time.Now, trees: trees})
+	publisher := &outboxPublisher{}
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion",
+		stateDir: t.TempDir(), tokens: outboxTokens{}, notices: publisher, handlers: w.handlers, now: time.Now, trees: trees}
+	w.outboxWake.Store(runner)
 	rig := &takeRig{t: t, ctx: ctx, pool: pool, records: records, sup: sup, rt: rt, engine: engine, values: values,
-		implementer: mustClaimToken(t, issue.Key, claim.RoleImplementer)}
+		implementer: mustClaimToken(t, issue.Key, claim.RoleImplementer), runner: runner, publisher: publisher}
 	machine, _, err := sup.Create(ctx, supervise.Claim{Token: rig.implementer, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
 		Role: claim.RoleImplementer, State: supervise.StateQueued}, "")
 	if err != nil {
@@ -623,8 +629,10 @@ func TestTakeOfARelaunchedAskedRoleIsHeldAskedAgainAndTakenOnceAtTheLanding(t *t
 			r := newTakeRig(t)
 			tc.ends(r)
 
+			// The re-send carries the launch it was queued for and the one it replaced (plan v162
+			// decision 11, record.MergeForwardMessage's Launch and SentLaunch).
 			want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: takeAskHead, Base: "main",
-				Phase: phase.Implementing, PullRequest: 86, Why: record.ConflictCheckNotGreen}}
+				Phase: phase.Implementing, PullRequest: 86, Why: record.ConflictCheckNotGreen, Launch: 2, SentLaunch: 1}}
 			if got := r.asks(); !slices.Equal(got, want) {
 				t.Fatalf("after the ready of launch 2 the outbox holds %+v, want the ask once", got)
 			}
@@ -658,6 +666,257 @@ func TestTakeOfARelaunchedAskedRoleIsHeldAskedAgainAndTakenOnceAtTheLanding(t *t
 			}
 			if got := len(r.rt.CallsOf("AdoptWorkingCopy")); got != adoptions+1 {
 				t.Fatalf("%d working copies adopted in all, want %d: the take after the landing adopts the merged working copy once", got, adoptions+1)
+			}
+		})
+	}
+}
+
+// takeLiveAt is mergeForwardRunnerAt's LEGION-208 in testing, its pull request #86 in state at
+// takeAskHead with asked as the record's merge forward, the implementer's claim live at launch 2 -
+// a failure of launch 1, then the operator's retry - with no workflow behind the supervisor, so its
+// ready writes nothing, and ask's row queued. The listener takes every publish.
+func takeLiveAt(t *testing.T, state record.PullRequestState, asked record.MergeForward, ask record.MergeForwardMessage) (*outbox, *store.Pool, *holderPublisher) {
+	t.Helper()
+	publisher := &holderPublisher{}
+	runner, sup, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Testing, "testing", state, &asked)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208",
+		Issue: "LEGION-208", Role: claim.RoleImplementer, Generation: 1, ServingGeneration: 1, State: supervise.StateFailed,
+		Failure: "launch failures ran out", Session: "ses-implementer", SessionFile: t.TempDir() + "/session.jsonl"}, "")
+	if err != nil {
+		t.Fatalf("create the failed implementer's claim: %v", err)
+	}
+	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
+	if err := takeRelaunched(machine); err != nil {
+		t.Fatal(err)
+	}
+	if got := machine.Claim().Generation; got != 2 {
+		t.Fatalf("the implementer is at launch %d, want 2", got)
+	}
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
+	return runner, pool, publisher
+}
+
+// Row 48 of plan v162, the delivery's side: the workflow knows no launch of the asked role's claim,
+// so the row a reopen queues carries the SentLaunch of the record's ask it was queued under, and its
+// delivery, which reads the launch, tells only a launch past it. A live launch told the ask before
+// the close, whose merge may still be running, is told nothing again, and the record keeps that
+// launch; a launch that came up during the close is told once, and recorded.
+//
+// The negative control is a delivery that reads no carried launch (heldMessage.toldThrough unset):
+// the live launch told before the close is told the ask a second time.
+func TestTakeMergeForwardAskQueuedAtAReopenTellsOnlyALaunchPastTheOneItWasQueuedUnder(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		sent uint64
+		told int
+	}{
+		{name: "the live launch was told before the close", sent: 2},
+		{name: "the asked role was relaunched during the close", sent: 1, told: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			asked := takeImplementersAsk()
+			asked.SentLaunch = tc.sent
+			ask := takeAsk
+			ask.SentLaunch = tc.sent
+			runner, pool, publisher := takeLiveAt(t, record.PullRequestOpen, asked, ask)
+
+			drainAt(t, runner, 0, "the reopen's row")
+
+			if _, delivered := publisher.snapshot(); len(delivered) != tc.told {
+				t.Errorf("the implementer at launch 2 was told %d messages (%+v), want %d", len(delivered), delivered, tc.told)
+			}
+			if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
+				t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none", rows)
+			}
+			if sent := takeSentLaunch(t, pool); sent != 2 {
+				t.Errorf("the record's ask was told launch %d, want launch 2", sent)
+			}
+		})
+	}
+}
+
+// Row 48b of plan v162, through the executor: the re-send at the ready of launch 2 wrote launch 2
+// as the ask's SentLaunch as it queued its row, which carries launch 1, the one it replaced. The
+// pull request is closed before the row is delivered, so the row ends undelivered, tells nobody,
+// and sets the record's ask back to launch 1, the launch last told, so the reopen's row tells
+// launch 2.
+//
+// The negative control is an end that sets nothing back (settleAskRow's undelivered branch cut):
+// the record still names launch 2, which was never told.
+func TestTakeMergeForwardReSendRefusedByACloseSetsItsLaunchBack(t *testing.T) {
+	t.Parallel()
+	asked := takeImplementersAsk()
+	asked.SentLaunch = 2
+	ask := takeAsk
+	ask.Launch, ask.SentLaunch = 2, 1
+	runner, pool, publisher := takeLiveAt(t, record.PullRequestClosed, asked, ask)
+
+	drainAt(t, runner, 0, "the re-send's row on the closed pull request")
+
+	if _, delivered := publisher.snapshot(); len(delivered) != 0 {
+		t.Errorf("the implementer was told %+v, want nothing: the pull request is closed", delivered)
+	}
+	if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
+		t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none", rows)
+	}
+	if sent := takeSentLaunch(t, pool); sent != 1 {
+		t.Errorf("the record's ask was told launch %d, want it set back to launch 1", sent)
+	}
+}
+
+// closes and reopens are GitHub's close of #86 at takeAskHead and its reopen there, at, applied
+// through the workflow.
+func (r *takeRig) closes(at time.Time) {
+	r.t.Helper()
+	result, err := intake.ApplyFact(r.ctx, r.pool, "test", "close-"+r.t.Name()+at.String(), intake.PullRequestClosed{Repo: "acme/widgets",
+		Number: 86, HeadSHA: takeAskHead, UpdatedAt: at}, r.engine)
+	if err != nil || result.Refusal != nil {
+		r.t.Fatalf("apply the close = %+v, %v", result, err)
+	}
+}
+
+func (r *takeRig) reopens(at time.Time) {
+	r.t.Helper()
+	result, err := intake.ApplyFact(r.ctx, r.pool, "test", "reopen-"+r.t.Name()+at.String(), intake.PullRequestOpened{Repo: "acme/widgets",
+		Number: 86, Branch: "legion/LEGION-208", Base: "main", HeadSHA: takeAskHead, UpdatedAt: at, Reopened: true}, r.engine)
+	if err != nil || result.Refusal != nil {
+		r.t.Fatalf("apply the reopen = %+v, %v", result, err)
+	}
+}
+
+// relaunchedByADeath is the implementer's process gone, and its next launch brought to its ready,
+// which the workflow applies.
+func (r *takeRig) relaunchedByADeath() {
+	r.t.Helper()
+	launch := r.machine.Claim().Generation
+	if err := r.machine.Handle(r.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *r.machine.Claim().Locator,
+		Kind: runtime.Gone, At: time.Now()}}); err != nil {
+		r.t.Fatalf("the implementer's death: %v", err)
+	}
+	r.machine.Wait()
+	if got := r.machine.Claim(); got.State != supervise.StateLaunching || got.Generation != launch+1 {
+		r.t.Fatalf("after the death the implementer is %s at launch %d, want it launching at %d", got.State, got.Generation, launch+1)
+	}
+	r.comesReady()
+}
+
+// toldAsks is how many messages the implementer's role topic was published.
+func (r *takeRig) toldAsks() int {
+	r.t.Helper()
+	told := 0
+	for _, topic := range r.publisher.topics() {
+		if topic == notify.RoleTopicPrefix+string(r.implementer) {
+			told++
+		}
+	}
+	return told
+}
+
+// closedUnmergedNotices is how many pr-closed-unmerged notices of LEGION-208 the outbox holds.
+func (r *takeRig) closedUnmergedNotices() int {
+	r.t.Helper()
+	var notices int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from outbox where kind = $1 and issue = 'LEGION-208' and payload->>'kind' = 'pr-closed-unmerged'`,
+		string(record.OutboxKindNotice)).Scan(&notices); err != nil {
+		r.t.Fatalf("read the notices: %v", err)
+	}
+	return notices
+}
+
+// Rows 47 and 48 of plan v162 end to end: the implementer holds its phase task in implementing and
+// is asked to merge the base forward; the ask is delivered to launch 1. The pull request is closed
+// at the same head: the ask stays owed, the architect is sent pr-closed-unmerged, and the take of
+// the implementer's relaunched process, which would adopt the working copy, is refused in-turn. The
+// pull request is reopened at the same head: where the implementer was relaunched during the close
+// (its ready sent nothing to a closed pull request), the reopen's row tells the new launch the ask
+// once; where its live launch was told before the close (the re-send at that launch's ready,
+// delivered while the pull request was open), the reopen's row tells it nothing, and the hold
+// stands until the landing. The merge lands: the value is written again and taken once, adopting
+// the merged working copy.
+//
+// The negative control is the reopen at 88ed2ae7, which drops the ask: the hold ends at the reopen
+// with the merge possibly running, and nothing is told.
+func TestTakeMergeForwardHeldThroughASameHeadCloseIsAskedOnceAtTheReopenAndTakenOnceAtTheLanding(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// before runs before the close, and during between the close and the reopen.
+		before, during func(r *takeRig)
+		told           int
+	}{
+		{name: "the asked role relaunched during the close", during: (*takeRig).relaunchedByADeath, told: 1},
+		{name: "the live launch told before the close", before: func(r *takeRig) {
+			r.relaunchedByADeath()
+			drainAt(r.t, r.runner, time.Minute, "the re-send at the ready of launch 2")
+			if told := r.toldAsks(); told != 1 {
+				r.t.Fatalf("before the close the implementer was told %d asks, want the re-send once", told)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newTakeRig(t)
+			if err := r.machine.Handle(r.ctx, supervise.RequestDeliver{Claim: r.implementer, Task: takePhaseTask, ID: "outbox:7",
+				Phase: phase.Implementing, Generation: 1}); err != nil {
+				t.Fatalf("deliver the phase task: %v", err)
+			}
+			r.machine.Wait()
+			if answer := r.take(); answer.Outcome != supervise.TakeOutcomeAccepted {
+				t.Fatalf("the take before the ask = %+v, want it accepted", answer)
+			}
+			r.asked()
+			if tc.before != nil {
+				tc.before(r)
+			}
+			told := r.toldAsks()
+			now := time.Now()
+
+			r.closes(now.Add(time.Minute))
+			if notices := r.closedUnmergedNotices(); notices != 1 {
+				t.Fatalf("after the close the outbox holds %d pr-closed-unmerged notices, want one, to the architect", notices)
+			}
+			if tc.during != nil {
+				tc.during(r)
+				if got := r.asks(); len(got) != 0 {
+					t.Fatalf("the ready during the close queued %+v, want nothing sent to a closed pull request", got)
+				}
+			}
+			adoptions := len(r.rt.CallsOf("AdoptWorkingCopy"))
+			if answer := r.take(); answer.Outcome != supervise.TakeOutcomeRefused || answer.Hold != supervise.HoldInTurn {
+				t.Fatalf("the relaunched process's take after the close = %+v, want it refused %s", answer, supervise.HoldInTurn)
+			}
+
+			r.reopens(now.Add(2 * time.Minute))
+			drainAt(t, r.runner, 10*time.Minute, "the reopen's row")
+			drainAt(t, r.runner, 20*time.Minute, "a later attempt")
+
+			if got := r.toldAsks() - told; got != tc.told {
+				t.Fatalf("after the reopen the implementer was told %d asks, want %d", got, tc.told)
+			}
+			if rows := outboxRowsOfKind(t, r.pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
+				t.Fatalf("after the reopen the outbox holds %d merge-forward rows, want none: the reopen's row ended", rows)
+			}
+			if sent := takeSentLaunch(t, r.pool); sent != r.machine.Claim().Generation {
+				t.Fatalf("after the reopen the record's ask was told launch %d, want the live launch %d", sent, r.machine.Claim().Generation)
+			}
+			if answer := r.take(); answer.Outcome != supervise.TakeOutcomeRefused || answer.Hold != supervise.HoldInTurn {
+				t.Fatalf("the take after the reopen = %+v, want it still refused %s until the landing", answer, supervise.HoldInTurn)
+			}
+			written := valueWritesOf(r.values, r.implementer)
+
+			r.lands()
+
+			testwait.Eventually(t, "the implementer's value to be written again once the merge landed", func() bool {
+				return valueWritesOf(r.values, r.implementer) > written
+			})
+			if answer := r.take(); answer.Outcome != supervise.TakeOutcomeAccepted {
+				t.Fatalf("the take after the landing = %+v, want it accepted", answer)
+			}
+			if got := len(r.rt.CallsOf("AdoptWorkingCopy")); got != adoptions+1 {
+				t.Fatalf("%d working copies adopted since the close, want one: the take after the landing adopts the merged working copy once", got-adoptions)
 			}
 		})
 	}

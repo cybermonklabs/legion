@@ -106,9 +106,9 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		if h.m.owedWrite == nil {
 			t.Fatal("the failed confirmation left no mark")
 		}
-		// No prompt result follows this turn's end, so the task is still the claim's and the
-		// repair still owes both rows; the claim goes idle, then its agent starts a turn of its
-		// own, which confirms nothing and whose claim-only write lands.
+		// No end report names the take after this turn's end, so the task is still the claim's
+		// and the repair still owes both rows; the claim goes idle, then its agent starts a turn
+		// of its own, which confirms nothing and whose claim-only write lands.
 		_ = h.handleQuiet(StreamTurnEnd{Claim: testToken})
 		h.wantState(StateIdle)
 		h.must(StreamTurnStart{Claim: testToken})

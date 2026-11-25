@@ -1088,7 +1088,9 @@ type PullRequest struct {
 	// MergeForward.Head and ReviewAsked when that landing asks the reviewer to read the merge. An
 	// ask that replaces the one the record holds - of a new head whose conflict was confirmed, or
 	// of the same head asked again on a phase entry - carries that ask's Earlier, and the ask
-	// itself, its head and the head that landed, once it landed.
+	// itself, its head and the head that landed, once it landed. A reopen of the pull request
+	// (pullRequestOpened) keeps it whole, and at a head pushed while the pull request was closed
+	// records the landing as that synchronize would; a close keeps it too.
 	// What clears it: any transition into implementing, the issue leaving the workflow, and a new
 	// generation (Store.ClearGeneration), since it is an ask of the run before. That ends the
 	// stretch of work, Earlier with it.
@@ -1140,18 +1142,25 @@ type ConflictRead struct {
 // head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts).
 // Withdrawn is whether the ask was withdrawn from the role it names, which that role is told: the
 // merge of the head is owed to nobody then until a role is asked again (workflow's owedTo), and
-// the ask is sent to no later launch (workflow's askAgain). SentLaunch is the latest launch of the
-// asked role's claim (intake.ClaimReady.Launch) the ask was told to: the launch a row of it was
-// delivered to, or the launch it was sent again to, 0 while neither happened. The ask is sent
+// the ask is sent to no later launch (workflow's askAgain). This release reads it and writes it
+// nowhere: cybermonklabs/legion#5312's withdrawal of an ask owed to nobody writes it, and the end
+// of the take hold that write makes is posted from putPullRequest. SentLaunch is the latest launch
+// of the asked role's claim (intake.ClaimReady.Launch) the ask was told to: the launch a row of it
+// was delivered to, or the launch it was sent again to, 0 while neither happened. The ask is sent
 // again, and that launch recorded here, to a later launch of that role while the merge of the head
 // is still owed to it and no row of the ask is queued for it: at that launch's ready (workflow's
 // askAgainAtLaunch), and at the end of a row of the ask that did not reach it (workflow's
-// MergeForwardAskEnded). A process relaunched after the delivery and before the landing - a death,
-// a provider error's retry - holds no ask, and a claim that failed, that an operator stopped or
-// whose agent reported its own exit takes no row of the ask queued after it ended; while the merge
-// is owed, every take of the issue that would adopt the working copy is held, the asked role's own
-// phase task included (supervise's Deps.MergeForwardOwed), so a launch never told the ask would
-// hold that work with no turn to land the merge. It is stored as the jsonb of
+// MergeForwardAskEnded). The re-send writes the launch as it queues its row, which carries the
+// launch it replaced (MergeForwardMessage.SentLaunch), and a re-send's row that ends undelivered -
+// a close of the pull request refuses its delivery - sets it back to that one while it still names
+// the row's launch (workflow's settleAskRow). The row a reopen queues carries it too, and its
+// delivery tells only a later launch (workflow's askAtReopen, the daemon's mergeForwardMessage), so
+// a live launch told before a close is not told twice. A process relaunched after the delivery and
+// before the landing - a death, a provider error's retry - holds no ask, and a claim that failed,
+// that an operator stopped or whose agent reported its own exit takes no row of the ask queued
+// after it ended; while the merge is owed, every take of the issue that would adopt the working
+// copy is held, the asked role's own phase task included (supervise's Deps.MergeForwardOwed), so a
+// launch never told the ask would hold that work with no turn to land the merge. It is stored as the jsonb of
 // pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier,
 // Role, Withdrawn and SentLaunch with no migration of their own, and leaves each out while it is
 // empty, and a release before them reads the jsonb without them.

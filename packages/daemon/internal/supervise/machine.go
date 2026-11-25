@@ -1144,7 +1144,8 @@ type Deps struct {
 	// that would adopt the working copy (adopts) is refused in-turn, whatever its role, the asked
 	// role's own included, and a take that adopts nothing never asks it (takeable). It is read from
 	// the store at each such take, so a restarted daemon holds the same take. A read that fails
-	// leaves the take undecided (undecided), never accepted. The hold ends when the daemon records
+	// leaves the take undecided (undecided), never accepted, and its error, which names the read,
+	// is the machine's as it came. The hold ends when the daemon records
 	// the merge landed, withdrawn or cleared, which posts the issue's claims IssueTurnEnded; the
 	// sweep's offer of a take refused at its latest revision is the backstop. nil holds no take.
 	MergeForwardOwed func(ctx context.Context, issue string) (claim.Role, bool, error)

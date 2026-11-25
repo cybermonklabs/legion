@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // baseRead is one base's batch of merge-state reads (workflowRuntime.baseReads): the repository
@@ -70,65 +71,79 @@ func baseReadKey(repo ghrepo.Repository, base string) string {
 
 // queueBaseMergeStates is what the workflow asks for on the commit of a push to base of repo
 // (workflow's basePush, the engine's Config.ReadBaseMergeStates): a read of GitHub's merge state
-// for each of issues, the pull requests on that base the push owes a read, which a push onto the
+// for each of reads, the pull requests on that base the push owes a read, which a push onto the
 // base can turn behind or conflicting with it while GitHub sends no event of the pull request
 // itself (dispatch://INFRA-4374 R0, R4). They are read in one batch, a climb of the base's reads
 // (queueBaseReads): GraphQL queries of baseReadChunk pull requests each, asked for by number,
-// rather than one GET /pulls/{number} of each. Each of once, issues among them in merging, is owed
+// rather than one GET /pulls/{number} of each. A read marked Once, an issue in merging, is owed
 // one read rather than a climb (baseOwed.once, classify.MergeStateReadOnce). It only records the
 // issues and wakes the reader, so the push's own transaction waits for no GitHub call, and a
 // runtime with no reader queues nothing.
-func (w *workflowRuntime) queueBaseMergeStates(repo, base string, issues, once []string) {
+func (w *workflowRuntime) queueBaseMergeStates(repo, base string, reads []workflow.BaseRead) {
 	repository, err := ghrepo.Parse("the pushed repository", repo)
 	if err != nil {
 		w.log.Warn("github: a push to a base names no repository the daemon can read; its pull requests are read at their next event",
-			"repo", repo, "base", base, "issues", issues, "error", err)
+			"repo", repo, "base", base, "reads", reads, "error", err)
 		return
 	}
-	owed := make(map[string]string, len(issues))
-	for _, issue := range issues {
-		owed[issue] = ""
+	requests := make([]baseRequest, len(reads))
+	for i, read := range reads {
+		requests[i] = baseRequest{issue: read.Issue, once: read.Once}
 	}
-	w.queueBaseReads(w.repositories.serving(repository), base, owed, true, once)
+	w.queueBaseReads(w.repositories.serving(repository), base, requests, true)
 }
 
-// queueBaseRead is queueBaseReads with no issue owed one read alone.
+// queueBaseRead is queueBaseReads of each issue of owed with the head its reads follow ("" for
+// none named), none of them owed one read alone.
 func (w *workflowRuntime) queueBaseRead(repo ghrepo.Repository, base string, owed map[string]string, climb bool) {
-	w.queueBaseReads(repo, base, owed, climb, nil)
+	requests := make([]baseRequest, 0, len(owed))
+	for issue, head := range owed {
+		requests = append(requests, baseRequest{issue: issue, head: head})
+	}
+	w.queueBaseReads(repo, base, requests, climb)
 }
 
-// queueBaseReads puts each issue of owed in the batch of base of repo, out of any other batch it
-// was in, with the head its reads follow, and asks that batch's ladder for a climb (climb) or for
-// a follow: a head a climb of one pull request handed over, whose own ladder of reads starts then,
-// its first read two of the ladder's waits on, whatever the other owed pull requests' ladders
+// baseRequest is one issue a request puts in the batch of its base's reads (queueBaseReads): the
+// head its reads follow, "" where the request names none, and whether it is owed one read rather
+// than a climb (baseOwed.once), which only a climb's request asks.
+type baseRequest struct {
+	issue, head string
+	once        bool
+}
+
+// queueBaseReads puts the issue of each of requests in the batch of base of repo, out of any other
+// batch it was in, with the head its reads follow, and asks that batch's ladder for a climb (climb)
+// or for a follow: a head a climb of one pull request handed over, whose own ladder of reads starts
+// then, its first read two of the ladder's waits on, whatever the other owed pull requests' ladders
 // stand at (baseOwed). A climb asked for an issue the batch already follows keeps the head it
 // follows. A ladder that is not running starts (readBaseMergeStates); one that is is woken under
 // the lock it reads its requests under, so it takes up a climb at once and a follow when it falls
 // due. It only records and wakes (putLocked).
 //
-// An issue of once, asked for with a climb, is owed one read instead (baseOwed.once). A climb or a
-// follow outranks one read, in either order: each reads the head as that read would, and goes on
-// reading it while GitHub answers `unknown`. So a climb or a follow asked for an issue owed one
-// read makes it a climb or a follow, and one read asked for an issue the batch already climbs or
-// follows leaves it as it stands, under a new request, so that a read already in flight, made
-// before the request, does not take it out of the batch, and a read made after the request answers
-// it (leaveBase, setOwed).
-func (w *workflowRuntime) queueBaseReads(repo ghrepo.Repository, base string, owed map[string]string, climb bool, once []string) {
-	if w.baseWake == nil || len(owed) == 0 {
+// A request owed one read (baseRequest.once), asked for with a climb, is owed one read instead
+// (baseOwed.once). A climb or a follow outranks one read, in either order: each reads the head as
+// that read would, and goes on reading it while GitHub answers `unknown`. So a climb or a follow
+// asked for an issue owed one read makes it a climb or a follow, and one read asked for an issue
+// the batch already climbs or follows leaves it as it stands, under a new request, so that a read
+// already in flight, made before the request, does not take it out of the batch, and a read made
+// after the request answers it (leaveBase, setOwed).
+func (w *workflowRuntime) queueBaseReads(repo ghrepo.Repository, base string, requests []baseRequest, climb bool) {
+	if w.baseWake == nil || len(requests) == 0 {
 		return
 	}
 	key := baseReadKey(repo, base)
 	now, first := time.Now().UTC(), 2*w.mergeStateWait()
 	starts := false
 	w.mergeStateMu.Lock()
-	for issue, head := range owed {
+	for _, request := range requests {
+		issue, head := request.issue, request.head
 		var place baseOwed
 		held := false
 		if read := w.baseReads[key]; read != nil && w.baseReadOf[issue] == key {
 			place, held = read.owed[issue], true
 		}
 		switch {
-		case climb && slices.Contains(once, issue):
+		case climb && request.once:
 			if !held || place.once {
 				place = baseOwed{climb: true, once: true}
 			}

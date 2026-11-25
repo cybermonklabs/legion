@@ -938,9 +938,10 @@ func askedBeforeTheMerger(at phase.Phase) record.PullRequest {
 func readingEngine(asked *[]string) *Engine {
 	engine := mergingEngineAt(firstConflictRead)
 	engine.cfg.ReadMergeState = func(issue string) { *asked = append(*asked, issue) }
-	engine.cfg.ReadBaseMergeStates = func(_, _ string, issues, once []string) {
-		for _, issue := range issues {
-			if slices.Contains(once, issue) {
+	engine.cfg.ReadBaseMergeStates = func(_, _ string, reads []BaseRead) {
+		for _, read := range reads {
+			issue := read.Issue
+			if read.Once {
 				issue += " once"
 			}
 			*asked = append(*asked, issue)

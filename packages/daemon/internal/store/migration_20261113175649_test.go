@@ -768,11 +768,12 @@ func TestMigrationTaskNumbersWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T
 // write its deliveries again — the three read marks stand, at the defaults that read as a task it
 // has queued and not yet sent — and decode every supervise row and every merge-forward row of its
 // outbox: the start this release wrote has lost its `origin`, and the ask this release wrote its
-// `mergeState` and `stateReadAt`, keys that release's strict decoder refuses, and each kept every
-// other key. The failure cause this release adds, never_reconnected, which that release's plugins
-// read through a strict enum that names no such word, stands as never_registered in both of a
-// claim's cause columns — the pending cause of a relaunch under way and the failure cause of a
-// claim whose relaunches ran out — and a cause that release names stays as it was. The block of
+// `mergeState`, `stateReadAt`, `launch` and `sentLaunch`, keys that release's strict decoder
+// refuses, and each kept every other key. The failure cause this release adds, never_reconnected,
+// which that release's plugins read through a strict enum that names no such word, stands as
+// never_registered in both of a claim's cause columns — the pending cause of a relaunch under way
+// and the failure cause of a claim whose relaunches ran out — and a cause that release names stays
+// as it was. The block of
 // 20261122160000_design_news_credit_at_turn_start runs first, as docs/kubernetes.md says, since
 // its function reads turn_started, which this block drops. None of the fourteen columns stands,
 // nor either migration's version row, while every other row stays recorded. The roll-forward then
@@ -824,12 +825,14 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 		values ('supervise', 'LEGION-209', $1::jsonb, 0, now(), '') returning id`, start).Scan(&started); err != nil {
 		t.Fatalf("enqueue the start this release writes, naming its origin: %v", err)
 	}
-	const ask = `{"role": "implementer", "step": "ask", "head": "c0de", "base": "main", "phase": "testing", "pullRequest": 42, "why": "required-check-not-green", "mergeState": "dirty", "stateReadAt": "2026-11-19T01:01:00Z"}`
+	// The ask as this release writes it: the read of GitHub it rests on, and the launches of the
+	// asked role's claim a re-send carries (record.MergeForwardMessage's Launch and SentLaunch).
+	const ask = `{"role": "implementer", "step": "ask", "head": "c0de", "base": "main", "phase": "testing", "pullRequest": 42, "why": "required-check-not-green", "mergeState": "dirty", "stateReadAt": "2026-11-19T01:01:00Z", "launch": 2, "sentLaunch": 1}`
 	const askWithoutTheRead = `{"role": "implementer", "step": "ask", "head": "c0de", "base": "main", "phase": "testing", "pullRequest": 42, "why": "required-check-not-green"}`
 	var asked int64
 	if err := store.pool.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 		values ('merge_forward', 'LEGION-209', $1::jsonb, 0, now(), '') returning id`, ask).Scan(&asked); err != nil {
-		t.Fatalf("enqueue the merge-forward ask this release writes, naming the read it rests on: %v", err)
+		t.Fatalf("enqueue the merge-forward ask this release writes, naming the read it rests on and its launches: %v", err)
 	}
 
 	if _, err := store.pool.Exec(ctx, wayBackOf(t, creditAtTurnStartVersion, "20261122160000_design_news_credit_at_turn_start"),
@@ -852,12 +855,12 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 			startWithoutOrigin, stripped, unstripped)
 	}
 	var askStripped, askUnstripped bool
-	if err := store.pool.QueryRow(ctx, `select payload = $2::jsonb, payload ? 'mergeState' or payload ? 'stateReadAt' from outbox where id = $1`,
-		asked, askWithoutTheRead).Scan(&askStripped, &askUnstripped); err != nil {
+	if err := store.pool.QueryRow(ctx, `select payload = $2::jsonb, payload ? 'mergeState' or payload ? 'stateReadAt' or payload ? 'launch' or payload ? 'sentLaunch'
+		from outbox where id = $1`, asked, askWithoutTheRead).Scan(&askStripped, &askUnstripped); err != nil {
 		t.Fatalf("read the merge-forward ask after the way back: %v", err)
 	}
 	if !askStripped || askUnstripped {
-		t.Fatalf("the ask after the way back equals %s = %v and still names mergeState or stateReadAt = %v; want both taken out and every other key kept: the release before this one decodes a merge-forward payload strictly and refuses either key",
+		t.Fatalf("the ask after the way back equals %s = %v and still names mergeState, stateReadAt, launch or sentLaunch = %v; want all four taken out and every other key kept: the release before this one decodes a merge-forward payload strictly and refuses each key",
 			askWithoutTheRead, askStripped, askUnstripped)
 	}
 	for _, want := range []struct {

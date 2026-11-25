@@ -16,7 +16,6 @@ package supervise
 import (
 	"context"
 	"errors"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -63,7 +62,13 @@ func (r *mergeForwardRecord) read(_ context.Context, issue string) (claim.Role, 
 func (r *mergeForwardRecord) asked(issue string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(slices.DeleteFunc(slices.Clone(r.issues), func(got string) bool { return got != issue }))
+	asked := 0
+	for _, got := range r.issues {
+		if got == issue {
+			asked++
+		}
+	}
+	return asked
 }
 
 // mergeForwardHarness is a ready claim c of the one issue the harnesses share (LEGION-209) whose

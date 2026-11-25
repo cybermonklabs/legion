@@ -1279,7 +1279,7 @@ A second hold, named `in-turn` as a take refused in a turn of the claim's own is
 A merge forward is a message to the asked role and no take, so between two runs of that merge no claim of the issue is in a turn, and an adoption then would leave an empty commit on the merge in progress.
 A take of a task that adopts nothing is not held by it.
 The daemon's log says why, with the role the merge is owed to: `supervise: a merge forward of this issue is owed and has not landed; the phase task waits rather than adopt the working copy the merge writes`.
-The daemon writes each refused task's value again when the merge lands, is withdrawn or is cleared, and when a move leaves it owed to nobody; the sweep writes it again for an end it missed.
+The daemon writes each refused task's value again when the merge lands or is cleared, and when a move leaves it owed to nobody; the sweep writes it again for an end it missed.
 A daemon that restarts reads the same record and holds the same take.
 A take whose read of the record fails is answered `500 CLAIM_WRITE_FAILED` and never accepted, and its value is written again once the read answers.
 
@@ -1965,7 +1965,16 @@ roles"), so the role asked is asked again where its process was relaunched after
 delivered, by a death or a provider error's retry: at the ready of each later launch the ask is sent
 once more and that launch is recorded on the ask (`sentLaunch`), with `workflow: a merge forward
 still owed is asked again at its role's new launch`, and a launch that comes up while a row of the
-ask is still queued is told by that row. A red check sends nothing back from anywhere.
+ask is still queued is told by that row. Each launch is told the ask once, but for one window: a
+launch that comes up and takes the delivery between the daemon's read of the launch and its publish
+is told again, so that no launch is left untold. A close of the pull request at the same head does
+not stop a merge already running in the workspace, so the ask and the hold stand through it, and
+the architect is told `pr-closed-unmerged` to decide. A reopen at the same head keeps the ask and
+sends it once more where it did not reach the role's live launch — a row of the ask the close
+refused, or a launch that came up during the close — with `workflow: a merge forward still owed is
+asked again at the reopen of its pull request`; a launch told before the close is told nothing
+again, and the hold stands until the landing. A reopen at a head pushed while the pull request was
+closed is the merge landing. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 

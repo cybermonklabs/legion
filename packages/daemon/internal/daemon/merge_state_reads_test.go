@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // countingPullStandIn is GitHub's REST API for acme/widgets answering pull request 86 with the
@@ -642,9 +643,11 @@ func TestAClimbOrAFollowOutranksOneReadOfTheSameIssue(t *testing.T) {
 	// climb asks for a climb, as the same push asks it for an issue in reviewing; follow hands the
 	// batch the head a climb of one pull request ended on `unknown` for.
 	once := func(rig *readRig) {
-		rig.w.queueBaseMergeStates("acme/widgets", "main", []string{"CAPTURE-1"}, []string{"CAPTURE-1"})
+		rig.w.queueBaseMergeStates("acme/widgets", "main", []workflow.BaseRead{{Issue: "CAPTURE-1", Once: true}})
 	}
-	climb := func(rig *readRig) { rig.w.queueBaseMergeStates("acme/widgets", "main", []string{"CAPTURE-1"}, nil) }
+	climb := func(rig *readRig) {
+		rig.w.queueBaseMergeStates("acme/widgets", "main", []workflow.BaseRead{{Issue: "CAPTURE-1"}})
+	}
 	follow := func(rig *readRig) { rig.w.queueBaseRead(acme, "main", map[string]string{"CAPTURE-1": "code"}, false) }
 	// placed waits until CAPTURE-1's place in its base's batch holds what holds reads.
 	placed := func(t *testing.T, rig *readRig, what string, holds func(baseOwed) bool) {

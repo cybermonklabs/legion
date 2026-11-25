@@ -163,18 +163,23 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 // published, the attributes of the row's log lines, and the two lines the delivery itself logs: the
 // row's end on a claim that failed or retired, and the delivery. end, where set, is the row's end
 // itself, which deletes the row: told is the launch of the claim the message reached, read before
-// the publish, and 0 for the end at a claim that failed or retired (a merge-forward ask's,
-// endMergeForwardAsk). nil leaves the row's end to its settle.
+// the publish, and 0 for an end undelivered (a merge-forward ask's, endMergeForwardAsk). nil leaves
+// the row's end to its settle. toldThrough, where m has an end, is the launch of the claim at and
+// below which the message was told already (a merge-forward ask's SentLaunch,
+// record.MergeForwardMessage), 0 for none: the claim at such a launch is told nothing, and the row
+// ends undelivered, logging toldAlready.
 type heldMessage struct {
-	issue      record.Issue
-	token      claim.Token
-	role       claim.Role
-	what       string
-	message    string
-	attributes []any
-	claimEnded string
-	delivered  string
-	end        func(ctx context.Context, told uint64) error
+	issue       record.Issue
+	token       claim.Token
+	role        claim.Role
+	what        string
+	message     string
+	attributes  []any
+	claimEnded  string
+	delivered   string
+	end         func(ctx context.Context, told uint64) error
+	toldThrough uint64
+	toldAlready string
 }
 
 // deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
@@ -205,20 +210,13 @@ type heldMessage struct {
 // line is logged, and after the publish, with the launch the claim held just before it, which is
 // never later than the launch whose session took the message (the claim's launches only rise). An
 // end that fails fails the attempt: undelivered, the row is read again at its retry; delivered, it
-// is published again and ends again, so a launch may be told twice and none is told nothing.
+// is published again and ends again, so a launch may be told twice and none is told nothing. A
+// launch at or below m.toldThrough, read where the publish would go, was told the message already:
+// nothing is published, and the row ends undelivered there (endUndelivered).
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
 	held := r.supervisedClaim(m.token)
 	if supervise.FailedOrRetired(held.State) {
-		if r.beforeUndeliveredEnd != nil {
-			r.beforeUndeliveredEnd(row)
-		}
-		if m.end != nil {
-			if err := m.end(ctx, 0); err != nil {
-				return err
-			}
-		}
-		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
-		return nil
+		return r.endUndelivered(ctx, row, m.end, m.claimEnded, append(m.attributes, "state", held.State)...)
 	}
 	if held.Released() {
 		if m.role == claim.RoleMerger {
@@ -246,6 +244,9 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	var told uint64
 	if m.end != nil {
 		told = r.supervisedClaim(m.token).Generation
+		if told != 0 && told <= m.toldThrough {
+			return r.endUndelivered(ctx, row, m.end, m.toldAlready, append(m.attributes, "launch", told, "toldThrough", m.toldThrough)...)
+		}
 	}
 	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
 	switch {
@@ -261,6 +262,23 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w", m.what, m.role, notify.StateUnresponsive, published)
 	}
 	return fmt.Errorf("publish %s to its %s: %w", m.what, m.role, published)
+}
+
+// endUndelivered ends row undelivered, as both deliveries of a held message do (mergeForwardMessage,
+// deliverHeld): the test hook beforeUndeliveredEnd, then end with no launch told where the row has an
+// end of its own (a merge-forward ask's, endMergeForwardAsk), then line logged with attributes. An
+// end that fails fails the attempt, before the line, and the row is read again at its retry.
+func (r *outbox) endUndelivered(ctx context.Context, row record.OutboxRow, end func(context.Context, uint64) error, line string, attributes ...any) error {
+	if r.beforeUndeliveredEnd != nil {
+		r.beforeUndeliveredEnd(row)
+	}
+	if end != nil {
+		if err := end(ctx, 0); err != nil {
+			return err
+		}
+	}
+	r.log.Info(line, attributes...)
+	return nil
 }
 
 // mergingAt reads, in one transaction, what a merge-queue row reads of its issue before it acts:

@@ -51,7 +51,7 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 	if err != nil {
 		return intake.Result{}, err
 	}
-	var owed, readOnce []string
+	var owed []BaseRead
 	for _, pr := range open {
 		if pr.BaseMoved == fact.After {
 			// The same push redelivered, or a push that returned the base to the commit the
@@ -92,15 +92,21 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 			return intake.Result{}, err
 		}
 		if read {
-			owed = append(owed, own.Issue)
-		}
-		if read && once {
-			readOnce = append(readOnce, own.Issue)
+			owed = append(owed, BaseRead{Issue: own.Issue, Once: once})
 		}
 	}
 	if len(owed) > 0 {
 		repo, base := fact.Repo, fact.Branch
-		store.OnCommit(ctx, func() { e.cfg.ReadBaseMergeStates(repo, base, owed, readOnce) })
+		store.OnCommit(ctx, func() { e.cfg.ReadBaseMergeStates(repo, base, owed) })
 	}
 	return intake.Result{}, nil
+}
+
+// BaseRead is one pull request a push to its base owes a read of GitHub's merge state
+// (Config.ReadBaseMergeStates), by its issue: Once is whether it is owed one read rather than a
+// ladder of reads (classify.MergeStateReadOnce): an issue in merging, whose head sits in the merge
+// queue, where GitHub answers `unknown`, and an `unknown` answer then asks for no more.
+type BaseRead struct {
+	Issue string
+	Once  bool
 }

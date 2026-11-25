@@ -496,9 +496,13 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 			var asked []string
 			engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3,
 				Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
-				Clock:               func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
-				ReadMergeState:      func(issue string) { asked = append(asked, issue) },
-				ReadBaseMergeStates: func(_, _ string, issues, _ []string) { asked = append(asked, issues...) }}, nil)
+				Clock:          func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
+				ReadMergeState: func(issue string) { asked = append(asked, issue) },
+				ReadBaseMergeStates: func(_, _ string, reads []BaseRead) {
+					for _, read := range reads {
+						asked = append(asked, read.Issue)
+					}
+				}}, nil)
 
 			applyFacts(t, pool, engine)("fact", tc.fact)
 			if got := len(asked) > 0; got != tc.want {

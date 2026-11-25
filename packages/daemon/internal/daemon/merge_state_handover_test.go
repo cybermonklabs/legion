@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // A head GitHub has answered for reaches its base's reads, and they read it until GitHub's answer is
@@ -284,7 +285,7 @@ func TestABasePushDuringAClimbsFirstReadKeepsItsRead(t *testing.T) {
 						}
 					}
 					// The push to main commits while the climb's first read runs.
-					w.queueBaseMergeStates("acme/widgets", "main", []string{"CAPTURE-1"}, nil)
+					w.queueBaseMergeStates("acme/widgets", "main", []workflow.BaseRead{{Issue: "CAPTURE-1"}})
 					return cleanPull
 				case read < push:
 					return cleanPull

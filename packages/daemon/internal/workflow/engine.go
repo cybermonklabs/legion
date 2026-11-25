@@ -129,12 +129,10 @@ type Config struct {
 	// line, or a review round waiting on GitHub), named
 	// all at once, so that one push makes one batch of reads of its base rather than one read of
 	// each pull request (workflowRuntime.queueBaseMergeStates, GraphQL queries of a few pull
-	// requests each, asked for by number). issues is
-	// never empty. once is those of issues owed one read rather than a ladder of reads
-	// (classify.MergeStateReadOnce): an issue in merging, whose head sits in the merge queue,
-	// where GitHub answers `unknown`, and an `unknown` answer then asks for no more. Nil asks for
-	// none, as ReadMergeState's nil does.
-	ReadBaseMergeStates func(repo, base string, issues, once []string)
+	// requests each, asked for by number). reads is never empty, one entry for each issue in the
+	// order the push's walk met them, each saying whether its issue is owed one read rather than a
+	// ladder of reads (BaseRead.Once). Nil asks for none, as ReadMergeState's nil does.
+	ReadBaseMergeStates func(repo, base string, reads []BaseRead)
 	// MergeForwardEnded is told, on the commit of a fact that may leave the merge of issue's head
 	// owed to no role any more - the merge forward landed, a move left its open ask owed to nobody,
 	// or the ask was cleared (mergeForwardEnds) - that the take hold the owed merge put on every
