@@ -447,11 +447,24 @@ func readsRelation(node documentSearchPlanNode, relation string) bool {
 // the statement answers them.
 func documentSearchRows(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string) []string {
 	t.Helper()
+	read := []string{}
+	for _, values := range runSearchStatementRows(t, ctx, database, statement, arguments, settings) {
+		read = append(read, fmt.Sprint(values...))
+	}
+	return read
+}
+
+// runSearchStatementRows runs statement bound to arguments in a transaction of its own under
+// settings, as the route runs a search's statement in the scan it opens (beginKeywordScan,
+// beginMeaningScan), and returns each row's values (rows.Values()), in the order the statement
+// answers them.
+func runSearchStatementRows(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string) [][]any {
+	t.Helper()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the read's transaction: %v", err)
+		t.Fatalf("begin the statement's transaction: %v", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	for _, setting := range settings {
 		if _, err := tx.Exec(ctx, setting); err != nil {
 			t.Fatalf("%s: %v", setting, err)
@@ -462,16 +475,16 @@ func documentSearchRows(t *testing.T, ctx context.Context, database *store.Store
 		t.Fatalf("run the statement: %v", err)
 	}
 	defer rows.Close()
-	read := []string{}
+	var read [][]any
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
 			t.Fatalf("read a row: %v", err)
 		}
-		read = append(read, fmt.Sprint(values...))
+		read = append(read, values)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate the statement: %v", err)
+		t.Fatalf("read the statement's rows: %v", err)
 	}
 	return read
 }

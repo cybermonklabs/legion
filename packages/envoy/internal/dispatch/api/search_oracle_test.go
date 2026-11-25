@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -2047,49 +2049,40 @@ type searchAnswer struct {
 	items            []string
 }
 
-// readSearchAnswer runs statement bound to arguments in a transaction of its own under settings,
-// as the route runs a search's statement in the scan it opens (beginKeywordScan,
-// beginMeaningScan), and reads its answer. A page past the last row is one row of totals and no
-// item.
+// readSearchAnswer runs statement bound to arguments under settings (runSearchStatementRows) and
+// reads its answer. A page past the last row is one row of totals and no item.
 func readSearchAnswer(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string) searchAnswer {
 	t.Helper()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the search's transaction: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	for _, setting := range settings {
-		if _, err := tx.Exec(ctx, setting); err != nil {
-			t.Fatalf("%s: %v", setting, err)
-		}
-	}
-	rows, err := tx.Query(ctx, statement, arguments...)
-	if err != nil {
-		t.Fatalf("run the statement: %v", err)
-	}
-	defer rows.Close()
 	answer := searchAnswer{rows: []string{}}
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			t.Fatalf("read a row: %v", err)
-		}
+	for _, values := range runSearchStatementRows(t, ctx, database, statement, arguments, settings) {
 		answer.rows = append(answer.rows, fmt.Sprint(values...))
 		// The columns scanSearchRows reads: the totals first, the kind third and the id fifteenth.
-		var kind, id *string
-		columns := make([]any, len(values))
-		columns[0], columns[1], columns[2], columns[14] = &answer.total, &answer.reachable, &kind, &id
-		if err := rows.Scan(columns...); err != nil {
-			t.Fatalf("scan a row: %v", err)
+		// The kind and the id are text, and both are null on a page past the last row.
+		answer.total, answer.reachable = searchAnswerCount(t, values[0]), searchAnswerCount(t, values[1])
+		if kind := values[2]; kind != nil {
+			answer.items = append(answer.items, kind.(string)+"/"+values[14].(string))
 		}
-		if kind != nil {
-			answer.items = append(answer.items, *kind+"/"+*id)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the statement's rows: %v", err)
 	}
 	return answer
+}
+
+// searchAnswerCount is a total or a reachable as rows.Values() gives it: an int64 where the
+// statement counts with count(*), and a pgtype.Numeric where it sums counts, as the keyword
+// statement's total does (coalesce(sum(matches), 0)). Either is a whole number.
+func searchAnswerCount(t *testing.T, value any) int64 {
+	t.Helper()
+	switch count := value.(type) {
+	case int64:
+		return count
+	case pgtype.Numeric:
+		whole, err := count.Int64Value()
+		if err != nil || !whole.Valid {
+			t.Fatalf("read the count %v as a whole number: %v", value, err)
+		}
+		return whole.Int64
+	}
+	t.Fatalf("a count of type %T, neither bigint nor numeric", value)
+	return 0
 }
 
 // TestSearchAnswersMainsRowsOrderTotalAndReachable holds R3: each keyword arm ranks and counts

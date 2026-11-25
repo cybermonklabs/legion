@@ -35,12 +35,7 @@ var touchedTablePatterns = []struct {
 	{regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?([\w."]+)`), 0},
 	{regexp.MustCompile(`(?is)\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:(?:if\s+not\s+exists\s+)?[\w."]+\s+)?on\s+(?:only\s+)?([\w."]+)`), 0},
 	{regexp.MustCompile(`(?is)\bdrop\s+table\s+(?:if\s+exists\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), dropsTable},
-	// A truncate statement's first table is never the keyword on or or. Each follows the truncate
-	// event of a create trigger (create trigger x after truncate on t …, after truncate or insert
-	// on t …), a statement that truncates nothing and whose table the create trigger form below
-	// reads; each is a reserved word, so no unquoted table bears it. Go's regexp has no lookahead,
-	// so the first name is spelled out by its first two characters.
-	{regexp.MustCompile(`(?is)\btruncate\s+(?:table\s+)?(?:only\s+)?((?:[^\Wo]|[."]|o\b|o[^\Wnr]|o[nr][\w."])[\w."]*(?:\s*,\s*[\w."]+)*)`), truncatesRows},
+	{truncatePattern, truncatesRows},
 	{regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:constraint\s+)?trigger\s+[\w."]+.*?\bon\s+([\w."]+)`), 0},
 	// drop trigger names its table where create trigger does, and both are counted as touches:
 	// drop trigger takes ACCESS EXCLUSIVE on that table, create trigger SHARE ROW EXCLUSIVE.
@@ -59,6 +54,10 @@ var touchedTablePatterns = []struct {
 }
 
 var referencesPattern = regexp.MustCompile(`(?is)\breferences\s+(?:only\s+)?([\w."]+)`)
+
+// truncatePattern is the truncate statement's form. It also matches a create trigger's truncate
+// event, whose first name is on or or, and matchedNames passes over that match.
+var truncatePattern = regexp.MustCompile(`(?is)\btruncate\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`)
 
 var touchedIndexPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?is)\bdrop\s+index\s+(?:concurrently\s+)?(?:if\s+exists\s+)?([\w."]+)`),
@@ -147,7 +146,18 @@ func indexMatches(code string) []matchedName {
 func matchedNames(code string, pattern *regexp.Regexp) []matchedName {
 	var names []matchedName
 	for _, match := range pattern.FindAllStringSubmatchIndex(code, -1) {
-		for _, raw := range strings.Split(code[match[2]:match[3]], ",") {
+		raws := strings.Split(code[match[2]:match[3]], ",")
+		// A truncate match whose first name is on or or is a create trigger's truncate event
+		// (create trigger x after truncate on t …, after insert or truncate or update on t …), a
+		// statement that truncates nothing and whose table the create trigger form reads. Unquoted,
+		// on and or are reserved words, so no unquoted table bears either; the first name is read
+		// before its quotes are stripped, since a quoted "on" or "or" is still a table.
+		if pattern == truncatePattern {
+			if first := strings.ToLower(strings.TrimSpace(raws[0])); first == "on" || first == "or" {
+				continue
+			}
+		}
+		for _, raw := range raws {
 			name := strings.ToLower(strings.Trim(strings.TrimSpace(raw), `"`))
 			name = strings.TrimPrefix(name, "public.")
 			if name != "" {

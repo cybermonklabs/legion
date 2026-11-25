@@ -110,12 +110,43 @@ func (r *seedRun) writeEmbeddings(ctx context.Context) error {
 	return nil
 }
 
-// windowKinds is the embeddings kind of the windows of each kind of row meaning search embeds in
-// windows of its blocks rather than whole, in the order embeddedRows takes them: a document's,
-// an ask's, a comment's and a message's. refs.WindowKinds is the same kinds as a literal SQL list,
-// the list embeddings_window_owner's partial predicate names (migration 20261102233630).
-var windowKinds = []string{
-	refs.DocumentWindowKind, refs.ItemAsk.WindowKind(), refs.ItemComment.WindowKind(), refs.ItemMessage.WindowKind(),
+// windowedKinds is each kind of row meaning search embeds in windows of its blocks rather than
+// whole, in the order embeddedRows takes them: a document's, an ask's, a comment's and a
+// message's. Each holds the embeddings kind of its windows, how many rows of the kind the plan
+// holds, and the owner key of the plan's row at an index, which each of that row's windows' ids
+// begins with (refs.writeWindows). refs.WindowKinds is the same kinds as a literal SQL list, the
+// list embeddings_window_owner's partial predicate names (migration 20261102233630).
+var windowedKinds = []struct {
+	kind  string
+	count func(plan *seedPlan) int
+	owner func(plan *seedPlan, index int) string
+}{
+	{
+		refs.DocumentWindowKind,
+		func(plan *seedPlan) int { return len(plan.documents) },
+		func(plan *seedPlan, index int) string { return plan.documents[index].ID },
+	},
+	{
+		refs.ItemAsk.WindowKind(),
+		func(plan *seedPlan) int { return len(plan.asks) },
+		func(plan *seedPlan, index int) string {
+			return refs.ItemAsk.WindowOwnerKey(plan.asks[index].ID)
+		},
+	},
+	{
+		refs.ItemComment.WindowKind(),
+		func(plan *seedPlan) int { return len(plan.comments) },
+		func(plan *seedPlan, index int) string {
+			return refs.ItemComment.WindowOwnerKey(plan.comments[index].ID)
+		},
+	},
+	{
+		refs.ItemMessage.WindowKind(),
+		func(plan *seedPlan) int { return len(plan.messages) },
+		func(plan *seedPlan, index int) string {
+			return refs.ItemMessage.WindowOwnerKey(plan.messages[index].ID)
+		},
+	},
 }
 
 // embeddedRows is every (kind, id) that gets a vector, in the order the vectors are drawn: every
@@ -138,22 +169,12 @@ func (r *seedRun) embeddedRows(ctx context.Context) (kinds, ids []string, err er
 		ids = append(ids, r.plan.issues[index].Key)
 	}
 	var ownerKinds, owners []string
-	add := func(kind string, count int, owner func(int) string) {
-		for index := 0; index < count; index += 2 {
-			ownerKinds = append(ownerKinds, kind)
-			owners = append(owners, owner(index))
+	for _, windowed := range windowedKinds {
+		for index := 0; index < windowed.count(r.plan); index += 2 {
+			ownerKinds = append(ownerKinds, windowed.kind)
+			owners = append(owners, windowed.owner(r.plan, index))
 		}
 	}
-	add(refs.DocumentWindowKind, len(r.plan.documents), func(index int) string { return r.plan.documents[index].ID })
-	add(refs.ItemAsk.WindowKind(), len(r.plan.asks), func(index int) string {
-		return refs.ItemAsk.WindowOwnerKey(r.plan.asks[index].ID)
-	})
-	add(refs.ItemComment.WindowKind(), len(r.plan.comments), func(index int) string {
-		return refs.ItemComment.WindowOwnerKey(r.plan.comments[index].ID)
-	})
-	add(refs.ItemMessage.WindowKind(), len(r.plan.messages), func(index int) string {
-		return refs.ItemMessage.WindowOwnerKey(r.plan.messages[index].ID)
-	})
 	// A window's id is "<owner key>#<its first block>" (refs.writeWindows). The first window of
 	// every owner is read in one pass over the window rows and joined to the owners the rule takes.
 	// A probe for each owner's first window by id (order by id limit 1) is one the planner answers

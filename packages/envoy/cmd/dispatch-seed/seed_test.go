@@ -188,30 +188,22 @@ func TestSeedAtASmallScale(t *testing.T) {
 // assertWindowVectors holds the vectors of the four window kinds to the seed's rule
 // (embeddedRows): for every other document, ask, comment and message in plan order, its first
 // window by id holds a vector and its other windows hold none, and no window of any other owner
-// holds one. It reads which owners the rule takes from the plan, not from embeddedRows, so it
-// holds the rule rather than restating the code. Each kind must hold windows with a vector, since
-// a kind with none leaves its window arm of meaning search reading nothing on a seeded database;
-// the counts are logged for that reason.
+// holds one. It reads the kinds and each plan row's owner key from windowedKinds, and which owners
+// the rule takes from the plan, not from embeddedRows, so it holds the rule rather than restating
+// the code. Each kind must hold windows with a vector, since a kind with none leaves its window
+// arm of meaning search reading nothing on a seeded database; the counts are logged for that
+// reason.
 func assertWindowVectors(t *testing.T, database *store.Store, run *seedRun) {
 	t.Helper()
 	// taken is, for each window kind, every owner key of the plan and whether the rule takes it.
 	taken := map[string]map[string]bool{}
-	take := func(kind string, count int, owner func(int) string) {
-		taken[kind] = make(map[string]bool, count)
+	for _, windowed := range windowedKinds {
+		count := windowed.count(run.plan)
+		taken[windowed.kind] = make(map[string]bool, count)
 		for index := range count {
-			taken[kind][owner(index)] = index%2 == 0
+			taken[windowed.kind][windowed.owner(run.plan, index)] = index%2 == 0
 		}
 	}
-	take(refs.DocumentWindowKind, len(run.plan.documents), func(index int) string { return run.plan.documents[index].ID })
-	take(refs.ItemAsk.WindowKind(), len(run.plan.asks), func(index int) string {
-		return refs.ItemAsk.WindowOwnerKey(run.plan.asks[index].ID)
-	})
-	take(refs.ItemComment.WindowKind(), len(run.plan.comments), func(index int) string {
-		return refs.ItemComment.WindowOwnerKey(run.plan.comments[index].ID)
-	})
-	take(refs.ItemMessage.WindowKind(), len(run.plan.messages), func(index int) string {
-		return refs.ItemMessage.WindowOwnerKey(run.plan.messages[index].ID)
-	})
 
 	rows, err := database.Pool.Query(context.Background(), `
 		select kind, split_part(id, '#', 1), count(*), min(id),
@@ -257,7 +249,8 @@ func assertWindowVectors(t *testing.T, database *store.Store, run *seedRun) {
 	if len(wrong) > 0 {
 		t.Errorf("%d owners' windows break the rule, the first few: %v", len(wrong), wrong[:min(5, len(wrong))])
 	}
-	for _, kind := range windowKinds {
+	for _, windowed := range windowedKinds {
+		kind := windowed.kind
 		counted := tallies[kind]
 		if counted == nil || counted.embedded == 0 {
 			t.Errorf("no %s window holds a vector, so meaning search's %s arm reads nothing on a seeded database", kind, kind)
