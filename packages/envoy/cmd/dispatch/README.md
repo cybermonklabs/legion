@@ -5336,13 +5336,29 @@ Each item below names a path with its method and identity, then its purpose.
   A quote mark carries the ask's id and who asked, which no rendering shows and every load of the document builds:
   the marks a document's comments, suggestions and asks hold on its text carry at most 1 MiB of ids and authors, and a quote anchor that would leave them past it and carrying more is `413 CAP_EXCEEDED`, naming the bound and both sizes.
 
-- `/api/v1/issues/{key}/asks?state=&thread=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/asks?state=&thread=&order=&limit=&before=&author=` (GET; cookie, trusted header, or bearer)
 
   List an issue's asks, open and/or answered (`state`: `all` default, `open`, or `answered`).
   Each row carries `last_reply`, the newest comment in the ask's thread or null.
   `thread=1` adds `thread`, its `replies`, `edits`, `answers` and `followers`, batched over the list so no card fetches its own;
   without it no `thread` is returned, which is what the readers that render the ask alone want from this unpaged list.
   Any other `thread` value is `400 INVALID_ASK_THREAD`.
+  `order=activity` answers one page of the issue's threads in place of the list, `{threads, before, remaining}`: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first.
+  An ask's thread is the ask, each comment whose `ask_id` names it, and the answer and the resolution the ask holds now (a person's decline among them), each written by its actor at its own `at`;
+  an answer or a resolution a later one replaced is no entry.
+  Its row is the list's row with `last_activity_at`, and `state` and `thread=1` filter and shape the page as they filter and shape the list.
+  A row's `last_activity_at` is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits, such as `2026-11-23T22:34:52.010780Z`;
+  a deleted entry counts and an edit does not.
+  `limit` is how many threads a page holds at most, an integer from 1 to 100, and 20 without it.
+  `before` is the position of the page's last thread, `<last_activity_at>,<id>`, and null when no thread follows;
+  `?before=` with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it.
+  `remaining` is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when `before` is null.
+  `author` keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly;
+  `remaining` counts under it.
+  The route takes no `person`.
+  Without `order` the route answers its list.
+  Each refusal is `400 INVALID_QUERY`, names the parameter and the values it takes, and answers no thread:
+  `limit`, `before`, `author` or `person` without `order=activity`, an `order` other than `activity`, a `limit` that is not an integer from 1 to 100, a `before` that is not a position this API wrote, an empty `author`, a `person` value the route does not take, and any of `order`, `limit`, `before`, `author` and `person` given twice.
 
 - `/api/v1/asks/{id}` (GET; cookie, trusted header, or bearer)
 
@@ -5413,9 +5429,27 @@ Each item below names a path with its method and identity, then its purpose.
   The whole resolution rides `ask.resolved` to every session following the ask, and a write that opens another question on the issue is answered the issue's `declined_asks`.
   `GET /api/v1/agents/{session_id}/answers` lists the decline under the relation `declined_your_ask` for the ask's author and its followers, and under `declined_an_ask`, without Dispatch's sentences, for any other session it reached.
 
-- `/api/v1/issues/{key}/comments?artifact=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/comments?artifact=&order=&limit=&before=&author=&person=` (GET; cookie, trusted header, or bearer)
 
   List comments, optionally limited to an artifact ID.
+  `order=activity` answers one page of the issue's threads in place of the list, `{threads, before, remaining}`: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first.
+  A comment thread is a comment with no `reply_to` and no `ask_id`, and each comment whose `reply_to` names it;
+  its row is `{comment, replies, last_activity_at}`, the replies oldest first, each shaped as the list shapes it.
+  A comment with an `ask_id` is an entry of its ask's thread on `GET /api/v1/issues/{key}/asks`, and of no comment thread.
+  A row's `last_activity_at` is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits;
+  a deleted entry counts and an edit does not.
+  `limit` is how many threads a page holds at most, an integer from 1 to 100, and 20 without it.
+  `before` is the position of the page's last thread, `<last_activity_at>,<id>`, and null when no thread follows;
+  `?before=` with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it.
+  `remaining` is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when `before` is null.
+  `author` keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly;
+  `remaining` counts under it.
+  `person=in` keeps each thread with an entry a person wrote, and each thread on text, whoever wrote it: its first comment has an anchor, or one of its comments is a reply that stores a `quote`;
+  the route takes no other `person` value.
+  With `order=activity`, `artifact` keeps each thread whose first comment is anchored in that document, with all its replies, and the page's ETag hashes every parameter of the request, `If-None-Match` answering `304` as for the list.
+  Without `order` the route answers its list.
+  Each refusal is `400 INVALID_QUERY`, names the parameter and the values it takes, and answers no thread:
+  `limit`, `before`, `author` or `person` without `order=activity`, an `order` other than `activity`, a `limit` that is not an integer from 1 to 100, a `before` that is not a position this API wrote, an empty `author`, a `person` value the route does not take, and any of `order`, `limit`, `before`, `author` and `person` given twice.
 
 - `/api/v1/issues/{key}/comments` (POST; cookie, trusted header, or bearer)
 
@@ -5508,10 +5542,26 @@ Each item below names a path with its method and identity, then its purpose.
   An `in_reply_to` naming a message its author deleted is `409 POST_DELETED`, as a `reply_to` naming a deleted comment is;
   a reply written before the delete keeps its text and its place.
 
-- `/api/v1/issues/{key}/messages` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/messages?order=&limit=&before=&author=&person=` (GET; cookie, trusted header, or bearer)
 
   List an issue's message threads: every root message, oldest first, unpaged, each with its delivery attempts and its replies.
   Every message a route or event returns carries `reply_block`, the block of the message it answers, as a comment does.
+  `order=activity` answers one page of the issue's threads in place of the list, `{threads, before, remaining}`: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first.
+  A message thread is a root message and every message under it at any depth, and its row is the list's row with `last_activity_at`.
+  A row's `last_activity_at` is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits;
+  a deleted entry counts and an edit does not.
+  `limit` is how many threads a page holds at most, an integer from 1 to 100, and 20 without it.
+  `before` is the position of the page's last thread, `<last_activity_at>,<id>`, and null when no thread follows;
+  `?before=` with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it.
+  `remaining` is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when `before` is null.
+  `author` keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly;
+  `remaining` counts under it.
+  `person=in` keeps each thread with an entry a person wrote, and each thread whose root has no target;
+  `person=none` keeps each thread whose root targets an agent, as `role:<name>` or `session:<id>`, and that holds no entry a person wrote.
+  Neither value holds a thread whose root the Legion daemon of the issue's project wrote, the session `legion-daemon:<PROJECT>` (`legion-daemon:ACME` on an `ACME` issue), whoever wrote its other entries, so each other thread is on the pages of exactly one of the two.
+  Without `order` the route answers its list.
+  Each refusal is `400 INVALID_QUERY`, names the parameter and the values it takes, and answers no thread:
+  `limit`, `before`, `author` or `person` without `order=activity`, an `order` other than `activity`, a `limit` that is not an integer from 1 to 100, a `before` that is not a position this API wrote, an empty `author`, a `person` value the route does not take, and any of `order`, `limit`, `before`, `author` and `person` given twice.
 
 - `/api/v1/messages/{id}/blocks` (GET; cookie, trusted header, or bearer)
 

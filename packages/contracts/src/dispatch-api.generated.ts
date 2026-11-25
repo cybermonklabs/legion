@@ -1538,7 +1538,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder). */
+    /** @description List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder). ?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. An ask's thread is the ask, each comment whose ask_id names it, and the answer and the resolution the ask holds now (a person's decline among them), each written by its actor at its own at; an answer or a resolution a later one replaced is no entry. Its row is the list's row with last_activity_at, and ?state= and ?thread=1 filter and shape the page as they filter and shape the list. A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to 100, and 20 without it. before is the position of the page's last thread, <last_activity_at>,<id>, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. The route takes no ?person=. Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to 100, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice. */
     get: operations["getApiV1IssuesByKeyAsks"];
     put?: never;
     /** @description Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. */
@@ -1591,7 +1591,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
+    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. ?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. A comment thread is a comment with no reply_to and no ask_id, and each comment whose reply_to names it; its row is {comment, replies, last_activity_at}, the replies oldest first, each shaped as the list shapes it. A comment with an ask_id is an entry of its ask's thread on GET /api/v1/issues/{key}/asks, and of no comment thread. A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to 100, and 20 without it. before is the position of the page's last thread, <last_activity_at>,<id>, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. ?person=in keeps each thread with an entry a person wrote, and each thread on text, whoever wrote it: its first comment has an anchor, or one of its comments is a reply that stores a quote; the route takes no other person value. With ?order=activity, ?artifact= keeps each thread whose first comment is anchored in that document, with all its replies, and the page's ETag hashes every parameter of the request, If-None-Match answering 304 as for the list. Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to 100, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
     /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. Beside reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_COMMENT, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. */
@@ -1745,7 +1745,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's message threads: every root message, oldest first, each with its deliveries and its replies. */
+    /** @description List an issue's message threads: every root message, oldest first, each with its deliveries and its replies. ?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. A message thread is a root message and every message under it at any depth, and its row is the list's row with last_activity_at. A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to 100, and 20 without it. before is the position of the page's last thread, <last_activity_at>,<id>, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. ?person=in keeps each thread with an entry a person wrote, and each thread whose root has no target; ?person=none keeps each thread whose root targets an agent, as role:<name> or session:<id>, and that holds no entry a person wrote. Neither value holds a thread whose root the Legion daemon of the issue's project wrote, the session legion-daemon:<PROJECT> (legion-daemon:ACME on an ACME issue), whoever wrote its other entries, so each other thread is on the pages of exactly one of the two. Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to 100, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice. */
     get: operations["getApiV1IssuesByKeyMessages"];
     put?: never;
     /** @description Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. Beside in_reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without in_reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_MESSAGE, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS. A reply to a deleted message is 409 POST_DELETED: a withdrawn post takes no new text. */
@@ -3946,6 +3946,54 @@ export interface components {
       route_status: null | string;
       route_status_reason: null | string;
     };
+    AskThreadPage: {
+      before: null | string;
+      remaining: number;
+      threads: components["schemas"]["AskThreadRow"][] | null;
+    };
+    AskThreadRow: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
+      approval?: components["schemas"]["AskApproval"];
+      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
+      artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
+      author: components["schemas"]["Actor"];
+      block_artifact?: components["schemas"]["AskBlockArtifact"];
+      block_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      edited_at: null | string;
+      id: string;
+      issue_key: null | string;
+      kind: string;
+      last_activity_at: string;
+      last_reply: components["schemas"]["AskLastReply"] | null;
+      multiple: boolean;
+      opened_event_id?: number;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
+      question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      referenced_by_count?: number;
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
+      revision?: number;
+      state: string;
+      thread?: components["schemas"]["AskThread"];
+      urgency: string;
+      waiting_on?: string;
+      waiting_on_person?: string;
+    };
     AskWithTrees: {
       anchor: components["schemas"]["Anchor"] | null;
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
@@ -4337,6 +4385,16 @@ export interface components {
       quote?: null | string;
       reply_to_block?: null | string;
       target?: null | string;
+    };
+    CommentThreadPage: {
+      before: null | string;
+      remaining: number;
+      threads: components["schemas"]["CommentThreadRow"][] | null;
+    };
+    CommentThreadRow: {
+      comment: components["schemas"]["CommentWithTrees"];
+      last_activity_at: string;
+      replies: components["schemas"]["CommentWithTrees"][] | null;
     };
     CommentWithTrees: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -6021,6 +6079,17 @@ export interface components {
       issue_key: null | string;
       reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       target: null | string;
+    };
+    MessageThreadPage: {
+      before: null | string;
+      remaining: number;
+      threads: components["schemas"]["MessageThreadRow"][] | null;
+    };
+    MessageThreadRow: {
+      last_activity_at: string;
+      message: components["schemas"]["MessageWithTrees"];
+      replies: components["schemas"]["MessageWithTrees"][] | null;
+      unread?: boolean;
     };
     MessageWithTrees: {
       author: components["schemas"]["Actor"];
@@ -11211,6 +11280,10 @@ export interface operations {
       query?: {
         state?: string;
         thread?: "1";
+        order?: "activity";
+        limit?: number;
+        before?: string;
+        author?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -11228,7 +11301,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["IssueAskRow"][];
+          "application/json":
+            | components["schemas"]["IssueAskRow"][]
+            | components["schemas"]["AskThreadPage"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11418,6 +11493,11 @@ export interface operations {
     parameters: {
       query?: {
         artifact?: string;
+        order?: "activity";
+        limit?: number;
+        before?: string;
+        author?: string;
+        person?: "in";
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -11435,7 +11515,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["CommentWithTrees"][];
+          "application/json":
+            | components["schemas"]["CommentWithTrees"][]
+            | components["schemas"]["CommentThreadPage"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11779,6 +11861,11 @@ export interface operations {
   getApiV1IssuesByKeyMessages: {
     parameters: {
       query?: {
+        order?: "activity";
+        limit?: number;
+        before?: string;
+        author?: string;
+        person?: "in" | "none";
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -11796,7 +11883,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["MessageRead"][];
+          "application/json":
+            | components["schemas"]["MessageRead"][]
+            | components["schemas"]["MessageThreadPage"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15835,6 +15924,8 @@ export type AskResolutionWithTrees = components["schemas"]["AskResolutionWithTre
 export type AskSnooze = components["schemas"]["AskSnooze"];
 export type AskSnoozeInput = components["schemas"]["AskSnoozeInput"];
 export type AskThread = components["schemas"]["AskThread"];
+export type AskThreadPage = components["schemas"]["AskThreadPage"];
+export type AskThreadRow = components["schemas"]["AskThreadRow"];
 export type AskWithTrees = components["schemas"]["AskWithTrees"];
 export type BasisLearnedAt = components["schemas"]["BasisLearnedAt"];
 export type BlockAttributeValue = components["schemas"]["BlockAttributeValue"];
@@ -15871,6 +15962,8 @@ export type CommentDelivery = components["schemas"]["CommentDelivery"];
 export type CommentMention = components["schemas"]["CommentMention"];
 export type CommentRead = components["schemas"]["CommentRead"];
 export type CommentReplyInput = components["schemas"]["CommentReplyInput"];
+export type CommentThreadPage = components["schemas"]["CommentThreadPage"];
+export type CommentThreadRow = components["schemas"]["CommentThreadRow"];
 export type CommentWithTrees = components["schemas"]["CommentWithTrees"];
 export type CommentWriteResponse = components["schemas"]["CommentWriteResponse"];
 export type CreateAgentMessageInput = components["schemas"]["CreateAgentMessageInput"];
@@ -16050,6 +16143,8 @@ export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageRead = components["schemas"]["MessageRead"];
 export type MessageReplyInput = components["schemas"]["MessageReplyInput"];
 export type MessageReplyResult = components["schemas"]["MessageReplyResult"];
+export type MessageThreadPage = components["schemas"]["MessageThreadPage"];
+export type MessageThreadRow = components["schemas"]["MessageThreadRow"];
 export type MessageWithTrees = components["schemas"]["MessageWithTrees"];
 export type MovedApprovalDocument = components["schemas"]["MovedApprovalDocument"];
 export type MovedApprovalRequest = components["schemas"]["MovedApprovalRequest"];

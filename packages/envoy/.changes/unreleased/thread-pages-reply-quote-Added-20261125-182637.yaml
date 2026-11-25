@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  `GET /api/v1/issues/{key}/comments`, `/messages` and `/asks` take `order=activity` and then
+  answer one page of the issue's threads, `{threads, before, remaining}`, the newest last activity
+  first, each row the list's row with `last_activity_at`. `limit` is 1 to 100, 20 without it;
+  `before` reads the page after the last thread's position, and `remaining` counts the threads
+  after the page under the same filters. `author` keeps the threads an actor wrote in. On comments,
+  `person=in` keeps the threads a person wrote in and the threads on text; on messages,
+  `person=in` and `person=none` split the threads a person is in from the threads between agents,
+  and neither holds a thread the Legion daemon of the issue's project began. A query the page
+  cannot answer exactly is `400 INVALID_QUERY`, naming the parameter and its values. Without
+  `order` each route answers its list as it did. A reply to a block, on the six routes that take
+  `reply_to_block` or `in_reply_to_block`, also takes `quote` and `occurrence`, the words of that
+  block it quotes in the block's plain text and which of their matches they are: the reply stores
+  both, and each answer and event that carries its `reply_block` carries them, except an answer,
+  or an event written, after the answered post's delete. A quote the block does not hold is
+  `404 TARGET_NOT_FOUND`, and one it holds more than once with no `occurrence` is
+  `409 TARGET_AMBIGUOUS`.
+time: 2026-11-25T18:26:37Z
+custom:
+    Issue: thread-pages-reply-quote
