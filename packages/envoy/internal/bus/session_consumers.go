@@ -872,6 +872,25 @@ func (s *SessionConsumers) Info(ctx context.Context, sessionID string) (*jetstre
 	return s.info(ctx, name)
 }
 
+// consumerGrantProbe is the session whose consumer ProbeConsumerCalls reads: an id no session
+// registers under, so a server that lets the read through answers that no such consumer exists.
+const consumerGrantProbe = "envoy-consumer-grant-probe"
+
+// ProbeConsumerCalls asks the server whether the connection's NATS user may make the session
+// consumers' calls, by one CONSUMER.INFO of a consumer no session has (consumerGrantProbe): nil
+// when the server answered, found or not; its refusal under the user's grant, which wraps
+// ErrConsumerNotGranted and ErrPublishDenied; or the read's own failure. Dispatch's user and a
+// host's hold none of these calls (natsgrant.Dispatch, natsgrant.Host), so this is how a listener
+// running as either learns it from the server rather than from its own name. A takeover pass's
+// first read of a record is the same call on the previous holder's consumer
+// (Client.SessionReadFloor), so the listener asks this before it runs any pass.
+func (s *SessionConsumers) ProbeConsumerCalls(ctx context.Context) error {
+	if _, err := s.Info(ctx, consumerGrantProbe); err != nil && !errors.Is(err, ErrSessionConsumerNotFound) {
+		return err
+	}
+	return nil
+}
+
 // ListSessionConsumers reads every session consumer the stream holds, by session id, with the
 // paged consumer list ($JS.API.CONSUMER.LIST; nats-server v2.10.29 answers 256 consumers a page),
 // so a listener that starts relaying every session at once reads them in a few requests rather

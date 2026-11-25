@@ -321,7 +321,11 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	if err != nil {
 		return err
 	}
-	write := stepWrite(issue, step.place, step.role, step.typ, start.Agent, start.Starts)
+	drawn, err := e.variantOf(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	write := stepWrite(issue, drawn, step.place, step.role, step.typ, start.Agent, start.Starts)
 	write.PlanRating = &rating
 	return e.enqueue(ctx, tx, issue.Key, write)
 }

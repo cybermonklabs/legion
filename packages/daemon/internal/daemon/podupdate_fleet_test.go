@@ -541,6 +541,9 @@ func (d *fleetHandoffs) PutStep(context.Context, string, string, dispatch.StepWr
 func (d *fleetHandoffs) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *fleetHandoffs) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *fleetHandoffs) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
