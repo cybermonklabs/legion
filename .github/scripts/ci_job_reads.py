@@ -466,6 +466,22 @@ TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 E2E_LIB_TESTS = "bun run test:e2e-lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
 
 
+def dispatch_api_types(step):
+    """What a typecheck that compiles packages/contracts/src/dispatch-api.generated.ts reads in its
+    place: git ignores that module, and the job's own `bun install` renders it (the root
+    package.json's postinstall runs packages/contracts/scripts/gen-api.ts over the OpenAPI
+    document), so a change to either file changes what `step` compiles, and no change carries the
+    module itself. ci_ts_listing.py's RENDERED lists the same two files in the module's place, so
+    check-ts-filters.sh holds the gate's filter to them."""
+    return reads(
+        ("packages/contracts/schemas/dispatch-openapi.json",
+         f"{step} compiles packages/contracts/src/dispatch-api.generated.ts, which the job's bun install renders "
+         "from this document (package.json postinstall)"),
+        ("packages/contracts/scripts/gen-api.ts",
+         f"the job's bun install runs it (package.json postinstall) to render the module {step} compiles"),
+    )
+
+
 def envoy_client_dep(why):
     """The reads of a gate whose job compiles @legion/envoy-client: that package's sources, and
     packages/cipher-client's with them. envoy-client's src/broker-credential.ts imports

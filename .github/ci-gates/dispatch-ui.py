@@ -44,7 +44,7 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
                      "above import, and `packages/dispatch/e2e/read-token-live.ts#brokerCredential` imports "
                      "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
                      "(check-ts-filters.sh measures it)")
-  + bun_job("dispatch-ui"))
+  + dispatch_api_types(at("dispatch-ui", "Typecheck dispatch dashboard")) + bun_job("dispatch-ui"))
 GATE = with_reads(GATE, [
     Read('packages/envoy-client/test/**', "filter dispatch_ui held packages/envoy-client/test/** by hand before the filters were computed: it selected 10 file(s) no other read of this gate declares"),
 ])

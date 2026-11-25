@@ -253,14 +253,23 @@ src/dispatch-href.test.ts's "the Go reader's table is the same table" and src/di
 Not pmdoc/schema, the block schema those generated types are the shape of:
 this job generates that Go from packages/contracts/schemas, and reads no file of pmdoc/schema itself.
 
-## contracts: `bun run check:api` renders schemas/dispatch-openapi.json into
+## dispatch_api_types: The two files the Dispatch API types are rendered from
 
-`bun run check:api` renders schemas/dispatch-openapi.json into
-src/dispatch-api.generated.ts and compares, and reads no Go at all
-(`packages/contracts/scripts/gen-api.ts#schemaFile`), so the Go that document is emitted from is not named here:
-a change to it is judged by envoy-go-build's `openapi --check`, whose filter
-(envoy_go_build) selects both that Go and this document, so either one alone
-starts the job.
+packages/contracts/src/dispatch-api.generated.ts, the Dispatch API's TypeScript types,
+is in no commit: every `bun install` renders it from schemas/dispatch-openapi.json
+with scripts/gen-api.ts (the root package.json's postinstall), and so does the
+`typecheck` script of each package that compiles it, so two pull requests
+that each add a route never edit one generated file; every CI typecheck runs after
+the job's install. Only a type check reads it:
+dispatch-api.ts re-exports it with `export type *` and every other import of it is
+an `import type`, so Bun, `bun build`, Vite and Astro erase each of them. A change
+to what a typecheck compiles there is a change to one of those two files, so the gate
+of every job whose tsc program holds the module declares both
+(`.github/scripts/ci_job_reads.py#dispatch_api_types`), and the listing of a program gives the two
+in the module's place (`.github/scripts/ci_ts_listing.py#RENDERED`), so check-ts-filters.sh holds each
+gate to them. The contracts gate takes the whole package. The Go the document is
+emitted from is not named here: a change to it is judged by envoy-go-build's
+`openapi --check`, whose gate declares both that Go and the document.
 
 ## guide_layout_files: The six guides scripts/semantic-line-breaks.guides.test.ts reads, the checker it
 
