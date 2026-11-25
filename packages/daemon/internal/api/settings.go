@@ -69,6 +69,10 @@ type Settings struct {
 	NatsURLs             []string `json:"nats_urls"`
 	// DispatchURL is absent while the file sets none.
 	DispatchURL string `json:"dispatch_url,omitempty"`
+	// NotificationStreamMaxAgeHours is `notification_stream_max_age_hours`, a decimal number of
+	// hours, 0 for `unlimited`; absent while the file sets no dispatch_url, since only the
+	// workflow's intake reads it.
+	NotificationStreamMaxAgeHours *float64 `json:"notification_stream_max_age_hours,omitempty"`
 	// Projects is `{}` while the file declares none.
 	Projects map[string]ProjectSettings `json:"projects"`
 	Gates    GatesSettings              `json:"gates"`
@@ -587,6 +591,10 @@ func SettingsOf(cfg config.Config) Settings {
 	}
 	for i, raw := range cfg.NatsURLs {
 		settings.NatsURLs[i] = endpointOf(raw)
+	}
+	if cfg.DispatchURL != "" {
+		hours := cfg.NotificationStreamMaxAge.Hours()
+		settings.NotificationStreamMaxAgeHours = &hours
 	}
 	for key, project := range cfg.Projects {
 		entry := ProjectSettings{

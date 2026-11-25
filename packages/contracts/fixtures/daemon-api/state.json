@@ -1062,6 +1062,7 @@
       "nats://nats-2.internal.example:4222"
     ],
     "dispatch_url": "https://dispatch.internal.example",
+    "notification_stream_max_age_hours": 72,
     "projects": {
       "LEGION": {
         "slack_channels": [
