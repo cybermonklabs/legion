@@ -4948,3 +4948,106 @@ test("Tab from a row's editor stops at the references button of the node's own b
     }
   );
 });
+
+// The tester's red row of round 18 (6ddbadd7's reads that hold write controls, bounded at the
+// request deadline, and read-bound.ts's "The page shows it beside the sentence it shows for a
+// read that failed"). Inside `NoTooltips` Rebuild is held through the read its landed rebuild
+// makes and lets go at the deadline where that read has not settled (`readWithinBound`,
+// ProofDocument.tsx), but at a97f63a2 the page says nothing of why: the offer stands as it stood
+// before the press, with Rebuild pressable again, where the Legion daemons' Save and Remove and a
+// document's Remove say why (`useReadBound`). Measured in Chromium and Firefox.
+// SLOW(>=2s): a rebuild landed in a row's editor, and its re-read left unanswered past 30 s.
+/** What Dispatch answers the text read of a document whose stored history cannot load. */
+const PROBE_UNLOADABLE = JSON.stringify({
+  code: "DOCUMENT_UNLOADABLE",
+  error: "decode live document: unexpected end of input",
+});
+
+/** What Dispatch answers a rebuild that restored the document's latest saved version. */
+const PROBE_REBUILT = JSON.stringify({
+  head: 1,
+  removed_checkpoints: 0,
+  removed_snapshots: 0,
+  removed_updates: 3,
+  source_version: 1,
+  validation_error: "decode live document: unexpected end of input",
+});
+
+test("a rebuild in a row's editor whose re-read is never answered lets Rebuild go at the request deadline, and the page says why", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: PROJECT, name: "Rebuild bound" });
+      const issue = await createIssue(
+        {
+          force: true,
+          project: PROJECT,
+          spec: "# Rebuild bound\n\n## Requirements\n\n:::requirement{#r-rebuild-one}\nThe ledger keeps one clock for every mirror.\n:::\n",
+          title: "Rebuild bound",
+        },
+        asPlanner
+      );
+      return issue.key;
+    },
+    async (page, key) => {
+      const spec = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
+      const documentPath = `/api/v1/artifacts/${spec?.id ?? ""}`;
+      await gotoIssue(page, `/issues/${key}`);
+      await expectIssuePageDrawn(page);
+      await expectOpeningLanded(page);
+      await focusRow(page, blockNodeId(spec?.slug ?? "", "r-rebuild-one"));
+      let rebuilt = false;
+      await page.route(
+        (url) => url.pathname.startsWith(documentPath),
+        async (route) => {
+          const request = route.request();
+          if (request.method() === "POST") {
+            rebuilt = true;
+            await route.fulfill({
+              body: PROBE_REBUILT,
+              contentType: "application/json",
+              status: 200,
+            });
+            return;
+          }
+          // Once the rebuild has landed, no read of the document is answered.
+          if (rebuilt) return;
+          if (new URL(request.url()).pathname.endsWith("/text")) {
+            await route.fulfill({
+              body: PROBE_UNLOADABLE,
+              contentType: "application/json",
+              status: 409,
+            });
+            return;
+          }
+          await route.fallback();
+        }
+      );
+      page.on("dialog", (dialog) => {
+        void dialog.accept();
+      });
+      await page.keyboard.press("Enter");
+      const rebuild = page.getByRole("button", {
+        name: /^Rebuild(ing…| from the latest version)$/,
+      });
+      await expect(rebuild, "the row's editor offers Rebuild").toBeVisible({ timeout: 20_000 });
+      await rebuild.click();
+      await expect(rebuild, "Rebuild is held while the rebuilt document is read").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
+      await expect(rebuild, "Rebuild lets go at the 30 s bound").not.toHaveAttribute(
+        "aria-disabled",
+        "true",
+        { timeout: 35_000 }
+      );
+      await expect(
+        page.getByText(/did not answer within 30 seconds/),
+        "the page says why the rebuilt document is not read yet"
+      ).toBeVisible();
+    }
+  );
+});
