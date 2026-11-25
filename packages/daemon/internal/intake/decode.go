@@ -342,8 +342,7 @@ func isIssueEvent(typ string) bool {
 }
 
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
-// to unread each field it took as unknown. A payload that does not decode is an error in fixed
-// text (oauth2call.UnmarshalData), never json's error.
+// to unread each field it took as unknown.
 func decodeDispatchEvent(event dispatch.Event, unread *[]string) (Fact, error) {
 	if isIssueEvent(event.Type) {
 		var issue struct {
@@ -579,8 +578,7 @@ type eventClaim struct {
 
 // issueEventClaim reads an issue event's claim, `<kind>:<id>`, "" for null, and whether the event
 // showed it at all: an absent field, or a claim naming no actor, is unknown, the latter named in
-// unread. A claim that does not decode is named in unread in fixed text (oauth2call.UnmarshalData),
-// and neither name quotes the claim.
+// unread.
 func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	if raw == nil {
 		return "", false
@@ -646,7 +644,6 @@ type askPayload struct {
 }
 
 // decodeAskPayload reads event's ask, refusing one with no id, with its kind as askKind keeps it.
-// A payload that does not decode is named in fixed text (oauth2call.UnmarshalData).
 func decodeAskPayload(event dispatch.Event, unread *[]string) (askPayload, error) {
 	var ask askPayload
 	if err := oauth2call.UnmarshalData(event.Payload, &ask); err != nil {
@@ -668,10 +665,7 @@ func (a askPayload) artifact() string {
 }
 
 // askKind is an ask event's kind as the mirror keeps it: record.AskQuestion or record.AskApproval,
-// and "" for an absent kind or one this daemon does not know, the latter named in unread. The kind
-// an event retained from before Dispatch had the two carries (legacyAskKind) is named as the
-// daemon spells it; any other kind is named by its member alone, since it holds whatever Dispatch,
-// or whatever answers in its place, wrote there.
+// and "" for an absent kind or one this daemon does not know, the latter named in unread.
 func askKind(kind string, unread *[]string) string {
 	switch kind {
 	case record.AskQuestion, record.AskApproval, "":
