@@ -87,8 +87,9 @@ func seedOperatorClaim(s *seeding) composition {
 
 // seedLastPause is a project that runs after a pause has ended: the operator paused it for a
 // provider's outage, and the controller resumed it from its session (internal/pause's Service.Pause
-// and Service.Resume), the pause the pause routes' goldens answer, on the deployment those routes
-// serve. Its daemon booted and its image passed the probe, and no session has reported to it, so
+// and Service.Resume), with the moments, the reason and the actors of the pause the pause routes'
+// goldens answer (apifixture.Pause), on the deployment those routes serve; the store numbers it.
+// Its daemon booted and its image passed the probe, and no session has reported to it, so
 // every image row of its capability report is present and every live row unchecked: the state a
 // boot reads. No record moves, so its moments are the wall clock's month.
 func seedLastPause(s *seeding) composition {

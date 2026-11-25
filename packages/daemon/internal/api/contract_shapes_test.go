@@ -341,7 +341,7 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 			}}},
 		},
 		LastPause: &last,
-		Settings:  SettingsOf(loadSettingsFile(t, shapeSettingsFile)),
+		Settings:  SettingsOf(apifixture.LoadSettings(t, shapeSettingsFile)),
 	}
 }
 
@@ -518,7 +518,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Issues:       issues,
 		WakesWaiting: wakes,
 		Repositories: RepositoriesView{Live: live},
-		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
+		Settings:     SettingsOf(apifixture.LoadSettings(t, settingsFixtureFile+sandboxSettingsBlock)),
 		// Built as the state's read builds it (PauseStateTx), holding no row: the paused state's
 		// pause carries the held rows.
 		Paused:        pausedViewOf(apifixture.Pause(false), stops, nil),
@@ -1278,7 +1278,7 @@ func sortedShapeRecords(records []contractShape) []contractShape {
 // the one bootstrap run.
 func readContractShapes(t *testing.T) ([]contractShape, bool) {
 	t.Helper()
-	encoded, err := os.ReadFile(goldenPath(contractShapesFixture))
+	encoded, err := os.ReadFile(apifixture.Path(contractShapesFixture))
 	if os.IsNotExist(err) {
 		return nil, false
 	}

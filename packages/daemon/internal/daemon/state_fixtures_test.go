@@ -1,6 +1,6 @@
 package daemon
 
-//ci:reads packages/contracts/fixtures/daemon-api/* TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds (testgolden.Check, paths from stateFixturePath)
+//ci:reads packages/contracts/fixtures/daemon-api/* TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds (testgolden.Check, paths from apifixture.Path)
 //ci:reads packages/daemon/internal/api/state_golden_test.go apiSettings (stringConstant parses apiGoldenFile, ../api/state_golden_test.go, for its settingsFixtureFile and minimalSettingsFile)
 
 import (
@@ -44,18 +44,6 @@ import (
 // updateStateFixtures is this package's `-update` flag: it writes the state fixtures the test
 // below composes again.
 var updateStateFixtures = flag.Bool("update", false, "rewrite the daemon-api state fixtures this package composes")
-
-// stateFixturesRewrite is the two commands that write the state fixtures and every fixture
-// internal/api writes from the populated one (its populatedState), in the order they must run.
-const stateFixturesRewrite = "go test ./internal/daemon/ -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$' -update, " +
-	"then go test ./internal/api/ -run Golden -update"
-
-// stateFixturePath is the path of a daemon-api fixture, the cross-language pin: Go writes the wire
-// shape, and packages/contracts/src/legion-api.test.ts parses it through the schema the plugin
-// reads with and holds the parse equal to the file.
-func stateFixturePath(name string) string {
-	return filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
-}
 
 // apiGoldenFile is internal/api's file of goldens, which declares the two legion.yaml files the
 // goldens load: settingsFixtureFile, the maximal kubernetes file, and minimalSettingsFile, the
@@ -187,7 +175,7 @@ func TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds(t *testing.T) {
 			if !tc.marked {
 				body = withoutMark(t, body)
 			}
-			testgolden.Check(t, stateFixturePath(tc.file), json.RawMessage(body), *updateStateFixtures, stateFixturesRewrite)
+			testgolden.Check(t, apifixture.Path(tc.file), json.RawMessage(body), *updateStateFixtures, apifixture.StateFixturesRewrite)
 		})
 	}
 }

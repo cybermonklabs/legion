@@ -1,3 +1,6 @@
 kind: Changed
 body: |-
   The plugin speaks daemon API contract 261, the number the daemon of the same release declares.
+time: 2026-11-25T09:26:36Z
+custom:
+    Issue: pr5332

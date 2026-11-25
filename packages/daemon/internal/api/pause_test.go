@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -631,7 +632,7 @@ func TestPauseRoutes(t *testing.T) {
 // and a caller in no pod are served the key as the source answered it. The paused state carries
 // `paused` (pausedState); the last pause is the state of the record its fixture composes.
 func TestTheStateRouteServesAPodItsPluginContractsPause(t *testing.T) {
-	running := composedFixture(t, goldenPath("state-last-pause.json"))
+	running := composedFixture(t, apifixture.Path("state-last-pause.json"))
 	for _, state := range []struct {
 		name  string
 		state State

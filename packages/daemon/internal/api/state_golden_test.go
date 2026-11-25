@@ -1,6 +1,6 @@
 package api
 
-//ci:reads packages/contracts/fixtures/daemon-api/* golden and stateGolden (testgolden.Check, path from goldenPath)
+//ci:reads packages/contracts/fixtures/daemon-api/* golden and stateGolden (testgolden.Check, path from apifixture.Path)
 
 import (
 	"bytes"
@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -34,14 +33,6 @@ import (
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
-
-// goldenPath is the cross-language pin: Go writes the wire shape, and
-// `packages/contracts/src/legion-api.test.ts` parses it through the zod schema the plugin reads
-// with and holds the parse equal to the file, so a Go field with no zod line is named there. Go
-// is the source of truth; the fixture is how the schema is held to it.
-func goldenPath(name string) string {
-	return filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
-}
 
 // settingsFixtureFile is the maximal kubernetes legion.yaml the state golden and the settings tests
 // share: every key the loader models is set, and every value a credential, its source or its file
@@ -197,31 +188,17 @@ postgres_dsn: postgres://legion:fixture-dsn-password@127.0.0.1:5432/legion
 state_dir: /var/lib/legion
 `
 
-// loadSettingsFile writes body as a legion.yaml under t.TempDir() and loads it as the daemon does,
-// reading no environment, so the resolved values are the file's and the defaults alone
-// (apifixture.LoadSettings, which internal/daemon's state fixtures load these files with too).
-func loadSettingsFile(t *testing.T, body string) config.Config {
-	t.Helper()
-	return apifixture.LoadSettings(t, body)
-}
-
 // settingsFixtureConfig is settingsFixtureFile loaded.
 func settingsFixtureConfig(t *testing.T) config.Config {
 	t.Helper()
-	return loadSettingsFile(t, settingsFixtureFile)
+	return apifixture.LoadSettings(t, settingsFixtureFile)
 }
 
 // minimalSettingsConfig is minimalSettingsFile loaded.
 func minimalSettingsConfig(t *testing.T) config.Config {
 	t.Helper()
-	return loadSettingsFile(t, minimalSettingsFile)
+	return apifixture.LoadSettings(t, minimalSettingsFile)
 }
-
-// stateFixturesRewrite is the two commands that write the state fixtures and every fixture this
-// package writes from the populated one, in the order they must run: internal/daemon's
-// composition of the state fixtures over their seeds, then this package's goldens.
-const stateFixturesRewrite = "go test ./internal/daemon/ -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$' -update, " +
-	"then go test ./internal/api/ -run Golden -update"
 
 // populatedState is the populated state as internal/daemon's state source composes it over its
 // seed (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), read back from state.json byte
@@ -231,7 +208,7 @@ const stateFixturesRewrite = "go test ./internal/daemon/ -run '^TestTheStateFixt
 // answers and every route this package's tests serve the state through writes again.
 func populatedState(t *testing.T) State {
 	t.Helper()
-	state := composedFixture(t, goldenPath("state.json"))
+	state := composedFixture(t, apifixture.Path("state.json"))
 	state.Contract = nil
 	return state
 }
@@ -241,7 +218,7 @@ func populatedState(t *testing.T) State {
 // pause's keys read.
 func pausedState(t *testing.T) State {
 	t.Helper()
-	return composedFixture(t, goldenPath("state-paused.json"))
+	return composedFixture(t, apifixture.Path("state-paused.json"))
 }
 
 // operatorClaimState is the state of an operator's spawn on an issue the workflow keeps
@@ -249,7 +226,7 @@ func pausedState(t *testing.T) State {
 // tmux pane.
 func operatorClaimState(t *testing.T) State {
 	t.Helper()
-	return composedFixture(t, goldenPath("state-operator-claim.json"))
+	return composedFixture(t, apifixture.Path("state-operator-claim.json"))
 }
 
 // composedFixture is the state internal/daemon's state source composed at path, held to read back
@@ -258,17 +235,17 @@ func composedFixture(t *testing.T, path string) State {
 	t.Helper()
 	written, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s (run %s): %v", path, stateFixturesRewrite, err)
+		t.Fatalf("read %s (run %s): %v", path, apifixture.StateFixturesRewrite, err)
 	}
 	var state State
 	if err := json.Unmarshal(written, &state); err != nil {
-		t.Fatalf("decode %s (run %s): %v", path, stateFixturesRewrite, err)
+		t.Fatalf("decode %s (run %s): %v", path, apifixture.StateFixturesRewrite, err)
 	}
 	keepNullPriorities(t, path, written, state)
 	if again := testgolden.Encode(t, path, state); !bytes.Equal(again, written) {
 		line, held, read := testgolden.FirstDifference(written, again)
 		t.Fatalf("%s does not read back as it was written (run %s): line %d holds %q, and the state read from it writes %q",
-			path, stateFixturesRewrite, line, held, read)
+			path, apifixture.StateFixturesRewrite, line, held, read)
 	}
 	return state
 }
@@ -474,14 +451,14 @@ func TestPauseRouteGoldens(t *testing.T) {
 // (testgolden.Check).
 func golden(t *testing.T, name string, value any) {
 	t.Helper()
-	testgolden.Check(t, goldenPath(name), value, *updateGolden, "go test ./internal/api/ -run Golden -update")
+	testgolden.Check(t, apifixture.Path(name), value, *updateGolden, "go test ./internal/api/ -run Golden -update")
 }
 
 // stateGolden is golden for a fixture written from the populated state, whose failure names the
-// two commands that write the state and the fixture, in order (stateFixturesRewrite).
+// two commands that write the state and the fixture, in order (apifixture.StateFixturesRewrite).
 func stateGolden(t *testing.T, name string, value any) {
 	t.Helper()
-	testgolden.Check(t, goldenPath(name), value, *updateGolden, stateFixturesRewrite)
+	testgolden.Check(t, apifixture.Path(name), value, *updateGolden, apifixture.StateFixturesRewrite)
 }
 
 // The register response is what the plugin reads its claim, its secret and the task agents its

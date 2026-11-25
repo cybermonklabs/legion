@@ -17,18 +17,22 @@ package api
 // Bump rule: a change to any of these surfaces raises this constant above the number its base
 // carries. The same commit writes the number in every other file that holds it:
 // `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
-// `packages/claude-envoy/package.json`, and the two fixtures that hold it,
+// `packages/claude-envoy/package.json`, and the three fixtures that hold it:
 // `packages/contracts/fixtures/daemon-api/version.json`, which this package's
-// TestDaemonAPIVersionGolden writes, and `packages/contracts/fixtures/daemon-api/state.json`, the
+// TestDaemonAPIVersionGolden writes; `packages/contracts/fixtures/daemon-api/state.json`, the
 // state route's body, which internal/daemon's TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds
-// writes. In `packages/daemon`, `go test ./internal/api -run '^TestDaemonAPIVersionGolden$' -update`
-// and `go test ./internal/daemon -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$'
-// -update` write the two fixtures. The plugin's test reads `version.json`, so that fixture holds
-// this constant and the plugin's field together. The bump's history is its numbered entry in this
-// file, below.
-// `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant, and, naming a free number, a change that touches the contract
-// below (that script's header says which edits do) and declares no number above its base's.
+// writes; and `packages/contracts/fixtures/daemon-api/state-narrowed-repositories.json`, the state
+// route's body for a caller below repositoriesLiveContract, which this package's
+// TestStateNarrowedRepositoriesGolden writes from state.json. In `packages/daemon`, the two
+// commands of apifixture.StateFixturesRewrite, run in its order, write all three: internal/daemon's
+// `-update` writes state.json, then this package's `-run Golden -update` writes the other two. The
+// plugin's test reads `version.json`, so that fixture holds this constant and the plugin's field
+// together. The bump's history is its numbered entry in this file, below.
+// `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of the two
+// manifests, `version.json` or `state.json`, disagrees with this constant (it reads no
+// `state-narrowed-repositories.json`, which its golden holds to what the state route serves), and,
+// naming a free number, a change that touches the contract below (that script's header says which
+// edits do) and declares no number above its base's.
 //
 // Serving rule: a change that moves the shape of an answer a plugin parses serves the old shape to
 // each contract of `SupportedContracts` below this constant, through shaping.go's `shapeAnswer`: a
