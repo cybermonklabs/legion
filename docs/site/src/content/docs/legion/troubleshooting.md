@@ -191,6 +191,17 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   - `Succeeded without checking the capability list (its legion CLI predates the check)`: the image's
     `legion` is older than this daemon's capability check. Build the image from this daemon's
     commit.
+  - `… does not take --session-id (omp-session-id=absent …)`, `… could not read whether its Oh My
+    Pi … takes --session-id …` or `… its legion CLI predates the omp-session-id mark …`:
+    `runtime.kubernetes.agent_secrets.exchange_audience` is set, so the daemon starts each new Oh My
+    Pi role with `--session-id <id>`, and the image's Oh My Pi does not take that flag, or nothing
+    shows that it does. The third message comes from an image whose `legion` speaks this daemon's
+    contract but prints no `omp-session-id` mark. An image whose `legion` is older than this release
+    is refused for its daemon contract instead (the first cause above). Use a worker image with an
+    Oh My Pi from the cybermonklabs/oh-my-pi release `v18.18.6-sami.20261117-074351` or a later
+    one, and a `legion` from this daemon's release or a later one, or unset `exchange_audience`.
+    The Oh My Pi that this release's `.omp-pin` names is that release or a later one, so an image
+    built on that pin passes.
   - `… refused role <role>'s Oh My Pi overlays: <file> cannot be read: …` (or `Oh My Pi refuses
     <file>: error: …`, quoting Oh My Pi's own error): a file `role_config_files` names for that
     role is not in the mount you gave it, or Oh My Pi cannot parse it. Add the key to the ConfigMap
@@ -2289,12 +2300,14 @@ notice comes once per handoff commit, from whichever read finds it first.
   reads `"state": "failed"` until a login succeeds. Nothing needs restarting, and no person is ever
   asked. The line names the class the failure was sorted into (`class`), the retry schedule that
   class takes (`schedule`), the wait before the next login (`retry_in`) and the cause (`error`).
-  When a login got no HTTP answer, or a 5xx answer from the broker or its front door (the
-  broker is down, out of reach, or cannot reach its database), the daemon retries 2 s later,
-  doubling to at most 10 s, so it logs in within about 10 s of the broker serving again. After
-  any other failure it retries 30 s later, doubling to at most 5 minutes: a refusal the broker
-  decided, a token file it could not read, and a fault on the daemon's own side — a TLS
-  handshake that failed, or a host name that does not resolve — which no wait of seconds fixes.
+  When a login got no HTTP answer, or a 408, a 429 or a 5xx answer from the broker or its front
+  door (the broker is down, out of reach, cannot reach its database, or will not take a login
+  yet), the daemon retries 2 s later, doubling to at most 10 s, so it logs in within about 10 s of
+  the broker serving again. After a 429 it waits at least as long as the answer's `Retry-After`
+  asks, at most 5 minutes. After any other failure it retries 30 s later, doubling to at most 5
+  minutes: a refusal the broker decided (any other 4xx), a token file it could not read, and a
+  fault on the daemon's own side — a TLS handshake that failed, or a host name that does not
+  resolve — which no wait of seconds fixes.
 
   ```sh
   legion state --config legion.yaml --json | jq .agentSecretsLogin

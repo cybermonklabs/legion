@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
 import { graphNode } from "./__tests__/graph-fixture";
+import { keptWrites } from "./__tests__/kept-sends-harness";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
@@ -135,13 +136,6 @@ function aliceWrite(
       .catch((error: unknown) => error);
   });
   return pressed;
-}
-
-/** The names of the writes this tab keeps across a reload. */
-function keptWrites(): string[] {
-  return Array.from({ length: window.sessionStorage.length }, (_, index) =>
-    window.sessionStorage.key(index)
-  ).filter((name): name is string => name?.startsWith("dispatch.write:") === true);
 }
 
 // W26. Someone else signs in from another tab of this browser: the session cookie is the browser's,
@@ -607,6 +601,7 @@ test("project routes render the project page and a project document route", asyn
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const listProjectArtifacts = spyOn(api, "listProjectArtifacts").mockResolvedValue([]);
