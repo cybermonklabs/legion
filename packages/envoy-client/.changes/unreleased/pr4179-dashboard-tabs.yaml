@@ -2,7 +2,9 @@ kind: Fixed
 body: |-
   A dashboard address of each tab of an issue's page, the Verification tab among them, and of a
   document's page under the singular `/artifact/` segment now gives its `dispatch://` reference, as
-  the dashboard's pages file lists them, and each tab's reference reads as its issue wherever a
-  tool takes a reference, as `dispatch read` does.
+  the dashboard's pages file lists them. `dispatch read` reads a tab's reference as its issue. A
+  tool that acts on the owner of a reference (doc-read, doc-edit, comment, suggest) refuses a view
+  tab's reference, the Verification, Plan, Steps, Artifacts and Collaborators tabs, as it refuses a
+  log or children reference, so no tab's address makes it act on the issue's spec.
 custom:
     Issue: pr4179

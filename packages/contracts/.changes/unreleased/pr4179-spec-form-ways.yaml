@@ -1,8 +1,0 @@
-kind: Changed
-body: |-
-  `SpecFormFinding` gains `ways`, the words of the ways out that a finding of the form gives, or an
-  empty string. `detail` now holds the rule's words at the place of the finding only, and no longer
-  ends with its ways out. The OpenAPI document and `dispatch-api.generated.ts` carry the field.
-time: 2026-11-21T08:59:19Z
-custom:
-    Issue: pr4179
