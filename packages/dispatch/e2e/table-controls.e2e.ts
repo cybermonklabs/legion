@@ -10295,3 +10295,88 @@ test("Enter on a value of the shared multi-select keeps the option the list mark
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): the Delivery page opened over the session-groups fixture, and its window changed while the live socket holds the new window's answer.
+// INFRA-3135, round 26 (the tester's), by the architect's ruling of 2026-11-24 08:07Z: a count
+// beside a value is drawn only once the data it counts has answered, and the class search's C14
+// (a previous answer's counts are not shown after a change). Measured in builds Jobs
+// infra-3135-c-h-n62l7 (head 8e7e463a), infra-3135-c-b-qzzxg (34dc6a07) and infra-3135-c-m-672j8
+// (main 0dbe5048), in Chromium, Firefox and WebKit at 1440x900: with the window changed to Last 7
+// days and its timeline answer held, the Filter panel and the Own colour list draw no count, but
+// the session-groups editor its **Edit groups** opens lists "Sessions in this window" with the
+// previous window's sessions and counts ("2 PRs"). **Edit groups** is offered whenever an answer is
+// on screen (DeliveryPage.tsx:601-609, `data === undefined ? null`), with no `counted` gate, and
+// the editor is handed that answer's counts (`counts={data.session_pr_counts ?? {}}`, :615-621),
+// which it draws beside each session (SessionGroupsEditor.tsx:290, :312). Once the new window
+// answers, the editor lists that window's own sessions and counts, which this row reads too, so it
+// can tell a count from a placeholder.
+test("the Delivery page's session-groups editor draws no count from the previous window while a new window's answer is held @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await seedSessionGroupsFixture();
+  const main = page.getByTestId("main-content");
+  /** Whether a frame the page sends is a timeline view's subscribe, which `holding` keeps. */
+  const timelineSubscribe = (message: string | Buffer): boolean => {
+    try {
+      const frame = JSON.parse(String(message)) as { type?: string; view?: { kind?: string } };
+      return frame.type === "subscribe" && frame.view?.kind === "timeline";
+    } catch {
+      return false;
+    }
+  };
+  // One route for the page's live socket: it passes every frame through to the server, and while
+  // `holding` keeps each timeline subscribe the page sends, so the new window has no answer.
+  let holding = false;
+  const held: (() => void)[] = [];
+  await page.routeWebSocket(/\/ws\/live$/u, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      if (holding && timelineSubscribe(message)) {
+        held.push(() => server.send(message));
+        return;
+      }
+      server.send(message);
+    });
+  });
+  /** Each row of the editor's "Sessions in this window", by its text, read once the list holds
+   *  `count` rows, so the read is of a list that is whole. */
+  const sessions = async (count: number): Promise<string[]> => {
+    await openFilterPanel(page, main);
+    await page.getByRole("button", { name: "Edit groups" }).click();
+    const editor = page.getByRole("dialog", { name: "Session groups" });
+    const rows = editor
+      .getByRole("list", { name: "Sessions in this window" })
+      .getByRole("listitem");
+    await expect(rows).toHaveCount(count);
+    const names = await rows.evaluateAll((elements) =>
+      elements.map((element) => (element.textContent ?? "").replace(/\s+/g, " ").trim())
+    );
+    await editor.getByRole("button", { name: "Close session groups" }).click();
+    await expect(editor).toHaveCount(0);
+    await closeControlPanel(main);
+    return names;
+  };
+  await page.goto("/delivery");
+  await expect(main.getByText("3 PRs in current filter/window")).toBeVisible();
+  // The control: the default window's answer counts each of its three sessions.
+  const answered = await sessions(3);
+  expect(answered.filter((name) => /\b1 PR$/u.test(name))).toHaveLength(3);
+  holding = true;
+  await pickFromList(listTrigger(page, "Window"), "Last 7 days");
+  await expect(page).toHaveURL(/[?&]window=7d/u);
+  await expect.poll(() => held.length).toBeGreaterThan(0);
+  await expect(main.getByText("Counting PRs in current filter/window…")).toBeVisible();
+  const wrong = (await sessions(3))
+    .filter((name) => /\b\d+ PRs?\b/u.test(name))
+    .map((name) => `window held: the editor offers "${name}" before the new window answered`);
+  holding = false;
+  for (const send of held.splice(0)) send();
+  await expect(main.getByText("2 PRs in current filter/window")).toBeVisible();
+  // The new window's own answer: its two sessions, each with its count, and no Reviewer.
+  const sevenDays = await sessions(2);
+  expect(
+    sevenDays.filter((name) => /^Planner, (first|second) run\b.*\b1 PR$/u.test(name))
+  ).toHaveLength(2);
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
