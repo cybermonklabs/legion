@@ -317,11 +317,12 @@ const (
 // priorityNewestEventKeyedWalkQuery is the newest event alone, as #5316 read it in a statement of
 // its own, with every read of issues keyed: a candidate that TestStatementTimings measures beside
 // the priorities read's statement, on the seed and on production, and that the plan test
-// (TestPriorityNewestEventReadsOneEventOfEachMember) holds, through its branch for a walk other
-// than main's, to an index condition on every scan (requireEveryScanKeyed). The walk steps from
-// each member to its children through issues_parent_key, and each member issue's own issues row
-// is read through issues_pkey, each written as a lateral probe that `offset 0` keeps the planner
-// from flattening into a join it may hash; the event of last_seq is read by a probe like that of
+// (TestPriorityNewestEventReadsOneEventOfEachMember) holds to one event of each member issue and
+// an index condition on every scan (requireOneEventOfEachMember, requireEveryScanKeyed). The walk
+// steps from each member to its children through issues_parent_key, and each member issue's own
+// issues row is read through issues_pkey, each written as a lateral probe that `offset 0` keeps
+// the planner from flattening into a join it may hash; the event of last_seq is read by a probe
+// like that of
 // priorityReadQuery (last_seq_event). The issues row and the event are read inside a materialized
 // CTE (member_event) for the distinct keys of `members` (member_issue), and the one time of each
 // issue is joined back to `members`. The event's probe names i alone, but i is itself a lateral

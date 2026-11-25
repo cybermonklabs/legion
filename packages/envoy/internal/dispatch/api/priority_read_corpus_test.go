@@ -22,8 +22,9 @@ import (
 // How the corpus of production's counts the priorities read is measured and compared over is
 // built (dispatch://INFRA-5791, R1 to R3), and what it is held to: the corpus of
 // TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan,
-// TestThePrioritiesReadKeepsItsPlansWithAProjectNamed and
-// TestThePrioritiesReadAnswersAsTheMergeBaseAnswers. It is a file of its own for the reason
+// TestThePrioritiesReadKeepsItsPlansWithAProjectNamed,
+// TestThePrioritiesReadAnswersAsTheMergeBaseAnswers and
+// TestThePrioritiesReadWalksIssuesOnceOnTheCorpus. It is a file of its own for the reason
 // priority_speed_seed_test.go is: none of it is a reading.
 //
 // The projects and their first issues are written here, by COPY (priority_fixture_test.go); every
@@ -76,7 +77,7 @@ const (
 	readCorpusParkedPairs    = 736
 )
 
-// readCorpus is the corpus as the three tests address it: its database, whose every connection
+// readCorpus is the corpus as the four tests address it: its database, whose every connection
 // runs with JIT off (withJITOff), and the counts its first line reports.
 type readCorpus struct {
 	database *store.Store

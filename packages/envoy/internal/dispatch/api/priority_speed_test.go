@@ -185,13 +185,11 @@ const (
 // store holds more (speedPriorityGrowth): the objects one read allocates once the store holds
 // speedCorpusMoreRelations relations more, beyond the same read over the corpus's
 // speedCorpusRelations, for each relation added. It is the read's own growth, which only the
-// relations make. The read below INFRA-5791 scanned each relation once and sent the pair of
-// arrays they made with every statement of its batch, so a read that allocated for each relation
-// more than it did read one object a relation more here; the read now sends the live priority ids
-// alone and its one statement reads the relations itself, so no relation reaches Go but through
-// the rows of the answer. Whatever the read allocates the same at both sizes (the priorities, the
-// counts' rows, the faults' fifty rows, the trace) is in neither reading's difference: a fixed
-// cost is held by no bound here.
+// relations make. The read sends the live priority ids alone and its one statement reads the
+// relations itself, so no relation reaches Go but through the rows of the answer, and a read that
+// allocated for each relation would read one object a relation more here. Whatever the read
+// allocates the same at both sizes (the priorities, the counts' rows, the faults' fifty rows, the
+// trace) is in neither reading's difference: a fixed cost is held by no bound here.
 //
 // The read's whole count is not held, because it is mostly such fixed costs and moves with the
 // build: correct code allocates 10,876 to 10,878 objects for the body over the corpus in the

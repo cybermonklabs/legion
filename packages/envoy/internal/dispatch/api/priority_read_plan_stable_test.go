@@ -104,11 +104,11 @@ func TestThePrioritiesReadKeepsItsPlansWithAProjectNamed(t *testing.T) {
 //   - in steady state, every member's newest-event pair naming its event of last_seq, as the
 //     corpus's fill leaves it: no read of events in the newest event (requireNewestEventProbes).
 //
-// These are the walk's holds TestPriorityNewestEventReadsOneEventOfEachMember made on its corpus
-// of 29 member issues, moved here: there the statement's walk is sized from that corpus's few
-// relations, and the planner then scans issues at each step, where on a deployment's relations
-// it hashes issues once. The walk keyed through issues_parent_key (priorityNewestEventKeyedWalkQuery)
-// is the control both walk holds must fail under each plan (explaintest.RequireControlFails).
+// These holds read the corpus of production's counts because the planner sizes the statement's
+// walk from the relations it reads: over a corpus of a few relations it scans issues at each step
+// of the walk, where over a deployment's relations it hashes issues once. The walk keyed through
+// issues_parent_key (priorityNewestEventKeyedWalkQuery) is the control both walk holds must fail
+// under each plan (explaintest.RequireControlFails).
 //
 // Both plans of each text run on one connection, the plan for its values right after the generic
 // plan of the same text, so each count is what the plan reads on a connection that has run the
@@ -119,7 +119,10 @@ func TestThePrioritiesReadKeepsItsPlansWithAProjectNamed(t *testing.T) {
 // connection (PostgreSQL 18.6, 2026-11-25). Those three were neither the relations' read nor the
 // walk's, and the hold counted them as the walk's.
 func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
-	// Not parallel: it holds shared-buffer counts, as the other two tests over the corpus do.
+	// Not parallel: it holds shared-buffer counts, as the two other corpus tests that hold them
+	// (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan and
+	// TestThePrioritiesReadKeepsItsPlansWithAProjectNamed) are not; the merge base's comparison
+	// holds none and runs in parallel.
 	if !strings.Contains(priorityReadQuery, mainNewestEventWalk) {
 		t.Fatalf("the priorities read's statement does not carry main's walk as mainNewestEventWalk freezes it, so the walk holds hold no text the read runs")
 	}

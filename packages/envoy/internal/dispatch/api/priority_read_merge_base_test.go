@@ -811,18 +811,23 @@ func appendAsTheReleaseBefore(t *testing.T, database *store.Store) {
 	if len(picked) != len(ids) {
 		t.Fatalf("the corpus states a relation for %d of its %d live priorities, want each", len(picked), len(ids))
 	}
+	var newest time.Time
+	if err := database.Pool.QueryRow(ctx, `select max(created_at) from events`).Scan(&newest); err != nil {
+		t.Fatalf("read the corpus's newest event: %v", err)
+	}
 	for minutes, key := range appended {
+		at := newest.Add(time.Duration(minutes+1) * time.Minute)
 		if _, err := database.Pool.Exec(ctx, `
 			with appended as (
 				insert into events (issue_key, seq, type, actor, payload, notify, published_at, created_at)
-				select i.key, i.last_seq + 1, 'comment.created', '{"kind":"user","id":"alice"}'::jsonb, '{}'::jsonb, false, at.at, at.at
-				from issues i, (select max(created_at) + make_interval(mins => $2) as at from events) at
+				select i.key, i.last_seq + 1, 'comment.created', '{"kind":"user","id":"alice"}'::jsonb, '{}'::jsonb, false, $2::timestamptz, $2::timestamptz
+				from issues i
 				where i.key = $1
 				returning issue_key, seq, created_at
 			)
 			update issues set last_seq = appended.seq, updated_at = greatest(issues.updated_at, appended.created_at)
 			from appended where issues.key = appended.issue_key
-		`, key, minutes+1); err != nil {
+		`, key, at); err != nil {
 			t.Fatalf("append to %s as the release before does: %v", key, err)
 		}
 	}

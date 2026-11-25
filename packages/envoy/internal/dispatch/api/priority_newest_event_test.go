@@ -55,12 +55,12 @@ const mainPriorityNewestEventQuery = `with recursive members_seed as (
 	group by m.priority`
 
 // mainNewestEventWalk is main's walk over the members of each priority, the recursive CTE that
-// newestEventWalkCTE names, frozen letter for letter as mainPriorityNewestEventQuery holds it,
-// which the plan test requires of that text. Each step joins issues on parent_key, and the
-// planner hashes issues for it from one read of the table. It decides the holds a text of the
-// newest event is put to (requireNewestEventPlan): a text that carries it takes main's walk, and
-// any other text takes a walk of its own, such as the walk keyed through issues_parent_key
-// (priorityNewestEventKeyedWalkQuery) that a reading on production may call for.
+// newestEventWalkCTE names, frozen letter for letter as mainPriorityNewestEventQuery holds it.
+// Each step joins issues on parent_key, and the planner hashes issues for it from one read of the
+// table. The plan tests require it of mainPriorityNewestEventQuery and of priorityReadQuery, so
+// the walk holds read the walk the read runs; the walk keyed through issues_parent_key
+// (priorityNewestEventKeyedWalkQuery) is the control both walk holds must fail
+// (TestThePrioritiesReadWalksIssuesOnceOnTheCorpus).
 const mainNewestEventWalk = `members_spread as (
 		select s.key, s.priority, 0 as depth from members_seed s
 		union all
@@ -92,8 +92,9 @@ const (
 // times the member issues the read joins, so a plan that probes the events of every issue before
 // it joins the members runs its probe many more times than a plan that probes once for each
 // member issue (requireOneEventOfEachMember). Most of them have a parent. The planner sizes the
-// walk over the members from the 1,000 rows it plans for every seed (priorityMemberTerms) and from
-// how many issues have a parent, so it plans many more member rows than there are issues: 16,498
+// walk over the members of mainPriorityNewestEventQuery and priorityNewestEventKeyedWalkQuery from
+// the 1,000 rows it plans for the seed those texts read from two arrays (generate_subscripts) and
+// from how many issues have a parent, so it plans many more member rows than there are issues: 16,498
 // against 1,029 (PostgreSQL 18.7, 2026-11-24). A plan that probes every issue first is then the
 // cheaper one by its costs. When none of these issues had a parent, the planner probed once for
 // each member row even where the probe named the issue alone, so the check passed such a probe.
@@ -403,7 +404,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 		t.Fatalf("main's text (mainPriorityNewestEventQuery) does not carry main's walk as mainNewestEventWalk freezes it:\n%s", mainNewestEventWalk)
 	}
 	if strings.Contains(priorityNewestEventKeyedWalkQuery, mainNewestEventWalk) {
-		t.Fatalf("the statement with its walk keyed (priorityNewestEventKeyedWalkQuery) carries main's walk, so no plan the test reads takes the keyed branch")
+		t.Fatalf("the statement with its walk keyed (priorityNewestEventKeyedWalkQuery) carries main's walk, so it is no control of a walk other than main's")
 	}
 	corpus := seedNewestEventCorpus(t)
 	settleSpeedCorpus(t, corpus.database)

@@ -411,11 +411,17 @@ func (r *seedRun) writeEvents(ctx context.Context) error {
 // project's `next_number` past its highest issue number. events/broker.go's Append reads
 // `last_seq` off the owner row (lockEventOwner) and inserts seq = last_seq + 1, so a seeded issue
 // left at 0 fails the unique (issue_key, seq) on the first comment, ask, message, upload or title
-// edit written to it.
+// edit written to it. An issue's statement also writes the time and the seq of the event at its
+// new `last_seq` as `last_event_at` and `last_event_at_seq`, as the append writes them beside
+// `last_seq` (QueueAppendWithLogins), so a seeded database stands as a deployment does once its
+// fill has run (20261125094600) and the priorities read takes each newest event from the row
+// rather than probing it (api's priorityReadQuery).
 func (r *seedRun) settleEventCounters(ctx context.Context) error {
 	for _, statement := range []string{
-		`update issues i set last_seq = coalesce(e.top, 0)
-		   from (select issue_key, max(seq) as top from events where issue_key is not null group by issue_key) e
+		`update issues i set last_seq = e.seq, last_event_at = e.created_at, last_event_at_seq = e.seq
+		   from (select distinct on (issue_key) issue_key, seq, created_at
+		           from events where issue_key is not null
+		          order by issue_key, seq desc) e
 		  where e.issue_key = i.key`,
 		`update artifacts a set last_seq = coalesce(e.top, 0)
 		   from (select artifact_id, max(seq) as top from events where artifact_id is not null group by artifact_id) e
