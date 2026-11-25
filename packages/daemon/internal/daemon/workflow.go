@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/backpressure"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -703,7 +704,11 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 //
 // appCalls are the start's App-call bounds (overrides.appCalls): nil, in production, is
 // productionAppCalls.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
+//
+// hold is the model gateway's hold on new work (backpressure_url, nil without one): the engine
+// reserves a paced catch-up from its end while it stands, and admission starts no issue of its
+// waiting line.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, hold *backpressure.Hold, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -784,6 +789,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
 	// which is the pacing off: the engine then writes that catch-up due at once, as it always did.
 	engineCfg.Reserve = reserve
+	if hold != nil {
+		engineCfg.Hold = hold
+	}
 	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
 	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
@@ -803,6 +811,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).
 	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
+	if hold != nil {
+		w.admission.UseGatewayHold(hold)
+	}
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written

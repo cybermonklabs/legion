@@ -11,7 +11,7 @@
 //
 // Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
 // `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
-// `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
+// `backpressure_token_file`, `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
@@ -142,6 +142,17 @@ type Config struct {
 	// kind holds.
 	WorkerWakesPerMinute int
 	WorkerWakeBurst      int
+
+	// BackpressureURL is `backpressure_url`, the model gateway's hold route the daemon polls every
+	// 10 to 15 seconds (internal/backpressure), "" when the file names none: the daemon then
+	// reads no hold and holds nothing. BackpressureTokenFile is `backpressure_token_file`, the
+	// file holding the bearer the poll presents, and BackpressureTeam `backpressure_team`, the
+	// gateway team whose hold, beside a hold of every team, holds this daemon's new work. Both are
+	// required with the URL and refused without it, and the URL is refused with the pacing off,
+	// since a hold's release is paced (resolveBackpressure).
+	BackpressureURL       string
+	BackpressureTokenFile string
+	BackpressureTeam      string
 
 	// GitHubGraphQLShare is the share of the time this daemon's GraphQL queries of one GitHub App
 	// installation may keep GitHub at work (`github_graphql_share`, DefaultGitHubGraphQLShare
@@ -420,11 +431,16 @@ type fileConfig struct {
 	// WorkerWakesPerMinute is `worker_wakes_per_minute`, read on its own rather than as a count
 	// key: 0 is a value an operator may set, and the count reader refuses it.
 	WorkerWakesPerMinute *int
-	OperatorTokenFile    *string
-	EnvoyURL             *string
-	NatsURLs             []string
-	EnvoyTokenFile       *string
-	NatsNkeySeedFile     *string
+	// BackpressureURL, BackpressureTokenFile and BackpressureTeam are `backpressure_url`,
+	// `backpressure_token_file` and `backpressure_team` (resolveBackpressure).
+	BackpressureURL       *string
+	BackpressureTokenFile *string
+	BackpressureTeam      *string
+	OperatorTokenFile     *string
+	EnvoyURL              *string
+	NatsURLs              []string
+	EnvoyTokenFile        *string
+	NatsNkeySeedFile      *string
 	// NatsDaemonNkeySeedFile is `nats_daemon_nkey_seed_file`.
 	NatsDaemonNkeySeedFile *string
 	DispatchURL            *string
@@ -1128,6 +1144,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
 	}
+	if err := resolveBackpressure(file, configDir, &cfg); err != nil {
+		return Config{}, err
+	}
 
 	if file.GitHubGraphQLShare != nil {
 		cfg.GitHubGraphQLShare = *file.GitHubGraphQLShare
@@ -1290,6 +1309,48 @@ func checkWorkerBackground(cfg Config) error {
 	}
 	return fmt.Errorf("worker_background_hours (%s) is at or below worker_silence_minutes (%s): the bound on background work a worker reports must be above the bound on its silence, since a shorter one would name a job that has barely begun and would race the repair that sends the same worker its phase's task again",
 		cfg.WorkerBackground, cfg.WorkerSilence)
+}
+
+// resolveBackpressure settles `backpressure_url`, `backpressure_token_file` and `backpressure_team`
+// (Config.BackpressureURL). The URL is an http or https endpoint with no query or fragment, since a
+// credential belongs in the token file; the token file is resolved against the file's directory
+// and read at each poll, never here. Each of the other two keys is refused without the URL, which
+// would leave it holding nothing, and the URL is refused with the pacing off: a hold releases what
+// it held at worker_wakes_per_minute, and with no rate the end of a hold would be the burst the
+// hold exists to prevent.
+func resolveBackpressure(file fileConfig, configDir string, cfg *Config) error {
+	if file.BackpressureURL == nil {
+		switch {
+		case file.BackpressureTokenFile != nil:
+			return errors.New("backpressure_token_file is set but backpressure_url is not: it does nothing without the route it is for")
+		case file.BackpressureTeam != nil:
+			return errors.New("backpressure_team is set but backpressure_url is not: it does nothing without the route it is for")
+		}
+		return nil
+	}
+	parsed, err := endpointURL(*file.BackpressureURL, "backpressure_url")
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("backpressure_url must be http or https, not %q", parsed.Scheme)
+	}
+	if parsed.User != nil {
+		return errors.New("backpressure_url must not carry userinfo: the bearer goes in backpressure_token_file")
+	}
+	if file.BackpressureTokenFile == nil {
+		return errors.New("backpressure_url needs backpressure_token_file: the file holding the bearer the poll presents")
+	}
+	if file.BackpressureTeam == nil {
+		return errors.New("backpressure_url needs backpressure_team: the model gateway team whose hold holds this daemon's new work")
+	}
+	if cfg.WorkerWakesPerMinute == 0 {
+		return errors.New("backpressure_url needs the wake pacing: worker_wakes_per_minute is 0, and a hold releases what it held at that rate; set a rate above 0 or remove backpressure_url")
+	}
+	cfg.BackpressureURL = *file.BackpressureURL
+	cfg.BackpressureTokenFile = underConfig(*file.BackpressureTokenFile, configDir)
+	cfg.BackpressureTeam = *file.BackpressureTeam
+	return nil
 }
 
 // resolveStage2 settles the keys Stage 2 models. Each is read from the file alone: the shipped

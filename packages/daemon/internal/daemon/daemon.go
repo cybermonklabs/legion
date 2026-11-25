@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/backpressure"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/cipher"
@@ -207,6 +208,10 @@ type overrides struct {
 	// zero is the production catchUpRetryDelay. A whole-daemon test whose Dispatch stand-in refuses
 	// the catch-up's reads shortens it, so each of its boots does not wait out two seconds a read.
 	catchUpRetry time.Duration
+	// backpressurePoll draws the wait between two polls of `backpressure_url`
+	// (backpressure.Poller.Interval); nil is the production 10 to 15 seconds. A whole-daemon test
+	// of the gateway's hold shortens it, so it reads a changed answer in its own time.
+	backpressurePoll func() time.Duration
 	// appCalls are the bounds of the start's App calls (appCallBounds): their attempt, the retry
 	// between attempts that failed transiently, the rate-limit policy, and the clock every wait of
 	// theirs reads and waits on; nil is productionAppCalls. A test of the boot's App calls shortens
@@ -455,6 +460,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		limiter := wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration])
 		reserveWake, wakeInterval = limiter.Reserve, limiter.Interval()
 	}
+	// The model gateway's hold on new work (`backpressure_url`, internal/backpressure): one reading
+	// that every lane the limiter paces reads, and the admission pass, polled from here until run
+	// returns, before the boot's first admission pass and the first launch it raises. The loader
+	// refuses the URL with the pacing off, so a hold always has a limiter to release through.
+	if cfg.BackpressureURL != "" {
+		plan.gatewayHold = backpressure.New(cfg.BackpressureTeam, log)
+		stopPolling := pollBackpressure(ctx, cfg, plan.gatewayHold, plan.clock.Now, o.backpressurePoll)
+		defer stopPolling()
+	}
 	// The one gate of the stale-plugin refresh lane, built here because K is that same rate: the
 	// lane may hold one minute of the pacing at a time, and the sweep a minute later admits the
 	// next minute's worth (supervise.NewRefreshGate, which says what a lane without it costs).
@@ -476,7 +490,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now, o.experimentSource, o.appCalls)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.gatewayHold, plan.clock.Now, o.experimentSource, o.appCalls)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -1011,6 +1025,10 @@ type plan struct {
 	modelFallback func(ctx context.Context) string
 	clock         supervise.Clock
 	orphanSweep   time.Duration
+	// gatewayHold is the model gateway's hold on new work (`backpressure_url`), which run builds
+	// and polls; nil without one. The machines' pacing, the engine, admission and the state read
+	// the one reading.
+	gatewayHold *backpressure.Hold
 	// controllerRetry is the controller keeper's first wait before it retries a failed controller.
 	controllerRetry time.Duration
 	// stopBudget is how long the stop waits for the daemon's own work once it begins (stopBudget).
@@ -1885,6 +1903,11 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	if pauses != nil {
 		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut = pauses.service.Paused, pauses.stopped, pauses.wakeLetOut
 		pauses.supervisor = sup
+	}
+	// The gateway's hold goes on the pace only where there is one: a nil *backpressure.Hold in the
+	// interface would read as a hold to ask.
+	if p.gatewayHold != nil {
+		sup.deps.WakePace.Hold = p.gatewayHold
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
@@ -2817,6 +2840,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			deployment:   s.deploymentWith,
 			reports:      s.capabilityReports,
 			wakes:        s.waitingWakes,
+			gatewayHold:  p.gatewayHold,
 			repositories: p.repositories,
 			caches:       s.cacheStatuses,
 			gatedSteps:   cfg.Gates.Steps(),
@@ -2991,6 +3015,9 @@ type source struct {
 	// wakes is every wake the daemon's machines hold, as each machine last published it
 	// (supervision.waitingWakes); nil for a daemon that supervises nothing.
 	wakes func() []supervise.WaitingWake
+	// gatewayHold is the model gateway's hold on new work (plan.gatewayHold), whose standing hold
+	// the state serves as `backpressure`; nil for a daemon with no `backpressure_url`.
+	gatewayHold *backpressure.Hold
 	// repositories is the repository state the workflow fills, empty for a daemon with no
 	// workflow, whose state serves no repository.
 	repositories *repositories
@@ -3478,6 +3505,8 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if state.Paused, state.LastPause, err = api.PauseStateTx(ctx, tx, s.project, now); err != nil {
 		return api.State{}, nil, err
 	}
+	// The model gateway's hold on new work, from the one reading the lanes read (plan.gatewayHold).
+	state.Backpressure = backpressureView(s.gatewayHold, now)
 	state.Daemon = api.DaemonInfo{
 		Project:       s.project,
 		SchemaVersion: version,

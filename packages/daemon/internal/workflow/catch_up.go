@@ -84,7 +84,17 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 	now := e.now()
 	var paced time.Time
 	if fact.Paced && e.cfg.Reserve != nil {
-		paced = e.cfg.Reserve(now)
+		// The catch-up wakes the issue's own architect (the outbox's noticeArchitect), so the
+		// gateway's hold counts that architect's wake.
+		project, err := claim.ProjectToken(issue.Project)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		architect, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		paced = supervise.WakePace{Reserve: e.cfg.Reserve, Hold: e.cfg.Hold}.Turn(architect, now)
 	}
 	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *issue, fact.Launch, fact.Relaunch, now, paced)
 }

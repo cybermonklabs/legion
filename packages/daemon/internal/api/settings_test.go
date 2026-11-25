@@ -239,6 +239,9 @@ var settingsExcluded = map[string]string{
 	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
 	"Config.Revision":                 "not a setting: the commit this binary was built from, which `legion start` sets from cmd/legion's link-time revision and no legion.yaml key names",
 	"Config.GitHubGraphQLShare":       "not shown yet: the pace of the daemon's own GraphQL reads of GitHub, which no pod or plugin reads or acts on; carrying it on GET /legion/v1/state is a change of the daemon API contract (answers.go, packages/contracts) that the pull request adding the key does not make",
+	"Config.BackpressureURL":          "a deployment's own route, named by a route that authenticates nobody (GET /legion/v1/state); the hold it answers is the state's `backpressure`",
+	"Config.BackpressureTokenFile":    "the path of a file holding a credential",
+	"Config.BackpressureTeam":         "a deployment's own gateway team, named by a route that authenticates nobody; the team of a hold that stands is the state's `backpressure.team`",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly

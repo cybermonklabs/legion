@@ -216,6 +216,9 @@ func (s *supervision) recordedDeath(token claim.Token) (*bootRelaunch, bool) {
 // passed is handed none and reserved none while it stays refused, so a refusal that never clears
 // does not take a turn of the pacing at every sweep; its release, when it comes, reserves it one.
 // The order of the reservations does not matter, since the pool is sorted before it is handed out.
+// A turn reserved while the model gateway's hold stands is reserved from the hold's end
+// (supervise.WakePace.Turn), and a kept turn the hold has come over since is reserved again at
+// the gate (reserveWake).
 func (s *supervision) reserveUnfinishedTurns(launches []*bootRelaunch) {
 	deps := &s.supervisor.deps
 	now := deps.Clock.Now()
@@ -238,7 +241,7 @@ func (s *supervision) reserveUnfinishedTurns(launches []*bootRelaunch) {
 			if l.release == releaseRefused && !turn.IsZero() {
 				continue
 			}
-			turn = deps.WakePace.Reserve(deps.Clock.Now())
+			turn = deps.WakePace.Turn(l.token, deps.Clock.Now())
 		}
 		pool = append(pool, turn)
 		queue = append(queue, owed{launch: l, since: owedSince(c)})

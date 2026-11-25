@@ -1947,6 +1947,17 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "state", held.State, "stopping", held.Stopping)
 		return nil
 	}
+	// A paced catch-up is a wake of its architect, so it waits out the model gateway's hold as a
+	// paced launch does: a row whose turn came while the hold still stands — the gateway renewed
+	// it after the turn was reserved — is due again at a fresh turn past it
+	// (supervise.WakePace.HeldTurn). Every attempt asks again, a ready's pull-forward included
+	// (releaseWaiting). The wait is routine: a hold the gateway keeps renewing is no fault of the row.
+	if !payload.PacedAt.IsZero() {
+		if at, held := r.supervisor.deps.WakePace.HeldTurn(architect, r.now()); held {
+			return routineWaiting{err: wait.Until(at, fmt.Sprintf("the catch-up on row %d for %s waits out the model gateway's hold until its turn at %s",
+				row.ID, architect, at.UTC().Format(time.RFC3339)))}
+		}
+	}
 	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
 	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
 	// for an architect that is relaunching, and publishes once the woken session holds its role.

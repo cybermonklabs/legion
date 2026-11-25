@@ -243,10 +243,16 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 // from its reservation (runWake), and one that passed the wake gate wrote its line there
 // (wake.ran). Its callers are the gate's own stop finding no pause open (pauseStopDue) and the
 // resume's event (resumePause).
+//
+// A pause that ends while the model gateway's hold stands lets every launch out to a turn past
+// that hold instead, paid or not (holdOff, WakePace.Hold).
 func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 	waiting := m.wake
 	waiting.pause = 0
 	m.disarm(TimerPause)
+	if at, held := m.deps.WakePace.HeldTurn(m.claim.Token, m.deps.Clock.Now()); held {
+		return m.holdOff(ctx, waiting, at)
+	}
 	if waiting.paid {
 		m.wake = nil
 		return m.runWake(ctx, waiting, true)

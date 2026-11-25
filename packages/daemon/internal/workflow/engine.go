@@ -143,6 +143,10 @@ type Config struct {
 	// the pacing and knows no limiter; what the rate and the burst were is the outbox's to log,
 	// where the wake runs (the daemon's wakeRan).
 	Reserve func(now time.Time) time.Time
+	// Hold is the model gateway's hold on new work, the one the machines read
+	// (supervise.WakePace.Hold): a catch-up reserved while it stands is reserved from its end.
+	// nil is no hold.
+	Hold supervise.WakeHold
 	// Hooks are the deployment's hooks (`hooks`, config.Config.Hooks), each put in front of the
 	// roles it names every Every moves back of what it selects. The empty list fires nothing:
 	// the one hook a deployment that writes no key runs is the configuration's default

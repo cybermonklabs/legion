@@ -114,6 +114,27 @@ type Admission struct {
 	// as work.
 	workerSilence    time.Duration
 	workerBackground time.Duration
+
+	// gatewayHold is the model gateway's hold on new work (UseGatewayHold): while one stands, the
+	// pass starts no issue of its waiting line. nil is no hold.
+	gatewayHold GatewayHold
+}
+
+// GatewayHold is the model gateway's hold on new work as admission reads it
+// (internal/backpressure's Hold).
+type GatewayHold interface {
+	// HoldAdmission is whether a hold stands at now, counting issue as one it keeps from
+	// admission when one does.
+	HoldAdmission(issue string, now time.Time) bool
+}
+
+// UseGatewayHold registers the model gateway's hold: while one stands, the pass promotes no
+// candidate of its waiting line — it opens no tree, resumes no answered root, gives no slot back
+// and starts no owed first phase — and the line is promoted at the first pass after the hold ends.
+// Every other step of the pass runs: the releases, the repairs and the controller's notices. It is
+// a setter for the reason UseExperiments is.
+func (a *Admission) UseGatewayHold(hold GatewayHold) {
+	a.gatewayHold = hold
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -2057,6 +2078,17 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					a.log.Warn("admission skips an answered root it may not resume", "issue", issue.Key, "reason", reason)
 					continue
 				}
+			}
+			// While the model gateway's hold stands, the candidate the line would promote here
+			// is held instead, and counted against the cap as if promoted, so the hold counts the
+			// promotions this pass would have made and no more (UseGatewayHold). Nothing of it is
+			// written: the first pass after the hold ends promotes the line as it stands then.
+			if a.gatewayHold != nil && a.gatewayHold.HoldAdmission(issue.Key, a.now()) {
+				a.log.Debug("admission holds an issue while the model gateway holds new work", "issue", issue.Key, "kind", candidate.Kind)
+				if takes {
+					own = append(own, record.Slot{Issue: issue.Key})
+				}
+				continue
 			}
 			if candidate.Kind == record.LineQueuedRoot {
 				// Claims, tree lifecycles and the runtime key a tree by the normalized project

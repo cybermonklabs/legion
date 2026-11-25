@@ -119,6 +119,56 @@ type WakePace struct {
 	// carried for the line a wake writes as it runs and read for nothing else.
 	Rate  int
 	Burst int
+	// Hold is the model gateway's hold on new work (internal/backpressure): while one stands, a
+	// paced wake is reserved no moment before it ends (Turn), and one whose moment comes while it
+	// still stands is reserved again past it (HeldTurn), so the wakes a hold puts back leave from
+	// its end at the pace. It acts through Reserve alone, so a wake the pacing lets through — the
+	// controller's, a request a person waits on (exemptWake) — is never held. nil is no hold, a
+	// daemon with no `backpressure_url`.
+	Hold WakeHold
+}
+
+// WakeHold is a hold on the daemon's paced wakes that something outside the daemon decides
+// (internal/backpressure's Hold).
+type WakeHold interface {
+	// HoldWake is the end of the hold that stands at now and true, counting c's wake as one the
+	// hold puts back; the zero time and false while none stands.
+	HoldWake(c claim.Token, now time.Time) (time.Time, bool)
+}
+
+// heldFrom is the moment a paced wake of c is reserved from at now: the end of the hold that
+// stands at now and true, or now itself and false.
+func (p WakePace) heldFrom(c claim.Token, now time.Time) (time.Time, bool) {
+	if p.Hold == nil {
+		return now, false
+	}
+	if until, held := p.Hold.HoldWake(c, now); held {
+		return until, true
+	}
+	return now, false
+}
+
+// Turn reserves the moment a paced wake of c raised at now may run: the pacing's moment, reserved
+// from the end of the gateway's hold where one stands. Reserve must not be nil.
+func (p WakePace) Turn(c claim.Token, now time.Time) time.Time {
+	from, _ := p.heldFrom(c, now)
+	return p.Reserve(from)
+}
+
+// HeldTurn is what a paced wake of c whose moment has come at now does under the gateway's hold: a
+// fresh moment reserved past the hold and true while one stands, and the zero time and false while
+// none does, when the wake runs. A hold renewed after the wake was reserved is what puts its
+// moment inside the hold. The wake takes a second token; the one it took for a moment inside the
+// hold is a turn no wake could have used.
+func (p WakePace) HeldTurn(c claim.Token, now time.Time) (time.Time, bool) {
+	if p.Reserve == nil {
+		return time.Time{}, false
+	}
+	until, held := p.heldFrom(c, now)
+	if !held {
+		return time.Time{}, false
+	}
+	return p.Reserve(until), true
 }
 
 // WakeWaiting is a machine's waiting wake as its view publishes it: what kind of wake it is
@@ -280,17 +330,23 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, turn time.Time, 
 	// above 0 (the daemon's run).
 	reserve := m.deps.WakePace.Reserve
 	now := m.deps.Clock.Now()
+	// While the model gateway's hold stands, the launch is reserved from its end (WakePace.Hold),
+	// and so is a turn the caller reserved before the hold began that falls inside it.
+	from, held := m.deps.WakePace.heldFrom(m.claim.Token, now)
 	// A turn the caller reserved already is decided as RequestSpawn.Turn states.
 	at := now
 	switch {
-	case turn.IsZero():
-		at = reserve(now)
+	case turn.IsZero(), held && turn.Before(from):
+		at = reserve(from)
 	case turn.After(now):
 		at = turn
 	case now.Sub(turn) >= m.deps.WakePace.Interval:
 		at = reserve(now)
 		m.log.Warn("supervise: this launch reached the wake gate an interval or more after the turn its caller reserved; it is reserved a turn afresh",
 			"turn", turn, "late", now.Sub(turn), "due", at)
+	}
+	if held {
+		m.log.Info(WakeHeldMessage, "kind", kind, "holdUntil", from, "due", at)
 	}
 	m.wakeLetOut(at)
 	if !at.After(now) {
@@ -488,7 +544,26 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 	if pause, holds := m.pauseHolds(); holds {
 		return m.pauseGate(ctx, waiting, pause)
 	}
+	if at, held := m.deps.WakePace.HeldTurn(m.claim.Token, m.deps.Clock.Now()); held {
+		return m.holdOff(ctx, waiting, at)
+	}
 	return m.runWake(ctx, waiting, true)
+}
+
+// WakeHeldMessage is the line a paced wake writes where the model gateway's hold moves it to a
+// turn past the hold (WakePace.Hold): at the wake gate (reserveWake), at a turn that came while
+// the hold still stood (wakeNow) and at the let-out of a launch a project pause held
+// (letOutHeldLaunch).
+const WakeHeldMessage = "supervise: the model gateway holds new work; this wake waits for a turn past the hold"
+
+// holdOff parks again a paced wake whose turn met the gateway's hold, at the fresh turn at past it
+// (WakePace.HeldTurn), told to the daemon as every reservation is (wakeLetOut). The wake keeps the
+// moment it was first reserved, so the line it writes when it runs reports the whole of its wait.
+func (m *Machine) holdOff(ctx context.Context, waiting *wake, at time.Time) error {
+	m.log.Info(WakeHeldMessage, "kind", waiting.kind, "due", at)
+	m.wakeLetOut(at)
+	waiting.at, waiting.paid = at, true
+	return m.parkWake(ctx, waiting)
 }
 
 // runWake is everything a wake does once it is off the machine: the lifecycle recheck and the

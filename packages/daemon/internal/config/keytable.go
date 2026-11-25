@@ -313,6 +313,21 @@ var topLevelKeys = func() []keyDescriptor {
 			Positive:    &positiveKey{Value: 1, Count: func(c *Config) *int { return &c.WorkerWakeBurst }},
 		},
 		{
+			Name: "backpressure_url", Default: "the daemon reads no hold and holds nothing", RequiredBy: "no",
+			Description: "The model gateway's hold route, an http or https URL the daemon GETs every 10 to 15 seconds for a JSON list of `{team, state, hold_until, at, reason}` objects; while one for `backpressure_team` or `*` says `hold` with a `hold_until` ahead, read as at most 2 minutes ahead, the daemon reserves no paced wake before the hold ends and admits no issue, and releases them at `worker_wakes_per_minute` once it ends. A poll that fails, answers a non-success status or an unreadable body holds nothing. It needs `backpressure_token_file`, `backpressure_team` and a `worker_wakes_per_minute` above 0.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.BackpressureURL = v }),
+		},
+		{
+			Name: "backpressure_token_file", Default: "none: a configured `backpressure_url` is refused without it", RequiredBy: "when `backpressure_url` is configured",
+			Description: "The file holding the bearer token the daemon presents to `backpressure_url`, read again at every poll, so a rotated token needs no restart.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.BackpressureTokenFile = v }),
+		},
+		{
+			Name: "backpressure_team", Default: "none: a configured `backpressure_url` is refused without it", RequiredBy: "when `backpressure_url` is configured",
+			Description: "The model gateway team whose hold, besides a hold for every team (`*`), holds this daemon's new work.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.BackpressureTeam = v }),
+		},
+		{
 			Name: "worker_silence_minutes", Default: "`30`", RequiredBy: "no",
 			Description: "How many minutes a phase worker that is up, between turns and holding no task may go with no recorded step before the daemon sends it its phase's task again; decimals allowed, and a value under 16 is refused, since a healthy worker that says it is waiting stays quiet for 15 minutes before its own reminder comes again.",
 			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.WorkerSilence = v }),

@@ -93,6 +93,11 @@ type State struct {
 	// when; absent while the project is paused, before any pause has ended, and from a body served
 	// a caller below pauseContract.
 	LastPause *PauseView `json:"lastPause,omitempty"`
+	// Backpressure is the model gateway's hold on new work while one stands for this daemon
+	// (internal/backpressure, `backpressure_url`): absent while none stands, for a daemon with no
+	// `backpressure_url`, and from a body served a caller below backpressureContract (shaping.go's
+	// withoutBackpressure).
+	Backpressure *BackpressureView `json:"backpressure,omitempty"`
 	// ControllerLocator is the project's controller, absent until a session registers as it: with
 	// the capability `legion controller start` fetched, or, under `controller: daemon`, with the boot
 	// token of the daemon's own controller launch.
@@ -162,6 +167,22 @@ type State struct {
 // the key is on the wire at all is what the band is read by, since the reader below it refuses
 // the key when it is 0 as surely as when it names a number (server's withoutClaimsToRefresh).
 const ClaimsToRefreshField = "claimsToRefresh"
+
+// BackpressureView is the model gateway's hold on new work that stands (State.Backpressure): the
+// team the holding object names, the daemon's own gateway team or `*` for every team; the reason
+// the gateway gave; when the hold ends unless the gateway renews it, never more than two minutes
+// past the answer that set it; when the daemon read the hold as begun; and how many distinct paced
+// wakes and issues the hold has put back since it began. While it stands no paced wake goes out and
+// admission starts no issue of its waiting line; the wakes it held leave at
+// `worker_wakes_per_minute` once it ends.
+type BackpressureView struct {
+	Team           string    `json:"team"`
+	Reason         string    `json:"reason"`
+	HoldUntil      time.Time `json:"holdUntil"`
+	Since          time.Time `json:"since"`
+	HeldWakes      int       `json:"heldWakes"`
+	HeldAdmissions int       `json:"heldAdmissions"`
+}
 
 // ConsumerLagView is one durable consumer's lag as the state shows it (intake.ConsumerLag): its
 // name; how many messages wait for it (Waiting); the stream time of the oldest and its age in whole
