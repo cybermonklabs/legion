@@ -267,13 +267,14 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 // Each case sets INFRA's setting as TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNothing
 // does: A read well in the rig's store, B whose starting read fails, then C read well in a store of
 // its own, so A's store is the recorded old store; for the marked store, B's message marks B's
-// store. C's URL comes to serve the dropped store at 41, with no write of the setting. Work queued
-// on INFRA's runner keeps it busy with no read in flight, 16 messages of C's store wait behind
-// that work, and the dropped store's boot at 41 arrives past the cap. The test holds the boot to
-// owing the store read and holding it: the boot goes back to the stream holding that read, at its
-// hold's first hand-back (heldLine), and INFRA's cursor owes the store read alone and names the
-// boot as its holder, while no read is in flight. The runner is then let go. Within 75 s, a
-// minute on the intake's clock, INFRA's cursor follows the dropped store at 41.
+// store. C's URL comes to serve the dropped store at 41, with no write of the setting, and the
+// intake's clock moves ReadRetryAfter and a second on. Work queued on INFRA's runner keeps it busy
+// with no read in flight, 16 messages of C's store wait behind that work, and the dropped store's
+// boot at 41 arrives past the cap. The test holds the boot to owing the store read and holding it:
+// the boot goes back to the stream holding that read, at its hold's first hand-back (heldLine), and
+// INFRA's cursor owes the store read alone and names the boot as its holder, while no read is in
+// flight. The runner is then let go, and within 75 s of wall-clock time INFRA's cursor follows the
+// dropped store at 41.
 //
 // C serves the store at the boot's sequence, as a daemon that published the boot does: a daemon
 // commits each event before it publishes it. So the cursor reaches 41 whichever delivery makes

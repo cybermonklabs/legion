@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// The stores and runs of the daemons the tests here name besides INFRA's first: B's, C's and D's.
+// The runs and stores of the daemons the tests name B and C, besides INFRA's first.
 const (
 	bRun, bStore = "3c9e5a71-8b2d-4f06-a4e1-7d0b6c2f9a38", "9a4f2c6e-1d7b-4e38-b5a0-2e8c7f1d6b49"
 	cRun, cStore = "6f1b8d2a-4e7c-4a59-9d3b-0c5e2a7f8b16", "1e7c3b9d-5a2f-4c86-8e0b-4d6a1f9c2e73"
@@ -56,8 +56,10 @@ func (r *intakeRig) handBacksOf() map[uint64]int {
 // setting named before, and a message holds the durable's ack floor for about 11 minutes at the
 // most. A write of the setting that names another daemon ends the hold of the message that holds
 // the project's owed read, whatever store that message is of (released_holders): the message is
-// finished unapplied at its next delivery, holds no read and makes none, and its store is marked as
-// no daemon of the project. INFRA's setting names B, which never answers: each read of it waits out
+// finished unapplied at its next delivery, holds no read and makes none, and endHold says whether
+// it marks the message's store as no daemon of the project. Here it marks each held message's
+// store, which is neither the cursor's (no read of B or C is good) nor INFRA's first, the store
+// the write recorded. INFRA's setting names B, which never answers: each read of it waits out
 // the client's window, readWindow, and moves the intake's clock RequestTimeout on, so a read that
 // fails is due again at once. B's own message holds the owed read and goes back to the stream after
 // each read it makes. Then the setting names C, which never answers either, and C's own message
@@ -75,9 +77,9 @@ func TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt(t *testing.T) {
 	rig.awaitStartingRead("INFRA")
 	stall := func() { rig.clock.advance(RequestTimeout) }
 
-	// hold has the daemon at url publish a message in store under run once the cursor owes the read
-	// its starting read failed, waits for that message to go back to the stream holding the read,
-	// and answers the message's stream sequence.
+	// hold waits until named has served a read and INFRA's cursor owes one, as named's failed
+	// starting read leaves it, then publishes a message of named's in store under run, waits for
+	// that message to go back to the stream holding the read, and answers its stream sequence.
 	hold := func(name string, named *fakeDaemon, run, store string) uint64 {
 		t.Helper()
 		rig.waitFor(time.Minute, func() bool { return named.served() >= 1 && cursorOf(t, rig.database, "INFRA").readOwed }, func() string {
@@ -91,8 +93,9 @@ func TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt(t *testing.T) {
 		return held
 	}
 	// write names named in INFRA's setting, waits for held to be finished, and fails unless that
-	// took less than readWindow and a second, held made no read after the write, and the cursor
-	// marks marks as no daemon of INFRA.
+	// took less than readWindow and a second, held went back to the stream at most once after the
+	// write (the hand-back in flight at the write), and the cursor marks exactly the stores marks
+	// as no daemon of INFRA and records no released holder.
 	write := func(name string, named *fakeDaemon, held uint64, marks []string) {
 		t.Helper()
 		atWrite := rig.handBacksOf()[held]

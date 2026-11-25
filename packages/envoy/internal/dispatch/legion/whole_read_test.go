@@ -160,9 +160,9 @@ func (d *fakeDaemon) holds(t *testing.T) (release func()) {
 }
 
 // stateOf is a one-issue state document of INFRA's daemon at state sequence 1 of the rig's store
-// (rigStateID): the issue in phase, with planner or implementer holding the only claim. Its daemon
-// block and the dispatch_url of its settings are what make a whole read of it a good one
-// (fetchWhole).
+// (rigStateID): the issue in phase, with the worker of role (planner, implementer or tester in the
+// tests here) holding the only claim. Its daemon block and the dispatch_url of its settings are
+// what make a whole read of it a good one (fetchWhole).
 func stateOf(phase, role string) string {
 	return fmt.Sprintf(`{"daemon":{"project":"INFRA","stateSeq":1,"stateId":%q},
 		"settings":{"dispatch_url":"http://dispatch.internal.example"},
@@ -231,8 +231,7 @@ func announcements(t *testing.T, database *store.Store, project string) func(wha
 }
 
 // readDaemon reads setting's daemon whole for ReadReasonStart (ReadWhole), and fails the test on
-// the one error ReadWhole answers: a record the database refused, and refused again as a failed
-// read.
+// any error ReadWhole answers.
 func readDaemon(t *testing.T, database *store.Store, setting Settings) {
 	t.Helper()
 	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonStart); err != nil {

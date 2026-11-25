@@ -73,9 +73,10 @@ type readRuleRow struct {
 // ended its hold between", the failure the model found on 8 seeds at 0dc86e28. It passes with the
 // rule (read-rule-cases row 6.1b).
 //
-// Every other row leaves heldStarts off: each is cut to a recorded failure from before those steps
-// were added, so each draws exactly the steps it drew when it was cut. Each seed that
-// LEGION_READ_RULE_SEED or LEGION_READ_RULE_SEEDS names turns them on.
+// Every other row leaves heldStarts off, so each draws exactly the steps it drew before those steps
+// were added: the six above and seed 1030 keep the steps of a recorded failure, and seeds 8 and 37
+// draw 40, as many as readRuleDefaultSteps. Each seed that LEGION_READ_RULE_SEED or
+// LEGION_READ_RULE_SEEDS names turns them on.
 var readRuleRows = []readRuleRow{
 	{seed: 7, steps: 5}, {seed: 18, steps: 7}, {seed: 36, steps: 24}, {seed: 29, steps: 25},
 	{seed: 12, steps: 27}, {seed: 5, steps: 40}, {seed: 8, steps: 40}, {seed: 37, steps: 40},
@@ -133,7 +134,8 @@ var readRuleInvariants = map[int]string{
 //     until it next commits), stalled (each RequestTimeout on the intake's clock), slow, or refused
 //     a minute late, several reads in a row; or the daemon stops answering for 8 to 14 reads, each
 //     refused a minute late, while a message past a gap holds the read and its redeliveries make
-//     them, so a hold reaches stateMaxHolds hand-backs;
+//     them: a hold goes back stateMaxHolds times at the most, and fewer where the refusals end
+//     first (stopsAnsweringStep);
 //   - a write of the setting: the same URL, another daemon in a store of its own, another daemon that
 //     serves the same store (the daemon moved), or back to an earlier URL;
 //   - a redeploy: the daemon behind the setting's URL comes to serve the old store, an earlier
@@ -495,8 +497,9 @@ func (m *readRuleModel) foreignStore() *modelStore {
 	return m.foreign[m.random.IntN(len(m.foreign))]
 }
 
-// droppedStore is a store the cursor drops for a burst's message past the cap: the old store where
-// it is not the setting's, and a foreign store otherwise.
+// droppedStore is the store of a burst's message past the cap that the cursor may drop: the old
+// store where it is not the setting's, and a foreign store otherwise. Whether the cursor drops it
+// is cursor.forgets' rule: a foreign store, for one, is dropped only once the cursor marks it.
 func (m *readRuleModel) droppedStore() *modelStore {
 	if m.old != nil && m.old.store != m.setting.store {
 		return m.old.store
@@ -1044,8 +1047,8 @@ func (m *readRuleModel) awaitCaughtUp(index int) {
 	}
 }
 
-// intakeIdle reports whether the running intake has no whole read of INFRA in flight, no call for
-// INFRA's owed read queued and no message of INFRA waiting on its runner.
+// intakeIdle reports whether the running intake has no whole read of INFRA in flight, no call that
+// callRead queued for INFRA's owed read (calling) and no message of INFRA waiting on its runner.
 func (m *readRuleModel) intakeIdle() bool {
 	in := m.rig.intake
 	if in.readsNow("INFRA") {
@@ -1057,16 +1060,16 @@ func (m *readRuleModel) intakeIdle() bool {
 }
 
 // checkIdleCursor is invariant 2's cheap form, checked after each step: where the intake is idle
-// within quiet - no message of INFRA pending or in hand, no whole read in flight and no call for one
-// queued - a cursor that owes no read must hold a store and be at the newest message of it that the
-// stream delivered (published). A cursor that follows the setting's URL and holds no store takes no
-// message (outcomeNoStore) and calls for no read, and one behind a delivered message of its store
-// calls for none either, so the project, quiet from here, would stay behind with nothing to bring
-// it up. A cursor that follows no URL (a write's reset) is read at the next message, settings
-// change or take-over. A burst waits a while for the intake to drain (quiet), since the read it held
-// lands and the messages it held back are judged after it; the wait ends early once the only
-// messages pending are ones handed back with a delay, which keep the intake from being idle for up
-// to ReadRetryAfter.
+// within quiet - no message of INFRA pending or in hand, no whole read in flight and no call that
+// callRead queued for one (intakeIdle) - a cursor that owes no read must hold a store and be at the
+// newest message of it that the stream delivered (published). A cursor that follows the setting's
+// URL and holds no store takes no message (outcomeNoStore) and calls for no read, and one behind a
+// delivered message of its store calls for none either, so the project, quiet from here, would stay
+// behind with nothing to bring it up. A cursor that follows no URL (a write's reset) is read at the
+// next message, settings change or take-over. A burst waits a while for the intake to drain
+// (quiet), since the read it held lands and the messages it held back are judged after it; the
+// wait ends early once the only messages pending are ones handed back with a delay, which keep the
+// intake from being idle for up to ReadRetryAfter.
 func (m *readRuleModel) checkIdleCursor(index int, quiet time.Duration) {
 	var floor uint64
 	var parked bool
@@ -1169,13 +1172,13 @@ func (m *readRuleModel) checkValues(index int) {
 // a write that ended it (writeReleasedLine), a heldLine of another message, since a cursor names
 // one holder at a time, or a good whole read while it held the read - for example when a take-over
 // replays it from the durable's ack floor. The holder is the message that logged heldLine last. A
-// good read ends, for this check, the hold of that message: such a read clears the holder unless a
-// sequence skipped past the cap above its stateSeq keeps the gap read owed, and the log cannot show
-// which, so the check lets that holder's count start again. A good read also ends the hold of a
-// message whose two hand-backs its record lands between, by its legion_reads row's recorded_at
-// against each heldLine's time, whatever the log's order: the read's own line comes only after
-// its record commits, and a message judged beside the project's runner in that gap (judgeCrowded,
-// row 8.1) can go back first, on the cursor the read left.
+// good read ends, for this check, the hold of that message: such a read clears the holder unless
+// the skipped record keeps a read owed (cursor.afterRead), and the log cannot show which, so the
+// check lets that holder's count start again. A good read also ends the hold of a message whose two
+// hand-backs its record lands between, by its legion_reads row's recorded_at against each
+// heldLine's time, whatever the log's order: the read's own line comes only after its record
+// commits, and a message judged beside the project's runner in that gap (judgeCrowded, row 8.1)
+// can go back first, on the cursor the read left.
 func (m *readRuleModel) checkHandBacks(index int) {
 	recorded := m.goodReadsRecorded()
 	last, ended := map[uint64]float64{}, map[uint64]bool{}
