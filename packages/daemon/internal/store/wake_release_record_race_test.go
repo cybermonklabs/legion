@@ -308,10 +308,12 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 // Window 2 of round 9's class search (dispatch://INFRA-3589): the outbox's delivery wake resumes
 // its claim in process, with no `start` row to wait for the release's teardown. A release's stop
 // suspends the claim as `released` first, and records the role on the mark after it, in a
-// transaction of its own. A delivery wake that read the role on the mark found it not recorded
-// in that gap, took the wake and resumed the role in the pod the teardown was about to take. So
+// transaction of its own. A delivery wake that read the role on the mark in that gap would find
+// it not recorded, take the wake and resume the role in the pod the teardown is about to take. So
 // the delivery wake takes nothing while any mark of the issue stands, and once the teardown has
-// cleared the mark it takes its wake against the release the teardown recorded.
+// cleared the mark it takes its wake against the newest release recorded (LatestPodRelease): the
+// release the teardown recorded, or the release before it where the teardown gave up on its record
+// (internal/daemon's recordGivenUp, SettleUnrecordedRelease).
 func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()

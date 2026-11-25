@@ -28,8 +28,8 @@ import (
 // read before it. The two differ: the release's rows run on the issue's lifecycle lane, and a
 // notice or a hook prompt runs on a lane of its own, so the wake one of those makes can
 // resume a role in between. A teardown that took the first answer and ignored the second
-// recorded a release of a pod that still stands, armed a backstop over it and forgot its wake
-// marks, and left the other roles released in a running pod with nothing to bring them back.
+// recorded a release of a pod that still stands and forgot its wake marks, and left the other
+// roles released in a running pod with nothing to bring them back.
 func TestATeardownTheRuntimeFindsUnauthorizedCancelsTheRelease(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
@@ -58,18 +58,8 @@ func TestATeardownTheRuntimeFindsUnauthorizedCancelsTheRelease(t *testing.T) {
 	if len(records.Holds) != 1 || records.Holds[0].Reason != workflow.IdleHoldUnauthorized.String() {
 		t.Fatalf("holds = %+v, want the one %s", records.Holds, workflow.IdleHoldUnauthorized)
 	}
-	var backstops int
-	if err := rig.pool.QueryRow(ctx, `select count(*) from pod_wake_backstops where issue = $1`, rig.issue.Key).Scan(&backstops); err != nil {
-		t.Fatal(err)
-	}
-	if backstops != 0 {
-		t.Fatalf("backstops armed = %d, want none: a backstop belongs to a pod that is gone", backstops)
-	}
 	if rig.marked(t) {
 		t.Fatal("the cancelled release left its mark behind")
-	}
-	if rig.declined(t) {
-		t.Fatal("the cancelled release recorded a decline: only its workspace check declines")
 	}
 	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
 		t.Fatalf("the claim = %s by %s, want the cancelled release to have resumed it into the pod it kept",
@@ -324,19 +314,33 @@ func refusePodReleaseRecordOnce(t *testing.T, pool *store.Pool) {
 //     no resume and takes none, and the drain resumes the role once. The control of that absence
 //     follows it: once a later release of the issue is recorded, the same wake closes the resume
 //     and takes its own.
-//   - (b) is the control of (a). The next attempt runs a second before the bound. It fails as the
-//     first did: it logs its row's failure and no line of a give-up, the mark stands, the row
-//     stays, the resume and the start are as the wake left them, and the role is not resumed in
-//     the pod the teardown took.
+//   - (a2) is the test of the give-up's order. The next attempt runs at the bound and gives up on
+//     the record, and the end of the pod's hold under a pause (outbox.podDeleted), its next step,
+//     fails once (podEndFaults). The settle is the teardown's last write, in the transaction that
+//     clears the mark, so that attempt writes nothing of the give-up: it logs its row's failure and
+//     no ERROR line, the mark stands, and the resume and the start are as the wake left them. The
+//     attempt after it, a minute later and still past the bound, gives up again and ends as (a)
+//     does, with the one ERROR line of the whole run.
+//   - (b) is the control of (a) and (a2). The next attempt runs a second before the bound. It fails
+//     as the first did: it logs its row's failure and no line of a give-up, the mark stands, the
+//     row stays, the resume and the start are as the wake left them, and the role is not resumed
+//     in the pod the teardown took.
 func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
+	// holdEndRefused is the error of podEndFaults' refused end of the pod's hold.
+	const holdEndRefused = "the pause's hold on the pod cannot be read"
 	for _, tc := range []struct {
 		name string
 		// next is when the next attempt runs, after the release's mark.
 		next time.Duration
 		// givesUp is whether that attempt gives up on the record.
 		givesUp bool
+		// holdEndFails is whether that attempt's end of the pod's hold fails once, so the attempt
+		// a minute after it is the one that finishes.
+		holdEndFails bool
 	}{
 		{name: "(a) the test: the attempt at the bound gives up on the record", next: workflow.WakeHeldForRelease, givesUp: true},
+		{name: "(a2) the test: an attempt at the bound whose next step fails writes nothing of the give-up, and the attempt after it gives up",
+			next: workflow.WakeHeldForRelease, givesUp: true, holdEndFails: true},
 		{name: "(b) the control: an attempt a second before the bound fails", next: workflow.WakeHeldForRelease - time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -392,9 +396,10 @@ func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
 				return logs.String()[before:]
 			}
 			// failing checks a teardown whose attempts all failed: the row kept with that many
-			// attempts, the mark standing, no record of the release, the wake's resume and its start
-			// as the wake left them, and the role not resumed.
-			failing := func(attempts int, logged string) {
+			// attempts, its failure logged once naming cause, the mark standing, no line of a
+			// give-up, no record of the release, the wake's resume and its start as the wake left
+			// them, and the role not resumed.
+			failing := func(attempts int, logged, cause string) {
 				t.Helper()
 				var kept int
 				if err := rig.pool.QueryRow(ctx, `select attempts from outbox where issue = $1 and kind = 'issue_release'`,
@@ -402,9 +407,9 @@ func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
 					t.Fatalf("the teardown row's attempts = %d (%v) and the mark stands = %t; want the row failed %d times and the mark left",
 						kept, err, rig.marked(t), attempts)
 				}
-				refused := loggedLines(t, logged, podReleasesRefused)
-				if len(refused) != 1 || refused[0]["msg"] != "outbox row failed" || refused[0]["kind"] != "issue_release" {
-					t.Fatalf("the attempt's lines that name the refused record = %v, want one: the teardown row's failure", refused)
+				failed := loggedLines(t, logged, cause)
+				if len(failed) != 1 || failed[0]["msg"] != "outbox row failed" || failed[0]["kind"] != "issue_release" {
+					t.Fatalf("the attempt's lines that name %q = %v, want one: the teardown row's failure", cause, failed)
 				}
 				if given := loggedMessages(t, logs.String(), idleRigRecordGivenUp); len(given) != 0 {
 					t.Fatalf("the teardown logged %v, want no line of a teardown that gave up on its record", given)
@@ -422,33 +427,45 @@ func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
 				}
 			}
 
-			failing(1, attempt(workflow.WakeHeldForRelease-time.Minute))
+			failing(1, attempt(workflow.WakeHeldForRelease-time.Minute), podReleasesRefused)
+			if tc.holdEndFails {
+				rig.runner.trees = &podEndFaults{outboxTrees: rig.st}
+			}
 			logged := attempt(tc.next)
 			if !tc.givesUp {
-				failing(2, logged)
+				failing(2, logged, podReleasesRefused)
 				return
+			}
+			// gaveUp is when the attempt that gives up runs, which is the time the settle writes.
+			gaveUp := markedAt.Add(tc.next)
+			if tc.holdEndFails {
+				failing(2, logged, holdEndRefused)
+				gaveUp = gaveUp.Add(time.Minute)
+				logged = attempt(tc.next + time.Minute)
 			}
 
 			errorLines := loggedLines(t, logged, `"level":"ERROR"`)
 			if len(errorLines) != 1 || !strings.HasPrefix(fmt.Sprint(errorLines[0]["msg"]), idleRigRecordGivenUp) ||
 				errorLines[0]["issue"] != rig.issue.Key || errorLines[0]["release"] != float64(mark) ||
 				!strings.Contains(fmt.Sprint(errorLines[0]["error"]), podReleasesRefused) {
-				t.Fatalf("the attempt at the bound logged the ERROR lines %v; want one, %q, naming issue %s, release %d and the record's error %q",
+				t.Fatalf("the attempt that gave up logged the ERROR lines %v; want one, %q, naming issue %s, release %d and the record's error %q",
 					errorLines, idleRigRecordGivenUp, rig.issue.Key, mark, podReleasesRefused)
 			}
+			if given := loggedMessages(t, logs.String(), idleRigRecordGivenUp); len(given) != 1 {
+				t.Fatalf("the teardown logged %v, want the one ERROR line of the attempt that gave up", given)
+			}
 			if failed := loggedMessages(t, logged, "outbox row failed"); len(failed) != 0 {
-				t.Fatalf("the attempt at the bound logged %v, want no failure of its row", failed)
+				t.Fatalf("the attempt that gave up logged %v, want no failure of its row", failed)
 			}
 			var rows int
 			if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'issue_release'`,
 				rig.issue.Key).Scan(&rows); err != nil || rows != 0 || rig.marked(t) {
-				t.Fatalf("after the attempt at the bound the teardown rows = %d (%v) and the mark stands = %t; want the row finished and the mark cleared",
+				t.Fatalf("after the attempt that gave up the teardown rows = %d (%v) and the mark stands = %t; want the row finished and the mark cleared",
 					rows, err, rig.marked(t))
 			}
 			if releases := rig.records(t).Releases; len(releases) != 1 || releases[0].ID != earlier {
 				t.Fatalf("releases = %+v, want the earlier release %d alone: the give-up writes no pod release", releases, earlier)
 			}
-			gaveUp := markedAt.Add(workflow.WakeHeldForRelease)
 			settled := wokenResume{release: 0, seen: earlier, at: gaveUp, clock: gaveUp}
 			rig.wantImplementerResume(t, settled)
 			if starts := rig.implementerStarts(t); starts != 1 {

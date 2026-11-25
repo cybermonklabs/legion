@@ -5403,15 +5403,15 @@ func TestTheDefaultSessionReapIntervalMeetsTheTwoMinuteAdoption(t *testing.T) {
 }
 
 // The role claim reaper runs on a period of its own, and its default is the five minutes the
-// fixed pass this change replaces ran at. A session bucket an older build created keeps a record
+// deployment keeps for it. A session bucket an older build created keeps a record
 // five minutes until ENVOY_SESSION_MAX_AGE raises it, and there a holder whose key expired reads
-// gone, so a shorter pass would free a stalled holder's role sooner than the fixed pass did. Two
-// passes still fit well inside the gone horizon, so a holder that really is gone loses its role
-// promptly.
+// gone, so a shorter pass would free a stalled holder's role sooner than a five-minute pass does.
+// Two passes still fit well inside the gone horizon, so a holder that really is gone loses its
+// role promptly.
 func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndTwoPassesFitInsideTheGoneHorizon(t *testing.T) {
 	t.Parallel()
 	if defaultRoleClaimReapInterval != 5*time.Minute {
-		t.Fatalf("the default role claim reap interval is %s, want the 5m fixed pass this change replaced: the deployment keeps that period, and a change to it is a change to how long a gone holder keeps its role", defaultRoleClaimReapInterval)
+		t.Fatalf("the default role claim reap interval is %s, want 5m: the deployment keeps that period, and a change to it is a change to how long a gone holder keeps its role", defaultRoleClaimReapInterval)
 	}
 	if got := 2 * defaultRoleClaimReapInterval; got > session.GoneHorizon {
 		t.Fatalf("two passes at the default role claim reap interval take %s, want them inside the %s gone horizon, so a gone holder's role is free well before an operator waits out another horizon", got, session.GoneHorizon)

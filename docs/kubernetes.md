@@ -7974,11 +7974,14 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   Its release line follows the record, and a teardown whose record was already written logs no second line.
   A record that cannot be written fails the teardown before its later steps: the mark stands, the row runs again on its backoff, and the attempt whose record lands logs the release line.
 
-A teardown whose record cannot be written runs again for at most 15 minutes after the release's mark (`issue_releases.marked_at`), the same bound a listener's wake report waits for a release.
-The first attempt at or past that bound gives up on the record, and the daemon logs one line at ERROR, `outbox: the record of a release could not be written within 15 minutes of its mark; the teardown finishes without it and clears the mark, the release records hold no row of this release, and each wake taken during it starts once`, with the fields `issue`, `release` (the mark's id, `issue_releases.id`) and `error` (the write's error).
-The teardown then finishes its later steps as after a record: it ends the pod's hold under a pause, runs the end of the pod, arms the idle release's backstop and clears the mark, so the starts and messages that the release held run.
+A teardown whose record cannot be written runs again on its backoff until 15 minutes after the release's mark (`issue_releases.marked_at`), the same bound a listener's wake report waits for a release.
+The first attempt at or past that bound gives up on the record and finishes its later steps as after a record: it ends the pod's hold under a pause, runs the end of the pod and arms the idle release's backstop.
+Its last write, in place of the clear of the mark, settles the wakes taken while the release stood, writes no release record and clears the mark, all in one transaction, so no wake is taken between the settle and the clear; the starts and messages that the release held then run.
+Once that transaction commits, the daemon logs one line at ERROR, `outbox: the record of a release could not be written within 15 minutes of its mark; the teardown finishes without it and clears the mark, the release records hold no row of this release, and each wake taken during it starts once`, with the fields `issue`, `release` (the id of the release's mark, `issue_releases.id`, which no row holds by the time of this line: the transaction before it cleared the mark, wrote no pod release and paired each wake with release 0) and `error` (the write's error).
+An attempt whose later step fails before that last write logs no such line and leaves the mark: the row runs again, and its next attempt, still past the bound, gives up again.
 A wake taken while the release stood keeps its one start, which brings its role back once in the new pod, and the role's next wake starts it no second time; its resume is recorded against no release (`pod_resumes.release_id` 0), as the first wake of an issue is, so the stranded report leaves it out and the stuck warning still reads it (`SettleUnrecordedRelease`, `internal/store/release_records.go`).
-The line means that the database refused the release's record for 15 minutes, and the release records count one release fewer than the daemon made: read its `error` and fix the database before the next release.
+The line means that every attempt to write the release's record failed, the last at or past 15 minutes after the mark: a teardown that reached its record only after that bound, because its role stops or its runtime steps took that long, gives up at its first failed record.
+The release records count one release fewer than the daemon made: read its `error` and fix the database before the next release.
 
 The pod's disk goes with the pod, as at every other end of a pod, and a released issue leaves nothing in the namespace: no Sandbox, no pod and no volume claim.
 A kept volume is the exception: a released issue whose Sandbox owns one leaves that Sandbox, `Suspended`, and the claim of its volume, and no pod and no Secret.
@@ -8037,7 +8040,7 @@ A wake that arrives while the release runs cancels it, up to the moment the firs
 After that moment, the release's record of a role's claim as `released` is its point of no return for that role: a wake of that role no longer cancels the release.
 The release's teardown runs to its end, and the wake's start waits for it, because no start of a role of the issue runs while the issue's teardown row is in the outbox.
 The role then starts once, in the new pod.
-Its task says that its pod was released and that this wake brought it back, and the wake's resume is recorded against that release.
+Its task says that its pod was released and that this wake brought it back, and the wake's resume is recorded against that release, or against no release where the teardown gave up on the release's record (above).
 A wake that a project's pause holds is recorded against no release, as every held wake is: the teardown's record moves only the release that wake saw and its times ([Pausing a project](#pausing-a-project)).
 A notice, hook prompt, merge-queue removal message or merge-forward message for a `released` role of the issue takes no wake while the release runs, whether or not the release stopped that role.
 It waits in its outbox row, reads the role again every 30 seconds, and wakes the role in the new pod once the teardown has finished.
@@ -8083,7 +8086,7 @@ While a committed release has not finished, the whole workflow of its issue wait
 So a Kubernetes step that keeps failing after the commit, such as the delete of a role Secret or of the Sandbox, stops the issue.
 Fix the cluster first.
 When the runtime's step succeeds, the next attempt of the teardown finishes the release, the daemon logs `outbox: released the idle pod of an issue, whose workspace held no unpushed commit on a working copy or a bookmark and no working-copy change; its roles resume in the same sessions at the next wake`, and every row the release held runs.
-A record of the release that the database keeps refusing stops the issue for at most 15 minutes after the mark, with no step by hand: the teardown then gives up on the record, logs the ERROR line that the steps of a release above name, and finishes.
+A record of the release that the database keeps refusing stops the issue until the teardown's first attempt at or past 15 minutes after the mark, with no step by hand: that attempt gives up on the record, finishes, and then logs the ERROR line that the steps of a release above name.
 
 If the step cannot succeed, end the release by hand.
 This is the last way out: no backstop is armed for the release's roles, and where no record names the mark (the read below shows no `released`) the release records hold no row for this release.

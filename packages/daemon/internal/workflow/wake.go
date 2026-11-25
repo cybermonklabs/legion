@@ -142,13 +142,14 @@ func PauseWakeRow(issue record.Issue, role claim.Role, pause int64) record.Super
 }
 
 // A wake report that finds its claim in a release that has not ended is applied again every
-// wakeRetryInRelease, for at most WakeHeldForRelease after the report's own time. That limit is
-// longer than INFRA's 610-second bound on a stop (runtime/sandbox), so a release that ends
-// records the claim inside it. A release that has not ended by then has a fault of its own, and
-// the wake is dropped with one warning (listenerWakeInRelease). WakeHeldForRelease is R3's bound
-// on the release too (dispatch://INFRA-3589): a teardown whose record of the release cannot be
-// written runs again for at most WakeHeldForRelease after the release's mark, and then finishes
-// without that record and clears the mark (internal/daemon's recordGivenUp).
+// wakeRetryInRelease, until WakeHeldForRelease after the report's own time. That limit is longer
+// than INFRA's 610-second bound on a stop (runtime/sandbox), so a release that ends records the
+// claim inside it. A release that has not ended by then has a fault of its own, and the wake is
+// dropped with one warning (listenerWakeInRelease). WakeHeldForRelease is R3's bound on the
+// release too (dispatch://INFRA-3589): a teardown whose record of the release cannot be written
+// runs again until its first attempt at or past WakeHeldForRelease after the release's mark,
+// which finishes without that record and clears the mark in the transaction that settles the
+// wakes taken under it (internal/daemon's recordGivenUp and settleGivenUp).
 const (
 	wakeRetryInRelease = 30 * time.Second
 	WakeHeldForRelease = 15 * time.Minute

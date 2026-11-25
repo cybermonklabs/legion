@@ -283,7 +283,7 @@ describe("consumer delivery", () => {
   // land, after it made the session's consumer, so what the stream stores still reaches the
   // session. Such a refusal is held as the start race is: no notice inside the bound, and a
   // registration accepted inside it clears it with none. Past the bound the session is told once
-  // that the listener did not record its registration, and never that it has no consumer.
+  // that its registration is not recorded for certain, and never that it has no consumer.
   const UNRECORDED = `${BUS_UNANSWERED_PREFIX}: write the known-session record of ${SESSION}: context deadline exceeded`;
 
   /** One heartbeat tick whose registration the listener refuses: envoy-client's transport sends
@@ -330,7 +330,7 @@ describe("consumer delivery", () => {
     }
   });
 
-  test("(e) past the bound a bus-outage 503 is told once, as a registration the listener did not record, and the accepted registration after it says inbound is back", async () => {
+  test("(e) past the bound a bus-outage 503 is told once, as a registration not recorded for certain, and the accepted registration after it says inbound is back", async () => {
     const session = await bootConsumer("consumer-unrecorded-past-bound", {
       refuse: { status: 503, error: UNRECORDED },
     });

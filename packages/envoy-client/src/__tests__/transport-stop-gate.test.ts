@@ -155,7 +155,7 @@ describe("the stop gate", () => {
     expect(delivered(published).envelope.event_id).toBe(ENVELOPE.event_id);
   });
 
-  test("a registration whose fetch started before the stop is answered as before, and a retry after the stop is not sent and ends the call with the sent attempt's answer", async () => {
+  test("a registration whose fetch started before the stop is answered, and a retry after the stop is not sent and ends the call with the sent attempt's answer", async () => {
     let stopping = false;
     const fetched: string[] = [];
     const answers: (() => void)[] = [];

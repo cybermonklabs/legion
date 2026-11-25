@@ -3734,18 +3734,22 @@ func declineMessage(issue string, work runtime.WorkspaceWork) string {
 // Sandbox already gone is done, a Suspended one is not patched again, a Secret already gone
 // counts as deleted). Once the runtime has answered, the release's record is the first step, and
 // it names the release's mark (store.Store.RecordPodRelease). A record that cannot be written is
-// the teardown's error: the mark stands, and the row runs again on the outbox's backoff, for at
-// most workflow.WakeHeldForRelease after the mark (store.ReleaseDecision.MarkedAt), R3's bound.
-// The attempt at or past that bound gives up on the record (recordGivenUp): it settles the wakes
-// taken under the mark in place of the record and writes no pod release
-// (store.Store.SettleUnrecordedRelease), logs one ERROR line naming the issue, the release and the
-// write's error, and finishes the steps that are left, so the mark clears and the row finishes. A
-// later step that fails runs the row again too, and that attempt reads the mark as a release that
-// took its pod (store.ReleaseDecision.PodTaken): it asks the runtime nothing, cancels nothing, and
-// finishes the steps that are left. A cancel then would resume roles in a pod that is gone and
-// drop the wakes the record already counted. The release line follows the record's first write,
-// so it is logged once, by the attempt whose record lands, and a teardown that gave up on its
-// record logs none.
+// the teardown's error: the mark stands, and the row runs again on the outbox's backoff, until
+// workflow.WakeHeldForRelease after the mark (store.ReleaseDecision.MarkedAt), R3's bound. The
+// attempt at or past that bound gives up on the record (recordGivenUp) and finishes the steps that
+// are left. Its last write, in place of the clear of the mark, settles the wakes taken under the
+// mark in place of the record, writes no pod release and clears the mark, in one transaction
+// (settleGivenUp, store.Store.SettleUnrecordedRelease), so no wake is taken between the settle and
+// the clear. Once that transaction commits, it logs one ERROR line naming the issue, the release
+// and the write's error, and the row finishes. A later step that fails runs the row again too.
+// Where the record was written, that attempt reads the mark as a release that took its pod
+// (store.ReleaseDecision.PodTaken): it asks the runtime nothing, cancels nothing, and finishes the
+// steps that are left. A cancel then would resume roles in a pod that is gone and drop the wakes
+// the record already counted. Where the teardown gave up on the record, no record names the mark:
+// that attempt reads it as committed (store.ReleaseDecision.Committed), cancels nothing, asks the
+// runtime again, and writes the record or gives up on it again. The release line follows the
+// record's first write, so it is logged once, by the attempt whose record lands, and a teardown
+// that gave up on its record logs none.
 //
 // A teardown of the release of a pod no role can use that took nothing records no pod release and
 // logs no release line, which would count one release twice, and logs instead that it found no
@@ -3850,9 +3854,14 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// (store.Store.RecordPodRelease). A record that cannot be written is the teardown's error: the
 	// mark stands, and the row runs again on the outbox's backoff, until
 	// workflow.WakeHeldForRelease after the mark. The attempt at or past that bound gives up on
-	// the record and finishes the steps below (recordGivenUp). A release that suspended no role
-	// records no roles. The release line follows the record's first write, and a retry whose
-	// record was already written logs it no second time (recordPodRelease).
+	// the record (recordGivenUp) and finishes the steps below, and its last write is the settle, in
+	// place of the clear of the mark (settleGivenUp). A release that suspended no role records no
+	// roles. The release line follows the record's first write, and a retry whose record was
+	// already written logs it no second time (recordPodRelease).
+	//
+	// givenUp is whether this teardown gave up on the record, and unrecorded is the record's error.
+	var givenUp bool
+	var unrecorded error
 	if records {
 		suspended := decision.Suspended
 		if decision.SuspendsNoRole {
@@ -3860,7 +3869,8 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		}
 		wrote, err := r.recordPodRelease(ctx, row.Issue, decision.Release, payload.Generation, suspended)
 		if err != nil {
-			if err := r.recordGivenUp(ctx, row.Issue, decision, err); err != nil {
+			unrecorded = err
+			if givenUp, err = r.recordGivenUp(decision, err); err != nil {
 				return err
 			}
 		}
@@ -3903,6 +3913,9 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 			r.log.Info("outbox: the release found no Sandbox of the issue to release and released nothing",
 				"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation, "claims", claims)
 		}
+		if givenUp {
+			return r.settleGivenUp(ctx, row.Issue, decision.Release, unrecorded)
+		}
 		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
 	}
 	// The pod is gone, so the backstop is armed now and not before: a release that stopped short
@@ -3914,6 +3927,9 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	}
 	if err := r.armBackstops(ctx, issue); err != nil {
 		return err
+	}
+	if givenUp {
+		return r.settleGivenUp(ctx, row.Issue, decision.Release, unrecorded)
 	}
 	return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
 }

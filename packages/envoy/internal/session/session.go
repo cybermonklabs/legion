@@ -29,10 +29,10 @@ func (e SessionEntry) ConsumerRelaysStored(captured bool, storedSeq uint64) bool
 }
 
 // Resolve decides what a fan-out delivery of item to sessionID's session at entry comes to, and
-// there are two answers left, which its error alone carries: a nil error is the session's own
+// there are two answers, which its error alone carries: a nil error is the session's own
 // consumer relaying the message, so this delivery has nothing left to do - the relay of that
 // consumer is what delivers it - and ErrNoSessionRecord is an entry that records no way of
-// receiving at all. No session takes a message off a NATS subscription of its own any more
+// receiving at all. No session takes a message off a NATS subscription of its own
 // (dispatch://INFRA-771), so there is no third outcome for a result to describe. A nil entry
 // produces ErrNoSessionRecord, the same answer a failed lookup produces, so a caller can avoid a
 // second registry read.

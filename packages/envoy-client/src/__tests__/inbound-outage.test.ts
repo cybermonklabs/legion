@@ -332,7 +332,7 @@ describe("one registration", () => {
     expect([report.told, report.restored]).toEqual([[], []]);
   });
 
-  test("(e) past the bound a bus-outage 503 is told once, as a registration the listener did not record and not as a session with no consumer", async () => {
+  test("(e) past the bound a bus-outage 503 is told once, as a registration not recorded for certain and not as a session with no consumer", async () => {
     const report = reportOnClock();
 
     await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);

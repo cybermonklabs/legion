@@ -55,9 +55,9 @@ const (
 // consumerPluginPackage and consumerPluginMinimumVersion name the release of Oh My Pi's plugin
 // that first asked for the session's durable consumer, @sjawhar/pi-envoy 14.1.0
 // (packages/pi-envoy/CHANGELOG.md, 14.1.0, "Consumer delivery"); every release before it receives
-// from a plain NATS subscription this listener no longer feeds. A registration of that release or
-// a later one is given a consumer whether or not it asks for one (readsUnaskedRelay), and
-// noConsumerRemedy tells every other client that asks for none what it must do.
+// from a plain NATS subscription, which this listener does not feed. A registration of that
+// release or a later one is given a consumer whether or not it asks for one (readsUnaskedRelay),
+// and noConsumerRemedy tells every other client that asks for none what it must do.
 const (
 	consumerPluginPackage        = "@sjawhar/pi-envoy"
 	consumerPluginMinimumVersion = "14.1.0"

@@ -485,7 +485,7 @@ api() { # api PORT METHOD PATH [BODY]
 # a consumer whether or not it asks (`readsUnaskedRelay`, R21 of dispatch://INFRA-3589). This rig's
 # registration names no plugin, so without the ask it would be refused, and the session would
 # exist for no check to read. It says `self_subscribed` as every plugin's registration does, and
-# that field decides no delivery any more: it records what a session says of itself, which a check
+# that field decides no delivery: it records what a session says of itself, which a check
 # reads back, and nothing follows from it, which is why no caller chooses it.
 registered() {
   local session=$1 body

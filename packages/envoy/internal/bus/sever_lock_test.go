@@ -19,15 +19,17 @@ import (
 // Sever does not wait for the client's own lock. A caller can hold that lock while it waits for
 // nats.go's: ResendRefusedCore reads its connection's status under it, and Close closes the
 // connection under it. Connected does not: it reads the status with the client's lock released. A
-// Sever that took the client's lock to find the connection waited behind such a caller for as long
-// as a write held nats.go's lock, and once the link moved, the publish that waited behind the
-// write went out before the sever. Two subtests: with no such caller (the control), and with a
+// Sever that took the client's lock to find the connection would wait behind such a caller for as
+// long as a write holds nats.go's lock, and once the link moves, the publish waiting behind the
+// write would go out before the sever. Two subtests: with no such caller (the control), and with a
 // ResendRefusedCore left waiting for nats.go's lock, which the row waits for until the client's
 // lock stays taken. Each requires that Sever returns while the write still holds the lock, and that
 // the publish that waited behind the write never reaches the server: once the client has a
 // connection of its own again, a second marker published and flushed on it is the first the
 // subscriber receives.
 func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
+	// Serial (busTestParallelism): it reads back something the whole process shares, every
+	// goroutine's stack, which HoldStalledWrite reads to find its stalled write.
 	testnats.RequireSocketQueues(t)
 	const subject = "testbus.sever.locked-marker"
 	for _, withRead := range []bool{false, true} {

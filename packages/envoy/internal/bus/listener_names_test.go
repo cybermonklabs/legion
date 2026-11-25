@@ -7,8 +7,8 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
-// The listener's durable and role-lane queue are the names cmd/listener spelled itself before they
-// moved here: a space in the machine id becomes a hyphen in both. Each other character NATS
+// The listener's durable and role-lane queue keep the names a deployed listener's durable and
+// queue group carry: a space in the machine id becomes a hyphen in both. Each other character NATS
 // refuses in a consumer name becomes '%' and its byte in two upper-case hex digits. ListenerSpelling
 // is the same spelling with no prefix, which an edge listener's inbox prefix and receipt family
 // carry, so it is each name with its prefix cut off.

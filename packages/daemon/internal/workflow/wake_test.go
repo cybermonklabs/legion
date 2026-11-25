@@ -36,6 +36,8 @@ type wakeRig struct {
 	engine *Engine
 	logged *bytes.Buffer
 	apply  func(id string, fact intake.Fact) intake.Result
+	// clock is the engine's clock, at wakeAt until a row moves it.
+	clock *checkClock
 }
 
 func newWakeRig(t *testing.T) wakeRig {
@@ -52,7 +54,7 @@ func newWakeRig(t *testing.T) wakeRig {
 		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head1", Failing: []string{}})
 	seedReleasedClaim(t, pool, claim.RoleImplementer, "session-implementer")
 	seedReleasedClaim(t, pool, claim.RoleArchitect, "session-architect")
-	return wakeRig{pool: pool, engine: engine, logged: logged, apply: applyFacts(t, pool, engine)}
+	return wakeRig{pool: pool, engine: engine, logged: logged, apply: applyFacts(t, pool, engine), clock: clock}
 }
 
 // wakePods is the project's pod records as the daemon hands them to the engine

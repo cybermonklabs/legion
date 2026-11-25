@@ -82,7 +82,7 @@ func TestAWaitingRetryWaitsItsOwnDelayAtEveryDelivery(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			retry := &RetryLater{After: 30 * time.Second, Waiting: tc.waiting, Err: errors.New("the wake finds its claim in a release")}
-			if got := retryDelay(7, spec, retry); got != tc.want {
+			if got, _ := retryDelay(7, spec, retry); got != tc.want {
 				t.Fatalf("retryDelay at delivery 7 = %s, want %s", got, tc.want)
 			}
 		})

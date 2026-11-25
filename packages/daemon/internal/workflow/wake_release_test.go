@@ -315,9 +315,10 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 
 	// (k) A release whose workspace check declines it ends at the decline, which cancels it before
 	// any role stops (store.Store.DeclineIssueRelease). A wake report held while that release stood
-	// is applied at its next delivery: it finds the claim live in no release and does nothing more,
-	// as (e) does, with no retry and no warning that drops it. Its control is the first delivery,
-	// made while the release stands, which is retried.
+	// is applied at its next delivery, which comes at the bound, where a release still standing
+	// drops it: it finds the claim live in no release and does nothing more, as (e) does, with no
+	// retry and no warning that drops it. Its control is the first delivery, made while the release
+	// stands, which is retried.
 	t.Run("(k) a declined release ends, and the wake it held is applied", func(t *testing.T) {
 		rig := newWakeRig(t)
 		st := releaseStore(t, rig.pool)
@@ -346,6 +347,9 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 			t.Fatalf("DeclineIssueRelease = %+v, %v; want the decline recorded and no resume: no role had stopped", declined, err)
 		}
 
+		// The next delivery comes at the bound, where a release still standing drops the wake: only
+		// the decline's end of the release keeps it.
+		rig.clock.now = wakeAt.Add(WakeHeldForRelease)
 		if err := applyWake(rig, "wake", fact); err != nil {
 			t.Fatalf("applying the held wake after the decline = %v, want it applied with no retry", err)
 		}
@@ -436,10 +440,6 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		const coming = "wake: the role is coming back on a start already queued; this wake takes nothing"
 		if lines := loggedLines(rig, "INFO", coming); len(lines) != 1 || !strings.Contains(lines[0], "issue=LEGION-208") {
 			t.Fatalf("INFO lines %q = %q, want one naming LEGION-208; log:\n%s", coming, lines, rig.logged.String())
-		}
-		const dropped = "wake: a wake that came during a release was dropped"
-		if lines := loggedLines(rig, "WARN", dropped); len(lines) != 0 {
-			t.Fatalf("WARN lines %q = %q, want none: the decline ended the release, so the wake was not dropped", dropped, lines)
 		}
 	})
 

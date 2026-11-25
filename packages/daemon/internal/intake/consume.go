@@ -1416,10 +1416,9 @@ func resolveReviewBody(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact,
 // the nak itself fails. A RetryLater that is Waiting is no failure: its line is at info and says
 // the fact waits.
 func nakResolve(spec ConsumerSpec, message jetstream.Msg, delivered uint64, eventID string, outcome messageOutcome) {
-	delay := retryDelay(delivered, spec, outcome.err)
+	delay, waiting := retryDelay(delivered, spec, outcome.err)
 	level, what := slog.LevelWarn, outcome.what
-	var later *RetryLater
-	if errors.As(outcome.err, &later) && later.Waiting {
+	if waiting {
 		level, what = slog.LevelInfo, "an intake fact waits and is applied again after its delay"
 	}
 	logMessage(spec.Logger, level, what, message, "event_id", eventID, "retry_in", delay, "delivered", delivered, "error", outcome.err)

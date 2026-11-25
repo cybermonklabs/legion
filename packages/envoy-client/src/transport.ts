@@ -366,8 +366,8 @@ export type EnvoyClientConfig = {
    * (`STOP_GATE`). A call none of whose attempts was sent throws `EnvoyStoppingError`. A call
    * whose retry the gate refuses after an earlier attempt was sent ends with that attempt's own
    * outcome, as a call whose retries ran out does: that attempt may have landed. An attempt
-   * already sent is not cancelled, and its answer is read as before. Unset, the session never
-   * reads as stopping.
+   * already sent is not cancelled, and its answer is read as any answer is. Unset, the session
+   * never reads as stopping.
    */
   readonly stopping?: () => boolean;
 };

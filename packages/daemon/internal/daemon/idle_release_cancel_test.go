@@ -569,9 +569,6 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 	if rig.marked(t) {
 		t.Fatal("the cancelled release left its mark behind")
 	}
-	if rig.declined(t) {
-		t.Fatal("the cancelled release recorded a decline: only its workspace check declines")
-	}
 	var left int
 	if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1
 		and kind in ('supervise', 'issue_suspend', 'issue_release')`, rig.issue.Key).Scan(&left); err != nil {

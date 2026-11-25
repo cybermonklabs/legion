@@ -30,9 +30,8 @@ const SESSION = "ses_claude"
 // R24 (INFRA-3589): a session is told it receives nothing only when that is so. A session that
 // closes its own relay on purpose - its shutdown closes the relay before the registration chain
 // is drained - has lost nothing, and a heartbeat that was waiting on that chain and runs after
-// the close is no outage. The tester found the race as the connection probe test of
-// `envoy-channel-consumer.test.ts` failing 15 of 20 runs on a loaded pod; this test holds it open
-// on purpose. Its control is the row after it.
+// the close is no outage. This test holds that race open on purpose. Its control is the row
+// after it.
 test("a heartbeat that runs after the session's shutdown closed its relay tells the session nothing", async () => {
   const directory = scratchState()
   const nats = new FakeNats()

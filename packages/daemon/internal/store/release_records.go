@@ -188,10 +188,11 @@ type PodReleaseRecords struct {
 // this call wrote the row, which a record that names no mark always does.
 //
 // A write of this record can fail every time, for a fault of the database or of this row. The
-// teardown runs again on the outbox's backoff while it does, for at most
-// workflow.WakeHeldForRelease after the release's mark, and then gives up on the record
-// (internal/daemon's releaseIssue): it writes SettleUnrecordedRelease in its place, which settles
-// the wakes taken under the mark without a row here.
+// teardown runs again on the outbox's backoff while it does, until workflow.WakeHeldForRelease
+// after the release's mark, and its first attempt at or past that bound gives up on the record
+// (internal/daemon's releaseIssue): its last write is SettleUnrecordedRelease, in place of the
+// record and of the clear of the mark, which settles the wakes taken under the mark without a row
+// here and clears the mark in the same transaction.
 func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64, wrote bool, err error) {
 	if rel.Project == "" || rel.Issue == "" {
 		return 0, false, errors.New("a pod release record needs its project and issue")
@@ -256,12 +257,13 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 	return id, wrote, nil
 }
 
-// SettleUnrecordedRelease is what the teardown writes in place of the release's record when it
-// gives up on that record (internal/daemon's releaseIssue): a write of the record that still fails
+// SettleUnrecordedRelease is the last write of a teardown that gives up on the release's record
+// (internal/daemon's releaseIssue): a write of the record that still fails at or past
 // workflow.WakeHeldForRelease after the release's mark. It writes nothing to pod_releases, so the
-// release records hold no row of this release. release is the mark the record names, or 0 for the
-// issue's mark, as for RecordPodRelease. Where a record names that mark after all (a write that
-// committed and then answered an error), the record stands: this writes nothing and answers
+// release records hold no row of this release, and it clears the mark, in place of
+// ClearIssueRelease. release is the mark the record names, or 0 for the issue's mark, as for
+// RecordPodRelease. Where a record names that mark after all (a write that committed and then
+// answered an error), the record stands: this writes nothing, leaves the mark, and answers
 // recorded true, and the teardown runs again and reads that record (ReleaseDecision.PodTaken). So
 // no resume that a record pointed at its release is changed here.
 //
@@ -283,8 +285,16 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 // (clock_at) move to at where they were earlier, as the record moves them, because the pod starts
 // to come back at the release's end. A held wake keeps its pause. The same transaction retells the
 // start of each such wake in the release's words (retellWakesUnderRelease, wakeTask), since the
-// pod is gone, and ends every running hold streak of the pod, as the record does. With no mark,
-// or no such resume, it changes no resume.
+// pod is gone, ends every running hold streak of the pod, as the record does, and then deletes the
+// mark (deleteIssueRelease). With no mark, or no such resume, it changes no resume.
+//
+// The settle and the clear of the mark are one transaction, so no wake is taken between them. A
+// take locks the mark first (lockReleaseMark; PodRecords.TakePodWake). A take that committed
+// before this locked the mark is a wake taken under the mark, and this settles it. A take that
+// comes while this runs waits for its commit and then finds no mark: it pairs with the newest
+// release recorded (LatestPodRelease), as every wake after a release's end does. With the clear in
+// a later transaction, a wake taken between the two would pair with the release before this one,
+// which did not take this pod, and its start would not be told in this release's words.
 //
 // The transaction takes RecordPodRelease's lock order: the issue's release mark `for update`,
 // then, before it writes anything, the project's open pause row `for share`
@@ -339,7 +349,10 @@ func (s *Store) SettleUnrecordedRelease(ctx context.Context, project, issue stri
 		if err := retellWakesUnderRelease(ctx, tx, issue, woken, last, wakeTask); err != nil {
 			return err
 		}
-		return endPodHoldStreaks(ctx, tx, project, issue, "")
+		if err := endPodHoldStreaks(ctx, tx, project, issue, ""); err != nil {
+			return err
+		}
+		return deleteIssueRelease(ctx, tx, project, issue)
 	})
 	if err != nil {
 		return false, fmt.Errorf("settle the wakes of the unrecorded release of %s: %w", issue, err)

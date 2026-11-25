@@ -181,11 +181,12 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 }
 
 // A teardown that gives up on its release's record settles the wakes taken under the mark in its
-// place (SettleUnrecordedRelease, R3's bound of dispatch://INFRA-3589), and writes no release. In
-// the first row no record names the mark: the wake taken under it pairs with no release, keeps the
-// newest release it saw, and is dated to the give-up; a wake of a role the release never recorded
-// is left as it was. The second row is the control of the first: a record already names the mark,
-// so the settle answers that and writes nothing, and the wake stays pointed at that record.
+// place (SettleUnrecordedRelease, R3's bound of dispatch://INFRA-3589), writes no release and
+// clears the mark, in one transaction. In the first row no record names the mark: the wake taken
+// under it pairs with no release, keeps the newest release it saw, and is dated to the give-up; a
+// wake of a role the release never recorded is left as it was; and the mark is gone. The second
+// row is the control of the first: a record already names the mark, so the settle answers that,
+// writes nothing and leaves the mark, and the wake stays pointed at that record.
 func TestAnUnrecordedReleaseSettlesTheWakeUnderItsMarkUnlessARecordNamesIt(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -248,6 +249,17 @@ func TestAnUnrecordedReleaseSettlesTheWakeUnderItsMarkUnlessARecordNamesIt(t *te
 			if err := store.Pool().QueryRow(ctx, `select count(*) from pod_releases where issue = $1`, rootIssue).Scan(&releases); err != nil ||
 				releases != wantReleases {
 				t.Fatalf("releases recorded = %d (%v), want %d", releases, err, wantReleases)
+			}
+			// The settle clears the mark where no record names it. Where one does, the mark stands,
+			// and the teardown that runs again reads that record.
+			wantMarks := 0
+			if tc.recorded {
+				wantMarks = 1
+			}
+			var marks int
+			if err := store.Pool().QueryRow(ctx, `select count(*) from issue_releases where issue = $1`, rootIssue).Scan(&marks); err != nil ||
+				marks != wantMarks {
+				t.Fatalf("release marks after the settle = %d (%v), want %d", marks, err, wantMarks)
 			}
 			want := []struct {
 				what          string

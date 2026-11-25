@@ -1745,7 +1745,7 @@ describe("EnvoyClient", () => {
       };
     }
 
-    test("a retry that gets no answer fails with that 503, which is held and told as not recorded", async () => {
+    test("a retry that gets no answer fails with that 503, which is held and told as not recorded for certain", async () => {
       const session = registrations(() => {
         // What AbortSignal.timeout raises when the listener holds the request past the deadline.
         throw new DOMException("The operation timed out.", "TimeoutError");

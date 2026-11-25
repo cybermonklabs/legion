@@ -60,11 +60,13 @@ body: |-
   steps. A record of a release that cannot be
   written makes the teardown run again in the same way. The row's `outbox row failed` line names
   that error, and the daemon no longer logs `outbox: could not record an issue pod's release`.
-  It runs again for at most 15 minutes after the release's mark: the first attempt at or past that
-  bound logs one ERROR line, `outbox: the record of a release could not be written within 15
-  minutes of its mark`, with the issue, the release and the error, finishes without the record and
-  clears the mark. The release records then hold no row of that release, and each wake taken while
-  it stood still starts its role once, recorded against no release.
+  It runs again until 15 minutes after the release's mark: the first attempt at or past that bound
+  finishes without the record, and its last write settles the wakes taken while the release stood
+  and clears the mark in one transaction, so no wake is taken between the two. Then it logs one
+  ERROR line, `outbox: the record of a release could not be written within 15 minutes of its
+  mark`, with the issue, the release and the error. The release records then hold no row of that
+  release, and each wake taken while it stood still starts its role once, recorded against no
+  release.
   While such a release has not finished, the issue's whole workflow waits: every start of its
   roles, and every notice, hook prompt, merge-queue removal message and merge-forward message to a
   released role. The docs say how an operator ends it when the cluster cannot be fixed. A delivery

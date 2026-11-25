@@ -235,7 +235,7 @@ export interface TaskHandle {
   /** The listener's registered interests for a session; `undefined` when the read failed. */
   readonly readInterest: (sessionID: string) => Promise<Interest | undefined>;
   /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned in the
-   *  caller's own words and swallowed, as a recovery's own unregister was: the next pass reads
+   *  caller's own words and swallowed: the next pass reads
    *  the registry afresh. The warning is `busUnanswered` when the listener's message bus did not
    *  answer (`isBusUnanswered`), since the listener can have written the record before that, and
    *  `failed` for any other failure. */

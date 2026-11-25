@@ -109,7 +109,9 @@ type DeliveryWake struct {
 // The mark is read with the take's own lock (lockReleaseMark), in the take's own transaction, so
 // nothing can come between the read and the take. A release's record or cancel that has not
 // committed makes the read wait until it commits. Once the teardown clears the mark, the next call
-// takes the wake against the release the teardown recorded.
+// takes the wake against the newest release recorded (LatestPodRelease): the release the teardown
+// recorded, or the release before it where the teardown gave up on its record (internal/daemon's
+// recordGivenUp, SettleUnrecordedRelease).
 //
 // A cancel clears the mark too, and in the same transaction it queues a start for each claim it
 // resumes (CancelIssueRelease). The claim reads `released` until that start runs, but its pod

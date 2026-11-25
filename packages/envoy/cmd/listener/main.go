@@ -230,7 +230,7 @@ const defaultSessionReapInterval = time.Minute
 // five minutes until ENVOY_SESSION_MAX_AGE raises it (dispatch://INFRA-3590), so there a stalled
 // session's key is gone five minutes after its last heartbeat and the reaper then finds its holder
 // gone. Judged every minute, such a stalled holder would lose its role up to five times sooner
-// than the fixed pass this change replaces, which is the opposite of what this change is for. The
+// than at five minutes, the period the deployment keeps for it. The
 // grace a restored claim gets - and a claim the hand-back marked gets none, since no registration
 // renews a marked claim - is measured from the listener's own start against the live window
 // (store.Registry.releaseReadExpiredRoleClaim, which the reaper's pass hands the claim it read),
