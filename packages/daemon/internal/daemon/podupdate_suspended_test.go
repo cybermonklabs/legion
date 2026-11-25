@@ -94,7 +94,7 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	}
 	// Nothing is deciding when the sweep reads the claims, so the first sweep after the answers
 	// is the one that replaces the pod, and the read cannot be followed by a refusal that a
-	// machine mid-decision would cause (roundGroup's mask).
+	// machine mid-decision would cause (masked).
 	rig.settleAll()
 	replaced := rig.awaitReplacement(1, "once both workers answered")
 

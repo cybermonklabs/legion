@@ -405,6 +405,7 @@ func spliceDifferential(t *testing.T, name string, doc *Node, perBlock, rounds i
 // document of testdata: each fixture's tree as the browser editor reads it, and each corpus file as
 // Parse reads it.
 func TestIncrementalRenderMatchesTheWholeRenderOnTheFixtures(t *testing.T) {
+	t.Parallel()
 	tally := newSpliceTally()
 	perBlock, rounds := 21, 30
 	if testing.Short() {
@@ -525,6 +526,7 @@ func withAttr(attrs Attrs, name string, value any) Attrs {
 // TestIncrementalRenderMatchesTheWholeRenderOnALargeDocument runs the splice differential over a
 // generated document of at least 390 KB holding every kind of block, every top-level block mutated.
 func TestIncrementalRenderMatchesTheWholeRenderOnALargeDocument(t *testing.T) {
+	t.Parallel()
 	doc := generatedDocument(t, 400<<10)
 	markdown, _, layout, err := RenderWithLayout(doc)
 	if err != nil {
@@ -579,6 +581,7 @@ func TestIncrementalRenderMatchesTheWholeRenderOnALargeDocument(t *testing.T) {
 // TestIncrementalRenderCorpus runs the splice differential over every .md file of the directory
 // DISPATCH_RENDER_CORPUS names (real documents, never committed), skipped where it is unset.
 func TestIncrementalRenderCorpus(t *testing.T) {
+	t.Parallel()
 	dir := os.Getenv("DISPATCH_RENDER_CORPUS")
 	if dir == "" {
 		t.Skip("DISPATCH_RENDER_CORPUS is unset")
@@ -611,6 +614,7 @@ func TestIncrementalRenderCorpus(t *testing.T) {
 // (ReadForRendering) and block by block (ReadBlockForRendering), and splices every block of it read
 // so into the whole rendering, unchanged.
 func TestIncrementalRenderReadsBlocksAsTheWholeRead(t *testing.T) {
+	t.Parallel()
 	spliced := 0
 	for _, fx := range loadFixtures(t) {
 		doc := crdt.New()
@@ -698,6 +702,7 @@ func spliceCase(t *testing.T, name string, doc *Node, changes map[int]*Node, wan
 // TestIncrementalRenderGuards holds one case for each guard of Layout.Splice, and the cases next
 // to them that splice.
 func TestIncrementalRenderGuards(t *testing.T) {
+	t.Parallel()
 	reference := &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: "See "}, {Type: "footnote_reference", Attrs: Attrs{"label": "a"}}}}
 	t.Run("G4 a footnote definition in the block", func(t *testing.T) {
 		doc := &Node{Type: "doc", Children: []*Node{paragraph("[^b] stays text"), reference, footnoteDefinition("a", paragraph("Note."))}}
@@ -816,6 +821,7 @@ func TestIncrementalRenderGuards(t *testing.T) {
 // TestIncrementalRenderLayoutRecordsAsksAndSize checks what a layout tells its caller: the blocks
 // holding an ask, wherever it stands, the block count and the bytes it holds.
 func TestIncrementalRenderLayoutRecordsAsksAndSize(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("# Title\n\n:::ask{#a1 urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich?\n\n- A: a\n- B: b\n:::\n\nText.\n\n> :::ask{#a2 urgency=\"high\" multiple=\"false\" state=\"open\"}\n> Which?\n>\n> - A: a\n> - B: b\n> :::\n")
 	if err != nil {
 		t.Fatal(err)
