@@ -861,9 +861,14 @@ test("a range action whose rows stood above the view hands the focus to the firs
     await bar(page).getByRole("button", { name: "Move to Inbox selected threads" }).click();
     for (const id of range) await expect(row(page, id)).toHaveCount(0);
     await frameAndTask(page);
+    // The selection moved to a row that stays and stood above sight, so a scroll to it would have
+    // moved the list: the read of the scroll positions below holds the move to scrolling nothing.
     await expect(selectedRow(page)).toHaveCount(1);
     const selected = await selectedRow(page).getAttribute("data-inbox-row");
-    expect(range, "the selection moved to a row that stays").not.toContain(selected);
+    expect(
+      above.slice(range.length),
+      "the selection moved to a row that stays, above sight"
+    ).toContain(selected);
 
     const first = await firstMarkInSight(page);
     expect(first, "there is a surviving row in sight").toBeDefined();

@@ -6216,8 +6216,8 @@ test("in the reading column, a question withdrawn under the reader's focus hands
     await user.paste("Only on a cold start, and only back to the last lease.");
     await afterFrameAndTasks();
     expect(draft).toHaveFocus();
-    // The opening selection keeps its row in sight (`pane-selection.ts`); what follows is the
-    // loss, which scrolls nothing.
+    // The opening selection, which the settling effect hands to the first row, scrolls nothing
+    // either (`pane-selection.ts`); what follows is the loss, which scrolls nothing.
     scrolls.mockClear();
 
     // The server withdraws the question the reader is answering: it leaves the list, its own

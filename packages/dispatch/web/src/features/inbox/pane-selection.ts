@@ -126,10 +126,11 @@ export function usePaneSelection({
    *  can act on. */
   const nextAfterSelected = (): string | undefined =>
     stoodBetween.current.below ?? stoodBetween.current.above;
-  /** Whether the selection's next change brings its row into view. Every move of the reader's
-   *  does: a step, a pick, an address, an answer they recorded. A hand-on from a row that left the
-   *  bands does not: the reader did not move, and a press that took rows standing above the view
-   *  scrolls nothing (R4), as a row the server took away scrolls nothing. */
+  /** Whether the selection's next change brings its row into view. A step, a pick, an address
+   *  naming a row the list holds and an answer the reader recorded do. A selection the settling
+   *  effect hands on - from a row that left the bands, whatever took it, or onto the first row
+   *  while none was selected - does not: the reader did not move the selection there, and a press
+   *  that took rows standing above the view scrolls nothing (R4). */
   const revealNext = useRef(true);
 
   const select = (id: string | undefined): void => {
@@ -305,14 +306,17 @@ export function usePaneSelection({
   });
 
   // The selected row is kept on screen as the reader walks the list: the column beside it shows
-  // the row they cannot see otherwise. A hand-on (revealNext) scrolls nothing.
+  // the row they cannot see otherwise. A selection the settling effect hands on scrolls nothing
+  // (revealNext).
   useEffect(() => {
     const reveal = revealNext.current;
     revealNext.current = true;
-    if (!reveal || !paneShown || selectedId === undefined) {
+    if (!paneShown || selectedId === undefined) {
       return;
     }
-    selectedRow()?.scrollIntoView?.({ block: "nearest" });
+    if (reveal) {
+      selectedRow()?.scrollIntoView?.({ block: "nearest" });
+    }
   }, [paneShown, selectedId, selectedRow]);
 
   return {

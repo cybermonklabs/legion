@@ -136,15 +136,15 @@ func TestTheDismissedPageReadsOnePageUnderTheGenericPlan(t *testing.T) {
 	}
 }
 
-// The pile TestTheDismissedPageWalksFromThePagesOwnNodes dismisses in one Dismiss, the most rows of
-// graph_tuples its first page may read, and the index condition every probe the walk makes for each
-// of the page's nodes leads with.
+// The pile TestTheDismissedPageWalksFromThePagesOwnNodes dismisses in one Dismiss, and the most rows
+// of graph_tuples its first page may read.
 const (
 	dismissedWalkPile = 1_000
 	// dismissedWalkTuples bounds the rows the page's statement reads of graph_tuples, each scan's
 	// answer and what its filter removed: a few relations of each of the page's offset + limit + 1
-	// nodes. A probe led by the person reads the person's whole history of its kind instead, 1,000
-	// dismissed tuples or 1,000 read_through ones, for each of the 201 nodes.
+	// nodes. A probe of graph_tuples_as_of_out, led by the person and the kind, reads the person's
+	// whole history of its kind instead, 1,000 dismissed tuples or 1,000 read_through ones, for each
+	// of the 201 nodes.
 	dismissedWalkTuples = 20 * (dismissedScalePage + 1)
 )
 
@@ -172,15 +172,7 @@ func TestTheDismissedPageWalksFromThePagesOwnNodes(t *testing.T) {
 		issue: issue.Key, dismissedReplies: dismissedWalkPile,
 	}
 	dismissedScaleCommentPairs(t, shape, dismissedScalePileLabel, dismissedWalkPile, dismissedScalePileAge)
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/inbox/dismiss", map[string]string{
-		"dismiss_through": time.Now().UTC().Format(time.RFC3339Nano), "issue": issue.Key,
-	}, dismissedScaleLogin)
-	if response.Code != http.StatusOK {
-		t.Fatalf("dismiss the pile: status %d, body %s", response.Code, response.Body.String())
-	}
-	if dismissed := decodeBody[struct {
-		Dismissed int `json:"dismissed"`
-	}](t, response).Dismissed; dismissed != dismissedWalkPile {
+	if dismissed := dismissThrough(t, handler, dismissedScaleLogin, time.Now(), map[string]any{"issue": issue.Key}); dismissed != dismissedWalkPile {
 		t.Fatalf("the Dismiss took %d threads, want the pile's %d", dismissed, dismissedWalkPile)
 	}
 	plan := explainDismissedPage(t, shape, "the first page",

@@ -70,7 +70,9 @@ const (
 // nodes, the skip over their kinds and the walk out of them, so a generic plan of each can take
 // graph_tuples_current where that index is partial on leaving the delivery kind out: a column proves
 // nothing of that predicate, and this literal does. No delivery runs out of a person or a session,
-// so it leaves out nothing those reads would answer.
+// so it leaves out nothing those reads would answer. The Dismissed page's walk reads the relations
+// out of the person into each of its nodes by graph_tuples_as_of_in, and states none of it
+// (meInboxBuild).
 const meInboxOutOfPerson = `t.kind <> '` + graphstore.TupleDeliveredTo + `'`
 
 // The kinds of row the page draws, as an entry's page column names them (meInboxPageRows).
@@ -1241,11 +1243,10 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // key, so which of the two a connection took turned on the statistics it planned under. With 5,000
 // threads dismissed in one Dismiss, a plan that took graph_tuples_as_of_out read the person's 5,000
 // tuples of a kind in each of 402 probes, two kinds for each of the page's 201 nodes: 1,244 ms for a
-// page the other plan read in 50 ms, in a pod; in the server's log of CI's chromium-alone runner, six
-// of eleven loads of c-dismissed-window read the page in 439 to 477 ms at 50f167fa
-// (TestTheDismissedPageWalksFromThePagesOwnNodes). A page's nodes are at most offset + limit + 1,
-// where the states the page does not cut (inbox and unread) answer every row, so they keep the one
-// pass over the person's tuples.
+// page the other plan read in 50 ms, in a pod. TestTheDismissedPageWalksFromThePagesOwnNodes holds
+// the walk to the page's nodes. A page's nodes are at most offset + limit + 1, where the states the
+// page does not cut (inbox and unread) answer every row, so they keep the one pass over the person's
+// tuples.
 func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	slots := shape.slots()
 	args := &meInboxArgs{values: make([]any, slots.first)}
@@ -1286,7 +1287,7 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 		// graph_tuples_as_of_in from the page's node and never an index led by the person.
 		outbound = `t.to_kind = p.node_kind and t.to_id = p.node_id and t.kind = k.kind
 				and t.from_kind || '' = k.node_kind and t.from_id || '' = k.node_id
-				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
+				and t.to_kind <> '` + graphstore.KindValue + `' and ` + atHorizon
 	}
 
 	var statement strings.Builder
