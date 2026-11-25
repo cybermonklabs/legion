@@ -104,7 +104,7 @@ interface Work {
  *  median, with a few of up to 1,000, and most of the work in flight is held by a session (38 of
  *  the 59 issues active under no priority). The text is invented and names no one real.
  *
- *  - In flight under no priority: five, beside the broadcast issue `seedWorkspace` writes (whose
+ *  - Active under no priority: five, beside the broadcast issue `seedWorkspace` writes (whose
  *    row the `priorities-in-flight` route waits for), with titles of 120 to 190 characters and
  *    one of 756, each held by a session: one by each of the three workspace sessions that hold
  *    work and one by each claim holder (`Holder`), so that tab lists six rows, five of them

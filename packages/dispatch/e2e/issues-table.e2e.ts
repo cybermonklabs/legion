@@ -1536,9 +1536,10 @@ test("a roomy window is filled by the box, which grows when the window does", as
   }
 });
 
-/** How many issues the row below seeds in flight under no priority: enough that the first table
- *  of `/priorities` holds more rows than its box shows at every size the row reads it at. */
-const IN_FLIGHT_ISSUES = 40;
+/** How many issues the row below seeds under one priority: enough that the work table of the
+ *  priority's page holds more rows than its box shows at every size the row reads it at, and that
+ *  the margin below that table, which lists each relation, runs past the window. */
+const PRIORITY_WORK_ISSUES = 40;
 
 /** The tallest the row below lets one line of that table's box be, its header or one of its rows,
  *  each of which holds a one-line title: drawn, a row stands near 55 px, and the virtualizer counts
@@ -1556,34 +1557,35 @@ const STEADY_EVERY_MS = 250;
 // measure grew the box again, without end: on the Priorities page at 1600x1000, `scrollHeight`
 // went from 167,444 px to over 2,100,000 px in about 1.5 s. The measure now reads the pager's
 // place in the document (`useTableLayout`, web/src/features/project/issues-table-layout.ts).
-// The Priorities page draws its list in flight under no priority above a second table, so at
-// 1280x800 the end of the document's scroll lies past the first table's pager. From there the
-// window goes to 1920x1080, to 1600x1000 and back, and then, read every 250 ms for 2 s, the first
+// A priority's own page draws its work table above its margin below 1024 px, where the two stack
+// (`lg:flex-row`, PriorityPage.tsx), and the margin lists each issue the priority holds, so at
+// 900x800 the end of the document's scroll lies past the table's pager. From there the window goes
+// to 1000x1000, to 960x900 and back, each below 1024 px, and then, read every 250 ms for 2 s, the
 // table's box and the document each end at the `scrollHeight` they began at, within a pixel, and
 // the box's stays under what its header and its rows can take.
-// SLOW(>=2s): forty issues seeded and moved into work, three resizes, and readings over two seconds
+// SLOW(>=2s): forty issues seeded under one priority, three resizes, and readings over two seconds
 // of rest.
 test("a window resize made while scrolled past the issues table keeps the table's box at its size", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  // Each one in progress under no priority, so `/priorities` lists it in its first table. Nothing
-  // reads their order among themselves, so they go out side by side.
+  const priority = await createPriority({ owner: "alice", title: "Hold the table's box" });
+  // Each one advances the priority, so its page lists it in the work table and its relation in
+  // the margin. Nothing reads their order among themselves, so they go out side by side.
   await Promise.all(
-    Array.from({ length: IN_FLIGHT_ISSUES }, async (_, index) => {
-      const issue = await createIssue({ project: "CORE", title: `In flight number ${index}` });
-      await patchIssue(issue.key, { status: "in_progress" });
-    })
+    Array.from({ length: PRIORITY_WORK_ISSUES }, (_, index) =>
+      createIssue({ advances: [priority.id], project: "CORE", title: `Work number ${index}` })
+    )
   );
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.setViewportSize({ width: 1280, height: 800 });
-    await page.goto("/priorities");
-    const table = page.getByRole("region", { exact: true, name: "In flight under no priority" });
+    await page.setViewportSize({ width: 900, height: 800 });
+    await page.goto(`/priorities/${priority.id}`);
+    const table = page.getByRole("region", { exact: true, name: "Work advancing this priority" });
     const box = table.getByTestId("issues-table-scroll");
     const pager = table.getByTestId("issues-table-pager");
-    await expect(pager).toContainText(`of ${IN_FLIGHT_ISSUES}`);
+    await expect(pager).toContainText(`of ${PRIORITY_WORK_ISSUES}`);
     await expect(box.locator("[data-issue-row]").first()).toBeVisible();
     await expect
       .poll(
@@ -1595,9 +1597,9 @@ test("a window resize made while scrolled past the issues table keeps the table'
       )
       .toBeLessThanOrEqual(0);
     for (const size of [
-      { width: 1920, height: 1080 },
-      { width: 1600, height: 1000 },
-      { width: 1920, height: 1080 },
+      { width: 1000, height: 1000 },
+      { width: 960, height: 900 },
+      { width: 1000, height: 1000 },
     ]) {
       await page.setViewportSize(size);
       await nextFrames(page);
@@ -1629,8 +1631,8 @@ test("a window resize made while scrolled past the issues table keeps the table'
     ).toBeLessThanOrEqual(1);
     expect(
       Math.max(...boxHeights),
-      `the table's box's scrollHeight against its header and ${IN_FLIGHT_ISSUES} rows`
-    ).toBeLessThan((IN_FLIGHT_ISSUES + 1) * TABLE_LINE_CEILING_PX);
+      `the table's box's scrollHeight against its header and ${PRIORITY_WORK_ISSUES} rows`
+    ).toBeLessThan((PRIORITY_WORK_ISSUES + 1) * TABLE_LINE_CEILING_PX);
   } finally {
     await context.close();
   }
