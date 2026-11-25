@@ -1,3 +1,4 @@
+import type { LegionIssueResponse } from "@legion/contracts";
 import { INBOX_THREAD_KINDS } from "@legion/contracts";
 
 import {
@@ -498,6 +499,9 @@ interface DeliveryLiveBodies {
   readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
+  /** One issue's Legion state, `GET /api/v1/issues/{key}/legion`'s body: not a delivery view,
+   *  but served by the same hub, so `api/legion-issue.ts` subscribes it through `subscribeLive`. */
+  readonly legion_issue: LegionIssueResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
@@ -513,6 +517,9 @@ function subscribeLive<K extends keyof DeliveryLiveBodies>(
     DeliveryLiveBodies[K]
   >;
 }
+
+/** `api/legion-issue.ts` builds its live query of an issue's Legion state from these two. */
+export { LIVE, subscribeLive };
 
 /** The delivery timeline, live: the window, the search and every facet, applied by Dispatch
  *  (LEGION-567's plan, "API"), keyed by the view so a filter change subscribes its own entry. */
