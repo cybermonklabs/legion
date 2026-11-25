@@ -455,8 +455,9 @@ type Claim struct {
 	// found to have nothing to charge: the decision died makes for one dead process, and the
 	// record that keeps a second report of that same process from being charged a second death.
 	// An end of that process's pod from outside it charges nothing and writes this all the same
-	// (endedFromOutside), so a later report of that same process is that end again, never a
-	// death (judge, decidedFromOutside). The rule it keeps is written where it is applied (died,
+	// (endedFromOutside): a later report of that same process, which the record of that end
+	// sends back there (judge, recordedFromOutside), finds the end decided and decides it no
+	// second time (decidedFromOutside). The rule it keeps is written where it is applied (died,
 	// endedFromOutside); what leaves a claim to be reported twice is ProcessGone's two windows
 	// above.
 	//
@@ -4719,16 +4720,19 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// something outside the pod made is read in one place, here, and goes to the one site
 		// that decides it (endedFromOutside), which continues the claim in its own session
 		// charged nothing, however often such ends come. So does every report of a process whose
-		// decided end was one from outside the pod, however the runtime read it
-		// (decidedFromOutside): it is that end again, never a death. After a daemon restart such
-		// a report usually comes before the boot's replay, read neither way since the reading
-		// went with the old daemon's memory, and died would charge it as a death. An end the
-		// daemon itself made, and one the runtime read neither way of a process no such decision
-		// covers, are charged exactly as they were before the reading existed.
+		// end the claim records as one from outside the pod, however the runtime read it
+		// (recordedFromOutside): it is that end again, never a death. endedFromOutside makes that
+		// record before its take-back, which the store can refuse, and before its decision, so
+		// the record can stand where no decision does, and the report goes there to decide it.
+		// After a daemon restart such a report usually comes before the boot's replay, read
+		// neither way since the reading went with the old daemon's memory, and died would charge
+		// it as a death. An end the daemon itself made, and one the runtime read neither way of a
+		// process no such record covers, are charged exactly as they were before the reading
+		// existed.
 		if observation.Displaced {
 			return m.displaced(ctx, observation)
 		}
-		if observation.EndReading == runtime.PodEndNotOurs || m.decidedFromOutside() {
+		if observation.EndReading == runtime.PodEndNotOurs || m.recordedFromOutside() {
 			return m.endedFromOutside(ctx, observation)
 		}
 		return m.died(ctx, observation)

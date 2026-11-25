@@ -40,10 +40,11 @@ type EndedWork struct {
 	// JSON with the rest of the record, and an earlier daemon reading the row passes over the key.
 	Death runtime.DeathCauseKind `json:"death,omitempty"`
 	// FromOutside is whether the end this record is of was one from outside the pod: the runtime
-	// read it so (runtime.PodEndNotOurs) and the daemon decided it so (endedFromOutside). It is
-	// written where the record is made (recordDisplaced, markFromOutside), never read off Cause,
-	// and it is what every decision reads such an end by (decidedFromOutside): a report of the
-	// ended process and the boot's replay of the decision after a restart. So a reword of
+	// read it so (runtime.PodEndNotOurs) and the daemon recorded it so (endedFromOutside), before
+	// the take-back and the decision that follow. It is written where the record is made
+	// (recordDisplaced, markFromOutside), never read off Cause, and it is what every decision
+	// reads such an end by: a report of the ended process (judge, recordedFromOutside) and the
+	// boot's replay of the decision after a restart (decidedFromOutside). So a reword of
 	// endFromOutside, a sentence told to roles, leaves the records an earlier daemon wrote read
 	// as they were.
 	//

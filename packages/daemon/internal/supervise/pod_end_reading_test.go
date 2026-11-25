@@ -492,7 +492,7 @@ func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 // store, the daemon restarts, and its orphan sweep reports that same process again. Read again as
 // an end from outside the pod, the second report is the same uncharged continue. Read neither
 // way, as it is once the runtime's reading of the end has expired, it is that same end again
-// (judge, decidedFromOutside), never a death, and is continued charged nothing as well: neither
+// (judge, recordedFromOutside), never a death, and is continued charged nothing as well: neither
 // a death nor a launch failure. Left undecided, the one eviction would be charged a death against
 // the task the claim holds; sent to died over the decided process, it would be charged a launch
 // failure, which is the control.

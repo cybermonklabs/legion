@@ -117,29 +117,45 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 // however often it comes, whatever the claim's agent was doing and whether it was ready or still
 // starting. Nothing the role in the pod can do fixes a cause outside it, and stopping the role
 // fixes a cause that stays no better: a charge at some count would only turn a loop of restarts
-// into a stall. An end the runtime read neither way, of a process no decision of this kind
-// covers, is charged as a death (died), as it always was. Three of the kubelet's evictions are
-// such ends: the eviction of a pod over a limit of its own, which carries no DisruptionTarget
-// condition, and the two of a node under pressure whose message names a container over its
-// memory or ephemeral-storage request, which carry it (runtime.DeathMemoryRequest,
-// runtime.DeathDiskRequest; sandbox's clusterEndedReasons and evictedOverRequest say why).
+// into a stall. An end the runtime read neither way, of a process whose end the claim holds no
+// record of as one from outside the pod, is charged as a death (died), as it always was. Three
+// of the kubelet's evictions are such ends: the eviction of a pod over a limit of its own, which
+// carries no DisruptionTarget condition, and the two of a node under pressure whose message
+// names a container over its memory or ephemeral-storage request, which carry it
+// (runtime.DeathMemoryRequest, runtime.DeathDiskRequest; sandbox's clusterEndedReasons and
+// evictedOverRequest say why).
 //
-// judge sends it every report the runtime read so, and every report of a process whose decided
-// end was one from outside the pod, however that report was read (decidedFromOutside): such a
-// report is this end again, never a death. After a daemon restart the runtime's report usually
-// reaches the claim before the boot's replay (RecordedDeath), read neither way, since the reading
-// went with the old daemon's memory, and died would charge it a launch failure and record it as
-// a death. Here it finds the record of this launch standing and the task already taken back, so
-// it raises the uncharged relaunch, which the replay then finds raised (launchMet).
+// judge sends it every report the runtime read so, and every report of a process whose end the
+// claim records as one from outside the pod, however that report was read (recordedFromOutside):
+// such a report is this end again, never a death. That record is made here first, before the
+// take-back and the decision, so it stands for every report after this one, whether or not the
+// decision was made. After a daemon restart the runtime's report usually reaches the claim
+// before the boot's replay (RecordedDeath), read neither way, since the reading went with the old
+// daemon's memory, and died would charge it a launch failure and record it as a death. Where a
+// write of the claim carried the record into the store before the restart, the report finds that
+// record standing and comes here; where the decision was stored with it, it finds the task
+// already taken back, so it raises the uncharged relaunch, which the replay then finds raised
+// (launchMet).
 //
 // It takes back the task whose turn the end cut off first, after the record of what the end
 // ended (recordDisplaced), which reads the task before the take-back changes it, as died's
-// recordGoneEnd does; and a take-back the store refused returns here with nothing decided, as it
-// does in died. The stored claim then holds the process undecided with its task still confirmed,
-// so no replay after a restart relaunches it past the take-back, settle retires nothing, and the
-// next report of the process decides the end and takes the task back then. Decided before the
-// take-back, the stored claim would hold the decision over a task still confirmed: the replay
-// would relaunch it with no take-back, and settle would retire a task no turn finished.
+// recordGoneEnd does; and a take-back the store refused returns here before the decision, as it
+// does in died. The record of this launch stays in memory and goes into the store with the
+// claim's next write, such as the one an Uncertain report makes (judge), so the next report of
+// the process, however it is read, comes back here and decides the end then, after it takes the
+// task back. The stored claim holds no decision over a task still confirmed, so no replay after
+// a restart relaunches it past the take-back (the boot replays only a decided end), and settle
+// retires nothing. Decided before the take-back, the stored claim would hold the decision over a
+// task still confirmed: the replay would relaunch it with no take-back, and settle would retire
+// a task no turn finished.
+//
+// It decides the end once. A report over an end already decided (decidedFromOutside, read on
+// entry) — a restarted daemon's first report over a stored decision, or a sweep report over a
+// relaunch the lifecycle refused — writes this end's line, leaves the record of this launch as
+// it stands (recordDisplaced), finds nothing confirmed to take back and replaces the process,
+// but records none of the three things below again and writes nothing for them. The claim
+// reads working while its relaunch waits, so the end of the turn, which operators are shown
+// (Claim.LastTurnEnd), would otherwise move to the moment of each such report.
 //
 // With the task back it records three things, before the relaunch, because a parked relaunch
 // writes nothing until its turn; a write the store would not take is owed and the relaunch goes
@@ -152,7 +168,7 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 //   - that the ended process is decided (Claim.DeathCharged), the record died keeps for one dead
 //     process, so a later report of that same process — the orphan sweep's, over a claim whose
 //     relaunch the lifecycle refused or the wake pacing parked, or a restarted daemon's first —
-//     is this end again and charged nothing (judge, decidedFromOutside);
+//     comes back here, finds the end decided and decides nothing again (decidedFromOutside);
 //   - that the end was from outside the pod, in the record of what that end ended
 //     (EndedWork.FromOutside, markFromOutside). A daemon restart while the relaunch waits
 //     restores the claim standing over its decided process, and the boot raises the relaunch the
@@ -172,26 +188,31 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 // claim is decided and names every role the end ended, so this line, one per claim, is what says
 // what each role got.
 func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
+	decided := m.decidedFromOutside()
 	m.log.Info(continuedFromOutsideLine, "starting", slices.Contains(unready, m.claim.State), "detail", observation.Detail)
 	m.recordDisplaced(ctx, observation, endFromOutside, true)
 	if err := m.interrupted(ctx, displacedMidTurn, observation.OutOfMemory); err != nil {
 		return err
 	}
-	m.claim.DeathCharged = true
-	if m.turnOpen() {
-		m.claim.LastTurnEnd = m.deps.Clock.Now()
+	var written error
+	if !decided {
+		m.claim.DeathCharged = true
+		if m.turnOpen() {
+			m.claim.LastTurnEnd = m.deps.Clock.Now()
+		}
+		m.markFromOutside()
+		written = m.persist(ctx)
 	}
-	m.markFromOutside()
-	decided := m.persist(ctx)
 	_, err := m.replaceProcess(ctx, displacedMidTurn, observation.OutOfMemory, endFromOutside)
-	return errors.Join(decided, err)
+	return errors.Join(written, err)
 }
 
 // markFromOutside leaves on the claim, for the launch it records, a record of its process's end
 // from outside the pod (EndedWork.FromOutside), whose cause is endFromOutside, whatever that end
-// ended, so the decision's write carries it and every later read of the decided end reads it as
-// one from outside the pod (decidedFromOutside). Where recordGoneEnd recorded the end, that
-// record is it, typed from its making, and this leaves it as it stands.
+// ended, so the decision's write carries it and every later read of the end reads it as one from
+// outside the pod: a report of the ended process (judge, recordedFromOutside) and the boot's
+// replay of the decision (decidedFromOutside). Where recordGoneEnd recorded the end, that record
+// is it, typed from its making, and this leaves it as it stands.
 //
 // Where the end ended nothing worth telling — no turn running, no task taken back and no
 // background work reported (recordEnd) — recordGoneEnd records nothing, and the record left here
@@ -217,15 +238,28 @@ func (m *Machine) markFromOutside() {
 	m.claim.EndedWork = EndedWork{At: now, Cause: endFromOutside, FromOutside: true, Generation: m.claim.Generation, Told: true}
 }
 
-// decidedFromOutside is whether the claim's decided end is one from outside the pod: the process
-// the claim records is decided (Claim.DeathCharged), and the record of the end of the launch the
-// claim records now says the end was from outside the pod (EndedWork.FromOutside). It reads that
-// typed value and never the record's sentence. Every read of a decided end asks it, a report of
-// the ended process (judge) and the boot's replay of the decision (relaunchRecordedDeath), so
-// the end is continued charged nothing whichever of the two reaches the claim first.
-func (m *Machine) decidedFromOutside() bool {
+// recordedFromOutside is whether the claim holds the record of the end of the launch it records
+// now typed as an end from outside the pod (EndedWork.FromOutside). It reads that typed value and
+// never the record's sentence. Only endedFromOutside writes such a record (recordDisplaced,
+// markFromOutside), so it says the daemon read this launch's end as one from outside the pod,
+// whether or not that end is decided yet: the record is made before the take-back, which the
+// store can refuse, and before the decision, and it goes into the store with any write of the
+// claim. judge sends every report of the process to endedFromOutside where it holds, however the
+// runtime read that report, so the one end is continued charged nothing on one daemon, and after
+// a restart wherever the record reached the store.
+func (m *Machine) recordedFromOutside() bool {
 	e := m.claim.EndedWork
-	return m.claim.DeathCharged && e.FromOutside && e.Generation == m.claim.Generation
+	return e.FromOutside && e.Generation == m.claim.Generation
+}
+
+// decidedFromOutside is whether the claim's decided end is one from outside the pod: the process
+// the claim records is decided (Claim.DeathCharged), and the claim holds the record of its end as
+// one from outside the pod (recordedFromOutside). The boot's replay of the decision asks it
+// (relaunchRecordedDeath), so a decided end from outside the pod is relaunched charged nothing
+// whichever of the replay and a report reaches the claim first; and endedFromOutside asks it on
+// entry, so a report over an end already decided decides nothing again.
+func (m *Machine) decidedFromOutside() bool {
+	return m.claim.DeathCharged && m.recordedFromOutside()
 }
 
 // continuedFromOutsideLine is the line, at Info, of an end from outside the claim's pod: the
