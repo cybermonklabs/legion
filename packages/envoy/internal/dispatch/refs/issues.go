@@ -32,10 +32,17 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // which reads it from the proposed parent) and a block pointer's ancestor rule (docs'
 // refuseBlockPointers) are all this query.
 //
-// It binds no visibility predicate and takes no acting person, because it lists no issue to a
-// reader: every caller is a rule of a write - those four, the near-copy gate's exclusion of the
-// new issue's chain and the scope a result's check resolves in - and a rule that skipped an issue
-// it may not see would let a cycle through that issue, or route an event short of its root.
+// It binds no visibility predicate and takes no acting person, because every issue of the chain
+// is one every reader of the key's issue may see: a parent is in its child's project (api's
+// validateIssueParent refuses another project's), and an issue node is never reserved for its
+// author (the registry of visibility.go takes the kind by resolvedKind), so each is
+// project-visible, which everyone who may read the project reads. The issue and artifact events
+// above put the chain in a payload every reader of the event gets, and it names no issue hidden
+// from such a reader, while a chain that skipped an issue would route the event short of its
+// root. The other callers are rules of a write - a reparent's cycle refusal, a block pointer's
+// ancestor rule, the near-copy gate's exclusion of the new issue's chain and the scope a result's
+// check resolves in - and a rule that skipped an issue it may not see would let a cycle through
+// that issue.
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {

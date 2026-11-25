@@ -1084,12 +1084,12 @@ function treesHolding(
     }
     return answer;
   };
-  // The check's identity (`same`, decision 412's cost 2) is every input it reads: the issue, the
-  // kinds it moves, whether the event writes a document, which decides whether an issue above
-  // reaches an answer (`issuesAboveFor`), and the ancestors the event names (`ancestors`) - none,
-  // `[]` or a chain, each its own. So the events of a batch that agree in all of them run one check
-  // on each query (`dedupeRefreshTargets`). An ask's event is on nodes of its own (`ON_ITS_TARGET`),
-  // which no identity names.
+  // The check's identity (`same`, decision 412's cost 2) is every input it reads but `tie`: the
+  // issue, the kinds it moves, whether the event writes a document, which decides whether an issue
+  // above reaches an answer (`issuesAboveFor`), and the ancestors the event names (`ancestors`) -
+  // none, `[]` or a chain, each its own. So the events of a batch that agree in all of them run one
+  // check on each query (`dedupeRefreshTargets`). `tie` is true only of an `ask.answered`, and an
+  // ask's event is on nodes of its own (`ON_ITS_TARGET`), which takes no identity.
   const same =
     moved === ON_ITS_TARGET
       ? undefined

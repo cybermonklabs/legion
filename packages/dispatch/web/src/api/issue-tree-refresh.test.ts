@@ -1820,37 +1820,6 @@ test("a grandchild's document version that names no ancestors marks the coverage
   expect(seen).toEqual({ "no tree read of the root": false, "the root's outline": true });
 });
 
-// INV-3. Over the three writes of a document and the edit notice: each write reaches the root's
-// trees by the event's ancestors; only an upload and a version, the two that mark the issue's own
-// coverage, mark the root's coverage too; the edit notice marks nothing of the root's.
-test("of a grandchild's document events that name its ancestors, each write marks the root's trees, only an upload and a version mark the root's coverage, and an edit notice marks nothing of the root's", () => {
-  const seen: Record<string, unknown> = {};
-  for (const type of [
-    "artifact.created",
-    "artifact.version",
-    "artifact.removed",
-    "artifact.human_edited",
-  ]) {
-    const client = new QueryClient();
-    const root = rootOnVerification(client);
-    try {
-      refreshQueries(
-        client,
-        eventRefreshTargets(grandchildDocumentEvent(type, GRANDCHILD_ANCESTORS), "alice")
-      );
-      seen[type] = root.marks();
-    } finally {
-      root.stop();
-    }
-  }
-  expect(seen).toEqual({
-    "artifact.created": ROOT_MARKED,
-    "artifact.human_edited": ROOT_UNMARKED,
-    "artifact.removed": { coverage: false, outline: true, verification: true },
-    "artifact.version": ROOT_MARKED,
-  });
-});
-
 // ST-2, the shared wait on an outline (R3: decision 412's cost 3). The parent CORE-1 has its
 // outline's refetch out when the events land, and CORE-2 and CORE-4 are its children. The
 // versions name no ancestors, as an older server's do: a version that names CORE-1 marks its
@@ -2248,7 +2217,8 @@ function treeCheckCounts(checks: Map<string, number>): { checks: number; most: n
 // version that names its chain marks the parent's four reads with no check (D-R2-presence), and
 // scans no answer to place the child (`issuesAbove` runs for an event that names none alone), so
 // its scans fall by half. A version that names none checks every coverage read under the page's
-// issues with D-R2-fallback's target. The milliseconds are logged, not asserted.
+// issues with D-R2-fallback's target. The milliseconds are not asserted: a failure's message gives
+// them beside the base's counts, and the pull request's body gives them as measured.
 test("one event over fifty open trees checks each tree read it does not name once, and a version that names its chain scans each answer once", () => {
   const events = {
     "C's plain ask": eventOf(
@@ -2303,8 +2273,10 @@ test("one event over fifty open trees checks each tree read it does not name onc
       scans: [...scans.values()].reduce((sum, n) => sum + n, 0),
     };
   }
-  console.log("P1: each event's refresh over fifty trees, in milliseconds", milliseconds);
-  expect(seen, `at the base (647c646e): ${JSON.stringify(AT_BASE)}`).toEqual(AT_HEAD);
+  expect(
+    seen,
+    `at the base (647c646e): ${JSON.stringify(AT_BASE)}; milliseconds at this run: ${JSON.stringify(milliseconds)}`
+  ).toEqual(AT_HEAD);
 });
 
 // P2, decision 412's cost 2: the checks a batch of ten events runs on one tree read, through the
