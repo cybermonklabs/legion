@@ -338,8 +338,11 @@ type cutReference struct {
 // each reference span Extract reads as a `dispatch://` address or a page of the dashboard at
 // serverURL (spanReference, locateSpan), a URL of anywhere else left out, and each bare key and
 // `#id` Mentions would ask about (bareCandidates), whether or not it names anything, since a cut
-// that splits one changes what the text says. Each is widened over the inline link that holds it
-// (linkRanges), and a span that is a link's address is that address, as the link reads it.
+// that splits one changes what the text says. Each is widened over the inline link or picture
+// that holds it (linkRanges). A span that is a link's address is read as Extract reads it too,
+// not as the link parser's destination: spanReference ends it at the link's own `)` and drops the
+// punctuation a sentence leaves on it, so `[w](dispatch://CORE-1.)` names CORE-1 and a cut in it
+// moves back to the link's `[`, where the destination `dispatch://CORE-1.` would name nothing.
 func cutReferences(body, serverURL string) []cutReference {
 	spans := referencePattern.FindAllStringIndex(body, -1)
 	links := linkRanges(body)
@@ -364,13 +367,6 @@ func cutReferences(body, serverURL string) []cutReference {
 	}
 	for _, span := range spans {
 		start, raw := span[0], spanReference(body, span[0], span[1])
-		for _, link := range links {
-			if link.open < start && start < link.close && link.destination != "" &&
-				strings.HasPrefix(body[start:], link.destination) {
-				raw = link.destination
-				break
-			}
-		}
 		if raw == "" {
 			continue
 		}
@@ -391,10 +387,9 @@ func cutReferences(body, serverURL string) []cutReference {
 }
 
 // linkRange is one inline link or picture a text writes: its `[`, or the `!` before it, the `]`
-// its words end at, one past its `)`, and its address as the link reads it.
+// its words end at, and one past its `)`.
 type linkRange struct {
 	open, words, close int
-	destination        string
 }
 
 // linkRanges is every inline link and picture body writes, in the order they open, as goldmark
@@ -449,18 +444,15 @@ func (p rangedLinkParser) Parse(parent ast.Node, block markdowntext.Reader, pc p
 	// The parser reads a link from the `]` its words end at, which is where the reader stands.
 	_, at := block.Position()
 	node := p.InlineParser.Parse(parent, block, pc)
-	var destination []byte
 	closer := byte(')')
 	switch link := node.(type) {
 	case *ast.Link:
-		destination = link.Destination
 		if link.Reference != nil {
-			closer, destination = ']', nil
+			closer = ']'
 		}
 	case *ast.Image:
-		destination = link.Destination
 		if link.Reference != nil {
-			closer, destination = ']', nil
+			closer = ']'
 		}
 	default:
 		return node
@@ -471,9 +463,7 @@ func (p rangedLinkParser) Parse(parent ast.Node, block markdowntext.Reader, pc p
 	}
 	_, after := block.Position()
 	closed := bytes.LastIndexByte(block.Source()[:after.Start], closer) + 1
-	*ranges = append(*ranges, linkRange{
-		open: node.Pos(), words: at.Start, close: closed, destination: string(destination),
-	})
+	*ranges = append(*ranges, linkRange{open: node.Pos(), words: at.Start, close: closed})
 	return node
 }
 

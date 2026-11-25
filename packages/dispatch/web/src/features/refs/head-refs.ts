@@ -48,14 +48,16 @@ const LONGEST_WHOLE_REFERENCE = 1024;
  * dashboard at `origin` as the shared span reader finds them, a URL of anywhere else left out,
  * and a bare issue key and a `#id` as the shared reader finds them (`readTextReferences`), each
  * widened over the inline link that holds it, a picture's `!` included (`inlineLinks`). A span
- * that is a link's address is that address as the link reads it, since the span would run on
- * over the `)` into whatever follows it: `dispatch://CORE-1)s` of `[CORE-1](dispatch://CORE-1)s`.
- * Where one starts before the cut and ends after it, the cut moves back to its start: the link's
- * `[` where a link wraps it. A code span the cut opens and does not close moves it back to its
- * opening backticks the same way, since the head would leave them as text and read what the span
- * holds - an address included - as prose. The cut moves back to a reference's start too where
- * the head, with the ellipsis after it, does not read the references of the text it holds as the
- * text does: one it reads that the text does not write (`CORE-12` of `CORE-12x4`, which is no
+ * that is a link's address is read as that reader reads any span, not as the link's own address
+ * as written: it ends at the link's `)`, so `[CORE-1](dispatch://CORE-1)s` names CORE-1, and drops
+ * the punctuation a sentence leaves on it, so `[w](dispatch://CORE-1.)` names CORE-1 too, as the
+ * server's `text.Extract` reads both. Where one starts before the cut and ends after it, the cut
+ * moves back to its start: the link's `[` where a link wraps it. A code span the cut opens and
+ * does not close moves it back to its opening backticks the same way, since the head would leave
+ * them as text and read what the span holds - an address included - as prose. The cut moves back
+ * to a reference's start too where the head, with the ellipsis after it, does not read the
+ * references of the text it holds as the text does: one it reads that the text does not write
+ * (`CORE-12` of `CORE-12x4`, which is no
  * key), or one the text writes whole that the ellipsis joins (`dispatch://agent/s1` and `…` read
  * as the session `s1…`). A cut that moved drops the whitespace before it, save where the head
  * then ends after a reference: there it keeps the first whitespace character the text has after
@@ -302,10 +304,10 @@ function linkStart(link: InlineLink): number {
 /** Every reference of `text` as a cut reads it (`headRefs`), none of them resolved against what
  *  Dispatch holds, since a cut that splits a reference changes what the text says whether or not
  *  its target exists: each span the shared span reader finds that is an address of Dispatch or of
- *  the dashboard at `origin`, read as the link's address where it starts inside a link that
- *  writes it there, and each bare key and `#id` the shared reader finds, each widened over the
- *  inline link that holds it and named as `Extent` says. The link that holds one is the first to
- *  open, as the server's link reader lists them. */
+ *  the dashboard at `origin`, read as that reader reads it - a link's address ended at the link's
+ *  `)` and trimmed as any span is - and each bare key and `#id` the shared reader finds, each
+ *  widened over the inline link that holds it and named as `Extent` says. The link that holds one
+ *  is the first to open, as the server's link reader lists them. */
 function referenceExtents(text: string, origin: string): Extent[] {
   const links = [...inlineLinks(text)].sort((one, other) => linkStart(one) - linkStart(other));
   const extents: Extent[] = [];
@@ -318,18 +320,9 @@ function referenceExtents(text: string, origin: string): Extent[] {
     );
   };
   for (const span of referenceSpans(text)) {
-    const link = links.find(
-      (one) =>
-        linkStart(one) < span.start &&
-        span.start < one.close &&
-        one.addressEnd > one.addressStart &&
-        text.startsWith(text.slice(one.addressStart, one.addressEnd), span.start)
-    );
-    const address =
-      link === undefined ? span.value : text.slice(link.addressStart, link.addressEnd);
-    const route = address === "" ? undefined : referenceRouteFromHref(address, origin);
+    const route = span.value === "" ? undefined : referenceRouteFromHref(span.value, origin);
     if (route !== undefined) {
-      add(span.start, span.start + address.length, buildDispatchReference(route));
+      add(span.start, span.start + span.value.length, buildDispatchReference(route));
     }
   }
   for (const reference of readTextReferences(text, { origin }).references) {

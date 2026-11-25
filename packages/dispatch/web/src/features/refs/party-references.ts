@@ -1,3 +1,5 @@
+import { trimReference } from "@legion/contracts";
+
 import { codeRanges } from "./code-ranges";
 import { partyLink } from "./ref-picker";
 import {
@@ -320,9 +322,13 @@ export function inlineLinks(body: string): readonly InlineLink[] {
   return lastRead.links;
 }
 
-/** The inline link whose address is `body.slice(start, end)`, or undefined where none is. */
+/** The inline link whose address, trimmed as the shared span reader trims it, stands at `[start, end)`. */
 function linkWithAddress(body: string, start: number, end: number): InlineLink | undefined {
-  return inlineLinks(body).find((link) => link.addressStart === start && link.addressEnd === end);
+  return inlineLinks(body).find(
+    (link) =>
+      link.addressStart === start &&
+      start + trimReference(body.slice(start, link.addressEnd)).length === end
+  );
 }
 
 /** `[start, end)` widened over the inline link that wraps it, where one does. A mention's
