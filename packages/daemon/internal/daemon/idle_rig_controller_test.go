@@ -532,10 +532,19 @@ func (c *idleRigController) summaries() string {
 }
 
 // awaitGivenOnce waits for the session to be given summary and then reads the count again once
-// idleRigControllerSettle has passed: it must be one event, given once.
+// idleRigControllerSettle has passed: it must be one event, given once. A session never given it
+// fails naming the count, 0. Pass or fail, it logs where the daemon published the notice, as the
+// listener logged each publish of it (idleRigListener.publishesOf): the topic and the answer, so
+// a run of the daemon at main names the controller topic and a run of this change the role
+// topic.
 func (c *idleRigController) awaitGivenOnce(summary string) {
 	c.t.Helper()
 	defer func() {
+		published := c.rig.listener.publishesOf(summary)
+		c.t.Logf("the listener logged %d publishes of %q", len(published), summary)
+		for _, line := range published {
+			c.t.Logf("the listener's publish of %q: %s", summary, line)
+		}
 		if c.t.Failed() {
 			c.t.Logf("the controller %s was given: %s", c.session, c.summaries())
 			logs := c.rig.listener.log()
@@ -545,9 +554,13 @@ func (c *idleRigController) awaitGivenOnce(summary string) {
 			c.t.Logf("the Envoy listener's log:\n%s", logs)
 		}
 	}()
-	idleRigEventually(c.t, idleRigControllerNoticeWait, fmt.Sprintf("the controller %s being given %q", c.session, summary), func() bool {
-		return c.given(summary) > 0
-	})
+	deadline := time.Now().Add(idleRigControllerNoticeWait)
+	for c.given(summary) == 0 && time.Now().Before(deadline) {
+		time.Sleep(idleRigPoll)
+	}
+	if n := c.given(summary); n == 0 {
+		c.t.Fatalf("the controller %s was given %q 0 times in %s, want exactly once", c.session, summary, idleRigControllerNoticeWait)
+	}
 	time.Sleep(idleRigControllerSettle)
 	if n := c.given(summary); n != 1 {
 		c.t.Fatalf("the controller %s was given %q %d times, want exactly once", c.session, summary, n)

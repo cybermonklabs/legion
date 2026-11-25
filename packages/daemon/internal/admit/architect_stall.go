@@ -250,10 +250,10 @@ func (a *Admission) ArchitectStallArms(ctx context.Context, tx pgx.Tx) (map[stri
 // It marks nothing and queues nothing while no controller is registered
 // (record.Store.ControllerSession, one read for the whole pass), which is the daemon's rule
 // for every wake that keeps a mark (wakeController, tellStalledTrees): a controller that
-// registers later reads its notices from the end of the stream, so a wake queued before it
-// reaches nobody, and the mark written beside it would keep that arm from being told again in
-// the run. So a stall read while no controller runs is told at the first pass after one
-// registers.
+// registers later reads the project's state at its start (`legion state` and Dispatch), so a
+// wake queued before it would wait in the outbox and repeat what it reads, and the mark written
+// beside it would keep that arm from being told again in the run. So a stall read while no
+// controller is registered is told at the first pass after one registers.
 //
 // Every stall of the pass is marked in one statement, and a stall marked already answers false,
 // so a root that stays stalled costs no statement of its own on the facts after its telling. The

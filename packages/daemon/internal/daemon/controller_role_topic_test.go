@@ -38,7 +38,9 @@ const (
 //
 // The control is main's code (the pull request records the run): there the first attempt
 // publishes the notice to the controller topic (notifications.legion.legion.controller) while no
-// session holds the role, and an unresponsive holder's answer fails the attempt as an error.
+// session holds the role, which finishes the row, so the test stops at its first assertion. What
+// main does with an unresponsive holder's answer is the control of
+// TestAControllerNoticeWhoseHolderLapsesBeforeThePublishWaits.
 func TestAControllerNoticeWaitsForALiveHolderOfTheControllerRoleThenGoesToItsRoleTopicOnce(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -115,6 +117,53 @@ func TestAControllerNoticeWaitsForALiveHolderOfTheControllerRoleThenGoesToItsRol
 	if len(waits) != 2 || !strings.Contains(waits[0], "no holder") ||
 		!strings.Contains(waits[1], "ses_controller") || !strings.Contains(waits[1], notify.StateUnresponsive) {
 		t.Fatalf("logged the waits %q, want two: one naming no holder, then one naming ses_controller unresponsive:\n%s", waits, text)
+	}
+}
+
+// The publish-time half of R2 (d): the listener names the registered controller session the
+// role's live holder when the outbox reads the role, and the holder's live window ends before the
+// publish, so the publish is answered as the listener answers a lapsed holder it reads
+// unresponsive (a 404 naming holder_state unresponsive, which stores nothing). The row waits,
+// the attempt is logged as a wait naming the unresponsive holder, and nothing fails.
+//
+// The control is main's code (the pull request records the run): there controllerNotice waits on
+// notify.ErrNoHolder alone, so the same answer to its publish fails the attempt as an error, and
+// settle logs "outbox row failed" at ERROR. The real listener gives that answer on a role topic
+// only; this fake gives it to every publish, main's publish to the controller topic among them,
+// so that the run at main reads main's own handling of the answer.
+func TestAControllerNoticeWhoseHolderLapsesBeforeThePublishWaits(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
+	listener := newControllerRoleListener()
+	listener.answer("ses_controller", "live")
+	listener.lapseAtPublish("unresponsive")
+	server := httptest.NewServer(listener)
+	t.Cleanup(server.Close)
+	clock := time.Now().UTC()
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, clock))
+	var logged syncBuffer
+	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records,
+		notices: notify.New(server.URL, ""), project: "legion", now: func() time.Time { return clock }}
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the outbox: %v", err)
+	}
+	if attempted := listener.attemptedTopics(); len(attempted) != 1 {
+		t.Fatalf("the outbox asked the listener to publish to %v, want one publish: the holder read live, so the attempt reaches the publish", attempted)
+	}
+	if got := listener.publishedTopics(); len(got) != 0 {
+		t.Fatalf("the listener took publishes to %v, want none: it answers every publish as an unresponsive holder", got)
+	}
+	if rows := outboxRows(t, pool); rows != 1 {
+		t.Fatalf("%d outbox rows, want the notice's row kept", rows)
+	}
+	text := logged.String()
+	if strings.Contains(text, "level=ERROR") || strings.Contains(text, `msg="outbox row failed"`) {
+		t.Fatalf("the unresponsive holder's answer to the publish to %v failed the attempt as an error:\n%s", listener.attemptedTopics(), text)
+	}
+	if !strings.Contains(text, `msg="outbox row waits"`) || !strings.Contains(text, "unresponsive") {
+		t.Fatalf("logged %q, want one wait naming the unresponsive holder", text)
 	}
 }
 
@@ -261,11 +310,15 @@ func TestAControllerNoticeWithNoControllerRegisteredWaitsAtDebug(t *testing.T) {
 // other state, which is the 404 of a lapsed holder in that state. A publish to a role topic is
 // answered as the listener answers keep: false, by that same holder: a live one takes it with
 // 200, and every other answer is the lookup's 404, which stores nothing. A publish to any other
-// topic is taken. Every publish taken is recorded.
+// topic is taken. Once a test calls lapseAtPublish, every publish, to any topic, is answered as
+// the 404 of a lapsed holder in that state, whatever the lookup says. Every publish asked for is
+// recorded (attemptedTopics), and every publish taken (publishes).
 type controllerRoleListener struct {
 	mu        sync.Mutex
 	holder    string
 	state     string
+	lapse     string
+	attempted []string
 	published []controllerRolePublish
 }
 
@@ -283,6 +336,22 @@ func (l *controllerRoleListener) answer(holder, state string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.holder, l.state = holder, state
+}
+
+// lapseAtPublish makes every publish from now on be answered as a lapsed holder in state: the
+// answer of a holder whose live window ended between the outbox's read of the role and its
+// publish.
+func (l *controllerRoleListener) lapseAtPublish(state string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lapse = state
+}
+
+// attemptedTopics is the topic of every publish asked for, taken or not.
+func (l *controllerRoleListener) attemptedTopics() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.attempted)
 }
 
 func (l *controllerRoleListener) publishes() []controllerRolePublish {
@@ -316,6 +385,13 @@ func (l *controllerRoleListener) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	var published controllerRolePublish
 	if err != nil || json.Unmarshal(body, &published) != nil {
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	l.attempted = append(l.attempted, published.Topic)
+	if l.lapse != "" {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprintf(w, `{"error":"holder %s lapsed; claim retained","reason":"holder_lapsed","holder":%q,"holder_state":%q,"last_seen":1,"claim_released":false}`,
+			l.holder, l.holder, l.lapse)
 		return
 	}
 	if role, ok := strings.CutPrefix(published.Topic, notify.RoleTopicPrefix); ok && (l.holder == "" || l.state != "live") {

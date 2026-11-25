@@ -1096,15 +1096,17 @@ func (l *sessionLocks) releaser(sessionID string, held *sessionLock) func() {
 // /v1/interests/subscribe judges a registration's topics on (m.splitUncapturedTopics), so a
 // topic only a newer build's subjects capture, which this build stores on the session's row
 // while the two builds run, is in the filter too, and a message stored on it is delivered. A
-// Legion controller's notice lane (notifications.legion.<project>.controller) is one of those
-// topics while the session holds that project's controller role, and this filter is the whole of
-// how it now reaches the controller: the lane's live core subscription, which handed the session
-// only what was published while it was subscribed, went with the rest of the core receive path
-// (INFRA-771), so a notice published while the controller was away is delivered from the stream
-// when it returns. A topic the stream does not store reaches the session on no path of its own: a
-// role lane reaches its holder as a forward on the holder's agent subject, and a topic an earlier
-// build's row still names, which /v1/interests/subscribe drops from a registration with a
-// warning now, reaches nothing.
+// Legion controller's notice lane (notifications.legion.<project>.controller, where a Legion
+// daemon of an earlier release publishes) is one of those topics only while the session holds
+// that project's controller role. A session whose role claim was freed while it was away
+// registers again without the lane, and gets the lane back only once it claims the role again,
+// at the consumer's position then, so a notice stored on the lane while it was away is not
+// delivered to it (dispatch://INFRA-1585, the loss of 2026-11-23). A current daemon publishes
+// controller notices to the controller's role topic instead, which reaches the role's live
+// holder as a forward on its agent subject. A topic the stream does not store reaches the
+// session on no path of its own: a role lane reaches its holder as a forward on the holder's
+// agent subject, and a topic an earlier build's row still names, which /v1/interests/subscribe
+// drops from a registration with a warning now, reaches nothing.
 // SessionConsumers reduces the list to filters that do not overlap.
 //
 // A topic the server would refuse as a filter subject (bus.CheckFilterSubject: an empty token, as

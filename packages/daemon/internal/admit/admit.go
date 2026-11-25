@@ -479,7 +479,8 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // alone: a role that is empty is a term the pending read leaves out.
 //
 // It answers whether it queued a row. Two of its own rules queue nothing and are no error: no
-// controller is registered, so nothing would read the wake, and an older notice of the same
+// controller is registered, and the controller that registers next reads the project's state at
+// its start, so a wake queued now would only repeat it; and an older notice of the same
 // kind, issue and role still waits unsent. A caller that records something of its own about
 // the wake must know which happened, and one does: the stalled-tree rule marks a root only for
 // a notice that went into the outbox, in this same transaction, so a tree that stopped while

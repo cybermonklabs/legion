@@ -214,7 +214,8 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	// Step 3: the refusal that answers for every root of this pass at once, asked before
 	// anything is built for a notice it would refuse. A controller that is not registered
 	// refuses the whole pass with one read, so nothing below is gathered or judged for a notice
-	// nothing would read.
+	// wakeController would not queue: the controller that registers next reads the project's
+	// state at its start.
 	session, err := a.store.ControllerSession(ctx, tx, a.project)
 	if err != nil || session == "" {
 		return err

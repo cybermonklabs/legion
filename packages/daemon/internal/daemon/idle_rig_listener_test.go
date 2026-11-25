@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -122,6 +123,19 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 		return body.Status == "healthy"
 	})
 	return l
+}
+
+// publishesOf is each "listener publish" line of the listener's log so far whose message is
+// summary: the topic the publish named and the listener's answer, as the listener logged them
+// (requestRecord, packages/envoy/cmd/listener/request_record.go).
+func (l *idleRigListener) publishesOf(summary string) []string {
+	var lines []string
+	for _, line := range strings.Split(l.log(), "\n") {
+		if strings.Contains(line, "listener publish") && strings.Contains(line, summary) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 // log is the listener's own output so far, which a failure names.
