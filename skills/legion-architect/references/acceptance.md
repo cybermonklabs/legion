@@ -24,7 +24,7 @@ Read, against the goal, every check and every requirement:
 
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 
-- A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the `phase-finished` may never have reached you.
+- A `catch-up` whose `accepting` names an issue waiting for your acceptance is its wake: the `phase-finished` may never have reached you.
 
 - `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, and sign off again.
 
@@ -82,7 +82,7 @@ Until the task's last step has run, the daemon asks the implementer to merge the
 A conflict it does not act on yet is recorded: the task's steps go on at that head, and a reviewer step's approval of it ends its review round.
 Once every step has run, in `retro` or in `accepting` with no step after yours, the conflict waits, so accept the head as any other; once the issue enters `merging` the daemon asks the merger to merge the base forward,
 and a check the base's newer code breaks is the merger's to fix in that merge too.
-When it asks, the daemon tells you once by `checks-red`, naming the phase the issue stays in, the role asked, the head, the base and why; in `implementing` no notice comes.
+When it asks, the daemon tells you once by `checks-red`, naming the phase the issue stays in (`phase`), the role asked (`asked`), the head (`head`), the base (`conflicts_with`) and why (`why`); in `implementing` no notice comes.
 You start nothing for the merge.
 
 Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes; the merger merges the new head only once that approval is on the pull request.

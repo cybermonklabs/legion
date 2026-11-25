@@ -87,7 +87,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   So is any clear fix in a file it touches: a later round costs a CI pass and a review, if any.
   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 
-- The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
+- The merge gate follows the task's `steps` field: each named step runs in order, then retro and the merger.
   The default task has tester evidence, reviewer approval and architect acceptance.
   With no tester step, the implementer's evidence serves;
   with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro.

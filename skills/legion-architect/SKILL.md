@@ -11,7 +11,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 ## Every turn
 
-- Act on each delivered wake by its row in `skill://legion-architect/references/wake-routing.md`; build no wait loop.
+- Act on each delivered wake, and on each `low` notice at your next turn, by its row in `skill://legion-architect/references/wake-routing.md`; build no wait loop.
 
 - Check each claim against the code as fetched now (the default branch your addressing line names, or the head under review), and tell every reader you dispatch to do the same.
 

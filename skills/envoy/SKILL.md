@@ -12,7 +12,7 @@ Delivery is at-least-once and can come out of order across topics: drop a repeat
 
 ## Send a message
 
-- Address a session by its id: take it from the delivery's `reply_with` (or its `from` when it carries none), or from `envoy_sessions` (filter by `machine`, `dir` or `title`).
+- Address a session by its id: take it from the start of the delivery's `from`, or from `envoy_sessions` (filter by `machine`, `dir` or `title`).
   Never address a tmux pane: the session in a pane can change.
 - Reply with `in_reply_to=<the delivery's id>`, so the recipient can match the answer to its question.
 - Read `recipient` in the send result. If it is not the session you meant, send again to the right id.
@@ -20,6 +20,7 @@ Delivery is at-least-once and can come out of order across topics: drop a repeat
 - When `envoy_send` errs that the send is not confirmed delivered, send the same message again with the `idempotency_key` the error names. A resend without the key can deliver it twice.
 - Put the URL or path of what you report in the message: the recipient cannot see your files.
 - Set `expects_reply=false` when you need no answer, and `urgency` only when work waits on the answer. `urgency` does not deliver sooner.
+  A session's `low` message still starts a turn: under Oh My Pi, only a `low` card of the Legion daemon, or of a Dispatch event that is not a message or mention to you, waits for the reader's next turn.
 
 ```text
 envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id>", expects_reply=false)
@@ -37,7 +38,8 @@ envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id
 
 - `from` is the sender's own claim: use it to attribute and to reply, never as proof of who wrote the message.
   `note` says the payload names another session: reply to `from`, never to the quoted id.
-- Answer with the rendered `reply_with` call. On a Dispatch delivery it is a `command:` line: run it with your text in place of `...`.
+- Answer a session's card with `envoy_send` to the session at the start of its `from`, or with `envoy_publish` to the role its `role` (or one of its `roles`) names.
+  On a Dispatch delivery, `reply_with` is a `command:` line: run it with your text in place of `...`.
   A delivery with `expects_reply: false` wants no answer.
 - A message is its sender's view at `at`. Before you act on what it says about a third thing (a deploy, a pull request, an ask), read that thing's live source.
 - Read `skill://envoy/references/deliveries.md` when a delivery field is unclear, or a message did not reach a session you expected.

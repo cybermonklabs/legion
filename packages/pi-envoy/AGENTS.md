@@ -28,7 +28,7 @@ A Legion pane also loads `@sjawhar/pi-legion`, which reaches this plugin only th
 
 - Render inbound messages only through `renderInbound` (`@legion/envoy-client/delivery`).
 
-- Deliver a card as an aside with `triggerTurn`, never a steer, except an inert card and a startup-phase card (`src/unwritten-frames.ts`, `src/card-wake.ts`): a steer waits in the queue that holds a person's Send.
+- Deliver a card as an aside with `triggerTurn`, never a steer, except an inert card, a startup-phase card and a `low` card, which starts no turn (`src/unwritten-frames.ts`, `src/card-wake.ts`): a steer waits in the queue that holds a person's Send.
 
 - A person's Send or Aside becomes the user's own turn only through `acceptUserTurn` (`@legion/pi-shared/accept-user-turn`), which claude-envoy runs too.
 
