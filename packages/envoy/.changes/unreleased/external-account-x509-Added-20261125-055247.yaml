@@ -22,11 +22,13 @@ body: |-
 
   A trust chain, certificate configuration, certificate or private key that cannot be read is named
   in the error with the file call's reason, never its path, and so is a subject token file that is
-  a directory. A certificate configuration that names no workload certificate and private key, an
-  enterprise certificate proxy's among them, is refused before Google's library would start the
-  signer program it names. An exchange whose answer holds no access token is refused before
-  `generateIdToken`. A refused X.509 exchange names the security token service, its status and its
-  registered code. The exchange logs nothing, whatever `GOOGLE_SDK_GO_LOGGING_LEVEL` says: the
+  a directory. A certificate, private key or trust chain that Google's library would not parse is
+  named as such before anything is sent. A certificate configuration that names no workload
+  certificate and private key as Google's library reads it, an enterprise certificate proxy's among
+  them, is refused before the library would start the signer program it names. An exchange whose
+  answer holds no access token is refused before `generateIdToken`. A refused X.509 exchange names
+  the security token service (Google's where the credential names no `token_url`), its status and
+  its registered code. The exchange logs nothing, whatever `GOOGLE_SDK_GO_LOGGING_LEVEL` says: the
   library's log of it would hold the subject token and the tokens it mints.
 time: 2026-11-25T05:52:47Z
 custom:

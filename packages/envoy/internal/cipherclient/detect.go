@@ -12,8 +12,12 @@
 package cipherclient
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -216,14 +220,14 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 	if json.Unmarshal(e.CredentialsJSON, &fields) != nil {
 		return "", "", errCredentialUnread
 	}
-	x509 := fields.Source.Certificate != nil
+	certified := fields.Source.Certificate != nil
 	credential := e.CredentialsJSON
 	answered := &oauthrefusal.Recorder{}
 	options := &credentials.DetectOptions{Scopes: []string{poolScope}, Logger: slog.New(slog.DiscardHandler)}
-	if !x509 {
+	if !certified {
 		options.Client = oauthrefusal.Client(e.HTTP, answered)
 	} else if reason := certificateFailure(*fields.Source.Certificate); reason != "" {
-		return "", "", e.mintFailure(x509, reason)
+		return "", "", e.mintFailure(certified, reason)
 	} else if federation, err := withoutImpersonation(credential); err != nil {
 		return "", "", errCredentialUnread
 	} else {
@@ -232,16 +236,16 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 	creds, err := credentials.NewCredentialsFromJSON(credentials.ExternalAccount, credential, options)
 	if err != nil {
 		if reason := credentialFileFailure(fields); reason != "" {
-			return "", "", e.mintFailure(x509, reason)
+			return "", "", e.mintFailure(certified, reason)
 		}
 		return "", "", errCredentialUnread
 	}
 	access, err := creds.Token(ctx)
 	if err != nil {
-		return "", "", e.mintFailure(x509, externalAccountFailure(fields, answered, err))
+		return "", "", e.mintFailure(certified, externalAccountFailure(fields, answered, err))
 	}
 	if access.Value == "" {
-		return "", "", e.mintFailure(x509, "the exchange answered no access token")
+		return "", "", e.mintFailure(certified, "the exchange answered no access token")
 	}
 	token, err := generateIDToken(ctx, e.HTTP, e.IAMCredentialsURL, e.ServiceAccount, e.account(), e.Audience, access.Value)
 	if err != nil {
@@ -251,10 +255,10 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 }
 
 // mintFailure is the error of a mint that failed for reason, which names the account and never
-// the file or a library's text: of the account's access token, or for an X.509 certificate (x509)
-// of the federated one.
-func (e *ExternalAccountIdentity) mintFailure(x509 bool, reason string) error {
-	if x509 {
+// the file or a library's text: of the account's access token, or for an X.509 certificate
+// (certified) of the federated one.
+func (e *ExternalAccountIdentity) mintFailure(certified bool, reason string) error {
+	if certified {
 		return fmt.Errorf("mint a federated access token with the external_account credential %s names, to act as %s: %s", credentialsFileVar, e.account(), reason)
 	}
 	return fmt.Errorf("mint an access token as %s with the external_account credential %s names: %s", e.account(), credentialsFileVar, reason)
@@ -300,17 +304,21 @@ type certificateSource struct {
 // this client's own. A file its credential_source names that cannot be read prints as
 // credentialFileFailure says; a refusal names the service that answered - the security token
 // service, IAM Credentials (at the impersonation URL), the token service the credential names
-// (token_url), or else the subject token source its credential_source names (a url, or AWS's
-// metadata) - and the status and registered code its answer carried (redact.Answered); any other
-// failure prints as its class (redact.Class). An X.509 certificate's exchange goes out on the
-// library's own client, which answered does not see, so the status and body of the security token
-// service's answer are read from the library's error instead (libraryAnswer), and only its
-// registered code printed.
+// (token_url, else the library's default, defaultTokenURL), or else the subject token source its
+// credential_source names (a url, or AWS's metadata) - and the status and registered code its
+// answer carried (redact.Answered); any other failure prints as its class (redact.Class). An X.509
+// certificate's exchange goes out on the library's own client, which answered does not see, so the
+// status and body of the security token service's answer are read from the library's error instead
+// (libraryAnswer), and only its registered code printed.
 func externalAccountFailure(fields credentialFields, answered *oauthrefusal.Recorder, err error) string {
 	if reason := credentialFileFailure(fields); reason != "" {
 		return reason
 	}
-	tokenURL, _ := url.Parse(fields.TokenURL)
+	token := fields.TokenURL
+	if token == "" {
+		token = defaultTokenURL
+	}
+	tokenURL, _ := url.Parse(token)
 	status, body, host := answered.Status, answered.Answer(), answered.Host
 	if status == 0 && fields.Source.Certificate != nil && tokenURL != nil {
 		if quoted := libraryAnswer.FindStringSubmatch(err.Error()); quoted != nil {
@@ -341,6 +349,11 @@ func externalAccountFailure(fields credentialFields, answered *oauthrefusal.Reco
 // words it otherwise.
 var libraryAnswer = regexp.MustCompile(`(?s)\Acredentials: status code ([0-9]{3}): (.*)\z`)
 
+// defaultTokenURL is where cloud.google.com/go/auth exchanges a credential that names no token_url
+// (credentials/internal/externalaccount's defaultTokenURL, in the default universe: the library
+// does not pass it a credential's universe_domain).
+const defaultTokenURL = "https://sts.googleapis.com/v1/token"
+
 // credentialFileFailure is why a file the credential's credential_source names cannot be read,
 // and "" where each can: the subject token file, or an X.509 certificate's files
 // (certificateFailure). The library's error quotes the path (and, for the subject token file, does
@@ -358,17 +371,22 @@ func credentialFileFailure(fields credentialFields) string {
 	return ""
 }
 
-// certificateFailure is why an X.509 credential's files cannot be read, and "" where each can:
+// certificateFailure is why an X.509 credential's files cannot be used, and "" where each can be:
 // its trust chain; its certificate configuration, the one it names or else the default one
 // (GOOGLE_API_CERTIFICATE_CONFIG, else gcloud's), which Google's library finds the same way; and
-// the certificate and private key that configuration names. A configuration that names no
-// workload certificate and key is refused: the one other kind Google's library reads, an
-// enterprise certificate proxy's, makes it start the signer program the configuration names, with
-// no setting that allows it (as GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES allows an executable
-// credential_source) and no time limit. Each file prints as the file call's reason (redact.File).
+// the certificate and private key that configuration names. A file that cannot be read prints as
+// the file call's reason (redact.File), and one that does not parse as Google's library parses it
+// as a fixed reason: the library fails on either before it sends the exchange, or in its TLS
+// handshake, with no answer to name. A configuration that names no workload certificate and key
+// is refused: the one other kind Google's library reads, an enterprise certificate proxy's, makes
+// it start the signer program the configuration names, with no setting that allows it (as
+// GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES allows an executable credential_source) and no time
+// limit.
 func certificateFailure(source certificateSource) string {
+	var chain []byte
 	if source.TrustChain != "" {
-		if err := opens(source.TrustChain); err != nil {
+		var err error
+		if chain, err = os.ReadFile(source.TrustChain); err != nil {
 			return "read the trust chain its credential_source names: " + redact.File(err).Error()
 		}
 	}
@@ -387,25 +405,82 @@ func certificateFailure(source certificateSource) string {
 	if err != nil {
 		return "read " + what + ": " + redact.File(err).Error()
 	}
-	var workload struct {
-		Configs struct {
-			Workload struct {
-				Cert string `json:"cert_path"`
-				Key  string `json:"key_path"`
-			} `json:"workload"`
-		} `json:"cert_configs"`
-	}
-	if json.Unmarshal(data, &workload) != nil {
+	var parsed certificateConfig
+	if json.Unmarshal(data, &parsed) != nil {
 		return what + " is not JSON"
 	}
-	cert, key := workload.Configs.Workload.Cert, workload.Configs.Workload.Key
-	if cert == "" || key == "" {
+	workload := parsed.CertConfigs.Workload
+	if workload == nil || workload.CertPath == "" || workload.KeyPath == "" {
 		return what + " holds no workload certificate and private key"
 	}
-	for _, file := range []struct{ what, path string }{{"certificate", cert}, {"private key", key}} {
-		if err := opens(file.path); err != nil {
-			return "read the " + file.what + " its certificate configuration names: " + redact.File(err).Error()
+	cert, err := os.ReadFile(workload.CertPath)
+	if err != nil {
+		return "read the certificate its certificate configuration names: " + redact.File(err).Error()
+	}
+	key, err := os.ReadFile(workload.KeyPath)
+	if err != nil {
+		return "read the private key its certificate configuration names: " + redact.File(err).Error()
+	}
+	leaf := pemCertificate(cert)
+	if leaf == nil {
+		return "the certificate its certificate configuration names is not a PEM certificate"
+	}
+	if _, err := tls.X509KeyPair(cert, key); err != nil {
+		return "the private key its certificate configuration names is not the certificate's PEM private key"
+	}
+	return trustChainFailure(chain, leaf)
+}
+
+// certificateConfig is a certificate configuration decoded into the types Google's library decodes
+// it into (internal/transport/cert's certificateConfig), so that this client reads the workload the
+// library reads, whichever keys the file repeats: Go's JSON decoder reads a repeated key into a
+// struct and into a pointer differently (a later null leaves a struct as it was and sets a pointer
+// to nil). The library reads a nil Workload as an enterprise certificate proxy's configuration.
+type certificateConfig struct {
+	CertConfigs struct {
+		Workload *struct {
+			CertPath string `json:"cert_path"`
+			KeyPath  string `json:"key_path"`
+		} `json:"workload"`
+	} `json:"cert_configs"`
+}
+
+// pemCertificate is the certificate whose PEM block leads data, or nil where data leads with none,
+// as Google's library reads a certificate file (credentials/internal/externalaccount's
+// parseCertificate).
+func pemCertificate(data []byte) *x509.Certificate {
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil
+	}
+	return certificate
+}
+
+// pemCertificateHeader opens each certificate of a trust chain file, which Google's library splits
+// on it.
+const pemCertificateHeader = "-----BEGIN CERTIFICATE-----"
+
+// trustChainFailure is why chain, the content of a trust chain file, is not one Google's library
+// reads beside leaf, and "" where it is (x509Provider's readTrustChain and subjectToken): PEM
+// certificates, of which leaf may be only the first.
+func trustChainFailure(chain []byte, leaf *x509.Certificate) string {
+	read := 0
+	for _, block := range strings.Split(string(chain), pemCertificateHeader) {
+		if block = strings.TrimSpace(block); block == "" {
+			continue
 		}
+		certificate := pemCertificate([]byte(pemCertificateHeader + "\n" + block))
+		if certificate == nil {
+			return "the trust chain its credential_source names is not PEM certificates"
+		}
+		if read > 0 && bytes.Equal(certificate.Raw, leaf.Raw) {
+			return "the trust chain its credential_source names holds the certificate below its top"
+		}
+		read++
 	}
 	return ""
 }

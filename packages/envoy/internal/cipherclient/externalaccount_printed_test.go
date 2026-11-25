@@ -11,10 +11,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -146,6 +147,39 @@ func TestAnExternalAccountMintsFailureSaysWhatFailed(t *testing.T) {
 		}
 		return source
 	}
+	// x509Edited is the credential_source of an X.509 credential whose files are in a directory
+	// named secret, after edit changed them; it names the trust chain file edit answers, if any.
+	x509Edited := func(t *testing.T, edit func(t *testing.T, f x509Files) (chain string)) map[string]any {
+		t.Helper()
+		dir := filepath.Join(t.TempDir(), secret)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		files := writeX509Credential(t, dir, sts, "https://iamcredentials.invalid")
+		certificate := map[string]any{"certificate_config_location": files.config}
+		if chain := edit(t, files); chain != "" {
+			certificate["trust_chain_path"] = chain
+		}
+		return map[string]any{"certificate": certificate}
+	}
+	// write puts content in the file at path; chainOf writes a trust chain of content beside the
+	// certificate f names, and answers its path.
+	write := func(t *testing.T, path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chainOf := func(t *testing.T, f x509Files, content func(cert string) string) string {
+		t.Helper()
+		cert, err := os.ReadFile(f.cert)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(filepath.Dir(f.cert), "chain.pem")
+		write(t, path, content(string(cert)))
+		return path
+	}
 	for _, row := range []struct {
 		name   string
 		source func(t *testing.T) map[string]any
@@ -190,6 +224,29 @@ func TestAnExternalAccountMintsFailureSaysWhatFailed(t *testing.T) {
 		{"a private key that is not there", func(t *testing.T) map[string]any {
 			return x509Missing(t, func(f x509Files) string { return f.key }, "")
 		}, "read the private key its certificate configuration names: open: no such file or directory"},
+		// Google's library fails on each of these before it sends the exchange, or in its TLS
+		// handshake, so each is named, never as "the request failed": a call that got no answer.
+		{"a certificate that does not parse", func(t *testing.T) map[string]any {
+			return x509Edited(t, func(t *testing.T, f x509Files) string { write(t, f.cert, "not a certificate "+secret); return "" })
+		}, "the certificate its certificate configuration names is not a PEM certificate"},
+		{"a private key that does not parse", func(t *testing.T) map[string]any {
+			return x509Edited(t, func(t *testing.T, f x509Files) string { write(t, f.key, "not a key "+secret); return "" })
+		}, "the private key its certificate configuration names is not the certificate's PEM private key"},
+		{"a trust chain that does not parse", func(t *testing.T) map[string]any {
+			return x509Edited(t, func(t *testing.T, f x509Files) string {
+				return chainOf(t, f, func(string) string { return "-----BEGIN CERTIFICATE-----\n" + secret + "\n-----END CERTIFICATE-----\n" })
+			})
+		}, "the trust chain its credential_source names is not PEM certificates"},
+		{"a trust chain that holds the certificate below its top", func(t *testing.T) map[string]any {
+			return x509Edited(t, func(t *testing.T, f x509Files) string {
+				return chainOf(t, f, func(cert string) string { return cert + cert })
+			})
+		}, "the trust chain its credential_source names holds the certificate below its top"},
+		{"control: a trust chain whose top is the certificate", func(t *testing.T) map[string]any {
+			return x509Edited(t, func(t *testing.T, f x509Files) string {
+				return chainOf(t, f, func(cert string) string { return cert })
+			})
+		}, "the token service the credential names: the server answered HTTP 400 invalid_grant"},
 		{"control: the token service refuses the exchange", func(t *testing.T) map[string]any {
 			return map[string]any{"file": subjectTokenFile(t, "the.workload.credential")}
 		}, "the token service the credential names: the server answered HTTP 400 invalid_grant"},
@@ -251,21 +308,27 @@ func TestARefusalAtIAMCredentialsImpersonationNamesIt(t *testing.T) {
 // error, and only where that error is, from its first word to its last, the library's quote of the
 // security token service's answer (libraryAnswer), over as many lines as the body runs. An error
 // worded otherwise, or one that quotes those words further in, prints as a request that failed and
-// never as an answer nobody recorded.
+// never as an answer nobody recorded. A credential that names no token_url is exchanged at the
+// library's default, Google's security token service, and its refusal names that service.
 func TestOnlyTheLibrarysOwnQuoteIsReadAsAnAnswer(t *testing.T) {
-	var fields credentialFields
-	fields.TokenURL = "https://sts.mtls.googleapis.com/v1/token"
-	fields.Source.Certificate = &certificateSource{}
-	for _, row := range []struct{ name, text, want string }{
-		{"the library's quote of a refusal", `credentials: status code 403: {"error":"access_denied","error_description":"echo"}`,
+	const mtls = "https://sts.mtls.googleapis.com/v1/token"
+	for _, row := range []struct{ name, tokenURL, text, want string }{
+		{"the library's quote of a refusal", mtls, `credentials: status code 403: {"error":"access_denied","error_description":"echo"}`,
 			"Google's security token service: the server answered HTTP 403 access_denied"},
-		{"the library's quote of a body of many lines", "credentials: status code 400: {\n  \"error\": \"invalid_target\",\n  \"error_description\": \"echo\"\n}\n",
+		{"the library's quote of a body of many lines", mtls, "credentials: status code 400: {\n  \"error\": \"invalid_target\",\n  \"error_description\": \"echo\"\n}\n",
 			"Google's security token service: the server answered HTTP 400 invalid_target"},
-		{"another wording", `credentials: HTTP 403: {"error":"access_denied"}`, "the request failed"},
-		{"an error that quotes the library's words further in", `a certificate parse error containing credentials: status code 403: {"error":"access_denied"}`,
+		{"a credential that names no token_url", "", `credentials: status code 403: {"error":"access_denied"}`,
+			"Google's security token service: the server answered HTTP 403 access_denied"},
+		{"control: a token_url of another service", "https://sts.example/v1/token", `credentials: status code 403: {"error":"access_denied"}`,
+			"the token service the credential names: the server answered HTTP 403 access_denied"},
+		{"another wording", mtls, `credentials: HTTP 403: {"error":"access_denied"}`, "the request failed"},
+		{"an error that quotes the library's words further in", mtls, `a certificate parse error containing credentials: status code 403: {"error":"access_denied"}`,
 			"the request failed"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			var fields credentialFields
+			fields.TokenURL = row.tokenURL
+			fields.Source.Certificate = &certificateSource{}
 			if got := externalAccountFailure(fields, &oauthrefusal.Recorder{}, errors.New(row.text)); got != row.want {
 				t.Fatalf("externalAccountFailure(%q) = %q; want %q", row.text, got, row.want)
 			}
@@ -301,42 +364,56 @@ func subjectTokenFile(t *testing.T, token string) string {
 	return path
 }
 
-// TestAnEnterpriseCertificateProxyConfigurationRunsNothing: a certificate configuration with no
-// workload certificate and key, but an enterprise certificate proxy's signer to run (`libs.ecp`),
-// is refused before Google's library reads it: the library would start that program with no
-// setting that allows it, as an executable credential_source needs, and no time limit, and leave
-// it running. Control: the signer the configuration names runs when started.
+// TestAnEnterpriseCertificateProxyConfigurationRunsNothing: a certificate configuration that Google's
+// library reads as an enterprise certificate proxy's, with a signer to run (`libs.ecp`), is refused
+// before the library reads it: the library would start that program with no setting that allows it,
+// as an executable credential_source needs, and no time limit, and leave it running. So is one that
+// names a workload certificate and key and then a null workload, in either case of its key: Go's
+// JSON decoder keeps the first in a struct and takes the null in a pointer, which is how the library
+// reads it, so the library sees no workload. Control: for each, the library alone, given the same
+// credential, starts the signer.
 func TestAnEnterpriseCertificateProxyConfigurationRunsNothing(t *testing.T) {
-	dir := t.TempDir()
-	ran := filepath.Join(dir, "ran")
-	signer := filepath.Join(dir, "signer")
-	if err := os.WriteFile(signer, []byte("#!/bin/sh\ntouch '"+ran+"'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	files := writeX509Credential(t, dir, "http://127.0.0.1:9", "https://iamcredentials.invalid")
-	config := `{"cert_configs":{"pkcs11":{"module":"/nowhere","slot":1,"label":"key"}},"libs":{"ecp":"` + signer + `"}}`
-	if err := os.WriteFile(files.config, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := exec.Command(signer).CombinedOutput(); err != nil {
-		t.Fatalf("control: the signer did not run: %v %s", err, out)
-	}
-	if err := os.Remove(ran); err != nil {
-		t.Fatalf("control: the signer ran and left no mark: %v", err)
-	}
+	for _, row := range []struct{ name, workload string }{
+		{"an enterprise certificate proxy's configuration", ``},
+		{"a workload, then a null workload", `"workload":{"cert_path":%q,"key_path":%q},"workload":null,`},
+		{"a workload, then a null Workload", `"workload":{"cert_path":%q,"key_path":%q},"Workload":null,`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ran := filepath.Join(dir, "ran")
+			signer := filepath.Join(dir, "signer")
+			if err := os.WriteFile(signer, []byte("#!/bin/sh\ntouch '"+ran+"'\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			files := writeX509Credential(t, dir, "http://127.0.0.1:9", "https://iamcredentials.invalid")
+			workload := row.workload
+			if workload != "" {
+				workload = fmt.Sprintf(workload, files.cert, files.key)
+			}
+			config := `{"cert_configs":{` + workload + `"pkcs11":{"module":"/nowhere","slot":1,"label":"key"}},"libs":{"ecp":"` + signer + `"}}`
+			if err := os.WriteFile(files.config, []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(files.credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = credentials.NewCredentialsFromJSON(credentials.ExternalAccount, data,
+				&credentials.DetectOptions{Scopes: []string{poolScope}, Logger: slog.New(slog.DiscardHandler)})
+			if err := os.Remove(ran); err != nil {
+				t.Fatalf("control: Google's library did not start the signer the configuration names: %v", err)
+			}
 
-	data, err := os.ReadFile(files.credential)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: "robot@example.iam.gserviceaccount.com",
-		Audience: testAudience, HTTP: HTTPClient()}
-	_, _, err = identity.Token(context.Background())
-	if want := "the certificate configuration its credential_source names holds no workload certificate and private key"; err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("Token: %v; want %q", err, want)
-	}
-	if _, err := os.Stat(ran); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
+			identity := &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: "robot@example.iam.gserviceaccount.com",
+				Audience: testAudience, HTTP: HTTPClient()}
+			_, _, err = identity.Token(context.Background())
+			if want := "the certificate configuration its credential_source names holds no workload certificate and private key"; err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Token: %v; want %q", err, want)
+			}
+			if _, err := os.Stat(ran); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
+			}
+		})
 	}
 }
 
