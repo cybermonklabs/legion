@@ -28,6 +28,7 @@ import {
 } from "./agents";
 import {
   answerAsk,
+  claimIssue,
   createAgentMessage,
   createAsk,
   createComment,
@@ -10378,5 +10379,73 @@ test("the Delivery page's session-groups editor draws no count from the previous
   expect(
     sevenDays.filter((name) => /^Planner, (first|second) run\b.*\b1 PR$/u.test(name))
   ).toHaveLength(2);
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): the project List opened with the agent list held, and its Claimed by filter read before and after the list answers.
+// INFRA-3135, round 26 (the tester's), by the architect's ruling of 2026-11-24 08:07Z and the
+// round-23 rule (an instance in main's code, in a file this pull request changes, is fixed here).
+// Measured in builds Jobs infra-3135-c-h-n62l7 (head 8e7e463a) and infra-3135-c-m-672j8 (main
+// 0dbe5048), and infra-3135-c-b-qzzxg (34dc6a07), in Chromium, Firefox and WebKit at 1440x900: with
+// the agent list (`GET /api/v1/agents`) held, the Claimed by filter offers "Nobody or lapsed, 1
+// issue" over an unclaimed issue and one claimed by a session that is no longer running; once the
+// list answers it offers "Nobody or lapsed, 2 issues". Which claims have lapsed is the agent
+// list's answer (IssuesTable.tsx:196-199); until it answers every claim is judged held
+// (issues-table-data.ts:150, `claimIsTakeable` over a registry whose states are `unknown`), and the
+// table hands its header filters the counts with no gate (`filterCounts={openFacets}`, no
+// `filterCounted`, IssuesTable.tsx:596).
+test("the project List's Claimed by filter draws no count of the lapsed claims before the agent list answers @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  await createIssue({ project: "CORE", title: "Nobody holds this" });
+  const gone = await createIssue({ project: "CORE", title: "Held by a session that is gone" });
+  const token = await mintAgentToken("claim-lapsed", "alice");
+  const holder = { session_id: "e2e-claim-lapsed", title: "Lapsed holder" };
+  await setLiveSessions([holder]);
+  await claimIssue(gone.key, {
+    actor: { id: holder.session_id, kind: "session", origin: { session_title: holder.title } },
+    as: "agent",
+    token,
+  });
+  await setLiveSessions([]);
+  // The agent list is held until the row lets it through.
+  let holding = true;
+  const held: Route[] = [];
+  await page.route(
+    (url) => url.pathname === "/api/v1/agents",
+    async (route) => {
+      if (holding) {
+        held.push(route);
+        return;
+      }
+      await route.continue();
+    }
+  );
+  /** Each option of the Claimed by filter, by its accessible name, read once it holds all three. */
+  const claimOptions = async (): Promise<string[]> => {
+    const trigger = page.getByRole("button", { name: /^Filter Claimed by(?:: \d+ picked)?$/u });
+    await trigger.click();
+    const options = listOf(trigger).getByRole("option");
+    await expect(options).toHaveCount(3);
+    const names = await options.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("aria-label") ?? "")
+    );
+    await page.keyboard.press("Escape");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    return names;
+  };
+  await page.goto("/projects/CORE/issues");
+  await expect(page.locator(`[data-issue-row="${gone.key}"]`)).toBeVisible();
+  const wrong = (await claimOptions())
+    .filter((name) => /^Nobody or lapsed, \d+ issues?$/u.test(name))
+    .map((name) => `agent list out: Claimed by offers "${name}"`);
+  // The agent list was asked for and is held: what the filter offered is the unanswered state.
+  await expect.poll(() => held.length).toBeGreaterThan(0);
+  holding = false;
+  for (const route of held.splice(0)) await route.continue();
+  // The control: once the list answers, the lapsed claim counts beside the unclaimed issue.
+  await expect.poll(claimOptions).toContain("Nobody or lapsed, 2 issues");
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
