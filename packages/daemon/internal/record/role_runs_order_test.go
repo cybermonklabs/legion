@@ -125,7 +125,7 @@ func TestRoleRunsNeverReportsARetiredClaimBesideAStartItsOwnRunHasTakenAway(t *t
 	}
 	t.Cleanup(reader.Close)
 
-	key := RoleRunKey{Token: token, Issue: issue, Role: claim.RoleImplementer, Generation: 1}
+	key := RunKey(token, Issue{Key: issue, Tree: issue, Generation: 1}, claim.RoleImplementer)
 	tx, err := reader.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the read's transaction: %v", err)

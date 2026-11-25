@@ -1159,8 +1159,11 @@ type SuperviseRequest struct {
 	// (Store.ForgetKeptDecisions), and a start that reached no claim hands them over to a fresh
 	// catch-up (workflow.HandOverKept). Every other request carries none.
 	Kept *KeptDecisions `json:"kept,omitempty"`
-	// Generation is the issue generation the request serves. A request of an earlier generation
-	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
+	// Generation is the generation of the issue the request serves (Issue.GenerationOf): the
+	// architect's run for a start of the architect, which is the tree's run on a tree root, and the
+	// issue's own generation for every other request. A request of another generation than the
+	// record holds for it finishes without acting: it must never suspend, stop, or start the next
+	// generation's worker.
 	// Three requests are not held to it. A production check's look start (CheckLook) is fenced on
 	// its check instead (the daemon outbox's checkLookHolds). A tree close of the issue's own tree
 	// whose cleanup is reserved still retires its claim and drives that cleanup, however stale its

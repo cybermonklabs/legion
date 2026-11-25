@@ -527,7 +527,7 @@ func (e *Engine) ownArchitectRun(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return record.RoleRun{}, false, nil
 	}
-	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, claim.RoleArchitect, issue.Generation)
+	run, err := e.store.RoleRun(ctx, tx, token, issue, claim.RoleArchitect)
 	return run, err == nil, err
 }
 
@@ -550,7 +550,7 @@ func architectStartQueued(run record.RoleRun, current phase.Phase) bool {
 // (ArchitectAtWork). The child's first phase start queues it (gateOpened), and so does its next
 // phase start while the claim has failed (reviveArchitect).
 func childArchitectStart(issue record.Issue) record.SuperviseRequest {
-	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}
+	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.GenerationOf("start", claim.RoleArchitect)}
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
@@ -769,7 +769,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		move = reassertion
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
+		Generation: issue.GenerationOf("start", role), Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
 		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
 }
 
