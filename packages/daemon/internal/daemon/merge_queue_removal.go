@@ -225,9 +225,12 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	} else if waits {
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
-	// A reviewer is told nothing by a process launched at another head than the one the record
-	// holds now: its clone stands where that launch made it (supervise's ReviewHeadHolds, which
-	// raises the relaunch at the record's head), and the row waits for the process that starts.
+	// A reviewer is told nothing by a process that does not work where its record says: one
+	// launched at another head than the one the record holds now, whose clone stands where that
+	// launch made it, which supervise's ReviewHeadHolds starts again at the record's head, and one
+	// in an issue pod on another image than the configured one, where no reviewer works
+	// (reviewerPods.check), which the pod's update round replaces. The row waits for the process
+	// that starts in its place.
 	if m.role == claim.RoleReviewer {
 		if err := r.reviewerAtRecordedHead(ctx, m); err != nil {
 			return err
@@ -247,8 +250,11 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 }
 
 // reviewerAtRecordedHead is nil once the reviewer m is for works at the head its record holds now,
-// and otherwise the wait deliverHeld returns: while the machine raises the relaunch at that head,
-// while it is deciding something else (ErrMachineBusy), or while the record does not answer. A
+// in a pod on the configured image, and otherwise what deliverHeld returns: the routine wait the
+// reviewer's task waits on while its issue pod runs another image (supervise's
+// Deps.DeliveryWaits, reviewerPods.check), which names the pod and its update round and raises no
+// relaunch; a wait while the machine raises the relaunch at the record's head, or while it is
+// deciding something else (ErrMachineBusy); and the record's error where it does not answer. A
 // reviewer with no machine here holds nothing back: the publish that follows waits for its holder.
 func (r *outbox) reviewerAtRecordedHead(ctx context.Context, m heldMessage) error {
 	if r.supervisor == nil {
@@ -262,6 +268,8 @@ func (r *outbox) reviewerAtRecordedHead(ctx context.Context, m heldMessage) erro
 	switch {
 	case errors.Is(err, supervise.ErrMachineBusy):
 		return wait.Errorf("%s waits for its reviewer's machine, which is deciding something else", m.what)
+	case errors.Is(err, wait.ErrWaiting):
+		return fmt.Errorf("%s waits for its reviewer's issue pod: %w", m.what, err)
 	case err != nil:
 		return fmt.Errorf("read which head %s's reviewer works at: %w", m.what, err)
 	case !holds:

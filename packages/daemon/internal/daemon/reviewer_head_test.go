@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -254,12 +255,16 @@ func (p reviewerPodOf) IssuePodImage(issue string) (sandbox.PodImage, bool) {
 // reviewer's issue pod runs another image than the configured one, also where its process was
 // launched at the head the record holds: the reviewer works only in a pod on the configured image
 // (reviewerPods), so the row publishes nothing to the process in that pod and starts nothing
-// there. Once the pod's update round has replaced the pod and the reviewer runs in the new one,
-// the row publishes, to that process. The control: with the pod on the configured image, a
-// message for the same head is published at once, to the process the daemon found.
+// there. Its wait names the pod and the pod's update round, and it is routine, as a held start's
+// is: the daemon opens that round itself and the round's bound ends it, so the row's attempts stay
+// at debug however long the round runs, rather than turning into warnings from the seventh. Once
+// the round has replaced the pod and the reviewer runs in the new one, the row publishes, to that
+// process. The control: with the pod on the configured image, a message for the same head is
+// published at once, to the process the daemon found.
 func TestAMessageHeldForAReviewerAtItsHeadWaitsForItsPodOnAnotherImage(t *testing.T) {
 	publisher := &holderPublisher{}
-	runner, sup, _ := runnerIn(t, phase.Retro, "in_progress", publisher, quietLogger())
+	logs := &syncBuffer{}
+	runner, sup, _ := runnerIn(t, phase.Retro, "in_progress", publisher, slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	recorded := &pullRequestHead{head: "sha-2"}
 	sup.deps.ReviewHead = recorded.read
 	sup.deps.Specs = headSpecs{recorded: recorded}
@@ -270,7 +275,7 @@ func TestAMessageHeldForAReviewerAtItsHeadWaitsForItsPodOnAnotherImage(t *testin
 	pods := newReviewerPods(sup.deps.Runtime, quietLogger())
 	pods.images = reviewerPodOf{images}
 	sup.deps.Store = pods.gate(sup.deps.Store)
-	sup.deps.DeliveryWaits = pods.holdsTask
+	sup.deps.DeliveryWaits = pods.check
 	rt := sup.deps.Runtime.(*fake.Runtime)
 	conns := sup.deps.Conns.(*fake.Conns)
 
@@ -322,10 +327,23 @@ func TestAMessageHeldForAReviewerAtItsHeadWaitsForItsPodOnAnotherImage(t *testin
 	// The configured image moves on, so the pod the reviewer runs in now runs another one.
 	images.runs(podUpdatePod, reviewerPodOldImage)
 	held := message("read what changed since sha-1 and send your verdict at sha-2")
+	var waited error
 	for n := 1; n <= 3; n++ {
-		if err := attempt(held); !errors.Is(err, wait.ErrWaiting) {
-			t.Fatalf("attempt %d while the pod runs %s = %v, want a wait", n, reviewerPodOldImage, err)
+		if waited = attempt(held); !errors.Is(waited, wait.ErrWaiting) {
+			t.Fatalf("attempt %d while the pod runs %s = %v, want a wait", n, reviewerPodOldImage, waited)
 		}
+	}
+	if text := waited.Error(); !routineWait(waited) || !strings.Contains(text, podUpdatePod) || !strings.Contains(text, "update round") {
+		t.Errorf("the held message waits with %q (routine: %t), want the routine wait that names the pod %s and its update round",
+			text, routineWait(waited), podUpdatePod)
+	}
+	// The row's seventh attempt, where a wait that is not routine turns into a warning
+	// (waitWarnAttempts): the outbox settles it as it settles every attempt.
+	late := row
+	late.Attempts = waitWarnAttempts
+	runner.settle(ctx, late, waited)
+	if lines := loggedMessages(t, logs.String(), "outbox row waits"); len(lines) != 1 || lines[0]["level"] != "DEBUG" {
+		t.Errorf("the seventh attempt's wait logged %+v, want one line, at debug", lines)
 	}
 	if _, delivered := publisher.snapshot(); len(delivered) != 1 {
 		t.Fatalf("delivered %+v, want the control alone: nothing reaches the reviewer in a pod on another image", delivered)

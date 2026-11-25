@@ -858,7 +858,8 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 // pause held waiting for the role a pause stopped to hold its topic (roleMessage's wait on
 // notify.ErrNoHolder), which the role's return or an end of its debt ends (heldMessageOwed), and
 // a reviewer's start held while its issue pod runs an image other than the configured one
-// (reviewerPods.check), which the pod's update round, opened by the daemon itself, ends.
+// (reviewerPods.check), which the pod's update round, opened by the daemon itself, ends, and so
+// does the same wait of a message the daemon holds for that reviewer (reviewerAtRecordedHead).
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()

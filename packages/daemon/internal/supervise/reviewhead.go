@@ -128,9 +128,10 @@ func relaunchAtReviewHead(m *Machine, ctx context.Context, ev Event) error {
 // record's head itself. Nor does a reviewer whose task waits for a reason of the daemon's
 // (Deps.DeliveryWaits), which sendPending asks before the head: its issue pod runs another image,
 // so its relaunch would be refused there (internal/daemon's reviewerPods), and the message waits
-// for the process the pod's replacement starts, with no relaunch raised. It takes the lock only
-// when the lock is free, and answers ErrMachineBusy otherwise, as PublishUpdateAsk does, so the
-// outbox never waits on a launch in flight.
+// for the process the pod's replacement starts, with no relaunch raised. It answers false then,
+// with that wait as its error, so the message's row waits on what the task waits on. It takes the
+// lock only when the lock is free, and answers ErrMachineBusy otherwise, as PublishUpdateAsk does,
+// so the outbox never waits on a launch in flight.
 func (m *Machine) ReviewHeadHolds(ctx context.Context) (bool, error) {
 	if !m.mu.TryLock() {
 		return false, ErrMachineBusy
@@ -138,8 +139,10 @@ func (m *Machine) ReviewHeadHolds(ctx context.Context) (bool, error) {
 	defer m.unlock()
 	switch m.claim.State {
 	case StateReady, StateIdle, StateWorking:
-		if m.claim.Role == claim.RoleReviewer && m.deps.DeliveryWaits != nil && m.deps.DeliveryWaits(m.claim) {
-			return false, nil
+		if m.claim.Role == claim.RoleReviewer && m.deps.DeliveryWaits != nil {
+			if waits := m.deps.DeliveryWaits(m.claim); waits != nil {
+				return false, waits
+			}
 		}
 		return m.reviewHeadHolds(ctx)
 	}

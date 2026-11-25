@@ -7652,7 +7652,7 @@ Where the pod runs another image, the daemon starts no reviewer: the launch's ow
 The round needs no other role's process in the pod: where no claim of the issue records a process there, the daemon replaces the pod through the issue's Sandbox (`ReplaceIssuePod`, `internal/runtime/sandbox/podimage.go`) once no claim the round asks is left unanswered, or at the round's bound, while no operator's suspension and no project's pause holds it.
 The round asks every role in the pod to push and answer as any round does, and the reviewer starts in the pod that the first launch after the replacement makes.
 The daemon logs `supervise: the issue pod is replaced before its reviewer starts, because it runs an image other than the configured one` once for each such pod, at info, with `issue`, `pod`, `image` and `configured_image`.
-A reviewer process already running in such a pod is not stopped for this, and it is handed no new task there, whichever backend runs it (`DeliveryWaits`, `sendPending`): the task waits, the pod's round opens as for a start, and the reviewer gets the task once it runs in the new pod.
+A reviewer process already running in such a pod is not stopped for this, and it is handed no new task there, whichever backend runs it (`DeliveryWaits`, `sendPending`), and no message the daemon holds for it (a merge forward's review, the ask of its verdict past review: `ReviewHeadHolds`): the task and the message's outbox row wait, the pod's round opens as for a start, and the reviewer gets both once it runs in the new pod.
 The stale-plugin lane relaunches no reviewer in place there either ("Contract discipline" above).
 Under `runtime: tmux` none of this applies: a pane runs on the daemon's own host, whose reviewer clone the daemon makes itself.
 
