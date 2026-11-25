@@ -35,8 +35,8 @@ const specWriterGuardPkg = "api"
 // suggestion, which change a document's text too (plan, "Where the plan departs from the spec's
 // words"). A call names one through the interface the handlers hold (docs.API) or through the
 // service itself (docs.Service), and either is a call of the sink. KeepAskBlockInStep is the write
-// of an ask's state into its block, which SetBlockAttributes made before it. ReviseQueries is no
-// sink: the version it appends when a check result is recorded or retracted re-renders the
+// of an ask's state into its block, which SetBlockAttributes made before it. DrainOwedQueries is
+// no sink: the version it appends once a check result is recorded or retracted re-renders the
 // issue's query documents for that result, and a result is no requirement, criterion or check
 // node, nor is its tuple to its check a relation out of one, so the version writes nothing the
 // check guards; specWriterRevisions names the routes that reach it, each with that reason.
@@ -59,15 +59,15 @@ var specWriterSinkTypes = []string{"docs.API.", "docs.Service."}
 var specWriterNodeSinks = []string{"api.writeNodeState", "api.writeReasoningPointer"}
 
 // specWriterRevision is the write of the document service that appends a version of each query
-// document of an issue whose record a write moved (docs.Service.ReviseQueries), by method name,
-// called through either of specWriterSinkTypes. It is no sink (specWriterSinks), and the routes
-// whose path reaches it are the ones specWriterRevisions names.
-const specWriterRevision = "ReviseQueries"
+// document of an issue whose record a write moved and marked owed (docs.Service.DrainOwedQueries),
+// by method name, called through either of specWriterSinkTypes. It is no sink (specWriterSinks),
+// and the routes whose path reaches it are the ones specWriterRevisions names.
+const specWriterRevision = "DrainOwedQueries"
 
 // resultRevisionExemption is why specWriterRevisions leaves the two result routes' versions
 // unchecked.
 const resultRevisionExemption = "a result recorded or retracted moves the record of its check's Verification query, and the " +
-	"version ReviseQueries appends re-renders that document from the store and writes no requirement, criterion or check " +
+	"version DrainOwedQueries appends re-renders that document from the store and writes no requirement, criterion or check " +
 	"node and no value or relation out of one: a result is none of those nodes, and its tuple to its check is a relation " +
 	"out of the result (TestARecordedResultAndItsRetractionChangeNoRequirementCriterionOrCheck)"
 
@@ -77,11 +77,13 @@ const resultRevisionExemption = "a result recorded or retracted moves the record
 // not named here fails, naming it, and so does a route named here that the table does not serve or
 // whose path no longer reaches the revision, so no reason is left describing a route it does not.
 //
-// One call of the revision is outside the walk, which reads package api alone: the issue room's
-// settlement (settlement.reviseQueries, docs/settlement.go) revises the query documents a
-// settled edit moved. It needs no writer check of its own: what it settles reached the room
-// through a document socket, which admits a person alone (requestActor, docs/socket_admission.go),
-// or through a route whose own path this test holds to the check.
+// Two drains are outside the walk, which reads package api alone: the one an issue room's
+// settlement runs once it has committed (commitVersion, docs/settlement.go), of the query documents
+// a settled edit moved, and the block-index tick's, of the marks a request or a settlement left
+// (drainOwedQueryMarks, docs/query_marks.go). Neither needs a writer check of its own: what a
+// settlement settles reached the room through a document socket, which admits a person alone
+// (requestActor, docs/socket_admission.go), or through a route whose own path this test holds to
+// the check, and every other mark is left by one of the routes specWriterRevisions names.
 var specWriterRevisions = map[string]string{
 	"POST /api/v1/issues/{key}/results": resultRevisionExemption,
 	"POST /api/v1/results/{id}/retract": resultRevisionExemption,
@@ -224,8 +226,8 @@ func TestTheSpecWriterExemptionsStillHold(t *testing.T) {
 // a planted exempt route whose path calls the check. The planted table also holds a route that
 // checks its writer, one that needs the person scope, and one that writes nothing, and neither
 // helper names any of them. A third control holds the revision list the same way: over a planted
-// list naming one route that reaches ReviseQueries and one that reaches nothing, the decision names
-// the planted route that reaches ReviseQueries unnamed and the named route that does not reach it,
+// list naming one route that reaches DrainOwedQueries and one that reaches nothing, the decision
+// names the planted route that reaches DrainOwedQueries unnamed and the named route that does not reach it,
 // and neither the named revision route nor any route of the first two controls.
 func TestTheSpecWriterGuardSeesAPlantedWriter(t *testing.T) {
 	graph := plantedSpecWriterGraph(t)
@@ -489,7 +491,7 @@ func specWriterServiceMethod(name string) (string, bool) {
 }
 
 // plantedSpecWriterSources is the planted module TestTheSpecWriterGuardSeesAPlantedWriter reads, by
-// import path: a document service with ApplyOps and ReviseQueries behind an interface, as docs.API
+// import path: a document service with ApplyOps and DrainOwedQueries behind an interface, as docs.API
 // holds them; the stand-ins for net/http's method names the table's rows spell; and a server whose
 // routes table holds a route that writes through a function literal with no check, a route whose
 // path calls the check through a helper before the same write, a route that needs the person scope
@@ -502,14 +504,14 @@ var plantedSpecWriterSources = map[string]string{
 
 type API interface {
 	ApplyOps(artifactID string) error
-	ReviseQueries(issueKey string) error
+	DrainOwedQueries(issueKey string) error
 }
 
 type Service struct{}
 
 func (s *Service) ApplyOps(artifactID string) error { return nil }
 
-func (s *Service) ReviseQueries(issueKey string) error { return nil }
+func (s *Service) DrainOwedQueries(issueKey string) error { return nil }
 `,
 	"planted/http": `package http
 
@@ -565,7 +567,7 @@ func (s *server) inTransaction(write func() error) { _ = write() }
 func (s *server) read() {}
 
 func (s *server) revise() {
-	s.inTransaction(func() error { return s.documents.ReviseQueries("KEY-1") })
+	s.inTransaction(func() error { return s.documents.DrainOwedQueries("KEY-1") })
 }
 `,
 }

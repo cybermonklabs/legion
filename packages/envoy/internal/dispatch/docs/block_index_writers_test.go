@@ -669,15 +669,16 @@ var indexPasses = map[string]string{
 	// mends a projection.
 	"api/results.go#writeRecordedResult":                "the result the request records, the check block it resolved and the event it appended",
 	"api/results_retract.go#writeCheckResultRetraction": "the retraction the request records, whether its result's node stands and the event it appended",
-	// A query's version a write appends where it moved the query's record or its document's
-	// rendering and wrote that document no version (Service.ReviseQueries): the version's node,
-	// caused by the write's event, after the version's row and before its version_renders row. It
-	// decides the version from the record of each query of the issue and the render of its
-	// document, both read at one cut of the write's own transaction, against the document's newest
-	// version, and writes a new version from that read: it reads no projection row to mend the
-	// store, nor the store to mend a projection.
-	"api/results.go#reviseQueriesUnder": "each query's record and its document's render at a cut of the route's transaction, its newest version and the event the route appended",
-	"docs/settlement.go#reviseQueries":  "each query's record and its document's render at a cut of the settlement's transaction, its newest version and the settlement's last artifact.version",
+	// A query's version a write owes where it moved the query's record or its document's
+	// rendering and wrote that document no version (planRevisions, writeRevisions): the version's
+	// node, after the version's row and before its version_renders row, and its facts caused under
+	// an event. It decides the version from the record of each query of the issue and the render of
+	// its document, both read at one cut of the writer's own transaction, against the document's
+	// newest version, and writes a new version from that read: it reads no projection row to mend
+	// the store, nor the store to mend a projection. The drain writes it for the issue a mark
+	// names - a result's, a retraction's or an issue room's settlement's - once that write has
+	// committed, under the mark's event.
+	"docs/query_marks.go#drainQueryMark": "the issue's query mark, and each query's record and its document's render at a cut of the drain's transaction, its newest version and the mark's event",
 	// A component's node and its relations (dispatch://INFRA-1253 R9): an import states them from
 	// the model it fetched, read against the part_of and depends_on each node states now only to
 	// state what moved, and the components it drops from the source's rows as they stood; a

@@ -115,14 +115,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The retraction moves the record of the check's issue's Verification query, which takes a
-	// version in its issue's room once the retraction is written (reviseQueriesUnder). That room's
-	// lock comes here, after the owner lock and before the event's owner row and every write
-	// (docs.LockQueryRooms).
-	if err := docs.LockQueryRooms(r.Context(), tx, result.CheckIssueKey); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
+	// The retraction moves the record of the check's issue's Verification query. This transaction
+	// writes no version of that query and takes no lock of the issue's room: its batch marks the
+	// issue's queries owed (writeCheckResultRetraction), and the drain writes the version once it
+	// has committed, below.
 	if err := s.refuseRetractionBy(r.Context(), tx, actor, person, result); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -162,11 +158,8 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	retraction := model.CheckResultRetraction{
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq, CreatedAt: createdAt,
 	}
-	if err := writeCheckResultRetraction(r.Context(), tx, &retraction, held, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := s.reviseQueriesUnder(r.Context(), tx, result.CheckIssueKey, actor, event.ID); err != nil {
+	marked, err := writeCheckResultRetraction(r.Context(), tx, &retraction, result.CheckIssueKey, held, event.ID)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -174,7 +167,14 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), event)
+	// The drain writes the version of the Verification query the retraction left owed, before the
+	// retraction's event is published (docs.Service.DrainOwedQueries), and what it appended
+	// follows that event.
+	var drained []model.Event
+	if marked {
+		drained = s.deps.Docs.DrainOwedQueries(r.Context(), result.CheckIssueKey)
+	}
+	s.publish(r.Context(), append([]model.Event{event}, drained...)...)
 	WriteJSON(w, http.StatusCreated, retraction)
 }
 
@@ -330,16 +330,22 @@ func resultNodeHeld(ctx context.Context, tx pgx.Tx, id string) (bool, time.Time,
 // event, in one batch (store.RunWrite), its write phase's last: its row, dated at the retraction's
 // created_at, the transaction's now() (resultNodeHeld), and, where the store holds the result's
 // node (held), the retracted value of that result (graphstore.ResultRetracted): its reason, stated
-// by the retraction's actor at that time and caused by event, of which the row is the projection.
-// A result whose node the store does not hold yet - a row an earlier release wrote, which the
-// backfill has not reached - takes no value here: the backfill writes its node and then its
-// retracted value from the row (graphcensus' census_results.go).
-func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *model.CheckResultRetraction, held bool, event int64) error {
+// by the retraction's actor at that time and caused by event, of which the row is the projection;
+// then the mark of the queries of the check's issue checkIssueKey owed a version, whose record the
+// value moved (docs.QueueQueryMark), with that event and the value's sequence as its causes, the
+// value's writer, the retraction's actor, being the one the drain names its version after, and
+// last the result's head rows. A result whose node the store does not hold yet - a row an earlier
+// release wrote, which the backfill has not reached - takes no value here, and so marks nothing:
+// the backfill writes its node and then its retracted value from the row (graphcensus'
+// census_results.go). It answers whether the batch marked the issue's queries, which it does only
+// where the issue has converted.
+func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *model.CheckResultRetraction, checkIssueKey string, held bool, event int64) (bool, error) {
 	actorJSON, err := encodeJSON(retraction.Actor)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+	marked := false
+	err = store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		b.Queue("record the retraction", `
 			insert into check_result_retractions (result_id, reason, session, actor, event_seq, created_at)
 			values ($1, $2, $3, $4, $5, $6)
@@ -349,7 +355,9 @@ func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *mode
 		}
 		graphstore.QueueWrite(b, nil, []graphstore.Tuple{graphstore.ResultRetracted(
 			retraction.ResultID, retraction.Reason, retraction.Actor, retraction.CreatedAt, event)})
+		docs.QueueQueryMark(b, checkIssueKey, event, &marked)
 		graphstore.QueueHeads(b, []graphstore.NodeKey{{Kind: graphstore.KindResult, ID: retraction.ResultID}})
 		return nil
 	})
+	return marked, err
 }

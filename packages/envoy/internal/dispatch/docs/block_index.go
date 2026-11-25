@@ -115,6 +115,10 @@ type BlockIndexTick struct {
 	// marked (graphcensus.FillIssueHeads): an issue a write of a build that keeps no head rows
 	// unmarked, and one a store of the release before holds.
 	HeadsFilled int
+	// Queries is how many issues' marks of queries owed a version (issue_query_marks) the tick
+	// drained: each a mark a request's write left and its own drain did not clear
+	// (drainOwedQueryMarks).
+	Queries int
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
 	OwedTexts      int
@@ -144,9 +148,9 @@ type BlockIndexTick struct {
 	// Cursor is where the next tick's batches start: the last owner each batch listed while that
 	// batch was full, and the start again once a batch lists fewer.
 	Cursor BlockIndexCursors
-	// Full reports a batch of documents, of texts, of items, of item blocks or of owners with
-	// no window that was full, a page of events after this build's cursor that was full, or a
-	// retirement pass that deleted a row, so more may be waiting. The retirement term counts
+	// Full reports a batch of documents, of texts, of items, of item blocks, of owners with no
+	// window or of query marks that was full, a page of events after this build's cursor that was
+	// full, or a retirement pass that deleted a row, so more may be waiting. The retirement term counts
 	// rows deleted rather than a full batch because that
 	// arm reads window owners and retires only the few that still hold a whole-text row: a
 	// pass that read its whole slice and deleted twenty rows is not full by any count of its
@@ -217,7 +221,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
 		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.Comments > 0 ||
-		tick.ObjectNodes > 0 || tick.OrphansGone > 0 || tick.StaleLensesGone > 0 || tick.HeadsFilled > 0 ||
+		tick.ObjectNodes > 0 || tick.OrphansGone > 0 || tick.StaleLensesGone > 0 || tick.HeadsFilled > 0 || tick.Queries > 0 ||
 		tick.AnotherBuild != logged.AnotherBuild || tick.LiveAhead != logged.LiveAhead || tick.Unreadable != logged.Unreadable ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
 		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
@@ -231,14 +235,15 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// comments= the documents it marked owed and the comments it gave their nodes from those
 		// events, object_nodes=, orphans_gone= and stale_lenses_gone= the rows the object pass gave
 		// their nodes, the orphaned document nodes it stated gone and the nodes of stale lenses it
-		// stated gone, and another_build= whether a live server process
+		// stated gone, queries= the issues whose marks of queries owed a version it drained
+		// (drainOwedQueryMarks), and another_build= whether a live server process
 		// of another build served, which decides nothing of which events the tick reads and makes
 		// it owe the object pass (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
 			"comments", tick.Comments, "object_nodes", tick.ObjectNodes, "orphans_gone", tick.OrphansGone,
-			"stale_lenses_gone", tick.StaleLensesGone, "heads_filled", tick.HeadsFilled,
+			"stale_lenses_gone", tick.StaleLensesGone, "heads_filled", tick.HeadsFilled, "queries", tick.Queries,
 			"another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
 			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead, "unreadable_rooms", tick.Unreadable,
@@ -306,8 +311,9 @@ type liveAheadDocuments map[string]owedDocument
 // while this build owes it, the object pass: the nodes of the issues, documents, asks and messages
 // whose rows another build wrote with none, and the gone statement of each document node another
 // build left behind no row (writeObjectNodesAnotherBuildWrote), which reads those four tables whole
-// where every other read of the tick reads only what is owed; then one batch of the documents owed
-// a block index past
+// where every other read of the tick reads only what is owed; then the drain of up to a batch of
+// the marks of queries owed a version that a request left (drainOwedQueryMarks); then one batch of
+// the documents owed a block index past
 // cursors.Documents (a document id; empty is the start), one batch of the items owed an index
 // with the block grammar, oldest first (refs.ReindexOwed), one batch of the comments, messages
 // and asks owed a block index of their own blocks, oldest owed_at first
@@ -363,6 +369,19 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		slog.Error("dispatch: block index could not write the nodes of the rows another build wrote", "error", err)
 	}
 	eventsFull = eventsFull || objectsLeft
+	// The marks of queries owed a version that a request's write left and its own drain did not
+	// clear run next, each in a transaction of its own under its issue's owner lock
+	// (drainOwedQueryMarks), so a version one writes whose block index it could not stand is
+	// listed by this tick's documents batch below. A pass that fails is logged and holds back
+	// nothing else of the tick: every mark stays for the next tick.
+	queriesFull, err := s.drainOwedQueryMarks(ctx, &tick)
+	switch {
+	case ctx.Err() != nil:
+		return tick, ctx.Err()
+	case err != nil:
+		slog.Error("dispatch: block index could not drain the queries the issues owe", "error", err)
+	}
+	eventsFull = eventsFull || queriesFull
 	owed, err := s.owedDocuments(ctx, after)
 	if err != nil {
 		return tick, err
