@@ -1,7 +1,10 @@
 import {
+  createContext,
   type KeyboardEvent,
   type ReactNode,
   useCallback,
+  useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -62,6 +65,7 @@ import {
   sentenceCase,
   VERIFICATION_WORDS,
 } from "../page-words";
+import { type Press, trackPress } from "../press-focus";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { type OnEditing, pressAsksCaret, useNodeEditing, useWordsPress } from "../useNodeEditing";
@@ -466,6 +470,8 @@ export function VerificationFilterBody({
       key === "Enter" ? target === row && enterRow(row) : key === "o" && keepChecks(row);
     if (acted) event.preventDefault();
   };
+  // The press under way anywhere on the page, followed once for every check row drawn.
+  const viewPress = useViewPress();
   const drawnBody = (
     <div className={BODY} data-verification-body="">
       {/* Each line, the page's one line for a failed read (`FailedReadLine`): its words and a
@@ -532,67 +538,69 @@ export function VerificationFilterBody({
                 total={issue.statements.length}
               />
             </div>
-            <div className={TABLE} data-verification-table="">
-              <Headings />
-              {shown.map((statement) => (
-                <Statement
-                  context={context.has(statement.node.id)}
-                  editingFor={editingFor}
-                  key={statement.node.id}
-                  onEdit={editRow}
-                  onPress={press}
-                  onPressWords={pressWords}
-                  presses={presses}
-                  reportFor={reportFor}
-                  statement={statement}
-                  statementNames={statementNames}
-                  tabIndexFor={tabIndexFor}
-                />
-              ))}
-              {/* What the table says where it draws no row under its headings, rather than
-                  headings over nothing: the page's line for no match where the query matched
-                  nothing of the issue, whose row still says how the issue stands, and the page's
-                  line for a state where the one the reader narrowed to holds no statement: a chip
-                  whose count is 0 is a press too, as is a chip whose statements the query left
-                  out. */}
-              {!matched || (only !== undefined && shown.length === 0) ? (
-                <p
-                  className={`${CELL} text-sm leading-5 ${pageQuietText}`}
-                  data-verification-none=""
-                  role="none"
-                  {...pageChrome}
-                >
-                  {matched ? EMPTY_STATE_LINES.verification_none : EMPTY_STATE_LINES.no_match}
-                </p>
-              ) : null}
-              {loose.map((check) => (
-                <Check
-                  check={check}
-                  editing={editingFor(check.node.id)}
-                  kept={table.kept.get(check.node.id) ?? NO_KEPT_RESULTS}
-                  key={check.node.id}
-                  loose={true}
-                  onEdit={() => editRow(check.node.id, check.node)}
-                  onPress={press}
-                  onPressWords={() => pressWords(check.node.id, check.node)}
-                  pressed={presses.get(check.node.id)}
-                  report={reportFor(check.node.id)}
-                  row={check.node.id}
-                  statementNames={statementNames}
-                  tabIndex={tabIndexFor(check.node.id)}
-                />
-              ))}
-              {others.map((node) => (
-                <OtherRow
-                  editing={editingFor(node.id)}
-                  key={node.id}
-                  node={node}
-                  onPressWords={() => pressWords(node.id, node)}
-                  report={reportFor(node.id)}
-                  tabIndex={tabIndexFor(node.id)}
-                />
-              ))}
-            </div>
+            <ViewPressContext.Provider value={viewPress}>
+              <div className={TABLE} data-verification-table="">
+                <Headings />
+                {shown.map((statement) => (
+                  <Statement
+                    context={context.has(statement.node.id)}
+                    editingFor={editingFor}
+                    key={statement.node.id}
+                    onEdit={editRow}
+                    onPress={press}
+                    onPressWords={pressWords}
+                    presses={presses}
+                    reportFor={reportFor}
+                    statement={statement}
+                    statementNames={statementNames}
+                    tabIndexFor={tabIndexFor}
+                  />
+                ))}
+                {/* What the table says where it draws no row under its headings, rather than
+                    headings over nothing: the page's line for no match where the query matched
+                    nothing of the issue, whose row still says how the issue stands, and the page's
+                    line for a state where the one the reader narrowed to holds no statement: a chip
+                    whose count is 0 is a press too, as is a chip whose statements the query left
+                    out. */}
+                {!matched || (only !== undefined && shown.length === 0) ? (
+                  <p
+                    className={`${CELL} text-sm leading-5 ${pageQuietText}`}
+                    data-verification-none=""
+                    role="none"
+                    {...pageChrome}
+                  >
+                    {matched ? EMPTY_STATE_LINES.verification_none : EMPTY_STATE_LINES.no_match}
+                  </p>
+                ) : null}
+                {loose.map((check) => (
+                  <Check
+                    check={check}
+                    editing={editingFor(check.node.id)}
+                    kept={table.kept.get(check.node.id) ?? NO_KEPT_RESULTS}
+                    key={check.node.id}
+                    loose={true}
+                    onEdit={() => editRow(check.node.id, check.node)}
+                    onPress={press}
+                    onPressWords={() => pressWords(check.node.id, check.node)}
+                    pressed={presses.get(check.node.id)}
+                    report={reportFor(check.node.id)}
+                    row={check.node.id}
+                    statementNames={statementNames}
+                    tabIndex={tabIndexFor(check.node.id)}
+                  />
+                ))}
+                {others.map((node) => (
+                  <OtherRow
+                    editing={editingFor(node.id)}
+                    key={node.id}
+                    node={node}
+                    onPressWords={() => pressWords(node.id, node)}
+                    report={reportFor(node.id)}
+                    tabIndex={tabIndexFor(node.id)}
+                  />
+                ))}
+              </div>
+            </ViewPressContext.Provider>
           </>
         )}
       </div>
@@ -1280,6 +1288,50 @@ function Statement({
   );
 }
 
+/** The press under way anywhere on the page, followed once for every check row the body draws
+ *  (`trackPress`, from the `mousedown` whose default moves the focus): whether one is held, from
+ *  its start until the task after it ends, and `afterPress`, which has `decide` called once the
+ *  press under way has ended - a row's `focusout` that names no element while a press is held is
+ *  the reader's act, decided as it ends (`Check`). A row drawn with no body around it sees no
+ *  press. */
+interface ViewPress {
+  readonly afterPress: (decide: () => void) => void;
+  readonly pressing: boolean;
+}
+
+const ViewPressContext = createContext<ViewPress>({ afterPress: () => {}, pressing: false });
+
+/** The body's `ViewPress`: one `trackPress` for the whole view, whose end calls each `decide`
+ *  queued while it was held, once, and forgets them. */
+function useViewPress(): ViewPress {
+  const press = useRef<Press | undefined>(undefined);
+  const queued = useRef<(() => void)[]>([]);
+  useEffect(() => {
+    const listening = new AbortController();
+    press.current = trackPress({
+      onEnd: () => {
+        const decides = queued.current;
+        queued.current = [];
+        for (const decide of decides) decide();
+      },
+      signal: listening.signal,
+      starts: ["mousedown"],
+    });
+    return () => listening.abort();
+  }, []);
+  return useMemo(
+    () => ({
+      afterPress: (decide: () => void) => {
+        queued.current.push(decide);
+      },
+      get pressing() {
+        return press.current?.pressing === true;
+      },
+    }),
+    []
+  );
+}
+
 /**
  * One check beside its latest result (the prototype's `.vc` and `.vres`): how it stands, by a
  * word and a shape, its own words, and the four attributes its body draws. Its earlier results
@@ -1370,31 +1422,64 @@ function Check({
   // Whether the facts were drawn when the pointer went down: the focus its press puts in the row
   // draws them before the click, and the click must shut only what was drawn before it.
   const drawnAtPress = useRef<boolean | undefined>(undefined);
-  // The row's element, whose focus events say whether the focus is inside it, and the press and
-  // its setter as last drawn, which its listener reads as the focus leaves.
+  // The row's element, whose focus events say whether the focus is inside it, and the press, its
+  // setter and the editing as last drawn, which its listener reads as the focus leaves. A
+  // `focusout` that names an element outside the row is the focus leaving it. One that names none
+  // is told by what dropped the focus. A press under way is the reader's act - one on blank space
+  // drops the focus to the page's body - and the press ending decides whether the focus is in
+  // the row then (the body's one `trackPress` for the view, `ViewPress`), edited or not. With no
+  // press, while the row is edited, the drop is the editing's own: Escape in the editor blurs it
+  // before it focuses the row, and the editor's redraw drops the focus to the page and puts it
+  // back on the block a microtask or a frame later (`useNodeEditing.ts`), neither of which leaves
+  // the row, so the facts the reader shut stay shut; the editing ending decides once whether the
+  // focus is in the row then. With no press on a row not edited, the drop is decided a microtask
+  // later, by whether the focus is in the row then, as the body's box decides whether it holds
+  // the focus (`slots/body.tsx`'s `useFocusHeld`). Nothing is decided after the effect's
+  // cleanup - the row gone, or its id changed.
+  const viewPress = useContext(ViewPressContext);
   const rowElement = useRef<HTMLDivElement>(null);
   const pressedNow = useRef(pressed);
   pressedNow.current = pressed;
   const onPressNow = useRef(onPress);
   onPressNow.current = onPress;
+  const editingNow = useRef(editing);
+  editingNow.current = editing;
+  const leave = useCallback(() => {
+    setFocusInside(false);
+    // A shut the reader pressed lasts while the focus stays; the next visit opens again.
+    if (pressedNow.current === false) onPressNow.current(row, undefined);
+  }, [row]);
   useLayoutEffect(() => {
     const element = rowElement.current;
     if (element === null) return;
-    const entered = () => setFocusInside(true);
-    const left = (event: FocusEvent) => {
-      const to = event.relatedTarget;
-      if (to instanceof Node && element.contains(to)) return;
-      setFocusInside(false);
-      // A shut the reader pressed lasts while the focus stays; the next visit opens again.
-      if (pressedNow.current === false) onPressNow.current(row, undefined);
+    const listening = new AbortController();
+    // Leaves the row where the focus has settled outside it, and does nothing after the cleanup.
+    const decide = () => {
+      if (!listening.signal.aborted && !element.contains(document.activeElement)) leave();
     };
-    element.addEventListener("focusin", entered);
-    element.addEventListener("focusout", left);
-    return () => {
-      element.removeEventListener("focusin", entered);
-      element.removeEventListener("focusout", left);
-    };
-  }, [row]);
+    element.addEventListener("focusin", () => setFocusInside(true), { signal: listening.signal });
+    element.addEventListener(
+      "focusout",
+      (event) => {
+        const to = event.relatedTarget;
+        if (to instanceof Node) {
+          if (!element.contains(to)) leave();
+          return;
+        }
+        if (viewPress.pressing) viewPress.afterPress(decide);
+        else if (editingNow.current === undefined) queueMicrotask(decide);
+      },
+      { signal: listening.signal }
+    );
+    return () => listening.abort();
+  }, [leave, viewPress]);
+  const editedBefore = useRef(editing);
+  useLayoutEffect(() => {
+    const ended = editedBefore.current !== undefined && editing === undefined;
+    editedBefore.current = editing;
+    const element = rowElement.current;
+    if (ended && element !== null && !element.contains(document.activeElement)) leave();
+  }, [editing, leave]);
   const node = check.node;
   const surface = node.facts.find((fact) => fact.name === "surface")?.value ?? "";
   const opened = pressed ?? focusInside;

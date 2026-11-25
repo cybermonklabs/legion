@@ -11,7 +11,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactElement, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -839,7 +839,7 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     expect(view.container.querySelectorAll("[data-node-body] img").length).toBeGreaterThan(0);
 
     // The focus leaving it closes what the focus opened.
-    act(() => words?.blur());
+    await act(async () => words?.blur());
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
     expect(card?.getAttribute("aria-expanded")).toBe("false");
     // The control is a button of the check's words' cell, a tab stop, which says the facts are
@@ -891,7 +891,7 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     await user.click(view.container.querySelector("[data-verification-result]") as Element);
     expect(document.activeElement).toBe(card);
     expect(card?.getAttribute("aria-expanded")).toBe("true");
-    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    await act(async () => (document.activeElement as HTMLElement | null)?.blur());
     expect(card?.getAttribute("aria-expanded")).toBe("false");
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
     expect(askedDocuments(page)).toEqual(["artifact-verification"]);
@@ -940,9 +940,9 @@ test("Enter on a statement and a press on a check's words edit each in its docum
     expect(row?.querySelector("[data-node-words] [data-editor-stand]")).not.toBeNull();
 
     // The press kept no facts: they were drawn while the caret was in the check, and are shut
-    // once the focus has left it.
+    // once the focus has left it for another row.
     expect(row?.getAttribute("aria-expanded")).toBe("true");
-    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    act(() => statement?.focus());
     expect(row?.getAttribute("aria-expanded")).toBe("false");
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
   } finally {
@@ -1002,6 +1002,188 @@ test("a check's facts are drawn while the caret is in its editor, and shut once 
   } finally {
     view.unmount();
     control.remove();
+  }
+});
+
+/** One check under a statement, drawn with the page's side of editing, and what the cases below
+ *  read of its row: the row, its Facts control, whether its facts are drawn - as the row says, as
+ *  its control says, and drawn - and `caretByEnter`, which puts the caret in the check's editor by
+ *  Enter on its words: the page is asked for the editor, and the focus goes into the stand-in for
+ *  it drawn on the row's stage in place of the words, which it answers. */
+interface EditedCheck {
+  readonly caretByEnter: () => Promise<HTMLElement | null>;
+  readonly drawn: () => (string | boolean | null | undefined)[];
+  readonly facts: HTMLElement | null | undefined;
+  readonly row: HTMLElement | null;
+  readonly view: RenderResult;
+}
+
+/** The check `EditedCheck` reads, drawn with `page` as the page's side of editing. */
+function editedCheck(user: UserEvent, page: EditingPage): EditedCheck {
+  const one = passing("c-one");
+  const view = drawBody([statementNode("r1", "The page draws it.", [checkNode(one)])], [one], {
+    editing: page,
+  });
+  const row = view.container.querySelector<HTMLElement>("[data-verification-check]");
+  const facts = row?.querySelector<HTMLElement>("[data-verification-facts]");
+  const drawn = () => [
+    row?.getAttribute("aria-expanded"),
+    facts?.getAttribute("aria-expanded"),
+    (row?.querySelectorAll("[data-node-body]").length ?? 0) > 0,
+  ];
+  const caretByEnter = async () => {
+    act(() => row?.querySelector<HTMLElement>("[data-verification-check-words]")?.focus());
+    await user.keyboard("{Enter}");
+    expect(askedDocuments(page)).toEqual(["artifact-verification"]);
+    const editor = row?.querySelector<HTMLElement>("[data-node-words] [data-editor-stand]") ?? null;
+    expect(editor, "Enter on the words drew no editor in the check's row").not.toBeNull();
+    act(() => editor?.focus());
+    expect(document.activeElement).toBe(editor);
+    return editor;
+  };
+  return { caretByEnter, drawn, facts, row, view };
+}
+
+// Escape in a check's editor blurs the editor and then gives the row its focus
+// (`useNodeEditing.ts`): on its way back into the row the focus falls to nothing for a moment,
+// which is no leaving of the row. So the facts the reader shut with the check's Facts control
+// while the focus was in the row stay shut once Escape has given the row back its focus, as the
+// row and its control say: the next visit to the row opens them, and this is no visit.
+test("a check's facts the reader shut with its Facts control stay shut once Escape in its editor gives the row back its focus", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const { caretByEnter, drawn, facts, row, view } = editedCheck(user, page);
+  try {
+    // The focus on the row draws the facts, and the control shuts them with the focus in the row.
+    act(() => row?.focus());
+    expect(drawn()).toEqual(["true", "true", true]);
+    await user.click(facts as Element);
+    expect(row?.contains(document.activeElement)).toBe(true);
+    expect(drawn()).toEqual(["false", "false", false]);
+
+    await caretByEnter();
+    expect(drawn(), "the caret in the check's editor drew the facts the reader shut").toEqual([
+      "false",
+      "false",
+      false,
+    ]);
+
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(row);
+    expect(drawn(), "Escape in the check's editor drew the facts the reader shut").toEqual([
+      "false",
+      "false",
+      false,
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The editor drops the focus to the page's body as it makes its plugins' views again, taking its
+// editable out of the box that wraps it, and puts it back on the block a microtask or a frame
+// later (`useNodeEditing.ts`): a `focusout` that names no element, with no press under way,
+// while the row is the row edited. That drop is the editing's own and no leaving of the row: the
+// facts the reader shut with the check's Facts control stay shut once the focus is back in the
+// editor, and the reader's shut stands, so the control's next press opens them.
+test("a check's facts the reader shut stay shut while its editor drops the focus to the page and takes it back, and its Facts control's next press opens them", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const { caretByEnter, drawn, facts, row, view } = editedCheck(user, page);
+  try {
+    act(() => row?.focus());
+    await user.click(facts as Element);
+    expect(drawn()).toEqual(["false", "false", false]);
+    const editor = await caretByEnter();
+
+    // The editable leaves its box: the focus falls to the page's body, naming no element, and
+    // comes back to the editor more than a microtask later, after a frame.
+    act(() => editor?.blur());
+    expect(row?.contains(document.activeElement)).toBe(false);
+    await act(async () => {
+      const frame = Promise.withResolvers<number>();
+      requestAnimationFrame(frame.resolve);
+      await frame.promise;
+    });
+    act(() => editor?.focus());
+    expect(document.activeElement).toBe(editor);
+    expect(drawn(), "the editor's drop of the focus drew the facts the reader shut").toEqual([
+      "false",
+      "false",
+      false,
+    ]);
+
+    await user.click(facts as Element);
+    expect(drawn(), "the Facts control's next press did not open the facts").toEqual([
+      "true",
+      "true",
+      true,
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// While a check is edited, the focus fallen to nothing with no press under way is the editing's
+// to give back, and the row decides nothing then: the editing ending decides whether the focus is
+// in the row. Here the reader has acted - a key in the editor - and the focus then falls to the
+// page's body: the editing's look for the caret sees the reader moved on from the row and ends
+// the editing a task later (`useNodeEditing.ts`), with no focus event, and the facts the focus
+// drew shut as it ends.
+test("a check's facts drawn by the focus shut once the editing of its text ends with the focus fallen to the page", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const { caretByEnter, drawn, row, view } = editedCheck(user, page);
+  try {
+    const editor = await caretByEnter();
+    expect(drawn()).toEqual(["true", "true", true]);
+    await user.keyboard("{Shift}");
+    act(() => editor?.blur());
+    await waitFor(() =>
+      expect(
+        page.asked.mock.calls.at(-1)?.[0],
+        "the focus fallen to the page after the reader's key left the editing on"
+      ).toBeUndefined()
+    );
+    expect(row?.contains(document.activeElement)).toBe(false);
+    expect(drawn(), "the editing's end left the facts drawn with the focus out of the row").toEqual(
+      ["false", "false", false]
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// A press on something that takes no focus drops the focus to the page's body, a `focusout` that
+// names no element, as the editor's own drop does; but a press under way is the reader's act, and
+// the focus out of the row once it has ended is the focus leaving the row, edited or not. So the
+// facts the focus drew in a check whose editor holds the caret shut once a press outside the
+// view has ended.
+test("a check's facts drawn by the focus shut once a press outside the view drops the focus from its editor to the page", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const { caretByEnter, drawn, row, view } = editedCheck(user, page);
+  // Something out of the view that takes no focus.
+  const blank = document.createElement("div");
+  document.body.append(blank);
+  try {
+    await caretByEnter();
+    expect(drawn()).toEqual(["true", "true", true]);
+    await user.pointer([
+      { keys: "[MouseLeft>]", target: blank },
+      { keys: "[/MouseLeft]", target: blank },
+    ]);
+    expect(row?.contains(document.activeElement)).toBe(false);
+    await waitFor(() =>
+      expect(drawn(), "the press outside the view left the facts drawn").toEqual([
+        "false",
+        "false",
+        false,
+      ])
+    );
+  } finally {
+    view.unmount();
+    blank.remove();
   }
 });
 
@@ -2828,7 +3010,7 @@ test("a check's words draw their links from the results read's tree", async () =
     // The page follows no link in this test.
     view.container.addEventListener("click", (event) => event.preventDefault());
     await user.click(runbook);
-    act(() => runbook.blur());
+    await act(async () => runbook.blur());
     expect(card?.getAttribute("aria-expanded")).toBe("false");
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
   } finally {
