@@ -60,11 +60,11 @@ const (
 
 // CloneTimeout is the one bound ensureRepoClone gives its size-following steps, together, as the
 // fetch's share FetchTimeout: from GitHub, a `jj git clone` that copies and imports every object;
-// from a pod's feed, a local `git clone` that hard-links objects where possible, then jj's import
-// of every commit. A 3.4 GB repository (816k objects, 421 refs) cloned from a local feed by `jj git
-// clone` in 253 s with four cores and 281 s with two on a 64-core devbox, using no more than about
-// two cores either way, so CommandTimeout's fixed 5 minutes is no bound for it once a sandbox slows
-// it at all.
+// from a pod's feed, a shared local `git clone` that copies no object (feedClone), then jj's
+// import of every commit. A 3.4 GB repository (816k objects, 421 refs) cloned from a local feed by
+// `jj git clone` in 253 s with four cores and 281 s with two on a 64-core devbox, using no more
+// than about two cores either way, so CommandTimeout's fixed 5 minutes is no bound for it once a
+// sandbox slows it at all.
 const CloneTimeout = 30 * time.Minute
 
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
@@ -875,9 +875,9 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 	// The fetch takes no snapshot of the clone's working copy: a snapshot runs the working-copy
 	// filter, fsmonitor, and signing programs jj's configuration names, which a tree agent can set,
 	// and on the tmux runtime this fetch holds the one-shot credential. A failed fetch returns its
-	// own error: no clone this code makes borrows objects from the feed (clone.go makes a plain
-	// local clone), so the connectivity scan that once diagnosed a clone whose borrowed history had
-	// gone had no case left and was deleted with the disk that carried such a clone (INFRA-80).
+	// own error. A pod's clone borrows the feed's objects through its alternates (feedClone), and no
+	// connectivity scan stands here to diagnose a clone whose borrowed history went: Fetch never
+	// removes or replaces a feed it finds present (ownFeedRepository), so that history does not go.
 	fetch := []string{"git", "fetch"}
 	for _, branch := range source.branches {
 		fetch = append(fetch, "--branch", exactName(branch))

@@ -333,7 +333,7 @@ func TestAPodlessRoundIsReplacedByIssueOnceNothingHoldsIt(t *testing.T) {
 func TestTheByIssueReplacementWaitsForAMachineInADecision(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
-		contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, unasked: true})
+		contract: api.DaemonAPIVersion(), suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, unasked: true})
 	rig.drifts(podUpdateDrift)
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 
@@ -925,7 +925,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 	t.Run("the launching member holds the ask", func(t *testing.T) {
 		const holder = claim.RoleTester
 		rig := newPodUpdateRig(t, podUpdateRole{role: holder, state: supervise.StateReady, session: true, inPod: true,
-			contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift})
+			contract: api.DaemonAPIVersion(), round: podUpdateRound, reasons: podUpdateDrift})
 		rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 
 		// Its process goes while it holds the ask, and the daemon launches it again.
@@ -992,7 +992,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 	t.Run("a fresh session never answers", func(t *testing.T) {
 		const holder, fresh = claim.RoleTester, "ses_tester_fresh"
 		rig := newPodUpdateRig(t, podUpdateRole{role: holder, state: supervise.StateReady, session: true, inPod: true,
-			contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift})
+			contract: api.DaemonAPIVersion(), round: podUpdateRound, reasons: podUpdateDrift})
 		rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 		token := rig.tokens[holder]
 		recorded := rig.claimOf(holder).Session
@@ -1014,7 +1014,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 		for _, ev := range []supervise.Event{
 			supervise.StreamHello{Claim: token, Generation: generation},
 			supervise.RequestRegister{Claim: token, Generation: generation, Session: fresh,
-				SessionFile: "/sessions/tester-fresh.jsonl", CapabilityHash: []byte(holder), PluginContract: api.DaemonAPIVersion},
+				SessionFile: "/sessions/tester-fresh.jsonl", CapabilityHash: []byte(holder), PluginContract: api.DaemonAPIVersion()},
 			supervise.RequestReady{Claim: token, Generation: generation, Session: fresh},
 		} {
 			rig.handle(holder, ev)

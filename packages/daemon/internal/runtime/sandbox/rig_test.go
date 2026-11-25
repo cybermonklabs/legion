@@ -557,6 +557,9 @@ type rig struct {
 	// such launcher answers a workspace-work request with, its ID set to the request's.
 	readsWorkspace  bool
 	workspaceAnswer shimwire.WorkspaceWorkResult
+	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
+	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
+	heldStops <-chan struct{}
 }
 
 type rigOption func(*rig, *Options)
@@ -598,6 +601,12 @@ func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resu
 // of a pod no role process reads through (R6 of #5285).
 func withWorkspaceRead(answer shimwire.WorkspaceWorkResult) rigOption {
 	return func(g *rig, _ *Options) { g.readsWorkspace, g.workspaceAnswer = true, answer }
+}
+
+// withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
+// is closed.
+func withHeldStops(release <-chan struct{}) rigOption {
+	return func(g *rig, _ *Options) { g.heldStops = release }
 }
 
 // testLaunchers is a launchers of its own, outside any rig, with no receiver for a memory guard's
@@ -1372,6 +1381,9 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
 			case shimwire.LauncherStart, shimwire.LauncherStop:
+				if _, stop := frame.(shimwire.LauncherStop); stop && g.heldStops != nil {
+					<-g.heldStops
+				}
 				answers, _ := answerGeneration(frame, &running)
 				for _, answer := range answers {
 					_ = writer.WriteFrame(answer)

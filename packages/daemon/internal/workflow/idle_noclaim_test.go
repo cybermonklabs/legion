@@ -48,6 +48,7 @@ func unownedIssue() pods.IdleView {
 // each row is the view, the clock, the idle period and whether the runtime holds the issue's
 // Sandbox, and nothing else.
 func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		view    pods.IdleView
@@ -377,6 +378,7 @@ func leftChild() pods.IdleView {
 // decline and no queued check: it is that check. It reads the moment the read began, and a turn
 // that started after it, by any claim, is one the read may not have seen.
 func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
+	t.Parallel()
 	standing := pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineUnpushedWork}
 	// failedImplementer is leftChild with no live claim: its implementer failed and records no
 	// process, its tester suspended beside it.
