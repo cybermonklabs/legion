@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"log/slog"
 	"slices"
 	"strconv"
 	"testing"
@@ -121,14 +122,14 @@ func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
 		t.Fatalf("stream subjects = %v, want this build's stream to carry %s", stamped.Subjects, resumeLane)
 	}
 
-	subjects, err := ensureStreamWithConfig(t.Context(), js, &older, capsAnUnsetStream, atStart)
+	subjects, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, &older, capsAnUnsetStream, atStart)
 	if err != nil {
 		t.Fatalf("the build before this one starts: %v", err)
 	}
 	if !slices.Contains(subjects, resumeLane) {
 		t.Fatalf("the start of the build before this one leaves subjects %v, want %s among them", subjects, resumeLane)
 	}
-	if _, err := keepStream(t.Context(), js, &older, capsAnUnsetStream); err != nil {
+	if _, err := keepStream(t.Context(), slog.Default(), js, &older, capsAnUnsetStream); err != nil {
 		t.Fatalf("the keeper of the build before this one: %v", err)
 	}
 	if got := deployedStream(t, js).Config.Subjects; !slices.Equal(got, stamped.Subjects) {

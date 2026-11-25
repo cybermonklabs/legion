@@ -171,7 +171,7 @@ export function IssueMarginCards({
             threads anchored in an open document and its composer, in the margin's words and the
             authors' own, and not the page's declared vocabulary (`page-structure.ts`). They are
             first because the margin places an anchored card at a `top` it measures down from
-            the top of its own content (`margin/ThreadList.tsx`'s `regionOrigin`), so anything
+            the top of its own content (`margin/card-stack.ts`'s `regionOrigin`), so anything
             drawn over them moves that anchor and a card can no longer reach the line its mark
             is on. */}
         <div className="contents" {...authorText}>

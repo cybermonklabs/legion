@@ -955,7 +955,7 @@ func indexTheArchive(t *testing.T, database *store.Store) {
 			t.Fatalf("begin the index of version %d: %v", version.number, err)
 		}
 		_, won, write, err := refs.IndexBlocks(ctx, tx, version.artifact, version.number, version.at, version.markdown,
-			blocks, text.ExtractAt(version.markdown, sizedServerURL), nil)
+			blocks, text.ExtractAt(version.markdown, sizedServerURL), nil, sizedServerURL)
 		if err == nil && !won {
 			err = fmt.Errorf("the pass lost the revision fence, so it wrote nothing")
 		}

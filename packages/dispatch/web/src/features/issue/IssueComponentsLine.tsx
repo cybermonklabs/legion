@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery } from "../../api/queries";
-import type { Issue, IssueComponents } from "../../api/types";
+import type { IssueComponents, IssueDetails } from "../../api/types";
 import {
   type PageWords,
   usePageWords,
@@ -27,6 +27,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath } from "../refs/routes";
 import { useIssueComponents } from "./useIssueComponents";
 
@@ -112,7 +113,10 @@ export function IssueComponentsLine({
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
-  issue: Pick<Issue, "components" | "key" | "project" | "status" | "title">;
+  issue: Pick<
+    IssueDetails,
+    "components" | "components_reason_tree" | "key" | "project" | "status" | "title"
+  >;
   /** How many chips the line draws, the first of its components and then of its retired ones
    *  as one list, for a host that draws the control that shows the next ones (the new issue
    *  page's Details): each chip past them is hidden, and each chip carries
@@ -165,6 +169,17 @@ export function IssueComponentsLine({
         </Link>
       </span>
     );
+  // No `source`: why the reason is no record is the reading list's `issue-components-reason`
+  // (`DISPATCH_READING_SURFACES`). It is drawn from the tree the issue read sends of it
+  // (`components_reason_tree`).
+  const reasonBody = (
+    <MarkdownBody
+      markdown={components.reason ?? ""}
+      surface="issue-components-reason"
+      tree={issue.components_reason_tree}
+      variant="inline"
+    />
+  );
   return (
     <div
       className={`flex ${page === null ? "shrink-0" : "min-w-0 flex-wrap"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
@@ -180,16 +195,19 @@ export function IssueComponentsLine({
           {page?.CONTROL_LABELS.components_not_attached ?? "Not attached"}
         </span>
       ) : components.mode === "none" ? (
-        <span className={quiet} {...page?.pageChrome}>
+        // Inside `NoTooltips` the line may shrink below its words (`min-w-0`): the renderer's own
+        // element breaks a long word only where it would overflow (`break-words`), so without it
+        // the line could be no narrower than that word.
+        <span className={page === null ? quiet : `min-w-0 ${quiet}`} {...page?.pageChrome}>
+          {page === null ? "None" : page.CONTROL_LABELS.components_none} —{" "}
+          {/* Inside `NoTooltips` the reason is a value, with the author's mark, on a wrapper,
+              since the renderer takes no class. */}
           {page === null ? (
-            <>None — {components.reason}</>
+            reasonBody
           ) : (
-            <>
-              {page.CONTROL_LABELS.components_none} —{" "}
-              <span className={value} {...page.authorText}>
-                {components.reason}
-              </span>
-            </>
+            <span className={value} {...page.authorText}>
+              {reasonBody}
+            </span>
           )}
         </span>
       ) : (
