@@ -1994,7 +1994,7 @@ func TestControllerStartWritesTheControllersGitHubCredentialUnderGh(t *testing.T
 // releases it, once it has seen the second token land, so the proof does not depend on the
 // machine's speed.
 func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variables controllerGitHubRefreshInterval, and stdinIsTerminal (newControllerStart).
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variables controllerGitHubRefreshInterval and stdinIsTerminal (newControllerStart).
 	old := controllerGitHubRefreshInterval
 	controllerGitHubRefreshInterval = 50 * time.Millisecond
 	t.Cleanup(func() { controllerGitHubRefreshInterval = old })
@@ -2064,7 +2064,7 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 // daemon. The recording Oh My Pi runs until the test releases it, once it has seen the stop logged
 // and the requests settle.
 func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variables controllerGitHubRefreshInterval, and stdinIsTerminal (newControllerStart).
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variables controllerGitHubRefreshInterval and stdinIsTerminal (newControllerStart).
 	old := controllerGitHubRefreshInterval
 	controllerGitHubRefreshInterval = 50 * time.Millisecond
 	t.Cleanup(func() { controllerGitHubRefreshInterval = old })

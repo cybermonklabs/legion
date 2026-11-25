@@ -755,7 +755,7 @@ func TestWorkspaceInitFetchFailsWhenTheCacheIsNeverReady(t *testing.T) {
 // volume fails inside the copy, or whose pack fails its checksum, exits 1. A bad flag exits
 // workspace.InitExitUsage, the usage exit of every legion command.
 func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process; it sets the package variables fetchBound, and fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	// Not parallel: it sets environment variables of the whole process; it sets the package variables fetchBound and fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	const access = "fatal: unable to access 'https://github.com/acme/widgets/': "
 	// failing is a fetch into a feed that holds the repository, whose every fetch from GitHub
 	// fails with stderr and status.
