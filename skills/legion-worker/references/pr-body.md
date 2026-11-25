@@ -2,7 +2,6 @@
 
 ## The pull request body template
 
-The implementer writes the body from this template when the pull request opens; later phases keep it current.
 Edit the live body: read it (`gh api repos/{owner}/{repo}/pulls/{number} --jq .body`), change your lines, write it back (`--method PATCH ... -F body=@body.md`).
 
 ```
@@ -48,7 +47,6 @@ GitHub refuses a body over 65,536 characters: past about 48,000, link evidence r
 
 ## The brief for the human
 
-The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true after every push.
 At each round the reviewer writes `Look at first`, and a risk on the `Not proven / risk` line where one stands.
 With no reviewer step, the implementer writes both, including what its own evidence does not prove; where the body claims a check that has not concluded at the head, the implementer names that check under `Not proven / risk`.
 With no reviewer step, at retro the implementer updates `Not proven / risk` after reading the tester's handoff where the task has a tester step.

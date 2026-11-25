@@ -322,9 +322,6 @@ export function unresolvedAgentDispatches(
     );
 }
 
-/** The worker skill, the one file the release rule below is written over. */
-export const WORKER_SKILL = path.join(REPO_ROOT, "skills/legion-worker/SKILL.md");
-
 /** The worker skill's tool reference, the one file the shared-database rules are written over. */
 export const WORKER_TOOLS = path.join(REPO_ROOT, "skills/legion-worker/references/tools.md");
 
@@ -350,44 +347,6 @@ function prosePinFaults(
     faults.push(`${file} does not say "${required.sentence}": ${required.because}`);
   }
   return faults;
-}
-
-/**
- * The claim the idle release retired (INFRA-945): that a role, or the pane it runs in, stays live
- * for as long as its issue is in the workflow. Under `runtime: kubernetes` the daemon now releases
- * an issue pod that has had no turn in progress and no turn due for the idle period, which ends
- * every role process of it and deletes the pod, its disk and its Sandbox. What outlives that is
- * the claim's session, its phase and the task it holds, which a wake resumes — so a sentence
- * saying the *session* is kept is the rule as it now is, and one saying the *role* stays live is
- * what this forbids. The subject is listed rather than inferred so the two read apart: "your
- * session is kept, until your issue leaves the workflow, to answer questions" passes, and main's
- * "you stay live only to answer questions" does not.
- */
-const ROLE_STAYS_LIVE =
-  /\b(?:you|your (?:role|pane|process|pod|agent)|the (?:role|worker|pane|process))\s+(?:stays?|remains?|keeps?)\s+(?:live|alive|running|up)\b/i;
-
-/**
- * The sentence the skill must carry instead, which is the heading of the bullet that tells a
- * worker what a release does to it. It is pinned whole and literally: a worker that reads nothing
- * about release reads its pod's deletion as a crash and its restored workspace as lost work.
- */
-const RELEASE_IS_NO_STOP = "A released pod is not a stop.";
-
-/** What `markdown` — skills/legion-worker/SKILL.md — gets wrong about a released pod. */
-export function retiredWorkerLifecycleClaims(markdown: string): string[] {
-  return prosePinFaults(
-    "skills/legion-worker/SKILL.md",
-    markdown,
-    {
-      claim: ROLE_STAYS_LIVE,
-      because:
-        "a released pod ends every role process of it, so no role stays live for as long as its issue is in the workflow",
-    },
-    {
-      sentence: RELEASE_IS_NO_STOP,
-      because: "a worker told nothing about release reads its pod's deletion as a crash",
-    }
-  );
 }
 
 /**

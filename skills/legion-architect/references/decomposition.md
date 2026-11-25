@@ -24,7 +24,6 @@ A release refused with a code below writes nothing: release the rest again witho
 
 1. Write each child's spec as `skill://dispatch-writing-specs` says, scaled to the child, each requirement a `requirement` block, with its `verification.md`: its workers read only these.
    Cite no item number of another document and copy no text that does not apply to the child.
-   Weigh each separate pull request against combining its work: each round tests a large pull request whole again, and each small one costs a workspace, an admission wait, review, CI, a queue wait and a deploy.
    A repeated change is one child, and deleting what this tree replaced is this tree's work.
 
 2. File each child:
@@ -38,7 +37,6 @@ A release refused with a code below writes nothing: release the rest again witho
 3. Review the version you filed ("Reviewing a child's spec") before `release_children`.
 
 - `--project` is the key's prefix (`LEGSMOKE-3` → `LEGSMOKE`).
-  `--parent` is `$LEGION_ISSUE`, never a child of yours: that child's own architect files its children.
 
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
 
@@ -51,19 +49,12 @@ A release refused with a code below writes nothing: release the rest again witho
 
 - Where the project has architecture components, give each child a `check` for the update of `.dispatch/architecture/<id>.md` of each component its pull request changes.
 
-- Your `Production check` line says whether this project checks production after a merge.
-  When it names a role, write one `after_merge` check for the production check in each child's Verification document, with its spec and while the child is open, because a closed issue refuses every new document.
-  Under `Production check: off`, write none.
-
 - A role token is `legion-<project>-<key>-<role>` with the daemon's project and the key lower-cased: `legion-acme-legion-41-architect`.
 
 ## Reviewing a child's spec
 
-No person reads a child's spec: review every version of it and of its Verification document, whoever wrote it, before the child's work goes on with that version.
-
 1. Read the child's spec and its Verification document, at the versions you review, against your own spec (a root's at its approved version, a child's at the version its parent approved).
    Ask whether the version serves each requirement of your spec that it names, whether it narrows or contradicts any of them, whether it adds scope your spec does not ask for, and whether each fact it states holds in the code, the docs or a read-only command.
-   Use a reader (`plan-reviewer`, `plan-gap-analyst`) where the reading needs one.
 
 2. Approve or request changes, with a reason either way.
 
@@ -77,7 +68,6 @@ No person reads a child's spec: review every version of it and of its Verificati
 
 As the child's architect: tell the architect above you of each new version, naming each document and its version;
 tell your workers of it only after its approving comment; answer `changes requested` with a new version.
-A decision only a person can make goes to the architect above you, never into your spec.
 
 ## Across repositories
 

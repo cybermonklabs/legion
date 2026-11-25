@@ -7,7 +7,6 @@
 
 - **A result** is one run of one check: `dispatch result --issue <issue> --check <block id> --role <your role> --verdict pass --commit <sha>`, with `--surface`, `--run`, `--observed` and `--negative-control`.
   These refuse a bare `-`: use `--run-file` and its kin, one reading stdin per call.
-  Put the printed line into the body unchanged.
 
 - The surface is production-like (the real-process harness, a sandbox repository, a real browser, a development stack, staging) and has the resource the change touches;
   `--run` or `--observed` links to the run.
@@ -23,17 +22,9 @@
   So after a push, record each `before_merge` check with no `ci_check` again.
   Run it again only when the change since its pass can affect what it drives; otherwise record its earlier pass at the new head with `--observed 'carried from <old sha>: <why the change cannot affect it>'`.
 
-## The rules every phase's evidence follows
-
-- The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes a failing test for each way it breaks that no existing test catches.
-  Lint, types and the unit and integration suites are CI's: read them on GitHub at the head, rerun no lane as evidence, and wait for none.
-
-- On a new head, the tester reruns each check the change since the head it last tested can reach (for a merge of the base, `skill://legion-worker/references/conflicts-and-rewrites.md#reading-a-merge-of-the-base`) and records each other check with no `ci_check` at the new head unrun, its `--observed` naming the earlier pass and why the merge misses it.
-
 ## Never waiting on CI
 
 - The implementer re-runs once a red check whose failure is not in this pull request's code, with `gh run rerun <run-id> --failed`, and is woken by its settlement as `skill://envoy` says, never by sleeping.
-  A merge-group run is never re-run.
 
 - A required check missing at the head: read `gh pr view <n> --json mergeStateStatus` first.
   `DIRTY` means the head conflicts with its base, so no `pull_request` run starts and a body edit re-judges nothing: merge the base forward.

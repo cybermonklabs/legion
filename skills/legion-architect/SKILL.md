@@ -5,8 +5,6 @@ description: "Use when you are a Legion root or child architect, before any life
 
 # Legion architect
 
-The daemon starts every worker and moves every phase; you write no code.
-
 ## Every turn
 
 - Act on each delivered wake by its row in `skill://legion-architect/references/wake-routing.md`; build no wait loop.
@@ -38,12 +36,8 @@ The daemon starts every worker and moves every phase; you write no code.
 
 4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says.
 
-5. Before you write or give an issue's plan, read `skill://legion-architect/references/plan.md`:
-   a root's plan comes before `register_gate`, a child's before `release_children`, and an issue with none runs the default steps.
+5. Before you write or give an issue's plan, read `skill://legion-architect/references/plan.md`.
    Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
-
-6. File every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
-   the gate's opening starts the root's own first phase, and a later child runs beside it.
 
 - Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
   one `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`, `when` (`before_merge`, `after_merge` or `default_branch`) and `negative_control`.
@@ -60,7 +54,6 @@ The daemon starts every worker and moves every phase; you write no code.
 - Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
 - Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
-  Legion holds a child whose blockers are not `done`.
   Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
   Never block a child on its own parent, which merges last.
 
@@ -73,7 +66,6 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 ## 4. Integration verification
 
 - Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
-  A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
   a passing check does not show that a person can do their job with it.
@@ -103,8 +95,6 @@ The merge closes the issue once every issue beneath it has left the workflow;
 nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
 
 ## Escalation judgment
-
-- Send the controller (its topic is on your addressing line) a child that serves no criterion of the root, a need for admission slots, and two trees changing the same code.
 
 - Carry a clear defect the controller gives you in this tree:
   in an open pull request, or in a child; reply under its evidence comment with the issue that carries it.

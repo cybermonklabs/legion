@@ -6,7 +6,6 @@
 
 ## No role runs it
 
-A check carrying `ci_check` is CI's.
 No role runs its work in the pod or records a result for it: Dispatch refuses one with `409 CHECK_PROVED_BY_CI`.
 `dispatch results --issue <issue>` reads the named run at the head of the issue's pull request and prints the one result it derives, its `A pass stands:` line, and the line for the PR body.
 
@@ -27,11 +26,8 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 - The implementer copies each such check's `Pull request line` into the `Checks` block.
   The next role that writes the body reads `dispatch results` again and replaces a no-result line.
 
-- The tester runs and records only the checks with no `ci_check`.
-  A `ci_check` check goes in `failures` only when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` until the label is on (the last bullet below).
+- A `ci_check` check goes in `failures` only when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` until the label is on (the last bullet below).
   A run still going fails no round: say so in `implementerProof.how`.
-
-- The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
 
 - A job the repository runs on a pull request only under a label (on cybermonklabs/legion, the slow suites) does not run without it.
   The implementer adds the label, `full-ci` or that job's own `lane:<output>`, then pushes, because the workflow starts on a push and not on a label.

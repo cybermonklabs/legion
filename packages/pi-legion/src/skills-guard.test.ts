@@ -387,14 +387,6 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
   expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
 }
 
-// R4: a planner waits on a decision its plan needs rather than completing around it
-// (dispatch://INFRA-206). The role prompts carry the rest of R4; roles_test.go pins those.
-test("a planner waits on an open decision instead of completing around it", () => {
-  expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
-    "a planner on a decision the plan itself needs, because a plan completed around an open decision carries that gap into every later phase"
-  );
-});
-
 // R5: a review agent returns its whole report, and the reviewer refuses a result without one
 // (dispatch://INFRA-331). shipped-agents.test.ts pins the two agent definitions.
 test("the reviewer treats a result with no report as a failed run, not a verdict", () => {

@@ -4,16 +4,7 @@
 // importer.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import {
-  brokenSharedDatabaseRules,
-  retiredWorkerLifecycleClaims,
-  WORKER_SKILL,
-  WORKER_TOOLS,
-} from "./skills-guard";
-
-test("the worker skill says a released pod is not a stop, and never that a role stays live", () => {
-  expect(retiredWorkerLifecycleClaims(readFileSync(WORKER_SKILL, "utf8"))).toEqual([]);
-});
+import { brokenSharedDatabaseRules, WORKER_TOOLS } from "./skills-guard";
 
 test("the worker tool reference forbids reads through the session URL, and claims no login that creates databases", () => {
   expect(brokenSharedDatabaseRules(readFileSync(WORKER_TOOLS, "utf8"))).toEqual([]);

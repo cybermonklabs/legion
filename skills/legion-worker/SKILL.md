@@ -8,7 +8,6 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 ## Every phase
 
 1. Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`).
-   Your architect's decisions for you come in your task, and in a reply in the thread of the plan task they concern, which its message links.
 
 2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 
@@ -39,13 +38,9 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 - These waits stand rather than proceed, each ending the turn with a `WAITING` line naming what it waits on:
 
-  - a planner on a decision the plan itself needs, because a plan completed around an open decision carries that gap into every later phase;
-
   - a reviewer on a half of the round that has no review, on a required check with no run at the head, or on the architect's rewrite of a check whose `run` is a whole test suite (`skill://legion-worker/references/merge-gate.md`);
 
-  - retro on the architect's answer to a defect it reported;
-
-  - a pushing role whose second push still did not carry the pull request onto its commit.
+  - retro on the architect's answer to a defect it reported.
 
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 
@@ -54,9 +49,6 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 - **Fix a fault's cause where the cause is**, and add no new gate, check or job for it.
 
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
-
-- A released pod is not a stop.
-  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives but a volume the deployment keeps.
 
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 

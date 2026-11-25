@@ -2,7 +2,6 @@
 
 ## The task block
 
-You choose which of Legion's steps each issue of your tree runs.
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
@@ -16,12 +15,8 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
-- This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
-  It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
-
 ## The roles and their order
 
-Name the steps in `steps` in the order they run.
 A `planner` step may stand at any place, and `implementer` stands before each `tester`, `reviewer` and `acceptance:owner` step, since each of them reads the pull request the implementer opens: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
 The table lists the steps in the order of the default steps:
 
@@ -42,17 +37,13 @@ So on a task with no reviewer step and no `acceptance:owner`, such a check holds
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
 Fix each reason and give a new version.
-A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
 
 An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
 Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
-`read_record` shows such an issue: one of its `assignments` has `plan` `default`.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
 ## When to give it
-
-- **A root:** before `register_gate`, because the gate's opening starts the root's first step.
 
 - **A child:** before `release_children` releases it.
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).

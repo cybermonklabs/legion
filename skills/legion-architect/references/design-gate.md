@@ -8,10 +8,6 @@
 - Upload `verification.md` beside it (`--force` from its second version). Each clause of a check's
   `negative_control` names the test row or run that drives it. A requirement over every member of
   a class iterates the class's list, never a sample.
-- Your `Production check` line says whether this project checks production after a merge. When it
-  names a role, write one `after_merge` check for the production check in the Verification
-  document, with the spec and while the issue is open, because a closed issue refuses every new
-  document. Under `Production check: off`, write none.
 - Where a real recorded input exists (a stored record, a captured log, a real service's answer),
   hold at least one read-only check against it, or say in a decision block why none can be
   written. A requirement of the form "try X and see" is accepted by an observed real run.
@@ -79,7 +75,6 @@ For each gated step, once every child is filed:
 
 - A newer version moves the open request to it and to your turn, and the person stops seeing it:
   once they have agreed to that version, run `dispatch request-approval` again to give it back.
-- `already approved at version <N>`: still `register_gate` that id and version.
 - Refusals record nothing: `VERSION_NOT_IN_DISPATCH` (register the latest version),
   `GATE_STEP_REQUIRED` (name the step),
   `GATE_STEP_NOT_CONFIGURED` (register only gated steps, and `criteria` where the line names `spec` and not `criteria`),
