@@ -75,10 +75,15 @@
 #                 registerEntry, which a tree from before the cutover does not define. Where it is
 #                 main, fetch main. Where it is the base branch, that branch has not merged the
 #                 cutover yet: convert it if it adds a numbered entry, else merge main into it, then
-#                 run this with --base naming it.
+#                 run this with --base naming it. A branch stacked on a base branch that main then
+#                 took as a squash, which GitHub retargets to main, still carries that branch's
+#                 entries, and main holds them as entry files: an entry whose text opens an entry
+#                 file of the ref is refused, naming that file; run this with --base naming the base
+#                 branch's last commit before the squash, then merge main.
 #   --report      steps 1 to 4 read and nothing done: no file written, no merge, no Go toolchain,
-#                 and no git read but of commits, trees and the blobs of the files the branch
-#                 changed, so it runs in a blobless clone. It prints, for <rev> (default HEAD):
+#                 and no git read but of commits, trees, the blobs of the files the branch changed
+#                 and those of the ref's entry files, so it runs in a blobless clone. It prints, for
+#                 <rev> (default HEAD):
 #                   base <sha> contract <n>                     the merge base and its number
 #                   entry <n> <constant> <slug> <file:line|->   each entry it would convert
 #                   move <file>:<line> <field> <constant>       each row it would move
@@ -160,6 +165,8 @@ WHOLE_COPIES = tuple(f"{FIXTURES}/{name}" for name in (
     "version.json", "contract-shapes.json", "request-shapes.json", "answers.json", "enumerated-fields.json"))
 ENTRY_FILE = re.compile(r"(?:^|/)contract_\d{14}_[a-z0-9]+(?:-[a-z0-9]+)*(?:_test)?\.go$")
 HEADER = re.compile(r"^// (\d+): (.*)$")
+# The first line of an entry file's text, as entry_file and scripts/daemon-contract-entry.sh write it.
+ENTRY_HEADER = re.compile(r"^// \d{14} [a-z0-9]+(?:-[a-z0-9]+)*:(?: (.*))?$")
 CONST_LINE = re.compile(r"^const DaemonAPIVersion = (\d+)\s*$", re.M)
 SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -542,10 +549,43 @@ def numbered(text):
     return lines, const, entries
 
 
+def joined(parts):
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
 def summary(entry):
     """An entry's first three lines without its number: what a renumber leaves as it was."""
-    text = " ".join([HEADER.match(entry["lines"][0]).group(2)] + [line[2:] for line in entry["lines"][1:3]])
-    return re.sub(r"\s+", " ", text).strip()
+    return joined([HEADER.match(entry["lines"][0]).group(2)] + [line[2:] for line in entry["lines"][1:3]])
+
+
+def held_in_entry_files(ref, entries):
+    """The path of the entry file of ref whose text opens with each entry's summary, by the entry's
+    number: the entry file writes the entry's text verbatim after `// <id> <slug>: `."""
+    paths = [p for p in git("ls-tree", "--name-only", ref, f"{API}/").decode().split("\n")
+             if ENTRY_FILE.search(p) and not p.endswith("_test.go")]
+    texts = read_blobs([f"{ref}:{p}" for p in paths])
+    openings = []
+    for path in paths:
+        text = texts[f"{ref}:{path}"]
+        if text is None:
+            die(f"cannot read {path} at {ref[:10]}")
+        lines = text.split("\n")
+        first = next((i for i, line in enumerate(lines) if ENTRY_HEADER.match(line)), None)
+        if first is None:
+            continue
+        rest = []
+        for line in lines[first + 1:]:
+            if not line.startswith("//"):
+                break
+            rest.append(line[2:])
+        openings.append((path, joined([ENTRY_HEADER.match(lines[first]).group(1) or ""] + rest)))
+    held = {}
+    for e in entries:
+        want = summary(e)
+        path = next((p for p, text in openings if text == want or text.startswith(want + " ")), None)
+        if path:
+            held[e["number"]] = path
+    return held
 
 
 def kebab(name):
@@ -698,6 +738,19 @@ def analyze(mode, base, head, main, main_name, state_path, requests_path="", req
             "(the first parent of the commit that took `const DaemonAPIVersion` out of version.go) into the "
             "branch first, then convert it")
     entries = [e for e in entries if summary(e) not in on_main]
+    # An entry whose text opens an entry file of main is a change main took after the cutover: the
+    # entry of a base branch this branch was stacked on, converted and taken as a squash, after which
+    # GitHub retargets the branch to main. Over its merge base with main the branch would convert it
+    # again under another id, as a second entry file of one change.
+    held = held_in_entry_files(main, entries) if entries else {}
+    for number, path in sorted(held.items()):
+        print(f"onmain {number} {path}")
+    if held and mode == "convert":
+        die("; ".join(f"entry {n} of this branch is {path} of {main_name}" for n, path in sorted(held.items())) +
+            f": the branch carries the entries of a base branch that {main_name} took as a squash after the "
+            "cutover, and would convert them again under other ids. Run this with --base naming the base "
+            f"branch's last commit before the squash, then merge {main_name}")
+    entries = [e for e in entries if e["number"] not in held]
     if not entries:
         print(f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert")
         return None
