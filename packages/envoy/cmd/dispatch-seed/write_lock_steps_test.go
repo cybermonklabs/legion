@@ -233,7 +233,10 @@ func newSeedLockFixture(t *testing.T) *seedLockFixture {
 			plan: &seedPlan{
 				vocabulary: newVocabulary(),
 				random:     newRandom(),
-				issues:     []issuePlan{{Key: seedLockIssue}},
+				// The issue is in the project, as the rows above have it, so each comment's
+				// node names the project its issue is in (seedRun.itemProject).
+				projects: []projectPlan{{Key: seedLockProject}},
+				issues:   []issuePlan{{Key: seedLockIssue, Project: 0}},
 			},
 			random: rand.New(rand.NewPCG(randomSeed+1, randomSeed^0x5851f42d4c957f2d)),
 		},

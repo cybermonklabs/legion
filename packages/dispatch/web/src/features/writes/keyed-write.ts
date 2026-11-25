@@ -188,6 +188,17 @@ export function refusedByDispatch(refusal: unknown): boolean {
   return refusal instanceof ApiError && !refusedAfterUnanswered.has(refusal);
 }
 
+/** Whether `refusal`, which ended a write, is no verdict of Dispatch's: the write stopped - the
+ *  reader's Stop trying, a reload long ago, its key run out - or Dispatch refused it after an
+ *  attempt of it that may have landed unseen (`refusedByDispatch`). Such a write may have landed,
+ *  or may land still. */
+export function endedWithoutVerdict(refusal: unknown): boolean {
+  return (
+    refusal instanceof SendStoppedError ||
+    (refusal instanceof ApiError && !refusedByDispatch(refusal))
+  );
+}
+
 /** `error`, which ends a write, marked as a refusal after an attempt that may have landed unseen
  *  where `unseen` says one went out (`refusedByDispatch`). */
 function endingAfter(error: unknown, unseen: boolean): unknown {

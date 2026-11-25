@@ -640,6 +640,14 @@ What a reader sees while two servers are serving:
   that cannot store them does not start, and the roll keeps the servers it would have replaced. A
   version older than the first that stores them stores nothing, so a roll away from one of those
   versions can still leave a page asking for files no server has.
+- A document that a server of the earlier version removes or makes again during the rollout can
+  leave this version's record of it out of step: `envoy-dispatch census --store` then names it
+  `orphaned` or `gone`. Once the rollout is done, run `envoy-dispatch backfill-graph-store` for
+  `gone`; an `orphaned` line says `no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone`.
+- A comment that a server of the earlier version writes during the rollout, and a document block
+  it indexes then, can keep a record that names no project: `envoy-dispatch census --store` then
+  names it `unscoped`. Once every server runs this version, run
+  `envoy-dispatch backfill-graph-store` again, which gives it its project.
 - The dashboard's **A new version is available** notice waits until every server runs one
   version: while two versions are serving, nobody is told to reload. A page that fails to load one
   of its files reloads itself, at most three times in five minutes.
