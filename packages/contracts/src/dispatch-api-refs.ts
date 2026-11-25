@@ -134,13 +134,14 @@ const DocumentActorSchema = z.object({
 
 /** The block a reply answers: its node id (`comment/<uuid>#b2`, or `ask/<uuid>#b2` for a part of
  *  the ask the reply names), its reference (absent for a block of a direct message, which has no
- *  address), its id, its text cut to 480 characters (the last text it held once removed), and
- *  whether its item's current revision no longer holds it. `edited_at` is the time the quoted
- *  comment or message was last edited by its author, so a read that prints the reply without its
- *  parent still says the parent was edited; absent means nobody edited it. `deleted_at` and
- *  `deleted_by` are the mark of the quoted comment or message once its author deleted it: the
- *  block then reads removed with no text, and the mark says the post itself is gone; absent while
- *  the post stands. Every mark is absent on a part of an ask and from a Dispatch older than it.
+ *  address), its id, its text cut to at most 480 characters, and earlier where a reference would
+ *  cross the cut (the last text it held once removed), and whether its item's current revision
+ *  no longer holds it. `edited_at` is the time the quoted comment or message was last edited by
+ *  its author, so a read that prints the reply without its parent still says the parent was
+ *  edited; absent means nobody edited it. `deleted_at` and `deleted_by` are the mark of the
+ *  quoted comment or message once its author deleted it: the block then reads removed with no
+ *  text, and the mark says the post itself is gone; absent while the post stands. Every mark is
+ *  absent on a part of an ask and from a Dispatch older than it.
  *  `quote` and `occurrence` are the words of the block the reply quotes and which of their
  *  matches in the block's plain text they are, counted from 0, as the reply stored them: both or
  *  neither, absent on a reply that quotes nothing, from an answer where the quoted post is

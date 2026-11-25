@@ -149,8 +149,9 @@ type replyRowPlan struct {
 //
 // quote and occurrence are the words of the block the reply quotes and which of their matches,
 // which replyQuoteRefusal has let stand. A quote is checked on the block's whole text, where the
-// excerpt stops at its 480th rune: the repair's plan holds it for an item this transaction
-// indexes, and the index's record of the block holds it otherwise (refs.CurrentItemBlockText).
+// excerpt keeps at most the first 480 runes and stops earlier where a reference would cross the
+// cut (refs.BlockExcerpt): the repair's plan holds it for an item this transaction indexes, and
+// the index's record of the block holds it otherwise (refs.CurrentItemBlockText).
 // The block keeps the quote with the occurrence it resolves to (namedBlock.setQuote), and a
 // quote the block does not hold is the *apiError that method answers.
 //
