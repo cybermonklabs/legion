@@ -15,7 +15,6 @@
 package legion
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -146,11 +145,9 @@ func (c *Client) State(ctx context.Context) (State, int, error) {
 	if err := answer.Decode(&answered); err != nil {
 		return State{}, read, fmt.Errorf("%w: decode GET %s: %v", ErrUnavailable, StatePath, err)
 	}
-	var body bytes.Buffer
-	_, _ = answer.StreamTo(&body) // a bytes.Buffer's Write never fails
 	var kept keptState
-	if err := json.Unmarshal(body.Bytes(), &kept); err != nil {
-		return State{}, read, fmt.Errorf("%w: decode GET %s: %v", ErrUnavailable, StatePath, redact.DecodeError(err, body.Bytes(), &kept))
+	if err := redact.Unmarshal(answer, &kept); err != nil {
+		return State{}, read, fmt.Errorf("%w: decode GET %s: %v", ErrUnavailable, StatePath, err)
 	}
 	return answered.with(kept), read, nil
 }
@@ -163,9 +160,9 @@ type answeredState struct {
 }
 
 // keptState is the members State keeps as the bytes the daemon sent, each issue's wait and the
-// settings, read from the answer as data (Answer.StreamTo): Dispatch stores them for the board and
-// the metrics to read, and prints neither. A member that does not decode is named in fixed text
-// (redact.DecodeError), as Decode names one of the rest.
+// settings, read from the answer as data (redact.Unmarshal): Dispatch stores them for the board
+// and the metrics to read, and prints neither. A member that does not decode is named in fixed
+// text (redact.DecodeError), as Decode names one of the rest.
 type keptState struct {
 	Issues map[string]struct {
 		WaitingOn json.RawMessage `json:"waitingOn"`
