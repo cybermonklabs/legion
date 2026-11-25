@@ -352,6 +352,39 @@ func TestACompactionTheStoreWouldNotTakeSaysNothingWasAsked(t *testing.T) {
 	h.wantPrompts(ladderSends)
 }
 
+// A compaction the store would not take puts back the end it dated as well as the state: its take
+// closes a turn the claim's times still show open (compactStart), and a write that fails leaves
+// the claim exactly as it found it, in memory and in the store. A claim left with the end dated
+// and no compaction running would read as in no turn, and the controller keeper would never end
+// the turn that is still open (dispatch://INFRA-2045 R2).
+func TestACompactionTheStoreWouldNotTakeLeavesTheCutOffTurnOpen(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(StreamTurnStart{Claim: h.token})
+	// A displacement cuts the turn off without dating its end, and the relaunched agent stands
+	// ready with that turn still open.
+	h.observeDisplaced(runtime.Gone)
+	h.relaunched()
+	before := h.claim()
+	if !before.LastTurnStart.After(before.LastTurnEnd) {
+		t.Fatalf("the relaunched claim's turn started %s and the last ended %s, want the cut-off turn still open", before.LastTurnStart, before.LastTurnEnd)
+	}
+	h.advance(time.Minute)
+	h.store.fail("PutClaim", errors.New("the store is down"))
+
+	if err := h.m.Compact(h.ctx, testCompactInstructions); !errors.Is(err, ErrCompactNotTaken) {
+		t.Fatalf("a compaction the store would not take answered %v, want ErrCompactNotTaken", err)
+	}
+
+	h.store.fail("PutClaim", nil)
+	for where, got := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(h.token)} {
+		if got.State != before.State || !got.LastTurnEnd.Equal(before.LastTurnEnd) {
+			t.Errorf("%s reads the claim %s with its last turn ended %s, want %s and %s as the compaction found them",
+				where, got.State, got.LastTurnEnd, before.State, before.LastTurnEnd)
+		}
+	}
+}
+
 // A compaction of a claim whose shim is not connected asks nothing and takes nothing: the daemon
 // has no connection to ask through, which is no refusal of the claim's state — the state takes a
 // compaction — so it answers the take that did not happen, and its caller reports the one

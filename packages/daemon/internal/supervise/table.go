@@ -2044,10 +2044,12 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 // beginTurn is what a turn's start decides and records, in a claim the start has just put in
 // working (turnStarted) or one a busy answer already recorded working (turnStartedWhileBusy):
 // whether it is the pending delivery's turn — which confirms that delivery — the durable write,
-// and the turn's step. dateStart dates the turn (Claim.LastTurnStart) and writes its start line,
-// naming the delivery the start confirms and "" for a start that confirms none: startTurn, or
-// busyTurnBegun for the agent_start of a turn a busy answer recorded. A callback that only wrote
-// a line would leave the turn timed from the turn before it.
+// and the turn's step. dateStart dates the turn (Claim.LastTurnStart) and writes the line that
+// names the delivery the start confirms, "" for a start that confirms none: startTurn, which
+// writes the turn's start line, or busyTurnBegun, which writes the line of the agent_start of a
+// turn a busy answer recorded, in place of the start line recordBusyTurn already wrote. A
+// callback that only wrote a line would leave the turn timed from the busy answer, or from the
+// turn before it.
 func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, dateStart func(delivery string)) error {
 	p := m.claim.Pending
 	news, inFlight := m.turnAnswers()
@@ -2173,7 +2175,17 @@ func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 		return m.beginTurn(ctx, ev.(StreamTurnStart), m.busyTurnBegun)
 	}
 	if m.compacting == nil {
-		return nil
+		if m.claim.LastTurnStart.After(m.claim.LastTurnEnd) {
+			return nil
+		}
+		// A claim a restart restored working with no turn dated is one working for a compaction
+		// the restart forgot (compactStart closed any turn its times showed open). A turn Oh My
+		// Pi starts there is dated and written here, or the controller keeper would read it as no
+		// turn and never end it (dispatch://INFRA-2045 R2).
+		m.startTurn("")
+		m.log.Info("supervise: a turn started in a claim a restart restored working with no turn dated; the turn is dated from this start",
+			"generation", m.claim.Generation)
+		return m.persist(ctx)
 	}
 	m.startTurn("")
 	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",

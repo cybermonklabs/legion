@@ -31,9 +31,8 @@ func (k *controllerKeeper) mind(ctx context.Context, m *supervise.Machine) error
 		// compaction, and a claim working for a compaction with no turn under it is between turns
 		// but compacting (replaceOld's NeverHold suspension is refused for a working claim too).
 		// Whether it is in a turn, and that turn the one read here, is the machine's to say
-		// (supervise's endTurnPastBound): it leaves alone a compaction with no turn under it, one
-		// a daemon restart forgot included (a compaction's start closes any turn the claim's times
-		// still show open, compactStart), a turn that ended and a new one.
+		// (supervise's endTurnPastBound): it leaves alone a compaction with no turn under it, a
+		// turn that ended and a new one.
 		if k.turnBound <= 0 || c.LastTurnStart.IsZero() || !c.LastTurnStart.Add(k.turnBound).Before(now) {
 			return nil
 		}

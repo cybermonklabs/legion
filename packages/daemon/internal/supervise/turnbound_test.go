@@ -44,6 +44,22 @@ func (h *harness) wantTurnEnd(want time.Time) {
 	}
 }
 
+// displacedTurn is the claim through a turn a displacement cut off: the relaunched agent stands
+// ready with that turn's start after its last end, since a displacement dates no end
+// (Claim.LastTurnEnd).
+func displacedTurn(h *harness) {
+	h.t.Helper()
+	h.advance(time.Minute)
+	h.must(StreamTurnStart{Claim: h.token})
+	started := h.claim().LastTurnStart
+	h.observeDisplaced(runtime.Gone)
+	h.relaunched()
+	if c := h.claim(); !c.LastTurnStart.Equal(started) || !c.LastTurnStart.After(c.LastTurnEnd) {
+		h.t.Fatalf("the relaunched claim's turn started %s and the last ended %s, want the cut-off turn's start %s after its end",
+			c.LastTurnStart, c.LastTurnEnd, started)
+	}
+}
+
 // The machine's half of dispatch://INFRA-2045 R2, on the harness's moved clock: a controller turn
 // open longer than its bound is ended when the keeper says so (TurnPastBound), whether or not steps
 // still arrive in it, and the end counts under R1; the machine re-reads the turn first, and leaves
@@ -304,6 +320,53 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 				c.State, gotResumes-resumes, gotSpawns-spawns, c.SessionRun.Ends, stored.SessionRun.Ends)
 		}
 	})
+
+	// A follow-up turn that starts under a compaction a daemon restart forgot, after the new
+	// daemon's hello found the agent streaming and stopped asking: the turn is dated from its own
+	// start, and ended past the bound. Both ways a claim reaches the compaction: after a turn it
+	// finished, and after one a displacement cut off, which leaves that turn's end undated.
+	for _, before := range []struct {
+		name string
+		turn func(h *harness)
+	}{
+		{"after a finished turn", func(h *harness) {
+			h.must(StreamTurnStart{Claim: h.token})
+			h.advance(time.Minute)
+			h.must(StreamTurnEnd{Claim: h.token})
+			h.wantState(StateIdle)
+		}},
+		{"after a displaced turn", displacedTurn},
+	} {
+		t.Run("a follow-up turn under a compaction a daemon restart forgot is dated and ended past the bound, "+before.name, func(t *testing.T) {
+			h := controllerUp(t)
+			before.turn(h)
+			h.advance(time.Minute)
+			release, compacted := h.compactHeld()
+			defer func() {
+				release()
+				<-compacted
+			}()
+			h.restart()
+			// The follow-up turn is already running at the new daemon's hello, which finds the
+			// agent streaming and stops asking (askTurnOver); its agent_start then arrives.
+			h.conn.SetStreaming(true)
+			h.connect()
+			h.advance(time.Minute)
+			began := h.clock.Now()
+			h.must(StreamTurnStart{Claim: h.token})
+			for where, got := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(h.token)} {
+				if !got.LastTurnStart.Equal(began) || !got.LastTurnStart.After(got.LastTurnEnd) {
+					t.Errorf("%s dates the follow-up turn %s with the last turn ended %s, want it dated %s", where, got.LastTurnStart, got.LastTurnEnd, began)
+				}
+			}
+			h.advance(turnBound + time.Minute)
+			resumes, spawns := h.startsSoFar()
+			h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: h.claim().LastTurnStart})
+
+			h.wantResumedSince(resumes, spawns, session)
+			h.wantEnds(1)
+		})
+	}
 
 	t.Run("an operator's compaction past the bound is left alone and counts nothing", func(t *testing.T) {
 		h := controllerUp(t)

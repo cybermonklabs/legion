@@ -154,13 +154,10 @@ func turnPastBound(m *Machine, ctx context.Context, ev Event) error {
 // open, begun at the moment the keeper read, and still past the bound now, since a turn that ended
 // and one that began since are the controller working. What is a turn is the machine's own answer:
 // the claim reads working at a let-go (endState), which a claim working for a compaction with no
-// turn under it does not, and the turn began no earlier than the last turn's end. A claim a daemon
-// restart restored working knows no compaction, so the second test is the one that holds for it:
-// a compaction's start closes any turn the claim's times still show open (compactStart), and a
-// turn that starts under the compaction dates and writes its own start (turnStartedWhileBusy). No
-// wake can be waiting to replace the process first: the controller's launch is never parked, since
-// the wake gate, the project pause and the pod-start gate each pass it (gatePaces, pauseHolding,
-// gated).
+// turn under it does not, and the turn began no earlier than the last turn's end, which every turn
+// that runs does (Claim.LastTurnStart). No wake can be waiting to replace the process first: the
+// controller's launch is never parked, since the wake gate, the project pause and the pod-start
+// gate each pass it (gatePaces, pauseHolding, gated).
 //
 // Otherwise it ends the launch as the stall backstop ends a stalled turn, whether or not steps still
 // arrive in the turn (replaceProcess): the task the turn served goes back to waiting and is sent to

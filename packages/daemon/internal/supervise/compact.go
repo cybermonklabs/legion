@@ -357,12 +357,12 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	was, ended := m.claim.State, m.claim.LastTurnEnd
 	m.compacting = &compacting{conn: conn, generation: m.claim.Generation, back: was}
 	m.claim.State = StateWorking
-	// A ready or idle claim runs no turn, but its times can still show one open: a displacement, a
-	// stale address, the stale-plugin relaunch and the stall backstop end a turn without dating
-	// its end. The compaction closes that turn in its own write (Claim.LastTurnEnd), so a daemon
-	// restarted during the compaction, which knows nothing of it, reads the claim stored working
-	// as in no turn rather than in the turn that was cut off, and ends nothing for it (the
-	// controller keeper's TurnPastBound, dispatch://INFRA-2045 R2).
+	// A ready or idle claim runs no turn, but its times can still show one open: every path that
+	// ends a turn without dating its end leaves them that way (Claim.LastTurnEnd's doc says which
+	// date it). The compaction closes that turn in its own write, so a daemon restarted during the
+	// compaction, which knows nothing of it, reads the claim stored working as in no turn rather
+	// than in the turn that was cut off, and ends nothing for it (the controller keeper's
+	// TurnPastBound, dispatch://INFRA-2045 R2).
 	if m.claim.LastTurnStart.After(m.claim.LastTurnEnd) {
 		m.claim.LastTurnEnd = m.deps.Clock.Now()
 	}

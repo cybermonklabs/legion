@@ -351,18 +351,23 @@ type Claim struct {
 	// daemon never read (recordBusyTurn), which that turn's own agent_start, read later, moves to
 	// its own moment (busyTurnBegun); the agent's answer that it is streaming, which puts a ready
 	// or idle claim a restart restored in working (sendPending's askFirst branch,
-	// answerAskFirstAfterDrop); or the agent_start of a turn Oh My Pi began under a compaction
+	// answerAskFirstAfterDrop); or an agent_start in a claim already working, which is a turn Oh
+	// My Pi began under a compaction, or one it began under a compaction a restart forgot
 	// (turnStartedWhileBusy). Each is dated where its start line is written (startTurn,
 	// busyTurnBegun), so no path that starts a turn leaves it timed from the turn before, and
 	// each writes the claim with its date. A turn's end is dated where the agent ends it
 	// (turnEnded), and where the daemon ends it: a charged death (chargeDeath), the controller
 	// keeper's end of a turn past its bound (endTurnPastBound), and a compaction's start, which
-	// closes a turn whose end was never dated (compactStart). The end is written with the claim
-	// at each, except the end of a turn that ran under a compaction, which is written with the
-	// compaction's end (compactEnded). They are persisted, so a restart keeps what was written:
-	// they are what a reader has to tell a worker still making progress from one wedged in a turn
-	// or idle since yesterday, and a claim rebuilt without them would look as if it had never
-	// worked.
+	// closes a turn whose end was never dated (compactStart). The end is written with the claim at
+	// each, except the end of a turn that ran under a compaction: that is written with the
+	// compaction's end (compactEnded), or with the death's own write where the process was lost
+	// under the compaction and no compaction end runs (compactionLostProcess). Every other path
+	// that ends a turn — a suspension that stops a process mid-turn, a displacement, a stale
+	// address, the stale-plugin relaunch, the stall backstop, a death charged nothing — dates no
+	// end, and leaves the times showing the turn open until a compaction or the next turn moves
+	// them. They are persisted, so a restart keeps what was written: they are what a reader has to
+	// tell a worker still making progress from one wedged in a turn or idle since yesterday, and a
+	// claim rebuilt without them would look as if it had never worked.
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
@@ -2805,15 +2810,13 @@ func (m *Machine) logTurn(line, delivery string) {
 }
 
 // startTurn records what this turn is the turn of and writes its start line, which is how the
-// turn's end comes to name what its start named (Machine.turnsDelivery, endTurn). Every path
-// that puts a claim in working goes through here — turnStarted, sendPending's askFirst branch,
-// answerAskFirstAfterDrop and recordBusyTurn — the three that name no delivery included, so a
-// turn that is no task's overwrites the identity of the turn before it rather than leaving it
-// standing for its end to read. So does the one path that records a turn in a claim already
-// working, a turn Oh My Pi starts under a compaction (turnStartedWhileBusy), whose end writes its
-// end line. The agent_start of a turn a busy answer recorded writes none: recordBusyTurn already
-// wrote that turn's start line, and the start names the task it confirms in a line of its own
-// (busyTurnBegun), so one start line and one end line still bracket the turn.
+// turn's end comes to name what its start named (Machine.turnsDelivery, endTurn), and dates the
+// turn (Claim.LastTurnStart, whose doc names every path that starts one). Each of those paths
+// goes through here, the three that name no delivery included, so a turn that is no task's
+// overwrites the identity of the turn before it rather than leaving it standing for its end to
+// read. The agent_start of a turn a busy answer recorded goes through busyTurnBegun instead:
+// recordBusyTurn already wrote that turn's start line, and the start names the task it confirms
+// in a line of its own, so one start line and one end line still bracket the turn.
 //
 // The identity is carried from the start because no reading of the claim can answer it at the
 // end: a pending delivery that is confirmed is the running turn's in one case and a finished
@@ -2823,7 +2826,7 @@ func (m *Machine) logTurn(line, delivery string) {
 // own starting in that window is no task's, so its start line names no delivery while a claim
 // read at its end would name that task and a reader would count the task's turn twice.
 //
-// It dates the turn too (Claim.LastTurnStart, whose doc keeps the list of who dates a turn).
+// A turn under a compaction writes its end line at its end (turnEnded).
 func (m *Machine) startTurn(delivery string) {
 	m.claim.LastTurnStart = m.deps.Clock.Now()
 	m.turnsDelivery = delivery
