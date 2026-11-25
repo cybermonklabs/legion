@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
-	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
