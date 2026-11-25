@@ -630,6 +630,22 @@ func (f TypedFacts) typedScope() *pairScope {
 	return &pairScope{kinds: typedKinds, blocks: blocks}
 }
 
+// holding is s widened to every block whose rows of s's kinds index holds. A block the version
+// removed, or holds under a type whose ties are none of those kinds - a decision or an ask block
+// taken out or retyped into a paragraph - holds no pair of them any more, so a reconcile of the
+// widened scope drops its rows and retracts each one's tuple out of the node the row names, the
+// ask's for an ask block's shaped, as the block index's reconcile of every row would.
+func (s *pairScope) holding(index BlockIndex) *pairScope {
+	blocks := slices.Clone(s.blocks)
+	for _, link := range index.links {
+		if slices.Contains(s.kinds, link.kind) {
+			blocks = append(blocks, link.blockID)
+		}
+	}
+	slices.Sort(blocks)
+	return &pairScope{kinds: s.kinds, blocks: slices.Compact(blocks)}
+}
+
 // indexedFacts is what the typed-node pass states of the version beside the block index that
 // indexes it in the same write (PlanBlocks), which writes the node of every block whose text the
 // version moved, states each typed node's part_of, reconciles every block_refs row of the
@@ -754,14 +770,17 @@ type DecisionIndexing struct {
 // same node PlanBlocks writes (blockNode), its values and its author (typedValues), and does for
 // its own blocks alone what the block index would: it states the part_of of each decision and
 // reading where the store places it elsewhere (planBlockParents), reconciles the rows of its own
-// kinds held by its own blocks (typedScope), deleting no other row of the document, and states
-// each decision and reading node the store places in the document that the version no longer
-// holds as one (unheldTypedNodes): gone where the version holds no such block, and a node of the
-// supertag block where it holds the block under another type. So a decision a deferred version
-// removes leaves the Decisions read in that version's transaction. The block-index reconciliation
-// indexes the document later with the same facts, and its pairs hold these same ties, so it moves
-// none of them (TestTheReconcilerMovesNoRowTheTypedPassWrote). Bare facts, of a version holding no
-// typed block, state only the nodes it no longer holds as one.
+// kinds held by its own blocks and by every block whose rows of those kinds the index holds
+// (typedScope, pairScope.holding), so the ties of a decision or an ask block the version removed
+// or retyped leave with their rows, the shaped of an ask block out of the ask's node, and deletes
+// no row of another kind, and it states each decision and reading node the store places in the
+// document that the version no longer holds as one (unheldTypedNodes): gone where the version
+// holds no such block, and a node of the supertag block where it holds the block under another
+// type. So a decision a deferred version removes leaves the Decisions read in that version's
+// transaction. The block-index reconciliation indexes the document later with the same facts, and
+// its pairs hold these same ties, so it moves none of them
+// (TestTheReconcilerMovesNoRowTheTypedPassWrote). Bare facts, of a version holding no typed block,
+// state the nodes it no longer holds as one and drop the rows of those kinds the index holds.
 func PlanDecisionNodes(ctx context.Context, q Queryer, index BlockIndex, artifactID string, version int, versionAt time.Time, facts TypedFacts, beside graphstore.Uncaused) (DecisionIndexing, error) {
 	plan := DecisionIndexing{artifactID: artifactID, version: version, held: index}
 	var nodes []graphstore.Node
@@ -795,7 +814,7 @@ func PlanDecisionNodes(ctx context.Context, q Queryer, index BlockIndex, artifac
 		nodes = unheld
 	}
 	plan.stated = graphstore.PlanUncaused(append(nodes, unwritten(beside.Nodes, nodes)...), tuples)
-	if facts.read {
+	if facts.read || facts.bare {
 		if err := plan.planTies(ctx, q, index, facts, versionAt); err != nil {
 			return DecisionIndexing{}, err
 		}
@@ -805,13 +824,19 @@ func PlanDecisionNodes(ctx context.Context, q Queryer, index BlockIndex, artifac
 }
 
 // planTies plans the pass's own share of a block index (DecisionIndexing.blocks): the parents of
-// the version's decisions and readings and the reconcile of the rows of their ties, against index,
-// with what each states appended to the pass's facts.
+// the version's decisions and readings and the reconcile of the rows of their ties and of the
+// rows of those kinds index holds of blocks the version no longer holds as one of its own
+// (pairScope.holding), against index, with what each states appended to the pass's facts. Bare
+// facts whose index holds no such row plan nothing.
 func (d *DecisionIndexing) planTies(ctx context.Context, q Queryer, index BlockIndex, facts TypedFacts, versionAt time.Time) error {
+	scope := facts.typedScope().holding(index)
+	if !facts.read && len(scope.blocks) == 0 {
+		return nil
+	}
 	writer := facts.document.Writer
 	d.blocks = BlockIndexing{
 		artifactID: d.artifactID, refKey: facts.document.RefKey, version: d.version, versionAt: versionAt,
-		pairs: facts.typedPairs(), scope: facts.typedScope(),
+		pairs: facts.typedPairs(), scope: scope,
 	}
 	only := make(map[string]struct{}, len(facts.typed))
 	for _, id := range facts.typed {
@@ -843,7 +868,7 @@ func (d *DecisionIndexing) planTies(ctx context.Context, q Queryer, index BlockI
 }
 
 // Moved is the targets whose counts the ties the pass reconciles move: those of the rows it
-// inserts or deletes and of those whose block types it changes.
+// inserts or deletes, of those whose block types it changes and of those whose node it moves.
 func (d DecisionIndexing) Moved() []Target {
 	return d.blocks.moved
 }
@@ -967,9 +992,9 @@ func unheldTypedNodes(ctx context.Context, q Queryer, artifactID string, documen
 	return nodes, nil
 }
 
-// OpenedAskTies is the shaped ties of the ask blocks whose asks a settlement opened, when it
-// writes no version of its own to index (PlanOpenedAskTies): planned in the settlement's read
-// phase and written by Queue in its write phase.
+// OpenedAskTies is the shaped ties of the ask blocks whose asks a settlement opened, which no
+// index of their version states (PlanOpenedAskTies): planned in the settlement's read phase and
+// written by Queue in its write phase.
 type OpenedAskTies struct {
 	// blocks is the reconcile of those blocks' shaped rows (planBlockRefs), which Queue queues as
 	// the block index queues its own. A plan that reconciles nothing holds no scope.
@@ -986,11 +1011,14 @@ type OpenedAskTies struct {
 // earlier indexing of it), and opened each such block with the id of the ask opened for it, whose
 // node the transaction writes before these rows. An ask block's shaped hangs on the ask's node
 // (TypedFacts.pairs), so a block whose ask no row held when its version was indexed had none of
-// its ties written then; the settlement that opens the asks writes them here, beside their rows
-// (docs' writeOpenedAskTies). The ask a block's ties hang on is the one opened names, since the
-// row that names it may be one this transaction has queued and not written, which no read of the
-// asks answers yet. It reconciles the shaped rows of those blocks alone, in one reconcile, from
-// the same pairs the block index reconciles, so the document's next index moves none of them.
+// its ties written then, and neither has the version the settlement that opens the ask writes:
+// that version's index reads the asks table (namedAskRows) before the write phase has written the
+// row the settlement queued. The settlement writes them here, beside their rows, whether or not it
+// writes a version (docs' writeOpenedAskTies). The ask a block's ties hang on is the one opened
+// names, since the row that names it may be one this transaction has queued and not written, which
+// no read of the asks answers yet. It reconciles the shaped rows of those blocks alone, in one
+// reconcile, from the same pairs the block index reconciles, so the document's next index moves
+// none of them.
 //
 // Moved answers, by block, the targets whose counts that block's rows moved, which the
 // ask.opened that records its ask names: an opened block held no shaped row before, since its

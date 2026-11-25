@@ -298,7 +298,11 @@ type BlockIndexing struct {
 	placedIDs     []string
 	placedParents []*string
 	moved         []Target
-	held          BlockIndex
+	// rehomed is each surviving link whose node the pass moves (planBlockRefs): a block retyped
+	// between an ask and a decision holds the same pair, which hangs on another node now. Each
+	// carries the node it hangs on after the move, which queueBlockRefs writes into its row.
+	rehomed []indexedLink
+	held    BlockIndex
 	// stated is what the pass states in the node and tuple store, held for the event that causes
 	// the write (graphstore.Uncaused).
 	stated graphstore.Uncaused
@@ -620,10 +624,10 @@ func (b *BlockIndexing) planLinks(
 	return heldLinks, nil
 }
 
-// Moved is the targets of the links the indexing inserts or deletes, and of those whose block
-// types it changes, whose counts move - a node is counted once for each block citing it - and of
-// the links it writes in a block whose text it changes, whose excerpts move, a link's excerpt
-// being the text of the block holding it.
+// Moved is the targets of the links the indexing inserts or deletes, of those whose block types it
+// changes and of those whose node it moves (rehome), whose counts move - a node is counted once
+// for each block citing it - and of the links it writes in a block whose text it changes, whose
+// excerpts move, a link's excerpt being the text of the block holding it.
 func (b BlockIndexing) Moved() []Target {
 	return b.moved
 }
@@ -1236,8 +1240,8 @@ func (p blockPair) from(refKey string) (kind, address string) {
 }
 
 // blockPairKey is how block_refs keys a pair: all of it but the block types it points at, which
-// a surviving pair takes from the version being indexed, and the node it hangs on, which only
-// the insert writes.
+// a surviving pair takes from the version being indexed, and the node it hangs on, which the
+// insert writes and a pair that survives on another node moves (planBlockRefs).
 type blockPairKey struct {
 	blockID string
 	kind    string

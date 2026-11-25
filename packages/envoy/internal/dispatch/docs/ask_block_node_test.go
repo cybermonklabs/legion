@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -110,4 +111,51 @@ func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
 	}
 	t.Logf("the ask block's node %s is %s with %d state tuple(s), and the census reads zero differences over %d row(s), %d of them block rows against %d block node(s)",
 		address, node.State, len(history), census.Rows(), blocks.Rows, blocks.Nodes)
+}
+
+// A settlement that opens the ask of a new ask block holding a shaped pointer, and writes a
+// version in the same transaction, states the block's shaped tie. The version's block index reads
+// the asks table, which holds no row the settlement has only queued, so it states none of the
+// block's ties; the settlement writes them after it (writeOpenedAskTies): the block_refs row,
+// naming the ask's node, and the ask's shaped tuple, caused by the ask.opened that records the ask.
+func TestASettlementThatOpensAnAskAndWritesAVersionStatesItsShapedTie(t *testing.T) {
+	t.Parallel()
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+	const slug = "opened-ties"
+	document := writeDocumentThroughTheRequestPath(t, service, database, slug, "# Ties\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+	settleCurrentGeneration(t, service, document)
+	rig := &docsWriterRig{database: database, service: service}
+	before := rig.versionCount(t, document)
+	service.addConnection(document, 1, model.Actor{Kind: "user", ID: "alice"})
+	shaped := refs.BlockRef(refs.ArtifactRef(&coreIssue, "CORE", nil, slug, "doc", false), "r1")
+	editLiveTree(t, service, document, appendBlocks(t, ":::ask{#q-tie urgency=\"med\" multiple=\"false\" shaped=\""+shaped+"\"}\n"+
+		"Which store holds the corpus?\n:::\n"))
+	settleCurrentGeneration(t, service, document)
+	if after := rig.versionCount(t, document); after != before+1 {
+		t.Fatalf("the settlement left %d versions of the document, want %d: it is the settlement that writes a version", after, before+1)
+	}
+
+	ask := blockAskOn(t, service, document, "q-tie")
+	target := graphstore.ArtifactRefKey("CORE-1", "CORE", "", slug) + "#r1"
+	var nodeKind, nodeAddress *string
+	if err := database.Pool.QueryRow(ctx, `
+		select node_kind, node_address from block_refs
+		where artifact_id = $1 and block_id = 'q-tie' and kind = $2 and to_kind = $3 and to_id = $4
+	`, document, refs.TupleShaped, refs.BlockNodeKind, target).Scan(&nodeKind, &nodeAddress); err != nil {
+		t.Fatalf("read the shaped row of q-tie to %s: %v", target, err)
+	}
+	if nodeKind == nil || nodeAddress == nil || *nodeKind != graphstore.KindAsk || *nodeAddress != ask.ID {
+		t.Errorf("the shaped row of q-tie names the node (%v, %v), want the ask's node (%s, %s)", nodeKind, nodeAddress, graphstore.KindAsk, ask.ID)
+	}
+	ties, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindAsk, ask.ID, []string{refs.TupleShaped})
+	if err != nil {
+		t.Fatalf("read the shaped ties of ask %s: %v", ask.ID, err)
+	}
+	if len(ties) != 1 || ties[0].ToKind != refs.BlockNodeKind || ties[0].ToID != target {
+		t.Errorf("ask %s states the shaped ties %+v, want one to %s", ask.ID, ties, target)
+	}
+	if err := rig.tiesCaused(ctx, document, "q-tie"); err != nil {
+		t.Error(err)
+	}
 }

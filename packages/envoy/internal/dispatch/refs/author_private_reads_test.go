@@ -176,6 +176,25 @@ func TestTheReferencesReadAnswersALinkFromADocumentReservedForItsAuthorToThatAut
 	}
 }
 
+// The issue itself is a target of the links in only for a reader who may see it. A public
+// document links CORE-1, which is reserved for its author: another person's read lists no node
+// that links in through the issue, so nothing of theirs names it as a via. The author's read lists
+// the document, through the issue.
+func TestTheReferencesReadAnswersALinkIntoAnIssueReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	tx := prefixFixture(t)
+	publicDocument, _ := createReferenceArtifact(t, tx, "", "CORE", "public-md")
+	insertReference(t, tx, "artifact", publicDocument, "issue", "CORE-1")
+	reserveForAuthor(t, tx, "issue", "CORE-1")
+
+	if got := linkedFromOf(t, tx, privateReader); len(got) != 0 {
+		t.Errorf("another person's linked_from = %q; want nothing, since the issue CORE-1 they link into is reserved for its author", got)
+	}
+	want := []string{relatedSummary("artifact", publicDocument, "public-md", []string{"mentions"}, model.ReferenceVia{Kind: "issue", ID: "CORE-1"})}
+	if got := linkedFromOf(t, tx, privateAuthor); !slices.Equal(got, want) {
+		t.Errorf("the author's linked_from = %q; want %q", got, want)
+	}
+}
+
 // A private target is no mention another person reads among a document's outgoing ones, and a
 // private document lists no mention to them at all. Its author reads both.
 func TestOutgoingAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {

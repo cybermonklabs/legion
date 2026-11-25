@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -520,5 +521,72 @@ func TestQuestionBlocksReadTheAskBlocksPmdocReads(t *testing.T) {
 				t.Errorf("questionBlocks reads the ask blocks %q, want %q as pmdoc reads them", scanned, test.want)
 			}
 		})
+	}
+}
+
+// queuedVersion is the Pending of a transaction that has queued a version of document artifact
+// holding markdown, and no other row.
+type queuedVersion struct{ artifact, markdown string }
+
+func (v queuedVersion) PendingIssue(string) bool                      { return false }
+func (v queuedVersion) PendingArtifact(string) (string, string, bool) { return "", "", false }
+func (v queuedVersion) PendingBlockAsks(string) []PendingBlockAsk     { return nil }
+func (v queuedVersion) PendingAsk(string) (PendingBlockAsk, bool)     { return PendingBlockAsk{}, false }
+func (v queuedVersion) PendingMarkdown(artifactID string) (string, bool) {
+	return v.markdown, artifactID == v.artifact
+}
+
+// A copy's source is the ask its block node's copied_from tuple names before the one its opening
+// line names, since a stored version's line may be one the release before wrote. A version the
+// reading transaction has queued is read before that transaction claims its copies, so there a
+// line that names a source is the newer of the two. Over one text, in which the copy c names
+// the second source on its line and the copy d names none, and whose nodes' tuples both name the
+// first: the stored version maps both to the first source, and the queued one maps c to the
+// second and d to the first.
+func TestAQueuedVersionsCopyResolvesToTheSourceItsLineNames(t *testing.T) {
+	database := parentDatabase(t)
+	ctx := context.Background()
+	document := newParentDocument(t, database, "COPY", "notes")
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the sources: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	first := insertScopeAsk(t, tx, document.issue, "", nil)
+	second := insertScopeAsk(t, tx, document.issue, "", nil)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the sources: %v", err)
+	}
+	markdown := `:::ask{#c copied_from="` + second + `"}` + "\nWhich?\n:::\n\n:::ask{#d}\nWhich too?\n:::\n"
+	version := renderTypedVersion(t, markdown)
+	record := document.writeVersion(t, 1, version.markdown, alice)
+	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
+		_, _, write, err := IndexBlocks(ctx, tx, document.artifact, 1, record.at, version.markdown, version.blocks, version.located, version.pointers, "", TypedFacts{})
+		for _, block := range []string{"c", "d"} {
+			write.Tuples = append(write.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+				FromKind: BlockNodeKind, FromID: document.address(block), Kind: graphstore.TupleCopiedFrom,
+				ToKind: graphstore.KindAsk, ToID: first, At: record.at, Who: alice, Asserted: true,
+			}})
+		}
+		return write, err
+	}, record.event)
+
+	ref := func(ask string) text.Ref { return text.Extract("dispatch://"+document.issue+"/ask/"+ask, "")[0] }
+	for _, read := range []struct {
+		name string
+		ctx  context.Context
+		want map[string]text.Ref
+	}{
+		{"the stored version", ctx, map[string]text.Ref{"c": ref(first), "d": ref(first)}},
+		{"the queued version", WithPending(ctx, queuedVersion{artifact: document.artifact, markdown: markdown}), map[string]text.Ref{"c": ref(second), "d": ref(first)}},
+	} {
+		got, err := questionMap(read.ctx, database.Pool, nil, document.artifact)
+		if err != nil {
+			t.Fatalf("the question map of %s: %v", read.name, err)
+		}
+		if !reflect.DeepEqual(got, read.want) {
+			t.Errorf("the question map of %s = %#v; want %#v", read.name, got, read.want)
+		}
 	}
 }

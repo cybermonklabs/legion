@@ -444,7 +444,8 @@ func ScopeSources(ctx context.Context, q Queryer, doc string) ([]Target, error) 
 // no read of the tables answers for them. A `#id` naming a block of the very version being
 // written, or one whose ask the same transaction opens - settlement makes the ask of every new
 // question block of an edit in one transaction - resolves to the ask it will name once the write
-// phase has run.
+// phase has run, and so does a copy whose opening line in that version names its source: the
+// line comes before its node's copied_from tuple, which the same write phase claims after.
 //
 // It answers for who. A document who may not see has no question, as one no row holds has none,
 // so not even its block ids are answered, and an ask who may not see is no question of it, nor is
@@ -525,18 +526,31 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 	}
 	copiedBy := map[string][]string{}
 	sources := []string{}
-	var unowned []string
+	// A copy names its source on its block node's copied_from tuple, which settlement states once
+	// the version's blocks are indexed (docs' claimCopies), and on its opening line, which every
+	// version this build writes keeps in step with that tuple (docs' keptAskState). A version this
+	// transaction has queued is read before its own claim is written, so where it names a source
+	// on the line, that line is the newer of the two, and the tuple is read only for a copy whose
+	// line names none (unread). A stored version's line may be one the release before wrote, so
+	// there the tuple is read first.
+	var unowned, unread []string
 	for _, block := range blocks {
-		if _, own := questions[block.id]; !own {
-			unowned = append(unowned, block.id)
+		if _, own := questions[block.id]; own {
+			continue
+		}
+		unowned = append(unowned, block.id)
+		if !queued || block.copiedFrom == "" {
+			unread = append(unread, block.id)
 		}
 	}
 	if len(unowned) == 0 {
 		return questions, nil
 	}
-	stated, err := copiedFromTuples(ctx, q, doc, unowned)
-	if err != nil {
-		return nil, fmt.Errorf("read the copied questions of document %s: %w", doc, err)
+	var stated map[string]string
+	if len(unread) > 0 {
+		if stated, err = copiedFromTuples(ctx, q, doc, unread); err != nil {
+			return nil, fmt.Errorf("read the copied questions of document %s: %w", doc, err)
+		}
 	}
 	for _, block := range blocks {
 		if _, own := questions[block.id]; own {

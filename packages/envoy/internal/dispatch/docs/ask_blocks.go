@@ -116,8 +116,9 @@ type answerInStep struct {
 // every opened ask), so a page reading backlink counts off the event refreshes them. tree is the
 // tree the settlement settled, rendered as offsets, of version `version` of document artifactID.
 // It runs before the events are appended, since an appended event is never rewritten. A
-// settlement that writes a version needs none of this: that version's block index runs after the
-// rows are queued and states the ties with every other link of the document.
+// settlement that writes a version runs it after that version's block index, which reads the asks
+// table, where the rows this settlement queued are not written yet, so it stated none of these
+// ties; this plans against what that index leaves (heldBlockIndex).
 func (r *settlementReconciliation) writeOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, version int, tree *pmdoc.Node, offsets []pmdoc.BlockOffset) error {
 	if len(r.opened) == 0 {
 		return nil
