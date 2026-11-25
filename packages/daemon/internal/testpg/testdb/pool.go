@@ -170,8 +170,16 @@ func createDatabase(admin *pgxpool.Pool, s shape) (string, error) {
 
 // give resets name, reads it back against its shape's template, and frees it for the next taker.
 // A database that fails either step is dropped rather than handed on, so a test never takes a
-// database another test left something in.
+// database another test left something in. A binary whose TestMain does not call Main drops each
+// database as its test ends, as before the pool: nothing would drop a pooled one when its tests
+// end.
 func give(admin *pgxpool.Pool, s shape, name string) error {
+	shared.mu.Lock()
+	pooling := shared.main
+	shared.mu.Unlock()
+	if !pooling {
+		return drop(admin, name, nil)
+	}
 	if err := reset(admin, s, name); err != nil {
 		return drop(admin, name, err)
 	}

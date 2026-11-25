@@ -23,6 +23,9 @@ func TestADatabaseAnotherTestContaminatedIsNeverHandedOn(t *testing.T) {
 	if dsn == "" {
 		t.Skip(SkipMessage)
 	}
+	if !shared.main {
+		t.Fatal("the pool hands databases on only under Main, and this package's TestMain does not call it, so this test would pass without reading anything")
+	}
 	ctx := context.Background()
 	admin, err := adminPool(dsn)
 	if err != nil {
