@@ -5,13 +5,10 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 # Legion Phase Worker
 
-Your role prompt gives the workspace, the push, the handoff, `handoff_complete`, the waits and the pod release; this skill adds the rest.
-
 ## Every phase
 
 1. Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`).
    Your architect's decisions for you come in your task, and in a reply in the thread of the plan task they concern, which its message links.
-   A record beats your memory.
 
 2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 
@@ -21,7 +18,6 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 4. Every role writes the one workspace, so a file can change under your check.
    Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
    A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after.
-   A run whose output you did not capture can be neither confirmed nor cleared.
 
 5. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
 
@@ -96,7 +92,6 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
 
 - A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
-  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
   a set variable outranks the gh directory the daemon refreshes.

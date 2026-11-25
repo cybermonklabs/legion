@@ -5,9 +5,7 @@ description: "Use when you are a Legion root or child architect, before any life
 
 # Legion architect
 
-You own one issue and every issue under it until the merge that closes it.
 The daemon starts every worker and moves every phase; you write no code.
-Your role prompt holds the lifecycle rules, this skill the procedures.
 
 ## Every turn
 
@@ -84,7 +82,6 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 
 ## 5. Retro
 
-Where your acceptance is the task's last step, your `sign_off` starts retro; otherwise the pass of the task's last step starts it, or holds a parent before it.
 Never message the implementer to start retro.
 A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do while it holds the phase.
 A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".

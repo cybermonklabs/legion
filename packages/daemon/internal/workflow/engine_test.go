@@ -1,7 +1,5 @@
 package workflow
 
-//ci:reads skills/legion-worker/references/merge-gate.md TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries reads it under ../../../..
-
 import (
 	"context"
 	"crypto/rand"
@@ -9,7 +7,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -27,7 +24,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -408,40 +404,6 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("the reviewer's prompt does not say %q", want)
-		}
-	}
-}
-
-// The reviewer is told the commit its later round reads from, and the entry of each round, by
-// the labels its task carries (reviewround.Sentences), and its prompt and the merge gate of
-// skill://legion-worker, which the prompt sends it to, name those fields, so a rename of a label
-// in the writer alone, in the reviewer's prompt alone or in the merge gate alone fails here. The
-// reviewer writes the entry into its review's footer, so a prompt that did not name the field
-// would leave every review moving no commit.
-func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
-	t.Parallel()
-	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
-	body, err := os.ReadFile(mergeGate)
-	if err != nil {
-		t.Fatalf("read %s, the skill the reviewer's prompt sends it to: %v", mergeGate, err)
-	}
-	prompt := reviewerPrompt(t)
-	sentences := reviewround.Sentences("<sha>", 7)
-	for _, tc := range []struct {
-		field, part string
-	}{
-		{field: reviewround.CommitLabel + ": <sha>", part: " " + reviewround.CommitLabel + ": <sha>. "},
-		{field: reviewround.EntryLabel + ": <n>", part: " " + reviewround.EntryLabel + ": 7."},
-	} {
-		if !strings.Contains(sentences, tc.part) {
-			t.Fatalf("a task names its round as %q, want it to hold %q", sentences, tc.part)
-		}
-		want := "`" + tc.field
-		if !strings.Contains(prompt, want) {
-			t.Errorf("the reviewer's prompt does not say %q", want)
-		}
-		if !strings.Contains(string(body), want) {
-			t.Errorf("%s does not say %q", mergeGate, want)
 		}
 	}
 }

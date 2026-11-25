@@ -1,6 +1,5 @@
 # Review threads
 
-Read it when you reply on, list or resolve a review thread, or judge a bot's finding.
 With no reviewer step, the implementer lists unresolved bot threads before each completion, including retro;
 it replies to and resolves each it fixes or declines, and records it in `Threads`.
 It names each declined thread to the task's architect, by node id with its reason, in its completion summary when it implements.

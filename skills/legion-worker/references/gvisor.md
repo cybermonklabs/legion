@@ -1,7 +1,5 @@
 # What gVisor changes in your pod
 
-Read it before you walk a path one component at a time, trust a tool's binary or set a stack limit in your pod, and before you report a duration measured there.
-
 Issue pods run under gVisor unless the deployment's `runtime.kubernetes.sandbox` puts the issue in a GKE Sandbox microVM (`docs/kubernetes.md`, "Issue pods in microVMs"). These items are about a gVisor pod.
 
 - Under gVisor `openat` with `O_DIRECTORY|O_NOFOLLOW` follows a link to a directory, and `openat2` can return `ENOSYS`. Open each path component with `O_PATH|O_NOFOLLOW|O_CLOEXEC` and read its kind with `fstat`.

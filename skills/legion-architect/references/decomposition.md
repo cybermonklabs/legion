@@ -1,7 +1,5 @@
 # Decomposing a tree
 
-Read this before you read a child's handoff, create or adopt children, review a child's spec, split work across repositories, record a wait on outside work, or attach architecture components.
-
 ## Reading the tree
 
 Read your own issue (`read_record`), its criteria, its children and their handoffs:
@@ -10,7 +8,6 @@ Read your own issue (`read_record`), its criteria, its children and their handof
 ## Adopting children
 
 Release a child a person created at once and as it is: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
-The answer names `released`, `started` and `held`, each held child with what it waits on.
 A release refused with a code below writes nothing: release the rest again without the child it names.
 
 - `CHILD_NOT_ADOPTABLE`: it runs or ran as a tree of its own.
@@ -93,7 +90,6 @@ Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 
 When an issue must wait on a sibling or on an issue outside this tree, set its `blocked_by` list as `skill://dispatch`, "Choosing what to work on", says.
 A blocker's close is its Dispatch issue reaching `done`, not a merge or a deploy: pick a blocker whose close is the fact the issue needs.
-Legion starts the issue once its blockers close.
 
 ## A root with no code of its own
 

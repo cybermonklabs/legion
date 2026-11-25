@@ -1,14 +1,8 @@
 # An issue's plan
 
-Part of `skill://legion-architect`, sections 1 and 2.
-Read it before you write or give an issue's plan.
-Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, `retro-held` and `plan-not-taken` notices:
-`skill://legion-architect/references/plan-changes.md`.
-
 ## The task block
 
 You choose which of Legion's steps each issue of your tree runs.
-An issue whose experiment's group runs the project's default steps is the exception ("What Legion refuses", below).
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
@@ -61,12 +55,7 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 - **A root:** before `register_gate`, because the gate's opening starts the root's first step.
 
 - **A child:** before `release_children` releases it.
-  The daemon has not recorded the child yet, so Legion keeps the plan until the release;
-  the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
-  A project's experiment draws the child when the daemon records it.
-  If the child's group runs the project's default steps, its first step passes your plan over (`plan-not-taken`).
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
-  The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 
 A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
 The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.

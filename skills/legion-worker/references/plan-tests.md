@@ -1,7 +1,5 @@
 # Tests named before code
 
-Read it when you write a plan or review one: the planner, and the plan reviewer the planner runs. A plan that names each case's test before the code lets the implementer meet every case in one round, rather than one review round per case.
-
 ## The trace
 
 The plan traces each clause of each requirement to the test rows that prove it: a test file and a test's name, or a row of a table test. A clause is one thing the requirement says is true: "each surface shows the stored text, and an empty one shows a dash" is two clauses. A clause with no test row is not planned yet.

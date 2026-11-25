@@ -1,9 +1,5 @@
 # What the withheld capability is, and what it is not
 
-Read it before you unpack, extract or install anything the worker image does not carry.
-
-The withheld `operator-setup` row (`packages/daemon/internal/capabilities/capabilities.go`) reads "installs or configures its own dependencies in the pod: Legion owns its dependencies". It does not forbid the pinned runners of `skill://legion-worker/references/tools.md`: the image ships `uv`, `bun` and Go for a role to use (`packages/daemon/docker/worker.Dockerfile`), the `toolchain` row grants them, and the pod puts their caches on the issue's volume (`roleEnvironment` in `packages/daemon/internal/runtime/sandbox/manifest.go`, and `podkind.go`). What it withholds is a dependency the pod carries: something that outlives its command and that a later launch or another role resolves without asking for it.
-
 ## The test: where it lands, and what it leaves resolving
 
 An install of your own (an interpreter, a browser, a second toolchain, an extraction) is sanctioned only when both hold:
@@ -14,7 +10,6 @@ An install of your own (an interpreter, a browser, a second toolchain, an extrac
 - A repository's own dependency install (`uv sync`, `bun install`) into its ignored directories is sanctioned.
 - A pinned runner line pins the named package alone; its dependencies are resolved when it runs. When the work needs the whole dependency closure pinned (a comparison that has to hold across days or across pods), use a project's own lockfile with `uv run` or `bun install`, not a one-off runner line.
 - Playwright keeps its browsers under `XDG_CACHE_HOME`, on the issue's volume, where the issue's roles share one registry under an install lock (`docs/kubernetes.md`, "Anatomy of a Sandbox pod"). Pointing `PLAYWRIGHT_BROWSERS_PATH` elsewhere loses that shared registry and the lock that makes a second role's install wait rather than race. A tool whose cache the runtime does not place, such as Puppeteer, needs its own variable (`PUPPETEER_CACHE_DIR`) pointed under one of the paths above.
-- Every cache is on the issue's volume, and the cache trimmer of `skill://legion-worker/references/tools.md` holds part of that volume under a mark. An install is paid once per pod in uv's cache and Pythons, the Go module cache and the Playwright registry, and can be paid again after a sweep in the bun install cache and the Go build cache.
 
 ## The Dispatch browser suite
 

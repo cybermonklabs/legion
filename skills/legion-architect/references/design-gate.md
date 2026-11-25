@@ -1,8 +1,5 @@
 # The root spec and the design gate
 
-Read this before you write a root spec, before any edit to an approved one, and on
-`design-approved` or `design-changes-requested`. A child's own architect runs no gate.
-
 ## Writing the root spec
 
 - Write it as `skill://dispatch-writing-specs` says, extending the issue's primary document in
