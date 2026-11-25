@@ -33,7 +33,7 @@ func AdvancePullRequestHead(pr record.PullRequest, arrival Arrival, headSHA stri
 			pr, _, _ = advance(pr, arrival, headSHA, nil)
 			return pr
 		}
-		pr.Run = &record.HeadRun{Anchor: judgementOf(pr), Pushes: clone(pr.Pushes), Since: pr.HeadUpdatedAt}
+		pr.Run = &record.HeadRun{Anchor: judgementOf(pr), Pushes: clone(pr.Pushes), Since: pr.HeadUpdatedAt, Settled: clone(pr.SettledHeads)}
 	}
 	pr = runStep(pr, record.RunStep{Head: headSHA, Before: arrival.Before, Sender: arrival.Sender, SyncedAt: arrival.At})
 	pr.Pushes = unspentPushes(pr.Pushes, pr.Moves, true)
@@ -706,10 +706,23 @@ func HeadRuns(pr record.PullRequest) []record.AttemptRun {
 }
 
 // SettlementFor says whether a CI settlement of candidate.Head may stand for the pull request's
-// current head, and returns the pull request ready to apply it. It may only when candidate.Head is
-// the current head: every other settlement - an earlier head's, a head a force push left - stands
-// for nothing. A settlement of a head other than the recorded one starts that head's fence afresh,
-// since check runs, generations, snapshots and commit statuses are each head's own.
+// current head, and returns the pull request with the fence it is weighed against
+// (ClassifySettlement) and applied to (ApplySettlement). It may only when candidate.Head is the
+// current head: every other settlement - an earlier head's, a head a force push left - stands for
+// nothing. Check runs, generations, snapshots and commit statuses are each head's own, so the
+// fence is the head's: the one the pull request holds when it stands at the head, and otherwise
+// the one it remembers for the head (record.PullRequest.SettledHeads), empty for a head it never
+// settled or no longer remembers.
+//
+// The pull request holds another head's fence, or none, when the branch went to another head that
+// settled and came back, when a reopen emptied the fence, and when a new generation's clear did
+// (record.Store's ClearGeneration). What it remembers for the head is the fence as it stood
+// before that, so a settlement after any of them is classified as it would have been had nothing
+// reset the fence, and applied to the same fence. An earlier settlement of the head - an older
+// run, fewer checks, an older commit status - delivered late, or replayed from a message the
+// intake gave up on, however late, is then stale as it is against a fence that stands, and the
+// newest one delivered again is the duplicate it is there (settle says what each does to a fence
+// that was reset).
 func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	head := candidate.Head
 	if head != pr.HeadSHA {
@@ -718,14 +731,69 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 	if head == pr.CheckedHead {
 		return pr, true
 	}
-	pr.CheckedHead = head
-	pr.Failing = []string{}
-	pr.Cancelled = []string{}
-	pr.CheckRuns = nil
-	pr.Generation = 0
-	pr.Snapshot = ""
-	pr.Statuses = nil
-	return pr, true
+	remembered := record.Settlement{Head: head}
+	for _, settled := range pr.SettledHeads {
+		if settled.Head == head {
+			remembered = settled
+		}
+	}
+	return withFence(pr, remembered), true
+}
+
+// fenceEntry is pr's check fence as an entry of what the pull request remembers of its settled
+// heads (record.PullRequest.SettledHeads): the head it stands at and each field of the fence, every
+// list copied, so the entry shares no list with pr.
+func fenceEntry(pr record.PullRequest) record.Settlement {
+	return record.Settlement{Head: pr.CheckedHead, CheckRuns: clone(pr.CheckRuns), Generation: pr.Generation, Snapshot: pr.Snapshot,
+		Failing: clone(pr.Failing), Cancelled: clone(pr.Cancelled), Statuses: clone(pr.Statuses)}
+}
+
+// withFence is pr with entry as its check fence, standing at entry's head: each field of the entry,
+// every list copied, so pr shares no list with the entry it remembers, and Failing and Cancelled
+// lists even where the entry holds none, as a fence a settlement applied to holds them. fenceEntry
+// is the copy the other way: these two copy the pull request's fence to and from what it
+// remembers of its settled heads. They are not the only copies of a settlement's fields, so a
+// field the fence gains reaches these two and each of the others: the settlement fact's candidate
+// (workflow's settlementCandidate), a head run's settlement step and its replay
+// (ApplyCheckSettlement's step, candidateOf, sameSettlement), the apply of a newer settlement
+// (ApplySettlement), the reopen step that empties the fence (applyStep), the judgement a head run
+// anchors and replays and the test of its change (judgementOf, withJudgement, JudgementChanged),
+// and the store's columns and memory rows of the fence (record's PutPullRequest, scanPullRequest,
+// storedFence and the clear of a new generation).
+func withFence(pr record.PullRequest, entry record.Settlement) record.PullRequest {
+	pr.CheckedHead = entry.Head
+	pr.Failing, pr.Cancelled = append([]string{}, entry.Failing...), append([]string{}, entry.Cancelled...)
+	pr.CheckRuns, pr.Statuses = clone(entry.CheckRuns), clone(entry.Statuses)
+	pr.Generation, pr.Snapshot = entry.Generation, entry.Snapshot
+	return pr
+}
+
+// maxSettledHeads bounds the heads a pull request remembers the fence of
+// (record.PullRequest.SettledHeads), and so the rows of each kind pull_request_settled_heads keeps
+// for it: at most this many heads, each with one run of each check name and one status of each
+// context it reported. A branch comes back to a head it held after a push or two is undone, a
+// reopen, or a new generation, each of which is a head or two back; sixteen cover that with room.
+// A head pushed out of the memory loses only its fence: a settlement of it is weighed against an
+// empty one, as one of a head the record never settled is.
+const maxSettledHeads = 16
+
+// rememberSettled is settled, what the pull request remembers of its settled heads
+// (record.PullRequest.SettledHeads), with pr's fence as the entry of its checked head, the head a
+// settlement just applied on: that head's entry replaced and moved to the end, where the head a
+// settlement applied on last stands, and the oldest heads beyond maxSettledHeads gone. The fence
+// was the remembered one, or the one that stood at the head, when the settlement was applied to it
+// (SettlementFor), so the entry it replaces holds nothing the fence does not.
+func rememberSettled(settled []record.Settlement, pr record.PullRequest) []record.Settlement {
+	kept := make([]record.Settlement, 0, len(settled)+1)
+	for _, entry := range settled {
+		if entry.Head != pr.CheckedHead {
+			kept = append(kept, entry)
+		}
+	}
+	if drop := len(kept) - (maxSettledHeads - 1); drop > 0 {
+		kept = kept[drop:]
+	}
+	return append(kept, fenceEntry(pr))
 }
 
 // HeadPushKnown says whether a push the record holds left head, so the record already knows of a
@@ -1197,7 +1265,7 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
-// askMergeStateFor refuses a pull request that is not open, so the state the record holds is the
+// mergeStateOwed refuses a pull request that is not open, so the state the record holds is the
 // one it held before the merge. A closed one merges nothing until a reopen, and a reopen asks for
 // a read of the head again (the opened handler, then Apply's askMergeState). Projection's
 // mergeWaitView makes no state test of its own and relies on this one.
@@ -1256,9 +1324,11 @@ func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
 }
 
 // MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
-// request (workflow's askMergeStateFor, which queues the ladder behind daemon's readMergeState):
-// whether a fact of kind fact asks for it, for an issue whose task walks line. Each of two reasons
-// asks, and one is enough:
+// request (workflow's mergeStateOwed, which both a fact of one pull request reads by, to queue the
+// ladder behind daemon's readMergeState, and a base push reads by for each pull request on the
+// base, to queue that base's batch of reads, daemon's queueBaseMergeStates): whether a fact of
+// kind fact asks for it, for an issue whose task walks line. Each of two reasons asks, and one is
+// enough:
 //
 //   - The fact moves the head, and a merge forward stands where the issue stands
 //     (MergeForwardStands, dispatch://INFRA-4374 R0): implementing, or a phase after it on the
@@ -1281,8 +1351,8 @@ func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
 // waiting on GitHub's answer about the head, whatever the fact - an approval that stands on a head
 // GitHub has answered nothing for, or a state it would not merge from (RoundWaitsOnMergeState),
 // or a head whose first conflicting read waits for its second (workflow's reviewRound,
-// round.waitsOnMergeState). Only the engine works out the round, so askMergeStateFor adds that
-// reason, and works the round out only for a fact the gate owes no read for.
+// round.waitsOnMergeState). Only the engine works out the round, so workflow's mergeStateOwed adds
+// that reason, and works the round out only for a fact the gate owes no read for.
 func MergeStateReadOwed(issue record.Issue, line []phase.Phase, fact MergeStateFact) bool {
 	switch fact {
 	case MergeStateFactHeadMove:

@@ -398,7 +398,7 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 
 		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
 		if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
-			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", queued)
+			t.Fatalf("queued rows = %v, want the workspace check, the role stop and the teardown and nothing else", queued)
 		}
 		rig.drain(t)
 		if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {

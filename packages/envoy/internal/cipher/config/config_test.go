@@ -2154,9 +2154,11 @@ func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
 // TestLoadReadsTheExchangeAccounts pins BROKER_EXCHANGE_ACCOUNTS: whitespace-separated
 // <account>=<project>=<person>[=<session>] entries in order, none when unset, a session that may
 // itself carry "=", an empty project (the shared public-session account's entry, whose named
-// tokens name no project), and refusals naming the entry for one that is not of that form, has a
-// blank account or person, names a namespace's default account or lists an account twice. It
-// needs the cluster issuer and the exchange audience, whose tokens its pods present.
+// tokens name no project), an empty project and person (a job's own account, whose tokens act as
+// the account itself), and refusals naming the entry for one that is not of that form, has a
+// blank account, names a project and no person, names a namespace's default account or lists an
+// account twice. It needs the cluster issuer and the exchange audience, whose tokens its pods
+// present.
 func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2173,7 +2175,8 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	e := withExchange()
 	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com\n" +
 		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE=1 " +
-		"system:serviceaccount:example-ns:example-public==ada@example.com"
+		"system:serviceaccount:example-ns:example-public==ada@example.com " +
+		"system:serviceaccount:example-ns:example-job== system:serviceaccount:example-ns:example-probe===example-probe-session"
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
@@ -2182,6 +2185,8 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 		{Account: "system:serviceaccount:example-ns:example-worker", Project: "EXAMPLE", Person: "ada@example.com"},
 		{Account: "system:serviceaccount:example-ns:example-daemon", Project: "EXAMPLE", Person: "ada@example.com", Session: "legion-daemon:EXAMPLE=1"},
 		{Account: "system:serviceaccount:example-ns:example-public", Project: "", Person: "ada@example.com"},
+		{Account: "system:serviceaccount:example-ns:example-job"},
+		{Account: "system:serviceaccount:example-ns:example-probe", Session: "example-probe-session"},
 	}
 	if !slices.Equal(cfg.ExchangeAccounts, want) {
 		t.Fatalf("ExchangeAccounts = %v, want %v", cfg.ExchangeAccounts, want)
@@ -2196,6 +2201,12 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_ACCOUNTS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
 			t.Errorf("BROKER_EXCHANGE_ACCOUNTS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
 		}
+	}
+	// An entry naming a project and no person is refused naming that rule, not only its form.
+	e = withExchange()
+	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE="
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "names no person only when it names no project either") {
+		t.Errorf("BROKER_EXCHANGE_ACCOUNTS naming a project and no person: err = %v, want a refusal naming the rule", err)
 	}
 	e = withExchange()
 	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:x:y=A=ada@example.com system:serviceaccount:x:y=B=ada@example.com"

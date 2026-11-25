@@ -293,6 +293,16 @@ if [ -n "${DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL:-}" ]; then
   delivery_reconcile_env=(DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL="$DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL")
 fi
 
+# Whether the server keeps a parent's status in line with its children's
+# (DISPATCH_PARENT_STATUS_RULE), read before the sweep below. Unset is the server's own off, which
+# every e2e run keeps, since none sets it. A caller that sets it
+# (`DISPATCH_PARENT_STATUS_RULE=on bun run dispatch:local`) gets that value passed on as it set it,
+# and the server refuses a value other than on or off.
+parent_status_rule_env=()
+if [ -n "${DISPATCH_PARENT_STATUS_RULE+set}" ]; then
+  parent_status_rule_env=(DISPATCH_PARENT_STATUS_RULE="$DISPATCH_PARENT_STATUS_RULE")
+fi
+
 # Meaning search's embedder, read before the sweep below. The file-store block above gives this
 # process the AWS SDK's own variables so it can reach the stack's S3 server, and Bedrock - the
 # default place DISPATCH_EMBEDDER names - takes those same static keys as its credentials and the
@@ -425,6 +435,7 @@ exec "${listen[@]}" env \
   "${nats_env[@]}" \
   "${port_env[@]}" \
   "${delivery_reconcile_env[@]}" \
+  "${parent_status_rule_env[@]}" \
   DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \
   DISPATCH_TEST_HOOKS=1 \
   DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW="$listener_takeover_window" \

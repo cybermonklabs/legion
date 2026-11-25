@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // roomLoadComments is how many anchored comments a benchmark document of 30 or more versions
@@ -79,7 +80,7 @@ func newRoomLoadFixture(tb testing.TB, versions, young int) *roomLoadFixture {
 	database := storetest.Open(tb)
 	ctx := context.Background()
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	tb.Cleanup(func() {
+	testcleanup.Add(tb, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			tb.Errorf("shutdown room load benchmark service: %v", err)
 		}

@@ -24,9 +24,12 @@ import (
 // in a running daemon, with nothing restarted: the agent said it was working, the connection
 // under that write was ended, and the row reads working all the same.
 //
-// This is the measured incident. The daemon's own backend is ended under the write — the write
-// after such a kill fails with SQLSTATE 57P01, and the write after that one lands, because the
-// pool dials a new connection — and what the daemon then does is read from the row itself.
+// This is the measured incident: the daemon's own backend ended under the write, SQLSTATE 57P01.
+// The backend is ended while the write's transaction runs, waiting on a row lock this test holds
+// on the claim: a backend ended before the write is no longer a lost write, since the store begins
+// a bounded write on another connection when the one it is handed was closed (store.Pool.BeginTx),
+// so the break this measures is one inside a transaction, which nothing can begin again for it.
+// What the daemon then does is read from the row itself.
 //
 // On the merge base the same test leaves the claim at its older state: a write the store did not
 // take was lost with the decision that failed, the claim stood working in memory over a row that
@@ -35,11 +38,11 @@ import (
 // at all. The break is what this measures, which is why the kill is in it.
 //
 // The daemon's pool is given three parameters of this test's own. One connection makes the kill
-// deterministic: there is exactly one backend to end, so the write after it is the write on a
-// connection the server has closed. The hour-long health check keeps the pool from replacing that
-// connection behind the test's back. And the application name is how the kill finds the daemon's
-// backend and nothing else: the package's tests run under the race detector against one shared
-// PostgreSQL, where a kill by database or by login would end another test's connection.
+// deterministic: there is exactly one backend to end, the one the write waits on. The hour-long
+// health check keeps the pool from replacing that connection behind the test's back. And the
+// application name is how the kill finds the daemon's backend and nothing else: the package's
+// tests run under the race detector against one shared PostgreSQL, where a kill by database or by
+// login would end another test's connection.
 func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 	t.Parallel()
 	// A database of this test's own, and a pool of its own on it: the reads below and the kill go
@@ -69,17 +72,31 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 		return storedClaimState(t, pool, token) == supervise.StateReady
 	})
 
-	// The daemon's own backend is ended, by its application name alone. Nothing of the daemon's is
-	// asked for anything between here and the turn: a read of its own would meet the broken
-	// connection first and the pool would replace it, and the write under test would land on a
-	// connection the server never closed.
+	// The test holds the claim's row, so the turn start's write waits on it inside its
+	// transaction, and the daemon's one backend is ended, by its application name alone, while it
+	// waits there.
+	ctx := context.Background()
+	holder, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the claim's row: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if _, err := holder.Exec(ctx, "select 1 from claims where token = $1 for update", string(token)); err != nil {
+		t.Fatalf("hold the claim's row: %v", err)
+	}
+
+	// The agent starts a turn. The claim stands working in the daemon's memory; its write waits on
+	// the row, its connection is ended under it, and the row is behind what memory holds.
+	sh.send(shimwire.AgentStart{})
+	testwait.Eventually(t, "the turn start's claim write to wait on the claim's row", func() bool {
+		return daemonBackends(t, pool, application, backendWaitingOnALock) == 1
+	})
 	if ended := terminateDaemonBackends(t, pool, application); ended != 1 {
 		t.Fatalf("ended %d backends of %s, want the daemon's one connection", ended, application)
 	}
-
-	// The agent starts a turn. The claim stands working in the daemon's memory; its write meets
-	// the connection the kill ended, and the row is behind what memory holds.
-	sh.send(shimwire.AgentStart{})
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("let the claim's row go: %v", err)
+	}
 	testwait.Eventually(t, "the turn start's claim write to fail on the broken connection", func() bool {
 		return strings.Contains(logs.String(), loggedMessage(owedWriteFailedLine))
 	})

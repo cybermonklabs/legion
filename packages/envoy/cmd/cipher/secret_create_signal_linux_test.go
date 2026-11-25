@@ -523,6 +523,7 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 // value piped in: the read goes on, nothing is deleted, and the whole value is stored once the
 // pipe closes.
 func TestCreateSignalInheritedIgnoredStaysIgnored(t *testing.T) {
+	requireSignalDispositions(t)
 	p := startCreate(t, exec.Command("bash", "-c", `trap '' HUP INT; exec "$0" -test.run='^TestCreateSignalHelper$'`, os.Args[0]))
 	p.waitFor("READING")
 	// The create's watch on the signals is in place by the read: a signal it watched would have a

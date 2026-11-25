@@ -47,7 +47,7 @@ LABEL = {"app.kubernetes.io/name": "s10-judge-sandbox"}
 # bound to no cloud identity and no role. The driver's own pod's account is refused.
 SERVICE_ACCOUNT = "s10-judge-sandbox"
 # The ConfigMap of the driver's namespace that the sandbox mounts `models.yml` and the overlay from,
-# by these keys: point 2's route, which theorem-labs/agent-infra's cluster-grants/agentsessions.go
+# by these keys: point 2's route, which the deployment repository's cluster-grants/agentsessions.go
 # declares immutable (`s10JudgeRouteName`). A session pod's own route is no such file: it holds
 # Legion's live route as of the session's last apply, and `runtime_refusal` refuses any bytes but
 # point 2's.

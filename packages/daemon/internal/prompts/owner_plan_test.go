@@ -524,9 +524,11 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 	planRead := []string{
 		"where a planner step comes before yours, or your task has no `Task:` line, it is the issue's `plan.md`",
 		"where no planner step comes before yours, it is your task's `Task text:`",
+	}
+	planRetired := []string{
+		"`Steps:` line names a planner,", "where the line names no planner", "`Steps:` line names no planner has no plan handoff",
 		"A task with no planner step before yours has no plan handoff for you",
 	}
-	planRetired := []string{"`Steps:` line names a planner,", "where the line names no planner", "`Steps:` line names no planner has no plan handoff"}
 	for _, tc := range []struct {
 		part       string
 		want, gone []string
@@ -557,9 +559,9 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 		{
 			"implementer.md",
 			append(slices.Clone(planRead),
-				"The steps after yours then run on that head, the tester's among them where your task has one",
+				"The steps after yours then run on that head, the tester's among them where your task has one"),
+			append(slices.Clone(planRetired), "so the tester runs that head",
 				"the plan handoff's `requiredSkills` for your role, where a planner step comes before yours"),
-			append(slices.Clone(planRetired), "so the tester runs that head"),
 		},
 		{
 			"core/planner.md",
@@ -921,10 +923,9 @@ func TestTheSentencesTheReadersOfTheNewestHeadShowedFalseSayWhatTheDaemonDoes(t 
 // (TestTheMergeForwardPartsReadTheTasksOwnSteps pins that sentence now);
 // the architect accepts no head whose code it reads red, which a re-run of a flaky check is not;
 // only the implementer fixes a defect, and the other roles send it to the implementer; a
-// production-check look comes to the implementer as a task that names no phase; the completion
-// reads the handoff's `head`; and nothing refuses a plan handoff without `requiredSkills` (no code
-// reads that field). Each part is read alone, by its name. This shows the text is loaded, never
-// that an agent follows it.
+// production-check look comes to the implementer as a task that names no phase; and the
+// completion reads the handoff's `head`. Each part is read alone, by its name. This shows the text
+// is loaded, never that an agent follows it.
 func TestTheSentencesTheFifthRoundsReadersShowedFalseSayWhatTheDaemonDoes(t *testing.T) {
 	for _, tc := range []struct {
 		part       string
@@ -952,11 +953,6 @@ func TestTheSentencesTheFifthRoundsReadersShowedFalseSayWhatTheDaemonDoes(t *tes
 			"roles/mechanics/headless.md", func(t *testing.T) string { return rolePart(t, "mechanics/headless.md") },
 			[]string{"the implementer fixes it, and any other role sends it to the implementer with its evidence"},
 			[]string{"Fix a clear defect in code this tree touches or depends on in this tree's own pull request"},
-		},
-		{
-			"roles/core/planner.md", func(t *testing.T) string { return rolePart(t, "core/planner.md") },
-			[]string{"nothing refuses a handoff that leaves one out, so check them before you record it"},
-			[]string{"the plan handoff is refused otherwise"},
 		},
 	} {
 		t.Run(tc.part, func(t *testing.T) {
