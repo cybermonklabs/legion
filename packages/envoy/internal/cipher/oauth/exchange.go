@@ -625,13 +625,7 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 	committed = true
 	logSessionTaken(session, taken, fixed)
 	if placeholderTrade {
-		// The placeholder's answer carries the no-store headers of a token's answer (RFC 6749
-		// Section 5.1), which the library writes only for an answer it built.
-		w.Header().Set("Content-Type", "application/json;charset=UTF-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Pragma", "no-cache")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(placeholderAnswer)
+		writeOAuthJSON(w, http.StatusOK, placeholderAnswer)
 		return
 	}
 	if credentialID != "" {

@@ -61,7 +61,8 @@ func (p *Provider) approveGrantLifetime() time.Duration {
 // claims, the person and the project scope person - less any projects, with the scope approve
 // alone, the sign-in's credential, which ends it when revoked, and the capability's entry digest.
 // Nobody approves it: the person's sign-in is its authority. It sets the session's access-token
-// expiry to the grant's end, which the claim holds the session name until. The body is the
+// expiry to the grant's end, which the claim holds the session name oauthstore.SessionRetention
+// past (claimSession). The body is the
 // placeholder as access_token, its type as issued_token_type, the token_type N_A of a token that
 // is no access token (RFC 8693 Section 2.2.1), the seconds the grant lasts, the grant's id and the
 // proxy release a session runs with. The library mints nothing, and no approve-capable token ever
@@ -86,8 +87,8 @@ func (p *Provider) grantApprove(ctx context.Context, session *oauthstore.Exchang
 	if err != nil {
 		return nil, oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
-	// The session name is held until the grant's end, as a token's claim holds it until the
-	// token's end (claimSession reads the session's access-token expiry).
+	// The session name is held oauthstore.SessionRetention past the grant's end, as a token's
+	// claim holds it past the token's end (claimSession reads the session's access-token expiry).
 	session.SetExpiresAt(oauth2.AccessToken, expires)
 	return map[string]any{
 		"access_token":         held,

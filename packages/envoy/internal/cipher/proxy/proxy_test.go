@@ -1255,6 +1255,58 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 	}
 }
 
+// TestAnEndedStoredGrantsValuesAreDropped: a grant released from a stored secret ends at the end
+// its connection carries, as a minted capability's does, and nothing extends it, so the read that
+// adds a new grant's entry drops the entry of a stored grant whose end the pod's clock has reached,
+// and keeps the live one's (TestAnEndedMintedGrantsValuesAreDropped is the minted half).
+func TestAnEndedStoredGrantsValuesAreDropped(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)}
+	r := newRig(t, Options{Now: clock.read})
+	type storedGrant struct {
+		id, placeholder string
+		ends            time.Time
+	}
+	grants := []storedGrant{
+		{"grant-00000011", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789cd", clock.read().Add(15 * time.Minute)},
+		{"grant-00000012", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789ef", clock.read().Add(time.Hour)},
+	}
+	for _, g := range grants {
+		connection := testConnection()
+		connection.GrantID, connection.Expires = g.id, &g.ends
+		connection.Names = map[string]requests.AirlockGrantName{workerName: {Slots: map[string]string{requests.SlotValue: g.placeholder}}}
+		r.grants.setConnection(g.placeholder, connection)
+		r.grants.setValues(g.id, storedValues(workerName, workerValue))
+	}
+	call := func(g storedGrant) {
+		t.Helper()
+		answer, body := r.get(r.client(g.placeholder), "https://"+boundHost+"/v1/call", "Authorization", "Bearer "+g.placeholder)
+		if answer.StatusCode != http.StatusOK {
+			t.Fatalf("the call of grant %s = %d %s, want 200", g.id, answer.StatusCode, body)
+		}
+	}
+	holds := func(g storedGrant) bool {
+		r.proxy.valuesMu.Lock()
+		defer r.proxy.valuesMu.Unlock()
+		_, held := r.proxy.values[g.id]
+		return held
+	}
+	first, second := grants[0], grants[1]
+
+	call(first)
+	if !holds(first) {
+		t.Fatalf("the pod holds no values of grant %s after its call; the row cannot see a drop", first.id)
+	}
+	clock.set(first.ends)
+	r.grants.refuseConnection(first.placeholder, requests.ErrGrantNotLive)
+	call(second)
+	if holds(first) {
+		t.Errorf("the pod still holds the values of stored grant %s, which ended at %s, with the clock at %s", first.id, first.ends, clock.read())
+	}
+	if !holds(second) {
+		t.Errorf("the pod holds no values of grant %s, which has not ended", second.id)
+	}
+}
+
 // TestDropNameDropsOneNameAndKeepsTheGrantsOthers: a reread says one secret has a new version,
 // and says nothing about the rest of a grant, so the drop is of that name alone - and the next
 // request reads the grant's values again, which is what puts the new version in front of it.

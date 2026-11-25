@@ -64,9 +64,9 @@ type grantValues struct {
 	// names, which is what makes the next request read again - a read that began before a
 	// drop landed included, since such an answer is its own request's and no later one's.
 	drops, keptAt uint64
-	// ends is the end of a minted capability's grant, its connection's Expires, and zero for
-	// every other grant. It is set when the entry is made and never after, and read under the
-	// Server's valuesMu, which is what valuesFor drops an ended grant's entry under.
+	// ends is the grant's end, its connection's Expires, and zero for a grant that carries none.
+	// It is set when the entry is made and never after, since nothing extends a grant's end, and
+	// read under the Server's valuesMu, which is what valuesFor drops an ended grant's entry under.
 	ends time.Time
 }
 
@@ -149,18 +149,16 @@ func (g *grantValues) drop(name string) {
 // names, a policy version that has moved since the read, or a minted value coming within
 // mintAgainBefore of its expiry.
 //
-// The map holds one entry per grant this pod serves. A grant released from a stored secret keeps
-// its entry until the pod is rolled, which every deployment and every change to the profiles file
-// does: its values are a handful of strings, and what ends its reach is the connection check,
-// which refuses a placeholder whose grant has ended whatever this map still holds. A minted
-// capability's grants come one per use - the approve capability's one per review - and each ends
-// at the end it was made with (grantValues.ends), so the read that adds a grant's entry first
-// drops the entry of every minted grant whose end this pod's clock has reached. The map then holds
-// the minted grants still live and those that ended since this pod last added a grant, never one
-// per use since the pod started. The drop reads nothing: a later request of a grant it dropped is
-// refused by the connection check, and one in flight keeps the values it was handed. A pod whose
-// clock runs ahead of the database's drops an entry a little early, which costs the grant's next
-// request one more read, a token minted again.
+// The map holds one entry per grant this pod serves, and each grant ends at the end its connection
+// carries (grantValues.ends), which nothing extends: a grant released from a stored secret ends at
+// its grant's expiry, and a minted capability's, which come one per use - the approve capability's
+// one per review - at the end it was made with. So the read that adds a grant's entry first drops
+// the entry of every grant whose end this pod's clock has reached, and the map holds the grants
+// still live and those that ended since this pod last added a grant, never one per use since the
+// pod started. The drop reads nothing: a later request of a grant it dropped is refused by the
+// connection check, and one in flight keeps the values it was handed. A pod whose clock runs ahead
+// of the database's drops an entry a little early, which costs the grant's next request one more
+// read.
 func (s *Server) valuesFor(ctx context.Context, grant requests.AirlockConnection) (map[string]requests.AirlockSecret, error) {
 	// Read before the map's lock is taken, since a clock that panics would otherwise leave that
 	// lock held, and every later request of every grant behind it.
@@ -174,7 +172,7 @@ func (s *Server) valuesFor(ctx context.Context, grant requests.AirlockConnection
 			}
 		}
 		held = &grantValues{}
-		if grant.Minted && grant.Expires != nil {
+		if grant.Expires != nil {
 			held.ends = *grant.Expires
 		}
 		s.values[grant.GrantID] = held
