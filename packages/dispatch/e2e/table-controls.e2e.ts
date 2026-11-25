@@ -12206,3 +12206,124 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
     landings.map((landing) => landing.text).join("; ")
   ).toEqual(landings.map(() => true));
 });
+
+// INFRA-3135, round 28 (the tester's), by the architect's rulings of 2026-11-25 05:1xZ (the rule
+// reads the checkbox, the control that takes the focus, and not its row), 05:3xZ (every landing of
+// the selection bar's return takes the least scroll to its nearest edge, and a landing partly in
+// sight is shown whole) and 20:3xZ, which counts this row at 390x664, a size the spec names.
+// Measured at 5a444912 in builds Jobs infra-3135-f8-h3-wwf5b and
+// infra-3135-infra-3135-probe28c-cqhhk and at 4f1ad776 in infra-3135-f8-b3-4prbk, in Chromium and
+// WebKit at 390x664 (Firefox lands whole): on the project List of an epic's ninety issues, with
+// the table's box standing 60 px below the window's top, the two rows marked last near the end of
+// the list and the box scrolled back to its top, so neither is drawn, the box ends at y 494 while
+// the selection bar stands, and CORE-4's checkbox stands at 483 to 496, cut by 2 px at that edge.
+// Take out of epic lands the focus on that checkbox and scrolls the box 3 px, the least scroll that
+// shows it whole in the box as it stood. In the frame the bar goes, the box's bottom edge moves up
+// 20 px, to 474, while the rows move by the 3 px scroll alone, and the checkbox, now at 480 to 493, is left
+// wholly below the box's edge. The landing measures the box before the bar's going has changed it,
+// and does not read the checkbox again once it has.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): ninety issues of an epic seeded, and one Take out of epic read once the box settles.
+test("at 390 Take out of epic with the rows marked last far below the view and not drawn lands the focus on a checkbox wholly in the box's sight, or on the table, by no more than the least scroll @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 664, width: 390 });
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Table epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  for (let index = 0; index < 90; index++) {
+    await createIssue({ parent: epic.key, project: "CORE", title: `Epic row ${index}` });
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const box = page.getByTestId("issues-table-scroll");
+  await page.goto(`/projects/CORE/issues?f.epic=${encodeURIComponent(`${epic.key} · Table epic`)}`);
+  await expect.poll(() => page.locator("[data-issue-row]").count()).toBeGreaterThanOrEqual(12);
+  // The box's top 60 px below the window's top, and the box scrolled to its end, where it draws
+  // the rows near the end of the list.
+  await box.evaluate((node) => {
+    window.scrollBy(0, node.getBoundingClientRect().top - 60);
+    node.scrollTop = node.scrollHeight;
+  });
+  await settledScrollTop(box);
+  await settledScrollTop(page);
+  await nextFrames(page);
+  const order = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("[data-issue-row]")]
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
+      .map((row) => row.getAttribute("data-issue-row") ?? "")
+  );
+  const upper = order[order.length - 4] ?? "";
+  const lower = order[order.length - 3] ?? "";
+  // The lower row first, so the row marked last is the upper one.
+  for (const key of [lower, upper]) {
+    const mark = page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+    await mark.focus();
+    await page.keyboard.press("Space");
+    await expect(mark).toBeChecked();
+  }
+  await expect(bar).toContainText("2 selected");
+  await box.evaluate((node) => {
+    node.scrollTop = 0;
+  });
+  await settledScrollTop(box);
+  await settledScrollTop(page);
+  await nextFrames(page);
+  await expect(page.locator(`[data-issue-row="${upper}"]`)).toHaveCount(0);
+  /** The part of the window the box shows its rows in, below its sticky head; the box's and the
+   *  window's scroll; and the rect of each drawn row's checkbox, by the row's key. */
+  const takeOutView = () =>
+    page.evaluate(() => {
+      const node = document.querySelector<HTMLElement>('[data-testid="issues-table-scroll"]');
+      const frame = node?.getBoundingClientRect();
+      const head = node?.querySelector("thead")?.getBoundingClientRect();
+      const marks: Record<string, { bottom: number; top: number }> = {};
+      for (const row of document.querySelectorAll<HTMLElement>("[data-issue-row]")) {
+        const own = row.querySelector('input[type="checkbox"]')?.getBoundingClientRect();
+        if (own !== undefined)
+          marks[row.getAttribute("data-issue-row") ?? ""] = { bottom: own.bottom, top: own.top };
+      }
+      const focused = document.activeElement;
+      return {
+        bottom: Math.min(window.innerHeight, frame?.bottom ?? 0),
+        boxScroll: node?.scrollTop ?? 0,
+        focusedRow:
+          focused instanceof HTMLInputElement && focused.type === "checkbox"
+            ? (focused.closest("[data-issue-row]")?.getAttribute("data-issue-row") ?? null)
+            : null,
+        onTable: focused !== null && focused === node?.querySelector("table"),
+        focusedName: focused?.getAttribute("aria-label") ?? focused?.tagName ?? "nothing",
+        marks,
+        top: Math.max(0, head?.bottom ?? frame?.top ?? 0),
+        windowScroll: window.scrollY,
+      };
+    });
+  const before = await takeOutView();
+  await bar.getByRole("button", { exact: true, name: "Take out of epic" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(bar).toHaveCount(0, { timeout: 15_000 });
+  await settledScrollTop(box);
+  await settledScrollTop(page);
+  await nextFrames(page);
+  // One read is the answer: the bar has gone and the box and the window have held still, so
+  // nothing moves the focus or the rows after this.
+  const now = await takeOutView();
+  const scrolled =
+    Math.abs(now.boxScroll - before.boxScroll) + Math.abs(now.windowScroll - before.windowScroll);
+  const landed = now.focusedRow === null ? undefined : now.marks[now.focusedRow];
+  const was = now.focusedRow === null ? undefined : before.marks[now.focusedRow];
+  // The least scroll that shows the landed checkbox whole, from where it stood before the press.
+  const least =
+    was === undefined ? 0 : Math.max(0, was.bottom - before.bottom, before.top - was.top);
+  const where =
+    `the focus is on ${now.focusedName}` +
+    (landed === undefined
+      ? ""
+      : ` at top ${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)}, in the box's sight from ${Math.round(now.top)} to ${Math.round(now.bottom)}`) +
+    `, and the box and the window scrolled ${Math.round(scrolled)} px where the least is ${Math.round(least)} px`;
+  const whole =
+    landed !== undefined && landed.top >= now.top - 1 && landed.bottom <= now.bottom + 1;
+  expect(now.focusedRow !== null || now.onTable, where).toBe(true);
+  expect(now.onTable || (whole && scrolled <= least + 1), where).toBe(true);
+});
