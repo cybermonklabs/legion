@@ -29,7 +29,7 @@ Every role reads a merge of the base the same way:
 - `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
 - A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.
 
-A reviewer reads, beside the merge, the change's own commits since the head `skill://legion-worker/references/merge-gate.md#a-merge-of-the-base-is-reviewed-for-what-it-changed` names.
+For a reviewer, the change's own commits to read beside the merge are those since the head your last verdict named, as your role prompt says.
 
 ## The daemon's ask
 

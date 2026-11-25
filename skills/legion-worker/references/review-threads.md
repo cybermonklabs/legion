@@ -21,7 +21,7 @@ At retro it answers the threads it finds; a run still going may open more, so re
 
 - The implementer records each thread in the PR body's `Threads` section, stamped with the head it just pushed, or at retro with the head retro found.
 
-- The reviewer lists the threads, replies, and names the threads it accepted to the implementer by node id (on the implementer's role topic, or in the body of its `COMMENT` review, which carries its findings and decides nothing; its verdict goes to the daemon):
+- The reviewer lists the threads, replies, and names the threads it accepted to the implementer by node id (on the implementer's role topic, or in its review body):
 
   ```bash
   gh api graphql --paginate -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}}' -F o=<owner> -F r=<repo> -F n=<number>
@@ -33,5 +33,5 @@ At retro it answers the threads it finds; a run still going may open more, so re
 
 - A reviewer who disagrees with a resolution replies and unresolves it; a finding it cannot accept becomes its own, and its verdict is `changes`.
 
-- The reviewer verifies thread state in `gh api graphql`, never from the `Threads` section, and its verdict never waits on a resolution.
+- The reviewer verifies thread state in `gh api graphql`, never from the `Threads` section, and its approval never waits on a resolution.
   The merger resolves nothing.

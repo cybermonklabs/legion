@@ -85,7 +85,7 @@ const MAIN_GUIDE_EXEMPTIONS: readonly Entry[] = [
   },
   {
     file: "skills/legion-worker/references/merge-gate.md",
-    has: "`approve` is gated by the issue's own `before_merge` checks, as your role prompt says",
+    has: "Approval is gated by the issue's own `before_merge` checks, as your role prompt says",
     keep: "Owned by the guide pull request.",
   },
   {

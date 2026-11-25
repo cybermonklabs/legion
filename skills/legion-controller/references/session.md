@@ -20,9 +20,9 @@ The daemon runs you in a pod. When the pod dies, it relaunches it and resumes th
 
 ## `gh`
 
-`gh` acts as the bot account of the one App every Legion role acts as (`gh api graphql -f query='{viewer{login}}'` names it). It reads with the token of the owner a command names (`-R owner/repo`, `repos/owner/repo`, a GitHub URL), so always name the repository.
+`gh` acts as the one App's bot account (`gh api graphql -f query='{viewer{login}}'` names it). It reads with the token of the owner a command names (`-R owner/repo`, `repos/owner/repo`, a GitHub URL), so always name the repository.
 
-End every pull-request comment or review you post with `<!-- legion: {"session":"<session-id>","phase":"controller"} -->`: every role posts as that one account, so the footer says which session wrote it. No review you post decides a round.
+End every pull-request comment or review you post with `<!-- legion: {"session":"<session-id>","phase":"controller"} -->`.
 
 ## Reading a pull request
 

@@ -30,7 +30,7 @@ the body written earlier may not cover every path the pull request now changes, 
    leave every other line byte for byte, the `Checks` block included, except a no-result line, which you replace as `skill://legion-worker/references/ci-checks.md` says.
 
 4. Write it back.
-   A body edit changes no commit, so no result, verdict or `legion-verdict` at the head moves:
+   A body edit changes no commit, so no result or approval at the head moves:
 
    ```bash
    cd -- "$LEGION_WORKSPACE" && gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F body=@"$dir/body.md"

@@ -36,7 +36,7 @@ The table lists the steps in the order of the default steps:
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
 | `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
 | `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: you, or a subagent you dispatch, then run and record them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
-| `reviewer` | review | `reviewing` | No reviewer's verdict. A plan with no `tester`, `reviewer` or `acceptance:owner` step has no reader of any commit, so where the daemon writes `legion-verdict` it never reads `success` on that plan's head. |
+| `reviewer` | review | `reviewing` | No review. A plan with no `tester`, `reviewer` or `acceptance:owner` step has no reader of any commit, so where the daemon writes `legion-verdict` it never reads `success` on that plan's head. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
 
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.

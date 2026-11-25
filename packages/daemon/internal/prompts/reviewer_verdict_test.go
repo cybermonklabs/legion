@@ -79,7 +79,7 @@ func TestTheSideReviewerSendsItsVerdictToTheControllerTopicOfItsAddressing(t *te
 // This shows the text is there, never that an architect follows it.
 func TestTheAcceptanceSkillNamesTheOwnerAmongTheAgentsAskedPastReview(t *testing.T) {
 	part := skillPart(t, filepath.Join("legion-architect", "references", "acceptance.md"), "A conflicting head")
-	const asked = "has the daemon ask the agent of each review step that has passed for its verdict on the new head, which it sends with `review_verdict`: the reviewer, and you once your step `acceptance:owner` has passed."
+	const asked = "the daemon asks the reviewer to read the merge and send `approve` or `changes` on the new head with `review_verdict`, as it asks you once your step `acceptance:owner` has passed."
 	if !strings.Contains(part, asked) {
 		t.Errorf("acceptance.md's part on a conflicting head omits %q: %q", asked, part)
 	}

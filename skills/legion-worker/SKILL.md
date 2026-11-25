@@ -88,13 +88,15 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
-  The default task has tester evidence, the reviewer's `approve` and architect acceptance.
+  The default task has tester evidence, reviewer approval and architect acceptance.
   With no tester step, the implementer's evidence serves;
-  with no reviewer step, no reviewer's verdict is awaited; without `acceptance:owner`, the last step starts retro.
+  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 
-- End every pull-request comment or review you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
-  A Dispatch comment or message carries no footer: Dispatch records the session that wrote it.
+- End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
+
+- A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
+  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
   a set variable outranks the gh directory the daemon refreshes.
@@ -117,7 +119,8 @@ and the production check after the close (`skill://legion-worker/references/merg
 
 - A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
 
-- Review, verdict, merge, production check: `skill://legion-worker/references/merge-gate.md`.
+- Review, approval, merge, production check: `skill://legion-worker/references/merge-gate.md`.
+
 - Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
 
 - A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit:

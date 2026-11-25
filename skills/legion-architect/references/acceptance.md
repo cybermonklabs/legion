@@ -18,7 +18,7 @@ Read, against the goal, every check and every requirement:
 
 2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
 
-3. where a reviewer step comes before your acceptance, the reviewer's verdict: the `decision` its `review` handoff records, `approved` for its `approve`, at the head that handoff names (`dispatch handoff-read --issue <issue> --phase review`), and, for a verdict past review, the reviewer's message on your role topic; never a review on GitHub, which decides nothing; and each claim of its prose, against the code at that head;
+3. where a reviewer step comes before your acceptance, the reviewer's verdict: the `decision` its `review` handoff records at the head that handoff names (`dispatch handoff-read --issue <issue> --phase review`), or past review its message on your role topic, never a review on GitHub, and each claim of its prose, against the code at that head;
 
 4. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed is accepted as any other (*A conflicting head*, below).
 
@@ -68,7 +68,8 @@ When the merger reports:
 - a merge GitHub refuses for a repository setting or an App permission:
   open a `dispatch ask` naming the pull request, the head and GitHub's refusal, and never bypass a rule;
 
-- a required approving review, which no step gives: open a `dispatch ask` naming the base rule;
+- a required approving review that no reviewer step gave: open a `dispatch ask` naming the base rule.
+  Do not wait for a reviewer phase the task does not have;
 
 - a squash into a base other than the default branch:
   tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward.
@@ -78,15 +79,14 @@ When the merger reports:
 
 A head that conflicts with its base keeps the issue in its phase.
 Until the task's last step has run, the daemon asks the implementer to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
-A conflict it does not act on yet is recorded: the task's steps go on at that head, and a reviewer step's `approve` of it ends its review round.
+A conflict it does not act on yet is recorded: the task's steps go on at that head, and a reviewer step's approval of it ends its review round.
 Once every step has run, in `retro` or in `accepting` with no step after yours, the conflict waits, so accept the head as any other; once the issue enters `merging` the daemon asks the merger to merge the base forward,
 and a check the base's newer code breaks is the merger's to fix in that merge too.
 When it asks, the daemon tells you once by `checks-red`, naming the phase the issue stays in, the role asked, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
-Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge; a merge forward that lands then, and any other push once a review step passed, has the daemon ask the agent of each review step that has passed for its verdict on the new head, which it sends with `review_verdict`: the reviewer, and you once your step `acceptance:owner` has passed.
-That verdict writes no handoff and sends you no notice: in `accepting`, wait before `sign_off` until the reviewer tells you on your role topic that it sent `approve` on the new head, and send the issue back with `request_backward_move` when its verdict is `changes`.
-The merger merges the new head only once `legion-verdict` there is `success`.
+Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge and send `approve` or `changes` on the new head with `review_verdict`, as it asks you once your step `acceptance:owner` has passed.
+In `accepting`, wait before `sign_off` until the reviewer tells you on your role topic that it sent that `approve`, and send the issue back with `request_backward_move` when the reviewer requests changes.
 A reviewer step after yours reviews the new head when it runs.
 A task with no reviewer step has no review to await.
 

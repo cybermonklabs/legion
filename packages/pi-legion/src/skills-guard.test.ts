@@ -407,7 +407,7 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
     "Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict"
   );
   expect(mergeGate).toContain(
-    "that half of the round has no review: tell the architect, send no `approve`, and wait with a `WAITING` line naming what you wait on until it answers"
+    "that half of the round has no review: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on until it answers"
   );
 });
 
@@ -801,7 +801,7 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
       /no reviewer step[^.;]*implementer lists unresolved bot threads[^.;]*retro/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
-      /no reviewer step[^.;]*no reviewer's verdict is awaited/,
+      /no reviewer step[^.;]*no Legion approval/,
       /without `acceptance:owner`[^.;]*last step starts retro/,
     ]),
   ]).toEqual([]);

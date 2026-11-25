@@ -446,7 +446,10 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   type `COMMENT`, which decides nothing. The daemon refuses a completion of reviewing with no
   verdict (`REVIEWER_VERDICT_REQUIRED`) or with no head (`VERDICT_COMMIT_REQUIRED`), and takes the
   verdict only from the claim that runs the step (`VERDICT_CALLER_FORBIDDEN`). Every role acts as
-  the one App, the pull request's author, so no review written with its token decides anything. A
+  the one App, the pull request's author, so no review written with its token decides anything,
+  and each comment or review a role posts on a pull request ends with a footer,
+  `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`, that names the session and the
+  phase that wrote it. A
   person's request for changes, delivered by its webhook from an account of type `User` with write
   access to the repository, refuses the head it names, and while the reviewer's round is open it
   ends the round; on a head a Legion issue owns, that person's approval of the head lifts their
@@ -492,8 +495,10 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   branch's own required checks, which Legion reads only to decide whether a conflicting head needs
   its merge forward now (below), and never re-implements. The reviewer reads the
   head's checks on GitHub itself before it sends `approve`, and the architect before it accepts; those
-  reads are the ones that decide anything. Two settlements of the same head that name the same
-  checks tell nobody twice, and a lingering tree is told nothing at all.
+  reads are the ones that decide anything. The reviewer leaves `legion-verdict` out of the required
+  checks it reads and never waits for it: the daemon writes that check from the review steps'
+  verdicts, so it reads `success` only after the reviewer's `approve`. Two settlements of the same
+  head that name the same checks tell nobody twice, and a lingering tree is told nothing at all.
 - **A head that conflicts with its base** moves no phase. GitHub computes no merge ref for such a
   head and runs no check on it. The daemon reads the pull request's mergeability twice, at least a
   minute apart, since a read made while GitHub is still computing can be stale. It acts only on a
@@ -519,7 +524,9 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   phase the issue has already left is recorded as before. Past review, the daemon asks the agent of
   each review step that has passed, the reviewer and the owner at `acceptance:owner`, for its
   verdict on the new head, which it sends with the `legion` tool's `review_verdict`; it asks the
-  same on every other push past review. The reviewer reads a merge of the base with
+  same on every other push past review. That verdict writes no handoff and sends the architect no
+  notice, so the reviewer tells the architect and the phase's worker on their role topics what it
+  decided. The reviewer reads a merge of the base with
   `git show --remerge-diff`. The merger merges a head that moved past review only once
   `legion-verdict` at that head is `success`. A reviewer step still to come reviews the new head
   when it runs. A task with no review step that has passed has none to ask, and its merger goes on
@@ -548,6 +555,16 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   unnoticed.
 - **Review threads** close one by one, and only once the thread's opener (or, for a thread a bot
   opened, Legion's reviewer, or the implementer on a task with no reviewer step) accepts the reply.
+  Every role acts as the one App, the pull request's author, so GitHub lets any role resolve a
+  thread; the implementer resolves each one, and no other role does.
+- **Side reviews.** On a repository whose verdict entry sets `side_reviews`, the controller can
+  name a running reviewer on that repository, from a tree that did not write the pull request, as
+  side reviewer of a pull request no Legion tree opened, at its head
+  (`POST /legion/v1/pull-request-reviewer`). The reviewer posts a `COMMENT` review and sends
+  `approve` or `changes` on Envoy to the controller, which relays it
+  (`POST /legion/v1/pull-request-verdict`) only when the message's Envoy sender is the session it
+  named for that pull request and head; the daemon refuses any other session
+  (`VERDICT_REVIEWER_NOT_NAMED`). The relayed verdict is the verdict on that head.
 - One limit flags a loop: after `review_round_cap` counted rounds (three by default) the daemon
   posts a message on the issue and tells the architect; it stops no worker.
   It says so once for each value the cap holds, not on every round past it: a cap raised in
@@ -664,7 +681,8 @@ check at all — a child's close retires every claim of the child and releases i
 root's close suspends every claim of its tree for the linger, whose end retires them. The loader
 refuses any other value, naming the key and the value it read. The check's record carries the
 role, written when the check opened, so changing the setting leaves an open check with the role
-it started under, and only that role may report on it. Each look of the check reaches the deploy
+it started under, and only that role may report on it. A pass on staging is no production pass,
+since staging may lack resources production runs. Each look of the check reaches the deploy
 as your
 deployment instructions say (the merge commit published to your deploy role, with no reply
 awaited), reads whether production carries the merge, and ends one of three ways: `pass`, once

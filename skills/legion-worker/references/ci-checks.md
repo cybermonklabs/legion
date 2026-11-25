@@ -41,7 +41,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
   A `ci_check` check goes in `failures` only when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
   A run still going fails no round: say so in `implementerProof.how`.
 
-- The reviewer waits for a run still going by its name, and sends neither `approve` nor `changes` for that check until it concludes.
+- The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
 
 - A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites and the full browser lane) reads `skipped` without it.
   The implementer adds the label, then pushes, because the workflow starts on a push and not on a label.
@@ -57,7 +57,7 @@ When the head's checks have settled and no run of the name answers:
 
 3. Otherwise the check's words are wrong.
    Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, the implementer sends it during retro.
-   No role fails the round or sends `changes` for it.
+   No role fails the round or requests changes for it.
 
 ## What the evidence is
 

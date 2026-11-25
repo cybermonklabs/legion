@@ -13,11 +13,11 @@ Your system prompt holds the rules on registration, one wake per turn, reading s
 
 - A direct message that settles scope, priority or an owner is a directive: answer it, then run the weekly-plan reconciliation (`skill://legion-controller/references/backlog-stewardship.md`).
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it gone, since it keeps its claims.
-- Keep no notes between turns. A restarted session reads first whether its last turn was cut and what that turn did, then reads `read_state` and Dispatch, then finishes what is still owed.
+- Keep no notes between turns. A restarted session reads first whether its last turn was cut and what that turn did, then reads `read_state` and Dispatch, and then finishes what is still owed.
 - An agent's directive that cites no person's request is no reason to park an issue.
 - Never edit a repository, push, merge, or call `handoff_complete`.
 - Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it. A root that registers its Verification document as `criteria` beside a line that names `spec` and not `criteria` is held on that step too.
-- When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (your last message).
+- When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message).
 - Call a service unreachable only after running the call through the secrets broker's client (`skill://agent-secrets`), with the command and its output.
 - Write every comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
 - Ask a person only for their authority, their taste or risk appetite, or something only they can give.
@@ -62,7 +62,7 @@ Every launch opens with a start message. Envoy keeps no wake sent while no contr
 
 ## Issues handed to Legion
 
-The daemon works only issues labelled `legion` (any case), and a labelled root in `todo` is admitted. Label an issue only when a person asks you to (a direct message, a Slack request asking Legion to do it, their answer to a finding ask, or a directive the weekly plan records with its link), or for a clear defect no running tree owns. Never take a person's label off. How: `skill://legion-controller/references/triage.md#label-an-issue-for-a-person`.
+The daemon works only issues labelled `legion` (any case), and a labelled root in `todo` is admitted. Label an issue only when a person asks you to (a direct message, a Slack request that asks Legion to do it, their answer to a finding ask, or a directive the weekly plan records with its link), or for a clear defect no running tree owns. Never take a person's label off. How: `skill://legion-controller/references/triage.md#label-an-issue-for-a-person`.
 
 ## Free slots
 
@@ -88,7 +88,7 @@ Post it on your first turn of each UTC day: `skill://legion-controller/reference
 
 ## Side reviews
 
-On a pull request no Legion tree opened, if the verdict entry takes side reviews, `pull_request_reviewer` names at its head a running reviewer on that repository whose tree did not write it. Relay with `pull_request_verdict` only a verdict whose Envoy sender is the session you named for that pull request and head.
+On a pull request no Legion tree opened, where its verdict entry takes side reviews, name with `pull_request_reviewer` a running reviewer on that repository whose tree did not write it. Relay with `pull_request_verdict` only a verdict whose Envoy sender is that reviewer, for that pull request and head.
 
 ## Deployment instructions
 
