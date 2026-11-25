@@ -148,7 +148,8 @@ type State struct {
 	// result): its record's id, times and bound, who ended it, and its result as the release last
 	// recorded it, the same body its own `GET /legion/v1/operator/project/release` answers.
 	// Absent while no release of the project was ever recorded, and from a body served a caller
-	// below projectReleaseContract (shaping.go's withoutProjectRelease).
+	// below the project release entry's number (entryNumber(projectReleaseContract), shaping.go's
+	// withoutProjectRelease).
 	ProjectRelease *ProjectReleaseResponse `json:"projectRelease,omitempty"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's

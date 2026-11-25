@@ -19,11 +19,11 @@ func init() {
 	registerEntryTestRows(entryTestRows{
 		entry: projectReleaseContract,
 		carry: withGoldenProjectRelease,
-		states: func(t *testing.T) []State {
-			bootEnded := populatedState(t)
-			bootEnded.ProjectRelease = releaseCarryingEveryDeclaredValue(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC),
-				[]claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger})
-			return []State{withGoldenProjectRelease(populatedState(t)), bootEnded}
+		// One body carries the whole release, every key path of `projectRelease` and every value
+		// of its six enumerated fields, and no issue: the census serves each issue of a body again
+		// through the record route at every contract, and the release is no issue's.
+		states: func(*testing.T) []State {
+			return []State{{ProjectRelease: releaseCarryingEveryDeclaredValue()}}
 		},
 		answers: func(*testing.T) map[AnswerID]answerFixture {
 			return map[AnswerID]answerFixture{
@@ -48,50 +48,47 @@ func projectReleaseRefusalFixture() PauseFailure {
 			Claims: []claim.Token{"legion-legion-legion-208-implementer"}}}})
 }
 
-// The same daemon serves the full release from this entry on and omits it below the entry.
-// Compare against the resolved number, which can be anywhere among the build's entries.
+// The same daemon serves the full release from this entry on and omits it below the entry, and
+// its log names `projectRelease` exactly when it omits it. Compare against the resolved number,
+// which can be anywhere among the build's entries. Every other line is another band's, read from
+// the table (narrowingsExpected), so a band a later entry adds is counted here and fails nothing.
 func TestProjectReleaseStateContractBoundary(t *testing.T) {
-	state := withGoldenProjectRelease(populatedState(t))
+	state := carriedState(t)
 	at := entryNumber(projectReleaseContract)
 	wantRelease, err := json.Marshal(state.ProjectRelease)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name     string
-		contract int
-		dropped  []string
+		name   string
+		stated int
 	}{
-		{"below cause times", causeTimesContract - 1, []string{"the claim views' lastDeathAt and lastStartFailureAt", "dispatchCredential", "projectRelease"}},
-		{"at the Dispatch credential", dispatchCredentialContract, []string{"projectRelease"}},
-		{"just below the entry", at - 1, []string{"projectRelease"}},
-		{"at the entry", at, nil},
-		{"current caller with no header or pod", 0, nil},
+		{"below cause times", causeTimesContract - 1},
+		{"at the Dispatch credential", dispatchCredentialContract},
+		{"just below the entry", at - 1},
+		{"at the entry", at},
+		{"current caller with no header or pod", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body, lines := stateNarrowedStating(t, state, "192.0.2.1:41000", nil, tc.contract)
-			var served map[string]json.RawMessage
-			if err := json.Unmarshal(body, &served); err != nil {
-				t.Fatal(err)
+			body, lines := stateNarrowedStating(t, state, "192.0.2.1:41000", nil, tc.stated)
+			// A caller that states no contract from no pod is served this daemon's own.
+			contract := tc.stated
+			if contract == 0 {
+				contract = DaemonAPIVersion()
 			}
-			if tc.contract != 0 && tc.contract < at {
-				if got, exists := served["projectRelease"]; exists {
-					t.Errorf("caller at %d was served projectRelease %s", tc.contract, got)
-				}
-			} else if got := served["projectRelease"]; !bytes.Equal(got, wantRelease) {
-				t.Errorf("caller at %d was served projectRelease %s, want %s", tc.contract, got, wantRelease)
+			below := contract < at
+			served, carried := keysOf(t, body)["projectRelease"]
+			if below && carried {
+				t.Errorf("caller at %d was served projectRelease %s", contract, served)
 			}
-			if tc.contract >= repositoriesLiveContract {
-				if keys, block := repositoriesServed(t, body); !slices.Contains(keys, "live") {
-					t.Errorf("caller at %d was served repositories %s, want the live block", tc.contract, block)
-				}
+			if !below && !bytes.Equal(served, wantRelease) {
+				t.Errorf("caller at %d was served projectRelease %s, want %s", contract, served, wantRelease)
 			}
-			wantNarrowings(t, lines, tc.contract, tc.dropped)
-			if tc.contract == at-1 || tc.contract == at {
-				if mark, _ := contractServed(t, body); mark["caller"] != float64(tc.contract) {
-					t.Errorf("caller at %d was served contract mark %v, want caller %d", tc.contract, mark, tc.contract)
-				}
+			said := slices.ContainsFunc(lines, func(line narrowingLine) bool { return line.Dropped == "projectRelease" })
+			if said != below {
+				t.Errorf("caller at %d was written a line dropping projectRelease = %v, want %v: %+v", contract, said, below, lines)
 			}
+			wantNarrowings(t, lines, contract, narrowingsExpected(state, contract))
 		})
 	}
 }
@@ -110,9 +107,14 @@ func TestProjectReleaseRefusalContractBoundary(t *testing.T) {
 	}
 }
 
-// releaseCarryingEveryDeclaredValue supplies all six enumerated fields' values, plus the fields
-// absent on the finished release: endedAt, endedBy and result.failure.
-func releaseCarryingEveryDeclaredValue(at time.Time, roles []claim.Role) *ProjectReleaseResponse {
+// releaseCarryingEveryDeclaredValue is a release that carries every key path of the state's
+// `projectRelease` and every value of its six enumerated fields: the keys of the golden release
+// (goldenProjectRelease), and those absent on that finished release, endedAt, endedBy and
+// result.failure. The values are written here, and not read from the table, as
+// stateCarryingEveryDeclaredValue's are.
+func releaseCarryingEveryDeclaredValue() *ProjectReleaseResponse {
+	at := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	roles := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger}
 	claimRoles := append(slices.Clone(roles), claim.RoleController)
 	ends := []ReleasedClaimEnd{
 		ReleasedClaimEnd(supervise.StateQueued), ReleasedClaimEnd(supervise.StateLaunchUncertain),
@@ -131,10 +133,19 @@ func releaseCarryingEveryDeclaredValue(at time.Time, roles []claim.Role) *Projec
 	claims := make([]ReleasedClaim, 0, len(ends))
 	for i, ended := range ends {
 		role := claimRoles[i%len(claimRoles)]
-		claims = append(claims, ReleasedClaim{Token: claim.Token(fmt.Sprintf("legion-values-values-%d-%s", i+1, role)),
-			Role: role, Ended: ended, BootStarts: ended == ReleasedClaimEnd(supervise.SuspendedByProjectRelease)})
+		line := ReleasedClaim{Token: claim.Token(fmt.Sprintf("legion-values-values-%d-%s", i+1, role)),
+			Role: role, Session: fmt.Sprintf("ses_values_%d", i+1), Ended: ended,
+			BootStarts: ended == ReleasedClaimEnd(supervise.SuspendedByProjectRelease)}
+		if role != claim.RoleController {
+			line.Issue = fmt.Sprintf("VALUES-%d", i+1)
+		}
+		if ended == ReleasedClaimEnd(supervise.StateWorking) {
+			line.Detail = "not stored suspended within the stop timeout of 20s after the later of its stop and the bound"
+		}
+		claims = append(claims, line)
 	}
-	finished, ended := at.Add(31*time.Minute), at.Add(2*time.Hour)
+	answered, finished, ended := at.Add(10*time.Minute), at.Add(31*time.Minute), at.Add(2*time.Hour)
+	lost, changed := 2, true
 	return &ProjectReleaseResponse{
 		ID: 9, StartedAt: at, BoundAt: at.Add(30 * time.Minute), Bound: (30 * time.Minute).String(),
 		FinishedAt: &finished, EndedAt: &ended, EndedBy: store.ProjectReleaseEndedByBoot,
@@ -143,8 +154,12 @@ func releaseCarryingEveryDeclaredValue(at time.Time, roles []claim.Role) *Projec
 				{Name: "legion-values-values-1", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-1", Outcome: ReleaseWaiting, Asked: asked},
 				{Name: "legion-values-values-2", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-2", Outcome: ReleaseDeletedClean},
 				{Name: "legion-values-values-3", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-3", Outcome: ReleaseDeletedUnread},
-				{Name: "legion-values-values-4", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-4", Outcome: ReleaseDeletedLost},
-				{Name: "legion-values-values-5", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-5", Outcome: ReleaseDeletedReadRefused},
+				{Name: "legion-values-values-4", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-4", Outcome: ReleaseDeletedLost,
+					Commits: &lost, WorkingCopyChanged: &changed,
+					Asked: []ReleasedAsk{{Role: claim.RoleImplementer, AnsweredAt: &answered}}},
+				{Name: "legion-values-values-5", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-5", Outcome: ReleaseDeletedReadRefused,
+					Refusal: "Unknown command: read-unpushed", OtherImage: true,
+					Asked: []ReleasedAsk{{Role: claim.RoleTester, Bound: true}}},
 				{Name: "legion-values-controller", Kind: runtime.ProjectSandboxController, Outcome: ReleaseDeleted},
 				{Name: "legion-values-cache-acme-widgets", Kind: runtime.ProjectSandboxCache, Outcome: ReleaseLeft, Reason: "its delete was refused"},
 				{Name: "legion-values-probe", Kind: runtime.ProjectSandboxProbe, Outcome: ReleaseDeleted},

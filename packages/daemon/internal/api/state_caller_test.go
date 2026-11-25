@@ -395,8 +395,8 @@ func withoutRepositoryAppsKey(t *testing.T, body []byte) []byte {
 }
 
 // withoutProjectReleaseKey is a state body with no `projectRelease`, which is what a caller below
-// projectReleaseContract is served of a state (api's withoutProjectRelease). It serves the table
-// below as withoutQuietKeys does.
+// the project release entry's number (entryNumber(projectReleaseContract)) is served of a state
+// (api's withoutProjectRelease). It serves the table below as withoutQuietKeys does.
 func withoutProjectReleaseKey(t *testing.T, body []byte) []byte {
 	t.Helper()
 	var served map[string]any
@@ -742,9 +742,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// served the keys and every older one is not.
 		priority bool
 		// release is whether the caller is served the project's newest project release,
-		// `projectRelease` (projectReleaseContract, the contract that added it). It stands above
-		// repositoriesLiveContract, and no pod's claims place a caller at either, so the rows
-		// served one are the rows served the other.
+		// `projectRelease` (the project release entry, the entry that added it). That entry's
+		// number stands above repositoriesLiveContract, and no pod's claims place a caller at
+		// either, so the rows served one are the rows served the other.
 		release bool
 		// caches is whether the caller is served the repository-cache-room row's `source`,
 		// `caches` (cachesSourceContract, the contract that added the word). The word is a value,
@@ -770,13 +770,14 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// phaseEntriesContract, heldContract, quietTimeContract, mergeWaitContract,
 		// assignmentsContract, entryTimesContract, repositoryAppsContract, pauseContract,
 		// shapedAnswersContract, repositoriesLiveContract, assignmentPlanContract,
-		// intakeGiveUpsContract, podHoldContract, priorityContract and projectReleaseContract, the
-		// seventeen bands above it that these rows compare, so the issues it is served carry no
-		// answer, no entry number, no tree quiet time, no `mergeWait`, no assignments (so no
-		// assignment's `plan` either), no entry times, no architect-stalled arms, no `podHold` and
-		// no `priority`, its claim views no leak check's cause and neither of the two keys contract
-		// 193 added, its admission block no held list, its repositories no `apps` and in contract
-		// 152's shape, and the state no pause, no `intakeGiveUps` and no project release.
+		// intakeGiveUpsContract, podHoldContract, priorityContract and the project release entry's
+		// number (entryNumber(projectReleaseContract)), the seventeen bands above it that these
+		// rows compare, so the issues it is served carry no answer, no entry number, no tree quiet
+		// time, no `mergeWait`, no assignments (so no assignment's `plan` either), no entry times,
+		// no architect-stalled arms, no `podHold` and no `priority`, its claim views no leak
+		// check's cause and neither of the two keys contract 193 added, its admission block no held
+		// list, its repositories no `apps` and in contract 152's shape, and the state no pause, no
+		// `intakeGiveUps` and no project release.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, contract: recordFieldsContract},
 		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
 		// too, and the leak check's cause, the entry numbers, the held list, the tree quiet time,

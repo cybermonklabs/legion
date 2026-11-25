@@ -2131,8 +2131,8 @@ Such a pod is bounded by the kernel's stop of the whole container alone, until a
 
 #### Rolling back below the release that adds the project release
 
-The release that added `legion project release` ([Releasing a project's pods](#releasing-a-projects-pods)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-3583`.
-Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+The release that added `legion project release` ([Releasing a project's pods](#releasing-a-projects-pods)) is the one whose build carries the contract entry `20261125162422` (`packages/daemon/internal/api/contract_20261125162422_project-release.go`, for `dispatch://INFRA-3583`).
+Name it by that entry's id, never by a number ([Contract discipline](#contract-discipline)): `legion version --contracts` prints the entry's number in the build you run.
 A rollback below it has one step of its own.
 
 **Let this release boot once after a project release, before the earlier image is pinned.**

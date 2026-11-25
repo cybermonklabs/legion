@@ -156,10 +156,9 @@ var frozenTypedSettings = []TypedSetting{
 // Answers is one row per answer a plugin parses: the rows of the numbered entries
 // (frozenAnswers) and then each entry's, in number order, with the routes an entry adds to an
 // older answer and the state's row typing typedSettings (contracts.go). The operator's claim
-// answers, the operator's project pause, resume and release answers, the operator's replay
-// and discard of the intake's give-ups, and the controller's secret and credential answers
-// are no rows: no plugin parses them. The project release reaches plugins only as the state's
-// `projectRelease` (entry 20261125162422).
+// answers, the operator's pause and resume answers (`legion project pause|resume`), the
+// operator's replay and discard of the intake's give-ups (`legion intake replay|discard`) and the
+// controller's secret and credential answers are no rows: no plugin parses them.
 func Answers() []Answer { return registry().answers }
 
 // frozenAnswers is the rows of Answers that the numbered entries wrote. Its state's row types the

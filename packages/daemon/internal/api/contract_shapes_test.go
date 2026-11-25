@@ -356,21 +356,21 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // to no record at any contract (TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody).
 //
 // The values are written here, and not read from the table: a value the table gains with no body
-// that carries it is then red in that census, and an edit of the table alone cannot carry it here
-// too. Issue i of the body carries value i of each list, and a list shorter than the longest starts
-// again at its first value, so the twelve issues carry every value of every list. Each issue's
-// architect carries a failure, a pending cause and a held task, as a worker does. No other body
-// carries them on an architect, so without this body no record describes those keys at their
-// architect paths, and the value comparison reads no value there. Each issue also carries a merge
-// wait with every key of one, whose `mergeState` and `toldState` take value i of the merge states,
-// so the twelve issues carry all eight words at both key paths. The project's pause waits on the
-// stop of one claim of each role, so `paused.waitsOn.*.role` carries every role, where
-// populatedState's pause waits on an implementer alone. Its repositories block names five live
-// repositories, both role Apps installed on each, whose caches stand in the five states a cache can
-// be in, so `repositories.live.*.cache.state` carries every word of that field, which arrived with
-// the block at repositoriesLiveContract (answers.go's liveCacheStates). The intake's open give-ups
-// list one record of each reason, so `intakeGiveUps.newest.*.reason` carries every word, where
-// populatedState's three records carry three of the five.
+// that carries it is then red in that census, and an edit of the table alone cannot carry it
+// here too. Issue i of the body carries value i of each list, and a list shorter than the longest
+// starts again at its first value, so the twelve issues carry every value of every list. Each
+// issue's architect carries a failure, a pending cause and a held task, as a worker does. No
+// other body carries them on an architect, so without this body no record describes those keys
+// at their architect paths, and the value comparison reads no value there. Each issue also carries
+// a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
+// merge states, so the twelve issues carry all eight words at both key paths. The project's pause
+// waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
+// where populatedState's pause waits on an implementer alone. Its repositories block names five
+// live repositories, both role Apps installed on each, whose caches stand in the five states a
+// cache can be in, so `repositories.live.*.cache.state` carries every word of that field, which
+// arrived with the block at repositoriesLiveContract (answers.go's liveCacheStates). The intake's
+// open give-ups list one record of each reason, so `intakeGiveUps.newest.*.reason` carries every
+// word, where populatedState's three records carry three of the five.
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
@@ -682,10 +682,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// every answer that is not a success, so the fixture holds each and the record is the keys
 		// of the four read as one set. The pause refusals are the three the goldens hold
 		// (TestPauseRouteGoldens): the setting that turns the pause off, the pause that stands,
-		// and the last pause, ended, which between them carry every numbered key of a PauseFailure.
-		// Their pause is the controller's, richer than the goldens' operator's (controllerPause).
-		// The plan refusal names a cause of the whole plan and a cause of one task, the two kinds a
-		// reason takes.
+		// and the last pause, ended, which between them carry every key the numbered entries gave
+		// a PauseFailure. Their pause is the controller's, richer than the goldens' operator's
+		// (controllerPause). The plan refusal names a cause of the whole plan and a cause of one
+		// task, the two kinds a reason takes.
 		AnswerRefusal: {
 			roots: typesOf(claim.Refusal{}, Failure{}, PauseFailure{}, PlanRefusal{}),
 			bodies: []any{

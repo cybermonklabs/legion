@@ -3008,7 +3008,6 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     .filter((contract) => contract < repositoriesLiveContract);
   expect(served.contract).toEqual({ caller: Math.max(...recordedBelow) });
   expect("intakeGiveUps" in served).toBeFalse();
-  expect("projectRelease" in served).toBeFalse();
   const {
     repositories: _narrowedBlock,
     contract: _narrowedMark,
@@ -3453,10 +3452,10 @@ test("the state goldens carry the pause that stands and the last pause, and both
 // names beside its sentence, and nothing else: the setting that turns the pause off, the pause
 // that stands, or the last pause. The daemon client reads a refusal through the plain refusal
 // shape, which keeps the code and the sentence of every one of them. The two refusals from entry
-// 20261125162422 are among them: a pause while a release runs names
-// nothing beside its sentence, and a release while a pause holds the project names the pause that
-// stands and each pod a pause still holds, with the claims of it stored suspended by `released`;
-// a held pod that names no issue key, or no list of claims, is no such pod.
+// 20261125162422 are among them: a pause while a release runs names nothing beside its sentence,
+// and a release while a pause holds the project names the pause that stands and each pod a pause
+// still holds, with the claims of it stored suspended by `released`; a held pod that names no issue
+// key, or no list of claims, is no such pod.
 test("the pause goldens answer the pause begun and the pause ended, and each refusal names what its code names", () => {
   const pause = {
     id: 7,

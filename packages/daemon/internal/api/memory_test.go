@@ -242,12 +242,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// the contract that added it, so a pod at it is served the key and every pod below it is
 		// not.
 		plans bool
-		// release is whether the caller is served the project's newest project release
-		// (projectReleaseContract), the contract that added it, so a caller served this daemon's
-		// own body is served the release, and a pod the reading places below that contract (its
-		// claims record a contract below shapedAnswersContract) is not. It stands above
-		// repositoriesLiveContract, and no pod's claims place a caller at either, so the rows
-		// served one are the rows served the other.
+		// release is whether the caller is served the project's newest project release, which the
+		// project release entry added (entryNumber(projectReleaseContract)), so a caller served
+		// this daemon's own body is served the release, and a pod the reading places below that
+		// entry's number (its claims record a contract below shapedAnswersContract) is not. It
+		// stands above repositoriesLiveContract, and no pod's claims place a caller at either, so
+		// the rows served one are the rows served the other.
 		release bool
 		// priority is whether the caller is served each issue's `priority` and its waitingLine's
 		// `priority` (priorityContract), the contract that added both, so a pod at it is served
@@ -509,8 +509,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if !tc.pause {
 				delete(want, "paused")
 			}
-			// A pod below projectReleaseContract is served no `projectRelease`, the one key that
-			// contract added to the state (withoutProjectRelease).
+			// A pod below the project release entry's number (entryNumber(projectReleaseContract))
+			// is served no `projectRelease`, the one key that entry added to the state
+			// (withoutProjectRelease).
 			if !tc.release {
 				delete(want, "projectRelease")
 			}

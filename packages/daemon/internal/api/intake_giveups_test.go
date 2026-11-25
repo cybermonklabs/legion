@@ -711,8 +711,10 @@ func TestTheGiveUpRoutesRefuseAnotherProjectsRecord(t *testing.T) {
 // key, and the rest of the two bodies is the same. Every build from shapedAnswersContract on
 // states its contract in the header, and a pod's claims place no caller at 193 or above
 // (podContracts), so the header is what places a caller below this band. The older caller's log
-// holds one line for each band above its contract (narrowingsExpected), the give-ups' first.
-// Both callers read carriedState, so each entry's band finds its key and writes its line.
+// holds one line for each band above its contract (narrowingsExpected), the give-ups' first; a
+// later band's own line is that band's test's to name. Both callers read carriedState, the
+// golden's state with the keys each entry adds to it, so an entry's band finds its key to take
+// and writes the line narrowingsExpected counts for it.
 func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if intakeGiveUpsContract > DaemonAPIVersion() {
 		t.Fatalf("intakeGiveUpsContract = %d, above DaemonAPIVersion %d: no caller could be served the key", intakeGiveUpsContract, DaemonAPIVersion())
@@ -736,11 +738,10 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if served := currentBody["intakeGiveUps"]; !bytes.Equal(served, want) {
 		t.Errorf("a caller at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
 	}
-	lines := narrowingsExpected(carriedState(t), intakeGiveUpsContract-1)
-	if len(lines) == 0 || lines[0] != "intakeGiveUps" {
-		t.Fatalf("a caller below %d expects the lines %v, want the give-ups' row first", intakeGiveUpsContract, lines)
+	if len(narrowings) == 0 || narrowings[0].Dropped != "intakeGiveUps" || narrowings[0].PluginContract != intakeGiveUpsContract-1 {
+		t.Errorf("the daemon logged %+v for a caller at %d, want its first line saying it dropped intakeGiveUps", narrowings, intakeGiveUpsContract-1)
 	}
-	wantNarrowings(t, narrowings, intakeGiveUpsContract-1, lines)
+	wantNarrowings(t, narrowings, intakeGiveUpsContract-1, narrowingsExpected(carriedState(t), intakeGiveUpsContract-1))
 	for _, body := range []map[string]json.RawMessage{olderBody, currentBody} {
 		delete(body, "intakeGiveUps")
 		delete(body, "contract")
