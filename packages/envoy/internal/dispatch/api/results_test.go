@@ -164,21 +164,39 @@ func writeHead(t *testing.T, database *store.Store, repo string, number int, sha
 // GitHub names, which the stand-in for GitHub names for a pull request no test moves. The conflict
 // clause writes every column either caller means to write, so a second row for the same pull
 // request leaves none of them as the first write left it.
+//
+// A merged row holds a time of merge, mergedHeadsAt and its number in seconds, so of two merged
+// pull requests the one of the higher number merged later, as every caller means, and the rule
+// this build judges by (delivery.AttributionRuleVersion), so a read that orders merged rows has
+// no row to ask GitHub about. A row that is not merged holds no time of merge, and its rule is
+// the column's default or the one it held.
 func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number int, sha, state, issueKey, baseRef string) {
 	t.Helper()
 	var attributed *string
 	if issueKey != "" {
 		attributed = &issueKey
 	}
+	var mergedAt *time.Time
+	rule := 0
+	if state == "merged" {
+		at := mergedHeadsAt.Add(time.Duration(number) * time.Second)
+		mergedAt, rule = &at, delivery.AttributionRuleVersion
+	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, base_sha, state, issue_key, event_at, checked_at)
-		values ($1, $2, $3, 'legion/work', $4, $7, $5, $6, now(), now())
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, base_sha, state, issue_key, event_at, checked_at,
+			merged_at, attribution_rule)
+		values ($1, $2, $3, 'legion/work', $4, $7, $5, $6, now(), now(), $8, $9)
 		on conflict (repo, number) do update set head_sha = excluded.head_sha, base_ref = excluded.base_ref,
-			base_sha = excluded.base_sha, state = excluded.state, issue_key = excluded.issue_key
-	`, repo, number, sha, baseRef, state, attributed, ciJobBaseSHA); err != nil {
+			base_sha = excluded.base_sha, state = excluded.state, issue_key = excluded.issue_key, merged_at = excluded.merged_at,
+			attribution_rule = case when excluded.state = 'merged'
+				then excluded.attribution_rule else pull_request_heads.attribution_rule end
+	`, repo, number, sha, baseRef, state, attributed, ciJobBaseSHA, mergedAt, rule); err != nil {
 		t.Fatalf("store the head of %s#%d on %s: %v", repo, number, baseRef, err)
 	}
 }
+
+// mergedHeadsAt is the time writeHeadOnBase's merged rows count their merge from.
+var mergedHeadsAt = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 
 // recordMerge records one issue's merged pull request as production records a merge, through
 // the writer that seeds the one fact the merge itself proves: the base branch held the merge
@@ -691,17 +709,26 @@ func resultsGitHubAnswering(
 // delivery.BranchCommitStaleAfter and which a test can reach no other way, since it cannot
 // wait five minutes out. readThroughGitHub answers the same for the read-through's cache.
 // checkRuns, where it is not nil, answers `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`
-// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404.
+// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404. routes are further
+// routes the stand-in answers (gitHubRoute), such as a pull request's own read.
 func resultsGitHubServed(
 	t *testing.T,
 	repos, held map[string]bool,
 	defaultBranch string,
 	answer func(base, head string) (int, string),
 	checkRuns http.HandlerFunc,
+	routes ...gitHubRoute,
 ) (http.Handler, *store.Store, *server) {
 	t.Helper()
-	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns))
+	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns, routes...))
 	return handler, database, served
+}
+
+// gitHubRoute is one more route a results stand-in answers (resultsGitHubOptions): a
+// http.ServeMux pattern and its handler.
+type gitHubRoute struct {
+	pattern string
+	handler http.HandlerFunc
 }
 
 // resultsGitHubOptions is the server resultsGitHubServed builds, as options a test can add to
@@ -713,6 +740,7 @@ func resultsGitHubOptions(
 	defaultBranch string,
 	answer func(base, head string) (int, string),
 	checkRuns http.HandlerFunc,
+	routes ...gitHubRoute,
 ) testServerOptions {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -769,6 +797,9 @@ func resultsGitHubOptions(
 	})
 	if checkRuns != nil {
 		mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", checkRuns)
+	}
+	for _, route := range routes {
+		mux.HandleFunc(route.pattern, route.handler)
 	}
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return testServerOptions{

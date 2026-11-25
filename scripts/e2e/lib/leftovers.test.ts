@@ -57,12 +57,14 @@ function dockerListingNone(): string {
 }
 // check runs refuse_leftovers PREFIX over ROOT, with PATH's front directory BIN when given, and
 // answers its status and what its `fail` said (a driver's fail, here one that prints and returns).
-function check(root: string, bin = "") {
+// TRAPPED runs it from the shell's exit trap, after a clean end, as a driver's exit handler would.
+function check(root: string, bin = "", trapped = false) {
+  const call = `refuse_leftovers ${prefix}; echo "status $?"`;
   const ran = Bun.spawnSync(
     [
       "bash",
       "-c",
-      `set -u\nfail() { printf '%s\\n' "$*"; return 1; }\n. ${JSON.stringify(leftovers)}\nrefuse_leftovers ${prefix}; echo "status $?"`,
+      `set -u\nfail() { printf '%s\\n' "$*"; return 1; }\n. ${JSON.stringify(leftovers)}\n${trapped ? `trap '${call}' EXIT` : call}`,
     ],
     {
       env: {
@@ -165,6 +167,9 @@ test.skipIf(skip)(
       out: `refuse_leftovers: find exited 137 reading the working directories under ${root}: find ended with status 137 and printed nothing\nstatus 2\n`,
       err: "",
     });
+    // The same find from a driver's exit trap after a clean end: there bash's bare `exit` in a
+    // process substitution exits with the status the trap was entered with, 0, not the find's.
+    expect(check(root, findStub("kill -KILL $$"), true)).toEqual(killed);
     const unreadable = said(
       findStub(`/usr/bin/find "$@"\necho "find: '$proc_root/1/cwd': Permission denied" >&2\nexit 1`)
     );

@@ -79,6 +79,7 @@ func subjectAt(t *testing.T, stands wirePassStands, commit string) wirePassSubje
 // ciJobHead. The open pull request's head is the one subject: c1 compares with it alone, and reads
 // no pass, naming that head and its fail.
 func TestAJobsFailAtThePullRequestHeadReadsNoPass(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
@@ -103,6 +104,7 @@ func TestAJobsFailAtThePullRequestHeadReadsNoPass(t *testing.T) {
 // legion/ACME-1 counts only where the issue has no open pull request. With #70 open at ciJobHead,
 // where nothing ran, c1 reads no pass; the control is the same pass read before #70 is opened.
 func TestAPassAtABranchHeadStandsForNothingWhileAPullRequestIsOpen(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	jobRecorded(t, "the job's pass on legion/ACME-1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
@@ -125,6 +127,7 @@ func TestAPassAtABranchHeadStandsForNothingWhileAPullRequestIsOpen(t *testing.T)
 // head is a subject, so c1 reads no pass, and the answer says each head's state. The control is the
 // read before the fail.
 func TestAFailAtOneBranchHeadHoldsBackThePassAtAnother(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	const retry = "legion/ACME-1-retry"
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
@@ -149,6 +152,7 @@ func TestAFailAtOneBranchHeadHoldsBackThePassAtAnother(t *testing.T) {
 // fail and a pass, in each order, make that commit's state unknown: no pass stands, and the answer
 // says why (pass_and_fail). The control: two passes at one commit read yes.
 func TestAPassAndAFailOfTheJobAtOneCommitReadUnknown(t *testing.T) {
+	t.Parallel()
 	for _, order := range [][2]string{{"fail", "pass"}, {"pass", "fail"}, {"pass", "pass"}} {
 		t.Run(order[0]+" then "+order[1], func(t *testing.T) {
 			rig := newCIJobRig(t)
@@ -174,6 +178,7 @@ func TestAPassAndAFailOfTheJobAtOneCommitReadUnknown(t *testing.T) {
 // basis and is no subject. A tester's pass at the merged head stands at that basis, and no pass of
 // k1 stands, since the open head, the one subject, holds no result.
 func TestAMergedHeadStaysABasisWhileAPullRequestIsOpen(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 69, ciJobCommit, "merged", rig.issue)
 	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
@@ -205,6 +210,7 @@ func TestAMergedHeadStaysABasisWhileAPullRequestIsOpen(t *testing.T) {
 // basis, and no pass of k1 stands, since #70's head holds no result. The control: a tester's pass at
 // #70's head makes that subject yes, and k1 reads a pass from the tester.
 func TestTheNewestMergedHeadIsASubjectWhereNoPullRequestIsOpen(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 69, ciJobCommit, "merged", rig.issue)
 	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "merged", rig.issue)
@@ -244,6 +250,7 @@ func TestTheNewestMergedHeadIsASubjectWhereNoPullRequestIsOpen(t *testing.T) {
 // pass of k1 at #70's head alone reads no pass, and the answer names #69's head with no result.
 // The control: a tester's pass at ciJobCommit too makes both subjects yes, and k1 reads a pass.
 func TestABranchHeadAnOlderMergedHeadNamesIsASubject(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 69, ciJobCommit, "merged", rig.issue)
 	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "merged", rig.issue)

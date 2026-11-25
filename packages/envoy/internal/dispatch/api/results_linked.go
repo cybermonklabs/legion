@@ -421,17 +421,26 @@ type commitRepository struct {
 // from defaultBranchIn's memo. Every reader of such a repository reads that memo for it next
 // anyway, so the answer costs no GitHub call they would not make.
 func (c *comparisonReader) commitRepositoryOf(ctx context.Context, issueKey string, commitRepo *string) commitRepository {
-	if commitRepo == nil {
-		return commitRepository{}
-	}
-	owner := commitRepository{linked: c.server.deps.Renames.Canonical(*commitRepo)}
-	if own, answered := c.repositoryOf(ctx, issueKey); answered && own != nil && strings.EqualFold(owner.linked, *own) {
-		owner.linked = ""
-	}
+	owner := commitRepository{linked: c.commitRepositoryName(ctx, issueKey, commitRepo)}
 	if owner.linked != "" {
 		_, owner.readable = c.defaultBranchIn(ctx, owner.linked)
 	}
 	return owner
+}
+
+// commitRepositoryName is commitRepositoryOf's linked alone, which reads no GitHub: the linked
+// repository commitRepo names, under its canonical name, and "" where it names none or names the
+// repository the check's issue resolves to now. resultBasisAt reads it to tell the heads of the
+// repository a result's commit is taken to be of from the others.
+func (c *comparisonReader) commitRepositoryName(ctx context.Context, issueKey string, commitRepo *string) string {
+	if commitRepo == nil {
+		return ""
+	}
+	linked := c.server.deps.Renames.Canonical(*commitRepo)
+	if own, answered := c.repositoryOf(ctx, issueKey); answered && own != nil && strings.EqualFold(linked, *own) {
+		return ""
+	}
+	return linked
 }
 
 // linkedBranchBases is branchBases for a result whose commit is taken to be of repo, a linked

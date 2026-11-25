@@ -38,9 +38,11 @@ type branchHeadAnswer struct {
 // (branchOfIssue), in name order (branchHeadBases). Where an open pull request is, the subjects
 // are the head of each open one alone: a pull request under review is the change a gate judges, so
 // no other head speaks for it while it is open, and a merged head stays a basis that is no
-// subject. Where none is open, they are the final head of the newest merged one and each branch
-// head. A branch whose head a pull request head already names adds nothing, since that commit is a
-// basis already, and a branch GitHub no longer holds adds nothing either. An issue with neither
+// subject. Where none is open, they are the final head of the merged one that merged last
+// (mergedInOrder), and each branch head. Where Dispatch cannot tell which merged one merged last,
+// no merged head is a subject, the comparison is marked unordered, and each merged head stays a
+// basis. A branch whose head a pull request head already names adds nothing, since that commit is
+// a basis already, and a branch GitHub no longer holds adds nothing either. An issue with neither
 // compares with nothing, and nothingReason says which of the three kinds of nothing it is; where
 // the one thing it might compare with is a branch head Dispatch could not read, the reason is that
 // read's.
@@ -70,26 +72,44 @@ func (c *comparisonReader) headBases(ctx context.Context, issueKey string) compa
 	if open {
 		heads = slices.Concat(heads, c.former[issueKey])
 	}
-	bases, subjects := pullRequestBases(heads, issueRepo, open)
+	ordered := open || c.mergedInOrder(ctx, heads)
+	bases, subjects := pullRequestBases(heads, issueRepo, open, ordered)
 	unread := ""
 	if !open {
 		bases, subjects, unread = c.branchHeadBases(ctx, issueKey, heads, bases, subjects)
 	}
 	switch {
 	case len(bases) > 0:
-		return comparison{bases: bases, unread: unread, subjects: subjects}
+		return comparison{bases: bases, unread: unread, subjects: subjects, unordered: !ordered}
 	case unread != "":
 		return noBases(unread)
 	}
 	return noBases(c.nothingReason(ctx, issueKey))
 }
 
+// mergedInOrder reports whether heads, the merged pull request heads of an issue none of whose
+// pull requests is open, can be ordered by when each merged: it asks the read's fill
+// (fillMergeTimes, over the reader's memo fills) and gives each head the time of its merge the
+// fill holds, so pullRequestBases orders them as the fill does.
+func (c *comparisonReader) mergedInOrder(ctx context.Context, heads []delivery.AttributedHead) bool {
+	rows := make([]delivery.MergeTime, len(heads))
+	for index, head := range heads {
+		rows[index] = head.MergeTime()
+	}
+	ordered := c.server.fillMergeTimes(ctx, c.fills, rows)
+	for index := range heads {
+		heads[index].MergedAt = rows[index].MergedAt
+	}
+	return ordered
+}
+
 // pullRequestBases is the basis of each of heads, the pull request heads of one issue in the order
 // delivery.Attributor.HeadsAttributedTo lists them (headBasis), and among them the subjects, each
 // with the repository of its row: where open, some pull request of heads is open, the head of each
-// open one; otherwise the final head of the merged one of the highest number, the first of them
-// where two share it.
-func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open bool) ([]model.CheckBasis, []headSubject) {
+// open one; otherwise, where ordered, the merged heads can be ordered by when each merged
+// (mergedInOrder), the final head of the one that merged last (mergedAfter), the first of them
+// where two share that place; and where they cannot be ordered, none.
+func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open, ordered bool) ([]model.CheckBasis, []headSubject) {
 	bases := make([]model.CheckBasis, 0, len(heads))
 	var subjects []headSubject
 	newestMerged := -1
@@ -99,14 +119,28 @@ func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open b
 		switch {
 		case open && head.Open:
 			subjects = append(subjects, headSubject{basis: basis, repo: head.Repo})
-		case !open && (newestMerged < 0 || head.Number > heads[newestMerged].Number):
+		case !open && (newestMerged < 0 || mergedAfter(head, heads[newestMerged])):
 			newestMerged = index
 		}
 	}
-	if newestMerged >= 0 {
+	if newestMerged >= 0 && ordered {
 		subjects = append(subjects, headSubject{basis: bases[newestMerged], repo: heads[newestMerged].Repo})
 	}
 	return bases, subjects
+}
+
+// mergedAfter reports whether merged pull request a merged after b, in the order
+// delivery.NewestPullRequestHead reads them by: the later time of merge first, a head holding no
+// time after every head that holds one, and the higher number first between two of one time or
+// of none.
+func mergedAfter(a, b delivery.AttributedHead) bool {
+	switch {
+	case a.MergedAt != nil && b.MergedAt != nil && !a.MergedAt.Equal(*b.MergedAt):
+		return a.MergedAt.After(*b.MergedAt)
+	case (a.MergedAt == nil) != (b.MergedAt == nil):
+		return a.MergedAt != nil
+	}
+	return a.Number > b.Number
 }
 
 // branchHeadBases is bases and subjects, the pull request heads of an issue none of whose pull

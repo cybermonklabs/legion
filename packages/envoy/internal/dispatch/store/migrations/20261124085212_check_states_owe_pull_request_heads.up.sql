@@ -1,7 +1,7 @@
--- 20261121000333_check_states_owe_pull_request_heads.up.sql
+-- 20261124085212_check_states_owe_pull_request_heads.up.sql
 -- A pull request head inserted, moved, opened, closed, merged, given to another issue or deleted
 -- marks the check states of the issue it belonged to and of the issue it belongs to now owed
--- (check_states_owe_head, 20261121000327): the open heads are the heads a state is published at.
+-- (check_states_owe_head, 20261124085206): the open heads are the heads a state is published at.
 -- The update trigger fires only where head_sha, state or issue_key moved: every writer of the row
 -- names each column in its `do update set` on each write, a read-through included, so a trigger
 -- on the columns alone would fire on each read, and the settle's own read-through would mark the

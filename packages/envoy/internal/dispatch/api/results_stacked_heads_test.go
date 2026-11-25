@@ -311,6 +311,7 @@ func stackedCommits(bases []stackedBasis) []string {
 // of its own: a pass at its head stands, from the tester, and each check compared with that head
 // alone.
 func TestAStackedPullRequestsHeadHasItsOwnStateBesideTheIssuesOwnHead(t *testing.T) {
+	t.Parallel()
 	own := stackedPull{number: stackedOwn, head: stackedOwnHead, base: "main"}
 	onTop := stackedPull{number: stackedOnTop, head: stackedOnTopHead, suffix: "-snippet-sentinels"}
 	t.Run("two open pull requests, one stacked on the other's branch", func(t *testing.T) {

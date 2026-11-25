@@ -68,6 +68,7 @@ func refusedForTheBranch(t *testing.T, response interface {
 // legion/ACME-1 and reads no pass. The same token's write on ACME-1 is the control: it is stored,
 // and a pass stands there.
 func TestAJobOnAnotherIssuesBranchRecordsNothingThere(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	other := anotherIssue(t, rig)
@@ -100,6 +101,7 @@ func TestAJobOnAnotherIssuesBranchRecordsNothingThere(t *testing.T) {
 // of ACME-1's pull request #70, records its result on ACME-1, and the same token is refused on
 // ACME-2, which no pull request on legion/work is attributed to.
 func TestAPullRequestsHeadBranchBelongsToItsIssue(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, ciJobCommit, "open", rig.issue)
 	other := anotherIssue(t, rig)
@@ -116,6 +118,7 @@ func TestAPullRequestsHeadBranchBelongsToItsIssue(t *testing.T) {
 // legion/ACME-1 adds that branch's head (the control); the same row moved to legion/ACME-404, a
 // branch whose name gives it to no issue and that no pull request has as its head, adds none.
 func TestAStoredRowOfABranchOfNoIssueAddsNoBasis(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	const stray = "legion/ACME-404"
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})

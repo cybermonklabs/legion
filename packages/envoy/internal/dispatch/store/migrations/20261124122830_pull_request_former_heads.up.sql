@@ -185,7 +185,7 @@
 -- candidate: verified false, since a result there does not show that the commit was ever this
 -- pull request's. The Verification document is the issue's document of that role, by the
 -- predicate the server reads it by (api/artifacts.go, documentRolePredicate), which
--- check_states_owe_check_block (20261121000327) states too. The settler asks GitHub once which of
+-- check_states_owe_check_block (20261124085206) states too. The settler asks GitHub once which of
 -- each such pull request's candidates are its own commits and keeps those (api/check_states.go,
 -- verifyFormerHeads), and each issue holding a candidate is marked owed here, so that read comes
 -- at the settler's first pass. A head left before this release with no result at it is not known,
@@ -691,7 +691,7 @@ end $$;
 -- The snapshot of the pull request of an identity that GitHub's answer about its commits depends
 -- on: each open row of it, by name and number, with its head, its base branch and the commit the
 -- base branch was at when the row was last read (pull_request_heads.base_sha, migration
--- 20261122071000), in one order. The base branch can move with no change of its name, and the
+-- 20261124085218), in one order. The base branch can move with no change of its name, and the
 -- answer is about one base revision, so the snapshot names the revision, and "unknown" where the
 -- row holds none, a row a writer of the release before this one wrote, which is not read until a
 -- write stores one: the reconcile's read of the pull request, which of n rows due in its first
@@ -928,7 +928,7 @@ create trigger pull_request_former_heads_of_ci_check_results after insert on ci_
 --
 -- The end is where the pull request's last closed period began, as Dispatch's record of each
 -- write that opened or closed a row of it shows (pull_request_heads_lifecycle, migration
--- 20261122070959), which this install is the one reader of: the migration after it,
+-- 20261124085217), which this install is the one reader of: the migration after it,
 -- 20261124122831, drops the record, its triggers and its function. The writes are those of every
 -- name the rename rule maps to the pull request at its canonical name, in the order of their
 -- times. Each write that opened a row starts a new period; the last closed period is the closes
@@ -947,7 +947,7 @@ create trigger pull_request_former_heads_of_ci_check_results after insert on ci_
 -- and this one, which this one finds open, ends its lifecycle here as one closed now does.
 --
 -- A closed period whose first close is undated, the record's of a pull request closed when
--- migration 20261122070959 ran, began before that migration by a span no record of Dispatch's
+-- migration 20261124085217 ran, began before that migration by a span no record of Dispatch's
 -- shows. Of such a pull request every result recorded before the install stays out after a
 -- reopen, however long after that migration it was recorded, so that end goes after every result
 -- the install finds; so does the end of a pull request closed now whose last recorded write opened
@@ -966,7 +966,7 @@ create trigger pull_request_former_heads_of_ci_check_results after insert on ci_
 -- one, so it can place a result from before the close after it. The other costs: a result recorded
 -- between GitHub's close and Dispatch's write of it stays out, and the head a pull request reopened
 -- before the install stands at, once it moves on, keeps no visit of its own, since no record shows
--- when it was reached. A close and a reopen both before migration 20261122070959 are in no record
+-- when it was reached. A close and a reopen both before migration 20261124085217 are in no record
 -- of Dispatch's, as every pull request's history before this release is not, and the seed below
 -- takes its results as it finds them.
 --
@@ -976,7 +976,7 @@ create trigger pull_request_former_heads_of_ci_check_results after insert on ci_
 -- (pull_request_former_heads_apply): it ends the lifecycle at its place, so a result placed after
 -- it is of the next lifecycle and one placed before it is not (pull_request_former_heads_leave),
 -- whichever side of the install it was recorded on. A pull request is closed now by the rule
--- migration 20261122070959 records the closed ones by: where the row of its canonical name is not
+-- migration 20261124085217 records the closed ones by: where the row of its canonical name is not
 -- open, or, with no row of that name, where no row of it is open, so an open pull request whose
 -- old name's row reads closed from before that migration keeps the results it holds. The places
 -- come before the seed, so a candidate the seed leaves holds its result's place as its since, and

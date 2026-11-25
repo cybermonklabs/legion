@@ -334,7 +334,7 @@ func baseBranchMergedInQuery(renames refs.Renames) string {
 	select h.base_ref from linked_pulls l
 	` + linkedHeadJoin + `
 	where h.issue_key = $1 and lower(l.repo) = lower($2) and h.state = 'merged'
-	order by h.event_at desc nulls last, h.number desc
+	order by h.merged_at desc nulls last, h.number desc
 	limit 1`
 }
 

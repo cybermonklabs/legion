@@ -2081,8 +2081,8 @@ export const dispatchToolSpecs = [
       `${CHECK_PROVED_BY_CI}: ` +
       "no role records its result. Dispatch derives one result from the run that its ci_check " +
       "names at each head it reads from GitHub: the head of each open pull request of the " +
-      "issue, each in that pull request's own repository, else the head of its merged one of " +
-      "the highest number. A run of that " +
+      "issue, each in that pull request's own repository, else the head of its newest merged " +
+      "one, the one GitHub merged last. A run of that " +
       "CI job on a push of the change's branch also records its own result, at the commit it " +
       "tested. The derived result at the open pull request of the highest number prints as " +
       "`- <id> (before_merge): <verdict> at " +

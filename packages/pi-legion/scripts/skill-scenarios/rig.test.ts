@@ -705,6 +705,10 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
     }
   );
 
+  // stopScript is a shell that sources the rig's process walks and runs BODY, for DIR in $1.
+  const stopScript = (body: string) =>
+    `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(path.join(root, "scripts/e2e/lib/rig.sh"))}\n${fn("stop_env_processes")}\n${fn("run_env_pids")}\n${body}`;
+
   // Catches: a stop_env_processes that does not end what its walk names. The loop that ends each
   // process, held to its start and its mark, is kill_held (scripts/e2e/lib/process-tree.sh), the
   // run's sweep's own; its rows, a pid that passed to another process and a parent that exits after
@@ -714,14 +718,44 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
     const run = runProcess(dir);
     await untilRunning(run.pid, "sleep");
     try {
-      const rig = path.join(root, "scripts/e2e/lib/rig.sh");
-      const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
       const own = groupBash(
-        `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
+        stopScript(`stop_env_processes "$1"; echo "status $?"`),
         [dir],
         procRootOf(dir, [run.pid])
       );
       expect(own).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
+      expect(await run.exited).not.toBe(0);
+      expect(run.signalCode).toBe("SIGKILL");
+    } finally {
+      run.kill("SIGKILL");
+    }
+  });
+
+  // Catches: a stop_env_processes that stops nothing when the exit trap of a run that failed runs
+  // it. There bash's bare `exit` in a process substitution exits with the status the trap was
+  // entered with, so the walk read xargs as exiting 1 after every failed run and named no process
+  // (procs_naming, scripts/e2e/lib/process-tree.sh). A walk of a busy machine always meets a batch
+  // of entries with no match (xargs 123), and only then hands a status out through that `exit`;
+  // this row's proc root fits one batch that matches, so a grep that prints what the real one
+  // prints and then answers as such a batch does stands in for the rest of the machine. The trap
+  // runs inside `fail`, whose arguments are not the script's, so it names the run by $work.
+  test("stops each process of the run from the exit trap of a run that failed", async () => {
+    const dir = freshDir("env-stop-failed");
+    const busy = freshDir("env-stop-busy");
+    writeFileSync(path.join(busy, "grep"), `#!/bin/sh\n/usr/bin/grep "$@"\nexit 1\n`, {
+      mode: 0o755,
+    });
+    const run = runProcess(dir);
+    await untilRunning(run.pid, "sleep");
+    try {
+      const failed = groupBash(
+        stopScript(
+          `export PATH=${JSON.stringify(busy)}:$PATH\ntrap 'stop_env_processes "$work"; echo "status $?"' EXIT\nfail`
+        ),
+        [dir],
+        procRootOf(dir, [run.pid])
+      );
+      expect(failed).toEqual({ code: 1, stdout: "status 0\n", stderr: "" });
       expect(await run.exited).not.toBe(0);
       expect(run.signalCode).toBe("SIGKILL");
     } finally {

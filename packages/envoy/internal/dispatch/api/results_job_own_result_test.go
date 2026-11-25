@@ -20,6 +20,7 @@ import (
 // c2, and the run failed, as it does when c2's test fails. c1 reads yes, from the job's own pass,
 // and c2 reads no, from the run's fail.
 func TestAJobsFailOnAnotherCheckLeavesThePassItRecorded(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	twoProved := ciJobVerification + "\n" + ciCheckBlock("c2", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`)
 	if written := uploadVerification(t, rig.handler, rig.issue, twoProved); written.Code != http.StatusCreated {
@@ -52,6 +53,7 @@ func TestAJobsFailOnAnotherCheckLeavesThePassItRecorded(t *testing.T) {
 // alone and no run, the job's result decides; and once the job's result is retracted, the run's
 // conclusion decides again.
 func TestTheJobsOwnResultAtAHeadTakesThePlaceOfItsRunsConclusion(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, job, derived string
 		retract            bool
@@ -105,6 +107,7 @@ func TestTheJobsOwnResultAtAHeadTakesThePlaceOfItsRunsConclusion(t *testing.T) {
 // error nor anything a reviewer acts on (R15). The control is the row the job's pass beside a
 // failing run of TestTheJobsOwnResultAtAHeadTakesThePlaceOfItsRunsConclusion, whose resolve answers.
 func TestAJobsResultWhoseRepositoryDidNotResolveIsAFailedRead(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
 	rig.github.setBranch("legion/work", ciJobBranchHead{sha: ciJobHead})
@@ -163,6 +166,7 @@ func storeJobResult(t *testing.T, rig *ciJobRig, run, commit, digest string, rep
 // fail it derived there. The row of another commit is a job's pass at an old commit, which must
 // never hide a failing run at the new head.
 func TestOnlyAJobsResultThatCountsAtTheHeadTakesThePlaceOfItsRun(t *testing.T) {
+	t.Parallel()
 	other := "acme/another-repository"
 	for _, row := range []struct {
 		name, run, commit, digest string

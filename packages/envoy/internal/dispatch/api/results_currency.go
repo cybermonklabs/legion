@@ -10,7 +10,7 @@ import "github.com/sjawhar/envoy/internal/dispatch/model"
 // costs no read of the database or of GitHub and changes none of them.
 //
 // Once no client older than pi-envoy 17.1.0 is in use, remove this file and
-// results_currency_test.go, the answerCompatibilityCurrency call in listCheckResults,
+// results_currency_test.go, the answerCompatibilityCurrency call in answerIssueChecks,
 // model.CheckResult.Currency and model.Currency*, and the currency descriptions in
 // packages/envoy/cmd/dispatch/README.md and routes_table.go.
 // From the repository root, grep for `pi-envoy 17[.]1[.]0|Currency` in packages/envoy and

@@ -126,6 +126,7 @@ func (r passAndFailRig) head(t *testing.T, what, answer, reason string, results 
 // not known, in either order and from any role; a later pass does not end it, and a read at the
 // commit gives the same. A retraction of the fail leaves the pass, and of the pass the fail.
 func TestAPassAndAFailAtOneHeadReadNotKnown(t *testing.T) {
+	t.Parallel()
 	// The case production printed as a pass from tester and implementer: the tester's pass at one
 	// commit, then its fail at the same commit under the same words.
 	t.Run("a pass then a fail", func(t *testing.T) {
@@ -181,6 +182,7 @@ func TestAPassAndAFailAtOneHeadReadNotKnown(t *testing.T) {
 // the newest fail there. Each case holds two results of each kind the head picks from, so a head
 // that named an older one would name another result than the one each case wants.
 func TestAHeadNamesTheNewestResultsThatDecideIt(t *testing.T) {
+	t.Parallel()
 	t.Run("the newest pass and the newest fail", func(t *testing.T) {
 		rig := newPassAndFailRig(t)
 		rig.record(t, "tester", "pass")
