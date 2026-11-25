@@ -16,8 +16,8 @@ import (
 // hold (secrets, session): whoever answers there can repeat a credential the address carries where
 // no request's record lists it - here a token in its path, which the '=' before it makes not clean -
 // and a field's own reading prints such a token as it came. EXPIRES, this CLI's own words, prints
-// the time whatever the address. Twin: the address is not clean, and a field holding the token reads
-// as the token (RemoteText.String), so the row can see it printed. Captures
+// the time whatever the address (expires). Twin: the address is not clean, and a field holding the
+// token reads as the token (RemoteText.String), so the row can see it printed. Captures
 // agent-secrets.grant-cells/<case>.
 func TestAGrantCellOfSeveralFieldsPrintsNothingBesideAnAddressThatIsNotClean(t *testing.T) {
 	base := cipheraddr.New("https://broker.example/k=" + redacttest.Token)
@@ -47,9 +47,12 @@ func TestAGrantCellOfSeveralFieldsPrintsNothingBesideAnAddressThatIsNotClean(t *
 			if row[c.column] != cipheraddr.WordsNotPrinted {
 				t.Errorf("the %s cell is %q; want %q", grantColumns[c.column], row[c.column], cipheraddr.WordsNotPrinted)
 			}
-			if want := at.Format(time.RFC3339); row[7] != want {
-				t.Errorf("the EXPIRES cell is %q; want %q", row[7], want)
-			}
 		})
 	}
+	t.Run("expires", func(t *testing.T) {
+		row := grantRow(base, OperatorGrant{GrantID: plain, Names: []redact.RemoteText{plain}, ExpiresAt: &at})
+		if want := at.Format(time.RFC3339); row[7] != want {
+			t.Errorf("the EXPIRES cell is %q; want %q", row[7], want)
+		}
+	})
 }
