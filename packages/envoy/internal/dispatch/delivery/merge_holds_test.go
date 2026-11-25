@@ -193,7 +193,7 @@ func TestTheNewestMergeIsTheLastToMergeNotTheLastEdited(t *testing.T) {
 		t.Parallel()
 		pool, ctx := deliveryTestPool(t)
 		issue := seedHeadIssue(t, ctx, pool, 51)
-		intake := newIntake(nil, pool, nil, newFakeGitHub(t).newTestClient(), nil, nil, unrenamed())
+		intake := newIntake(nil, nil, pool, nil, newFakeGitHub(t).newTestClient(), nil, nil, unrenamed())
 		deliver := func(number int, body map[string]any) {
 			t.Helper()
 			payload := envelopePayload(t, body)

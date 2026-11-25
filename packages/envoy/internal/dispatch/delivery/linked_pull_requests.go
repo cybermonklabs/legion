@@ -144,63 +144,15 @@ func (a *Attributor) HeadAttributedTo(ctx context.Context, pool *store.Pool, iss
 
 // mergeInRead lists linked merged pull requests over the same stored or request-local heads.
 func mergeInRead(renames refs.Renames) headsStatement {
-	return newHeadsStatement(linkedPullRequestTerms(renames), `
+	return newHeadsStatement(linkedPullRequestTerms(renames), mergeInQuery, 2, "")
+}
+
+var mergeInQuery = `
 	select ` + mergedColumns + ` from (
-		select distinct on (h.repo, h.number)
-			h.repo, h.number, h.base_ref, h.head_sha, h.merge_commit_sha, h.merged_at, h.attribution_rule
+		select distinct h.repo, h.number, h.base_ref, h.head_sha, h.merge_commit_sha,
+			h.merged_at, h.attribution_rule
 		from linked_pulls l
 		` + linkedHeadJoin + `
 		where lower(l.repo) = lower($2) and h.state = 'merged'
-		order by h.repo, h.number
 	) merged
-	order by ` + newestMergeFirst, 2, "")
-}
-
-// baseBranchMergedInQuery is BaseBranchMergedIn's statement after its WITH list: the linked rows
-// of headsAttributedQuery's second arm, held to one repository and to the merged state, in
-// BaseBranchMergedFor's order.
-var baseBranchMergedInQuery = `
-	select h.base_ref from linked_pulls l
-	` + linkedHeadJoin + `
-	where lower(l.repo) = lower($2) and h.state = 'merged'
-	order by h.event_at desc nulls last, h.number desc
-	limit 1`
-
-// baseBranchMergedInRead is baseBranchMergedInQuery whole, for both callers, its linked pull
-// requests read over renames (linkedPullRequestTerms). NewAttributor builds it once from its
-// rename pairs.
-func baseBranchMergedInRead(renames refs.Renames) headsStatement {
-	return newHeadsStatement(linkedPullRequestTerms(renames), baseBranchMergedInQuery, 2, "")
-}
-
-// BaseBranchMergedIn is BaseBranchMergedFor for a repository issueKey does not resolve to: the
-// branch the merged pull request that the issue's external links name in repoFull merged into
-// (linkedPullRequestTerms), and "" where Dispatch holds no merge of such a pull request. An
-// issue whose work spans two repositories links the pull request it has in the second one,
-// and the attribution can never give that pull request to it, so BaseBranchMergedFor, which
-// reads the attributed rows, never names that merge. The results read measures an
-// `after_merge` result whose commit the second repository holds against the branch answered
-// here (api/results_comparison.go).
-//
-// The rows are ordered as BaseBranchMergedFor orders them, and the empty answer means what its
-// empty answer means: no branch to measure against. A link to a pull request of the
-// repository the issue resolves to names nothing here, as it names nothing in
-// HeadsAttributedTo, so a repoFull the issue resolves to answers "". repoFull is compared
-// without case with the canonical name each link is read under, as every other comparison of
-// a repository here is.
-//
-// The linked rows are read through pull_request_heads_repo_head's leading column, one
-// repository's rows for each linked pull request, as HeadsAttributedTo's are. answers is the
-// caller's request's, as HeadsAttributedTo takes them.
-func (a *Attributor) BaseBranchMergedIn(ctx context.Context, q refs.Queryer, issueKey, repoFull string, answers HeadAnswers) (string, error) {
-	query, args := a.mergedInRead.query(answers, issueKey, repoFull)
-	var branch string
-	err := q.QueryRow(ctx, query, args...).Scan(&branch)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the merged linked pull request base branch of %s in %s: %w", issueKey, repoFull, err)
-	}
-	return branch, nil
-}
+	order by ` + newestMergeFirst

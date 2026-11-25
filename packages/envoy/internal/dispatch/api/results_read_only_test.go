@@ -886,6 +886,7 @@ type parityGitHub struct {
 	compare    func(base, head string) (int, string)
 	limited    map[int]bool
 	runs       map[string][]map[string]any
+	details    map[int]string
 	linked     *parityLinked
 }
 
@@ -1131,11 +1132,19 @@ func parityStandIn(t *testing.T, script *parityGitHub, calls *parityCalls) strin
 		}
 		number, _ := strconv.Atoi(r.PathValue("number"))
 		state := ""
+		detail := ""
 		script.mu.Lock()
+		if repoOf(r) == parityRepo {
+			detail = script.details[number]
+		}
 		if repoOf(r) == parityLinkedRepo {
 			state = script.linked.states[number]
 		}
 		script.mu.Unlock()
+		if detail != "" {
+			fmt.Fprint(w, detail)
+			return
+		}
 		switch state {
 		case "open":
 			fmt.Fprintf(w, `{"number":%d,"state":"open","merged":false,"merged_at":null}`, number)
@@ -1523,8 +1532,8 @@ func parityInProcess(stack *parityStack) string {
 	return fmt.Sprintf("%+v\n%+v", &stack.rig.served.commitPulls, &stack.rig.served.branches)
 }
 
-// parityStored is every pull_request_heads and branch_commits row database holds, whole, one row a
-// line in one order, and how many events it holds.
+// parityStored records every head, branch answer and commit-history answer, whole and ordered,
+// and the event count, so a read-only read cannot hide a write to either kind of cached fact.
 func parityStored(t *testing.T, database *store.Store) string {
 	t.Helper()
 	var stored string
@@ -1534,6 +1543,8 @@ func parityStored(t *testing.T, database *store.Store) string {
 			select 'pull request head ' || to_jsonb(head)::text as row from pull_request_heads head
 			union all
 			select 'branch answer ' || to_jsonb(answer)::text from branch_commits answer
+			union all
+			select 'commit history answer ' || to_jsonb(answer)::text from commit_holds answer
 			union all
 			select count(*)::text || ' events' from events
 		) held
@@ -1572,7 +1583,13 @@ func (s *parityStack) normalized(t *testing.T, body string) string {
 				}
 			}
 		case []any:
-			for _, inner := range value {
+			for place, inner := range value {
+				if id, isString := inner.(string); isString {
+					if index := slices.Index(s.ids, id); index >= 0 {
+						value[place] = fmt.Sprintf("result %d", index)
+						continue
+					}
+				}
 				walk(inner)
 			}
 		}
