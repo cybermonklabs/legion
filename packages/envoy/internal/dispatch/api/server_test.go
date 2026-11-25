@@ -247,12 +247,6 @@ type testServerOptions struct {
 	// list asks the listener and stores no copy, as the browser suite's server runs
 	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
 	listenerRosterUncached bool
-	// rosterUncached is Deps.ListenerRosterUncached: every read of the listener's session list asks
-	// the listener, as an end-to-end test process does (DISPATCH_TEST_ROSTER_UNCACHED).
-	rosterUncached bool
-	// routeRosterTTL is Deps.RouteRosterTTL: how long a stored listener answer serves reads before
-	// a read fetches it again. Zero keeps five seconds.
-	routeRosterTTL time.Duration
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -417,8 +411,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BuildCommit:            options.buildCommit,
 		OutboxPublishes:        options.outboxPublishes,
 		Metrics:                options.metrics,
-		ListenerRosterUncached: options.rosterUncached || options.listenerRosterUncached,
-		RouteRosterTTL:         options.routeRosterTTL,
+		ListenerRosterUncached: options.listenerRosterUncached,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

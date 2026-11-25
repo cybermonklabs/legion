@@ -130,12 +130,8 @@ const routeRosterTimeout = 2 * time.Second
 // is left alone for the silence window like any other unanswered fetch: its reason, and the
 // Retry-After it sent, are the roster's and reach every read the window serves.
 const (
-
-	// routeRosterContentMargin is how much of its life a stored answer must have left for a
-	// refresh of the session content rule to take it (contentMargin).
-	routeRosterContentMargin = routeRosterTTL - routeRosterTimeout
-	routeRosterTTL           = 5 * time.Second
-	routeRosterSilenceTTL    = 5 * time.Second
+	routeRosterTTL        = 5 * time.Second
+	routeRosterSilenceTTL = 5 * time.Second
 )
 
 // rosterCache is how this process reads and refreshes the stored listener answer: the TTLs it
@@ -193,7 +189,46 @@ type rosterFetch struct {
 // as storeRouteRoster counts it - and it is the answer the read would have waited for had it
 // reached the lock a moment sooner.
 func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
-	return s.readRouteRosterLeaving(ctx, 0)
+	if s.deps.Envoy == nil {
+		return routeRoster{reason: model.RouteReasonUnreachable}, nil
+	}
+	if s.deps.ListenerRosterUncached {
+		// An end-to-end test process: every read asks the listener itself, with no stored answer,
+		// no shared fetch and nothing kept.
+		return s.listRouteRoster(ctx), nil
+	}
+	roster, fresh, now, seen, err := s.storedRouteRoster(ctx)
+	if err != nil {
+		return routeRoster{}, fmt.Errorf("read the stored listener answer: %w", err)
+	}
+	if fresh {
+		return roster, nil
+	}
+	cache := &s.rosters
+	cache.mu.Lock()
+	fetch := cache.fetch
+	if fetch == nil {
+		if cache.builtSent.After(seen) {
+			roster = cache.built
+			cache.mu.Unlock()
+			return roster, nil
+		}
+		fetch = &rosterFetch{done: make(chan struct{})}
+		cache.fetch = fetch
+		// The fetch is every waiting read's, so it runs on the server's lifetime rather than on
+		// the request that started it, whose end must not end it and whose values (its
+		// transaction-tracking mark among them) belong to that request alone; the fetch bound
+		// still limits it, and a shutdown ends it. now, the database's clock on the read that
+		// found the row stale, is when its call counts as sent.
+		go s.fetchRouteRoster(s.lifetime, fetch, now)
+	}
+	cache.mu.Unlock()
+	select {
+	case <-fetch.done:
+		return fetch.roster, nil
+	case <-ctx.Done():
+		return routeRoster{reason: model.RouteReasonUnreachable, err: fmt.Errorf("%w: %v", envoy.ErrUnavailable, ctx.Err())}, nil
+	}
 }
 
 // routeRosterOrUnknown is readRouteRoster for a read that only shows a route: a failed read of the
@@ -229,10 +264,9 @@ const routeRosterQuery = `
 	left join route_roster r on true`
 
 // storedRouteRoster reads the route_roster row on the pool, outside any transaction, and answers
-// the roster it holds, the row's expires_at, the database's now(), against which its caller judges
-// how much of the answer's life is left, and the row's sent_at. No row answers a zero expires_at
-// and sent_at, which every caller reads as stale.
-func (s *server) storedRouteRoster(ctx context.Context) (roster routeRoster, expires, now, sent time.Time, err error) {
+// the roster it holds, whether that is still fresh by the database's clock, that clock's now(),
+// and the row's sent_at, zero for no row. No row reads as not fresh.
+func (s *server) storedRouteRoster(ctx context.Context) (roster routeRoster, fresh bool, now, sent time.Time, err error) {
 	cache := &s.rosters
 	cache.mu.Lock()
 	built, builtSent := cache.built, cache.builtSent
@@ -247,18 +281,18 @@ func (s *server) storedRouteRoster(ctx context.Context) (roster routeRoster, exp
 	var sessions []byte
 	if err := s.deps.Store.Pool.QueryRow(ctx, routeRosterQuery, known).
 		Scan(&now, &answered, &sentAt, &expiresAt, &reason, &retryAfter, &sessions); err != nil {
-		return routeRoster{}, time.Time{}, time.Time{}, time.Time{}, err
+		return routeRoster{}, false, time.Time{}, time.Time{}, err
 	}
 	if sentAt == nil {
-		return routeRoster{}, time.Time{}, now, time.Time{}, nil
+		return routeRoster{}, false, now, time.Time{}, nil
 	}
 	roster = built
 	if sessions != nil {
 		if roster, err = cache.remember(*sentAt, answered, reason, retryAfter, sessions); err != nil {
-			return routeRoster{}, time.Time{}, time.Time{}, time.Time{}, err
+			return routeRoster{}, false, time.Time{}, time.Time{}, err
 		}
 	}
-	return roster, *expiresAt, now, *sentAt, nil
+	return roster, expiresAt.After(now), now, *sentAt, nil
 }
 
 // remember builds the roster a stored answer holds and keeps it as this process's built roster.
@@ -505,71 +539,4 @@ func parseRouteStatusFilter(raw string) (string, error) {
 	return "", errorf(http.StatusBadRequest, "INVALID_ROUTE_STATUS",
 		"route_status must be %s, %s, %s or %s, got %q",
 		model.RouteLive, model.RouteHolderUnresponsive, model.RouteNoHolder, model.RouteUnknown, raw)
-}
-
-// readRouteRosterLeaving is readRouteRoster counting the stored answer stale while it has left of
-// its life or less, by the database's clock: zero for a read that takes the answer until its
-// expires_at, as an issue read and an agents list do, and contentMargin for the refresh before a
-// read of the session content rule, whose later statements read the answer's lists only while it
-// has not passed its expires_at.
-func (s *server) readRouteRosterLeaving(ctx context.Context, left time.Duration) (routeRoster, error) {
-	if s.deps.Envoy == nil {
-		return routeRoster{reason: model.RouteReasonUnreachable}, nil
-	}
-	if s.deps.ListenerRosterUncached {
-		// An end-to-end test process: every read asks the listener itself, with no shared fetch,
-		// and answers what that call answered. It still stores the answer, as a fetch does, because
-		// the route_roster_session_projects projection records each listener session for the session
-		// rule (access.SessionClause): a process that stored none would judge every session with no
-		// history as one the listener does not list.
-		var sent time.Time
-		if err := s.deps.Store.Pool.QueryRow(ctx, `select now()`).Scan(&sent); err != nil {
-			return routeRoster{}, fmt.Errorf("read the database's clock: %w", err)
-		}
-		roster := s.listRouteRoster(ctx)
-		s.storeRouteRoster(ctx, sent, roster)
-		return roster, nil
-	}
-	roster, expiresAt, now, seen, err := s.storedRouteRoster(ctx)
-	if err != nil {
-		return routeRoster{}, fmt.Errorf("read the stored listener answer: %w", err)
-	}
-	if expiresAt.Sub(now) > left {
-		return roster, nil
-	}
-	cache := &s.rosters
-	cache.mu.Lock()
-	fetch := cache.fetch
-	if fetch == nil {
-		if cache.builtSent.After(seen) {
-			roster = cache.built
-			cache.mu.Unlock()
-			return roster, nil
-		}
-		fetch = &rosterFetch{done: make(chan struct{})}
-		cache.fetch = fetch
-		// The fetch is every waiting read's, so it runs on the server's lifetime rather than on
-		// the request that started it, whose end must not end it and whose values (its
-		// transaction-tracking mark among them) belong to that request alone; the fetch bound
-		// still limits it, and a shutdown ends it. now, the database's clock on the read that
-		// found the row stale, is when its call counts as sent.
-		go s.fetchRouteRoster(s.lifetime, fetch, now)
-	}
-	cache.mu.Unlock()
-	select {
-	case <-fetch.done:
-		return fetch.roster, nil
-	case <-ctx.Done():
-		return routeRoster{reason: model.RouteReasonUnreachable, err: fmt.Errorf("%w: %v", envoy.ErrUnavailable, ctx.Err())}, nil
-	}
-}
-
-// contentMargin is how much of its life a stored answer must have left for the refresh before a
-// read of the session content rule to take it (refreshRosterForContent): routeRosterContentMargin,
-// held under this cache's own ttl less its fetch bound, so an answer this cache's fetch stores is
-// not taken as stale at once under a TTL a test process set shorter than five seconds, and none
-// below zero. Under the deployment's five seconds and two it is the three seconds that constant
-// is; a longer TTL a test process sets leaves it three.
-func (c *rosterCache) contentMargin() time.Duration {
-	return max(0, min(routeRosterContentMargin, c.ttl-cmp.Or(c.timeout, routeRosterTimeout)))
 }

@@ -51,14 +51,6 @@ func (s *server) resolveReader(r *http.Request) (model.Actor, error) {
 // readerFor is actor as a read answers for it (model.Actor.Reader), with what its credential sees
 // now (access.Resolve): the one resolution behind resolveReader, and the one a live socket makes
 // again of the caller its upgrade resolved (feedEvents, the delivery hub's access re-check).
-//
-// A reader that does not see every object (seesEveryObject) has the session content rule asked
-// about every session party of what it reads (access.SessionContentClause, through PartyClause,
-// MessageClause, DocumentClause and ItemOwnerClause), and that rule reads a listener list only
-// from a stored listener answer that has not passed its expires_at. So such a resolution
-// refreshes the stored answer first (refreshRosterForContent), once, before the request reads
-// anything, taking it only while it has the margin left that the request's reads need. A reader
-// that sees every object - the server's own - reads nothing for it.
 func (s *server) readerFor(ctx context.Context, actor model.Actor) (model.Actor, error) {
 	reader := actor.Reader()
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
@@ -70,9 +62,6 @@ func (s *server) readerFor(ctx context.Context, actor model.Actor) (model.Actor,
 		return model.Actor{}, err
 	}
 	reader.Viewer = &viewer
-	if !seesEveryObject(reader) {
-		s.refreshRosterForContent(ctx)
-	}
 	return reader, nil
 }
 
