@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    The stale-plugin refresh lane no longer spends a credit of its gate on a claim that left the
+    lane during the sweep. The sweep reads its claims before it reconciles orphans, and a claim
+    suspended, relaunched or put in a turn in between was posted a credit its machine ignored or
+    gave back only when it decided the post; until then the gate counted it out and the pass
+    refused every claim after it. The pass now reads each claim as its machine last published it.
+time: 2026-11-24T16:17:52Z
+custom:
+    Issue: pr5400

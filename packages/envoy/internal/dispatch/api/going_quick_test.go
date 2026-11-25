@@ -69,13 +69,13 @@ func (h *heldAnswerer) state() (asked, ended []string, holding, most int) {
 	return slices.Clone(h.asked), slices.Clone(h.ended), h.holding, h.most
 }
 
-// terminalWithin waits up to within for run's ending, and answers its frames' names and the error
-// code it ended with, "" for an end.
-func (rig goingRoutesRig) terminalWithin(t *testing.T, run string, within time.Duration) ([]string, string) {
+// terminal waits for run's ending, bounded by the test binary's deadline (waitUntil), and answers
+// its frames' names and the error code it ended with, "" for an end.
+func (rig goingRoutesRig) terminal(t *testing.T, run string) ([]string, string) {
 	t.Helper()
 	var names []string
 	var code string
-	waitUntil(t, within, "the ending of run "+run, func() bool {
+	waitUntil(t, "the ending of run "+run, func() bool {
 		stored, _, err := rig.server.readGoingStream(context.Background(), run, 0)
 		if err != nil {
 			t.Fatalf("read the run's frames: %v", err)
@@ -104,11 +104,11 @@ func TestTheShortAnswerAndJevAreBoundedInTheServer(t *testing.T) {
 		rig := newGoingRoutesRig(t, held)
 		held.freeAfter(t)
 		first := askRun(t, rig, "alice", map[string]any{"words": "the words alice typed"})
-		waitUntil(t, 10*time.Second, "alice's first question to reach the model", func() bool { asked, _, _, _ := held.state(); return len(asked) == 1 })
+		waitUntil(t, "alice's first question to reach the model", func() bool { asked, _, _, _ := held.state(); return len(asked) == 1 })
 		askRun(t, rig, "bob", map[string]any{"words": "the words bob typed"})
 		askRun(t, rig, "alice", map[string]any{"words": "the words alice typed next"})
-		waitUntil(t, 10*time.Second, "alice's first question to end", func() bool { _, ended, _, _ := held.state(); return len(ended) == 1 })
-		waitUntil(t, 10*time.Second, "the two newer questions to reach the model", func() bool { asked, _, _, _ := held.state(); return len(asked) == 3 })
+		waitUntil(t, "alice's first question to end", func() bool { _, ended, _, _ := held.state(); return len(ended) == 1 })
+		waitUntil(t, "the two newer questions to reach the model", func() bool { asked, _, _, _ := held.state(); return len(asked) == 3 })
 		asked, ended, holding, _ := held.state()
 		if ended[0] != "the words alice typed" || holding != 2 {
 			t.Fatalf("the model was asked %q, ended %q and holds %d, want alice's first question ended and bob's and alice's next held", asked, ended, holding)
@@ -134,13 +134,15 @@ func TestTheShortAnswerAndJevAreBoundedInTheServer(t *testing.T) {
 		for asker := range goingQuickSlots + 1 {
 			askRun(t, rig, fmt.Sprintf("asker-%02d", asker), map[string]any{"words": fmt.Sprintf("the question of asker %02d", asker)})
 		}
-		waitUntil(t, 20*time.Second, "32 questions to reach the model", func() bool { _, _, holding, _ := held.state(); return holding == goingQuickSlots })
-		time.Sleep(time.Second)
+		waitUntil(t, "32 questions to reach the model", func() bool { _, _, holding, _ := held.state(); return holding == goingQuickSlots })
+		// The 33rd question waits: the count of questions the model was asked holds still at 32
+		// for a second (awaitStill) before the check reads it.
+		awaitStill(t, "the questions that reach the model", time.Second, func() int64 { asked, _, _, _ := held.state(); return int64(len(asked)) })
 		if asked, _, _, _ := held.state(); len(asked) != goingQuickSlots || jev.calls.Load() != goingQuickSlots {
 			t.Fatalf("with 32 questions held the model was asked %d and Jev %d, want 32 each: the 33rd waits, its Jev call too", len(asked), jev.calls.Load())
 		}
 		held.release <- struct{}{}
-		waitUntil(t, 10*time.Second, "the 33rd question to reach the model once one was answered", func() bool { asked, _, _, _ := held.state(); return len(asked) == goingQuickSlots+1 })
+		waitUntil(t, "the 33rd question to reach the model once one was answered", func() bool { asked, _, _, _ := held.state(); return len(asked) == goingQuickSlots+1 })
 		if _, _, _, most := held.state(); most != goingQuickSlots || jev.calls.Load() != goingQuickSlots+1 {
 			t.Errorf("the model held %d questions at most and Jev was asked %d times, want 32 at most and 33", most, jev.calls.Load())
 		}
@@ -150,7 +152,7 @@ func TestTheShortAnswerAndJevAreBoundedInTheServer(t *testing.T) {
 		words := strings.Repeat("word ", (answerStreamBytes+64<<10)/5)
 		answerer, model := newGoingModelAnswerer(t, goingtest.Reply{Text: words, Chunk: 32 << 10})
 		rig := newGoingRoutesRig(t, answerer)
-		names, code := rig.terminalWithin(t, askRun(t, rig, "alice", map[string]any{"words": "stream past the limit"}), 30*time.Second)
+		names, code := rig.terminal(t, askRun(t, rig, "alice", map[string]any{"words": "stream past the limit"}))
 		if !strings.Contains(code, contracts.GoingErrorAnswerFailed) || model.Calls() != 1 {
 			t.Fatalf("a stream past 4 MiB ended %v (%s) after %d model calls, want %s after the one", names, code, model.Calls(), contracts.GoingErrorAnswerFailed)
 		}
@@ -158,7 +160,7 @@ func TestTheShortAnswerAndJevAreBoundedInTheServer(t *testing.T) {
 		within := strings.Repeat("word ", (answerStreamBytes-512<<10)/5)
 		answerer, model = newGoingModelAnswerer(t, goingtest.Reply{Text: within, Chunk: 32 << 10}, goingtest.Reply{Final: &goingtest.Final{Answer: "A short answer."}})
 		rig = newGoingRoutesRig(t, answerer)
-		if names, code := rig.terminalWithin(t, askRun(t, rig, "alice", map[string]any{"words": "stream within the limit"}), 30*time.Second); code != "" {
+		if names, code := rig.terminal(t, askRun(t, rig, "alice", map[string]any{"words": "stream within the limit"})); code != "" {
 			t.Errorf("a stream within 4 MiB ended %v (%s) after %d model calls, want it answered", names, code, model.Calls())
 		}
 	})
@@ -167,7 +169,7 @@ func TestTheShortAnswerAndJevAreBoundedInTheServer(t *testing.T) {
 		answerer, _ := newGoingModelAnswerer(t, goingtest.Reply{Silent: true})
 		rig := newGoingRoutesRig(t, answerer)
 		asked := time.Now()
-		names, code := rig.terminalWithin(t, askRun(t, rig, "alice", map[string]any{"words": "never answered"}), goingQuickTime+goingStreamGrace+5*time.Second)
+		names, code := rig.terminal(t, askRun(t, rig, "alice", map[string]any{"words": "never answered"}))
 		took := time.Since(asked)
 		if !strings.Contains(code, contracts.GoingErrorAnswerDidNotArrive) {
 			t.Fatalf("an answer the model never wrote ended %v (%s), want %s", names, code, contracts.GoingErrorAnswerDidNotArrive)
@@ -187,7 +189,7 @@ func TestTheShortAnswerAndJevAreBoundedInTheServer(t *testing.T) {
 		)
 		rig := newGoingRoutesRig(t, answerer)
 		asked := time.Now()
-		names, code := rig.terminalWithin(t, askRun(t, rig, "alice", map[string]any{"words": "search, then answer slowly"}), goingQuickTime+goingStreamGrace+5*time.Second)
+		names, code := rig.terminal(t, askRun(t, rig, "alice", map[string]any{"words": "search, then answer slowly"}))
 		took := time.Since(asked)
 		if !strings.Contains(code, contracts.GoingErrorAnswerDidNotArrive) || model.Calls() != 2 {
 			t.Fatalf("a loop of two 18 s calls ended %v (%s) after %d model calls, want %s in the second", names, code, model.Calls(), contracts.GoingErrorAnswerDidNotArrive)

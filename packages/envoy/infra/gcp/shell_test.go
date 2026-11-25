@@ -69,8 +69,11 @@ func shellCommand(t testing.TB, args ...string) *exec.Cmd {
 // clock (tailnetRig.run), which its fake sleep ends once the clock reaches the run's limit. Every
 // step of the clock forks the stand-ins, so the wall time a run takes is the machine's, and on a
 // loaded machine a run of a few hundred fake seconds passed scriptTimeout's 2 min (at a box load
-// of about 2,400, INFRA-3904). Its only bound is untilTheTestDeadline's, so a script that never
-// reaches its event still fails t by name, deadlineMargin before go test's -timeout.
+// of about 2,400, INFRA-3904). The same holds for a script a test waits on for an event with no
+// span of its own: cert-publish (startCertPublish) and the advertiser that SIGTERM ends
+// (TestTailnetServiceAdvertiserExitsOnSIGTERM). Its only bound is untilTheTestDeadline's, so a
+// script that never reaches its event still fails t by name, deadlineMargin before go test's
+// -timeout.
 func shellCommandUntilTheTestDeadline(t testing.TB, args ...string) *exec.Cmd {
 	t.Helper()
 	return shellCommandIn(t, untilTheTestDeadline(t), deadlineMargin.String()+" before go test's -timeout", args...)

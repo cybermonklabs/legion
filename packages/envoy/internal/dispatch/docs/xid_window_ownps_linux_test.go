@@ -31,8 +31,9 @@ import (
 // decision itself, xidRuntimeWaitProblem, is proven with no clock or load by storetest's
 // TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown and
 // TestAWaitOnAPHandedToALockedThreadDecidesNothing; that analyzeXidWindows applies it is shown
-// only by this row's runs that reach the UNKNOWN branch, which log it: envoy-go-docs-finalizers
-// runs the docs package with -v, so its log says which branch ran. Taking the wait out as the
+// only by this row's runs that reach the UNKNOWN branch, which log it: envoy-go's step "Test what
+// the race build cannot run at all or at full size" runs this file's tests with -v, so its log
+// says which branch ran. Taking the wait out as the
 // runtime's, the rig before this row read such a gap - a reviewer's forcing of 145 workers at
 // 72 Ps, 50.125 ms on the clock and 1.826 ms of the thread's CPU - as 0.159 ms made, and the
 // window kept D6 (2026-11-21).

@@ -44,6 +44,11 @@ type Reply struct {
 	// Pause is how long the model waits between frames, so a test can assert the first byte
 	// arrives early.
 	Pause time.Duration
+	// Hold, where set, holds the reply after its first HoldAfter frames of content until Hold is
+	// closed or the caller's context ends, so a test can read what those frames carried while the
+	// rest is still unwritten: an order no clock decides, where Pause gives only a time.
+	Hold      <-chan struct{}
+	HoldAfter int
 	// Silent never answers: the response is held open until the caller's context ends.
 	Silent bool
 	// Status, when non-zero, is answered with an error body instead of a completion.
@@ -278,8 +283,14 @@ func stream(r *http.Request, w http.ResponseWriter, reply Reply, content string)
 		_ = control.Flush()
 	}
 	write(wireChoice{Delta: wireDelta{Role: "assistant"}})
-	for _, piece := range pieces(content, chunk) {
+	for index, piece := range pieces(content, chunk) {
 		write(wireChoice{Delta: wireDelta{Content: piece}})
+		if reply.Hold != nil && index+1 == reply.HoldAfter && !gone {
+			select {
+			case <-reply.Hold:
+			case <-r.Context().Done():
+			}
+		}
 	}
 	for index, call := range reply.ToolCalls {
 		arguments := pieces(call.Arguments, chunk)

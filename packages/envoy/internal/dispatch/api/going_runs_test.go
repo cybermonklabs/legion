@@ -305,7 +305,7 @@ func TestGoingRunsSweepDeletesARunPastSevenDays(t *testing.T) {
 	runSweep(t, func(ctx context.Context) {
 		RunMaintenanceSweep(ctx, rig.database.Pool, maintenanceTestInterval, leases, nil)
 	})
-	waitUntil(t, 30*time.Second, "the 8-day run deleted by a maintenance pass", func() bool { return !stored(old) })
+	waitUntil(t, "the 8-day run deleted by a maintenance pass", func() bool { return !stored(old) })
 	if !stored(kept) {
 		t.Fatal("the maintenance pass deleted the 6-day run, want it kept")
 	}
