@@ -72,6 +72,14 @@
 //                                          first as Dispatch lists them, each with the body it
 //                                          stores, as score.ts's testerProof reads them
 //                                          (handoffs.json in <run dir>)
+//   seed.ts capture-results <file> <run dir>
+//                                          every result recorded against a check of the issue
+//                                          <file> names, the seeded passes among them, each with
+//                                          its check, the commit it names, the session and role
+//                                          that recorded it, its verdict, its observed text (an
+//                                          earlier pass recorded as holding gives its reason
+//                                          there) and when Dispatch recorded it, as score.ts's
+//                                          `resultsOf` reads them (results.json in <run dir>)
 //   seed.ts ask-on-message <file>          one run's own issue and the owner's message posting its
 //                                          plan; writes {issue, message} to <file>
 //   seed.ts measure-before-ask <file>      one run's own issue and the owner's message naming three
@@ -164,6 +172,7 @@ import { parseInstant } from "./production-dispatch";
 import { WORLD_PROJECT } from "./run-names";
 import {
   captureHandoffs,
+  captureResults,
   daemonStatus,
   phaseHandoff,
   planSeed,
@@ -922,7 +931,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [no-name] | plan <file> <implement body file> <base commit> <remote> | pull-request <file> <gh answers file> <remote> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | steps <file> <project> <phase> [model] | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [no-name] | plan <file> <implement body file> <base commit> <remote> | pull-request <file> <gh answers file> <remote> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | steps <file> <project> <phase> [model] | capture-handoffs <file> <run dir> | capture-results <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -1002,6 +1011,8 @@ async function main(argv: string[]): Promise<boolean> {
     await stepsSeed(file, second, third, argv[4] ?? "");
   else if (command === "capture-handoffs" && file !== undefined && second !== undefined && n === 3)
     await captureHandoffs(file, second);
+  else if (command === "capture-results" && file !== undefined && second !== undefined && n === 3)
+    await captureResults(file, second);
   else return false;
   return true;
 }

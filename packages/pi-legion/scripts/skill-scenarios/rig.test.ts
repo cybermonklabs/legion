@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   appendFileSync,
+  chmodSync,
+  copyFileSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -1455,6 +1457,8 @@ describe("scratch_clean", () => {
   function cleaned(parallel: string) {
     const shared = freshDir("shared-scratch");
     const R = freshDir("scratch-run");
+    // cmd_run makes the run's logs before scratch_before writes its record there.
+    mkdirSync(path.join(R, "logs"));
     writeFileSync(path.join(shared, "pre-batch.json"), "from an earlier batch\n");
     const result = bash(
       [
@@ -1474,19 +1478,26 @@ describe("scratch_clean", () => {
   }
 
   // Catches: a record that misses what the run's time added, or that names what was there before
-  // it, and a cleanup that deletes what appeared, which may be another process's of this user.
+  // it, and a cleanup that deletes what appeared, which may be another process's of this user; and
+  // a record at the top of the run's directory, where its agents read it and launch's guard read
+  // other suites' /tmp names in it as the run's world (CI at 8de01663).
   test("a serial run records what appeared in the shared scratch, and removes nothing there", () => {
     const { shared, R, result } = cleaned("1");
     expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(readdirSync(shared).sort()).toEqual(["LWEVAL-1-review.json", "a-dir", "pre-batch.json"]);
     expect(readFileSync(path.join(shared, "a-dir", "inside"), "utf8")).toBe("run\n");
     expect(
-      readFileSync(path.join(R, "scratch-created.txt"), "utf8")
+      readFileSync(path.join(R, "logs", "scratch-created.txt"), "utf8")
         .split("\n")
         .filter((line) => line !== "")
         .map((line) => line.replace(/^\S+ /, ""))
         .sort()
     ).toEqual([path.join(shared, "LWEVAL-1-review.json"), path.join(shared, "a-dir")]);
+    expect(readdirSync(R)).toEqual(["logs"]);
+    expect(readdirSync(path.join(R, "logs")).sort()).toEqual([
+      "scratch-before.txt",
+      "scratch-created.txt",
+    ]);
   });
 
   // Catches: a record at a parallelism above 1, which would name a concurrent run's files as this
@@ -1498,7 +1509,7 @@ describe("scratch_clean", () => {
       "only serial runs (SKILL_SCENARIOS_PARALLEL=1) record what a run made there"
     );
     expect(readdirSync(shared).sort()).toEqual(["LWEVAL-1-review.json", "a-dir", "pre-batch.json"]);
-    expect(existsSync(path.join(R, "scratch-created.txt"))).toBe(false);
+    expect(existsSync(path.join(R, "logs", "scratch-created.txt"))).toBe(false);
   });
 });
 
@@ -3055,6 +3066,7 @@ describe("run_threads_closed", () => {
         "start_recorder() { :; }",
         "worker_run_world() { pr=1001; head=0123456789ab; }",
         "seed_ts() { :; }",
+        "judge_ts() { :; }",
         "await_start() { :; }",
         'reviewer_wake() { cat "$R/wake.json"; }',
         'worker_boot() { printf "%s\\n" "$*" >>"$R/boots"; printf "boot %s\\n" "$3" >>"$R/booted"; }',
@@ -3251,6 +3263,7 @@ describe("worker_boots", () => {
         "start_recorder() { :; }",
         "worker_run_world() { pr=1001; head=0123456789ab; }",
         "seed_ts() { :; }",
+        "judge_ts() { :; }",
         "await_start() { :; }",
         'reviewer_wake() { cat "$R/wake.json"; }',
         `worker_boot() { printf "%s%s\\n" "$3" "\${4:+:$4}" >>"$R/boots"; }`,
@@ -3272,6 +3285,55 @@ describe("worker_boots", () => {
       ...boots("run_threads_closed", ["code-defect"], '[{"message":"pushed"}]\n'),
     ];
     expect([...new Set(booted)].sort()).toEqual([...listed].sort());
+  });
+
+  // Catches: a worker run whose issue's results nobody captures, so no bar on a recorded result
+  // can be scored, or whose agents' texts no judge reads (Verification v47's rule 8); and a capture
+  // or a judging made before the run's last agent has ended, which would miss what it did.
+  test("each run of reviewer-text-findings and threads-closed ends by capturing its handoffs and results, then judging it", () => {
+    const ends = (runner: string, args: string[]) => {
+      const dir = freshDir(`worker-ends-${runner}`);
+      writeFileSync(path.join(dir, "threads.json"), "[]\n");
+      writeFileSync(path.join(dir, "wake.json"), "[]\n");
+      writeFileSync(
+        path.join(dir, "fixture.json"),
+        JSON.stringify({ implement: { version: 1 }, test: { version: 1 } })
+      );
+      const result = bash(
+        [
+          fn("note"),
+          fn("fail"),
+          fn("skip_reason"),
+          fn(runner),
+          "start_recorder() { :; }",
+          "worker_run_world() { pr=1001; head=0123456789ab; }",
+          "steps_seed() { :; }",
+          "await_start() { :; }",
+          'reviewer_wake() { cat "$R/wake.json"; }',
+          'seed_ts() { printf "seed_ts %s\\n" "$*" >>"$R/ends"; }',
+          'judge_ts() { printf "judge_ts %s\\n" "$*" >>"$R/ends"; }',
+          'worker_boot() { printf "worker_boot %s\\n" "$3" >>"$R/ends"; }',
+          "R=$1 here=$2 co=$3 worker_key=LWEVAL-1 worker_repo=example/widgets",
+          `${runner} the-run skillsproject1 1 100 ${args.join(" ")}`,
+        ].join("\n"),
+        [dir, import.meta.dir, root]
+      );
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      return readFileSync(path.join(dir, "ends"), "utf8")
+        .trim()
+        .split("\n")
+        .slice(-4)
+        .map((line) => line.replaceAll(dir, "$R"));
+    };
+    const last = (role: string) => [
+      `worker_boot ${role}`,
+      "seed_ts capture-handoffs $R/fixture.json $R",
+      "seed_ts capture-results $R/fixture.json $R",
+      "judge_ts run $R",
+    ];
+    expect(ends("run_reviewer_text_findings", ["text-only"])).toEqual(last("reviewer"));
+    expect(ends("run_threads_closed", ["correct"])).toEqual(last("reviewer"));
+    expect(ends("run_threads_closed", ["accept"])).toEqual(last("implementer"));
   });
 });
 
@@ -4181,7 +4243,9 @@ describe("health", () => {
    * repository, a reviewer completion taken, its built-from and services-from naming `checkout`
    * (RUN_CHECKOUT unless one is given), and, given `before`, the shared scratch's entries when it
    * started (rig.sh's scratch_before) and, given `created`, the entries a serial run's exit found
-   * had appeared there, each with its time (rig.sh's scratch_clean). */
+   * had appeared there, each with its time (rig.sh's scratch_clean), both in the run's logs as
+   * rig.sh writes them, or at its top (`scratchAt` "top") as a run recorded before 2026-11-25
+   * holds them. */
   function worldRun(
     name: string,
     {
@@ -4196,6 +4260,7 @@ describe("health", () => {
       work = "/recorded/work",
       namespace = true,
       world = [],
+      scratchAt = "logs",
     }: {
       steps?: Step[];
       agent?: string;
@@ -4208,6 +4273,7 @@ describe("health", () => {
       work?: string;
       namespace?: boolean;
       world?: string[];
+      scratchAt?: "logs" | "top";
     }
   ) {
     const dir = run(name, [[complete(200, undefined, "reviewer")]], { checkout, namespace });
@@ -4242,11 +4308,16 @@ describe("health", () => {
         `${declared.stdout.toString()}${world.map((line) => `${line}\n`).join("")}`
       );
     }
+    const records = scratchAt === "logs" ? path.join(dir, "logs") : dir;
+    if (before !== undefined || created !== undefined) mkdirSync(records, { recursive: true });
     if (before !== undefined)
-      writeFileSync(path.join(dir, "scratch-before.txt"), before.map((one) => `${one}\n`).join(""));
+      writeFileSync(
+        path.join(records, "scratch-before.txt"),
+        before.map((one) => `${one}\n`).join("")
+      );
     if (created !== undefined)
       writeFileSync(
-        path.join(dir, "scratch-created.txt"),
+        path.join(records, "scratch-created.txt"),
         created.map(([at, entry]) => `${Date.parse(at) / 1000}.0000000000 ${entry}\n`).join("")
       );
     for (const [into, made] of [[agent, steps] as const, ...Object.entries(others)]) {
@@ -4986,6 +5057,39 @@ describe("health", () => {
     expect(stdout).toContain(
       "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs: threads-closed-correct-head-5 (/tmp/LWEVAL-1-review.json, /tmp/placeholder). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 4 runs\n"
     );
+  });
+
+  // rig.sh writes a run's records of the shared scratch into its logs (scratch_before,
+  // scratch_clean), which its agents' world hides; a run recorded before 2026-11-25 holds them at
+  // its top. Catches: such a run read as one with no record; and a run recorded since read from a
+  // file of that name at its top, which its agents could write: here one naming the entry the
+  // agent reads, which would make that read one of scratch from before the run.
+  test("a run's scratch records are read from its logs, or from its top for a run recorded before they moved", () => {
+    const read: Step = {
+      tool: "read",
+      args: { path: "/tmp/pre-batch.json" },
+      at: "2026-11-14T03:00:00.000Z",
+    };
+    const old = worldRun("threads-closed-code-defect-head-31", {
+      namespace: false,
+      before: ["/tmp/pre-batch.json"],
+      scratchAt: "top",
+      steps: [read],
+    }).dir;
+    const planted = worldRun("threads-closed-code-defect-head-32", {
+      namespace: false,
+      before: [],
+      steps: [read],
+    }).dir;
+    writeFileSync(path.join(planted, "scratch-before.txt"), "/tmp/pre-batch.json\n");
+    const { stdout, stderr } = health(old, planted);
+    expect(verdict(stdout, old)).toBe(
+      "threads-closed-code-defect-head-31  unhealthy: shared scratch from before the run: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl at 2026-11-14T03:00:00.000Z reads /tmp/pre-batch.json, which no run given wrote before it and /tmp/pre-batch.json was in /tmp when the run started (scratch-before.txt)"
+    );
+    expect([verdict(stdout, planted), refusal(stderr, planted)]).toEqual([
+      undefined,
+      unrecorded(planted),
+    ]);
   });
 
   // Catches: a write into a run's own /tmp counted as one outside its directory. In its namespace
@@ -10018,23 +10122,94 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   );
 
   // Catches: a judge that truncates an earlier judge's out.txt or judge-model.txt in its
-  // directory, or removes the key directory beside it that a judge killed outright left. Each is
-  // refused before anything else of the judge runs (so these rows need no Docker), and kept.
-  test("refuses a directory an earlier judge left its output, model record or key directory in, and keeps each", () => {
-    for (const leftover of ["out.txt", "judge-model.txt", ".key"]) {
+  // directory, or removes the key directory or the world (a judge in the pod's HOME and /tmp)
+  // beside it that a judge killed outright left. Each is refused before anything else of the judge
+  // runs (so these rows need no Docker), and kept.
+  test("refuses a directory an earlier judge left its output, model record, key directory or world in, and keeps each", () => {
+    for (const leftover of ["out.txt", "judge-model.txt", ".key", ".world"]) {
       const dir = judgeDir();
-      const file =
-        leftover === ".key" ? path.join(`${dir}.key`, "token") : path.join(dir, leftover);
+      const beside = leftover.startsWith(".") ? `${dir}${leftover}` : undefined;
+      const file = beside === undefined ? path.join(dir, leftover) : path.join(beside, "token");
       mkdirSync(path.dirname(file), { recursive: true });
       writeFileSync(file, "an earlier judge's\n");
       const result = judge("ste", dir);
       expect(result.exitCode).toBe(1);
       expect(result.stderr.toString()).toContain(
-        `judge-omp: ${leftover === ".key" ? `${dir}.key` : file} is there from an earlier judge of ${dir}; nothing of it is removed or replaced`
+        `judge-omp: ${beside ?? file} is there from an earlier judge of ${dir}; nothing of it is removed or replaced`
       );
       expect(readFileSync(file, "utf8")).toBe("an earlier judge's\n");
     }
   });
+
+  // The route of a batch whose services are given (Verification v47's rule 1: no docker), which a
+  // Legion pod has: the judge runs in the pod, in a namespace of its own (private_world) with a
+  // HOME of its own, as a run's agent does. It has a work directory and a key file of its own, in
+  // a directory that holds nothing the judge's world hides, since the profile's key command names
+  // the key file it was built with. Catches: a judge-omp that needs docker where the services are
+  // given; a judge that reads the operator's home, the work directory or a file beside its own
+  // directory, or runs under the operator's HOME; a profile or key command it cannot read; and a
+  // world or key directory left behind.
+  test.skipIf(withoutNamespace)(
+    "where the services are given, a judge runs in the pod, in its own namespace and HOME, and sees its directory alone",
+    () => {
+      const podWork = freshDir("judge-pod-work");
+      mkdirSync(path.join(podWork, "runs"));
+      const podOutside = path.join(podWork, "outside.txt");
+      writeFileSync(podOutside, "a file beside the judge's directory\n");
+      const key = path.join(freshDir("judge-pod-key"), "key");
+      copyFileSync(keyFile(0o600), key);
+      chmodSync(key, 0o600);
+      const dir = path.join(podWork, "judging", "job-1");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, "prompt.txt"), "Write answer.json.\n");
+      const result = judge("ste", dir, "answer.json", {
+        SKILL_SCENARIOS_WORK: podWork,
+        SKILL_SCENARIOS_POSTGRES_URL: "postgres://rig@127.0.0.1:1/rig",
+        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:1",
+        LEGION_E2E_ANTHROPIC_KEY_FILE: key,
+        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${podOutside} OPERATOR_HOME=${operatorHome} WORK=${podWork}`,
+      });
+      expect(judged(result)).toEqual(judgedCleanly);
+      expect(recorded(dir, "argv")).toEqual([
+        omp,
+        "-p",
+        "Write answer.json.",
+        "--no-extensions",
+        "--skills",
+        "asd-ste100",
+        "--model",
+        "anthropic/claude-opus-4-8",
+        "--thinking",
+        "high",
+        "--session-dir",
+        `${dir}/sessions`,
+      ]);
+      expect(recorded(dir, "env")).toEqual([
+        `PWD=${dir}`,
+        `HOME=${dir}.world/home`,
+        "OMP_PROFILE=judge-ste",
+      ]);
+      // The namespace mounts no file, so the judge's directory is shown read-write whole.
+      expect(Object.fromEntries(recorded(dir, "probe").map((line) => line.split(" ")))).toEqual({
+        "read-outside": "denied",
+        "read-home-ssh": "denied",
+        "list-work": "denied",
+        "read-own": "allowed",
+        "write-own-dir": "allowed",
+        "write-sessions": "allowed",
+        "read-skill": "allowed",
+        "read-models": "allowed",
+        "key-command": "allowed",
+        "gateway-base-url": "denied",
+        "token-is-jwt": "denied",
+        "dbus-set": "denied",
+      });
+      expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=0\n");
+      expect(existsSync(`${dir}.world`)).toBe(false);
+      expect(existsSync(`${dir}.key`)).toBe(false);
+    },
+    judgeBound
+  );
 
   // The gateway route with the real installer and key command, and a stand-in hawk-token first on
   // PATH that mints a JWT and counts each mint. The key command needs the operator's home and
@@ -10231,6 +10406,66 @@ describe("require_superpowers", () => {
     expect(stderr).toContain("SKILL_SCENARIOS_SUPERPOWERS");
     writeFileSync(path.join(label, "superpowers"), "");
     expect(check(label).code).toBe(0);
+  });
+});
+
+// `rig.sh identity <label>`, the whole script, on a label profile staged as cmd_profile leaves one:
+// its directory under <work>/profiles, with its built-from, and its install under <work>/installs.
+// Catches: an identity that names no profile tree, or whose digest moves with each model call (the
+// route's call record, minted key and key command) or stays put when a plugin changes; a pack
+// digest that is not the built-from's `skills` line; a rig revision that is not this checkout's;
+// and a label with no built profile answered with three lines anyway.
+describe("identity", () => {
+  test("prints the label's profile tree digest, its pack digest and the rig's revision", () => {
+    const idWork = freshDir("identity-work");
+    const P = path.join(idWork, "profiles", "head");
+    const I = path.join(idWork, "installs", "0a1b2c3d4e5f");
+    mkdirSync(P, { recursive: true });
+    const pack = "5".repeat(64);
+    for (const [file, text] of Object.entries({
+      [path.join(P, "ready")]: "",
+      [path.join(P, "install")]: "0a1b2c3d4e5f\n",
+      [path.join(P, "pin")]: "omp@1.0.0\n",
+      [path.join(P, "built-from")]:
+        `checkout /checkouts/head\ncommit ${"6".repeat(40)} parents=\nskills ${pack}\n`,
+      [path.join(I, "home", ".omp", "profiles", "legion", "agent", "config.yml")]: "a: 1\n",
+      [path.join(I, "pi-envoy", "dist", "index.js")]: "export {};\n",
+      [path.join(I, "key", "anthropic-key.calls")]: "",
+      [path.join(I, "cache", "hawk-token.key")]: "a token\n",
+    })) {
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, text);
+    }
+    const identity = (label = "head") =>
+      spawnChecked(["bash", path.join(import.meta.dir, "rig.sh"), "identity", label], {
+        env: { ...childEnv, SKILL_SCENARIOS_WORK: idWork },
+      });
+    const first = identity();
+    expect({ code: first.exitCode, stderr: first.stderr.toString() }).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    const [tree = "", packLine, rig, ...rest] = first.stdout.toString().split("\n");
+    const revision = bash([fn("checkout_commit"), 'checkout_commit "$1"'].join("\n"), [root]);
+    expect({ tree: /^profile-tree [0-9a-f]{64}$/.test(tree), packLine, rig, rest }).toEqual({
+      tree: true,
+      packLine: `pack ${pack}`,
+      rig: `rig ${revision.stdout.trim()}`,
+      rest: [""],
+    });
+    // A model call rewrites the route's live files, and the tree digest stays.
+    appendFileSync(path.join(I, "key", "anthropic-key.calls"), "a call\n");
+    writeFileSync(path.join(I, "cache", "hawk-token.key"), "another token\n");
+    expect(identity().stdout.toString().split("\n")[0]).toBe(tree);
+    // A plugin that changes moves it.
+    writeFileSync(path.join(I, "pi-envoy", "dist", "index.js"), "export const a = 1;\n");
+    expect(identity().stdout.toString().split("\n")[0]).not.toBe(tree);
+    const unbuilt = identity("base");
+    expect({ code: unbuilt.exitCode, stdout: unbuilt.stdout.toString() }).toEqual({
+      code: 1,
+      stdout: "",
+    });
+    expect(unbuilt.stderr.toString()).toContain("no profile for label base");
   });
 });
 
@@ -10700,6 +10935,46 @@ sleep() { command sleep 0.05; }`;
       expect(world(run)).toContain(`ro ${path.join(tree, "bin")}`);
       expect(world(run)).toContain(`ro ${realpathSync(store)}`);
       expect(world(run).filter((line) => line.includes(RIG))).toEqual([]);
+    }
+  );
+
+  // Catches: a bun stand-in that records no tree, so no own run of the world's check can be told
+  // from a run at another commit (score.ts's `ownRun`): it records the directory bun ran in and
+  // that directory's `git rev-parse HEAD`, and an empty head outside a repository.
+  test.skipIf(withoutNamespace)(
+    "the bun stand-in records the directory it ran in and that directory's commit",
+    () => {
+      const work = freshDir("launch-bun");
+      const name = "threads-closed-correct-head-2";
+      const tree = path.join(runDirOf(work, name), "cwd", "tree");
+      mkdirSync(tree, { recursive: true });
+      const git = (...args: string[]) =>
+        spawnChecked(["git", "-C", tree, "-c", "user.name=n", "-c", "user.email=n@n", ...args], {
+          env: childEnv,
+        })
+          .stdout.toString()
+          .trim();
+      git("init", "-q");
+      git("commit", "-q", "--allow-empty", "-m", "a");
+      const commit = git("rev-parse", "HEAD");
+      const { run, result, out } = launched(
+        work,
+        name,
+        'cd tree && "$(dirname "$HOME")/bin/bun" -e 0 Ada; cd .. && "$(dirname "$HOME")/bin/bun" -e 0; echo ran',
+        [],
+        { standins: true }
+      );
+      expect({ code: result.code, out }).toEqual({ code: 0, out: "ran\nexit=0\n" });
+      const bunCalls = readFileSync(path.join(run, "calls.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((call) => call.as === "bun")
+        .map(({ argv, cwd, head }) => ({ argv, cwd, head }));
+      expect(bunCalls).toEqual([
+        { argv: ["-e", "0", "Ada"], cwd: tree, head: commit },
+        { argv: ["-e", "0"], cwd: path.join(run, "cwd"), head: "" },
+      ]);
     }
   );
 
@@ -11912,7 +12187,9 @@ sleep() { command sleep 0.05; }`;
     "  case $1 in",
     '  "$here/run-names.ts") [ "$2" != guard ] || launched_copy "$3" ;;',
     '  "$here/boot-refusal.ts") echo "claim boot failed before the first turn"; return 0 ;;',
-    `  "$here/judge.ts") printf '{"ask":"01a2d000-0000-7000-8000-000000000005","selected":["Text-only"],"text":"It is."}\\n' >"$3/answers-$4.jsonl"; return 0 ;;`,
+    // judge.ts's `answer` answers the spec run's ask; its `run`, which a worker run's end calls
+    // (judge_ts run), judges nothing here, since no agent wrote.
+    `  "$here/judge.ts") [ "$2" != answer ] || printf '{"ask":"01a2d000-0000-7000-8000-000000000005","selected":["Text-only"],"text":"It is."}\\n' >"$3/answers-$4.jsonl"; return 0 ;;`,
     '  "$here/seed.ts") [ "$2" != state ] || { shift; command bun "$STATE_READER" "$@"; return; } ;;',
     "  esac",
     '  whole_bun "$@"',

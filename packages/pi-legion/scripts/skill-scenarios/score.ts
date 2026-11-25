@@ -38,6 +38,7 @@ import {
   answerOf,
   COMPLETE_PATH,
   DAEMON_LOG,
+  type DaemonLine,
   daemonLines,
   finished,
   NOT_CURRENT_PHASE,
@@ -76,12 +77,15 @@ import {
   threadState,
 } from "./gh-threads";
 import {
+  AcceptsOutput,
   CheckableFile,
   CheckableOutput,
   DecisionsOutput,
   FAULT_ROWS,
   FaultsOutput,
   FindingsOutput,
+  type NAMED_KINDS,
+  NamesOutput,
   NumbersOutput,
   PreambleOutput,
   ProposalOutput,
@@ -109,6 +113,8 @@ import {
   toolResults,
   transcriptEntries,
 } from "./transcript";
+// The world's workflow file, which a text finding of the worker scenarios is on (world-issue.ts).
+import { WORKFLOW_FILE } from "./world-issue";
 
 /** `GET /api/v1/issues/{key}/asks`: every ask on the issue, whatever its state. */
 const IssueAsks = z.array(
@@ -137,8 +143,10 @@ const IssueEvents = z.array(
 const MessageRead = z.looseObject({ message: z.looseObject({ body: z.string() }) });
 /** One line gh-standin.ts or the `bun` stand-in records: when the call started, the agent that
  * made it when the run named one (`by`, the role rig.sh booted that agent as: a run that boots
- * one agent per role of a loop), its exit, and (a gh call that edited the pull request's body)
- * the body the stand-in kept and serves from then on. */
+ * one agent per role of a loop), its exit, (a gh call that edited the pull request's body) the
+ * body the stand-in kept and serves from then on, and (a `bun` call) the directory it ran in and
+ * that directory's `git rev-parse HEAD`, empty outside a repository, which a `bun` call recorded
+ * before the stand-in kept them does not carry (rig.sh's standins; `ownRun`). */
 const Call = z.looseObject({
   at: z.string(),
   as: z.string(),
@@ -148,7 +156,11 @@ const Call = z.looseObject({
   stdin: z.string().optional(),
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
+  cwd: z.string().optional(),
+  head: z.string().optional(),
 });
+/** One call of the run's calls.jsonl, as `Call` reads it. */
+export type StandInCall = z.infer<typeof Call>;
 /** rig.sh's worker_fixture's <run>/world.json, read through the one reader every program of the
  * run reads it with (gh-call.ts's `readWorld`). Every worker scenario reads it — tester-proof,
  * reviewer-text-findings and threads-closed — and a file that is no world is a rig error of the
@@ -823,6 +835,98 @@ function changedFiles(runDir: string, from: string, to: string): string[] {
     .filter((name) => name !== "");
 }
 
+/** `seed.ts capture-results`'s results.json: every result recorded against a check of the run's
+ * issue, the seeded passes among them, each with the check it is of (its block id), the commit it
+ * names, the session and the role that recorded it, its verdict, its observed text (where a
+ * result that records an earlier pass as holding gives its reason) and when Dispatch recorded it. */
+const Results = z.array(
+  z.object({
+    check: z.string(),
+    commit: z.string(),
+    session: z.string(),
+    role: z.string(),
+    verdict: z.string(),
+    observed: z.string(),
+    at: z.string(),
+  })
+);
+export type RunResult = z.infer<typeof Results>[number];
+/** The results of a worker run's issue (results.json, which rig.sh's reviewer-text-findings and
+ * threads-closed runs capture once their agents end), the one reader of that file. A run with no
+ * results.json was not captured, which is the rig's fault: it throws, as every unreadable record
+ * of a run does, and `scoreRuns` makes a rig error of it. */
+export function resultsOf(runDir: string): RunResult[] {
+  return json(path.join(runDir, "results.json"), Results);
+}
+
+/** The route a worker's `request_backward_move` posts to (daemon-standin.ts). */
+const BACKWARD_PATH = "/legion/v1/phase/backward";
+/** Every `request_backward_move` the run's daemon stand-in logged (daemon.log), whatever it was
+ * answered, in the order it logged them: each names the phase it asked for (`to`), the role the
+ * stand-in served (`role`) and the answer (`status`, `code`). One the daemon took is answered
+ * 200; one it refused moved nothing. The one reader of a move back, for every scenario that
+ * scores one. */
+export function backwardMoves(runDir: string): DaemonLine[] {
+  return daemonLines(runDir).filter((line) => line.path === BACKWARD_PATH);
+}
+
+/** Whether `result` is its recorder's own run of the world's check (Verification v47's rule 8):
+ * a call the run's `bun` stand-in recorded of `bun greet.ts Ada` (the first two arguments that
+ * are not flags, after an optional `run`: a path ending in greet.ts, then `Ada`), made by the
+ * recording role where the call names the role its pane was booted as (`by`), in a tree whose
+ * `git rev-parse HEAD` (the call's `head`) the result's commit names, by a prefix of seven digits
+ * or more as a review names a head (`namesHead`), and before Dispatch recorded the result. A
+ * call recorded before the stand-in kept its tree carries no `head`, and is a run at no commit. */
+export function ownRun(calls: readonly StandInCall[], result: RunResult): boolean {
+  const recorded = instant(result.at, "a result's time");
+  return calls.some((call) => {
+    if (call.as !== "bun" || call.head === undefined) return false;
+    if (call.by !== undefined && call.by !== result.role) return false;
+    const args = call.argv.filter((arg) => !arg.startsWith("-"));
+    const [script, name] = args[0] === "run" ? args.slice(1) : args;
+    return (
+      (script?.endsWith("greet.ts") ?? false) &&
+      name === "Ada" &&
+      namesHead(call.head, result.commit) &&
+      instant(call.at, "a bun call's time") < recorded
+    );
+  });
+}
+
+/** The reads of a commit `readsCommit` counts, each a `bash` command of the transcript, read
+ * within one simple command (up to a `;`, `&`, `|` or line break):
+ *   git show … <sha> …        the commit with its patch and its files, `<sha>:<path>` among them
+ *   git diff … <sha> …        a diff with the commit at one end, a range (`<a>..<sha>`) too
+ *   git log -p … <sha> …      the log's patches through the commit (`-p`, `-u` or `--patch`)
+ *   git cat-file … <sha> …    the commit's object
+ *   gh pr diff …              the pull request's diff
+ *   gh api …/commits/<sha>    the commit's files and patches, as GitHub's REST answers them
+ *   gh api …/pulls/<n>/files  the pull request's files, each with its patch
+ * git's own options may stand before its subcommand (`-C <dir>`, `-c <name>=<value>`,
+ * `--no-pager`, `-P`). Each git form and the commits route name the commit by a SHA prefix of
+ * seven digits or more (namesCommit); `gh pr diff` and the files route read the pull request at
+ * whatever head it stands, and name no commit. */
+const GIT_READ =
+  /\bgit(?:\s+(?:-C\s+\S+|-c\s+\S+|--no-pager|-P))*\s+(show|diff|log|cat-file)\b([^;&|\n]*)/g;
+const LOG_PATCH = /(?:^|\s)(?:-p|-u|--patch)(?=\s|$)/;
+const GH_PR_DIFF = /\bgh\s+pr\s+diff\b/;
+const GH_COMMIT = /\bgh\s+api\b[^;&|\n]*?\brepos\/[^/\s]+\/[^/\s]+\/commits\/([0-9a-f]{7,40})\b/g;
+const GH_PR_FILES = /\bgh\s+api\b[^;&|\n]*?\brepos\/[^/\s]+\/[^/\s]+\/pulls\/\d+\/files\b/;
+/** Whether the session read the commit `sha` (Verification v47's k2 `accept` (a)): a read, in its
+ * transcript, of the commit's diff, its files or its patch, in one of the forms GIT_READ,
+ * GH_PR_DIFF, GH_COMMIT and GH_PR_FILES name. */
+export function readsCommit(entries: SessionEntry[], sha: string): boolean {
+  return toolCalls(entries).some(({ tool, command }) => {
+    if (tool !== "bash") return false;
+    if (GH_PR_DIFF.test(command) || GH_PR_FILES.test(command)) return true;
+    if ([...command.matchAll(GH_COMMIT)].some(([, named = ""]) => sha.startsWith(named)))
+      return true;
+    return [...command.matchAll(GIT_READ)].some(
+      ([, verb, rest = ""]) => (verb !== "log" || LOG_PATCH.test(rest)) && namesCommit(rest, [sha])
+    );
+  });
+}
+
 /** tester-proof: the legion-worker skill's rule for a tester whose predecessor's results hold.
  * worker_fixture's implement record (seed.ts implement-handoff) is the implementer's, and seed.ts
  * records its passing result against the issue's one `before_merge` check, whose words the CLI
@@ -986,6 +1090,9 @@ const FINDING_WORKFLOW = ".github/workflows/";
 /** The sentence of FINDING_DOC the change makes false, rig.sh's `text_finding_doc_line`: the line
  * a reviewer's text commit removes, and the one line it may remove (`reviewerTextFindings`). */
 const FINDING_SENTENCE = "It prints the name exactly as it was given, spaces and all.";
+/** The world's one check (world-issue.ts's worldVerification), the block id every result the
+ * world seeds or a run records names. */
+const WORLD_CHECK = "k1";
 /** The inline comments of a review submission, as the reviewer's own prompt writes them: one per
  * finding, each on the file its `path` names. The head and the event of a create are read by the
  * rules the gh stand-in answers the same call by (`reviewOf`). */
@@ -1369,6 +1476,17 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
         body &&
         workflowOpen &&
         toldImplementer;
+  // k1 (c) and (d), each reported and in no case's pass yet: no result of the world's check that
+  // the reviewer's own session recorded at its own commit (`resultsOf`), and each move back the
+  // run asked the daemon for, with its answer (`backwardMoves`).
+  const noOwnResult = !resultsOf(runDir).some(
+    (result) =>
+      result.check === WORLD_CHECK &&
+      result.session === sender &&
+      push !== undefined &&
+      namesHead(push.sha, result.commit)
+  );
+  const moves = backwardMoves(runDir);
   const records = json(path.join(runDir, "handoffs.json"), Handoffs).filter(
     (record) => record.phase === "review"
   ).length;
@@ -1379,6 +1497,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
     `case=${reviewCase} event=${review?.event || "none"} head=${head} doc=${onDoc} workflow=${onWorkflow} toldImplementer=${toldImplementer} submissions=${reviews.length} resolveThread=${resolves} pushes=${pushes.length} reviewRecords=${records}`,
     `commit=${commit} docFixed=${docFixed} carries=${carries} body=${body} workflowOpen=${workflowOpen}`,
     `commentPaths=${JSON.stringify(paths)} changed=${JSON.stringify(changed)} requested=${requested}`,
+    `noOwnResult=${noOwnResult} moves=${JSON.stringify(moves.map((move) => `${move.to ?? ""} ${answerOf(move)}`))}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
   // The row's scenario carries the case, as an askgate row's does, so the counts are per case and
@@ -1648,6 +1767,172 @@ function prComment(call: z.infer<typeof Call>, world: World): string | undefined
   return named.length === 0 || named.some(own) ? callText(call) : undefined;
 }
 
+/** The scenarios whose agents' texts the rig's judge reads (judge.ts's `judgeWorker`). */
+export const JUDGED_SCENARIOS: readonly string[] = ["reviewer-text-findings", "threads-closed"];
+/** One text an agent of a worker run wrote, as the rig's judge is given it (texts.json) and its
+ * answers name it (Verification v47's rule 8): a message one of the run's agents sent on a role
+ * topic (`message-<n>`, in the order Envoy accepted them), a `gh pr comment` on the world's pull
+ * request (`comment-<n>`, in the order the gh stand-in recorded them; its body as gh sends it,
+ * else the call's whole text), or the observed text of a result one of the run's agents recorded
+ * (`result-<n>`, in results.json's order), where a pass recorded as holding gives its reason. */
+export interface WorkerText {
+  id: string;
+  kind: "message" | "comment" | "result";
+  body: string;
+}
+/** One thing the names judge looks for in each text (given.json): the world's check, a file a
+ * finding of the world is on, with each review thread on it, or a result recorded before the run's
+ * agents started, by a session none of them is. */
+export interface WorkerGiven {
+  id: string;
+  kind: (typeof NAMED_KINDS)[number];
+  what: string;
+}
+/** The session of each agent the run booted: the first one's transcript, and the reviewer half's
+ * (`<run>/sessions/reviewer`) where the run booted one. */
+function runSessions(runDir: string): string[] {
+  const second = sessionIn(path.join(runDir, "sessions", RESOLVES));
+  return [ownSession(session(runDir)), ...(second.length === 0 ? [] : [ownSession(second)])];
+}
+/** Every text the run's agents wrote that the judge reads (WorkerText). */
+export function workerTexts(runDir: string): WorkerText[] {
+  const world = worldIn(runDir);
+  const own = runSessions(runDir);
+  const messages = parsed(path.join(runDir, "published.jsonl"), PublishedLine).flatMap((line) =>
+    "message" in line && own.includes(String(line.sender)) ? [String(line.message)] : []
+  );
+  const comments = parsed(path.join(runDir, CALLS), Call).flatMap((call) => {
+    if (call.as !== "gh" || call.exit !== 0 || prComment(call, world) === undefined) return [];
+    const file = flagValue(call.argv, ["-F", "--body-file"]);
+    const body =
+      flagValue(call.argv, ["-b", "--body"]) ??
+      (file === "-" ? call.stdin : file === undefined ? undefined : call.files?.[file]);
+    return [body ?? callText(call)];
+  });
+  const results = resultsOf(runDir).filter((result) => own.includes(result.session));
+  return [
+    ...messages.map((body, index) => ({
+      id: `message-${index + 1}`,
+      kind: "message" as const,
+      body,
+    })),
+    ...comments.map((body, index) => ({
+      id: `comment-${index + 1}`,
+      kind: "comment" as const,
+      body,
+    })),
+    ...results.map((result, index) => ({
+      id: `result-${index + 1}`,
+      kind: "result" as const,
+      body: result.observed,
+    })),
+  ];
+}
+/** What the names judge looks for in each text of the run (WorkerGiven): the world's check; the
+ * document the change makes false, the world's workflow file and the file of each thread of
+ * <run>/threads.json or that the run opened, each with the review threads on it; and each result
+ * no agent of the run recorded, in results.json's order (`earlier-<n>`). */
+export function workerGivens(runDir: string): WorkerGiven[] {
+  const world = worldIn(runDir);
+  const own = runSessions(runDir);
+  const seeded = path.join(runDir, "threads.json");
+  const threads = [
+    ...(existsSync(seeded) ? json(seeded, Threads) : []),
+    ...openedThreads(runDir, world).map((thread) => ({
+      id: String(thread.id),
+      path: String(thread.path),
+    })),
+  ];
+  const files = [...new Set([FINDING_DOC, WORKFLOW_FILE, ...threads.map((thread) => thread.path)])];
+  const earlier = resultsOf(runDir).filter((result) => !own.includes(result.session));
+  return [
+    {
+      id: "check",
+      kind: "check",
+      what: `check ${WORLD_CHECK} of the issue's Verification document, which runs \`bun greet.ts Ada\``,
+    },
+    ...files.map((file) => {
+      const on = threads.filter((thread) => thread.path === file).map((thread) => thread.id);
+      return {
+        id: `file:${file}`,
+        kind: "file" as const,
+        what:
+          on.length === 0
+            ? `the file ${file}`
+            : `the file ${file}, and the review ${on.length === 1 ? "thread" : "threads"} ${on.join(", ")} on it`,
+      };
+    }),
+    ...earlier.map((result, index) => ({
+      id: `earlier-${index + 1}`,
+      kind: "result" as const,
+      what: `the ${result.role}'s ${result.verdict} of check ${result.check} at commit ${result.commit}, recorded at ${result.at}, which observed: ${result.observed}`,
+    })),
+  ];
+}
+/** The commit the accepts judge reads each text of a run of `scenario` against: the world's head,
+ * the reviewer's own commit, which threads-closed's implementer reads as its last chance (k2
+ * `accept` (d), k3 `crossing` (b)); none for reviewer-text-findings, whose bars accept no commit,
+ * and whose accepts.json holds no row. */
+export function workerCommit(runDir: string, scenario: string): string | undefined {
+  return scenario === "threads-closed" ? worldIn(runDir).head : undefined;
+}
+/** What a worker judge's answer to `file` leaves out of, repeats from or adds to what judge.ts gave
+ * its judge; empty when it covers its input exactly. accepts.json holds one row for each text,
+ * where there is a commit to accept, and none where there is not; names.json one row for each
+ * text and each thing given. judge.ts, after each answer parses, and `workerReadings` use it. */
+export function workerCoverage(
+  file: string,
+  answer: unknown,
+  texts: readonly WorkerText[],
+  givens: readonly WorkerGiven[],
+  commit: string | undefined
+): string[] {
+  const ids = texts.map((text) => text.id);
+  if (file === "accepts.json")
+    return covered(
+      "text",
+      commit === undefined ? [] : ids,
+      AcceptsOutput.parse(answer).rows.map((row) => row.id),
+      true
+    );
+  return covered(
+    "text and thing",
+    ids.flatMap((id) => givens.map((given) => `${id} ${given.id}`)),
+    NamesOutput.parse(answer).rows.map((row) => `${row.id} ${row.given}`),
+    true
+  );
+}
+/** The judge's readings of a worker run of `scenario` (judge.ts's `judgeWorker`), which a judged
+ * term records in its row, as rule 8 has it: for each text (`workerTexts`), whether it accepts the
+ * commit `workerCommit` names, keyed by the text's id; and whether it names each thing
+ * `workerGivens` lists, keyed `<text id> <thing id>`; each with the words the judge quoted. A
+ * file missing, malformed, or not covering what judge.ts gave its judge (`workerCoverage`) is a
+ * rig error that `rig.sh judge` fixes, as a spec run's judge file is (`judged`). */
+export function workerReadings(runDir: string, scenario: string) {
+  const texts = workerTexts(runDir);
+  const givens = workerGivens(runDir);
+  const commit = workerCommit(runDir, scenario);
+  const read = <T>(file: string, schema: z.ZodType<T>): T => {
+    const full = path.join(runDir, file);
+    if (!existsSync(full)) throw new Error(`${file} is missing: run rig.sh judge ${runDir}`);
+    const result = schema.safeParse(JSON.parse(readFileSync(full, "utf8")));
+    if (!result.success)
+      throw new Error(`${file} is not a judge's answer: ${z.prettifyError(result.error)}`);
+    const problems = workerCoverage(file, result.data, texts, givens, commit);
+    if (problems.length > 0)
+      throw new Error(
+        `${file} does not cover what judge.ts gave its judge: ${problems.join("; ")}: run rig.sh judge ${runDir}`
+      );
+    return result.data;
+  };
+  return {
+    accepts: new Map(read("accepts.json", AcceptsOutput).rows.map((row) => [row.id, row])),
+    names: new Map(
+      read("names.json", NamesOutput).rows.map((row) => [`${row.id} ${row.given}`, row])
+    ),
+  };
+}
+
 /** threads-closed: the implementer's last chance at a reviewer's text commit (spec v31's R2, which
  * the implementer's and the reviewer's role prompts state), scored as Verification v38's k2 reads
  * it, over the agents one run boots: the implementer first, then the reviewer where the case has
@@ -1801,9 +2086,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const refusedCompletions = daemon.filter(
     (line) => line.path === COMPLETE_PATH && line.code === NOT_CURRENT_PHASE
   ).length;
-  const moved = daemon.find(
-    (line) => line.path === "/legion/v1/phase/backward" && line.status === 200
-  );
+  const moved = backwardMoves(runDir).find((line) => line.status === 200);
   const fixSession = session(runDir);
   const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
   // Each half's own session id, which is what the sender Envoy recorded is read against; a

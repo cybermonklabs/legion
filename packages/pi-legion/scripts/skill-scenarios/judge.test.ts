@@ -843,3 +843,153 @@ test("an answer file that appears while the judges run is kept, and the judging 
   await expect(judgeRun(run, { runner: planting(shared) })).rejects.toThrow(shared);
   expect(readFileSync(shared, "utf8")).toBe("not this judging's\n");
 });
+
+/** The commit a worker run's world stands at: the reviewer's own commit, which threads-closed's
+ * implementer reads as its last chance. */
+const reviewerCommit = "099b05dc19f7f7e5058e791d16ae05f0b123a2cc";
+/** A run of a worker scenario, as rig.sh's worker runs leave one once its results are captured:
+ * its world, its threads and their routes, the gh stand-in's calls, the messages Envoy accepted on
+ * its role topics, the results of its check, and its agent's transcript, by the session
+ * `sessionId`. `files` is written over these. */
+function workerRun(name: string, files: Record<string, string> = {}): string {
+  const dir = path.join(work, "runs", name);
+  mkdirSync(path.join(dir, "sessions"), { recursive: true });
+  const published = (...lines: object[]) =>
+    [
+      { at: "2026-09-30T17:20:00.000Z", recording: "legion-skills1-lweval-1-" },
+      ...lines,
+      { at: "2026-09-30T17:50:00.000Z", closed: "stopped" },
+    ]
+      .map((line) => `${JSON.stringify(line)}\n`)
+      .join("");
+  const written: Record<string, string> = {
+    "world.json": JSON.stringify({
+      key: "LWEVAL-1",
+      repo: "fernbrook/widgets",
+      pr: 1001,
+      branch: "legion/LWEVAL-1",
+      base: "main",
+      head: reviewerCommit,
+    }),
+    "fixtures.json": JSON.stringify({ routes: [] }),
+    "threads.json": "[]",
+    "calls.jsonl": `${JSON.stringify({
+      at: "2026-09-30T17:31:00.000Z",
+      as: "gh",
+      by: "implementer",
+      argv: ["pr", "comment", "1001", "--body", `Read ${reviewerCommit.slice(0, 12)}.`],
+      exit: 0,
+    })}\n`,
+    "published.jsonl": published({
+      at: "2026-09-30T17:32:00.000Z",
+      topic: "notifications.role.legion-skills1-lweval-1-architect",
+      message: `I accept ${reviewerCommit.slice(0, 12)}: check k1 still holds.`,
+      sender: sessionId,
+    }),
+    "results.json": JSON.stringify([
+      {
+        check: "k1",
+        commit: "1".repeat(40),
+        session: "01a1b402-1f7d-7c55-8a3e-2b6d9f04c812",
+        role: "tester",
+        verdict: "pass",
+        observed: "prints Hello, Ada! and exits 0",
+        at: "2026-09-30T17:10:00.000001Z",
+      },
+    ]),
+    [`sessions/2026-09-30T14-51-17-651Z_${sessionId}.jsonl`]: `${JSON.stringify({
+      type: "session",
+      id: sessionId,
+      cwd: "/rig/cwd",
+    })}\n`,
+    ...files,
+  };
+  for (const [file, text] of Object.entries(written)) writeFileSync(path.join(dir, file), text);
+  return dir;
+}
+/** The answer of a worker judge that reads its own inputs: a row for each text, and for each
+ * thing where it was given things; the architect message accepts the commit. */
+function workerAnswer(dir: string): [string, unknown] {
+  const texts = JSON.parse(readFileSync(path.join(dir, "texts.json"), "utf8")) as { id: string }[];
+  if (path.basename(dir) === "accepts")
+    return [
+      "accepts.json",
+      { rows: texts.map(({ id }) => ({ id, accepts: id === "message-1", quote: null })) },
+    ];
+  const givens = JSON.parse(readFileSync(path.join(dir, "given.json"), "utf8")) as { id: string }[];
+  return [
+    "names.json",
+    {
+      rows: texts.flatMap(({ id }) =>
+        givens.map((given) => ({ id, given: given.id, names: false, quote: null }))
+      ),
+    },
+  ];
+}
+
+// Catches: a worker run judged as a spec run, or not at all; a judge given a text another session
+// wrote, given no comment of the run's, or given more than its prompt's inputs; an earlier result
+// read as the run's own text rather than as a thing a text may name; and an answer that is not
+// the judge's own copied into the run directory.
+test("a threads-closed run's two judges read its agents' texts, against the reviewer's commit and the things they may name", async () => {
+  const dir = workerRun("threads-closed-accept-head-1");
+  const ran: Seen[] = [];
+  await judgeRun(dir, { runner: fakeRunner(ran, workerAnswer) });
+  const judge = (name: string) => ran.find((one) => path.basename(one.dir) === name);
+  expect(
+    ran.map(({ profile, dir: at, output, files }) => [profile, path.basename(at), output, files])
+  ).toEqual([
+    ["bare", "accepts", "accepts.json", ["commit.txt", "prompt.txt", "texts.json"]],
+    ["bare", "names", "names.json", ["given.json", "prompt.txt", "texts.json"]],
+  ]);
+  const texts = JSON.parse(
+    readFileSync(path.join(judge("names")?.dir ?? "", "texts.json"), "utf8")
+  );
+  expect(texts).toEqual([
+    {
+      id: "message-1",
+      kind: "message",
+      body: `I accept ${reviewerCommit.slice(0, 12)}: check k1 still holds.`,
+    },
+    { id: "comment-1", kind: "comment", body: `Read ${reviewerCommit.slice(0, 12)}.` },
+  ]);
+  expect(readFileSync(path.join(judge("accepts")?.dir ?? "", "commit.txt"), "utf8")).toBe(
+    `${reviewerCommit}\n`
+  );
+  const givens = JSON.parse(
+    readFileSync(path.join(judge("names")?.dir ?? "", "given.json"), "utf8")
+  );
+  expect(givens.map((given: { id: string; kind: string }) => `${given.kind} ${given.id}`)).toEqual([
+    "check check",
+    "file file:docs/cli.md",
+    "file file:.github/workflows/greet.yml",
+    "result earlier-1",
+  ]);
+  for (const name of ["accepts", "names"])
+    expect(readFileSync(path.join(dir, `${name}.json`), "utf8")).toBe(
+      readFileSync(path.join(judge(name)?.dir ?? "", `${name}.json`), "utf8")
+    );
+});
+
+// Catches: a judge started where it has nothing to read, which spends a model session on it, and
+// an answer file left unwritten for it, which the score reads as a rig error.
+test("a reviewer-text-findings run runs no accepts judge, and a run whose agents wrote nothing runs none", async () => {
+  const reviewer = workerRun("reviewer-text-findings-text-only-head-1");
+  const ran: Seen[] = [];
+  await judgeRun(reviewer, { runner: fakeRunner(ran, workerAnswer) });
+  expect(ran.map((one) => path.basename(one.dir))).toEqual(["names"]);
+  expect(JSON.parse(readFileSync(path.join(reviewer, "accepts.json"), "utf8"))).toEqual({
+    rows: [],
+  });
+  const quiet = workerRun("threads-closed-accept-head-2", {
+    "calls.jsonl": "",
+    "published.jsonl": "",
+  });
+  const none: Seen[] = [];
+  await judgeRun(quiet, { runner: fakeRunner(none, workerAnswer) });
+  expect({
+    ran: none.length,
+    accepts: JSON.parse(readFileSync(path.join(quiet, "accepts.json"), "utf8")),
+    names: JSON.parse(readFileSync(path.join(quiet, "names.json"), "utf8")),
+  }).toEqual({ ran: 0, accepts: { rows: [] }, names: { rows: [] } });
+});

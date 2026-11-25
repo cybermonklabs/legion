@@ -20,7 +20,16 @@ import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { claimBootOpening } from "./boot-refusal";
-import { checkouts, runsOf, specWork, statesDesign, TestHandoff } from "./score";
+import {
+  checkouts,
+  ownRun,
+  readsCommit,
+  runsOf,
+  specWork,
+  statesDesign,
+  TestHandoff,
+  workerReadings,
+} from "./score";
 import { bundled, sourcesCommit, spawnChecked } from "./test-programs";
 
 // The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
@@ -3567,6 +3576,9 @@ function reviewRun(
       "fixtures.json": JSON.stringify({ routes: [] }),
       "pushes.log": "",
       "handoffs.json": handoffs(reviewRecord),
+      // seed.ts capture-results's record of the issue's results, which the score reads beside
+      // the handoffs (score.ts's `resultsOf`): none of the run's agents recorded one.
+      "results.json": "[]",
       "daemon.log": calls(reviewDaemon),
       "published.jsonl": bus(toldImplementer(head)),
       ...files,
@@ -5615,6 +5627,7 @@ function fixRun(
     "pushes.log": "",
     "daemon.log": calls([refusedCompletion]),
     "handoffs.json": handoffs(reviewRecord),
+    "results.json": "[]",
     // What Envoy accepted on this run's topics, with the boot line of each half: the
     // implementer's wakes of the reviewer and the architect, then the reviewer's wake of the
     // architect. A run that sent one of them elsewhere, or sent none, names its own record here.
@@ -7089,6 +7102,63 @@ for (const [name, files] of [
     ...files,
   });
 
+// head-200 and head-201: a reviewer round that pushed one commit above the head it read, as k1's
+// text-only round does. head-200's results file holds a pass the reviewer's own session recorded
+// at that commit, and its daemon log two moves back, one taken and one refused; head-201's holds
+// the tester's pass at that commit and the reviewer's own at the head below it, and no move.
+// Catches: a scorer that reads no result of the run (k1 (c) is "records no result of the world's
+// check at its own commit"), that reads a pass at the commit by any session as the reviewer's own
+// or the reviewer's own at any commit as one at its own, and one that reads no move back outside
+// threads-closed, or only the moves the daemon took (k1 (d), and every "moves nothing").
+const ownResult = (commit: string, session = FIRST_SESSION, role = "reviewer") => ({
+  check: "k1",
+  commit,
+  session,
+  role,
+  verdict: "pass",
+  observed: "prints Hello, Ada! and exits 0",
+  at: "2026-09-30T17:36:00.000123Z",
+});
+const backwardMove = (to: string, status: number, code?: string) => ({
+  at: "2026-09-30T17:41:00.000Z",
+  method: "POST",
+  path: "/legion/v1/phase/backward",
+  status,
+  ...(code === undefined ? {} : { code }),
+  role: "reviewer",
+  to,
+});
+for (const [name, files] of [
+  [
+    "reviewer-text-findings-text-only-head-200",
+    {
+      "results.json": JSON.stringify([ownResult(fix.fixed)]),
+      "daemon.log": calls([
+        ...reviewDaemon,
+        backwardMove("testing", 200),
+        backwardMove("implementing", 409, "BACKWARD_REFUSED"),
+      ]),
+    },
+  ],
+  [
+    "reviewer-text-findings-text-only-head-201",
+    {
+      "results.json": JSON.stringify([
+        ownResult(fix.fixed, "01a1b402-1f7d-7c55-8a3e-2b6d9f04c812", "tester"),
+        ownResult(fix.approved),
+      ]),
+    },
+  ],
+] as const) {
+  fix.remoteFor(name);
+  reviewRun(name, {
+    "world.json": worldOf(fix.approved),
+    "case.txt": "text-only\n",
+    "pushes.log": pushed(fix.fixed),
+    "calls.jsonl": calls([submission(approval())]),
+    ...files,
+  });
+}
 /** What `score.ts runs` printed over the staged world, and the code it exited with. Both are
  *  read in a hook, below the one that stages that world. */
 let out = "";
@@ -7122,7 +7192,7 @@ const FIXTURE_ARMS: readonly (readonly [arm: string, runs: number])[] = [
   ["reviewer-text-findings:defect:head", 15],
   ["reviewer-text-findings:head", 1],
   ["reviewer-text-findings:text-only:base", 3],
-  ["reviewer-text-findings:text-only:head", 72],
+  ["reviewer-text-findings:text-only:head", 74],
   ["spec-rewrite:head", 1],
   ["spec-rewrite:older", 1],
   ["spec-writing:base", 3],
@@ -7255,6 +7325,15 @@ test("reviewer-text-findings, text-only: an approval that wakes no implementer f
   );
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-11\tpass=false\t.*workflow=true toldImplementer=false /
+  );
+});
+
+test("reviewer-text-findings, text-only: a result the reviewer recorded at its own commit is read, and so is each move back", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-200\tpass=false\t.* pushes=1 .* noOwnResult=false moves=\["testing 200","implementing 409 BACKWARD_REFUSED"\] /
+  );
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-201\tpass=false\t.* pushes=1 .* noOwnResult=true moves=\[\] /
   );
 });
 
@@ -10175,6 +10254,7 @@ test("k1, term by term: a round short of any one act fails whatever its label, a
     "world.json": worldOf(seed.read),
     "fixtures.json": JSON.stringify({ routes: [] }),
     "handoffs.json": handoffs(reviewRecord),
+    "results.json": "[]",
     "daemon.log": calls(reviewDaemon),
     "case.txt": "text-only\n",
     "pushes.log": pushLine(seed.read, sha, pushedAt),
@@ -10340,6 +10420,7 @@ test("k2 accept, term by term: an implementer's answer short of any one act fail
     "pushes.log": "",
     "daemon.log": calls([]),
     "handoffs.json": handoffs(reviewRecord),
+    "results.json": "[]",
     "calls.jsonl": calls([
       {
         at: "2026-09-30T17:31:00.000Z",
@@ -10459,6 +10540,7 @@ test("k2 correct, term by term: a last chance with no comment naming its push, o
     "pushes.log": pushLine(seed.reviewerWrong, push),
     "daemon.log": calls([]),
     "handoffs.json": handoffs(reviewRecord),
+    "results.json": "[]",
     "calls.jsonl": calls([comment, listed, resolved, approved]),
     "published.jsonl": bus(toReviewer(), toArchitect(), toldArchitectOfHead(push)),
   };
@@ -10674,6 +10756,7 @@ test("k1: a text-only reviewer pushes one commit that fixes the document, approv
     "world.json": worldOf(seed.read),
     "fixtures.json": JSON.stringify({ routes: [] }),
     "handoffs.json": handoffs(reviewRecord),
+    "results.json": "[]",
     "daemon.log": calls(reviewDaemon),
     "case.txt": "text-only\n",
     "published.jsonl": bus(told(sha)),
@@ -10844,6 +10927,7 @@ test("k2 accept: the implementer accepts the reviewer's commit in a comment and 
     "pushes.log": "",
     "daemon.log": calls([]),
     "handoffs.json": handoffs(reviewRecord),
+    "results.json": "[]",
     "calls.jsonl": calls([comment(`Accepted ${sha.slice(0, 12)}: the reviewer's fix is right.`)]),
     "published.jsonl": bus(accepted),
   };
@@ -10945,6 +11029,7 @@ test("k2 correct: the implementer corrects the reviewer's commit in one text-onl
     "pushes.log": pushLine(seed.reviewerWrong, sha),
     "daemon.log": calls([]),
     "handoffs.json": handoffs(reviewRecord),
+    "results.json": "[]",
     "calls.jsonl": calls([comment(sha), ...reviewerActs(sha)]),
     "published.jsonl": bus(toReviewer(sha), toArchitect(sha), toldArchitectOfHead(sha)),
   });
@@ -11019,3 +11104,195 @@ test("k2 correct: the implementer corrects the reviewer's commit in one text-onl
     },
   });
 }, 120_000);
+
+/** A result of results.json, as `seed.ts capture-results` writes one: the implementer's pass at
+ * the world's head, by a twelve-digit prefix, recorded at 17:30. */
+const recorded = {
+  check: "k1",
+  commit: head.slice(0, 12),
+  session: FIRST_SESSION,
+  role: "implementer",
+  verdict: "pass",
+  observed: "prints Hello, Ada! and exits 0",
+  at: "2026-09-30T17:30:00.000001Z",
+};
+/** The bun stand-in's record of `bun greet.ts Ada` in a clone at the world's head, by the
+ * implementer's pane, a minute before the result. */
+const ranAtHead = {
+  at: "2026-09-30T17:29:00.000Z",
+  as: "bun",
+  by: "implementer",
+  argv: ["greet.ts", "Ada"],
+  exit: 0,
+  cwd: "/rig/cwd/widgets",
+  head,
+};
+
+// Catches: an own run read off the command line alone (rule 8 holds it to a tree at the result's
+// commit), off a run after the result or by another role, off another command, off a record the
+// stand-in wrote before it kept the tree, or off a commit prefix too short to name one.
+test("an own run is the recording role's bun greet.ts Ada in a tree at the result's commit, before the result", () => {
+  const { head: _untracked, ...beforeTheTree } = ranAtHead;
+  expect({
+    ran: ownRun([ranAtHead], recorded),
+    run: ownRun([{ ...ranAtHead, argv: ["run", "./greet.ts", "--", "Ada"] }], recorded),
+    otherTree: ownRun([{ ...ranAtHead, head: "7".repeat(40) }], recorded),
+    after: ownRun([{ ...ranAtHead, at: "2026-09-30T17:31:00.000Z" }], recorded),
+    otherRole: ownRun([{ ...ranAtHead, by: "reviewer" }], recorded),
+    otherName: ownRun([{ ...ranAtHead, argv: ["greet.ts", "Bob"] }], recorded),
+    gh: ownRun([{ ...ranAtHead, as: "gh" }], recorded),
+    noTree: ownRun([beforeTheTree], recorded),
+    shortPrefix: ownRun([ranAtHead], { ...recorded, commit: head.slice(0, 6) }),
+  }).toEqual({
+    ran: true,
+    run: true,
+    otherTree: false,
+    after: false,
+    otherRole: false,
+    otherName: false,
+    gh: false,
+    noTree: false,
+    shortPrefix: false,
+  });
+});
+
+// Catches: a read of the commit that counts any git or gh call, or only one of the forms the
+// scorer's rule names: git show, diff, log -p and cat-file of the commit by a SHA prefix, gh pr
+// diff, and gh api's commits route and pull-request files route.
+test("a session reads the commit in each form the rule names, and in no other", () => {
+  const reads = (command: string) => readsCommit([...header, bash(command)], head);
+  expect(
+    Object.fromEntries(
+      [
+        `git show ${head.slice(0, 7)}`,
+        `git -C widgets --no-pager diff ${"0".repeat(7)}..${head.slice(0, 12)} -- docs/cli.md`,
+        `git log -p -1 ${head.slice(0, 12)}`,
+        `git log -1 ${head.slice(0, 12)}`,
+        `git cat-file -p ${head}`,
+        `git show ${head.slice(0, 12)}:docs/cli.md | head -5`,
+        "git show HEAD",
+        `git show ${head.slice(0, 6)}`,
+        `git show ${"7".repeat(12)}`,
+        "gh pr diff 1001",
+        `gh api repos/fernbrook/widgets/commits/${head.slice(0, 12)}`,
+        `gh api repos/fernbrook/widgets/commits/${"7".repeat(12)}`,
+        "gh api repos/{owner}/{repo}/pulls/1001/files --paginate",
+        "gh pr view 1001 --json files",
+        "cat docs/cli.md",
+      ].map((command) => [command, reads(command)])
+    )
+  ).toEqual({
+    [`git show ${head.slice(0, 7)}`]: true,
+    [`git -C widgets --no-pager diff ${"0".repeat(7)}..${head.slice(0, 12)} -- docs/cli.md`]: true,
+    [`git log -p -1 ${head.slice(0, 12)}`]: true,
+    [`git log -1 ${head.slice(0, 12)}`]: false,
+    [`git cat-file -p ${head}`]: true,
+    [`git show ${head.slice(0, 12)}:docs/cli.md | head -5`]: true,
+    "git show HEAD": false,
+    [`git show ${head.slice(0, 6)}`]: false,
+    [`git show ${"7".repeat(12)}`]: false,
+    "gh pr diff 1001": true,
+    [`gh api repos/fernbrook/widgets/commits/${head.slice(0, 12)}`]: true,
+    [`gh api repos/fernbrook/widgets/commits/${"7".repeat(12)}`]: false,
+    "gh api repos/{owner}/{repo}/pulls/1001/files --paginate": true,
+    "gh pr view 1001 --json files": false,
+    "cat docs/cli.md": false,
+  });
+  expect(
+    readsCommit(
+      [
+        ...header,
+        {
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "toolCall", id: "r", name: "read", arguments: { path: "docs/cli.md" } },
+            ],
+          },
+        },
+      ],
+      head
+    )
+  ).toBe(false);
+});
+
+// Catches: a judge's reading taken off a file that covers another set of texts or things than the
+// run's, so a term reads a row no judge wrote; a text of the run left out (its comment, the reason
+// of a result it recorded), or one another session wrote taken in; and an earlier result, which
+// the names judge is given, read as the run's own.
+test("the judge's readings of a worker run are keyed by the run's own texts and the things they may name", () => {
+  const dir = path.join(work, "readings", "threads-closed-accept-head-1");
+  mkdirSync(path.join(dir, "sessions"), { recursive: true });
+  const tester = "01a1b402-1f7d-7c55-8a3e-2b6d9f04c812";
+  const files: Record<string, string> = {
+    "world.json": world,
+    "fixtures.json": JSON.stringify({ routes: [] }),
+    "threads.json": JSON.stringify([
+      { id: "PRRT_kwDOfix002", path: ".github/workflows/greet.yml" },
+    ]),
+    "calls.jsonl": calls([
+      {
+        at: "2026-09-30T17:31:00.000Z",
+        as: "gh",
+        by: "implementer",
+        argv: ["pr", "comment", "1001", "--body", `Read ${head.slice(0, 12)}; it is right.`],
+        exit: 0,
+      },
+    ]),
+    "published.jsonl": bus(
+      sentTo("architect", `I accept ${head.slice(0, 12)}.`),
+      sentTo("implementer", "Another session's message.", undefined, SECOND_SESSION)
+    ),
+    "results.json": JSON.stringify([
+      { ...recorded, session: tester, role: "tester", commit: "1".repeat(40) },
+      { ...recorded, observed: `The tester's pass at ${"1".repeat(12)} holds.` },
+    ]),
+    "sessions/2026-09-30T14-51-17-651Z_01a0f2cc.jsonl": [...header, ...turn]
+      .map((entry) => `${JSON.stringify(entry)}\n`)
+      .join(""),
+  };
+  for (const [file, text] of Object.entries(files)) writeFileSync(path.join(dir, file), text);
+  const texts = ["message-1", "comment-1", "result-1"];
+  const givens = ["check", "file:docs/cli.md", "file:.github/workflows/greet.yml", "earlier-1"];
+  const answers = (names: { id: string; given: string }[]) => {
+    writeFileSync(
+      path.join(dir, "accepts.json"),
+      JSON.stringify({
+        rows: texts.map((id) => ({ id, accepts: id === "message-1", quote: null })),
+      })
+    );
+    writeFileSync(
+      path.join(dir, "names.json"),
+      JSON.stringify({
+        rows: names.map((row) => ({
+          ...row,
+          names: row.id === "result-1" && row.given === "earlier-1",
+          quote: row.id === "result-1" && row.given === "earlier-1" ? "The tester's pass" : null,
+        })),
+      })
+    );
+  };
+  const every = texts.flatMap((id) => givens.map((given) => ({ id, given })));
+  answers(every);
+  const readings = workerReadings(dir, "threads-closed");
+  expect({
+    accepts: [...readings.accepts.keys()],
+    accepted: readings.accepts.get("message-1")?.accepts,
+    names: [...readings.names.keys()],
+    named: readings.names.get("result-1 earlier-1"),
+  }).toEqual({
+    accepts: texts,
+    accepted: true,
+    names: every.map(({ id, given }) => `${id} ${given}`),
+    named: { id: "result-1", given: "earlier-1", names: true, quote: "The tester's pass" },
+  });
+  answers(every.slice(1));
+  expect(() => workerReadings(dir, "threads-closed")).toThrow(
+    "names.json does not cover what judge.ts gave its judge: no row for text and thing message-1 check"
+  );
+  answers(every);
+  expect(() => workerReadings(dir, "reviewer-text-findings")).toThrow(
+    "accepts.json does not cover what judge.ts gave its judge: rows for text it was not given: message-1, comment-1, result-1"
+  );
+});

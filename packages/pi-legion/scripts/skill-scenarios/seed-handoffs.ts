@@ -11,11 +11,18 @@
 //   seed.ts tester-result <file> <body file> <commit>         phaseHandoff, phase test
 //   seed.ts review-handoff <file> <body file>                 phaseHandoff, phase review
 //   seed.ts capture-handoffs <file> <run dir>                 captureHandoffs
+//   seed.ts capture-results <file> <run dir>                  captureResults
 //
 // seed.ts's own header says what each writes and reads.
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Actor, type Handoff, type HandoffSummary, roleToken } from "@legion/contracts";
+import {
+  type Actor,
+  type Handoff,
+  type HandoffSummary,
+  type IssueCheckResults,
+  roleToken,
+} from "@legion/contracts";
 import { z } from "zod";
 import {
   baseUrl,
@@ -305,6 +312,45 @@ export async function captureHandoffs(file: string, runDir: string): Promise<voi
     records.push(await agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(summary.id)}`));
   writeFileSync(path.join(runDir, "handoffs.json"), `${JSON.stringify(records)}\n`);
   console.log(`captured ${issue}: ${records.length} handoff records`);
+}
+
+/** One result of results.json, as `capture-results` writes it and score.ts's `Results` reads it:
+ * the check it is of (its block id), the commit it names, the session and the role that recorded
+ * it, its verdict, the text it observed (where a result that records an earlier pass as holding
+ * gives its reason), and when Dispatch recorded it, which an agent's own run of the check is
+ * ordered against. */
+interface CapturedResult {
+  check: string;
+  commit: string;
+  session: string;
+  role: string;
+  verdict: string;
+  observed: string;
+  at: string;
+}
+
+/** `capture-results <file> <run dir>`: every result recorded against a check of the run's issue,
+ * the seeded passes among them, in the order `GET /api/v1/issues/{key}/results` answers them (each
+ * check of the issue's Verification document in document order, each check's results as Dispatch
+ * lists them), as results.json in <run dir>. */
+export async function captureResults(file: string, runDir: string): Promise<void> {
+  const { issue } = loadFixture(file);
+  const read = await agentGet<IssueCheckResults>(
+    `/api/v1/issues/${encodeURIComponent(issue)}/results`
+  );
+  const results: CapturedResult[] = (read.checks ?? []).flatMap((check) =>
+    (check.results ?? []).map((result) => ({
+      check: result.check_block_id,
+      commit: result.commit_sha,
+      session: result.session,
+      role: result.role,
+      verdict: result.verdict,
+      observed: result.observed,
+      at: result.created_at,
+    }))
+  );
+  writeFileSync(path.join(runDir, "results.json"), `${JSON.stringify(results)}\n`);
+  console.log(`captured ${issue}: ${results.length} results`);
 }
 
 /** The phases a seed records, in the order the workflow runs them, each with the word its handoff

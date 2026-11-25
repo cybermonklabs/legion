@@ -127,6 +127,9 @@ class FakeDispatch {
     body: string;
   }[] = [];
   results: Record<string, unknown>[] = [];
+  /** The checks `GET /api/v1/issues/{key}/results` answers, each with the results recorded
+   * against it, as Dispatch's IssueCheckResults holds them (contracts' CheckBlock). */
+  checks: Record<string, unknown>[] = [];
   /** Each issue write's body, as `PATCH /api/v1/issues/{key}` took it, with its caller. */
   issueWrites: { issue: string; who: string; body: Record<string, unknown> }[] = [];
   /** Each project's default repository, as `PUT /api/v1/projects/{key}/default-repository` took
@@ -364,6 +367,11 @@ class FakeDispatch {
           const record = this.handoffs.find((h) => h.id === id);
           return record === undefined ? json({ code: "HANDOFF_NOT_FOUND" }, 404) : json(record);
         },
+      ],
+      [
+        /^GET \/api\/v1\/issues\/([^/]+)\/results$/,
+        (issue) =>
+          json({ issue, verification_artifact_id: "art-verification", checks: this.checks }),
       ],
       [
         /^POST \/api\/v1\/issues\/([^/]+)\/artifacts$/,
@@ -1608,6 +1616,80 @@ describe("tester-proof", () => {
     ).toEqual([
       ["h-test", '{"phase":"test"}'],
       [dispatch.handoffs[0]?.id, JSON.stringify({ head: "2".repeat(40) })],
+    ]);
+  });
+
+  // Catches: a capture that reads the results of one check alone, or drops any of what a bar reads
+  // of a result: its check, the commit it names, who recorded it and as what role, its verdict, its
+  // observed text (where a pass recorded as holding gives its reason) and its time, which an
+  // agent's own run of the check is ordered against.
+  test("captures every result of every check of the issue, with what each bar reads of it", async () => {
+    const dir = runDir();
+    const file = path.join(dir, "fixture.json");
+    await seed.testerProofIssue(file);
+    const result = (fields: Record<string, unknown>) => ({
+      id: `result-${String(fields.check_block_id)}-${String(fields.role)}`,
+      issue_key: KEY,
+      check_issue_key: KEY,
+      check_artifact_id: "art-verification",
+      check_sha256: "0".repeat(64),
+      check_version: 1,
+      actor: { kind: "session", id: fields.session },
+      excluded: 0,
+      failed: 0,
+      skipped: 0,
+      negative_control: "",
+      run: "bun greet.ts Ada",
+      screenshots: null,
+      surface: "cli",
+      ...fields,
+    });
+    dispatch.checks.push(
+      {
+        block_id: "k1",
+        results: [
+          result({
+            check_block_id: "k1",
+            commit_sha: "1".repeat(40),
+            session: handoffSeeds.TESTER.id,
+            role: "tester",
+            verdict: "pass",
+            observed: "prints Hello, Ada! and exits 0",
+            created_at: "2026-10-24T10:40:00.000001Z",
+          }),
+          result({
+            check_block_id: "k1",
+            commit_sha: "2".repeat(40),
+            session: "ses-run",
+            role: "implementer",
+            verdict: "pass",
+            observed: `The tester's pass at ${"1".repeat(12)} holds: the commit changes no line the check reads.`,
+            created_at: "2026-10-24T10:50:00.000001Z",
+          }),
+        ],
+      },
+      { block_id: "k2", results: null }
+    );
+    await handoffSeeds.captureResults(file, dir);
+    expect(JSON.parse(readFileSync(path.join(dir, "results.json"), "utf8"))).toEqual([
+      {
+        check: "k1",
+        commit: "1".repeat(40),
+        session: handoffSeeds.TESTER.id,
+        role: "tester",
+        verdict: "pass",
+        observed: "prints Hello, Ada! and exits 0",
+        at: "2026-10-24T10:40:00.000001Z",
+      },
+      {
+        check: "k1",
+        commit: "2".repeat(40),
+        session: "ses-run",
+        role: "implementer",
+        verdict: "pass",
+        observed: `The tester's pass at ${"1".repeat(12)} holds: the commit changes no line the check reads.`,
+        at: "2026-10-24T10:50:00.000001Z",
+      },
     ]);
   });
 });

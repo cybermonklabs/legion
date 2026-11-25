@@ -82,15 +82,24 @@
 #                                                  stands: what its namespace hides and what it
 #                                                  shows again; no reader judges a run by it
 #   rig.sh judge     <run dir>...                  the judge's prompts on each spec-writing or
-#                                                  spec-rewrite run (judge.ts run), each in a fresh
-#                                                  Oh My Pi session with no Dispatch
+#                                                  spec-rewrite run, and on what the agents of
+#                                                  each reviewer-text-findings or threads-closed
+#                                                  run wrote (judge.ts run), each in a fresh
+#                                                  Oh My Pi session with no Dispatch; a worker
+#                                                  run's own end runs it too
+#   rig.sh identity  <label>                       the label's three lines of the rig's identity
+#                                                  (cmd_identity): its built profile's tree
+#                                                  digest, its pack digest and the rig's revision
 #   rig.sh judge-omp <ste|bare> <dir> <output>     one fresh judge session: `omp -p` of
 #                                                  <dir>/prompt.txt in <dir>, under the judge's
 #                                                  profile (ste: asd-ste100 its one skill; bare: no
 #                                                  skill), in a Docker container that sees only
 #                                                  <dir> (read-only but for <dir>/<output> and
-#                                                  <dir>/sessions), output to <dir>/out.txt, the
-#                                                  model and thinking level to <dir>/judge-model.txt
+#                                                  <dir>/sessions), or, where the batch's services
+#                                                  are given, in the pod, in a namespace that
+#                                                  shows <dir> and a HOME of its own (cmd_judge_omp),
+#                                                  output to <dir>/out.txt, the model and thinking
+#                                                  level to <dir>/judge-model.txt
 #   rig.sh class-search [<checkout>]               every class of defect INFRA-764's review
 #                                                  rounds found, each as a named check of the
 #                                                  checkout (this one, or <checkout>'s own
@@ -286,7 +295,9 @@
 #   LEGION_E2E_MODEL_PROVIDER_MODEL
 #                                 provider, optional: the model id of that block a label's agents run
 #                                 (default the judge's, claude-opus-4-8); the judge keeps its own
-# `judge` and `judge-omp` also need Docker: each judge runs in a container (cmd_judge_omp).
+# `judge` and `judge-omp` also need Docker, where the batch's services are not given: each judge
+# then runs in a container. Where they are given (SKILL_SCENARIOS_POSTGRES_URL and
+# SKILL_SCENARIOS_NATS_URL), each judge runs in the pod, in a namespace of its own (cmd_judge_omp).
 # The rig runs a mise of its own, never the caller's: a worker pod's image carries none (its
 # `tools` stage alone installs mise), and the caller's is any version at all. `profile`,
 # `live-read`, `batch` and `judge-omp` fetch it with curl (rig_mise) at the worker image's own
@@ -1184,7 +1195,10 @@ base_env() {
 # The run's stand-ins in $R/bin: `gh`, which records the call and answers from $R/fixtures.json,
 # and `bun`, which runs the bun this script runs on (a caller's `bun` may be a shim that resolves
 # nothing under the agent's HOME) and records the call to $R/calls.jsonl as gh-standin.ts records
-# its own. The score reads the tester's run of the CLI from that record. No `legion` stands in: an
+# its own, with the directory it ran in (`cwd`) and that directory's `git rev-parse HEAD` (`head`,
+# empty outside a repository), read before bun runs. The score reads the tester's run of the CLI
+# from that record, and an agent's own run of the world's check at a commit from its `head`
+# (score.ts's `ownRun`). No `legion` stands in: an
 # agent reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
 #
 # `gh` runs $R/lib/gh.js, a bundle of gh-standin.ts built here (`bun build --target=bun`), and
@@ -1208,10 +1222,12 @@ standins() {
   cat >"$R/bin/bun" <<EOF
 #!/usr/bin/env bash
 at=\$(date -u +%FT%T.%3NZ)
+cwd=\$PWD
+head=\$(git rev-parse HEAD 2>/dev/null) || head=
 status=0
 $(printf %q "$bun_real") "\$@" || status=\$?
-jq -cn --arg at "\$at" --arg by "\${LEGION_ROLE:-}" --argjson exit "\$status" \\
-  '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit} + (if \$by == "" then {} else {by:\$by} end)' \\
+jq -cn --arg at "\$at" --arg by "\${LEGION_ROLE:-}" --arg cwd "\$cwd" --arg head "\$head" --argjson exit "\$status" \\
+  '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit, cwd:\$cwd, head:\$head} + (if \$by == "" then {} else {by:\$by} end)' \\
   --args -- "\$@" >>$(printf %q "$R/calls.jsonl")
 exit "\$status"
 EOF
@@ -2806,8 +2822,11 @@ judge_profiles() {
 # in its container; this prints the directory of that file, which the caller mounts read-only at
 # its own path (the directory rather than the file, so a key the operator renews by writing a new
 # file in its place still reaches the judge).
+# AT is the path the judge sees KEYS at: /opt/key, where the container mounts it (the default), or
+# KEYS itself for a judge that runs in the pod (judge_in_pod), whose world shows KEYS at its own
+# path; the key command and the models.yml name the key command and the token there.
 judge_keys() {
-  local P=$1 agent=$2 keys=$3 host_command token exp deadline payload key_file read_from
+  local P=$1 agent=$2 keys=$3 at=${4:-/opt/key} host_command token exp deadline payload key_file read_from
   (umask 077 && mkdir -p -- "$keys") || fail "judge-omp: cannot make $keys"
   if [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" = provider ]; then
     key_file=$(jq -r '[.providers[].apiKey] | first // empty' "$agent/models.yml") || key_file=
@@ -2843,16 +2862,50 @@ judge_keys() {
         fail "judge-omp: the gateway's key command gave no key; see $P/key/hawk-token.log"
     fi
     (umask 077 && printf '%s\n' "$token" >"$keys/token")
-    read_from=/opt/key/token
+    read_from=$at/token
   fi
   # $(cat) drops trailing newlines and keeps a key whose file has none, as the host's key command
   # does with $(<file).
   (umask 077 && printf '#!/bin/sh\nkey=$(cat %s) && [ -n "$key" ] && printf "%%s\\n" "$key"\n' "$read_from" >"$keys/anthropic-key")
   chmod 0700 "$keys/anthropic-key"
-  sed "s#!exec $host_command\"#!exec /opt/key/anthropic-key\"#g" "$agent/models.yml" >"$keys/models.yml"
-  grep -q '!exec /opt/key/anthropic-key"' "$keys/models.yml" && ! grep -qF "$host_command" "$keys/models.yml" ||
+  sed "s#!exec $host_command\"#!exec $at/anthropic-key\"#g" "$agent/models.yml" >"$keys/models.yml"
+  grep -qF "!exec $at/anthropic-key\"" "$keys/models.yml" && ! grep -qF "$host_command" "$keys/models.yml" ||
     fail "judge-omp: $agent/models.yml does not name the key command $host_command"
   [ -z "${key_file:-}" ] || printf '%s\n' "$key_file"
+}
+
+# judge_world DIR W KEYS OMP_DIR [KEY_DIR] prints the world of one judge that runs in the pod
+# (cmd_judge_omp), one `<kind> <path>` a line in world_paths' kinds, for private_world to mount.
+# Hidden: every path world_paths hides from a run's agent (the scratch root, the issue
+# workspaces, the work directory, every label's checkout and the pod's credentials), and the
+# operator's HOME, which no judge reads (the container shows none of it). Shown again: the judge's
+# own directory DIR and its world W (its HOME and /tmp) read-write, and read-only its key
+# directory KEYS (judge_keys), the directory of the omp it runs, and KEY_DIR, the directory of the
+# file its key command reads on the key-file and provider routes. A shown path that is a link, or
+# lies under one, is shown at what it resolves to as well, as world_paths shows one.
+judge_world() {
+  local dir=$1 W=$2 keys=$3 omp_dir=$4 key_dir=${5:-} workspaces=/legion/workspaces file entry kind real
+  {
+    printf 'cover %s\n' "$(realpath -m -- "${TMPDIR:-/tmp}")"
+    [ -z "${LEGION_WORKSPACE:-}" ] || workspaces=${LEGION_WORKSPACE%/*/*/*}
+    printf 'cover %s\n' "$(realpath -m -- "$workspaces")"
+    printf 'cover %s\n' "$work"
+    for file in "$work"/profiles/*/checkout; do [ ! -f "$file" ] || printf 'cover %s\n' "$(<"$file")"; done
+    case ${HOME:-/} in /) ;; *) printf 'cover %s\n' "$(realpath -m -- "$HOME")" ;; esac
+    for entry in /var/run/legion /var/run/secrets; do
+      printf 'credentials %s\n' "$entry"
+      [ "$(realpath -m -- "$entry")" = "$entry" ] || printf 'credentials %s\n' "$(realpath -m -- "$entry")"
+    done
+    {
+      printf 'rw %s\n' "$W" "$dir"
+      printf 'ro %s\n' "$keys" "$omp_dir"
+      [ -z "$key_dir" ] || printf 'ro %s\n' "$key_dir"
+    } | while read -r kind entry; do
+      printf '%s %s\n' "$kind" "$entry"
+      real=$(realpath -m -- "$entry")
+      [ "$real" = "$entry" ] || printf '%s %s\n' "$kind" "$real"
+    done
+  } | LC_ALL=C sort -k2 | uniq
 }
 
 # cmd_judge_omp KIND DIR OUTPUT runs one fresh judge session in DIR on DIR/prompt.txt: no plugins,
@@ -2881,6 +2934,19 @@ judge_keys() {
 # The network is Docker's default bridge, for the model's endpoint. The container gets 2 CPUs and
 # 4 GiB, so the judges of a busy batch cannot take the machine. SKILL_SCENARIOS_JUDGE_ENV adds
 # `NAME=value` words to the container's environment, for tests.
+#
+# Where the batch has its services given (given_services: SKILL_SCENARIOS_POSTGRES_URL and
+# SKILL_SCENARIOS_NATS_URL), as in a Legion pod, which has no Docker, the judge runs in the pod
+# instead, in the form a run's agent runs in (launch): under `env -i`, with a HOME of its own,
+# DIR.world/home, which holds the profile's config.yml, the key directory's models.yml and the
+# profile's skills as the container's start copies them, and DIR.world/tmp as its /tmp, in a
+# namespace of its own (private_world) whose world judge_world declares. Its key directory is seen
+# at its own path (judge_keys' AT). The namespace takes no mount onto a file (a gVisor pod refuses
+# one), so DIR is shown read-write whole, where the container shows DIR/OUTPUT and DIR/sessions
+# alone writable: judge.ts reads the one answer file and nothing else of DIR. A host that refuses
+# the namespace is refused before anything is built (require_namespace), as a run is, with no
+# fallback to the shared world. DIR.world is refused as a leftover and removed at the judge's end
+# as the key directory is. Its CPU and memory are bound by the pod's alone, as a run's agent's are.
 cmd_judge_omp() {
   [ $# = 3 ] || fail "usage: rig.sh judge-omp <ste|bare> <dir> <output file name>"
   local kind=$1 dir output=$3 skills status=0 omp P agent keys key_file h=/home/judge
@@ -2891,18 +2957,23 @@ cmd_judge_omp() {
   "" | . | .. | */* | prompt.txt | sessions | out.txt | judge-model.txt | .tmp) fail "judge-omp: '$output' is not the name of an answer file in $dir" ;;
   esac
   # What an earlier judge of DIR left is that judge's: its output and model record, and the key
-  # directory beside DIR that a judge killed outright leaves. Each is refused, naming it, and
-  # nothing of it is removed or replaced. The key directory is removed by the judge that made it
-  # alone (on_exit, below).
-  local leftover
+  # directory and the world beside DIR that a judge killed outright leaves. Each is refused, naming
+  # it, and nothing of it is removed or replaced. The key directory and the world are removed by
+  # the judge that made them alone (on_exit, below).
+  local leftover world
   keys=$dir.key
-  for leftover in "$dir/out.txt" "$dir/judge-model.txt" "$keys"; do
+  world=$dir.world
+  for leftover in "$dir/out.txt" "$dir/judge-model.txt" "$keys" "$world"; do
     [ ! -e "$leftover" ] && [ ! -L "$leftover" ] ||
       fail "judge-omp: $leftover is there from an earlier judge of $dir; nothing of it is removed or replaced: give this judge a directory of its own, and remove a key directory a killed judge left"
   done
   case "$(omp_ancestor "$dir" || true)" in "") ;; *) fail "judge-omp: $dir is under $(omp_ancestor "$dir"), whose plugins Oh My Pi would load" ;; esac
   case ${LEGION_E2E_MODEL_ROUTE:-gateway} in gateway | key-file | provider) ;; *) fail "judge-omp: LEGION_E2E_MODEL_ROUTE is '$LEGION_E2E_MODEL_ROUTE': it is gateway, key-file or provider" ;; esac
-  command -v docker >/dev/null || fail "judge-omp: docker is not on PATH; each judge runs in a container"
+  if given_services; then
+    require_namespace
+  else
+    command -v docker >/dev/null || fail "judge-omp: docker is not on PATH; each judge runs in a container"
+  fi
   judge_profiles
   # The pinned omp, by the rig's own mise (rig_mise), found before this judge writes anything, so a
   # refused fetch leaves nothing that the next judge of DIR would refuse.
@@ -2915,24 +2986,59 @@ cmd_judge_omp() {
   [ -x "$omp" ] || fail "judge-omp: $omp is not an executable omp"
   P=$work/judge-profiles/$kind
   agent=$P/home/.omp/profiles/judge-$kind/agent
-  local route=() host ip
-  on_exit "$(printf 'rm -rf -- %q' "$keys")"
-  key_file=$(judge_keys "$P" "$agent" "$keys") || exit 1
-  route=(-v "$keys:/opt/key:ro")
-  [ -z "$key_file" ] || route+=(-v "$key_file:$key_file:ro")
-  # The judge's container resolves the model endpoint's hostname itself, and a tailnet name the
-  # host resolves is often not resolvable inside Docker, so the host's answer is passed in. This
-  # once skipped the key-file route, which reached Anthropic's own public name and needed none;
-  # since that route takes LEGION_E2E_MODEL_BASE_URL it can name a gateway like any other, and a
-  # route left out here would let the scenario agents reach it while its judges could not.
-  host=$(sed -n 's#^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}https\{0,1\}://\([^/:"]*\).*#\1#p' "$agent/models.yml" | head -1)
-  ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
-  [ -z "$ip" ] || [ "$ip" = "$host" ] || route+=(--add-host "$host:$ip")
+  local route=() host ip extra=() words=() word
+  on_exit "$(printf 'rm -rf -- %q %q' "$keys" "$world")"
+  if given_services; then
+    key_file=$(judge_keys "$P" "$agent" "$keys" "$keys") || exit 1
+  else
+    key_file=$(judge_keys "$P" "$agent" "$keys") || exit 1
+    route=(-v "$keys:/opt/key:ro")
+    [ -z "$key_file" ] || route+=(-v "$key_file:$key_file:ro")
+    # The judge's container resolves the model endpoint's hostname itself, and a tailnet name the
+    # host resolves is often not resolvable inside Docker, so the host's answer is passed in. This
+    # once skipped the key-file route, which reached Anthropic's own public name and needed none;
+    # since that route takes LEGION_E2E_MODEL_BASE_URL it can name a gateway like any other, and a
+    # route left out here would let the scenario agents reach it while its judges could not.
+    host=$(sed -n 's#^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}https\{0,1\}://\([^/:"]*\).*#\1#p' "$agent/models.yml" | head -1)
+    ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
+    [ -z "$ip" ] || [ "$ip" = "$host" ] || route+=(--add-host "$host:$ip")
+  fi
   printf 'model %s\nthinking %s\n' "$judge_model" "$judge_thinking" >"$dir/judge-model.txt"
   mkdir -p "$dir/sessions"
   : >>"$dir/$output"
-  local extra=() word
-  for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
+  for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do
+    words+=("$word")
+    extra+=(-e "$word")
+  done
+  if given_services; then
+    # The judge's HOME and /tmp, then its world. A shown path that is or holds a path the world
+    # hides would show all it holds, so it is refused before the judge starts, as launch refuses
+    # one. The key file's directory is shown on the two routes whose key command reads a file: the
+    # file's own on the key-file route, the directory judge_keys names on the provider route.
+    local a=$world/home/.omp/profiles/judge-$kind/agent shown='' line_kind shown_path other hidden
+    mkdir -p "$world/tmp" "$a"
+    cp "$agent/config.yml" "$keys/models.yml" "$a"/
+    [ ! -d "$agent/skills" ] || cp -r "$agent/skills" "$a"/
+    [ -z "$key_file" ] || { shown=$key_file && [ -d "$shown" ] || shown=$(dirname -- "$shown"); }
+    judge_world "$dir" "$world" "$keys" "$(dirname -- "$omp")" "$shown" >"$world/namespace.txt"
+    while read -r line_kind shown_path; do
+      case $line_kind in rw | ro) ;; *) continue ;; esac
+      while read -r other hidden; do
+        case $other in cover | credentials) ;; *) continue ;; esac
+        case $hidden in "${shown_path%/}" | "${shown_path%/}"/?*) fail "judge-omp: the judge's world shows $shown_path ($line_kind), which is or holds $hidden, a path it hides (judge_world)" ;; esac
+      done <"$world/namespace.txt"
+    done <"$world/namespace.txt"
+    env -i PATH="$namespace_path" "$(command -v unshare)" -Urm -p --fork --mount-proc sh -c "$private_world" - "$(id -u)" "$(id -g)" "$world" "$dir" \
+      env -i PATH="$namespace_path" HOME="$world/home" USER=judge TERM=xterm-256color TMPDIR=/tmp OMP_PROFILE="judge-$kind" \
+      PI_NOTIFICATIONS=off PI_NO_TITLE=1 ENVOY_URL=http://127.0.0.1:1 "${words[@]}" \
+      timeout "${SKILL_SCENARIOS_TIMEOUT:-1500}" "$omp" -p "$(<"$dir/prompt.txt")" --no-extensions "${skills[@]}" \
+      --model "$judge_model" --thinking "$judge_thinking" --session-dir "$dir/sessions" </dev/null >"$dir/out.txt" 2>&1 || status=$?
+    [ -e "$world/namespace-ready" ] ||
+      fail "judge-omp: the judge of $dir did not start: its namespace could not be made: $(head -n 3 "$dir/out.txt" | tr '\n' ' ')"
+    echo "exit=$status" >>"$dir/out.txt"
+    rm -rf -- "$keys" "$world"
+    return "$status"
+  fi
   # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
   # failed pull names itself. The registry answers one request of a batch badly now and then (a
   # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
@@ -2969,10 +3075,51 @@ cmd_judge_omp() {
   return "$status"
 }
 
-# cmd_judge RUN... runs judge.ts's prompts on each spec run.
+# cmd_judge RUN... runs judge.ts's prompts on each spec run, and on what the agents of each
+# reviewer-text-findings or threads-closed run wrote (judge.ts's `judgeWorker`), which the run's
+# own end judges already and this judges again once its answers are moved aside.
 cmd_judge() {
   [ $# -ge 1 ] || fail "usage: rig.sh judge <run dir>..."
   SKILL_SCENARIOS_WORK=$work exec bun "$here/judge.ts" run "$@"
+}
+
+# tree_digest ROOT... prints one SHA-256 of the trees at each ROOT, in order: each entry's path
+# below its root, its kind, its mode and a link's target, then each regular file's bytes, each
+# list in byte order (LC_ALL=C), so two trees one entry, byte, mode or link apart digest apart. A
+# link is never followed. The model route's live directories under an install (key, cache and
+# model-key: its call record, its minted key and its key command, install_model_route) are left
+# out, since every model call of a batch rewrites them.
+tree_digest() {
+  local tree
+  for tree in "$@"; do
+    [ -d "$tree" ] || fail "tree_digest: $tree is not a directory"
+    printf 'root\n'
+    (cd "$tree" && find . \( -path ./key -o -path ./cache -o -path ./model-key \) -prune -o -printf '%y %m %p %l\n' | LC_ALL=C sort)
+    (cd "$tree" && find . \( -path ./key -o -path ./cache -o -path ./model-key \) -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum)
+  done | sha256sum | cut -d' ' -f1
+}
+
+# cmd_identity LABEL prints the three lines of the rig's identity that Verification v47's rule 4
+# has each result name for a label it ran, each `<name> <value>`:
+#   profile-tree  the tree digest (tree_digest) of the label's built profile: its directory and
+#                 its install (load_label's P and I), which hold the plugins, the pinned Oh My Pi,
+#                 the profile and the checkout it was built from
+#   pack          the pack digest, the `skills` line of the label's built-from (cmd_profile)
+#   rig           the rig's own revision: this checkout's commit, as checkout_commit reads it
+# The fourth line of rule 4, the daemon gate (rule 5), the role that records the check reads
+# itself.
+cmd_identity() {
+  [ $# = 1 ] || fail "usage: rig.sh identity <label>"
+  local P I pack rev tree
+  P=$(label_dir "$1")
+  [ -f "$P/ready" ] || fail "no profile for label $1: run \`rig.sh profile $1 <checkout>\` first"
+  I=$P
+  [ ! -f "$P/install" ] || I=$work/installs/$(<"$P/install")
+  pack=$(sed -n 's/^skills //p' "$P/built-from")
+  [ -n "$pack" ] || fail "label $1's built-from ($P/built-from) has no skills line"
+  rev=$(checkout_commit "$root") || fail "cannot read the commit of $root with jj or git"
+  tree=$(tree_digest "$P" "$I")
+  printf 'profile-tree %s\npack %s\nrig %s\n' "$tree" "$pack" "$rev"
 }
 
 # worker_routes PR prints the routes the gh stand-in answers the tester's world from
@@ -4606,9 +4753,12 @@ run_reviewer_text_findings() {
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" "$round" >"$R/prompt.txt"
   steps_seed "$project" reviewing
   worker_boot "$name" "$project" reviewer
-  # What the run left on its issue: every handoff record, each with its body, beside the review
-  # submission the gh stand-in recorded, which is what the score reads.
+  # What the run left on its issue: every handoff record, each with its body, and every result of
+  # its check, beside the review submission the gh stand-in recorded, which is what the score
+  # reads; then the judge's readings of what its agents wrote (judge.ts's `judgeWorker`).
   seed_ts capture-handoffs "$R/fixture.json" "$R"
+  seed_ts capture-results "$R/fixture.json" "$R"
+  judge_ts run "$R"
 }
 
 # start_recorder starts this run's record of what Envoy accepted on its own role topics
@@ -4767,9 +4917,13 @@ run_threads_closed() {
   else
     worker_boot "$name-reviewer" "$project" reviewer "$phase" "$completed"
   fi
-  # What the run left on its issue: every handoff record, each with its body, beside the calls the
-  # gh stand-in recorded and the pushes the remote logged, which are what the score reads.
+  # What the run left on its issue: every handoff record, each with its body, and every result of
+  # its check, beside the calls the gh stand-in recorded and the pushes the remote logged, which
+  # are what the score reads; then the judge's readings of what its agents wrote (judge.ts's
+  # `judgeWorker`).
   seed_ts capture-handoffs "$R/fixture.json" "$R"
+  seed_ts capture-results "$R/fixture.json" "$R"
+  judge_ts run "$R"
 }
 
 # scenario_case SCENARIO prints the case SCENARIO's own variable names, nothing for a scenario
@@ -5035,6 +5189,7 @@ health) shift && SKILL_SCENARIOS_WORK=$work bun "$here/health.ts" "$@" ;;
 world) shift && cmd_world "$@" ;;
 class-search) shift && cmd_class_search "$@" ;;
 judge) shift && cmd_judge "$@" ;;
+identity) shift && cmd_identity "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;
 esac; exit

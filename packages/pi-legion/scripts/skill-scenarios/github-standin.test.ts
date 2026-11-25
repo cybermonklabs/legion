@@ -838,6 +838,9 @@ function worldRun(call: string, after: string[] = []) {
     "launch() { :; }",
     "base_env() { :; }",
     "standins() { :; }",
+    // A worker run's end judges what its agents wrote (judge.ts's `judgeWorker`), and these
+    // agents are stubbed: they wrote nothing, and no transcript names their session.
+    "judge_ts() { :; }",
     `trap 'stop_pid "\${watcher_pid:-}" >/dev/null 2>&1; stop_tree "\${standin:-}" >/dev/null 2>&1; stop_tree "\${dispatch_pid:-}" >/dev/null 2>&1; stop_tree "\${github_pid:-}" >/dev/null 2>&1; cp "$R/logs/github.log" "$SCRATCH/github.log"; pg_sql "$PG" "DROP DATABASE IF EXISTS $DATABASE_PREFIX$RUN_ID WITH (FORCE)" >/dev/null 2>&1 || true' EXIT`,
     "results() {",
     '  env -i PATH="$PATH" HOME="$SCRATCH/home" DISPATCH_STATE_DIR="$SCRATCH/state" \\',
