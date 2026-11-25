@@ -326,6 +326,7 @@ func TestAGivenUpMessageMovesTheFloorAndTheMessagesBehindItApply(t *testing.T) {
 // that a client takes after the stop and never handles, as a stopping one can. After the restart
 // the handler runs once for each delivery the bound has left.
 func TestTheCountAndTheFirstFailureSurviveARestartOfTheConsumers(t *testing.T) {
+	// Not parallel: it stops and restarts its consumers mid-test and counts the handler's runs, work a broker may repeat, exactly at consumerSpec's 200 ms acknowledgement window; the margin such a count rests on (docs/testing.md, "A test asserts no count of work a broker may repeat") closes under the load of tests beside it.
 	for _, row := range []struct {
 		name string
 		// taken is how many deliveries a client takes after the stop and never handles.
