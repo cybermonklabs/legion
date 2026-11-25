@@ -25,18 +25,22 @@ import { temporaryDirectory } from "./temporary-directories";
  * whose `tmpdir()` is a symlink.
  */
 export function temporaryTmpdir(prefix: string): string {
-  const root = temporaryDirectory(prefix, { real: true });
   let restore: EnvironmentRestore | undefined;
+  // Registered before the directory's own hooks (`temporaryDirectory`, below): Bun runs a scope's
+  // `afterAll` hooks in the order they were registered and drops the rest once one fails, so a
+  // removal that throws, or runs past its limit, still leaves `TMPDIR` put back for every later
+  // file of the process.
+  afterAll(() => {
+    restore?.();
+    restore = undefined;
+  });
+  const root = temporaryDirectory(prefix, { real: true });
   beforeAll(() => {
     // `??=`, so a `beforeAll` that runs a second time without its `afterAll` between captures
     // nothing: it would capture the root this fixture set, and the restore would then point
     // every later file of the process at a root this one removed.
     restore ??= captureEnvironment(["TMPDIR"]);
     process.env["TMPDIR"] = root;
-  });
-  afterAll(() => {
-    restore?.();
-    restore = undefined;
   });
   return root;
 }
