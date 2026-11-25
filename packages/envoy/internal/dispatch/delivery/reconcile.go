@@ -571,11 +571,11 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 }
 
 // reconcilePullRequestHeads re-reads the pull request heads ListStalePullRequestHeads hands it,
-// at most PullRequestHeadBatch of them a pass, the longest unread first: the open rows Dispatch
-// last checked over PullRequestHeadStaleAfter ago, the merged rows credited to nobody that no
-// read has reached, and every merged row a rule older than this build's judged, each of those
-// taken once per rule version (AttributionRuleVersion). A row this pass moves from one issue to
-// another records that move on both issues, through the broker handed to the refresh
+// at most PullRequestHeadBatch of them a pass, the least lately tried first: the open rows
+// Dispatch last checked over PullRequestHeadStaleAfter ago, the merged rows credited to nobody
+// that no read has reached, and every merged row a rule older than this build's judged, each of
+// those taken once per rule version (AttributionRuleVersion). A row this pass moves from one issue
+// to another records that move on both issues, through the broker handed to the refresh
 // (UpsertPullRequestHead). GitHub's `pull_request` events carry every head move, so this is
 // the backstop for an event that never arrived — a delivery Dispatch was down for, a
 // repository whose webhook was installed late — and the one way a merge that happened while
@@ -584,15 +584,46 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 // that has changed since: an envelope naming no head repository attributes nobody, only
 // GitHub's own answer, which always names `head.repo`, can attribute that row, and a merged row
 // is the one row no other writer ever revisits before a result at its head stands at no basis
-// for good. A rate limit stops the batch and fails the pass, as every other GitHub step's does;
-// any other per-row failure is logged and leaves the row for the next pass.
+// for good. Each row's try is stamped before its read (markHeadTried), so a row whose read fails
+// goes behind every due row tried less lately and the next pass takes those first: of n due rows,
+// the open rows due and the merged rows no read has reached (the merged rows of an older rule take
+// only the room those leave, at most RejudgedHeadsPerPass), each is tried within
+// ceil(n/PullRequestHeadBatch) passes that try their whole batch, each stamp acknowledged,
+// whatever their reads answer, a row never tried first, while no stamp whose call failed can still
+// commit (ListStalePullRequestHeads). A rate limit stops the batch and fails the pass, as every
+// other GitHub step's does: each row it did not try keeps its place, so the next pass takes those
+// first, and the stopped pass counts toward no bound; any other per-row failure is logged and
+// leaves the row due: a failed read behind the rows not tried since, and a failed stamp in its
+// place, or behind them unread where that stamp committed after all (below).
+//
+// A row's try is stamped on a context the batch's stop does not cancel (stampTry), and a row whose
+// turn comes after the stop is not stamped, so the stop itself puts no row behind that the pass
+// did not try: a stamp the stop cancelled in flight could commit at the server after the pass
+// returned, with the client told it failed. Each stamp is still a statement of its own, and a
+// stamp whose call times out or loses its connection may still commit, at a moment the pass never
+// learns: before or after the pass returns, and before or after the next pass selects its batch.
+// The pass gives that row up with no refresh. Where the stamp commits before the next selection,
+// the row moves behind the other due rows unread; where it commits after, that selection can take
+// the row again from its old place, in a slot another row would have had; and where it commits
+// after a later pass stamped the row, nothing orders the two writes, so it can put back the older
+// time. So the bound above counts no pass with such a stamp, and holds again only over the passes
+// after the stamp has settled; while such stamps recur, no number of passes bounds a row's read. A
+// stamp stores no checked_at and no base revision, so the row stays due, and it never supplies a
+// base revision or releases a handoff that waits on the row's read. So every row a pass stamped is
+// a row it tried, but for a row whose stamp's call failed and committed anyway.
 func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time) error {
 	stale, err := ListStalePullRequestHeads(ctx, r.pool, PullRequestHeadBatch, now)
 	if err != nil {
 		return err
 	}
 	refresh := func(ctx context.Context, head PullRequestHead) error {
-		err := r.attributor.RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
+		if ctx.Err() != nil {
+			return nil
+		}
+		err := stampTry(ctx, r.pool, head, now)
+		if err == nil {
+			err = r.attributor.RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
+		}
 		if err == nil {
 			return nil
 		}
@@ -611,6 +642,17 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		return fmt.Errorf("rate-limited re-reading pull request heads: %w", err)
 	}
 	return nil
+}
+
+// stampTry stamps head's try (markHeadTried) on a context the batch's stop does not cancel, so the
+// stop cancels no stamp in flight, with headWriteRollback as its deadline. The deadline ends the
+// call and not the statement: a stamp whose call times out or loses its connection may still
+// commit, even after the next pass has selected its batch, and what that costs the order is in
+// reconcilePullRequestHeads.
+func stampTry(ctx context.Context, pool *store.Pool, head PullRequestHead, now time.Time) error {
+	stamp, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
+	defer cancel()
+	return markHeadTried(stamp, pool, head.Repo, head.Number, now)
 }
 
 // attributionBackfillCalls bounds the GitHub calls reconcileAttributionInputs makes in one pass. A

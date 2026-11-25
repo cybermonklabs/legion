@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -71,7 +74,7 @@ func reviewRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 		if err != nil {
 			return err
 		}
-		return engine.transition(ctx, tx, *issue, TriggerReviewRejected, "", reviewer, pr, changesBody)
+		return engine.transition(ctx, tx, *issue, TriggerReviewRejected, "", reviewer, pr, moveWhy{Reason: changesBody})
 	})
 
 }
@@ -149,6 +152,12 @@ func noticesOf(t *testing.T, pool *pgxpool.Pool, key string, kind record.NoticeK
 		}
 	}
 	return notices
+}
+
+// carriesNumber says whether s carries n as a number of its own: a run of digits that spells n
+// with no letter or digit beside it, so the 4 of `#42`, of `k4` or of a commit is not n.
+func carriesNumber(s string, n int) bool {
+	return slices.Contains(strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }), strconv.Itoa(n))
 }
 
 // assertWalksAt fails unless key stands in want with task a running at place.
@@ -393,12 +402,12 @@ func standingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, pl
 	return now
 }
 
-// assertRefusedReturnTo fails unless result is the 409 RETURN_REFUSED whose message is want, and
-// key stands as it stood before the completion (before).
-func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, result intake.Result, want string, before recordAt) {
+// assertRefusedReturnTo fails unless result is a 409 RETURN_REFUSED, and key stands as it stood
+// before the completion (before).
+func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, result intake.Result, before recordAt) {
 	t.Helper()
-	if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "RETURN_REFUSED" || result.Refusal.Message != want {
-		t.Fatalf("the completion = %+v, want the 409 RETURN_REFUSED %q", result.Refusal, want)
+	if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "RETURN_REFUSED" {
+		t.Fatalf("the completion = %+v, want a 409 RETURN_REFUSED", result.Refusal)
 	}
 	if after := standingOf(t, pool, engine, key, before.task != nil); !reflect.DeepEqual(after, before) {
 		t.Fatalf("the refused completion changed %s:\n before %+v\n after  %+v", key, before, after)
@@ -407,33 +416,45 @@ func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 
 // A failed step's report can name the step of its task that the task returns to (returnTo):
 // any earlier step of the same task, not only the step of the type implementation that the
-// steps' types give, and the agent of that step gets the report. A report that names the failed
-// step itself or a later one, or a place no step of the task holds, is refused and changes
-// nothing, so the agent reports again (RETURN_REFUSED), as a backward move that no row serves is
-// refused today. An issue with no plan rows has no step to name: a report naming one is refused,
-// and the same report naming none returns to implementing as today.
+// steps' types give, and the agent of that step is started again in its own session, the
+// tester's notice naming as fields the head it tested and the check that does not pass there,
+// and the agent's task carrying the reason that notice gives, read from the notice and not written
+// here, and the version of the handoff record the tester's row holds, read from that row. A report
+// that names the failed step itself or a later one, or a place no step of the task holds, is
+// refused and changes nothing, so the agent reports again (RETURN_REFUSED), as a backward move
+// that no row serves is refused today. An issue with no plan rows has no step to name: a report
+// naming one is refused, and the same report naming none returns to implementing as today.
 func TestReturnToNamesAnEarlierStep(t *testing.T) {
 	// planned is LEGION-208 walking the steps planner implementer tester, standing in testing at
 	// step 3, its implementer started once, with its check failed at headOne, the head the
-	// tester's completion names.
-	planned := func(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
+	// tester's completion names, and the task of the planner's start the gate's opening wrote: the
+	// planner's task at its step before the tester wrote anything.
+	planned := func(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue, string) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "planner", "implementer", "tester")
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		first := roleStartsOf(t, pool, root.Key, claim.RolePlanner)
+		if len(first) != 1 || first[0].Task == "" {
+			t.Fatalf("the gate's opening wrote the planner's starts %+v, want one carrying its task", first)
+		}
 		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
 		testedAs(t, pool, engine, root.Key, headOne, false)
-		return pool, engine, root
+		return pool, engine, root, first[0].Task
 	}
 
-	t.Run("returnTo 1 returns the task to the planner, which gets the tester's report", func(t *testing.T) {
-		pool, engine, root := planned(t)
+	t.Run("returnTo 1 returns the task to the planner, started again in its own session", func(t *testing.T) {
+		pool, engine, root, firstTask := planned(t)
 		planners, implementers := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner)), len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
 
-		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
+		// The tester's record is version 4 of the issue's test handoff: a number the planner's task
+		// carries only where it names that record, as the check below shows.
+		fail := failedTest(root.Key, 1, "test-1")
+		fail.HandoffVersion = 4
+		if result := applyFacts(t, pool, engine)("fail-1", fail); result.Refusal != nil {
 			t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
 		}
 
@@ -442,9 +463,38 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if len(starts) != planners+1 {
 			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
 		}
-		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). Handoff commit: " + headOne + "."
-		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) || !strings.Contains(start.Task, "k1: no (fail)") {
-			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q and the check that failed, k1: no (fail)", start, report)
+		start := starts[len(starts)-1]
+		if start.FreshSession || start.Phase != phase.Planning {
+			t.Fatalf("the planner's start = %+v, want a start of planning in its own session", start)
+		}
+		var back []record.Notice
+		for _, notice := range noticesOf(t, pool, root.Key, "phase-finished") {
+			if notice.Role == claim.RoleTester {
+				back = append(back, notice)
+			}
+		}
+		if want := []record.FailingCheck{failingOf("k1", "no", "fail")}; len(back) != 1 || back[0].Phase != phase.Testing ||
+			back[0].Head != headOne || !reflect.DeepEqual(back[0].Failing, want) || back[0].WaitsFor != "" || len(back[0].Waiting) != 0 {
+			t.Fatalf("the tester's phase-finished notices = %+v, want one of the move back, with the head %s and failing %+v", back, headOne, want)
+		}
+		// The move writes the planner's task and the notice's reason from one value, so the task
+		// must carry the reason the notice gives; no word of either is compared with a literal.
+		if back[0].Reason == "" || !strings.Contains(start.Task, back[0].Reason) {
+			t.Fatalf("the planner's task %q does not carry the reason %q the tester's notice of the move back gives", start.Task, back[0].Reason)
+		}
+		// The move writes the planner's task from the tester's row too, so the task must carry the
+		// version of the handoff record that row holds, the record the planner reads: the version
+		// is read from the row and found in the task as a number of its own, and no word of the task
+		// is compared with a literal. The planner's task at its step before the tester wrote
+		// anything (planned) and the notice's reason carry no such number, so a task that names no
+		// record of the tester's fails here.
+		tester := roleRowOf(t, pool, engine, root.Key, claim.RoleTester)
+		if tester.HandoffRecord == "" || carriesNumber(firstTask, tester.HandoffVersion) || carriesNumber(back[0].Reason, tester.HandoffVersion) {
+			t.Fatalf("the tester's row holds the record %q at version %d, which the planner's first task %q or the reason %q carries already: this check proves nothing",
+				tester.HandoffRecord, tester.HandoffVersion, firstTask, back[0].Reason)
+		}
+		if !carriesNumber(start.Task, tester.HandoffVersion) {
+			t.Fatalf("the planner's task %q does not carry %d, the version of the handoff record %q the tester's row holds", start.Task, tester.HandoffVersion, tester.HandoffRecord)
 		}
 		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got > implementers {
 			t.Fatalf("the return wrote %d starts of the implementer, want none: the report named the planner", got-implementers)
@@ -467,19 +517,16 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		returnTo int
-		want     string
 	}{
-		{"returnTo naming the failed step itself is not earlier", 3,
-			"returnTo is 3, and step 3 (tester) of task a of LEGION-208 is not before step 3 (tester), the step this completion ends; send the completion again naming an earlier step, or without returnTo; nothing was recorded"},
-		{"returnTo naming a place no step of the task holds names another task's", 4,
-			"returnTo is 4, and task a of LEGION-208 has steps 1 to 3, so it names no step of the task whose step 3 (tester) this completion ends; send the completion again naming an earlier step of that task, or without returnTo; nothing was recorded"},
+		{"returnTo naming the failed step itself is not earlier", 3},
+		{"returnTo naming a place no step of the task holds names another task's", 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool, engine, root := planned(t)
+			pool, engine, root, _ := planned(t)
 			before := standingOf(t, pool, engine, root.Key, true)
 			apply := applyFacts(t, pool, engine)
 
-			assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, tc.returnTo, "test-1")), tc.want, before)
+			assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, tc.returnTo, "test-1")), before)
 
 			// The refusal recorded nothing, its handoff record among it, so the tester reports
 			// again with the same record, and the report naming no step returns to the
@@ -499,8 +546,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		before := standingOf(t, pool, engine, root.Key, false)
 		apply := applyFacts(t, pool, engine)
 
-		assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, 1, "test-1")),
-			"returnTo is 1, and LEGION-208 has no plan of tasks in Legion's record, so it has no step to name; send the completion again without returnTo; nothing was recorded", before)
+		assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, 1, "test-1")), before)
 
 		if result := apply("fail-again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail sent again without returnTo was refused: %+v", result.Refusal)
@@ -558,9 +604,8 @@ func TestTheStepATestersCompletionNamesIsTakenOnlyOnAFail(t *testing.T) {
 		if len(starts) != planners+1 {
 			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
 		}
-		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). Handoff commit: " + headOne + "."
-		if start := starts[len(starts)-1]; start.Phase != phase.Planning || !strings.Contains(start.Task, report) || !strings.Contains(start.Task, "k1: no (fail)") {
-			t.Fatalf("the planner's start = %+v, want a start of planning whose task holds the tester's report %q and the check that failed, k1: no (fail)", start, report)
+		if start := starts[len(starts)-1]; start.Phase != phase.Planning {
+			t.Fatalf("the planner's start = %+v, want a start of planning", start)
 		}
 		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got != implementers {
 			t.Fatalf("the return wrote %d starts of the implementer, want none: the completion named the planner", got-implementers)
@@ -691,9 +736,7 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
 	before := standingOf(t, pool, engine, root.Key, true)
 
-	assertRefusedReturnTo(t, pool, engine, root.Key, apply("late fail", failedTest(root.Key, 1, "test-1")),
-		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this completion names no step of the task to return to; send the completion again without returnTo; nothing was recorded",
-		before)
+	assertRefusedReturnTo(t, pool, engine, root.Key, apply("late fail", failedTest(root.Key, 1, "test-1")), before)
 
 	if result := apply("late fail again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
 		t.Fatalf("the tester's late fail sent again without returnTo was refused: %+v", result.Refusal)

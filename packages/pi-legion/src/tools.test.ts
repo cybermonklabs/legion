@@ -176,134 +176,6 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   return { posted, daemon: () => client };
 }
 
-/** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
- * tool's name and its parameters, and names the hold it leaves, that a stop before the issue's
- * first step settles its plan first, and each refusal code its text gives. */
-const STOP_TASK_TERMS = {
-  opens: "stop_task (issue, task) ",
-  names: [
-    "`holdReason` task-stopped",
-    "register_plan",
-    "first step",
-    "settles the plan",
-    "(TASK_STOPPED)",
-    "(TASK_NOT_FOUND",
-    "(TASK_DONE)",
-    "(TREE_LINGERING)",
-    "(ISSUE_OUTSIDE_TREE)",
-    "(TASK_STALE_GENERATION)",
-    "(TASK_AWAITING_PERSON",
-  ],
-} as const;
-
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, names where
- * the sign-off moves the task, names each refusal code its text gives, and says why a parent waits
- * for the issues beneath it. */
-const SIGN_OFF_TERMS = {
-  opens: "sign_off ",
-  names: [
-    "moving its task to its next step, or to retro where the acceptance is the task's last step",
-    "(SIGNOFF_OUTSIDE_ACCEPTING)",
-    "(SIGNOFF_CHILD_IN_WORKFLOW",
-    "(ISSUE_NOT_OWNED",
-    "ISSUE_OUTSIDE_TREE",
-    "SIGNOFF_STALE_GENERATION",
-    "SIGNOFF_STALE_ENTRY",
-    "since a parent is accepted only once no issue beneath it is still in the workflow",
-  ],
-} as const;
-
-/** The text of the description after `sign_off`'s. */
-const OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF =
-  "Sign off again when each of them has left the workflow. " +
-  "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
-  "End a child with your own status write in Dispatch. " +
-  "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
-  "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
-  "For a fold, name the carrier in the reason: the issue that carries the work. " +
-  "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
-  "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
-  "Before done on a running child, have its worker push the work that the carrier needs. " +
-  "Done ends the worker's turn and the pod at once. " +
-  "Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
-  "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
-  "Do this before done, or at once after a done that you wrote first. " +
-  "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
-  "A restart is backlog, then rerun_child. " +
-  "Say why in a dispatch comment. " +
-  "Write no status on a child that is already done, because a move out of done ends an open production check. " +
-  "After each move, read the child back (dispatch read --issue <KEY>). " +
-  "When the daemon set the move back, write it again. " +
-  "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it. " +
-  "When a child can neither finish nor take one of these moves, ask the person. Hold the acceptance until they answer. " +
-  "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
-  "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
-  "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-  "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
-  "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
-  "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
-  "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
-  "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
-  "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
-  "set_status moves an issue to todo, backlog or icebox. " +
-  "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
-  "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
-  "controller's report issue's icebox, because that issue holds no work. " +
-  "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
-  "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
-  "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
-  "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
-  "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
-  "claim is running, and no work was handed to it. It says what was refused, where this request stopped the claim " +
-  "and a step that would have started it again was refused, and the state that left the claim in: read that state " +
-  "in read_state, and ask for a fresh session again only where the claim is suspended. " +
-  "It reaches a claim stored working that no process stands behind: the daemon reads that claim's process when the " +
-  "request arrives, suspends the claim where it stands, and starts it again with the task its dead turn held. " +
-  "The daemon refuses it for a claim whose process that read finds running " +
-  "(CLAIM_IN_A_TURN), for a claim whose session is being compacted, which is not read at " +
-  "all (CLAIM_IN_A_TURN), for a claim whose process the runtime would not answer for, for " +
-  "one that records no process to read, and for one that moved under the request and that a second read " +
-  "finds no longer working or gone once more, each left exactly as the request found it " +
-  "(CLAIM_UNSETTLED; a claim that moved is otherwise answered as that second read finds it), for a claim a " +
-  "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
-  "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
-  "one queued, one whose launch is in flight, and one left working under a relaunch the " +
-  "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
-  "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
-  "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
-  "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
-  "fresh_session for a claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
-  "says whether the session was compacted and, when it was not, why; the claim is back either way. The daemon " +
-  "refuses it for a claim that is suspended, failed or retired, and for one stored working " +
-  "that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for a " +
-  "claim whose process the daemon reads as running (CLAIM_IN_A_TURN), for a claim whose " +
-  "session is being compacted already (CLAIM_IN_A_TURN), for a claim whose process the " +
-  "runtime would not answer for, for one that records no process to read, and for one " +
-  "that moved out of working while the request was made " +
-  "(CLAIM_UNSETTLED), for a claim a " +
-  "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
-  "where it is not), for a claim between states — one queued, one whose launch is in " +
-  "flight, one whose agent has registered and is not ready yet, which fresh_session " +
-  "reaches, and one left working under a relaunch the wake pacing parked " +
-  "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
-  "and for role controller. " +
-  "Each refusal says what the claim does now and which operation reaches each state. It " +
-  "names no moment to come back at: ask again later, and read the claim's state in " +
-  "read_state. " +
-  "pause (reason) pauses the whole project, and resume ends its pause; neither takes an issue. While the project " +
-  "is paused the daemon admits no issue, and it starts no role and gives no role a task except the controller. Every " +
-  "other role stops with its conversation kept, an idle one at once and one in a turn when that turn ends, and the " +
-  "pause deletes no pod. Each task, notice and wake for a stopped role waits for the resume. The answer is the " +
-  "pause: its id, since, by and reason. The daemon refuses a second pause (PROJECT_ALREADY_PAUSED, naming the " +
-  "pause that stands) and a pause its configuration cannot hold (PAUSE_UNAVAILABLE, naming the setting). " +
-  "resume ends the pause whoever made it, the operator's included. Each role the pause held something for then " +
-  "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
-  "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
-  "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
-  "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
-  "since each would start a turn. " +
-  "What a later phase needs goes in your handoff; a question for another live role goes to its role topic with envoy_publish.";
-
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
  * and the controller. */
 const EVERY_SESSION: readonly LegionToolSession[] = [
@@ -328,25 +200,11 @@ const toolFor = (active: LegionToolSession) =>
     session: () => active,
   });
 
-test("the legion tool's description, for every session, ends on the controller's operations and names stop_task's and sign_off's terms", () => {
-  for (const active of EVERY_SESSION) {
-    const description = toolFor(active).description;
-    const after = OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF;
-    expect(description.slice(description.length - after.length)).toBe(after);
-    const stopTaskAt = description.indexOf(STOP_TASK_TERMS.opens);
-    expect(stopTaskAt).toBeGreaterThan(0);
-    const held = description.slice(stopTaskAt, description.length - after.length);
-    const signOffAt = held.indexOf(SIGN_OFF_TERMS.opens);
-    expect(signOffAt).toBeGreaterThan(0);
-    const stopTask = held.slice(0, signOffAt);
-    const signOff = held.slice(signOffAt);
-    for (const term of STOP_TASK_TERMS.names) {
-      expect(stopTask).toContain(term);
-    }
-    for (const term of SIGN_OFF_TERMS.names) {
-      expect(signOff).toContain(term);
-    }
-  }
+// Every role reads one description: the tool's description is one text, whatever session it is
+// built for.
+test("the legion tool's description is one text for every session", () => {
+  const descriptions = new Set(EVERY_SESSION.map((active) => toolFor(active).description));
+  expect(descriptions.size).toBe(1);
 });
 
 // The daemon's refusals and notices over children carry its rules for ending a child
@@ -906,29 +764,6 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon takes a verdict on a production check report
-// alone (VERDICT_NOT_TAKEN on a phase completion): no role may read in it that its phase completion
-// reports one.
-test("the legion tool's description gives a verdict to a production check report alone", () => {
-  const tool = createLegionTool({
-    pi,
-    daemon: recordingDaemon({}).daemon,
-    controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
-    onUpdateAnswered: () => undefined,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    resolveDocument: noDocumentLookup,
-    session: () => claimSession("tester"),
-  });
-  expect(tool.description).toContain(
-    "`verdict` pass|pending|fail on a production check report alone"
-  );
-  expect(tool.description).toContain("A phase completion carries no verdict");
-  expect(tool.description).not.toContain("from the tester alone");
-  expect(tool.description).not.toContain("when your role's instructions require one");
-});
-
 test("a workflow refusal tells the agent both its code and message", async () => {
   const refusal = Object.assign(
     new Error(
@@ -1340,12 +1175,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       verdict,
     });
     expect(verdictOnPhase.isError).toBe(true);
-    expect(verdictOnPhase.content).toEqual([
-      {
-        type: "text",
-        text: "handoff_complete carries no verdict on a phase completion: Dispatch's check states decide the testing phase",
-      },
-    ]);
     expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
   }
   expect(completed).toHaveLength(4);

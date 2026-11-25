@@ -37,17 +37,17 @@ func formerHeadsInstall(t *testing.T) int {
 	return 0
 }
 
-// closesDatedSince is the version of the migration that has Dispatch store when a row of
-// pull_request_heads first reads closed (pull_request_heads.closed_at): a row closed before it
-// holds no such time.
-func closesDatedSince(t *testing.T) int {
+// closesRecordedSince is the version of the migration that has Dispatch record each write that
+// opens or closes a row of a pull request it stores (pull_request_heads_lifecycle), and each pull
+// request closed when it runs, undated: a close and a reopen before it are in no record.
+func closesRecordedSince(t *testing.T) int {
 	t.Helper()
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if digits, name, _ := strings.Cut(entry.Name(), "_"); name == "pull_request_heads_closed_at.up.sql" {
+		if digits, name, _ := strings.Cut(entry.Name(), "_"); name == "pull_request_heads_lifecycle.up.sql" {
 			version, err := strconv.Atoi(digits)
 			if err != nil {
 				t.Fatalf("%s: %v", entry.Name(), err)
@@ -55,7 +55,7 @@ func closesDatedSince(t *testing.T) int {
 			return version
 		}
 	}
-	t.Fatal("no migration has Dispatch store when a pull request's row first reads closed")
+	t.Fatal("no migration has Dispatch record each close of a pull request it stores")
 	return 0
 }
 
@@ -715,71 +715,90 @@ func TestAResultAndAHeadWriteInTheirOwnLockOrdersBothCommit(t *testing.T) {
 // such a lock while another writer, holding a lock the first needs next, waits for it closes a
 // cycle with the owner locks and the rows the writers take in their own orders, and Postgres breaks
 // it by failing one writer (TestAResultAndAHeadWriteInTheirOwnLockOrdersBothCommit is one such
-// pair). So each function a former heads trigger on pull_request_heads, check_results or
-// ci_check_results runs only reads and appends: its body names no row lock, no table lock and no
-// call of a function whose name holds "lock", updates and deletes nothing, inserts with no on
-// conflict, and calls none of the functions the settler folds, drains or leaves candidates with;
-// and each table it inserts into has no primary, unique, exclusion or foreign key, and no unique
-// index, so an insert there waits for no other transaction. The one function those bodies call
-// that writes, check_states_owe, inserts a mark whose key a sequence draws, and waits for nothing
-// either.
+// pair). So each function a former heads trigger, or a trigger of the record of opens and closes
+// (pull_request_heads_lifecycle), on pull_request_heads, check_results or ci_check_results runs only
+// reads and appends: its body names no row lock, no table lock and no call of a function whose
+// name holds "lock", updates and deletes nothing, inserts with no on conflict, and calls none of
+// the functions the settler folds, drains or leaves candidates with; and each table it inserts
+// into has no primary, unique, exclusion or foreign key, and no unique index, so an insert there
+// waits for no other transaction. The one function those bodies call that writes,
+// check_states_owe, inserts a mark whose key a sequence draws, and waits for nothing either. The
+// rule holds at the schema through the install, where the record of opens and closes still has its
+// triggers, as a deploy stopped before the migration that drops them leaves them, and once every
+// migration has applied.
 func TestEveryFormerHeadsTriggerOnAWritersTableOnlyReadsAndAppends(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	rows, err := store.Pool.Query(ctx, `
-		select distinct watched.relname::text, run.proname::text, run.prosrc
-		from pg_trigger fired
-		join pg_class watched on watched.oid = fired.tgrelid
-		join pg_proc run on run.oid = fired.tgfoid
-		where not fired.tgisinternal and watched.relname in ('pull_request_heads', 'check_results', 'ci_check_results')
-			and run.proname like 'pull\_request\_former\_heads\_%'
-		order by 1, 2`)
-	if err != nil {
-		t.Fatalf("read the former heads triggers: %v", err)
-	}
-	type triggerFunction struct{ table, name, body string }
-	functions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (triggerFunction, error) {
-		var f triggerFunction
-		return f, row.Scan(&f.table, &f.name, &f.body)
-	})
-	if err != nil {
-		t.Fatalf("read the former heads triggers: %v", err)
-	}
-	watched := map[string]bool{}
-	for _, f := range functions {
-		watched[f.table] = true
-	}
-	for _, table := range []string{"pull_request_heads", "check_results", "ci_check_results"} {
-		if !watched[table] {
-			t.Errorf("found no former heads trigger on %s, so this test holds nothing there to the rule", table)
+	for _, stage := range []struct {
+		name    string
+		migrate func()
+		closes  bool
+	}{
+		{"through the install", func() { migrateThrough(t, store, formerHeadsInstall(t)) }, true},
+		{"every migration", func() {
+			if err := store.Migrate(ctx); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+		}, false},
+	} {
+		stage.migrate()
+		rows, err := store.Pool.Query(ctx, `
+			select distinct watched.relname::text, run.proname::text, run.prosrc
+			from pg_trigger fired
+			join pg_class watched on watched.oid = fired.tgrelid
+			join pg_proc run on run.oid = fired.tgfoid
+			where not fired.tgisinternal and watched.relname in ('pull_request_heads', 'check_results', 'ci_check_results')
+				and (run.proname like 'pull\_request\_former\_heads\_%' or run.proname like 'pull\_request\_heads\_lifecycle\_%')
+			order by 1, 2`)
+		if err != nil {
+			t.Fatalf("%s: read the former heads triggers: %v", stage.name, err)
 		}
-	}
-	waits := regexp.MustCompile(`(?i)\bfor\s+(no\s+key\s+update|update|key\s+share|share)\b|\block\s+table\b|\b[a-z_]*lock[a-z_]*\s*\(|\bon\s+conflict\b|\bupdate\s+[a-z_.]+\s+set\b|\bdelete\s+from\b|\bpull_request_former_heads_(fold|drain|leave|leave_again|apply|resolve|join)\s*\(`)
-	inserts := regexp.MustCompile(`(?i)\binsert\s+into\s+([a-z_][a-z0-9_]*)`)
-	appended := map[string]bool{}
-	for _, f := range functions {
-		if found := waits.FindString(f.body); found != "" {
-			t.Errorf("%s, which a trigger on %s runs, holds %q: a writer that runs it can wait for a lock another writer holds", f.name, f.table, found)
+		type triggerFunction struct{ table, name, body string }
+		functions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (triggerFunction, error) {
+			var f triggerFunction
+			return f, row.Scan(&f.table, &f.name, &f.body)
+		})
+		if err != nil {
+			t.Fatalf("%s: read the former heads triggers: %v", stage.name, err)
 		}
-		for _, insert := range inserts.FindAllStringSubmatch(f.body, -1) {
-			appended[strings.ToLower(insert[1])] = true
+		watched := map[string]bool{}
+		closes := false
+		for _, f := range functions {
+			watched[f.table] = true
+			closes = closes || f.name == "pull_request_heads_lifecycle_keep"
 		}
-	}
-	if len(appended) == 0 {
-		t.Fatal("the former heads trigger functions insert into no table, so this test holds no table to the rule")
-	}
-	for table := range appended {
-		var keys int
-		if err := store.Pool.QueryRow(ctx, `
-			select (select count(*) from pg_constraint where conrelid = $1::regclass and contype in ('p', 'u', 'x', 'f'))
-				+ (select count(*) from pg_index where indrelid = $1::regclass and indisunique)`, table).Scan(&keys); err != nil {
-			t.Fatalf("read the keys of %s: %v", table, err)
+		if stage.closes && !closes {
+			t.Errorf("%s: found no trigger of the record of opens and closes on pull_request_heads, so this test holds it to nothing", stage.name)
 		}
-		if keys != 0 {
-			t.Errorf("a former heads trigger inserts into %s, which holds %d keys or unique indexes: an insert there can wait for another transaction's insert of the same key", table, keys)
+		for _, table := range []string{"pull_request_heads", "check_results", "ci_check_results"} {
+			if !watched[table] {
+				t.Errorf("%s: found no former heads trigger on %s, so this test holds nothing there to the rule", stage.name, table)
+			}
+		}
+		waits := regexp.MustCompile(`(?i)\bfor\s+(no\s+key\s+update|update|key\s+share|share)\b|\block\s+table\b|\b[a-z_]*lock[a-z_]*\s*\(|\bon\s+conflict\b|\bupdate\s+[a-z_.]+\s+set\b|\bdelete\s+from\b|\bpull_request_former_heads_(fold|drain|leave|leave_again|apply|resolve|join)\s*\(`)
+		inserts := regexp.MustCompile(`(?i)\binsert\s+into\s+([a-z_][a-z0-9_]*)`)
+		appended := map[string]bool{}
+		for _, f := range functions {
+			if found := waits.FindString(f.body); found != "" {
+				t.Errorf("%s: %s, which a trigger on %s runs, holds %q: a writer that runs it can wait for a lock another writer holds", stage.name, f.name, f.table, found)
+			}
+			for _, insert := range inserts.FindAllStringSubmatch(f.body, -1) {
+				appended[strings.ToLower(insert[1])] = true
+			}
+		}
+		if len(appended) == 0 {
+			t.Fatalf("%s: the former heads trigger functions insert into no table, so this test holds no table to the rule", stage.name)
+		}
+		for table := range appended {
+			var keys int
+			if err := store.Pool.QueryRow(ctx, `
+				select (select count(*) from pg_constraint where conrelid = $1::regclass and contype in ('p', 'u', 'x', 'f'))
+					+ (select count(*) from pg_index where indrelid = $1::regclass and indisunique)`, table).Scan(&keys); err != nil {
+				t.Fatalf("%s: read the keys of %s: %v", stage.name, table, err)
+			}
+			if keys != 0 {
+				t.Errorf("%s: a former heads trigger inserts into %s, which holds %d keys or unique indexes: an insert there can wait for another transaction's insert of the same key", stage.name, table, keys)
+			}
 		}
 	}
 }

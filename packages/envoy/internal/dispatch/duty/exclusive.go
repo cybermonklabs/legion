@@ -37,7 +37,7 @@ type Leases interface {
 // (store.repoRenameLockNamespace, "RNAM") and the former heads' (one pull request's identity,
 // under every name it goes by, and key 0, the registry that makes and joins identities: the
 // functions pull_request_former_heads_lock and pull_request_former_heads_resolve, migration
-// 20261123233128, which only the check states settler takes), each a first key of its own, so a
+// 20261124122830, which only the check states settler takes), each a first key of its own, so a
 // lease's second key, its name's hashtext, separates the leases from each other and from nothing
 // else.
 const leaseNamespace int32 = 0x4C4F4F50

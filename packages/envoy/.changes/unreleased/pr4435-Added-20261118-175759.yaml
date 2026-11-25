@@ -14,7 +14,7 @@ body: |-
     the database. An image cannot accept a text it has never seen, so it refuses a database whose
     migration a later image applied from an edited text: one an image with the edit created from
     empty, and a database rolled back by hand to an image it never ran. Before the merge,
-    `envoy-go-checks` fails a change that edits a migration its base holds without such lines.
+    `envoy-go-build` fails a change that edits a migration its base holds without such lines.
     `envoy-dispatch versions` and `envoy-broker versions` read without writing what the image's
     next start would do with each recorded migration.
 time: 2026-11-18T17:57:59.259752309Z

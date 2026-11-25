@@ -279,7 +279,7 @@ func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger stri
 // suspended, with nothing relaunched and the mark exactly as it found it, and the next
 // stale-plugin pass raises the relaunch again (refreshPlugin, the daemon's refreshStalePlugins).
 // The mark costs no write of its own either: the launch that commits it writes the claim as it
-// starts (launchNow).
+// starts (commitPluginRelaunch, launchTries).
 //
 // The intent names one launch and no other: a later launch of this machine, raised by something
 // else, marks nothing for this relaunch. The launch that took it holds it by then — the gate

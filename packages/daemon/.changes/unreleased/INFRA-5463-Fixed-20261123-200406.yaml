@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+    A claim's `lastStartFailure` no longer outlives the agent that came up after it. The claim
+    drops it when its agent says it is ready, as it resets the launch failures that sentence
+    names, so a claim launching again later shows a start failure only when a start failed since
+    then. Before, a claim waiting to launch could show a refusal from days before, such as the
+    leak-check install's `waitid: no child processes` that #4289 fixed, as if it were the reason
+    the claim was not running. A migration clears the start failure of every claim stored ready,
+    working or idle, and the daemon's boot clears it again on any such claim a daemon of an earlier
+    release that shares the database writes later. A claim an earlier release left in any other
+    state keeps the start failure it holds until its agent is next ready, since nothing in the row
+    says whether its agent came up after that start.
+time: 2026-11-23T20:04:06Z
+custom:
+    Issue: INFRA-5463

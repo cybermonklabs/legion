@@ -37,12 +37,19 @@
 -- stands while its issue is still in testing completes again under the release before. It drops
 -- states_serial, so that the roll-forward adds it again at 0 on every row and no row the release
 -- before completed carries a serial of this release's, and it deletes this migration's row, so the
--- roll-forward's Migrate runs this file again. It needs nothing of the outbox: the release before
--- decodes a notice with no verdict.
+-- roll-forward's Migrate runs this file again. It deletes the keys head, waits_for, waiting and
+-- failing from each queued notice: this release's tester's phase-finished notice of the testing
+-- move carries under them what its reason names, the tested head, what a wait waits for and the
+-- checks it names (record.Notice's Head, WaitsFor, Waiting and Failing), and the release before
+-- decodes a notice strictly and has no field for any of them, so a queued notice that kept one
+-- would retry for ever under that release. No notice of the release before carries any of the
+-- four keys, and the notice keeps its reason, which names the same head and checks. The release
+-- before decodes a notice with no verdict, so the strip of verdict below needs no undoing.
 --
 -- begin;
 -- update phases set verdict = '' where verdict <> '';
 -- alter table phases drop column if exists states_serial;
+-- update outbox set payload = payload - 'head' - 'waits_for' - 'waiting' - 'failing' where kind = 'notice';
 -- delete from schema_version where version = 20261121074614;
 -- commit;
 alter table phases alter column verdict set default '';

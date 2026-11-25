@@ -1,8 +1,7 @@
-// result_entry_start_test.go drives the REAL compiled broker's start check of the results entry
-// DISPATCH_RESULTS_TOKEN, the proxy block of the profile of that name (config.AirlockResultRules),
-// on a broker with no result entries of its own: such a broker still serves every result grant of
-// the database it shares, so it is held to the same entry as one with result entries. The helpers
-// are result_write_test.go's and main_test.go's.
+// result_entry_start_test.go drives the REAL compiled broker's start check of the results profile
+// DISPATCH_RESULTS_TOKEN (config.AirlockResultRules) on a broker with no result entries of its own:
+// such a broker still serves every result grant of the database it shares, so it is held to the
+// same profile as one with result entries. The helpers are result_write_test.go's and main_test.go's.
 package main
 
 import (
@@ -19,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 )
 
-// otherResultsHost is a host the misconfigured entries below bind beside, or in place of,
+// otherResultsHost is a host the misconfigured profiles below bind beside, or in place of,
 // resultsBoundHost: a name under the same parent, which a CI step could own.
 const otherResultsHost = "evil.ci-results.test"
 
@@ -34,8 +33,8 @@ func withoutSettings(env []string, names ...string) []string {
 	return out
 }
 
-// resultsProfilesBinding is resultsProfiles with the proxy block of DISPATCH_RESULTS_TOKEN binding
-// hosts (a JSON list's inside) and the extra profiles after it.
+// resultsProfilesBinding is resultsProfiles with DISPATCH_RESULTS_TOKEN's proxy block binding hosts
+// (a JSON list's inside) and the extra profiles after it.
 func resultsProfilesBinding(hosts string, extra ...string) string {
 	profiles := append([]string{`{"name": "DISPATCH_RESULTS_TOKEN", "proxy": {"hosts": [` + hosts + `], "headers": ["Authorization"],
 	"allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}], "kind": "dpop"}}`}, extra...)
@@ -44,14 +43,15 @@ func resultsProfilesBinding(hosts string, extra ...string) string {
 
 // TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost: broker B, on the
 // database of broker A, which has a result entry and has granted run 7 a placeholder, starts with
-// no result entry of its own. With a DISPATCH_RESULTS_TOKEN proxy block that binds
+// no result entry of its own. With a profile DISPATCH_RESULTS_TOKEN whose proxy block binds
 // *.ci-results.test, or resultsBoundHost and evil.ci-results.test, or resultsBoundHost with no
-// private destination or a destination of evil.ci-results.test, or with a second proxy block of
-// kind dpop beside it, B refuses to start, naming the setting at fault and not
-// BROKER_EXCHANGE_RESULT_WORKFLOWS, and the stand-in of evil.ci-results.test, which B could resolve
-// and dial, receives nothing. Control: B with the proxy block of resultsBoundHost and the
-// destination of that host starts, takes A's run placeholder, and its write reaches the stand-in of
-// Dispatch, stored.
+// private destination or a destination of evil.ci-results.test, or with a second profile of kind
+// dpop beside it, B refuses to start, naming BROKER_PROFILES_FILE and the setting or profile at
+// fault, and not BROKER_EXCHANGE_RESULT_WORKFLOWS or the removed BROKER_AIRLOCK_RULES_FILE, and the
+// stand-in of evil.ci-results.test, which B could resolve and dial, receives nothing. Control: B
+// with A's own profile, whose proxy block binds resultsBoundHost, and the destination of that host
+// starts, takes A's run placeholder (a grant serves only on a broker of its own results entry), and
+// its write reaches the stand-in of Dispatch, stored.
 func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(t *testing.T) {
 	e := newResultsEnvironment(t)
 	// The stand-in listens on 127.0.0.2: BROKER_AIRLOCK_TEST_RESOLVE refuses one address given two
@@ -81,11 +81,11 @@ func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(
 		name, profiles, says string
 		upstream             []string
 	}{
-		{"a wildcard entry", resultsProfilesBinding(`"*.ci-results.test"`), "one exact host", []string{resultsUpstream}},
-		{"a two-host entry", resultsProfilesBinding(`"` + resultsBoundHost + `", "` + otherResultsHost + `"`), "one exact host", []string{resultsUpstream}},
+		{"a wildcard profile", resultsProfilesBinding(`"*.ci-results.test"`), "one exact host", []string{resultsUpstream}},
+		{"a two-host profile", resultsProfilesBinding(`"` + resultsBoundHost + `", "` + otherResultsHost + `"`), "one exact host", []string{resultsUpstream}},
 		{"no private destination", resultsProfilesBinding(`"` + resultsBoundHost + `"`), "BROKER_AIRLOCK_PRIVATE_UPSTREAM is unset", nil},
 		{"a destination of another host", resultsProfilesBinding(`"` + resultsBoundHost + `"`), "names the host " + otherResultsHost, []string{otherUpstream}},
-		{"a second dpop entry", resultsProfilesBinding(`"`+resultsBoundHost+`"`, secondDPoP), "OTHER_TOKEN of kind dpop", []string{resultsUpstream}},
+		{"a second dpop profile", resultsProfilesBinding(`"`+resultsBoundHost+`"`, secondDPoP), "OTHER_TOKEN of kind dpop", []string{resultsUpstream}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			env := append(append(append([]string{}, base...), "BROKER_PROFILES_FILE="+profilesFile(t, c.profiles)), c.upstream...)
@@ -96,15 +96,17 @@ func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(
 			if strings.Contains(out, "BROKER_EXCHANGE_RESULT_WORKFLOWS") {
 				t.Errorf("B's refusal names BROKER_EXCHANGE_RESULT_WORKFLOWS, which it was not given: %s", out)
 			}
+			if !strings.Contains(out, "BROKER_PROFILES_FILE") || strings.Contains(out, "BROKER_AIRLOCK_RULES_FILE") {
+				t.Errorf("B's refusal does not name BROKER_PROFILES_FILE, whose proxy blocks are the rules, or names the removed BROKER_AIRLOCK_RULES_FILE: %s", out)
+			}
 			if seen := evil.Requests(); len(seen) != 0 {
 				t.Fatalf("the stand-in of %s received %d request(s); want none", otherResultsHost, len(seen))
 			}
 		})
 	}
 
-	// Control: the proxy block of the destination's one host starts, and B serves A's grant to
-	// Dispatch.
-	env := append(append([]string{}, base...), "BROKER_PROFILES_FILE="+profilesFile(t, resultsProfilesBinding(`"`+resultsBoundHost+`"`)), resultsUpstream)
+	// Control: A's own profile and destination start, and B serves A's grant to Dispatch.
+	env := append(append([]string{}, base...), "BROKER_PROFILES_FILE="+profilesFile(t, resultsProfiles), resultsUpstream)
 	process := startBroker(t, brokerOptions{Binary: binary, Env: env})
 	thumbprint, _ := process.AwaitRecord(t, dpopKeyLine, nil)["thumbprint"].(string)
 	b := &resultsBroker{brokerProcess: process, proxyAddr: airlockProxyAddr(t, process), thumbprint: thumbprint}

@@ -391,6 +391,167 @@ func TestProfilesCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 	})
 }
 
+// resultsProfileOf is a profile as a profiles file writes it, of name and a proxy block whose
+// fields are given as JSON text: hosts the inside of its list, and headers, allow and kind each
+// left out when given "".
+func resultsProfileOf(name, hosts, headers, allow, kind string) string {
+	fields := []string{`"hosts": [` + hosts + `]`}
+	if headers != "" {
+		fields = append(fields, `"headers": `+headers)
+	}
+	if allow != "" {
+		fields = append(fields, `"allow": `+allow)
+	}
+	if kind != "" {
+		fields = append(fields, `"kind": "`+kind+`"`)
+	}
+	return `{"name": "` + name + `", "proxy": {` + strings.Join(fields, ", ") + `}}`
+}
+
+// TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile: `profiles check` holds the
+// results profile, DISPATCH_RESULTS_TOKEN, to the boot's own check of it. Every shape the file
+// alone decides (config.ResultsEntryRules) is refused, with --private-upstream and without it,
+// exit 1 with one line on stderr naming the file, the profile and the fault, and no report: a
+// "*." host, two hosts, no kind, kind aws, no allow list, an empty one, a header other than
+// Authorization, a second profile of kind dpop, another profile whose "*." host binds the results
+// host, and a lower-case dispatch_results_token of kind dpop. Given the destination the broker is
+// given (--private-upstream, as BROKER_AIRLOCK_PRIVATE_UPSTREAM), it makes the boot's whole check
+// (config.AirlockResultRules): the profile of another host than the destination's is refused, and
+// so are the profile beside a destination given empty and a destination beside a file with no
+// results profile. Without the flag, a file holding the right profile is valid and the report says
+// in one line that its tie to the destination was not checked; with it, that line is absent; and
+// a file with no results profile prints no such line. A destination the setting's parser refuses
+// is a usage error that quotes no credential of its URL.
+func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T) {
+	const (
+		name     = "DISPATCH_RESULTS_TOKEN"
+		headers  = `["Authorization"]`
+		allow    = `[{"method": "POST", "pathPrefix": "/api/v1/projects/"}]`
+		upstream = resultsBoundHost + "=http://10.0.0.5:8766"
+		notSeen  = "profiles check: DISPATCH_RESULTS_TOKEN binds " + resultsBoundHost + "; its tie to BROKER_AIRLOCK_PRIVATE_UPSTREAM was not checked (no --private-upstream)"
+	)
+	bound := `"` + resultsBoundHost + `"`
+	file := func(profiles ...string) string { return `{"profiles": [` + strings.Join(profiles, ", ") + `]}` }
+	right := resultsProfileOf(name, bound, headers, allow, "dpop")
+
+	// refused runs the subcommand on body with args after the file, and holds it to a refusal of
+	// the file: exit 1, no report, one line on stderr that names the file, every want, and one of
+	// faults at least, and never a setting this run was not given.
+	refused := func(t *testing.T, body string, args []string, wants, faults []string) {
+		t.Helper()
+		path := profilesFile(t, body)
+		code, stdout, stderr := runCheck(t, append([]string{path}, args...)...)
+		if code != 1 {
+			t.Fatalf("exit %d, want 1: the boot refuses this file", code)
+		}
+		if stdout != "" {
+			t.Fatalf("a refused file still printed a report: %q", stdout)
+		}
+		if lines := strings.Count(strings.TrimRight(stderr, "\n"), "\n") + 1; lines != 1 {
+			t.Fatalf("the refusal is %d lines, want one: %q", lines, stderr)
+		}
+		if !strings.Contains(stderr, path) {
+			t.Fatalf("the refusal does not name the file %s: %q", path, stderr)
+		}
+		text := strings.ReplaceAll(stderr, path, "")
+		for _, want := range wants {
+			if !strings.Contains(text, want) {
+				t.Fatalf("the refusal does not say %q: %q", want, stderr)
+			}
+		}
+		if !slices.ContainsFunc(faults, func(fault string) bool { return strings.Contains(text, fault) }) {
+			t.Fatalf("the refusal names none of the faults %q: %q", faults, stderr)
+		}
+		for _, unset := range []string{"BROKER_EXCHANGE_RESULT_WORKFLOWS", "BROKER_AIRLOCK_RULES_FILE"} {
+			if strings.Contains(text, unset) {
+				t.Fatalf("the refusal names %s, which this run was not given: %q", unset, stderr)
+			}
+		}
+	}
+
+	for _, c := range []struct {
+		name   string
+		body   string
+		wants  []string
+		faults []string
+	}{
+		{"a *. host", file(resultsProfileOf(name, `"*.ci-results.test"`, headers, allow, "dpop")), []string{name, `"*.ci-results.test"`}, []string{"must bind one exact host"}},
+		{"two hosts", file(resultsProfileOf(name, bound+`, "`+otherResultsHost+`"`, headers, allow, "dpop")), []string{name, otherResultsHost}, []string{"must bind one exact host"}},
+		{"no kind", file(resultsProfileOf(name, bound, headers, allow, "")), []string{name}, []string{"must be of kind dpop"}},
+		{"kind aws", file(resultsProfileOf(name, bound, headers, allow, "aws")), []string{name, `"aws"`}, []string{"must be of kind dpop"}},
+		{"no allow list", file(resultsProfileOf(name, bound, headers, "", "dpop")), []string{name}, []string{"non-empty allow list"}},
+		{"an empty allow list", file(resultsProfileOf(name, bound, headers, "[]", "dpop")), []string{name}, []string{"non-empty allow list"}},
+		{"the header X-Token", file(resultsProfileOf(name, bound, `["X-Token"]`, allow, "dpop")), []string{name, "X-Token"}, []string{"Authorization header alone"}},
+		{"a second profile of kind dpop", file(right, resultsProfileOf("OTHER_TOKEN", `"`+otherResultsHost+`"`, headers, allow, "dpop")), []string{name}, []string{"OTHER_TOKEN of kind dpop"}},
+		{"another profile's *. host over the results host", file(right, `{"name": "WILDCARD_TOKEN", "proxy": {"hosts": ["*.ci-results.test"]}}`), []string{name, "WILDCARD_TOKEN"}, []string{"binds the host " + resultsBoundHost}},
+		// The policy reader refuses a lower-case name before the results check reads the file;
+		// either refusal names the profile as written.
+		{"dispatch_results_token of kind dpop", file(resultsProfileOf("dispatch_results_token", bound, headers, allow, "dpop")), []string{`dispatch_results_token`}, []string{"not an agent secret name", "dispatch_results_token of kind dpop"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Run("without --private-upstream", func(t *testing.T) { refused(t, c.body, nil, c.wants, c.faults) })
+			t.Run("with --private-upstream", func(t *testing.T) {
+				refused(t, c.body, []string{"--private-upstream", upstream}, c.wants, c.faults)
+			})
+		})
+	}
+
+	t.Run("--private-upstream: the profile of another host than the destination's", func(t *testing.T) {
+		refused(t, file(resultsProfileOf(name, `"`+otherResultsHost+`"`, headers, allow, "dpop")), []string{"--private-upstream", upstream},
+			[]string{name, "binds " + otherResultsHost}, []string{"names the host " + resultsBoundHost})
+	})
+	t.Run("--private-upstream given empty: the right profile", func(t *testing.T) {
+		refused(t, file(right), []string{"--private-upstream", ""}, []string{name}, []string{"BROKER_AIRLOCK_PRIVATE_UPSTREAM is unset"})
+	})
+	t.Run("--private-upstream: a file with no results profile", func(t *testing.T) {
+		refused(t, twoProfiles, []string{"--private-upstream", upstream}, []string{name, "names the host " + resultsBoundHost}, []string{"holds no profile " + name})
+	})
+
+	// valid runs the subcommand and holds it to a file it would serve, answering the report.
+	valid := func(t *testing.T, body string, args ...string) string {
+		t.Helper()
+		path := profilesFile(t, body)
+		code, stdout, stderr := runCheck(t, append([]string{path}, args...)...)
+		if code != 0 || stderr != "" {
+			t.Fatalf("exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
+		}
+		if !strings.Contains(stdout, path+" is valid") {
+			t.Fatalf("the report does not say the file is valid: %q", stdout)
+		}
+		return stdout
+	}
+	t.Run("--private-upstream: the right profile, with no not-checked line", func(t *testing.T) {
+		if stdout := valid(t, file(right), "--private-upstream", upstream); strings.Contains(stdout, "was not checked") {
+			t.Fatalf("a run given the destination says the tie was not checked: %q", stdout)
+		}
+	})
+	t.Run("without --private-upstream: the right profile, with the not-checked line", func(t *testing.T) {
+		if stdout := valid(t, file(right)); strings.Count(stdout, notSeen+"\n") != 1 {
+			t.Fatalf("the report does not say once, on a line of its own, %q: %q", notSeen, stdout)
+		}
+	})
+	t.Run("without --private-upstream: a file with no results profile, with no not-checked line", func(t *testing.T) {
+		if stdout := valid(t, twoProfiles); strings.Contains(stdout, "was not checked") {
+			t.Fatalf("a file with no results profile says a tie was not checked: %q", stdout)
+		}
+	})
+	t.Run("a destination the setting's parser refuses", func(t *testing.T) {
+		const word = "secret-word"
+		code, stdout, stderr := runCheck(t, profilesFile(t, file(right)), "--private-upstream", resultsBoundHost+"="+userinfoURL("http", "u", word, "10.0.0.5:8766"))
+		if code != 2 || stdout != "" {
+			t.Fatalf("exit %d with stdout %q, want exit 2 and no report", code, stdout)
+		}
+		for _, want := range []string{"--private-upstream", "BROKER_AIRLOCK_PRIVATE_UPSTREAM", "carries a user", profilesCheckUsage} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("the usage error does not say %q: %q", want, stderr)
+			}
+		}
+		if strings.Contains(stderr, word) {
+			t.Fatalf("the usage error quotes a part of the URL a credential can sit in: %q", stderr)
+		}
+	})
+}
+
 // TestProfilesCheckReportsWhatChangedAgainstTheOldFile is the report a reviewer reads: for a
 // profile both files hold, each value of a list added or removed and each other field as old →
 // new, a field the file leaves to the source written as the source's; and a profile removed, with
@@ -636,4 +797,10 @@ func TestTheBinaryRoutesEachSubcommandWord(t *testing.T) {
 		t.Fatalf("the removed airlock-check read the file: %s", out)
 	}
 	exitsTwo(t, []string{"usage: broker " + endSessionsCommand + " <login>"}, endSessionsCommand)
+}
+
+// userinfoURL is scheme://user:password@rest, built here so no test line spells a URL that
+// carries a credential in the form a secret scanner reads as one (as config_test.go's helper).
+func userinfoURL(scheme, user, password, rest string) string {
+	return scheme + "://" + user + ":" + password + "@" + rest
 }

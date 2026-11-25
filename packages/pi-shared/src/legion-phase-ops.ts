@@ -351,9 +351,9 @@ export const PHASE_OP_SENTENCES = {
  * What a worker whose completion is refused HANDOFF_STALE_ENTRY does, word for word the text the
  * daemon ends that refusal with (`staleEntryInstruction` in
  * `packages/daemon/internal/api/handoff.go`), so the worker reads one instruction in its tool and
- * in the refusal. The daemon's golden test writes its constant to
- * `packages/contracts/fixtures/daemon-api/stale-entry.json`, and `legion-phase-ops.test.ts` holds
- * the description below to that file.
+ * in the refusal; a change of one is made in the other too. No test holds these words, which an
+ * agent reads as a prompt; `packages/contracts/fixtures/daemon-api/stale-entry.json` holds the
+ * daemon's code alone.
  */
 export const STALE_ENTRY_INSTRUCTION =
   "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. " +

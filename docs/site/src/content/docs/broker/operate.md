@@ -2584,7 +2584,7 @@ What you do depends on how the database came to hold another file:
   written any other way, or that sits inside a quoted string or a function body, stops every start,
   naming the file and the line. A pull request that edits a migration main already holds without
   such lines, or whose lines do not begin with main's file's lines, in their order, then the one
-  naming main's file itself, fails CI's `envoy-go-checks` job before it merges.
+  naming main's file itself, fails CI's `envoy-go-build` job before it merges.
 
 An image cannot accept a text it has never seen, so it refuses a database whose migration a later
 image applied from an edited text: one that an image with the edit created from empty, and a

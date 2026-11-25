@@ -249,8 +249,10 @@ jobs:
     runs-on: ubuntu-24.04
     # A step's worst case is its largest measured green duration plus its own -timeout, as
     # daemon-go's says: over the same 158 green daemon-go jobs, the setup's 1.7 min
-    # at most, then the race step's 36.3 and its 30 minutes, then the report. That is under 69
-    # minutes, and 70 is the limit.
+    # at most, then the Postgres sizing step's 19 s (its cold build of the connections command
+    # and the service's restart, as envoy-go-race's job 137890840698 took them), then the race
+    # step's 36.3 and its 30 minutes, then the report. That is under 69 minutes, and 70 is the
+    # limit.
     timeout-minutes: 70
     services:
       postgres:
@@ -297,6 +299,18 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
+      # internal/daemon's scratch-Dispatch tests (startScratchDispatchOn) start the real Dispatch
+      # server on a database of this service, and one Dispatch process opens up to
+      # store.ConnectionsPerProcess connections (116): more than PostgreSQL's default
+      # max_connections of 100 allows, before the five packages' own pools. A run holding several
+      # at once had a scratch Dispatch refused with 53300 "sorry, too many clients already" and
+      # exit before it was ready (job 137919658889). So the service is raised to what a Dispatch
+      # test lane needs, as every lane that starts a Dispatch process raises its own. The go run of
+      # the script builds envoy's internal/dispatch/store/cmd/connections, after the cache restore
+      # so that it reads the restored module cache.
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+
       # internal/daemon's tests boot the daemon on the tmux runtime, which resolves tmux.
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
@@ -330,6 +344,17 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user true
+
+      # internal/daemon's tests run in parallel, its scratch-Dispatch tests each with a Dispatch
+      # process and a database of their own, beside the step's other packages, so this samples the
+      # service's client connections every 2 s while the next step runs and the step after it prints
+      # the peak against max_connections: a change that makes the tests open more at once shows here
+      # before it shows as a 53300 refusal. Postgres's own background processes are not counted. The
+      # loop runs in the background past its own step, until the runner ends the job.
+      - name: Sample the service's connections while the race tests run
+        run: |
+          # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
+          nohup bash -c 'while :; do docker exec "$1" psql -U postgres -Atc "select count(*) from pg_stat_activity where backend_type = '"'"'client backend'"'"'" >> "$2" 2>/dev/null; sleep 2; done' _ "${{ job.services.postgres.id }}" "$RUNNER_TEMP/pg-connections.txt" >/dev/null 2>&1 &
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
       # that share state with the intake's commit hooks and the API, so the packages the lanes
@@ -373,6 +398,16 @@ jobs:
       - name: Test the concurrent packages under the race detector
         run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
         working-directory: packages/daemon
+
+      - name: Report the service's peak connections
+        if: always()
+        run: |
+          allowed=$(docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_connections")
+          if [ -s "$RUNNER_TEMP/pg-connections.txt" ]; then
+            echo "pg connections: the peak of $(sort -n "$RUNNER_TEMP/pg-connections.txt" | tail -n 1) over $(wc -l < "$RUNNER_TEMP/pg-connections.txt") samples, max_connections ${allowed}"
+          else
+            echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
+          fi
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -75,8 +75,9 @@ type Config struct {
 	// already open, whose role its own row holds.
 	ProductionCheckRole claim.Role
 	// DefaultSteps are the project's default steps (config.Project.RunsByDefault): the steps of
-	// the one task default of an issue whose owner gives no plan, and of a task whose block names
-	// neither steps nor a sub-owner. Nil takes the steps of a project that names none.
+	// the one task default of an issue whose owner gives no plan or whose experiment's group takes
+	// none, and of a task whose block names neither steps nor a sub-owner. Nil takes the steps of
+	// a project that names none.
 	DefaultSteps []plan.Step
 	Clock        func() time.Time
 	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review
@@ -146,7 +147,9 @@ type Config struct {
 	// the memory experiment, whose unit is the tree and which is therefore drawn where a tree is
 	// opened and never here, so a project that declares no experiment of its own has this engine
 	// draw nothing. ExperimentSource is the random source a `random` mode is drawn with: nil is
-	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own.
+	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own. It is the one
+	// source of the daemon's draws: admission draws the trees and issues it records with it too
+	// (Engine.ExperimentSource).
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
@@ -295,6 +298,11 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 }
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
+
+// ExperimentSource is the random source every `random` experiment is drawn with
+// (Config.ExperimentSource): this engine's draw of each child it records, and admission's of each
+// tree and issue it records, which reads it here rather than holding a second one.
+func (e *Engine) ExperimentSource() func(uint64) (uint64, error) { return e.cfg.ExperimentSource }
 
 // byReviewApp says whether login is the review App's bot (Config.ReviewAppLogin). With no login
 // configured, it is no one's.
@@ -1307,7 +1315,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	}
 	switch issue.Phase {
 	case phase.Planning:
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerPlannerCompleted, "", row, pr, "")
+		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerPlannerCompleted, "", row, pr, moveWhy{})
 	case phase.Implementing:
 		if pr == nil {
 			return intake.Result{}, nil
@@ -1328,7 +1336,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		// The completion that ends the retro carries the rating its agent gave the plan, which
 		// planRatingRefusal above took on no other completion, and a plugin before the rating
 		// sends none, so its retro writes no rating.
-		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil || fact.PlanRating == nil {
+		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, moveWhy{}); err != nil || fact.PlanRating == nil {
 			return intake.Result{}, err
 		}
 		return intake.Result{}, e.rateRetro(ctx, tx, *issue, *fact.PlanRating)
@@ -2590,7 +2598,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if record.HeldFor(*issue, record.HoldForCI) {
 		return intake.Result{}, e.moveFromHold(ctx, tx, *issue, w, fact.To, from, row, pr, fact.Reason)
 	}
-	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
+	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, moveWhy{Reason: fact.Reason})
 }
 
 // endChildrenFirst is what the refusals over children still in the workflow, sign_off's and
@@ -2643,7 +2651,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")
+	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, moveWhy{})
 }
 
 // acceptedReport is the report the owner's acceptance of issue accepts: the phases row of the role
@@ -2674,7 +2682,28 @@ func (e *Engine) acceptedRole(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return claim.Role(w.Steps[place.Position-2].Role), nil
 }
 
-func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) error {
+// moveWhy is why a transition moves, as one value: Testing, the testing move, on the tester's move
+// back alone, and Reason, the words of every other move that gives one. A move carries one or the
+// other, never both, so the task, the status and the notice of a move all read the same value
+// (reason, noticeFor).
+type moveWhy struct {
+	Reason  string
+	Testing *testingMove
+}
+
+// reason is the sentence the move's task, status and notice carry: the testing move's own sentence
+// where it is one, Reason otherwise.
+func (why moveWhy) reason() string {
+	if why.Testing != nil {
+		return why.Testing.sentence()
+	}
+	return why.Reason
+}
+
+// transition moves issue on trigger for why: the move's row, its counts, its status, the start of
+// the next role with a task giving why's reason, and the architect's notice (noticeFor).
+func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, why moveWhy) error {
+	reason := why.reason()
 	// The row comes from the table of the issue's walk: the line of its plan's task, or today's
 	// line for a run with no plan rows (Walk).
 	w, err := e.walk(ctx, tx, issue)
@@ -2701,7 +2730,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	// A move of a task beside its fix, or after its fix ended while another step ran, waits for
 	// the way after the fix: besideFix takes the move in place of the row where it applies.
-	if took, err := e.besideFix(ctx, tx, issue, w, trigger, target, row, handoff, pr, reason); err != nil || took {
+	if took, err := e.besideFix(ctx, tx, issue, w, trigger, target, row, handoff, pr, why); err != nil || took {
 		return err
 	}
 	// Two counters move here, and they count different things. Every move back to an earlier phase
@@ -2748,7 +2777,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	if hold != "" {
-		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, handoff, pr, reason, hold, waits)
+		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, handoff, pr, why, hold, waits)
 	}
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, row.To, PhaseStatus(row.To), nil, handoff, pr, reason)
 	if err != nil {
@@ -2809,7 +2838,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			}
 		}
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, moverOf(ctx), reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, moverOf(ctx), why)); err != nil {
 		return err
 	}
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
@@ -2896,8 +2925,8 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 // implementing stays on the record, neither the hold nor its release (startHeldRetro) asks it
 // again, and the move into merging asks the merger.
 func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
-	handoff record.PhaseRow, pr *record.PullRequest, reason string, hold record.HoldReason, waits []string) error {
-	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: hold}, handoff, pr, reason)
+	handoff record.PhaseRow, pr *record.PullRequest, why moveWhy, hold record.HoldReason, waits []string) error {
+	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: hold}, handoff, pr, why.reason())
 	if err != nil {
 		return err
 	}
@@ -2908,7 +2937,7 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 		e.logOnCommit(ctx, "workflow: a task that passed its last step is held before its retro", "issue", issue.Key, "tree", issue.Tree,
 			"task", w.Task, "reason", hold, "waitsFor", waits)
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, moverOf(ctx), reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, moverOf(ctx), why)); err != nil {
 		return err
 	}
 	return e.notice(ctx, tx, issue.Key, endHoldNotice(issue, w, pr, hold, waits))
@@ -2954,21 +2983,25 @@ func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Iss
 // a hold for CI, or the end of a fix whose way returned the task) and the words it gave. The handoff
 // row a move writes is empty, so without that reason the architect reads a completion with no
 // summary and cannot tell it from a worker that finished its phase. No worker reports a verdict,
-// so the tester's move back says in its reason what the check states said: each check that does
-// not pass at the tested head (decideTesting).
-func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, by mover, reason string) record.Notice {
+// so the tester's move back is the testing move's own notice (why.Testing, decideTesting): its
+// reason says what the check states said, each check that does not pass at the tested head, and
+// its fields carry the head and those checks.
+func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, by mover, why moveWhy) record.Notice {
 	switch trigger {
 	case TriggerGateOpened:
 		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary}
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
-			Reason: fmt.Sprintf("moved back to %s by %s: %s", to, by.words(RoleFor(from)), reason)}
+			Reason: fmt.Sprintf("moved back to %s by %s: %s", to, by.words(RoleFor(from)), why.reason())}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
+	if trigger == TriggerTesterFailed && why.Testing != nil {
+		return why.Testing.notice(handoff)
+	}
 	notice := record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary}
 	if trigger == TriggerTesterFailed {
-		notice.Reason = reason
+		notice.Reason = why.reason()
 	}
 	return notice
 }
@@ -3068,7 +3101,7 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 			return err
 		}
 	}
-	return e.transition(ctx, tx, issue, TriggerGateOpened, "", record.PhaseRow{}, nil, "")
+	return e.transition(ctx, tx, issue, TriggerGateOpened, "", record.PhaseRow{}, nil, moveWhy{})
 }
 
 // everyClaim enqueues op for every claim an issue can hold but except's: its architect, which

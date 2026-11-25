@@ -373,6 +373,11 @@ type Machine struct {
 	ResultGrants ResultGrants
 	ResultTokens ResultTokens
 	ResultKey    string
+	// ResultEntryDigest is this broker's results entry (cmd/cipherd's resultEntryDigest, the one
+	// the token endpoint records in each grant it makes): both reads of a result grant answer
+	// ErrGrantNotLive for a grant made under another entry, before any token is minted
+	// (resultEntryRefusal). "" is a broker with no results entry, which serves no result grant.
+	ResultEntryDigest string
 	// Judge, when set, is handed every request Create has just written pending, once that
 	// transaction has committed and the request's grant-log line is out: the broker's model
 	// judge, which may approve such a request in its approver's place (cmd/cipherd wires it to

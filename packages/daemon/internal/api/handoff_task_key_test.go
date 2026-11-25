@@ -88,8 +88,9 @@ func holdForTheStop(t *testing.T, h *harness, key string) {
 // key an earlier task of the issue used. The task is the plan's one task whatever its state
 // (record.StoredPlan.Task), a stopped one among them, whose issue is held for the stop. An issue
 // with no plan rows keeps today's key byte for byte, its pass read from its implementer's row (the
-// control). The tester's completion names the head it tested and no verdict, so the key's last
-// segment, where a verdict stood, is empty.
+// control). The completion carries no verdict and names the head it tested, so the last segment
+// of each key, where a tester's verdict stood, is empty, and the head is not in the key: the
+// testing phase is record-backed, so the key names its record.
 func TestTheCompletionKeyNamesTheTaskOfAnIssueWithPlanRows(t *testing.T) {
 	h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	for _, tc := range []struct {

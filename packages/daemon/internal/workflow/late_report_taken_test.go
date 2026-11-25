@@ -40,7 +40,7 @@ func reviewApprovedNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key str
 		if err != nil {
 			return err
 		}
-		return engine.transition(ctx, tx, *issue, TriggerReviewApproved, "", reviewer, pr, "")
+		return engine.transition(ctx, tx, *issue, TriggerReviewApproved, "", reviewer, pr, moveWhy{})
 	})
 
 }

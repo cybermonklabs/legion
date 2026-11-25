@@ -32,9 +32,9 @@ type testingJudgement struct {
 	// check, one with no result while its CI run goes on (ci_case not_completed with the reason
 	// no_result).
 	Waiting []string
-	// Failing is each check with a conclusive state that is not yes, as "k2: no (fail)", "k3:
-	// unknown (pass_and_fail)" or "k4: unknown (read_failed)".
-	Failing []string
+	// Failing is each check with a conclusive state that is not yes, with that state and its
+	// reason: k2 no for fail, k3 unknown for pass_and_fail, k4 unknown for read_failed.
+	Failing []record.FailingCheck
 }
 
 // judgeStates judges the states the daemon holds of the head's checks, and is the one place the
@@ -74,10 +74,8 @@ func judgeStates(head record.HeadStates, leaveCI bool) (testingJudgement, bool) 
 			continue
 		case state.Reason == reasonNoResult && state.CICase == ciNotCompleted:
 			judgement.Waiting = append(judgement.Waiting, check)
-		case state.Reason == "":
-			judgement.Failing = append(judgement.Failing, fmt.Sprintf("%s: %s", check, state.State))
 		default:
-			judgement.Failing = append(judgement.Failing, fmt.Sprintf("%s: %s (%s)", check, state.State, state.Reason))
+			judgement.Failing = append(judgement.Failing, record.FailingCheck{Check: check, State: state.State, Reason: state.Reason})
 		}
 	}
 	return judgement, true
@@ -124,23 +122,22 @@ func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest)
 // naming each check it reads that does not pass with its state and its reason: to the step the
 // completion named (namedReturn), or, where it named none, by the walk's default, the first
 // implementation step before the tester (transition's returnOf), implementing for a run with no
-// plan rows. atCompletion is whether the tester's completion is the fact deciding: only that one
+// plan rows. Each wait and each move back is one testingMove, which writes the words of the task
+// of the step the work goes back to and the architect's notice and the notice's fields from the
+// same values. atCompletion is whether the tester's completion is the fact deciding: only that one
 // tells the architect of a wait, in one phase-finished notice that names what the move waits for,
 // so each later state event that leaves the move waiting tells nothing more.
 func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, atCompletion bool) error {
 	repo, head := testedHead(issue, row, pr)
 	if head == "" {
-		return e.testingWaits(ctx, tx, issue, row, head, atCompletion,
-			"the move waits for a tested head: the tester's test record named none, so no check state can decide it; "+
-				"the tester writes a new test handoff naming under head the commit it tested and completes again")
+		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{WaitsFor: waitsForTestedHead})
 	}
 	reached, err := e.store.StatesFenceReached(ctx, tx, issue.Key, row.StatesSerial)
 	if err != nil {
 		return err
 	}
 	if !reached {
-		return e.testingWaits(ctx, tx, issue, row, head, atCompletion,
-			fmt.Sprintf("the move waits for Dispatch's check states through serial %d at %s", row.StatesSerial, head))
+		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForFence, Serial: row.StatesSerial})
 	}
 	held, err := e.store.HeadStates(ctx, tx, issue.Key, repo, head)
 	if err != nil {
@@ -149,19 +146,18 @@ func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issu
 	judgement, judged := judgeStates(held, e.cfg.TestingLeavesCI)
 	switch {
 	case !judged:
-		return e.testingWaits(ctx, tx, issue, row, head, atCompletion, "the move waits for Dispatch's states at "+head)
+		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForSet})
 	case len(judgement.Waiting) > 0:
-		return e.testingWaits(ctx, tx, issue, row, head, atCompletion,
-			"the move waits for the states of "+strings.Join(judgement.Waiting, ", ")+" at "+head)
+		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForChecks, Waiting: judgement.Waiting})
 	case len(judgement.Failing) > 0:
 		target, err := e.namedReturn(ctx, tx, issue, row)
 		if err != nil {
 			return err
 		}
-		return e.transition(ctx, tx, issue, TriggerTesterFailed, target, row, pr,
-			"these checks do not pass at "+head+": "+strings.Join(judgement.Failing, "; "))
+		move := testingMove{Head: head, Failing: judgement.Failing}
+		return e.transition(ctx, tx, issue, TriggerTesterFailed, target, row, pr, moveWhy{Testing: &move})
 	}
-	if err := e.transition(ctx, tx, issue, TriggerTesterPassed, "", row, pr, ""); err != nil || row.ReturnTo <= 0 {
+	if err := e.transition(ctx, tx, issue, TriggerTesterPassed, "", row, pr, moveWhy{}); err != nil || row.ReturnTo <= 0 {
 		return err
 	}
 	// The line that the step named is not used is the pass's move's: it is written once the issue
@@ -178,6 +174,62 @@ func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issu
 			"issue", issue.Key, "head", head, "returnTo", row.ReturnTo)
 	}
 	return nil
+}
+
+// What a testing move that waits waits for, as the tester's notice names it (record.Notice's
+// WaitsFor).
+const (
+	// waitsForTestedHead is the head the tester tested: its test record named none.
+	waitsForTestedHead = "tested_head"
+	// waitsForFence is Dispatch's events through the serial of the tester's test record, some of
+	// which the daemon does not hold yet.
+	waitsForFence = "fence"
+	// waitsForSet is the head's set of checks, which the daemon does not hold.
+	waitsForSet = "set"
+	// waitsForChecks is the states of the checks the judgement waits for.
+	waitsForChecks = "checks"
+)
+
+// testingMove is one wait or one move back of the testing move at the tested head Head
+// (decideTesting): a wait names what it waits for (WaitsFor), the fence's serial (Serial) and the
+// checks whose states it waits for (Waiting); a move back has no WaitsFor, and names each check
+// that does not pass (Failing). Its sentence is the words of the task of the step the work goes
+// back to and of the architect's notice, and its notice carries the sentence and these values, so
+// the words and the fields are one value.
+type testingMove struct {
+	Head     string
+	WaitsFor string
+	Serial   int64
+	Waiting  []string
+	Failing  []record.FailingCheck
+}
+
+// sentence is the move in words, written from its fields alone.
+func (m testingMove) sentence() string {
+	switch m.WaitsFor {
+	case waitsForTestedHead:
+		return "the move waits for a tested head: the tester's test record named none, so no check state can decide it; " +
+			"the tester writes a new test handoff naming under head the commit it tested and completes again"
+	case waitsForFence:
+		return fmt.Sprintf("the move waits for Dispatch's check states through serial %d at %s", m.Serial, m.Head)
+	case waitsForSet:
+		return "the move waits for Dispatch's states at " + m.Head
+	case waitsForChecks:
+		return "the move waits for the states of " + strings.Join(m.Waiting, ", ") + " at " + m.Head
+	}
+	named := make([]string, len(m.Failing))
+	for i, check := range m.Failing {
+		named[i] = check.String()
+	}
+	return "these checks do not pass at " + m.Head + ": " + strings.Join(named, "; ")
+}
+
+// notice is the tester's phase-finished notice of the move, row being the tester's completion:
+// the tester's summary, the move's sentence as its reason, and the move's head, wait and checks as
+// its fields.
+func (m testingMove) notice(row record.PhaseRow) record.Notice {
+	return record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: row.Summary,
+		Reason: m.sentence(), Head: m.Head, WaitsFor: m.WaitsFor, Waiting: m.Waiting, Failing: m.Failing}
 }
 
 // namedReturn is the phase of the step the tester's completion, row, named for its task to
@@ -203,17 +255,16 @@ func (e *Engine) namedReturn(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return target, nil
 }
 
-// testingWaits is the testing move holding issue in testing for reason. At the tester's completion
-// it logs the wait and tells the architect, in a phase-finished notice of the tester's carrying
-// the tester's summary; at a later state event it does neither, since the architect was told.
-func (e *Engine) testingWaits(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, head string, atCompletion bool, reason string) error {
+// testingWaits is the testing move holding issue in testing for wait. At the tester's completion
+// it logs the wait and tells the architect, in wait's phase-finished notice of the tester's; at a
+// later state event it does neither, since the architect was told.
+func (e *Engine) testingWaits(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, atCompletion bool, wait testingMove) error {
 	if !atCompletion {
 		return nil
 	}
-	e.logOnCommit(ctx, "workflow: the testing move waits for check states", "issue", issue.Key, "head", head,
-		"statesSerial", row.StatesSerial, "reason", reason)
-	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing,
-		Summary: row.Summary, Reason: reason})
+	e.logOnCommit(ctx, "workflow: the testing move waits for check states", "issue", issue.Key, "head", wait.Head,
+		"statesSerial", row.StatesSerial, "reason", wait.sentence())
+	return e.notice(ctx, tx, issue.Key, wait.notice(row))
 }
 
 // checkState holds one of Dispatch's check.state_changed events of an issue the workflow records,

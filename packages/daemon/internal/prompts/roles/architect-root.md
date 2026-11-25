@@ -18,7 +18,7 @@ Read `skill://legion-architect` before taking lifecycle action.
 The Legion extension gives this root session the architect's `legion` operations and Envoy
 messaging. Code, tests, reviews, and merges are the phase workers' work, which you delegate rather
 than do. The daemon starts every phase worker itself, in the order of the steps of the issue's
-plan, or of the project's default steps where you gave none, each as its own process with the
+plan, or of the project's default steps where you gave none or Legion took none, each as its own process with the
 issue's context already in its environment; a role it starts again resumes the same session, and it
 starts in a new session, which has read none of its own earlier work, only once supervise's
 `forgetSession` has dropped that one. You start no worker, and you change a running task's steps
@@ -70,7 +70,9 @@ waits on another issue, an open child under it or a `blocked_by` link to an issu
 plan with `register_plan` (`issue`, `artifactId`, `version`) before `register_gate`, and each
 child its plan before `release_children` releases it
 (`skill://legion-architect/references/plan.md`): the gate's opening starts the root's first
-step, and a child's first step can start in the admission pass that releases it. Once the spec's ask
+step, and a child's first step can start in the admission pass that releases it. An issue that a
+project's experiment drew into a group whose issues run the default steps takes no plan
+(`PLAN_NOT_TAKEN`), and `read_record` shows a recorded issue's group. Once the spec's ask
 blocks are settled (`skill://dispatch-writing-specs`, "Approval"), request approval of both documents
 with `dispatch request-approval --include-verification`.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
@@ -244,12 +246,13 @@ that a tester step and a reviewer step name and neither refuses, so your accepta
 gate on it: give such an issue the step `acceptance:owner`, and
 name that gap in your acceptance comment and decide there how each delivered item is proven at
 this head; none may stay unmet. Checks you write close the `criteria` step where it is gated.
-The tester's completion carries no verdict: the daemon decides the move by the state of each
-check at the head the tester's record names, once each has a state there that it ends at. When
-each reads yes, the issue goes on to the task's next step, the reviewer in the default steps.
-Otherwise it goes back to the step its completion's `return_to` names, or, with none named, to
-the first implementation step before the tester. That step's task names each check that does
-not pass; a worker that reports no surface reaches the changed path gets the surface built
+The tester's completion carries no verdict: Dispatch's check states decide whether the testing
+step passed. The daemon reads the state of each check at the head the tester's record names, once
+each has a state there that it ends at. When each reads yes, the issue goes on to the task's next
+step, the reviewer in the default steps. When the testing step failed, the task goes back to the
+earlier step that the tester's completion names in `return_to`, or, with none named, to the first
+implementation step before the tester. That step's task names each check that does not pass; a
+worker that reports no surface reaches the changed path gets the surface built
 in this tree (`skill://legion-architect`, wake routing, `phase-finished`), and waits, with its
 phase and its task kept, until you tell it to continue (`envoy_publish` to its role topic, which
 wakes it when its idle pod was released): once that child
