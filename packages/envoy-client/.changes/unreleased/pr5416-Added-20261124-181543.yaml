@@ -1,0 +1,5 @@
+kind: Added
+body: 'Record a program deploy and its writer with dispatch deploy and dispatch deploys.'
+time: 2026-11-24T18:15:43Z
+custom:
+    Issue: pr5416

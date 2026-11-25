@@ -2601,6 +2601,38 @@ func TestGithubPayloadFields(t *testing.T) {
 	}
 }
 
+// A merged pull request's envelope carries the time GitHub merged it, as GitHub sent it, beside
+// its merge commit: Dispatch orders two merges of one issue by that time, since the pull
+// request's updated_at moves with every later edit. An open pull request's merged_at is null,
+// which is no field at all.
+func TestTheEnvelopeCarriesTheMergeTime(t *testing.T) {
+	t.Parallel()
+	pullRequest := func(action string, merged bool, mergedAt any) map[string]any {
+		return map[string]any{
+			"action":     action,
+			"repository": map[string]any{"full_name": "example-org/example-repo"},
+			"pull_request": map[string]any{
+				"number": 26, "merged": merged, "merged_at": mergedAt,
+				"merge_commit_sha": "3333333333333333333333333333333333333333",
+				"head":             map[string]any{"sha": "head-sha", "ref": "feature/payloads"},
+				"base":             map[string]any{"ref": "main"},
+				"updated_at":       "2026-09-08T10:00:00Z",
+			},
+		}
+	}
+	envelope := func(body map[string]any) map[string]string {
+		return decodePayload(t, GithubEnvelope(GithubEnvelopeInput{
+			Event: "pull_request", Delivery: "delivery", EventID: "event", TraceID: "trace", Body: body,
+		}).Payload)
+	}
+	if got := envelope(pullRequest("closed", true, "2026-09-07T10:00:59Z"))["merged_at"]; got != "2026-09-07T10:00:59Z" {
+		t.Fatalf("the merged pull request's payload[merged_at] = %q, want 2026-09-07T10:00:59Z as GitHub sent it", got)
+	}
+	if got, found := envelope(pullRequest("opened", false, nil))["merged_at"]; found {
+		t.Fatalf("the open pull request's payload carries merged_at %q, want no such field", got)
+	}
+}
+
 // TestEnvelopeTitlesAreCappedAtTheEnvelopeTextCap: every envelope carrying an issue or pull
 // request title keeps it under the envelope's text cap, because a publish past NATS's max
 // payload fails; a title GitHub itself allows (at most 256 characters) is copied whole.
