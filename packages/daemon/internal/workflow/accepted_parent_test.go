@@ -242,7 +242,7 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t 
 // The texts the daemon sends an architect about children still in the workflow tell it how a child
 // leaves: by the architect's own status write in Dispatch (record.EndChildRule), and never by an
 // operation the daemon no longer serves or by the old word for the move (dispatch://INFRA-3178 R6).
-// The sign_off and close_root refusals, the pr-merged notice and the retro-held notice of a parent
+// The sign_off and close_root refusals and the retro-held notice of a parent
 // held before its retro for the issues beneath it also say that a status the architect wrote counts
 // only once the daemon has taken it, because the Dispatch event that carries it can reach the
 // daemon after the architect calls again. The children-first notice ends a child, released or not,
@@ -276,16 +276,6 @@ func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 				t.Fatalf("close_root with an issue beneath = %+v, %v; want SIGNOFF_CHILD_IN_WORKFLOW", result.Refusal, err)
 			}
 			return result.Refusal.Message
-		}},
-		{"pr-merged", true, func(t *testing.T) string {
-			rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
-			for _, notice := range architectNotices(t, rig.pool) {
-				if notice.Kind == "pr-merged" {
-					return notice.Reason
-				}
-			}
-			t.Fatalf("no pr-merged notice after a merge that waits for LEGION-209")
-			return ""
 		}},
 		{"children-first", false, func(*testing.T) string {
 			return ChildrenFirstNotice(record.ChildWait{Parent: "LEGION-208", Open: []record.OpenChild{{Key: "LEGION-209", Status: "triage"}}}).Reason

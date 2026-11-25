@@ -63,22 +63,26 @@ func newCheckRig(t *testing.T) checkRig {
 }
 
 // childCheckRig is a running root (LEGION-208, implementing) whose child LEGION-209 merged
-// sjawhar/legion#43 at merge-43: the child is done with its check open at look 1 in the
-// tester's live session.
+// sjawhar/legion#43 at merge-43 and which a person then closed on Dispatch: the child is done with
+// its check open at look 1 in the tester's live session. The merge alone no longer produces that
+// state — a merged child waits in verifying for the checks of its goal — and a person's done on it
+// closes it and opens its check as a close at the merge did, which is the closed issue's check
+// these tests are about.
 func childCheckRig(t *testing.T) checkRig {
 	t.Helper()
 	rig := newCheckRig(t)
 	seedMergingChild(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
+	rig.apply("child-closed", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "child", Parent: "LEGION-208", Rank: "V"})
 	return rig
 }
 
 // rootCheckRig is a root LEGION-208 whose sjawhar/legion#42 merged at merge while it awaited it,
 // and which a person then closed on Dispatch, with a child LEGION-209 left implementing: the tree
 // lingers an hour and the root's check is open at look 1. The merge alone no longer produces that
-// state — a merged root's close waits for the rest of its tree (closeMerged) — and a person's
-// close of a root still lingers the tree whatever its children are doing, which is the path these
-// tests are about.
+// state — a merged root waits in verifying for its checks and the rest of its tree — and a
+// person's close of a root still lingers the tree whatever its children are doing, which is the
+// path these tests are about.
 func rootCheckRig(t *testing.T) checkRig {
 	t.Helper()
 	rig := newCheckRig(t)

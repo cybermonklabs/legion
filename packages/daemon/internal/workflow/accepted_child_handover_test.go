@@ -14,15 +14,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The child the accepted-parent hold stopped is handed over when the linger of the root that held
-// it ends.
+// The child the accepted-parent hold stopped is no longer held once its root merges, and is handed
+// over when the linger of a root a person then closes ends.
 //
 // A person moves a new issue under a tree whose root is already accepted. The daemon records it
-// at admitted and holds it there, and that same hold is what lets the root close at all:
-// record.OpenBeneath leaves it out of the wait a merged root keeps for the issues beneath it.
-// Without this the root merged, the tree lingered, and the linger's own hand-over passed the
-// child over as an admitted member waiting on nothing — so it stood todo at admitted in a closed
-// tree for ever, with nobody told.
+// at admitted and holds it there while the root stands in merging. The merge stands the root in
+// verifying, which is not accepted (record.Accepted), so the child is free to start and the root's
+// close waits for it as an issue beneath it (D10). A person who closes the root then lingers the
+// tree, and the linger's own hand-over hands the child to Legion: it never stands todo at admitted
+// in a closed tree, with nobody told.
 //
 // Two levels deep, through the linger's expiry: the held child hangs under a child of the root,
 // not under the root itself.
@@ -49,15 +49,21 @@ func TestTheChildHeldUnderAnAcceptedRootIsHandedOverWhenTheRootCloses(t *testing
 
 	apply := applyFacts(t, pool, engine)
 	apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge"})
-	if at := issueAt(t, pool, root); at != phase.Done {
-		t.Fatalf("%s stands at %s after its merge, want done: the issue it holds at admitted is left out of its wait", root, at)
+	if at := issueAt(t, pool, root); at != phase.Verifying {
+		t.Fatalf("%s stands at %s after its merge, want verifying: its close waits for the issue beneath it", root, at)
 	}
-
-	// The merge of a root opens its production check, and a tree lingers past its deadline while
-	// one is open: the check's own close is another rule's, so the fixture takes it away rather
-	// than driving a look to its end.
-	if _, err := pool.Exec(context.Background(), "delete from production_checks where issue = $1", root); err != nil {
-		t.Fatalf("close the production check of %s: %v", root, err)
+	var stored *record.Issue
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		var err error
+		stored, err = record.NewStore().Issue(t.Context(), tx, root)
+		return err
+	})
+	if wait, err := storedWaitOf(*stored); err != nil || len(wait.Beneath) != 1 || wait.Beneath[0].Key != held {
+		t.Fatalf("%s's stored wait = %+v, %v; want it to wait for %s beneath it", root, wait, err, held)
+	}
+	apply("root-closed", intake.DispatchIssue{Key: root, Seq: 2, Type: "issue.closed", Status: "done", Title: "root", Rank: "U"})
+	if at := issueAt(t, pool, root); at != phase.Done {
+		t.Fatalf("%s stands at %s after a person closed it, want done", root, at)
 	}
 	apply("linger", intake.LingerExpired{Issue: root, Generation: 7})
 

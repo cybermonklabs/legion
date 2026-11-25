@@ -45,14 +45,8 @@ func TestTheHeldGrandchildIsHandedOverWhateverBecomesOfItsAcceptedParent(t *test
 			close: func(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact) intake.Result) {
 				t.Helper()
 				apply("child-merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 44, MergeSHA: "merge"})
-				if at := issueAt(t, pool, child); at != phase.Done {
-					t.Fatalf("%s stands at %s after its merge inside the linger, want done: a member of a lingering tree still closes at its merge", child, at)
-				}
-				// That close opens the child's production check, and a tree lingers past its
-				// deadline while one is open: the check's own close is another rule's, so the
-				// fixture takes it away rather than driving a look to its end.
-				if _, err := pool.Exec(context.Background(), "delete from production_checks where issue = $1", child); err != nil {
-					t.Fatalf("close the production check of %s: %v", child, err)
+				if at := issueAt(t, pool, child); at != phase.Verifying {
+					t.Fatalf("%s stands at %s after its merge inside the linger, want verifying: a member of a lingering tree still takes its merge", child, at)
 				}
 			},
 		},
@@ -276,10 +270,10 @@ func TestLingerHandsOver(t *testing.T) {
 			}
 		}
 		// What the hand-over was for: the pull request it carried still merges, and that merge
-		// closes the issue (closeMerged, in a tree that lingers).
+		// stands the issue in verifying for its checks (closeMerged).
 		apply("the-handed-members-merge", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 44, MergeSHA: "merge-44"})
-		if at := issueAt(t, pool, handsOverMergeReady); at != phase.Done {
-			t.Fatalf("%s stands at %s after the merge of the pull request it carried, want done", handsOverMergeReady, at)
+		if at := issueAt(t, pool, handsOverMergeReady); at != phase.Verifying {
+			t.Fatalf("%s stands at %s after the merge of the pull request it carried, want verifying", handsOverMergeReady, at)
 		}
 	})
 

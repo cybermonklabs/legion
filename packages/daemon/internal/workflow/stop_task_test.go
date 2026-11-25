@@ -179,7 +179,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		}
 	})
 
-	t.Run("at merging the merger stops, and a merge GitHub still lands closes the issue, as it closes a hold of no plan rows", func(t *testing.T) {
+	t.Run("at merging the merger stops, and a merge GitHub still lands takes the issue into verifying, as it takes a hold of no plan rows", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
@@ -200,13 +200,13 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		if result := apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
 			t.Fatalf("the merge was refused: %+v", result.Refusal)
 		}
-		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Done || issue.Hold != nil {
-			t.Fatalf("%s stands in %s (hold %+v) after its merge, want done", root.Key, issue.Phase, issue.Hold)
+		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Verifying || issue.Hold != nil {
+			t.Fatalf("%s stands in %s (hold %+v) after its merge, want verifying: its close waits for its checks", root.Key, issue.Phase, issue.Hold)
 		}
 		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskDone {
 			t.Fatalf("task a is %s after its issue's merge, want done", task.State)
 		}
-		// The stop ended the merger's run; the merge that closes the issue ends it no second time.
+		// The stop ended the merger's run; the merge ends it no second time.
 		var ends []string
 		for _, write := range stepWrites(t, pool, root.Key) {
 			if isEnd(write) && write.Role == "merger" {
@@ -218,9 +218,10 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		}
 
 		// The twin: an issue with no plan rows held from merging, by a failed merger's claim,
-		// is closed by its merge too: a hold from merging awaits that merge (awaitsMerge), as the
-		// close and the boot's sweep read it, so the architect is told no "not merging". Its
-		// record is seeded as a store the daemon boots over holds it, before any fact.
+		// is taken into verifying by its merge too: a hold from merging awaits that merge
+		// (awaitsMerge), as the merge and the boot's sweep read it, so the architect is told no
+		// "not merging". Its record is seeded as a store the daemon boots over holds it, before any
+		// fact.
 		unplanned := migratedPool(t)
 		held := stepRoot(t, unplanned, phase.Held)
 		held.Hold = &record.Hold{From: phase.Merging}
@@ -229,11 +230,11 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		if result := applyFacts(t, unplanned, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
 			t.Fatalf("the merge of the issue with no plan rows was refused: %+v", result.Refusal)
 		}
-		if issue := issueOf(t, unplanned, engine, held.Key); issue.Phase != phase.Done || issue.Hold != nil {
-			t.Fatalf("%s with no plan rows stands in %s (hold %+v) after its merge, want done", held.Key, issue.Phase, issue.Hold)
+		if issue := issueOf(t, unplanned, engine, held.Key); issue.Phase != phase.Verifying || issue.Hold != nil {
+			t.Fatalf("%s with no plan rows stands in %s (hold %+v) after its merge, want verifying", held.Key, issue.Phase, issue.Hold)
 		}
 		if notices := noticesOf(t, unplanned, held.Key, "pr-merged"); len(notices) != 0 {
-			t.Fatalf("the pr-merged notices = %+v, want none: the merge closed the issue it held from merging", notices)
+			t.Fatalf("the pr-merged notices = %+v, want none: the merge was taken from the hold from merging", notices)
 		}
 	})
 
