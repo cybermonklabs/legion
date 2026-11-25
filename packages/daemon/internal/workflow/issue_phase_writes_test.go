@@ -60,6 +60,7 @@ func forgeTaskPlace(t *testing.T, pool *pgxpool.Pool, key string, generation uin
 // makes them disagree: claimFailed's refusal, which writes no hold and tells the architect, is the
 // last case.
 func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
+	t.Parallel()
 	implementing := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
 	for _, tc := range []struct {
 		name       string
@@ -143,6 +144,7 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 // every other leave does (leaveState): left where the status is not done, at the place it stood,
 // so the phase done its record takes is the phase its task stands in.
 func TestARootLeavingUnderTheOperatorsTreeEndsItsTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",

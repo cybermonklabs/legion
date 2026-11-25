@@ -20,6 +20,7 @@ import (
 // that awaits it: that merge lands later, and its close in the lingering tree ends the open record
 // passed, the one end it gets.
 func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Reviewing)
 	engine := stepEngine(nil)
@@ -69,6 +70,7 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 // A merge event closes a held merging phase too, both in a live tree and after its root parks.
 // Calling closeMerged directly would miss the event handler's choice of which phases it closes.
 func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
+	t.Parallel()
 	for _, lingering := range []bool{false, true} {
 		name := "live tree"
 		if lingering {
@@ -106,6 +108,7 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 // stopped, once. A member handed over keeps its merge open for its readmit to end, whatever its
 // pull request does.
 func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
+	t.Parallel()
 	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"}
 	closed := intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43"}
 	for _, tc := range []struct {
@@ -200,6 +203,7 @@ func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 // A root's close stops every member's running step, each keyed on the phase that member stands in,
 // and the root's own.
 func TestALingeringRootEndsEachMembersStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Reviewing)
 	stepChild(t, pool, "LEGION-209", phase.Testing, nil)
@@ -222,6 +226,7 @@ func TestALingeringRootEndsEachMembersStep(t *testing.T) {
 // A held issue's step runs through its hold, so the issue's leave ends the step of the phase the
 // hold is from.
 func TestAHeldIssueThatLeavesEndsItsHeldStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Held)
 	root.Hold = &record.Hold{From: phase.Testing}
@@ -237,6 +242,7 @@ func TestAHeldIssueThatLeavesEndsItsHeldStep(t *testing.T) {
 
 // A person's move of a running issue out of the workflow stops its step, once.
 func TestAPersonsMoveToDoneEndsTheRunningStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Reviewing)
 	stepChild(t, pool, "LEGION-209", phase.Reviewing, nil)
@@ -254,6 +260,7 @@ func TestAPersonsMoveToDoneEndsTheRunningStep(t *testing.T) {
 // phase, as a root taken back with its run does while it waits for its slot. The same departure of
 // a tree the workflow holds stops each one's step (leave, beginLinger).
 func TestAnOperatorsTreeLeavesNoStepRecord(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		operator bool
@@ -294,6 +301,7 @@ func TestAnOperatorsTreeLeavesNoStepRecord(t *testing.T) {
 // A child set back to todo opens its next run; the step of the run it leaves is stopped, and the
 // new run, at admitted, runs none yet.
 func TestAReenteredChildEndsItsOldRun(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Implementing)
 	child := stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
@@ -315,6 +323,7 @@ func TestAReenteredChildEndsItsOldRun(t *testing.T) {
 // An adopted member takes its next generation in the tree it joins; the step of the run it leaves
 // is stopped.
 func TestAnAdoptedMemberEndsItsOldRun(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Implementing)
 	member := record.Issue{Key: "LEGION-300", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-300", Project: "LEGION",

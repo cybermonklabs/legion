@@ -36,6 +36,7 @@ import (
 // So the precondition is stated as what both servers hold: the consumer has delivered none of the
 // messages published before it and has none to deliver, which is the state idle is read from.
 func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t *testing.T) {
+	t.Parallel()
 	js, stream := testJetStream(t)
 	pool := migratedPool(t)
 	spec := consumerSpec(&lockedBuffer{})
@@ -123,6 +124,7 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 //     (DispatchPosition) keeps the counts' idle and a reconcile's (ReconcilePosition) reads not
 //     idle, each saying so at Warn.
 func TestDispatchPositionIsNotIdleWhileTheStoreHoldsAMessageTheConsumerHasNotCounted(t *testing.T) {
+	// Not parallel: its reading holds only while the stored message's read beats consumerOldestBound, 1 s, a wall-clock bound the load of tests beside it can cross.
 	ctx := context.Background()
 	served, _ := testJetStream(t)
 	standIn := &lagStandIn{JetStream: served}
@@ -228,6 +230,7 @@ func requireNoConsumers(t *testing.T, read func() (context.Context, context.Canc
 // delivered again and dropped as a duplicate. Both ways a consumer is created do it: the boot's
 // OpenConsumers, and a SetRepositories mid-run, as a recording on a repository not heard yet makes.
 func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
+	t.Parallel()
 	for _, reopen := range []struct {
 		name string
 		open func(t *testing.T, js jetstream.JetStream, pool *pgxpool.Pool, spec ConsumerSpec, missing func()) func()
@@ -307,6 +310,7 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 // goroutine's and Lag's. CI's daemon-go job runs this package under -race (ci_job_reads.py's
 // DAEMON_RACE_PACKAGES).
 func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *testing.T) {
+	// Not parallel: each Lag it reads has to answer within consumerOldestBound, 1 s, and consumerLagBound, 2 s, wall-clock bounds the load of tests beside it can cross.
 	ctx := context.Background()
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
@@ -398,6 +402,7 @@ func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *tes
 // found missing, as a consumer created for the first time is: what was published before it is
 // not replayed.
 func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -444,6 +449,7 @@ func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T
 // none of them, and the daemon's own read of each issue's pull request heals those it would have
 // acted on.
 func TestAStoredPositionOlderThanTheStreamWarnsOfEventsThatMayHaveBeenMissed(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)

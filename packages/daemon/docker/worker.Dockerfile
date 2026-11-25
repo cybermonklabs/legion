@@ -1643,7 +1643,10 @@ COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 # after a push. jj's push is a `git … push --porcelain --no-verify`, so that wrapper is what puts
 # the leak guard in front of it. Before a `jj git push` or `jj gerrit upload`, aliases and the
 # default command expanded as jj expands them, it also checks that the git on PATH is the wrapper
-# and refuses a push whose configuration names another git, rather than pushing unchecked:
+# and refuses a push whose configuration names another git, rather than pushing unchecked. It
+# hands a `jj git push` to `legion jj --real /usr/local/bin/jj`, whose push step sets the author of
+# a commit the push sends from that commit's Legion-Role trailer, where its rules let it, and which
+# then runs the real jj:
 # packages/daemon/docker/jj.
 COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:

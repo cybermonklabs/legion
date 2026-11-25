@@ -39,6 +39,7 @@ func controllerNoticeKinds(t *testing.T, pool *pgxpool.Pool) []string {
 // agent running in the fresh session, in either cause's words; a claim named by its own role
 // keeps the role's sentence.
 func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing.T) {
+	t.Parallel()
 	const session = "01a1f5de-4835-7667-b005-e99e3e17edd3"
 	for _, row := range []struct {
 		name   string
@@ -131,6 +132,7 @@ func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing
 // A session store that cannot be asked is told the same way, and holds no phase: the claim keeps
 // its session and the daemon keeps trying.
 func TestASessionStoreFaultIsToldOnTheIssueAndToTheController(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
 

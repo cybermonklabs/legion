@@ -143,6 +143,7 @@ const notificationStreamMaxAge = 72 * time.Hour
 // stops at NakDelayCap; no delivery count overflows it, and a count of 0, a delivery whose
 // metadata did not parse, waits the cap.
 func TestTheNakDelayDoublesFromNakDelayToItsCap(t *testing.T) {
+	t.Parallel()
 	production, err := normalizedSpec(ConsumerSpec{Project: "CAPTURE", NakDelay: time.Second})
 	if err != nil {
 		t.Fatalf("normalizedSpec: %v", err)
@@ -197,6 +198,7 @@ func TestTheNakDelayDoublesFromNakDelayToItsCap(t *testing.T) {
 // failure. The values are the production ones: count 21, hour 1 h, margin 1 min, the stream's
 // 72 hours.
 func TestTheGiveUpRule(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	consumer := dispatchConsumerName("CAPTURE")
@@ -391,6 +393,7 @@ func giveUpNotices(t *testing.T, pool *pgxpool.Pool) (notices, count int) {
 // A RetryLater wait longer than the doubled nak delay takes its place, whole, with no cap; a
 // shorter one leaves the doubled delay. The nak line names the delay and the delivery count.
 func TestALongerRetryLaterWaitReplacesTheDoubledDelay(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	consumer := dispatchConsumerName("CAPTURE")
@@ -425,6 +428,7 @@ func TestALongerRetryLaterWaitReplacesTheDoubledDelay(t *testing.T) {
 // A message is terminated only once its give-up record has committed: the termination of each
 // kind of give-up finds the record committed, read through a connection of its own.
 func TestTheTermFollowsTheCommittedRecord(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	consumer := dispatchConsumerName("CAPTURE")
@@ -486,6 +490,7 @@ func TestTheTermFollowsTheCommittedRecord(t *testing.T) {
 // controller's notice. A consumer made again at an older stored time delivers it once more with a
 // count of 1: it fails, and is terminated with its record left as it was.
 func TestAMessageWhoseTermFailedComesBackAndIsTerminatedWithNoSecondRecord(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	registerCaptureController(t, pool)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
@@ -532,6 +537,7 @@ func TestAMessageWhoseTermFailedComesBackAndIsTerminatedWithNoSecondRecord(t *te
 // never terminated, a message that does not decode as well; once the record can be written, a
 // later delivery records it and terminates it.
 func TestWhileTheRecordCannotBeWrittenTheMessageIsNakedAndRecordedLater(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	consumer := dispatchConsumerName("CAPTURE")
 	for _, row := range []struct {
@@ -581,6 +587,7 @@ func TestWhileTheRecordCannotBeWrittenTheMessageIsNakedAndRecordedLater(t *testi
 // and the next delivery runs its handler, rather than giving the message up as a delivery that
 // did not end, with a stop or a crash for its cause that never happened.
 func TestAGiveUpWhoseCommitFailsStillRecordsTheDeliverysFailure(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	consumer := dispatchConsumerName("CAPTURE")
 	raw := migratedPool(t)
@@ -616,6 +623,7 @@ func TestAGiveUpWhoseCommitFailsStillRecordsTheDeliverysFailure(t *testing.T) {
 // logs none. An error longer than the record keeps is in the log whole, in storetext.LogWhole's
 // parts, while the give-up line carries it as the record does.
 func TestAGiveUpIsLoggedOnceAtError(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	logs := &lockedBuffer{}
@@ -652,6 +660,7 @@ func TestAGiveUpIsLoggedOnceAtError(t *testing.T) {
 // deliveries each held for the longest handler limit, the delays and the hour stay under the
 // stream's 72 hours less the margin.
 func TestTheProductionScheduleGivesUpBeforeTheStreamDeletesTheMessage(t *testing.T) {
+	t.Parallel()
 	spec, err := normalizedSpec(ConsumerSpec{Project: "CAPTURE", NakDelay: time.Second})
 	if err != nil {
 		t.Fatalf("normalizedSpec: %v", err)
@@ -679,6 +688,7 @@ func TestTheProductionScheduleGivesUpBeforeTheStreamDeletesTheMessage(t *testing
 // daemon's own event that does not decode is an error, and so is a name in neither form, which no
 // project's key reads (errIssueNameInNeitherForm).
 func TestAnotherProjectsIssueEventIsNoFactBeforeItsPayloadIsRead(t *testing.T) {
+	t.Parallel()
 	captured := capturedIssueUpdatedEnvelope(t)
 	for _, row := range []struct {
 		subject string

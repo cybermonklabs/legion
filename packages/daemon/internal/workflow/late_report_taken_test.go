@@ -128,6 +128,7 @@ func assertFirstReportTaken(t *testing.T, pool *pgxpool.Pool, engine *Engine, ke
 }
 
 func TestAFirstReportAfterItsRunsEventIsTakenOnTheEndedStep(t *testing.T) {
+	t.Parallel()
 	t.Run("a: no owner's plan, the approval before the reviewer's first completion", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
