@@ -114,6 +114,14 @@ func TestEveryAnswerThatCanHoldAReplyBlockCarriesItsQuote(t *testing.T) {
 	always := func(names ...string) func(int) []string { return func(int) []string { return names } }
 	issueComments, issueMessages := "/api/v1/issues/"+f.issue+"/comments", "/api/v1/issues/"+f.issue+"/messages"
 	agentMessages := "/api/v1/agents/" + quoteSession + "/messages"
+	getPage := func(path string) func(*testing.T, int) *httptest.ResponseRecorder {
+		return func(t *testing.T, pass int) *httptest.ResponseRecorder {
+			t.Helper()
+			response := get(path)(t, pass)
+			decodeThreadPage(t, response.Body.Bytes(), response.Code, path)
+			return response
+		}
+	}
 	answers := map[string]struct {
 		read func(t *testing.T, pass int) *httptest.ResponseRecorder
 		// carries is the fixture's replies the read gives the block of, in each pass.
@@ -160,14 +168,30 @@ func TestEveryAnswerThatCanHoldAReplyBlockCarriesItsQuote(t *testing.T) {
 			t.Helper()
 			return dispatchRequest(t, handler, http.MethodDelete, "/api/v1/messages/"+reply(spare("message")(pass)), nil, "alice")
 		}, func(pass int) []string { return []string{spare("message")(pass)} }},
+
+		"GET /api/v1/issues/{key}/comments commentThreadPage 200": {getPage(issueComments + "?order=activity"), always("comment", "callback")},
+		"GET /api/v1/issues/{key}/messages messageThreadPage 200": {getPage(issueMessages + "?order=activity"), always("message", "session")},
+		"GET /api/v1/issues/{key}/asks askThreadPage 200":         {getPage("/api/v1/issues/" + f.issue + "/asks?order=activity&thread=1"), always("ask")},
 	}
 
 	found := map[string]bool{}
 	for route, shape := range routeShapes {
-		for _, answer := range append([]routeAnswer{{Status: shape.Status, Body: shape.Response}, {Status: shape.Status, Body: shape.Advice}}, shape.Also...) {
-			if answer.Body != nil && holdsReplyBlock(reflect.TypeOf(answer.Body)) {
-				found[fmt.Sprintf("%s %d", route, answer.Status)] = true
+		for _, body := range []any{shape.Response, shape.Advice} {
+			if body != nil && holdsReplyBlock(reflect.TypeOf(body)) {
+				found[fmt.Sprintf("%s %d", route, shape.Status)] = true
 			}
+		}
+		for _, answer := range shape.Also {
+			ty := reflect.TypeOf(answer.Body)
+			if ty == nil || !holdsReplyBlock(ty) {
+				continue
+			}
+			// A second shape at the same status needs its own row, not the list's.
+			name := route
+			if answer.Status == shape.Status {
+				name += " " + ty.Name()
+			}
+			found[fmt.Sprintf("%s %d", name, answer.Status)] = true
 		}
 	}
 	for _, answer := range slices.Sorted(maps.Keys(found)) {

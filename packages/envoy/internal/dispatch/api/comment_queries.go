@@ -16,8 +16,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// listComments answers an issue's comment list, scoped by ?artifact= to the comments anchored in
-// one of its documents.
+// listComments answers an issue's comment list, scoped by ?artifact= to the comments anchored
+// in one of its documents. Under order=activity it answers threads, and the artifact scope
+// applies to the root so the page keeps its replies.
 func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -56,13 +57,23 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
+	var page *threadPage
+	if r.PathValue("key") != "" {
+		// Only the issue route accepts paging parameters.
+		var err error
+		page, err = parseThreadPage(r.URL.Query(), "in")
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	etag := s.commentListETag(owner, artifactFilter, watermark, lastSeq, trees)
+	etag := s.commentListETag(owner, artifactFilter, watermark, lastSeq, trees, page)
 	if answerNotModified(w, r, etag) {
 		return
 	}
@@ -73,14 +84,22 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	// The answer is kept and handed to every reader whose request names this owner and ETag
 	// (listAnswers), so it is read as everyReader: one reader's view of a block reserved for its
 	// author must never be the answer kept for the next.
-	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
+	var reads any
+	if page == nil {
+		var comments []model.Comment
+		comments, err = s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
+		if err == nil {
+			reader := s.readDisplayTrees(r.Context(), trees)
+			reads = shapedComments(comments, reader)
+			reader.resolve()
+		}
+	} else {
+		reads, err = s.readCommentThreadPage(r.Context(), deref(owner.IssueKey), artifactFilter, *page, trees)
+	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), trees)
-	reads := shapedComments(comments, reader)
-	reader.resolve()
 	encoded, err := encodeListAnswer(reads)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -127,10 +146,18 @@ func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, 
 // write the list shows raises, and the owner's event sequence, closed with the lines both lists'
 // ETags carry (listETag): one line per part, then the hash of them. Unlike the feed's, it names
 // its owner, so two lists standing at one count never share a validator.
-func (s *server) commentListETag(owner owner, artifactFilter string, watermark, lastSeq int64, trees bool) string {
+func (s *server) commentListETag(owner owner, artifactFilter string, watermark, lastSeq int64, trees bool, page *threadPage) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "issue=%s\nartifact=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\n",
 		deref(owner.IssueKey), deref(owner.ArtifactID), artifactFilter, watermark, lastSeq)
+	if page != nil {
+		before := ""
+		if page.before != nil {
+			before = page.before.cursor()
+		}
+		_, _ = fmt.Fprintf(hash, "order=activity\nlimit=%d\nbefore=%q\nauthor=%q\nperson=%q\n",
+			page.limit, before, page.author, page.person)
+	}
 	return s.listETag(hash, trees)
 }
 

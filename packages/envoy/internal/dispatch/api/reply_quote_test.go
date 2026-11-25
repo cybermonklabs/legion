@@ -196,6 +196,20 @@ func getRead(handler http.Handler, name, path string) quoteRead {
 	}}
 }
 
+func readThreadPageAnswer(t *testing.T, handler http.Handler, path string) []byte {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
+	decodeThreadPage(t, response.Body.Bytes(), response.Code, path)
+	return response.Body.Bytes()
+}
+
+func getThreadPageRead(handler http.Handler, path string) quoteRead {
+	return quoteRead{"GET " + path, func(t *testing.T, _ string) []byte {
+		t.Helper()
+		return readThreadPageAnswer(t, handler, path)
+	}}
+}
+
 // feedPayloads is the payload of each event of eventType about post id in the event feed at path
 // (GET /api/v1/issues/{key}/events, GET /api/v1/artifacts/{id}/events), oldest first.
 func feedPayloads(t *testing.T, handler http.Handler, path, eventType, id string) []json.RawMessage {
@@ -311,9 +325,12 @@ func TestAReplyToABlockStoresTheWordsItQuotes(t *testing.T) {
 		getRead(handler, "GET /api/v1/issues/{key}/comments", "/api/v1/issues/"+issue+"/comments"),
 		eventRead(handler, issueFeed, "comment.created"),
 	}
+	commentPage := getThreadPageRead(handler, "/api/v1/issues/"+issue+"/comments?order=activity")
+	commentPostReads := append([]quoteRead{commentPage}, commentReads...)
 	messageReads := []quoteRead{
 		getRead(handler, "GET /api/v1/issues/{key}/messages/{id}", "/api/v1/issues/"+issue+"/messages/{id}"),
 		getRead(handler, "GET /api/v1/issues/{key}/messages", "/api/v1/issues/"+issue+"/messages"),
+		getThreadPageRead(handler, "/api/v1/issues/"+issue+"/messages?order=activity"),
 		eventRead(handler, issueFeed, "message.answered"),
 	}
 	post := func(path string, input map[string]any) func(*testing.T) *httptest.ResponseRecorder {
@@ -340,12 +357,15 @@ func TestAReplyToABlockStoresTheWordsItQuotes(t *testing.T) {
 		{
 			name: "POST /api/v1/issues/{key}/comments, a reply to a comment's block",
 			send: post(issueComments, withQuote(map[string]any{"body": "On the second alpha.", "reply_to": comment}, "reply_to_block", "b1", quotedWord, 1)),
-			want: quoting(quotedWord, 1), reads: commentReads, edited: true,
+			want: quoting(quotedWord, 1), reads: commentPostReads, edited: true,
 		},
 		{
 			name: "POST /api/v1/issues/{key}/comments, a reply to an ask's part",
 			send: post(issueComments, withQuote(map[string]any{"body": "On the ask's second alpha.", "ask_id": ask}, "reply_to_block", "b1", quotedWord, 1)),
-			want: quoting(quotedWord, 1), reads: append([]quoteRead{getRead(handler, "GET /api/v1/asks/{id}", "/api/v1/asks/"+ask)}, commentReads...),
+			want: quoting(quotedWord, 1), reads: append([]quoteRead{
+				getRead(handler, "GET /api/v1/asks/{id}", "/api/v1/asks/"+ask),
+				getThreadPageRead(handler, "/api/v1/issues/"+issue+"/asks?order=activity&thread=1"),
+			}, commentReads...),
 		},
 		{
 			name: "POST /api/v1/artifacts/{id}/comments",
@@ -361,7 +381,7 @@ func TestAReplyToABlockStoresTheWordsItQuotes(t *testing.T) {
 			name: "POST /api/v1/comments/{id}/reply",
 			send: bearer("/api/v1/comments/"+comment+"/reply", withQuote(map[string]any{"body": "The session on the second alpha."}, "reply_to_block", "b1", quotedWord, 1)),
 			want: quoting(quotedWord, 1), edited: true,
-			reads: []quoteRead{commentReads[0], commentReads[1], eventRead(handler, issueFeed, "comment.answered")},
+			reads: []quoteRead{commentReads[0], commentReads[1], eventRead(handler, issueFeed, "comment.answered"), commentPage},
 		},
 		{
 			name: "POST /api/v1/issues/{key}/messages",
@@ -766,6 +786,12 @@ func TestADeletedPostLeavesNoQuoteOfItsWords(t *testing.T) {
 	}
 	issueComments, issueMessages := "/api/v1/issues/"+f.issue+"/comments", "/api/v1/issues/"+f.issue+"/messages"
 	agentMessages, broadcast := "/api/v1/agents/"+quoteSession+"/messages", "/api/v1/broadcasts/"+f.broadcast
+	getPage := func(path string) func(*testing.T) []byte {
+		return func(t *testing.T) []byte {
+			t.Helper()
+			return readThreadPageAnswer(t, handler, path+"?order=activity")
+		}
+	}
 	reads := []struct {
 		name, reply string
 		read        func(*testing.T) []byte
@@ -794,6 +820,10 @@ func TestADeletedPostLeavesNoQuoteOfItsWords(t *testing.T) {
 		{"GET /api/v1/broadcasts/{id}", "copy", get(broadcast)},
 		{"GET /api/v1/agents/{session_id}/messages", "copy", get(agentMessages)},
 		{"GET /api/v1/messages/{id}", "copy", get("/api/v1/messages/" + reply("copy"))},
+		{"the comment thread page", "comment", getPage(issueComments)},
+		{"the comment thread page", "callback", getPage(issueComments)},
+		{"the message thread page", "message", getPage(issueMessages)},
+		{"the message thread page", "session", getPage(issueMessages)},
 	}
 	for _, row := range reads {
 		step := row.name + ", the " + row.reply + " reply"
@@ -804,6 +834,8 @@ func TestADeletedPostLeavesNoQuoteOfItsWords(t *testing.T) {
 	// The ask no route deletes: its reply keeps both.
 	requireQuoted(t, "GET /api/v1/asks/{id}, the ask's reply", readAnswer(t, handler, "/api/v1/asks/"+f.posts["ask"]),
 		reply("ask"), quoting(quotedWord, 1))
+	askPage := "/api/v1/issues/" + f.issue + "/asks?order=activity&thread=1"
+	requireQuoted(t, "the ask thread page", readThreadPageAnswer(t, handler, askPage), reply("ask"), quoting(quotedWord, 1))
 
 	// The delete writes nothing to its replies: each row keeps the quote it stored.
 	for name, stored := range f.replies {

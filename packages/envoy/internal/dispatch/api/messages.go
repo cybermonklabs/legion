@@ -1013,14 +1013,27 @@ var listIssueRootMessagesQuery = `
 		order by created_at, id
 	`
 
-// listIssueMessages is every root message of one issue, oldest first, each with its deliveries
-// and every message replying to it: one row per thread, the list a dashboard shows one card
-// from. It is unpaged, as an issue's comments are - the threads on an issue are the whole
-// conversation held there. A targeted message is an ordinary root and is listed like any
-// other.
+// listIssueMessages answers every root message of one issue, oldest first, with its deliveries
+// and every message replying to it: one row per thread. Without order the list is unpaged,
+// as the issue's comment list is. A targeted message is an ordinary root and is listed like
+// any other. An activity page limits the roots before building their threads.
 func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
+		return
+	}
+	page, err := parseThreadPage(r.URL.Query(), "in", "none")
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if page != nil {
+		result, err := s.readMessageThreadPage(r.Context(), who, r.PathValue("key"), *page, wantsDisplayTrees(r))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), listIssueRootMessagesQuery, r.PathValue("key"))

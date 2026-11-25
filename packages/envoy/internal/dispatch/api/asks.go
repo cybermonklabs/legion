@@ -791,13 +791,12 @@ type issueAskRow struct {
 	Thread    *askThread          `json:"thread,omitempty"`
 }
 
-// listIssueAsks returns every ask on an issue, filtered by state: "open" or
-// "answered" match only that state; "all" (the default) returns every ask
-// regardless of state, including resolved ones. Each ask carries its newest reply, so a
-// client can order by it; `?thread=1` adds the thread a card renders, batched over the whole
-// page in one set of reads rather than a fetch per ask. The list is unpaged and three surfaces
-// read it, so the thread is what the one surface that draws it asks for, not what every reader
-// of the ask row pays for.
+// listIssueAsks returns asks on an issue, filtered by state: "open" or "answered" match only
+// that state; "all" (the default) includes resolved ones. Each ask carries its newest reply,
+// so a client can order by it. Without order the list is unpaged, and three surfaces read it.
+// Only the surface that draws threads asks for them with ?thread=1, so other readers do not
+// pay to build them. That parameter batches thread reads over the whole answer, and under
+// order=activity only the page's asks are built (readAskThreadPage).
 func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -812,8 +811,22 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	page, err := parseThreadPage(r.URL.Query())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	who, ok := s.actingReader(w, r)
 	if !ok {
+		return
+	}
+	if page != nil {
+		result, err := s.readAskThreadPage(r.Context(), who, r.PathValue("key"), state, *page, withThread, wantsDisplayTrees(r))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
 		return
 	}
 	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, who, issueOwner(r.PathValue("key")), state)
@@ -821,24 +834,11 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// One reader for the whole page: the asks' texts, and the replies, rewordings and answers of
-	// every thread the list carries, are one query and one store.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	rows := make([]issueAskRow, len(asks))
-	for index := range asks {
-		rows[index].shapedAsk.Ask = asks[index]
-		rows[index].shapedAsk.shape(reader)
-		if reply, ok := lastReplies[asks[index].ID]; ok {
-			rows[index].LastReply = &reply
-		}
+	rows, err := s.shapeIssueAskRows(r.Context(), who, asks, lastReplies, withThread, wantsDisplayTrees(r))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
-	if withThread {
-		if err := s.attachIssueAskThreads(r.Context(), who, rows, reader); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	reader.resolve()
 	WriteJSON(w, http.StatusOK, rows)
 }
 
