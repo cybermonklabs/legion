@@ -254,8 +254,9 @@ func requireUnder(t *testing.T, what string, tree docs.IssueTree, address, paren
 // first part after its comment; a criterion of a child under its parent's comment stands in the
 // child's spec record after the walk from the child's tree node, and a write of it moves the
 // child's digest and leaves the parent's; and a document comment anchored inside a decision's
-// paragraph stands under the decision, on a converted issue, through a moved address, and on one
-// that has not converted. The test refuses to run where select 'a' < 'B' is false.
+// paragraph stands under that paragraph, the node whose text it quotes (R31), after it, on a
+// converted issue, through a moved address, and on one that has not converted. The test refuses to
+// run where select 'a' < 'B' is false.
 func TestApprovalCoversTheDigestOfOneQuerysRecord(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
@@ -293,7 +294,7 @@ func TestApprovalCoversTheDigestOfOneQuerysRecord(t *testing.T) {
 		{"comments with no rank, and a reply, stand by made_at whatever their ids", digestStepUnranked},
 		{"a requirement under a comment's block stands in the walk's first part after its comment", digestStepRequirementUnderComment},
 		{"a criterion of a child under its parent's comment stands in the child's record alone", digestStepChildCriterion},
-		{"a comment anchored inside a decision's paragraph stands under the decision", digestStepAnchoredComment},
+		{"a comment anchored inside a decision's paragraph stands under that paragraph", digestStepAnchoredComment},
 	} {
 		t.Run(step.name, func(t *testing.T) { step.run(t, rig) })
 	}
@@ -822,25 +823,28 @@ func digestStepAnchoredComment(t *testing.T, rig *digestRig) {
 		comment := createBlockAnchoredComment(t, rig.handler, issue.Key, map[string]any{"artifact": artifact, "quote": "urgent list", "block_id": paragraph})
 		tree := rig.walk(t, issue.Key)
 		requireWalkOrder(t, tree)
-		decision := blockAddress(spec.address("d1"))
+		// The comment is a node under the node whose text it quotes (R31): its part_of names the
+		// paragraph its anchored_in names, which stands under the decision.
+		inside := blockAddress(spec.address(paragraph))
 		requireUnder(t, "a comment anchored inside the decision's paragraph (converted "+strconv.FormatBool(!unconverted)+")",
-			tree, graphstore.KindComment+":"+comment.ID, decision)
-		if inside := walkIndex(tree, blockAddress(spec.address(paragraph))); inside < 0 || inside > walkIndex(tree, graphstore.KindComment+":"+comment.ID) {
-			t.Errorf("the walk takes the decision's paragraph at %d, want it before the comment, a ranked child before an unranked one", inside)
-		}
+			tree, graphstore.KindComment+":"+comment.ID, inside)
+		requireUnder(t, "the decision's paragraph (converted "+strconv.FormatBool(!unconverted)+")",
+			tree, inside, blockAddress(spec.address("d1")))
 		if unconverted {
 			continue
 		}
-		// A comment whose anchored_in names an old address of the paragraph, which a moved_to
-		// carries to the paragraph's node in the room, stands under the decision too.
+		// A comment whose anchor names an old address of the paragraph, which a moved_to carries to
+		// the paragraph's node in the room, stands under the paragraph too. Its anchored_in and its
+		// part_of move together, as every writer of its anchored_in moves them (R31).
 		moved := createBlockAnchoredComment(t, rig.handler, issue.Key, map[string]any{"artifact": artifact, "quote": "urgent list", "block_id": paragraph})
 		old := issue.Key + "/spec-before#" + paragraph
-		rig.state(t,
-			graphstore.AnchoredIn(moved.ID, spec.address(paragraph), false, digestWriter, time.Now().UTC(), graphstore.NoEvent),
-			graphstore.AnchoredIn(moved.ID, old, true, digestWriter, time.Now().UTC(), graphstore.NoEvent),
-			blockTuple(old, graphstore.TupleMovedTo, refs.BlockNodeKind, spec.address(paragraph), true))
+		now := time.Now().UTC()
+		rig.state(t, slices.Concat(
+			graphstore.AnchorTuples(nil, moved.ID, refs.BlockNodeKind, spec.address(paragraph), true, false, digestWriter, now, graphstore.NoEvent),
+			graphstore.AnchorTuples(nil, moved.ID, refs.BlockNodeKind, old, true, true, digestWriter, now, graphstore.NoEvent),
+			[]graphstore.Tuple{blockTuple(old, graphstore.TupleMovedTo, refs.BlockNodeKind, spec.address(paragraph), true)})...)
 		requireUnder(t, "a comment anchored at an old address of the decision's paragraph", rig.walk(t, issue.Key),
-			graphstore.KindComment+":"+moved.ID, decision)
+			graphstore.KindComment+":"+moved.ID, inside)
 	}
 }
 
