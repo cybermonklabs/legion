@@ -120,6 +120,11 @@ export default {
         "The statement you wrote on has changed or is gone, so what you wrote is kept here:",
       kept_statement_gone_waits:
         "The statement you wrote on has changed or is gone, so what you wrote is kept here to use in this field once it is empty:",
+      /** What the box says, after the composer's own words that the post a reply answers was
+       *  deleted while the reply was open, of where it sends the draft instead: the box's own
+       *  control that writes on the issue, where the draft then goes as a comment, or as a
+       *  question with the Question chip pressed. */
+      deleted_reply_way: "Press Write on the issue instead to send it on the issue.",
     },
     CONTROL_LABELS: {
       /** Opens the editor of the issue's title: the button laid over the title's heading in the
@@ -136,13 +141,11 @@ export default {
       issue_placeholder_phone: "Write on the issue…",
       reply_placeholder_phone: "Your reply, under the row…",
       edit_placeholder_phone: "Your comment, rewritten…",
-      /** What the box says while it is empty and writes a comment on a statement: the comment
-       *  goes beside the statement, in the margin that draws a comment on a statement's text, and
-       *  not under its row as a reply does. */
-      statement_placeholder: "Your comment, beside the statement it is on…  (Enter sends)",
+      /** What the box says while it is empty and writes a comment on a statement. */
+      statement_placeholder: "Your comment on the statement…  (Enter sends)",
       /** The same in the shorter words the box says at 760 px and below, which fit its line
        *  whole. */
-      statement_placeholder_phone: "Comment beside the statement…",
+      statement_placeholder_phone: "Comment on the statement…",
     },
   },
   unasked: [],

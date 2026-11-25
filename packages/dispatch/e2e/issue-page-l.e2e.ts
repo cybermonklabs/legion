@@ -874,8 +874,8 @@ test.skip("what the reader sends from the box as a reply written in Graph is dra
 // one line with Send, as the pictures draw it, at 390 px as at 1440 px, and it says the words go
 // on the issue (R3, `issue_placeholder`, in its phone form at 760 px and below); while it replies
 // its placeholder says where the words go; and `a` on an open question leaves it as it is at
-// rest, since the ask's own body answers the ask (R5): no target line, no option, no answer field
-// and no caret in it, the focus left on the question's row.
+// rest, since the box answers no ask (R5, `OutlineWriter.answer`): no target line, no option,
+// no answer field and no caret in it, the focus left on the question's row.
 // SLOW(>=2s): two cold loads, at 1440 px and at 390 px, each with a reply opened and left again
 // and `a` pressed on the open question.
 test("the box at the foot is one line at rest, and says where a reply goes @phone", async ({
@@ -1225,8 +1225,8 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
       // line is drawn: the question's row is taken after that frame, as a reader's next press is.
       await nextFrames(page);
 
-      // `a` on the open question leaves the box as it is at rest, since the ask's own body
-      // answers the ask: no target line, and each control at least 24 by 24 px.
+      // `a` on the open question leaves the box as it is at rest, since the box answers no ask
+      // (`OutlineWriter.answer`): no target line, and each control at least 24 by 24 px.
       await focusRow(page, seeded.question);
       await page.keyboard.press("a");
       // The key's handler and the render it asks for are done within these frames, so a box that

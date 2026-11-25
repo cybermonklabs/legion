@@ -924,7 +924,7 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     // Reply aims the box at the foot (part L's `IssueComposer.tsx`) and puts the caret in its
     // line, the one the box draws: the line that writes on the issue stays mounted, hidden, while
     // the line edits a comment. Answer and a press on an option put no caret in the box, which
-    // answers no ask: the ask's own body does.
+    // answers no ask (`OutlineWriter.answer`).
     const boxField = page.locator('[data-testid="issue-composer"] textarea:visible');
     const comment = await focusRow(page, seeded.comment);
     await expect(rowAct(comment, "reply"), "the focused comment draws no Reply").toHaveCount(1);

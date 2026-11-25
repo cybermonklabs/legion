@@ -27,19 +27,24 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * of the outline, and what it is written to. With nothing set it writes a new comment on the
  * issue, or a question with the Question chip pressed. A row's Reply - its control, or `r` - sets
  * it to reply to that row, and an open question's Answer - its control, one of its options, or
- * `a` - sets it to answer that question, which the ask's own body takes and the line does not;
- * Escape, or the line's own control, sets it back.
+ * `a` - sets the answer the writer holds to that question, which the line does not send
+ * (`answer`); Escape, or the line's own control, sets it back.
  *
  * The state lives above the outline and the line both, because each sets it and both draw it:
  * a row draws the options the reader picked as picked, and the line names what it replies to.
  */
 export interface OutlineWriter {
-  /** The open question the line answers; undefined while it answers none. */
+  /** The open question an Answer, an option or a change of answer set, or undefined for none.
+   *  No control of the page sends it: the line at the foot answers no ask and draws nothing of
+   *  it, and the page draws no ask's own body yet. Its one reader draws the options picked on
+   *  the question's row (`NodeRow.tsx`'s `NodeOptions`), until the outline's ask rows move onto
+   *  the ask's body. */
   readonly answer: AnswerTarget | undefined;
-  /** Sets the line to answer `node`, an open question, and puts no caret in the box. */
+  /** Sets the answer the writer holds to `node`, an open question (`answer`), and puts no caret
+   *  in the box. */
   readonly answerNode: (node: TreeNode) => void;
-  /** Sets the line to change the reader's own answer to `node`, an answered question: the line
-   *  answers it again over the answer it holds (`AnswerTarget.replacing`). */
+  /** Sets the answer the writer holds to a change of the reader's own answer to `node`, an
+   *  answered question, over the answer it records (`AnswerTarget.replacing`, and `answer`). */
   readonly changeAnswer: (node: TreeNode) => void;
   /** Sets the line back to a new comment on the issue. */
   readonly clear: () => void;
@@ -71,7 +76,7 @@ export interface OutlineWriter {
   readonly issueKey: string;
   /** What the line writes with no reply set: a comment, or a question. */
   readonly kind: WriterKind;
-  /** Picks `label` of `node`'s options, or lets it go, and sets the line to answer `node`. */
+  /** Picks `label` of `node`'s options, or lets it go, in the writer's answer to `node`. */
   readonly pick: (node: TreeNode, label: string) => void;
   // A reply the line sent that Dispatch refused holds the line on it until the reader ends the
   // reply in the line (`clear`), the reader's own move, which takes the refusal off it: the rule
@@ -109,7 +114,7 @@ export interface OutlineWriter {
    *  read answers a tree and no `view_of` (`criterionOffered`). False for every node while the
    *  cache holds no tree read of the issue (`useRoomFacts`). */
   readonly takesCriterion: (node: TreeNode) => boolean;
-  /** Picks `label` of the options of the question the line answers, or lets it go. */
+  /** Picks `label` of the options of the answer the writer holds (`answer`), or lets it go. */
   readonly toggle: (label: string) => void;
   // A send of the line's own that Dispatch refused holds the line on its target through the
   // issue's own Reply too, as through every other aim (`statement`): only `clear`, which the
@@ -147,7 +152,7 @@ export interface Landing {
     | undefined;
 }
 
-/** The question the line answers. */
+/** The answer the writer holds (`OutlineWriter.answer`, which says what reads it). */
 export interface AnswerTarget {
   /** The ask's own id, which the answer is written to. */
   readonly askId: string;
@@ -155,8 +160,8 @@ export interface AnswerTarget {
   readonly multiple: boolean;
   /** The question's row in the outline. */
   readonly nodeId: string;
-  /** The moment of the reader's own answer this one replaces (`expected_answer_at`), where the
-   *  line changes an answer rather than giving the first; its words seed the line. */
+  /** The reader's own answer this one replaces, where it changes an answer rather than giving
+   *  the first: its moment (`expected_answer_at`) and its words. */
   readonly replacing?: { readonly at: string; readonly text: string };
   /** The options picked, by their labels, in the order they were picked. */
   readonly selected: readonly string[];
@@ -175,7 +180,7 @@ export function conversationItem(
     : undefined;
 }
 
-/** Whether `node` carries the control that answers it: an open question. */
+/** Whether `node` carries an Answer, which sets the writer's answer to it: an open question. */
 export function takesAnswer(node: Pick<TreeNode, "reference" | "state" | "type">): boolean {
   return node.type === "ask" && node.state === "open" && conversationItem(node) !== undefined;
 }
@@ -532,11 +537,12 @@ interface HeldLine {
  * statement - until the reader ends that target in the line (`clear`, which the target line's
  * control and Escape reach), whose composer then carries the refusal to the issue (`statement`).
  * Until then a press that would aim the line elsewhere - a Reply, an Edit, the issue's own Reply,
- * or an Answer, an option or a change of answer, which the ask's own body takes - leaves the line
- * on that target instead, so the refused words are neither replaced by another target's seed nor
- * sent under another target; the box's own aims then put the caret back in the line, and an
- * answer's puts none there. A refusal the same words would meet again (`TARGET_AMBIGUOUS`) holds
- * the line only until the reader lets its target go.
+ * or an Answer, an option or a change of answer, which set the answer the writer holds
+ * (`OutlineWriter.answer`) - leaves the line on that target instead, so the refused words are
+ * neither replaced by another target's seed nor sent under another target; the box's own aims
+ * then put the caret back in the line, and an answer's puts none there. A refusal the same
+ * words would meet again (`TARGET_AMBIGUOUS`) holds the line only until the reader lets its
+ * target go.
  * A Reply on that same statement, `aimed`, takes its row's whole target. With none held it does
  * nothing. Each caller's `sendingNow` guard runs first, so a send held then was refused. The
  * writer's setters are handed in, so each setter that calls this keeps the dependencies it had.

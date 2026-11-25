@@ -587,7 +587,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       },
     },
     {
-      // Answer the focused open question: the line answers it, its options its chips.
+      // The focused open question's Answer: sets the writer's answer (`OutlineWriter.answer`).
       id: "tree-answer",
       keys: "a",
       label: `${CONTROL_LABELS.answer} the focused question`,

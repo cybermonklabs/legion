@@ -888,8 +888,8 @@ export function RowMargin({
  * `tabStops` holds, as every other control inside a row is (R9).
  *
  * An open question's options are the choices of its answer (R16, the prototype's `button.opt`):
- * a press picks one, or lets it go, and sets the line at the foot of the outline to answer the
- * question, where the keyboard picks them too; the one picked is drawn on the waiting tint. A
+ * a press picks one, or lets it go, in the answer the writer holds (`OutlineWriter.answer`, which
+ * says what reads it), and the one picked is drawn on the waiting tint. A
  * reference inside such an option reads as a link and is none: the press is the option's.
  */
 export function NodeOptions({
@@ -963,8 +963,8 @@ export function NodeOptions({
             key={option.label}
           >
             {answering ? (
-              // Out of the tab order, as every control inside a row is: the line the press sets
-              // draws the same options as its own chips, which the keyboard reaches (R9). A
+              // Out of the tab order, as every control inside a row is, unless `tabStops` holds
+              // (R9); the line at the foot draws none of them (`OutlineWriter.answer`). A
               // press leaves the focus where it is until it ends: focusing the row on mousedown
               // opens its body, whose options' own words push every option below one that has
               // them down, and the press would end on another option or on none. Once the press

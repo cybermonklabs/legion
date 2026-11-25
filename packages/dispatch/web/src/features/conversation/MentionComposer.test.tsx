@@ -4068,6 +4068,7 @@ test("a pasted file answered KEY_COMMITTED says it was stored and adds no refere
  *  of the host's own, which the composer's own Retry never says. */
 const hostLook: OutlineLook = {
   cancelReply: "Write on the issue",
+  deletedReplyWay: "Press Write on the issue to send it on the issue.",
   end: () => {},
   kinds: [],
   placeholder: "Write a comment",

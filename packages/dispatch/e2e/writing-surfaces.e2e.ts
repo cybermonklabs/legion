@@ -505,8 +505,8 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   },
   // The new issue page's one box, at the foot of its outline, which a
   // reader gets once their `issue.page` is `outline` (`withIssuePage`). The line's name follows
-  // what it writes, so it is reached by the attribute its form carries. It answers no ask: an
-  // ask's own body does, so it draws no answer field. An edit of the reader's own comment is
+  // what it writes, so it is reached by the attribute its form carries. It answers no ask
+  // (`OutlineWriter.answer`), so it draws no answer field. An edit of the reader's own comment is
   // opened only by an Edit of that comment, which the page does not draw yet, so the list leaves
   // `comment-edit` uncovered until such an Edit is under the box.
   "issue-page-composer": {

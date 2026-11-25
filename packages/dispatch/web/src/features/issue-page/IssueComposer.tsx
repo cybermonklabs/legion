@@ -98,9 +98,10 @@ export interface BoxPlace {
  * otherwise only while the reader has asked to write - the writer holds a reply, a statement or
  * an edit, which a row's Reply or Edit sets there or in Details - or holds a send of the line's
  * own that is out or was refused. So a press is never answered by nothing, and a refusal is never
- * out of sight. An answer the writer holds draws nothing here: the ask's own body answers it.
+ * out of sight. An answer the writer holds draws nothing here, and the box sends none
+ * (`OutlineWriter.answer`). The box reads it for itself, and the slot for the reach its wrapper
+ * publishes (`useFootInset`).
  * A criterion the writer holds, set by a row's Write a criterion, draws the box as a reply does.
- * The box reads it for itself, and the slot for the reach its wrapper publishes (`useFootInset`).
  */
 export function useComposerShown({ documentOpen, viewOn }: BoxPlace): boolean {
   const writer = useOutlineWriter();
@@ -120,9 +121,8 @@ export function useComposerShown({ documentOpen, viewOn }: BoxPlace): boolean {
  * The box at the foot of the new issue page, held there by its slot (the prototype's
  * `#composer`): one line, which Enter sends, while the outline runs on under it. It is the
  * composer every box of the dashboard is (`MentionComposer`), in the look only this page asks for
- * (`OutlineLook`), so no file of the page holds a field of its own. It is not the page's only
- * place to write: an ask's own body answers the ask, and the margin beside a statement takes the
- * comments on its text.
+ * (`OutlineLook`), so no file of the page holds a field of its own. It sends no answer to an ask
+ * (`OutlineWriter.answer`).
  *
  * With no target it writes a comment on the issue, or a question with the Question chip pressed.
  * A row's Reply sets it to reply to that row - a comment, a message, an ask in any state - or to
@@ -299,6 +299,25 @@ function finish(writer: OutlineWriter, place: LinePlace, landing: Landing): void
   place.giveBack();
 }
 
+/** What the write line is aimed at: the entry a reply answers, or the statement a comment is on.
+ *  The writer holds at most one of the two (`OutlineWriter.statement`), and the line reads its
+ *  placeholder, its target line and where a send takes the reader off this one value. */
+interface LineAim {
+  /** The author the target line names: the entry's, or the statement's where its row carries
+   *  one; none for a statement taken up from a held send, which keeps no author. */
+  readonly author: Actor | undefined;
+  /** The page's word for the target's kind, which the target line names it by. */
+  readonly kind: NodeType;
+  /** Where a send from the line takes the reader (`Landing.to`): their newest node under the
+   *  entry a reply answers, or the statement's own row. */
+  readonly landsOn: Landing["to"];
+  /** Which of the line's placeholders it says while it is empty (`PLACEHOLDERS`). */
+  readonly placeholder: "reply" | "statement";
+  /** What a landing names (`Landing.under`): the entry, or the statement's row, which a
+   *  statement the line took up from a held send names as well (`StatementAnchor.row`). */
+  readonly under: NonNullable<Landing["under"]>;
+}
+
 /** The line that writes a comment, a question, a reply, or a comment on a statement: the
  *  composer in the issue page's look (`OutlineLook`). */
 function WriteLine({
@@ -332,17 +351,27 @@ function WriteLine({
     [statement]
   );
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
-  // Whether the line is aimed at something: the entry a reply answers, or the statement a comment
-  // is on; not for a write on the issue itself.
-  const aimed = reply !== null || statement !== undefined;
-  // What a landing names: that entry, or that statement's row, which a statement the line took
-  // up from a held send names as well (`StatementAnchor.row`); nothing for a write on the issue.
-  const under: Landing["under"] =
+  // What the line is aimed at (`LineAim`); none for a write on the issue itself.
+  const aim: LineAim | undefined =
     reply !== null
-      ? { id: reply.id, kind: reply.parentKind }
-      : statement === undefined
-        ? undefined
-        : { id: statement.row, kind: "statement" };
+      ? {
+          author: reply.actor,
+          kind: reply.parentKind,
+          landsOn: "newest",
+          placeholder: "reply",
+          under: { id: reply.id, kind: reply.parentKind },
+        }
+      : statement !== undefined
+        ? {
+            author: statement.author,
+            kind: "requirement",
+            landsOn: "self",
+            placeholder: "statement",
+            under: { id: statement.row, kind: "statement" },
+          }
+        : undefined;
+  const aimed = aim !== undefined;
+  const under = aim?.under;
   // A reply and a statement's comment are aimed at a row, so the kinds are drawn only while the
   // line writes on the issue. A closed issue takes a comment and no question, so the line writes
   // a comment there whatever chip was pressed while it was open, rather than holding a question
@@ -375,13 +404,11 @@ function WriteLine({
   const look: OutlineLook = {
     anchor,
     cancelReply: CONTROL_LABELS.write_on_issue,
+    deletedReplyWay: ANSWER_LINES.deleted_reply_way,
     end,
     kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },
     kinds: writesKinds ? KINDS : [],
-    placeholder: placeholderOf(
-      statement !== undefined ? "statement" : reply !== null ? "reply" : "issue",
-      place.phone
-    ),
+    placeholder: placeholderOf(aim?.placeholder ?? "issue", place.phone),
     retry: CONTROL_LABELS.retry,
     send: CONTROL_LABELS.send,
     sending: ANSWER_LINES.sending,
@@ -395,20 +422,8 @@ function WriteLine({
             goneWaits: ANSWER_LINES.kept_statement_gone_waits,
           },
     target:
-      reply !== null ? (
-        <TargetNamed
-          author={reply.actor}
-          doing={CONTROL_LABELS.replying_to}
-          kind={reply.parentKind}
-        />
-      ) : statement === undefined ? undefined : (
-        // The statement's own author, where its row carries one; none for a statement taken up
-        // from a held send, which keeps no author.
-        <TargetNamed
-          author={statement.author}
-          doing={CONTROL_LABELS.replying_to}
-          kind="requirement"
-        />
+      aim === undefined ? undefined : (
+        <TargetNamed author={aim.author} doing={CONTROL_LABELS.replying_to} kind={aim.kind} />
       ),
     uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
     uploading: ANSWER_LINES.uploading,
@@ -427,12 +442,10 @@ function WriteLine({
       }}
       // The reader is taken to what they wrote - their newest node under the row the line was
       // aimed at, or under the issue - and the line writes on the issue again. A comment on a
-      // statement's text is drawn in the margin beside it and no row of the outline, so the
-      // reader is taken back to the statement's own row. Neither is refused here: the write
-      // store drops the send before it calls this, so no send is out by then.
-      onSent={() =>
-        finish(writer, place, { to: statement === undefined ? "newest" : "self", under })
-      }
+      // statement's text takes the reader back to the statement's own row, whichever row draws
+      // the comment itself. Neither is refused here: the write store drops the send before it
+      // calls this, so no send is out by then.
+      onSent={() => finish(writer, place, { to: aim?.landsOn ?? "newest", under })}
       outline={look}
       owner={owner}
       replyParent={replyParentOf(reply, comments.data ?? [], messages.data ?? [])}
@@ -498,6 +511,7 @@ function EditLine({
     finish(writer, place, { to: "self", under: { id: editing.id, kind: "comment" } });
   const look: OutlineLook = {
     cancelReply: CONTROL_LABELS.write_on_issue,
+    deletedReplyWay: ANSWER_LINES.deleted_reply_way,
     end: back,
     kinds: [],
     placeholder: placeholderOf("edit", place.phone),
