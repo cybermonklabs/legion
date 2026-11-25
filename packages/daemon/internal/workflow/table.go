@@ -19,8 +19,11 @@ const (
 	TriggerReviewRejected      TriggerKind = "review_rejected"
 	TriggerRetroCompleted      TriggerKind = "retro_completed"
 	TriggerPullRequestMerged   TriggerKind = "pull_request_merged"
-	TriggerSignOff             TriggerKind = "sign_off"
-	TriggerBackward            TriggerKind = "backward"
+	// TriggerChecksPassed is the judge's answer that a merged issue's close waits for nothing
+	// (record.CloseWait.Done, judgeClose): the one trigger out of verifying.
+	TriggerChecksPassed TriggerKind = "checks_passed"
+	TriggerSignOff      TriggerKind = "sign_off"
+	TriggerBackward     TriggerKind = "backward"
 )
 
 // EffectKind identifies the durable outbox consequences selected by a row. EffectSuspend is the
@@ -39,10 +42,14 @@ const (
 // HasOpenOrMergedPR is whether the issue's pull request record is open or merged. A merged record
 // counts: the work landed, the merge told the architect (pr-merged), and the workflow runs on. A
 // completion never moves an issue on a pull request closed without merging, nor with none recorded.
+// CloseWaits is whether the close of a merged issue waits for anything (record.CloseWaitOf, read
+// by closeWait at the merge): transition fills it for TriggerPullRequestMerged alone, and it picks
+// which of the merge's two rows the merge takes.
 type Snapshot struct {
 	Phase             phase.Phase
 	HasOpenOrMergedPR bool
 	GateOpen          bool
+	CloseWaits        bool
 }
 
 // Row is one declarative workflow transition. The engine interprets its effects transactionally.
@@ -59,6 +66,11 @@ func allow(Snapshot) bool { return true }
 // hasOpenOrMergedPR is the guard of the implementer's move on: a completion moves an issue only on
 // a pull request that is open or merged (Snapshot).
 func hasOpenOrMergedPR(s Snapshot) bool { return s.HasOpenOrMergedPR }
+
+// closeWaits and closeWaitsNot are the guards of the merge's two rows: a merge whose close waits
+// for anything enters verifying, and only a merge whose close waits for nothing closes the issue.
+func closeWaits(s Snapshot) bool    { return s.CloseWaits }
+func closeWaitsNot(s Snapshot) bool { return !s.CloseWaits }
 
 // Table is the table of today's line, phase.Order: every row an issue with no plan rows walks
 // (Walk), built once. TableOf(phase.Order) is the table the workflow had before a plan picked an
@@ -90,12 +102,14 @@ var stepRows = []struct {
 // steps in the task's order, which holds implementing, then retro and merging (plan.Line of a plan
 // plan.Validate took). Rows, not switch-case scheduling, define every phase change. Its rows, in
 // this order: the gate's opening, out of admitted into the first phase of the line; each phase's
-// rows on its role's trigger (stepRows); the merge, out of merging into done; and a backward row
-// from each phase of the line to each phase before it in the line (backwardRows). A head that
-// conflicts with its base moves no phase (merge_forward.go). A row into accepting starts nobody,
-// because accepting's role is the tree's architect; every other row into a phase of the line
-// starts its role. No row carries a status of its own: every status a row writes is its target
-// phase's, which PhaseStatus holds.
+// rows on its role's trigger (stepRows); the merge's two rows, out of merging into done where the
+// close waits for nothing and into verifying where it waits, and the close out of verifying into
+// done once the checks of the goal pass; and a backward row from each phase of the line to each
+// phase before it in the line (backwardRows). A head that conflicts with its base moves no phase
+// (merge_forward.go). A row into accepting starts nobody, because accepting's role is the tree's
+// architect; every other row into a phase of the line starts its role. A row into verifying starts
+// nobody either: no role works the wait. No row carries a status of its own: every status a row
+// writes is its target phase's, which PhaseStatus holds.
 func TableOf(line []phase.Phase) []Row {
 	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], Effects: effectsInto(line[0])}}
 	for _, step := range stepRows {
@@ -110,9 +124,17 @@ func TableOf(line []phase.Phase) []Row {
 		rows = append(rows, Row{From: step.from, Trigger: step.trigger, Guard: step.guard, To: to, Effects: effectsInto(to)})
 	}
 	// The merger merges, and the merge is what ends merging: the daemon submits none and reads
-	// GitHub's merge of the pull request as the phase's own terminating fact.
-	rows = append(rows, Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done,
-		Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}})
+	// GitHub's merge of the pull request as the phase's own terminating fact. The merge closes the
+	// issue only where its close waits for nothing (closeWaitsNot). Else the issue waits in
+	// verifying, on no slot and with no role, until the judge finds that the checks of its goal
+	// passed (judgeClose), which closes it out of verifying.
+	rows = append(rows,
+		Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: closeWaitsNot, To: phase.Done,
+			Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
+		Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: closeWaits, To: phase.Verifying,
+			Effects: []EffectKind{EffectNotice}},
+		Row{From: phase.Verifying, Trigger: TriggerChecksPassed, Guard: allow, To: phase.Done,
+			Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}})
 	return append(rows, backwardRows(line)...)
 }
 

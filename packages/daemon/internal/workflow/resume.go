@@ -15,11 +15,10 @@ import (
 // booted is the daemon's boot (intake.DaemonBooted). It does three things, in this order.
 //
 // First, the upgrade's sweep (sweepMerged): an issue of this project that awaits its merge on a
-// pull request already merged is one the migration moved out of production_check, and the merge
-// that would have closed it will never come again, so the boot closes it as the merge would have
-// (closeMerged) — unless an issue beneath it is still in the workflow, which leaves it where it
-// is to close when the last of them leaves (leave's closeAwaitingMerge), so the deploy suspends no
-// running child under a mass of lingers.
+// pull request already merged is one a release before left there, and the merge will never come
+// again, so the boot takes it as the merge would have (closeMerged): the issue waits in verifying,
+// where its close waits for the issues beneath it and its checks, and no running child is
+// suspended under a mass of lingers. Each issue in verifying is then read again and judged.
 //
 // Second, the status repair (correctStatuses): every issue the daemon works whose recorded
 // Dispatch status is not the status of its phase gets the Dispatch status write that corrects it,
@@ -247,12 +246,15 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	return false, e.started(ctx, tx, owner.issue, owner.role, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
-// sweepMerged closes every issue of the project that awaits a merge GitHub already reported
-// (booted). Each is re-read before its close: a child's close may have closed the merged issues
-// above it (closeAwaitingMerge), and a root's close lingers the tree its children then close
-// under. A root whose tree still runs is left where it stands by closeMerged, which owns that
-// rule, and the sweep tells nobody of the wait: a restart must not repeat the architect's
-// notice, and a root can now wait for days across many boots.
+// sweepMerged takes every merge of the project's issues that GitHub already reported while the
+// issue awaited it (booted): a release before left such an issue in merging, waiting for the issues
+// beneath it, and the boot moves it into verifying, whose close waits for those issues as a term
+// (closeMerged; D16, door 4). Each is re-read before its move: a child's close may have moved the
+// merged issues above it. An issue it moves is told close-waits once, at that move. Then it reads
+// again and judges each issue that stands in verifying (judgeEachVerifying): a read whose row a
+// restart stopped runs again as the durable row it is, and one queued where none stands answers a
+// read the release before never made. Nothing is told again of a wait that stood in verifying
+// before the boot.
 func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
@@ -276,15 +278,27 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 			}
 			continue
 		}
-		waiting, err := e.closeMerged(ctx, tx, *issue, pr)
-		if err != nil {
+		if !issue.Merge.Merged() {
+			// A merge the release before recorded on the pull request's row alone, before the
+			// snapshot's column: the row is the evidence of it, and the snapshot is written from it
+			// as the merge's apply writes it. GitHub's merged_at is not on the row, so it stays
+			// unknown.
+			if _, err := e.store.PutMergeSnapshot(ctx, tx, issue.Key, record.Merge{Number: pr.Number, Head: pr.HeadSHA, SHA: pr.MergeSHA, Base: pr.Base, Repo: pr.Repo}); err != nil {
+				return err
+			}
+			if issue, err = e.store.Issue(ctx, tx, listed.Key); err != nil || issue == nil {
+				return err
+			}
+		}
+		if err := e.closeMerged(ctx, tx, *issue, pr); err != nil {
 			return err
 		}
-		if len(waiting) > 0 {
-			continue
-		}
-		e.logOnCommit(ctx, "workflow: the boot closes an issue whose pull request merged before the upgrade", "issue", issue.Key,
+		e.logOnCommit(ctx, "workflow: the boot takes the merge of an issue whose pull request merged before the upgrade", "issue", issue.Key,
 			"tree", issue.Tree, "pullRequest", pr.Number, "phase", issue.Phase)
 	}
-	return nil
+	issues, err = e.store.Issues(ctx, tx)
+	if err != nil {
+		return err
+	}
+	return e.judgeEachVerifying(ctx, tx, issues)
 }
