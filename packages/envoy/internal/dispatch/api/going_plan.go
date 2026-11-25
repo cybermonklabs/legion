@@ -905,6 +905,8 @@ func goingNewIssueShown(create goingPlanRowStored, edited map[string]any) string
 // written out first as one update change for each issue the option changes (expandStatusOptions),
 // so every row of the plan is an ordinary update; the changes after it are renumbered, and a
 // refusal of one of them names its number in the plan so written out.
+// A comment, a suggestion or an edit of a document placed by its `ref` is kept as the row of the
+// call that names the issue, the project or the document the reference names (goingRefPlace).
 // A send to an agent session is kept naming the session by its id and showing the issue it is
 // posted on (goingPlaceSend). A run whose latest plan still waits for its person, or has rows to
 // run, is refused another. A new-issue run's plan is one create of an issue, with the deployment's
@@ -964,6 +966,11 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 		arguments, err := goingRowArguments(change.Arguments)
 		if err != nil {
 			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %v", index, change.Tool, err)
+		}
+		// A write placed by its ref is kept as the row of the call that names that place.
+		arguments, why := goingRefPlace(change.Tool, arguments)
+		if why != "" {
+			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %s", index, change.Tool, why)
 		}
 		if why := goingNewIssueRefusal(entry, index, arguments, needs, rows); why != "" {
 			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %s", index, change.Tool, why)

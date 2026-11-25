@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"net/url"
 	"slices"
 	"sort"
@@ -27,10 +28,13 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/going"
+	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -150,13 +154,14 @@ type goingRosterFrame struct {
 }
 
 // goingReadRun is one run's reads: the project the run was asked of, which every project read is
-// held to, the page's context chip, which names what a read that names nothing reads, and the
-// roster the run last read, for its roster frame.
+// held to, the page's context chip, which names what a read that names nothing reads, the run's
+// author, the person each read is made as, and the roster the run last read, for its roster frame.
 type goingReadRun struct {
-	s     *server
-	asked string
-	chip  *goingContext
-	funcs map[string]going.ReadFunc
+	s      *server
+	asked  string
+	chip   *goingContext
+	author model.Actor
+	funcs  map[string]going.ReadFunc
 
 	mu     sync.Mutex
 	roster *goingRosterFrame
@@ -164,7 +169,7 @@ type goingReadRun struct {
 
 // goingRunReads is the reads of one run, each read tool its caller may call.
 func (s *server) goingRunReads(request goingRequest, start goingRunStart) *goingReadRun {
-	run := &goingReadRun{s: s, asked: request.Project, chip: start.chip}
+	run := &goingReadRun{s: s, asked: request.Project, chip: start.chip, author: request.Author}
 	every := map[string]going.ReadFunc{
 		going.ReadRoster:          run.readRoster,
 		going.ReadProgress:        run.readProgress,
@@ -238,36 +243,50 @@ func issueHit(key, title string) going.Hit {
 }
 
 // readRoster is read_roster: GET /api/v1/agents' rows, each session with the delivery modes it
-// takes (capabilities), its open asks and its last activity, and the age of Dispatch's copy of the
-// listener's list. A listener that is refilling its list is waited out for the Retry-After it
-// sent while the run's window leaves room to answer after it, then read again; a listener that is
-// unavailable, or still refilling once the window leaves no room, leaves the sessions Dispatch's
-// own rows name, marked stored (R12), which name no delivery modes.
+// takes (capabilities), its open asks, its last activity and the claims it holds, then each
+// session that holds a claim the listener no longer lists, marked gone (goingRosterClaims), and
+// the age of Dispatch's copy of the listener's list. It lists at most goingReadSessionMax
+// sessions, the gone ones kept first (goingRosterCut), and its totals count every session, the
+// gone ones among them. A listener that is refilling its list is waited out for the Retry-After
+// it sent while the run's window leaves room to answer after it, then read again; a listener that
+// is unavailable, or still refilling once the window leaves no room, leaves the sessions
+// Dispatch's own rows name, marked stored (R12), which name no delivery modes and judge no
+// session gone.
 func (g *goingReadRun) readRoster(ctx context.Context, arguments json.RawMessage) (going.Read, error) {
 	if err := decodeGoingArguments(arguments, &struct{}{}); err != nil {
 		return going.Read{}, err
 	}
-	rows, frame, err := g.s.goingRoster(ctx)
+	listed, frame, err := g.s.goingRoster(ctx)
 	if err != nil {
 		return going.Read{}, err
 	}
 	g.mu.Lock()
 	g.roster = &frame
 	g.mu.Unlock()
+	// The live rows are the listener's whole list, so a holder none of them names is one it lists
+	// no more; the stored rows are no listener's.
+	var lists func(string) bool
+	if frame.Source == goingRosterLive {
+		lists = func(string) bool { return false }
+	}
+	rows, gone, err := g.s.goingRosterClaims(ctx, g.author, listed, lists)
+	if err != nil {
+		return going.Read{}, err
+	}
 
-	sessions := make([]map[string]any, 0, min(len(rows), goingReadSessionMax))
 	live, unresponsive, openAsks := 0, 0, 0
 	for _, row := range rows {
 		switch row.State {
-		case "live":
+		case envoy.StateLive:
 			live++
-		case "unresponsive":
+		case envoy.StateUnresponsive:
 			unresponsive++
 		}
 		openAsks += row.OpenAsks
-		if len(sessions) == goingReadSessionMax {
-			continue
-		}
+	}
+	kept := goingRosterCut(rows, gone, goingReadSessionMax)
+	sessions := make([]map[string]any, 0, len(kept))
+	for _, row := range kept {
 		session := map[string]any{
 			going.FieldSessionID: row.SessionID, going.FieldTitle: row.Title, going.FieldState: row.State, "roles": row.Roles, "capabilities": row.Capabilities,
 			going.FieldOpenAsks: row.OpenAsks, going.FieldLastActivity: row.LastActivity,
@@ -277,15 +296,148 @@ func (g *goingReadRun) readRoster(ctx context.Context, arguments json.RawMessage
 		if row.LastActivityType != nil {
 			session["last_activity_issue"], session["last_activity_type"] = row.LastActivityIssue, *row.LastActivityType
 		}
+		if len(row.Claims) > 0 {
+			session["claims"] = row.Claims
+		}
 		sessions = append(sessions, session)
 	}
 	return going.Read{
 		Facts: map[string]any{"source": frame.Source, "age_ms": frame.AgeMS},
 		Tables: map[string][]map[string]any{
 			going.TableSessions: sessions,
-			"totals":            {{"sessions": len(rows), "live": live, "unresponsive": unresponsive, "open_asks": openAsks}},
+			"totals":            {{"sessions": len(rows), "live": live, "unresponsive": unresponsive, "gone": gone, "open_asks": openAsks}},
 		},
 	}, nil
+}
+
+// goingRosterClaim is one claim a roster row names: the open issue its session holds, and when the
+// claim was taken (issues.claimed_at, which the store holds beside every claim).
+type goingRosterClaim struct {
+	Issue string `json:"issue"`
+	At    string `json:"at"`
+}
+
+// goingRosterRow is one session of the bar's roster read: GET /api/v1/agents' row, and the claims
+// the session holds on open issues, none for a session that holds none. LastSeen stands over the
+// row's own last_seen: the listener's for a session it lists, and none for a gone session, which
+// no listener lists, so that row names no time rather than a zero.
+type goingRosterRow struct {
+	agentResponse
+	LastSeen *int64             `json:"last_seen,omitempty"`
+	Claims   []goingRosterClaim `json:"claims,omitempty"`
+}
+
+// goingSessionClaimsQuery is every claim a session holds on an open issue the reader bound at $1
+// may read, by the predicate every read of an issue for a person binds (refs.VisibleKind, as the
+// bar's own read of an answer's issue chips does, goingAnswerIssueQuery): the holder, the issue
+// and when the claim was taken, the newest first.
+var goingSessionClaimsQuery = `
+	select i.claimed_by->>'id', i.key, i.claimed_at
+	from issues i
+	where i.closed_at is null and i.claimed_by->>'kind' = 'session' and coalesce(i.claimed_by->>'id', '') <> ''
+		and ` + refs.VisibleKind("issue", "i.key", "$1") + `
+	order by i.claimed_at desc, i.key`
+
+// goingRosterClaims is listed, a roster's rows, each with the claims its session holds on open
+// issues reader may read, then, where lists says which sessions the listener lists, a row for each
+// other session that holds one: a session the listener lists no more is gone (routeRoster.state)
+// and still holds its claims, so its row says gone, with its claims, the title it last stamped on
+// a write, its open asks and its last activity, as a stored row does (unlistedAgentRows), the
+// newest claim first. A claim on an issue reader may not read names neither its issue nor, where
+// it is the session's only one, the gone session (R12: the agent reads nothing its person cannot).
+// A nil lists judges no session gone: the stored rows are no listener's, and already name every
+// holder (goingStoredSessionsQuery). It answers how many of the rows, the last ones, are gone.
+func (s *server) goingRosterClaims(ctx context.Context, reader model.Actor, listed []agentResponse, lists func(sessionID string) bool) ([]goingRosterRow, int, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, goingSessionClaimsQuery, refs.VisibilityArg(reader))
+	if err != nil {
+		return nil, 0, fmt.Errorf("query the sessions' claims: %w", err)
+	}
+	defer rows.Close()
+	claims := map[string][]goingRosterClaim{}
+	var holders []string
+	for rows.Next() {
+		var holder, issue string
+		var at time.Time
+		if err := rows.Scan(&holder, &issue, &at); err != nil {
+			return nil, 0, fmt.Errorf("scan the sessions' claims: %w", err)
+		}
+		if _, held := claims[holder]; !held {
+			holders = append(holders, holder)
+		}
+		claims[holder] = append(claims[holder], goingRosterClaim{Issue: issue, At: timestampValue(at)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate the sessions' claims: %w", err)
+	}
+
+	roster := make([]goingRosterRow, 0, len(listed))
+	named := make(map[string]bool, len(listed))
+	for _, row := range listed {
+		named[row.SessionID] = true
+		seen := row.LastSeen
+		roster = append(roster, goingRosterRow{agentResponse: row, LastSeen: &seen, Claims: claims[row.SessionID]})
+	}
+	if lists == nil {
+		return roster, 0, nil
+	}
+	gone := slices.DeleteFunc(holders, func(holder string) bool { return named[holder] || lists(holder) })
+	if len(gone) == 0 {
+		return roster, 0, nil
+	}
+	goneRows, _, err := s.unlistedAgentRows(ctx, gone, envoy.StateGone)
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, row := range goneRows {
+		roster = append(roster, goingRosterRow{agentResponse: row, Claims: claims[row.SessionID]})
+	}
+	return roster, len(goneRows), nil
+}
+
+// goingRosterCut is rows cut to most, where the last gone of rows are gone sessions
+// (goingRosterClaims): the gone rows are kept before the others, since a claim no session works
+// on is what a reader of the roster most needs to see, and each part keeps its order.
+func goingRosterCut(rows []goingRosterRow, gone, most int) []goingRosterRow {
+	if len(rows) <= most {
+		return rows
+	}
+	listed, goneKept := len(rows)-gone, min(gone, most)
+	return slices.Concat(rows[:min(listed, most-goneKept)], rows[listed:listed+goneKept])
+}
+
+// goingRosterTold is the bar agent's roster read as the model is told it: the answer of GET
+// /api/v1/agents of the goingReadSessionMax sessions seen last (goingTranslateRoster), each row
+// with the claims its session holds on the issues login, the run's person, may read, then the gone
+// sessions that hold one (goingRosterClaims), judged against Dispatch's copy of the listener's list
+// that answer was read from, at most goingReadSessionMax rows in all, the gone ones kept first
+// (goingRosterCut). The route's own answer stays as every other caller reads it. Any answer but a
+// whole 200 is told as the route answered it.
+func (s *server) goingRosterTold(ctx context.Context, login string, answer agentwire.CallAnswer) (agentwire.CallAnswer, error) {
+	if answer.Status != http.StatusOK || answer.Cut {
+		return answer, nil
+	}
+	var listed []agentResponse
+	if err := json.Unmarshal(answer.Body, &listed); err != nil {
+		return agentwire.CallAnswer{}, fmt.Errorf("read the agents list: %w", err)
+	}
+	roster, err := s.agentRoster(ctx)
+	if err != nil {
+		return agentwire.CallAnswer{}, err
+	}
+	var lists func(string) bool
+	if roster.answered {
+		lists = func(sessionID string) bool { return roster.state(sessionID) != envoy.StateGone }
+	}
+	rows, gone, err := s.goingRosterClaims(ctx, model.Actor{Kind: "user", ID: login}, listed, lists)
+	if err != nil {
+		return agentwire.CallAnswer{}, err
+	}
+	body, err := json.Marshal(goingRosterCut(rows, gone, goingReadSessionMax))
+	if err != nil {
+		return agentwire.CallAnswer{}, err
+	}
+	answer.Body = body
+	return answer, nil
 }
 
 // goingRoster is the roster a run reads and its frame: GET /api/v1/agents' rows from Dispatch's
@@ -368,12 +520,10 @@ const goingStoredSessionsQuery = `
 	where id is not null and id <> ''`
 
 // storedAgentRows is the roster as Dispatch's own rows tell it, with no listener: every session
-// goingStoredSessionsQuery names, each with the newest title it stamped on a write, its open asks
-// and its last activity, the newest first. Its state is unknown, since only the listener knows
-// whether a session is running.
+// goingStoredSessionsQuery names (unlistedAgentRows), the newest activity first. Its state is
+// unknown, since only the listener knows whether a session is running.
 func (s *server) storedAgentRows(ctx context.Context) ([]agentResponse, error) {
-	pool := s.deps.Store.Pool
-	rows, err := pool.Query(ctx, goingStoredSessionsQuery)
+	rows, err := s.deps.Store.Pool.Query(ctx, goingStoredSessionsQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -384,36 +534,47 @@ func (s *server) storedAgentRows(ctx context.Context) ([]agentResponse, error) {
 	if len(sessionIDs) == 0 {
 		return []agentResponse{}, nil
 	}
-	openAsks, err := s.agentOpenAskCounts(ctx, sessionIDs)
+	agents, activity, err := s.unlistedAgentRows(ctx, sessionIDs, "unknown")
 	if err != nil {
 		return nil, err
 	}
-	activity, err := s.agentLastActivity(ctx, sessionIDs)
-	if err != nil {
-		return nil, err
-	}
-	titles, err := delivery.ResolveSessionTitles(ctx, pool, sessionIDs)
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(sessionIDs, func(left, right int) bool {
-		leftAt, rightAt := activity[sessionIDs[left]].at, activity[sessionIDs[right]].at
+	sort.SliceStable(agents, func(left, right int) bool {
+		leftAt, rightAt := activity[agents[left].SessionID].at, activity[agents[right].SessionID].at
 		if !leftAt.Equal(rightAt) {
 			return leftAt.After(rightAt)
 		}
-		return sessionIDs[left] < sessionIDs[right]
+		return agents[left].SessionID < agents[right].SessionID
 	})
+	return agents, nil
+}
+
+// unlistedAgentRows is a row in state for each of sessionIDs, sessions no listener row describes,
+// in sessionIDs' order: the newest title each stamped on a write, its open asks and its last
+// activity, with no roles and no delivery modes; and the activity it read, by session.
+func (s *server) unlistedAgentRows(ctx context.Context, sessionIDs []string, state string) ([]agentResponse, map[string]agentActivity, error) {
+	openAsks, err := s.agentOpenAskCounts(ctx, sessionIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	activity, err := s.agentLastActivity(ctx, sessionIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	titles, err := delivery.ResolveSessionTitles(ctx, s.deps.Store.Pool, sessionIDs)
+	if err != nil {
+		return nil, nil, err
+	}
 	agents := make([]agentResponse, 0, len(sessionIDs))
 	for _, id := range sessionIDs {
 		row := agentResponse{OpenAsks: openAsks[id]}
-		row.SessionID, row.Title, row.State = id, titles[id], "unknown"
+		row.SessionID, row.Title, row.State = id, titles[id], state
 		row.Roles, row.Capabilities = []string{}, []string{}
 		if newest, active := activity[id]; active {
 			row.LastActivity, row.LastActivityIssue, row.LastActivityType = timestampPtr(&newest.at), newest.issue, &newest.kind
 		}
 		agents = append(agents, row)
 	}
-	return agents, nil
+	return agents, activity, nil
 }
 
 // readProgress is read_progress: an issue's task and child progress with its children, as GET

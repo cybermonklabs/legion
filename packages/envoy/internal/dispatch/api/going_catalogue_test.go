@@ -298,11 +298,12 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 }
 
 // TestACallTheBarCanNeverSendIsRefusedWithNoRequestMade: a call naming what the bar has no way to
-// send - a picture file, a place given by a dispatch:// link, a file to upload, an upload with no
-// text, a closing note on an update that does not close the issue, a sync's repository not written
-// as owner/name - is refused as the call's own argument error before any request, read or write,
-// is made; the same call without it goes on to its requests. A picture list written empty names no
-// picture, and the schema's bound refuses it first: a list of pictures holds one at least.
+// send - a picture file, a place given by a dispatch:// link that names no place such a write goes
+// (the link of a comment, of a block or of a version of a document), a file to upload, an upload
+// with no text, a closing note on an update that does not close the issue, a sync's repository not
+// written as owner/name - is refused as the call's own argument error before any request, read or
+// write, is made; the same call without it goes on to its requests. A picture list written empty
+// names no picture, and the schema's bound refuses it first: a list of pictures holds one at least.
 func TestACallTheBarCanNeverSendIsRefusedWithNoRequestMade(t *testing.T) {
 	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
@@ -321,7 +322,7 @@ func TestACallTheBarCanNeverSendIsRefusedWithNoRequestMade(t *testing.T) {
 		{"a comment with a list of no picture", "dispatch_comment",
 			map[string]any{"issue": issue, "body": "Reads well.", "images": []any{}},
 			map[string]any{"issue": issue, "body": "Reads well."}},
-		{"a comment placed by a link", "dispatch_comment",
+		{"a comment placed by the link of a comment", "dispatch_comment",
 			map[string]any{"issue": issue, "body": "Reads well.", "ref": "dispatch://" + issue + "/comment/1"},
 			map[string]any{"issue": issue, "body": "Reads well."}},
 		{"a question with a picture", "dispatch_ask",
@@ -330,11 +331,11 @@ func TestACallTheBarCanNeverSendIsRefusedWithNoRequestMade(t *testing.T) {
 		{"a message with a picture", "dispatch_message",
 			map[string]any{"issue": issue, "body": "Where are we?", "images": []any{"shot.png"}},
 			map[string]any{"issue": issue, "body": "Where are we?"}},
-		{"a suggestion placed by a link", "dispatch_suggest",
-			map[string]any{"issue": issue, "quote": "says hello", "replace_with": "says hi", "ref": "dispatch://" + issue + "/spec"},
+		{"a suggestion placed by the link of a block", "dispatch_suggest",
+			map[string]any{"quote": "says hello", "replace_with": "says hi", "ref": "dispatch://" + issue + "/spec#b-intro"},
 			map[string]any{"issue": issue, "artifact": "spec", "quote": "says hello", "replace_with": "says hi"}},
-		{"an edit placed by a link", "dispatch_doc_edit",
-			map[string]any{"issue": issue, "artifact": "notes", "ops": edit, "ref": "dispatch://" + issue + "/artifact/notes"},
+		{"an edit placed by the link of a version", "dispatch_doc_edit",
+			map[string]any{"ops": edit, "ref": "dispatch://" + issue + "/artifact/notes@v2"},
 			map[string]any{"issue": issue, "artifact": "notes", "ops": edit}},
 		{"an upload of a file", "dispatch_artifact",
 			map[string]any{"issue": issue, "name": "notes.md", "path": "notes.md"},

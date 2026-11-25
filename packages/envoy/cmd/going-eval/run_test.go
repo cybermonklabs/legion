@@ -5,7 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -157,6 +161,89 @@ func TestATryTheJudgeReadsAgainCountsAndOneStillUnreadLeavesTheRunIncomplete(t *
 	}
 	if strings.Contains(text, "pass^1 of answer") {
 		t.Errorf("the report gives a floor verdict over the kind with an unjudged try:\n%s", text)
+	}
+}
+
+// TestAFactOnlyAStepHeaderStatesFailsByTheAnswerFramesAndPassesOnlyByTheOldRule: the judge reads as
+// a try's answer the text of its answer frames alone. The person reads a run whose fact stands
+// only in a step header - a reply frame that names tools, which the bar draws over its calls and
+// never as the answer - and the try fails its task: the judge is put the answer frame's text, and
+// the header's is kept apart as the try's header_text. Grading puts nothing else to the judge; the
+// second pass, once every try has ended, grades the try by the old rule, every reply's text joined
+// in order, by which it passes, and that grade is the try's old_rule and nothing more: the try
+// still fails, the floors count it failed, and the report names it as a try whose verdict
+// differs, saying how many tries' headers held text.
+func TestAFactOnlyAStepHeaderStatesFailsByTheAnswerFramesAndPassesOnlyByTheOldRule(t *testing.T) {
+	const header, answer = "Reading the roster: session-impl-04 holds DEMO-26 and is gone.", "Five agent sessions are working now."
+	events := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for id, frame := range []struct{ name, data string }{
+			{"reply", `{"step":1,"text":` + strconv.Quote(header) + `,"tools":["call_tool"],"output_tokens":90}`},
+			{"tool", `{"step":2,"tool":"call_tool"}`},
+			{"reply", `{"step":3,"text":` + strconv.Quote(answer) + `,"output_tokens":40}`},
+			{"end", `{"state":"done","reason":"","offers":[]}`},
+		} {
+			_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id+1, frame.name, frame.data)
+		}
+	}))
+	t.Cleanup(events.Close)
+	p := &person{origin: events.URL, login: evalPerson, client: events.Client()}
+	result := tryResult{Task: "status-11", Kind: eval.KindStatus, Try: 1}
+	if err := p.readFrames(context.Background(), "run-1", &result.Outcome); err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome.Answer != answer || result.Outcome.HeaderText != header {
+		t.Fatalf("the outcome's answer is %q and its header text %q; want the answer frame's text and the header's apart", result.Outcome.Answer, result.Outcome.HeaderText)
+	}
+
+	task := eval.Task{ID: "status-11", Kind: eval.KindStatus, Words: "which agents are working now and on what",
+		Grade: eval.Grade{Facts: []string{"session-impl-04, which holds DEMO-26, is gone."}}}
+	var put []string
+	read := func(_ context.Context, _, text string, _ []string) (judgement, error) {
+		put = append(put, text)
+		stated := strings.Contains(text, "session-impl-04")
+		return judgement{Stated: []bool{stated}, Why: []string{fmt.Sprintf("it names the gone session: %t", stated)}}, nil
+	}
+	gradeAnswer(context.Background(), read, task, &result, &eval.Store{})
+	result.Pass = result.passes(task)
+	if result.Pass || len(put) != 1 || put[0] != answer || result.OldRule != nil {
+		t.Fatalf("graded by the answer frames, the try passes %t, the judge was put %q and its old rule is %+v; want a fail, the answer frame's text alone, and no old rule yet",
+			result.Pass, put, result.OldRule)
+	}
+
+	results := []tryResult{result}
+	if graded := gradeOldRule(context.Background(), read, []eval.Task{task}, results); len(graded) != 1 {
+		t.Fatalf("the second pass graded %v; want the one try whose header held text", graded)
+	}
+	if got := results[0]; got.Pass || got.OldRule == nil || !got.OldRule.Pass || len(put) != 2 || !strings.Contains(put[1], header) || !strings.Contains(put[1], answer) {
+		t.Fatalf("after the second pass the try passes %t with the old rule %+v, the judge put %q; want a fail still, an old rule that passes, and every reply's text put to it",
+			got.Pass, got.OldRule, put)
+	}
+	line, err := json.Marshal(results[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, held := range []string{`"header_text":` + strconv.Quote(header), `"old_rule":{"pass":true}`, `"pass":false`} {
+		if !strings.Contains(string(line), held) {
+			t.Errorf("the --answers-out line %s holds no %s", line, held)
+		}
+	}
+
+	var report strings.Builder
+	writeReport(&report, reportInput{
+		options: runOptions{tries: 1, parallel: 1}, all: []eval.Task{task}, tasks: []eval.Task{task}, results: results,
+		calibration: calibrationResult{answers: eval.JudgeCalibrationAnswers, agreed: eval.JudgeCalibrationAnswers},
+	})
+	text := report.String()
+	for _, held := range []string{
+		"| status-11 |  |  | fail | try 1: fact 1 not stated (it names the gone session: false) | pass |",
+		"| status | 1 | 0.0% (0 of 1) |",
+		"Tries whose step headers held text: 1 of 1.",
+		"Tries whose verdict differs between the two rules: 1.\n- status-11 try 1 (status): by the answer frames fail (fact 1 not stated (it names the gone session: false)); by the old rule pass\n",
+	} {
+		if !strings.Contains(text, held) {
+			t.Errorf("the report holds no %q:\n%s", held, text)
+		}
 	}
 }
 

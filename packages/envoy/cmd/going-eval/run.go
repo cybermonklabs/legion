@@ -168,6 +168,12 @@ type tryResult struct {
 	Unjudged string `json:"unjudged,omitempty"`
 	// judged is the try's answer as the judge reads it (judgedAnswer), kept for a second reading.
 	judged string
+	// OldRule is the try's grade by the rule before the answer frames alone, set by the second
+	// pass over the tries whose step headers hold text (gradeOldRule), nil for any other try; old
+	// is what that pass reads, which the try's grade kept while its store stood (gradeAnswer).
+	// Neither decides a pass or a floor.
+	OldRule *oldRuleGrade `json:"old_rule,omitempty"`
+	old     *oldRuleText
 	// Timing is where the try's time went.
 	Timing tryTiming `json:"timing"`
 	// Database is the try's database where it is kept: a failing or unjudged try's, and every
@@ -365,7 +371,12 @@ func runEval(ctx context.Context, options runOptions, stdout, stderr io.Writer) 
 	if ctx.Err() != nil {
 		return false, ctx.Err()
 	}
+	// The tokens floor is the tries' spend: taken before the second pass, which decides no floor.
 	highest, calls := e.limits.highestMinute()
+	e.oldRulePass(ctx, tasks, results)
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
 	return writeReport(stdout, reportInput{
 		started: started, ended: time.Now(), options: options, chat: chat, all: all, tasks: tasks, results: results,
 		calibration: calibration, highest: highest, calls: calls,
@@ -426,6 +437,18 @@ func (e *evalRun) judgeUnjudged(ctx context.Context, tasks []eval.Task, results 
 			_ = os.RemoveAll(e.tryDir(r.Task, r.Try))
 		}
 		e.logTry(*r)
+	}
+}
+
+// oldRulePass grades by the old rule, once every try has ended, each try whose step headers held
+// text (gradeOldRule), and writes each such try to --answers-out again, with its old_rule.
+func (e *evalRun) oldRulePass(ctx context.Context, tasks []eval.Task, results []tryResult) {
+	if !slices.ContainsFunc(results, func(r tryResult) bool { return r.old != nil }) {
+		return
+	}
+	fmt.Fprintln(e.stderr, "going-eval: grading the tries whose step headers hold text by the old rule too, which decides nothing")
+	for _, i := range gradeOldRule(ctx, e.judge.read, tasks, results) {
+		e.logTry(results[i])
 	}
 }
 
@@ -512,8 +535,8 @@ func (e *evalRun) runTry(ctx context.Context, task eval.Task, try int) (result t
 
 // grade grades a try from the store it left and the answer it gave, and records the calls of its
 // runs' tools (readCalls) before the store is dropped. serverURL is the try's server's address.
-// The judge reads an answer with its links rendered against the store the try left
-// (judgedAnswer); a try the judge cannot read is left unjudged (judgeTry).
+// An answer task's answer is graded by its answer frames alone, with its links rendered against
+// the store the try left (gradeAnswer); a try the judge cannot read is left unjudged (judgeTry).
 func (e *evalRun) grade(ctx context.Context, task eval.Task, database, serverURL string, result *tryResult) error {
 	conn, err := pgx.Connect(ctx, e.databases.url(database))
 	if err != nil {
@@ -534,23 +557,105 @@ func (e *evalRun) grade(ctx context.Context, task eval.Task, database, serverURL
 		return err
 	}
 	if !task.Kind.Changes() {
-		result.MissingLinks = eval.MissingLinks(task.Grade.Links, result.Outcome.Answer, result.Outcome.Blocks)
-		if task.Grade.Chart != nil {
-			result.MissingRows = eval.MissingChartRows(task.Grade.Chart.Rows, result.Outcome.Answer, result.Outcome.Blocks)
-		}
-		if strings.TrimSpace(result.Outcome.Answer) == "" && len(result.Outcome.Blocks) == 0 {
-			result.Facts = make([]bool, len(task.Grade.Facts))
-			result.Why = make([]string, len(task.Grade.Facts))
-			for i := range result.Why {
-				result.Why[i] = "the run answered nothing"
-			}
-		} else {
-			result.judged = judgedAnswer(result.Outcome, after)
-			judgeTry(ctx, e.judge.read, task, result)
-		}
+		gradeAnswer(ctx, e.judge.read, task, result, after)
 	}
 	result.Pass = result.passes(task)
 	return nil
+}
+
+// gradeAnswer grades an answer task's try by what the person reads as its answer, the text of its
+// answer frames alone (tryOutcome.Answer), with its links rendered as the bar draws them from
+// items, the store the try left (judgedAnswer): the items it links, the rows it shows, and the
+// judge's reading of it against the task's facts. A try whose step headers hold text also keeps,
+// rendered the same while that store stands, the text of every reply frame joined in its order,
+// the rule before the answer frames alone, with what that text links and shows, for the second
+// pass (gradeOldRule); the judge reads none of it here.
+func gradeAnswer(ctx context.Context, read readAnswer, task eval.Task, result *tryResult, items chips.Items) {
+	outcome := result.Outcome
+	result.MissingLinks, result.MissingRows = shownMissing(task, outcome)
+	if strings.TrimSpace(outcome.Answer) == "" && len(outcome.Blocks) == 0 {
+		result.Facts = make([]bool, len(task.Grade.Facts))
+		result.Why = make([]string, len(task.Grade.Facts))
+		for i := range result.Why {
+			result.Why[i] = "the run answered nothing"
+		}
+	} else {
+		result.judged = judgedAnswer(outcome, items)
+		judgeTry(ctx, read, task, result)
+	}
+	if strings.TrimSpace(outcome.HeaderText) == "" {
+		return
+	}
+	joined := tryOutcome{Answer: outcome.joined, Blocks: outcome.Blocks}
+	old := &oldRuleText{judged: judgedAnswer(joined, items)}
+	old.missingLinks, old.missingRows = shownMissing(task, joined)
+	result.old = old
+}
+
+// shownMissing is what of its task's links and chart rows outcome's answer and blocks leave out.
+func shownMissing(task eval.Task, outcome tryOutcome) (links, rows []string) {
+	links = eval.MissingLinks(task.Grade.Links, outcome.Answer, outcome.Blocks)
+	if task.Grade.Chart != nil {
+		rows = eval.MissingChartRows(task.Grade.Chart.Rows, outcome.Answer, outcome.Blocks)
+	}
+	return links, rows
+}
+
+// oldRuleText is what the second pass reads of a try whose step headers hold text: the text of
+// every reply frame joined in its order as the judge reads it, and what of its task's links and
+// chart rows that text leaves out.
+type oldRuleText struct {
+	judged                    string
+	missingLinks, missingRows []string
+}
+
+// oldRuleGrade is a try's grade by the rule before the answer frames alone: whether it passes when
+// its answer is every reply frame's text joined in order, step headers among them, as the judge
+// read it; why it does not, as the report's line says it; and the judge's error where it could not
+// read that text, which leaves it neither a pass nor a fail.
+type oldRuleGrade struct {
+	Pass     bool   `json:"pass"`
+	Why      string `json:"why,omitempty"`
+	Unjudged string `json:"unjudged,omitempty"`
+}
+
+// verdict is the grade's word in the report, as tryResult.verdict words a try's.
+func (g oldRuleGrade) verdict() string {
+	switch {
+	case g.Pass:
+		return "pass"
+	case g.Unjudged != "":
+		return "unjudged"
+	}
+	return "fail"
+}
+
+// gradeOldRule is the second pass, made once every try of the run has ended and its unread tries
+// were read again, so it takes none of the run's token budget while the tries run: each try of
+// results whose step headers held text (oldRuleText) is graded by the rule before the answer
+// frames alone, the judge reading every reply frame's text joined in order against the facts of
+// its task of tasks, and takes that grade as its OldRule. The grade decides no pass and no floor,
+// which are the answer frames' alone. It answers the index of each try it graded.
+func gradeOldRule(ctx context.Context, read readAnswer, tasks []eval.Task, results []tryResult) []int {
+	var graded []int
+	for i := range results {
+		r := &results[i]
+		if r.old == nil {
+			continue
+		}
+		task := tasks[slices.IndexFunc(tasks, func(t eval.Task) bool { return t.ID == r.Task })]
+		old := *r
+		old.Outcome.Answer, old.judged, old.Database = r.Outcome.joined, r.old.judged, ""
+		old.MissingLinks, old.MissingRows = r.old.missingLinks, r.old.missingRows
+		judgeTry(ctx, read, task, &old)
+		old.Pass = old.passes(task)
+		r.OldRule = &oldRuleGrade{Pass: old.Pass, Unjudged: old.Unjudged}
+		if !old.Pass {
+			r.OldRule.Why = old.failure()
+		}
+		graded = append(graded, i)
+	}
+	return graded
 }
 
 // readAnswer is a judge's reading of an answer, to the person's words, against facts (judge.read).
@@ -771,13 +876,18 @@ func writeReport(w io.Writer, in reportInput) bool {
 	}
 	fmt.Fprintln(w, "## Tries")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "| task | level | mode | tries | why a try failed or is unjudged |")
-	fmt.Fprintln(w, "| --- | --- | --- | --- | --- |")
+	fmt.Fprintln(w, "| task | level | mode | tries | why a try failed or is unjudged | tries by the old rule |")
+	fmt.Fprintln(w, "| --- | --- | --- | --- | --- | --- |")
 	var unjudged []string
 	for _, task := range in.tasks {
-		var marks, why []string
+		var marks, why, old []string
 		for _, r := range byTask[task.ID] {
 			marks = append(marks, r.verdict())
+			if r.OldRule != nil {
+				old = append(old, r.OldRule.verdict())
+			} else {
+				old = append(old, "-")
+			}
 			if r.Pass {
 				continue
 			}
@@ -786,7 +896,7 @@ func writeReport(w io.Writer, in reportInput) bool {
 				unjudged = append(unjudged, fmt.Sprintf("%s try %d: %s", task.ID, r.Try, r.Unjudged))
 			}
 		}
-		fmt.Fprintf(w, "| %s | %s | %s | %s | %s |\n", task.ID, task.Level, task.Mode, strings.Join(marks, " "), strings.Join(why, " <br> "))
+		fmt.Fprintf(w, "| %s | %s | %s | %s | %s | %s |\n", task.ID, task.Level, task.Mode, strings.Join(marks, " "), strings.Join(why, " <br> "), strings.Join(old, " "))
 	}
 	fmt.Fprintln(w)
 
@@ -863,6 +973,8 @@ func writeReport(w io.Writer, in reportInput) bool {
 		fmt.Fprintf(w, "- %s\n", u)
 	}
 	fmt.Fprintln(w)
+
+	writeHeaderText(w, in.tasks, byTask)
 
 	if problem := writeCalibration(w, in.options.judgeDeployment, in.calibration); problem != "" {
 		missed = append(missed, problem)
@@ -972,6 +1084,48 @@ func writeReferenceReads(w io.Writer, tasks []eval.Task, byTask map[string][]try
 	}
 	if len(read) > 0 {
 		fmt.Fprintf(w, "Run them again with `--tasks %s`.\n", strings.Join(read, ","))
+	}
+	fmt.Fprintln(w)
+}
+
+// writeHeaderText writes what the judge reads as a try's answer, how many tries' step headers held
+// text, and each try whose verdict by the answer frames differs from its verdict by the old rule
+// (gradeOldRule), with its task, try, kind and both grades.
+func writeHeaderText(w io.Writer, tasks []eval.Task, byTask map[string][]tryResult) {
+	fmt.Fprintln(w, "## Step headers")
+	fmt.Fprintln(w)
+	tries, headed, graded := 0, 0, 0
+	var differ []string
+	for _, task := range tasks {
+		for _, r := range byTask[task.ID] {
+			tries++
+			if strings.TrimSpace(r.Outcome.HeaderText) != "" {
+				headed++
+			}
+			if r.OldRule == nil {
+				continue
+			}
+			graded++
+			if r.verdict() == r.OldRule.verdict() {
+				continue
+			}
+			now, old := r.verdict(), r.OldRule.verdict()
+			if !r.Pass {
+				now += " (" + clipText(r.failure()) + ")"
+			}
+			if !r.OldRule.Pass {
+				old += " (" + clipText(cmp.Or(r.OldRule.Unjudged, r.OldRule.Why)) + ")"
+			}
+			differ = append(differ, fmt.Sprintf("- %s try %d (%s): by the answer frames %s; by the old rule %s", task.ID, r.Try, task.Kind, now, old))
+		}
+	}
+	fmt.Fprintln(w, "The judge reads as a try's answer the text of its answer frames alone: the replies that name no tool, which the bar shows as the answer, and which alone decide every pass and floor. "+
+		"A reply that names tools is the step header the bar draws over its calls, never the answer; its text is kept as the try's header_text.")
+	fmt.Fprintf(w, "Tries whose step headers held text: %d of %d. After every try ended, the judge graded %d of them, those of tasks whose answer it reads, again by the old rule: "+
+		"every reply's text joined in its order, step headers among them. That grade decides no pass and no floor. Tries whose verdict differs between the two rules: %d.\n",
+		headed, tries, graded, len(differ))
+	for _, line := range differ {
+		fmt.Fprintln(w, line)
 	}
 	fmt.Fprintln(w)
 }

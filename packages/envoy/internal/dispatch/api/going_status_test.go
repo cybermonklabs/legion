@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -13,9 +16,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/going"
+	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The status tests (c15): a status question is answered from what Dispatch stores, through the
@@ -125,11 +132,12 @@ func rosterFrameOf(t *testing.T, frames []goingEvent) goingRosterFrame {
 }
 
 // "Summarise this project" is answered from stored data: the roster, each session's open asks and
-// last activity, the issues' progress, the per-component counts and the project's events, each as
-// the route that serves it answers. No agent is messaged - the listener is sent nothing but the
-// session list, which here is not even asked for, and no message is recorded - the answer is
-// prose with no block, and the roster frame says how old Dispatch's copy of the listener's list
-// was: the stored copy was read three seconds before the run.
+// last activity, and the claim holder the listener lists no more after them, gone; the issues'
+// progress, the per-component counts and the project's events, each as the route that serves it
+// answers. No agent is messaged - the listener is sent nothing but the session list, which here
+// is not even asked for, and no message is recorded - the answer is prose with no block, and the
+// roster frame says how old Dispatch's copy of the listener's list was: the stored copy was read
+// three seconds before the run.
 func TestGoingStatusSummaryIsAnsweredFromStoredDataWithNoAgentMessaged(t *testing.T) {
 	t.Parallel()
 	listener := newStatusListener(t, func(_ int, w http.ResponseWriter) { _, _ = w.Write([]byte(statusSessions)) })
@@ -166,8 +174,11 @@ func TestGoingStatusSummaryIsAnsweredFromStoredDataWithNoAgentMessaged(t *testin
 	reads := toolResults(t, rig.model)
 	agents := decodeBody[[]agentResponse](t, dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/agents", nil, "alice"))
 	sessions := reads[going.ReadRoster].Tables["sessions"]
-	if len(sessions) != len(agents) || len(agents) != 2 {
-		t.Fatalf("the roster read %v, want the %d sessions GET /api/v1/agents lists", sessions, len(agents))
+	if len(agents) != 2 || len(sessions) != len(agents)+1 {
+		t.Fatalf("the roster read %v, want the %d sessions GET /api/v1/agents lists, then ses-claim, gone", sessions, len(agents))
+	}
+	if gone := sessions[len(agents)]; gone["session_id"] != "ses-claim" || gone["state"] != "gone" {
+		t.Errorf("the roster read's last row %v, want ses-claim, gone with its claim of ACME-3", gone)
 	}
 	for index, agent := range agents {
 		row := sessions[index]
@@ -330,8 +341,8 @@ func TestGoingStatusRefillingRosterIsWaitedOutThenLive(t *testing.T) {
 		t.Errorf("the second read came %s after the refusal, want the Retry-After of 1s waited out", waited)
 	}
 	sessions := toolResults(t, rig.model)[going.ReadRoster].Tables["sessions"]
-	if len(sessions) != 2 {
-		t.Errorf("the roster read %v, want the listener's two sessions", sessions)
+	if len(sessions) != 3 || sessions[2]["session_id"] != "ses-claim" {
+		t.Errorf("the roster read %v, want the listener's two sessions, then ses-claim, gone with its claim", sessions)
 	}
 }
 
@@ -368,5 +379,167 @@ func TestGoingStatusReadsStayInsideTheAuthorsProject(t *testing.T) {
 	}
 	if _, err := reads.funcs[going.ReadProgress](context.Background(), json.RawMessage(`{}`)); err != nil {
 		t.Errorf("read_progress naming nothing under a run asked of DEMO = %v, want DEMO read", err)
+	}
+}
+
+// The roster read names every session that holds a claim (status-11 of the eval, which no try
+// passed while the read listed the listener's sessions alone): a session the listener lists no
+// more whose claim stands is listed after the listener's, gone, with the issue it holds and since
+// when, and no last_seen; a listed session that holds a claim carries it; and one that holds none
+// is the row GET /api/v1/agents answers, as before, while that route's own answer names neither
+// the claims nor the gone session. A claim on an issue the run's person may not read (R12) adds
+// nothing: neither the claim of a listed session, which then reads as one that holds none, nor a
+// gone session whose one claim it is. The bar agent's read_roster, which reads that route
+// (goingRosterTold), and the answer run's read (readRoster), whose totals count the gone session,
+// list the same.
+func TestTheRosterReadNamesEverySessionThatHoldsAClaim(t *testing.T) {
+	t.Parallel()
+	listener := newStatusListener(t, func(_ int, w http.ResponseWriter) { _, _ = w.Write([]byte(statusSessions)) })
+	rig := newGoingAgentRigOver(t, newGoingWritesRigOn(t, listener.url, func(database *store.Store) *store.Store { return database }), nil)
+	loop := newGoingLoop(t, rig)
+	issue := func(login, title string) string {
+		return decodeBody[model.Issue](t, rig.fixture(t, login, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "DEMO", "title": title, "force": true,
+		})).Key
+	}
+	held, abandoned := issue("alice", "Held by the planner"), issue("alice", "Held by a session that is gone")
+	// Two issues of bob's that only he may read: one the worker ses-b holds, one a gone session
+	// holds and nothing else. No route writes an issue's node yet, so the store's own writer
+	// reserves each for bob, as a route that asked for `author` would (node_visibility_test.go).
+	unseen, unseenGone := issue("bob", "Held by the worker, for bob alone"), issue("bob", "Held by a gone session, for bob alone")
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(bob))
+	if err != nil {
+		t.Fatalf("reserve the issues for bob: %v", err)
+	}
+	tx, err := rig.database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nodes []graphstore.Node
+	for _, key := range []string{unseen, unseenGone} {
+		nodes = append(nodes, graphstore.Node{Kind: "issue", ID: key, Supertag: "issue", Visibility: visibility, State: graphstore.StateLive,
+			MadeAt: time.Now(), MadeBy: bob, SourceEvent: graphstore.NoEvent})
+	}
+	if err := graphstore.Write(context.Background(), tx, nodes, nil); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("write bob's issue nodes: %v", err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reserved := rig.count(t, `select count(*) from graph_nodes where kind = 'issue' and id = any($1) and visibility = 'author'`, []string{unseen, unseenGone}); reserved != 2 {
+		t.Fatalf("reserved %d nodes of bob's two issues for him, want both", reserved)
+	}
+	heldAt, abandonedAt := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC), time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+	for key, claim := range map[string]struct {
+		session string
+		at      time.Time
+	}{held: {"ses-a", heldAt}, abandoned: {"ses-gone", abandonedAt}, unseen: {"ses-b", heldAt}, unseenGone: {"ses-unseen", heldAt}} {
+		if _, err := rig.database.Pool.Exec(context.Background(),
+			`update issues set claimed_by = jsonb_build_object('kind', 'session', 'id', $2::text), claimed_at = $3 where key = $1`,
+			key, claim.session, claim.at); err != nil {
+			t.Fatalf("claim %s for %s: %v", key, claim.session, err)
+		}
+	}
+	wantClaims := map[string][]goingRosterClaim{
+		"ses-a":    {{Issue: held, At: timestampValue(heldAt)}},
+		"ses-gone": {{Issue: abandoned, At: timestampValue(abandonedAt)}},
+	}
+	listed := decodeBody[[]map[string]any](t, dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/agents?limit=50", nil, "alice"))
+	if len(listed) != 2 || slices.ContainsFunc(listed, func(row map[string]any) bool { _, claims := row["claims"]; return claims }) {
+		t.Fatalf("GET /api/v1/agents answered %v, want the listener's two sessions as before, with no claims", listed)
+	}
+
+	t.Run("the answer run's read", func(t *testing.T) {
+		reads := rig.served.goingRunReads(goingRequest{Author: model.Actor{Kind: "user", ID: "alice"}}, goingRunStart{reads: []string{going.ReadRoster}})
+		read, err := reads.funcs[going.ReadRoster](t.Context(), json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessions := read.Tables[going.TableSessions]
+		var ids []string
+		for _, row := range sessions {
+			id, _ := row[going.FieldSessionID].(string)
+			ids = append(ids, id)
+			claims, carries := row["claims"]
+			if want, holds := wantClaims[id]; holds != carries || (holds && !reflect.DeepEqual(claims, want)) {
+				t.Errorf("the row of %s carries the claims %v (%t), want %v", id, claims, carries, want)
+			}
+		}
+		if !slices.Equal(ids, []string{"ses-a", "ses-b", "ses-gone"}) || sessions[2][going.FieldState] != "gone" || sessions[0][going.FieldState] != "live" {
+			t.Errorf("the roster read lists %v, want the listener's two sessions, then ses-gone, gone", sessions)
+		}
+		if totals := read.Tables["totals"]; len(totals) != 1 || totals[0]["sessions"] != 3 || totals[0]["live"] != 2 || totals[0]["gone"] != 1 {
+			t.Errorf("the roster read's totals %v, want 3 sessions, 2 live and 1 gone", totals)
+		}
+	})
+
+	t.Run("the bar agent's read", func(t *testing.T) {
+		const words = "which agents are working now and on what"
+		loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return toolCall("call_tool", map[string]any{"tool": going.ReadRoster, "arguments": map[string]any{}})
+			}
+			return answered("Read.")
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		if ended := rig.ended(t, run, time.Minute); ended.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done", ended.state, ended.reason)
+		}
+		results := rig.toolResults(t, run)
+		_, body, read := strings.Cut(strings.Join(results, ""), ": status 200\n")
+		var told []map[string]any
+		if len(results) != 1 || !read || json.Unmarshal([]byte(body), &told) != nil {
+			t.Fatalf("the run saved the tool results %q, want the roster read whole", results)
+		}
+		if len(told) != 3 {
+			t.Fatalf("the model was told %v, want the listener's two sessions, then ses-gone", told)
+		}
+		for index, row := range listed {
+			id, _ := row[going.FieldSessionID].(string)
+			got := maps.Clone(told[index])
+			claims, carries := got["claims"]
+			delete(got, "claims")
+			if !reflect.DeepEqual(got, row) {
+				t.Errorf("the model was told %v of %s, want the row GET /api/v1/agents answers, %v", told[index], id, row)
+			}
+			if want, holds := wantClaims[id]; holds != carries || (holds && fmt.Sprint(claims) != fmt.Sprintf("[map[at:%s issue:%s]]", want[0].At, want[0].Issue)) {
+				t.Errorf("the row of %s carries the claims %v (%t), want %v", id, claims, carries, want)
+			}
+		}
+		gone := told[2]
+		_, seen := gone["last_seen"]
+		if gone[going.FieldSessionID] != "ses-gone" || gone[going.FieldState] != "gone" || seen ||
+			fmt.Sprint(gone["claims"]) != fmt.Sprintf("[map[at:%s issue:%s]]", timestampValue(abandonedAt), abandoned) {
+			t.Errorf("the model was told %v last, want ses-gone, gone, with no last_seen and its claim of %s", gone, abandoned)
+		}
+	})
+}
+
+// TestTheRosterKeepsItsGoneSessionsFirstWithinItsBound: a roster longer than its bound keeps every
+// gone session, up to the bound, before the sessions the listener lists, each part in its order.
+func TestTheRosterKeepsItsGoneSessionsFirstWithinItsBound(t *testing.T) {
+	t.Parallel()
+	rows := make([]goingRosterRow, 5)
+	for index, id := range []string{"live-1", "live-2", "live-3", "gone-1", "gone-2"} {
+		rows[index].SessionID = id
+	}
+	for _, c := range []struct {
+		most int
+		want []string
+	}{
+		{most: 5, want: []string{"live-1", "live-2", "live-3", "gone-1", "gone-2"}},
+		{most: 4, want: []string{"live-1", "live-2", "gone-1", "gone-2"}},
+		{most: 2, want: []string{"gone-1", "gone-2"}},
+		{most: 1, want: []string{"gone-1"}},
+	} {
+		var got []string
+		for _, row := range goingRosterCut(rows, 2, c.most) {
+			got = append(got, row.SessionID)
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("the roster cut to %d keeps %v, want %v", c.most, got, c.want)
+		}
 	}
 }

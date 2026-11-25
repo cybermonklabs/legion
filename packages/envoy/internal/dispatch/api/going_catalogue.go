@@ -454,11 +454,12 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 	return response, err
 }
 
-// prepare holds a call to the catalogue and the action's schema, refuses a call the bar can never
-// send (goingUnsendable), in the words its person reads, and one that breaks the tool's rule
-// (goingToolRules), in the spec's, chooses its row and translates it, reading what the
-// translation needs through the Doer, and sends no write. Each row of a plan is prepared when the
-// agent proposes it, when the person approves it and when it runs (goingReadRow, routeSends).
+// prepare holds a call to the catalogue and the action's schema, reads a write's `ref` as the
+// place it names (goingRefPlace), refuses a call the bar can never send (goingUnsendable), in the
+// words its person reads, and one that breaks the tool's rule (goingToolRules), in the spec's,
+// chooses its row and translates it, reading what the translation needs through the Doer, and
+// sends no write. Each row of a plan is prepared when the agent proposes it, when the person
+// approves it and when it runs (goingReadRow, routeSends).
 func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[string]any) (goingPrepared, error) {
 	entry, held := c.Catalogue.Lookup(action)
 	if !held {
@@ -467,7 +468,11 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 	if reason := checkGoingArguments(entry.Request, arguments); reason != "" {
 		return goingPrepared{}, GoingArgumentError{Action: action, Reason: reason}
 	}
-	if why := goingUnsendable(action, arguments); why != "" {
+	arguments, why := goingRefPlace(action, arguments)
+	if why == "" {
+		why = goingUnsendable(action, arguments)
+	}
+	if why != "" {
 		return goingPrepared{}, GoingArgumentError{Action: action, Reason: why}
 	}
 	if rule := goingToolRules[action]; rule != nil {

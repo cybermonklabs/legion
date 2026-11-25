@@ -104,17 +104,23 @@ func contextOf(page string) map[string]string {
 }
 
 // tryOutcome is what the person met in one run: how it ended, the plans they answered, what the
-// run spent, its answer's prose and the blocks it drew.
+// run spent, its answer's prose and the blocks it drew. Answer is the text of the run's answer
+// frames, the reply frames that name no tool, which the bar shows as the answer; HeaderText is the
+// text of its other reply frames, the step headers the bar draws over the calls they name and
+// never as the answer (readFrames); and joined is the text of every reply frame in its order,
+// which the eval read as the answer before it read the answer frames alone (gradeOldRule).
 type tryOutcome struct {
-	Run      string            `json:"run"`
-	State    string            `json:"state"`
-	Reason   string            `json:"reason,omitempty"`
-	Plans    []string          `json:"plans,omitempty"`
-	Calls    int               `json:"calls"`
-	Seconds  float64           `json:"seconds"`
-	Answer   string            `json:"answer"`
-	Blocks   []json.RawMessage `json:"blocks,omitempty"`
-	Timedout bool              `json:"timed_out,omitempty"`
+	Run        string   `json:"run"`
+	State      string   `json:"state"`
+	Reason     string   `json:"reason,omitempty"`
+	Plans      []string `json:"plans,omitempty"`
+	Calls      int      `json:"calls"`
+	Seconds    float64  `json:"seconds"`
+	Answer     string   `json:"answer"`
+	HeaderText string   `json:"header_text,omitempty"`
+	joined     string
+	Blocks     []json.RawMessage `json:"blocks,omitempty"`
+	Timedout   bool              `json:"timed_out,omitempty"`
 	// WorkingMS is the run's working time over all its turns, and PaceMS how much of it the
 	// agent's pacer held the run's model calls before they were sent, as the run's budget_used
 	// holds them: a run stopped at its level's time (agent.ReasonTimeBudget) says by PaceMS how
@@ -238,10 +244,11 @@ func (p *person) answerPlan(ctx context.Context, task eval.Task, run string, ans
 
 // readFrames reads every frame the run stored from its events stream, reading it again after the
 // last frame it holds when the stream closes before the run's end, each as readFrame takes it: the
-// prose of each reply, joined in order, is the answer.
+// prose of each answer frame, joined in order, is the answer, and that of each step header, joined
+// in order, the header text (tryOutcome).
 func (p *person) readFrames(ctx context.Context, run string, outcome *tryOutcome) error {
 	last := ""
-	var replies []string
+	var answers, headers, replies []string
 	for range 20 {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.origin+"/api/v1/going/runs/"+run+"/events", nil)
 		if err != nil {
@@ -262,8 +269,13 @@ func (p *person) readFrames(ctx context.Context, run string, outcome *tryOutcome
 				last = id
 			}
 			closedIdle = name == "keepalive"
-			if prose := outcome.readFrame(name, data); prose != "" {
+			if prose, header := outcome.readFrame(name, data); prose != "" {
 				replies = append(replies, prose)
+				if header {
+					headers = append(headers, prose)
+				} else {
+					answers = append(answers, prose)
+				}
 			}
 		})
 		_ = response.Body.Close()
@@ -279,29 +291,33 @@ func (p *person) readFrames(ctx context.Context, run string, outcome *tryOutcome
 			break
 		}
 	}
-	outcome.Answer = strings.Join(replies, "\n\n")
+	outcome.Answer, outcome.HeaderText, outcome.joined = strings.Join(answers, "\n\n"), strings.Join(headers, "\n\n"), strings.Join(replies, "\n\n")
 	return nil
 }
 
 // readFrame takes one frame the run stored into the outcome and answers the prose of a reply
-// frame, "" for none: each reply frame is one model call of the run, whose tokens go to ModelCalls,
-// and whose check by the no-plan guard, where its frame says one (check_ms), or whose skipped
-// check (check_skipped), goes to Checks, under the turn it was made in, with what Jev read the
-// words as; each block frame is a block the answer drew; and each end frame ends a turn.
-func (o *tryOutcome) readFrame(name string, data []byte) string {
+// frame, "" for none, and whether that frame names tools: a step header, which the bar draws over
+// the calls it names and never as the answer, where a reply frame that names none is an answer
+// frame (the server's goingKeepLinkWords, the web's features/going/run-frames.ts). Each reply
+// frame is one model call of the run, whose tokens go to ModelCalls, and whose check by the
+// no-plan guard, where its frame says one (check_ms), or whose skipped check (check_skipped), goes
+// to Checks, under the turn it was made in, with what Jev read the words as; each block frame is a
+// block the answer drew; and each end frame ends a turn.
+func (o *tryOutcome) readFrame(name string, data []byte) (string, bool) {
 	switch name {
 	case "reply":
 		var reply struct {
-			Text            string `json:"text"`
-			OutputTokens    int    `json:"output_tokens"`
-			ReasoningTokens int    `json:"reasoning_tokens"`
-			CheckMS         *int64 `json:"check_ms"`
-			CheckTokens     int    `json:"check_tokens"`
-			CheckSkipped    string `json:"check_skipped"`
-			JevLine         string `json:"jev_line"`
+			Text            string   `json:"text"`
+			Tools           []string `json:"tools"`
+			OutputTokens    int      `json:"output_tokens"`
+			ReasoningTokens int      `json:"reasoning_tokens"`
+			CheckMS         *int64   `json:"check_ms"`
+			CheckTokens     int      `json:"check_tokens"`
+			CheckSkipped    string   `json:"check_skipped"`
+			JevLine         string   `json:"jev_line"`
 		}
 		if json.Unmarshal(data, &reply) != nil {
-			return ""
+			return "", false
 		}
 		o.ModelCalls = append(o.ModelCalls, modelCall{OutputTokens: reply.OutputTokens, ReasoningTokens: reply.ReasoningTokens})
 		switch {
@@ -310,11 +326,11 @@ func (o *tryOutcome) readFrame(name string, data []byte) string {
 		case reply.CheckSkipped != "":
 			o.Checks = append(o.Checks, proseCheck{Turn: o.Turns + 1, Skipped: reply.CheckSkipped, Jev: reply.JevLine})
 		}
-		return strings.TrimSpace(reply.Text)
+		return strings.TrimSpace(reply.Text), len(reply.Tools) > 0
 	case "block":
 		o.Blocks = append(o.Blocks, json.RawMessage(bytes.Clone(data)))
 	case agentwire.FrameEnd:
 		o.Turns++
 	}
-	return ""
+	return "", false
 }

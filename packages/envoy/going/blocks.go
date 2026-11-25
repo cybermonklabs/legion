@@ -150,7 +150,7 @@ var blockGuides = map[string]string{
 	BlockMetric:      `{"source": a read tool, "params": its arguments, "table": a table of that read holding one row, "field": its numeric field, "label": what the number counts, "compare": another numeric field of the row or "", "compare_label": what that one counts or ""}.`,
 	BlockProgress:    `{"source": "read_progress" or "read_architecture", "params": its arguments, "table": "progress" for read_progress or "components" for read_architecture, "label": the field naming each bar ("label" or "title"), "done": the done field, "total": the total field}.`,
 	BlockIssueList:   `{"source": "read_progress", "params": its arguments}: the read's issues table, each issue's key, title and status.`,
-	BlockAgentStatus: `{"source": "read_roster", "params": {}}: every session's title, state, open asks and last activity.`,
+	BlockAgentStatus: `{"source": "read_roster", "params": {}}: every session's title, state, open asks and last activity, each gone session that still holds a claim among them.`,
 	BlockTimeline:    `{"source": "read_delivery", "params": {"view": "timeline", ...}}: the window's events, each dated in its lane.`,
 }
 

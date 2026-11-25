@@ -512,8 +512,8 @@ func TestAnExpandedChangeRenumbersTheChangesAfterIt(t *testing.T) {
 
 // TestAChangeWithAnOptionIsHeldToItsToolsRuleBeforeItIsWrittenOut: a change whose call the tool's
 // words refuse - an option with a field of its own, with no status, or an issue that is not there -
-// is refused as the call is refused anywhere, in those words, naming the change by its number in the
-// plan as the model wrote it, and no plan is kept.
+// is refused as the call is refused anywhere, naming the change by its number in the plan as the
+// model wrote it and the fields and values it is refused for, and no plan is kept.
 func TestAChangeWithAnOptionIsHeldToItsToolsRuleBeforeItIsWrittenOut(t *testing.T) {
 	t.Parallel()
 	rig := newStatusOptionsRig(t, true)
@@ -521,34 +521,30 @@ func TestAChangeWithAnOptionIsHeldToItsToolsRuleBeforeItIsWrittenOut(t *testing.
 	for _, tc := range []struct {
 		name    string
 		changes []map[string]any
-		refusal string
+		// names is what the refusal must name: the change's number, then each field or value it
+		// is refused for.
+		names []string
 	}{
 		{"an option beside a field of its own", []map[string]any{goingChange("dispatch_issue_update",
 			map[string]any{"issue": issue, "status": "todo", "include_parent": true, "title": "Retitled"})},
-			"change 0: With include_parent, give status alone, and reason when the status is done. This call also names title. Send those fields in a call of their own."},
+			[]string{"0", "include_parent", "title"}},
 		{"an option with no status", []map[string]any{goingChange("dispatch_issue_update", map[string]any{"issue": issue, "unlink_children": true})},
-			"change 0: status is required with unlink_children. Add status, or drop unlink_children."},
+			[]string{"0", "unlink_children", "status"}},
 		{"include_children with done", []map[string]any{goingChange("dispatch_issue_update",
 			map[string]any{"issue": issue, "status": "done", "reason": "Finished.", "include_children": true})},
-			"change 0: " + goingOptionsDoneRule},
+			[]string{"0", "include_children", "done"}},
 		{"an issue that is not there, after a change that is kept", []map[string]any{
 			goingChange("dispatch_issue_update", retitle(issue, "Retitled first")),
 			goingChange("dispatch_issue_update", map[string]any{"issue": "DEMO-99999", "status": "todo", "include_children": true})},
-			"change 1: not found"},
+			[]string{"1"}},
 		{"an option on the issue a create of the plan makes", []map[string]any{
 			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made by the plan", "force": true}),
 			goingChange("dispatch_issue_update", map[string]any{"issue": "$0", "status": "todo", "include_children": true}, 0)},
-			`change 1 (dispatch_issue_update): argument "issue" is "$0", but "issue" names the item this change changes, which the plan reads before anything runs: ` +
-				`a new issue may only be a value a change writes, such as parent or blocked_by; propose a change of the new issue itself once it exists`},
+			[]string{"1", "issue", "$0"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run, refused := rig.proposedPlan(t, tc.changes...)
-			switch {
-			case refused == nil || refused.Code != agentwire.CodeCallRefused:
-				t.Fatalf("the plan call answered %+v, want %s", refused, agentwire.CodeCallRefused)
-			case refused.Message != tc.refusal:
-				t.Fatalf("the plan call was refused %q, want %q", refused.Message, tc.refusal)
-			}
+			requireRefusalNames(t, refused, tc.names...)
 			if kept := rig.count(t, `select count(*) from going_plans where run_id = $1::uuid`, run); kept != 0 {
 				t.Fatalf("the refused call kept %d plans, want none", kept)
 			}

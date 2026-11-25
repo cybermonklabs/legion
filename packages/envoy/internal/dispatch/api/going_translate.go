@@ -18,10 +18,12 @@ package api
 // (goingChooseDocRead).
 //
 // What the bar can never send - a picture or a file the CLI reads off the machine it runs on, which
-// the bar has no way to reach, a `ref` where the bar places a write by issue, project and document
-// instead, and the rest goingUnsendable names - is decided by goingUnsendable, which needs no read:
-// GoingCaller refuses such a call before its row's translation. What a translator cannot send for
-// a reason of its own it refuses by name (goingUntranslatable), before anything is written.
+// the bar has no way to reach, a `ref` that names no place a write goes, and the rest
+// goingUnsendable names - is decided by goingUnsendable, which needs no read: GoingCaller refuses
+// such a call before its row's translation. A `ref` that names an issue or a document is read as
+// that place (goingRefPlace), and the call goes on as the call naming it. What a translator cannot
+// send for a reason of its own it refuses by name (goingUntranslatable), before anything is
+// written.
 
 import (
 	"bytes"
@@ -82,8 +84,10 @@ type goingTranslator func(ctx context.Context, read goingReader, call goingCallI
 // goingCall is what a translation makes of a call: the value of each placeholder of the row's
 // path, the query, the body - JSON, a multipart upload, or none - any write that must land before
 // the row's own, the compare-and-set the row's own request carries to its route on its context
-// (going_conditions.go), nil for none, and the uploaded file a read of one of its versions reads,
-// whose answer the model is told in words of its own (goingUploadedFile), nil for any other call.
+// (going_conditions.go), nil for none, the uploaded file a read of one of its versions reads,
+// whose answer the model is told in words of its own (goingUploadedFile), nil for any other call,
+// and whether it is the roster read, whose answer the model is told with the claims of each
+// session (goingRosterTold).
 type goingCall struct {
 	path      map[string]string
 	query     url.Values
@@ -92,6 +96,7 @@ type goingCall struct {
 	first     []goingSend
 	condition *goingCondition
 	file      *goingUploadedFile
+	roster    bool
 }
 
 // goingUpload is a multipart body: its fields, and the one file part, named `file`.
@@ -109,7 +114,8 @@ type goingUpload struct {
 // call sends before its own writes, in the words a row tells its person where the call failed in
 // the server after it landed (goingPanickedText); it is no part of what the request sends. file
 // is the uploaded file whose version the request reads, whose answer the call tells as
-// goingUploadedFile.told words it, nil for any other request; it is no part of what is sent.
+// goingUploadedFile.told words it, nil for any other request, and roster whether it is the roster
+// read, whose answer the call tells as goingRosterTold does; neither is any part of what is sent.
 type goingSend struct {
 	method      string
 	path        string
@@ -120,6 +126,7 @@ type goingSend struct {
 	condition   *goingCondition
 	what        string
 	file        *goingUploadedFile
+	roster      bool
 }
 
 // digest is the hex SHA-256 of what the request sends, its condition included, which a landing
@@ -151,25 +158,24 @@ func (e goingUntranslatable) Error() string { return string(e) }
 
 // goingUnsendable is why the bar can never send a call of action with these arguments, "" where
 // it may: a picture file or a file to upload, which the `dispatch` command reads off the machine
-// it runs on and the bar has no way to open; a `ref`, the dispatch:// reference the command finds
-// a comment's, a suggestion's or an edit's place by, where the bar places a write by the issue,
-// project and document the call names; an upload with no text; a closing `reason` on an update
-// that does not close the issue, which the update posts only before a close; an update that sets
-// an option of the status change (include_children, unlink_children, include_parent), whose route
-// writes several issues, each in a transaction of its own, which no landing of one request records
-// and no Undo walks. A plan call never reaches this: it writes such a change out as one update row
-// for each issue the option reaches (expandStatusOptions), so no row of a plan carries an option,
-// and this refusal is the backstop for a call that reaches a row with one; and a sync's source
-// repository not written as owner/name, the two segments its route's path takes. An ask's `ref`
-// is none of these: the question carries it as a line of its own (goingAskBody). None needs a
-// read or a row, so GoingCaller refuses such a call before it holds the call to the tool's rule
-// and chooses its row (prepare), with words neither the rule nor a translator repeats. Each is
-// worded for the person reading the bar's panel - what the bar cannot send, and what that person
-// can do there - and names no tool, no argument, no command line and no flag, none of which that
-// person holds. A link or a file path written empty names no link or file, so it counts as
-// absent, as null does (which the action's schema refuses first), and a picture list written
-// empty is refused by the schema first too, since it holds one picture at least: no translator
-// sends any of the three on, and the call is sent as it would be without it.
+// it runs on and the bar has no way to open; a `ref` of a comment, a suggestion or an edit that
+// names no place such a write goes (goingRefPlace); an upload with no text; a closing `reason` on
+// an update that does not close the issue, which the update posts only before a close; an update
+// that sets an option of the status change (include_children, unlink_children, include_parent),
+// whose route writes several issues, each in a transaction of its own, which no landing of one
+// request records and no Undo walks. A plan call never reaches this: it writes such a change out
+// as one update row for each issue the option reaches (expandStatusOptions), so no row of a plan
+// carries an option, and this refusal is the backstop for a call that reaches a row with one; and
+// a sync's source repository not written as owner/name, the two segments its route's path takes.
+// An ask's `ref` is none of these: the question carries it as a line of its own (goingAskBody).
+// None needs a read or a row, so GoingCaller refuses such a call before it holds the call to the
+// tool's rule and chooses its row (prepare), with words neither the rule nor a translator
+// repeats. Each is worded for the person reading the bar's panel - what the bar cannot send, and
+// what that person can do there - and names no tool, no argument, no command line and no flag,
+// none of which that person holds. A link or a file path written empty names no link or file, so
+// it counts as absent, as null does (which the action's schema refuses first), and a picture list
+// written empty is refused by the schema first too, since it holds one picture at least: no
+// translator sends any of the three on, and the call is sent as it would be without it.
 func goingUnsendable(action string, arguments map[string]any) string {
 	named := func(argument string) bool {
 		switch value := arguments[argument].(type) {
@@ -187,9 +193,6 @@ func goingUnsendable(action string, arguments map[string]any) string {
 		if named("images") {
 			return goingNoPictures("a comment")
 		}
-		if named("ref") {
-			return goingNoLink("a comment")
-		}
 	case "dispatch_ask":
 		if named("images") {
 			return goingNoPictures("a question")
@@ -197,14 +200,6 @@ func goingUnsendable(action string, arguments map[string]any) string {
 	case "dispatch_message":
 		if named("images") {
 			return goingNoPictures("a message")
-		}
-	case "dispatch_suggest":
-		if named("ref") {
-			return goingNoLink("a suggested change")
-		}
-	case "dispatch_doc_edit":
-		if named("ref") {
-			return goingNoLink("an edit of a document")
 		}
 	case "dispatch_artifact":
 		if named("path") {
@@ -230,6 +225,9 @@ func goingUnsendable(action string, arguments map[string]any) string {
 			}
 		}
 	}
+	if _, why := goingRefPlace(action, arguments); why != "" {
+		return why
+	}
 	return ""
 }
 
@@ -239,11 +237,84 @@ func goingNoPictures(write string) string {
 	return fmt.Sprintf("the bar cannot post %s with a picture, since the picture is a file the answer named and the bar has no way to open it. Ask again for the words alone.", write)
 }
 
-// goingNoLink is why the bar cannot send write where the call names its place by a dispatch://
-// reference (goingUnsendable).
-func goingNoLink(write string) string {
-	return fmt.Sprintf("the bar cannot send %s whose place is given by a link, since the bar finds where a write goes only by the issue, project or document the answer names. Ask again naming the issue or the document it is for.", write)
+// goingRefWrites are the writes whose spec lets a `ref`, a dispatch:// reference to an issue or a
+// document, name their place, each by what it is in the words its refusal says.
+var goingRefWrites = map[string]string{
+	"dispatch_comment":  "a comment",
+	"dispatch_suggest":  "a suggested change",
+	"dispatch_doc_edit": "an edit of a document",
 }
+
+// goingRefPlace is arguments of action, a write that takes a `ref` (goingRefWrites), with that
+// reference read as the place it names, as the server reads a reference (text.ParseRef), and as if
+// the call had named that place: an issue's reference as the issue, a reference to a document of
+// an issue, its spec included, as the issue and that document, and one to a project's document as
+// the project and that document, the ref left out, so a plan's row is the row of the call that
+// names the place. A suggestion is a change in a document, so an issue's reference names the
+// issue's spec where the call names no document, as a suggestion on the issue does
+// (goingTranslateIssueSuggest). It answers arguments themselves where action takes no ref or the
+// call names none, and otherwise, as why, the refusal of a reference the bar cannot read as such a
+// place: one that is no reference; one of a block, which places nothing a quote does not; one of
+// an ask, a comment, a message, a component or a file of an agent's conversation, none of which
+// these writes go on; one of a version of a document, where a write goes on the document as it
+// stands; and one that names another place than the issue, the project or the document the call
+// names besides it. Each refusal is worded as goingUnsendable's are.
+func goingRefPlace(action string, arguments map[string]any) (map[string]any, string) {
+	write, takes := goingRefWrites[action]
+	value, _ := arguments["ref"].(string)
+	if !takes || value == "" {
+		return arguments, ""
+	}
+	ref, parsed := text.ParseRef(value, "")
+	elsewhere := func(what string) string {
+		return fmt.Sprintf("the bar cannot send %s whose place is given by the link of %s, since it goes on an issue or a document. Ask again naming the issue or the document it is for.", write, what)
+	}
+	switch {
+	case !parsed:
+		return nil, fmt.Sprintf("the bar cannot send %s whose place is given by a link that names no issue or document of Dispatch. Ask again naming the issue or the document it is for.", write)
+	case ref.Kind == "block":
+		return nil, fmt.Sprintf("the bar cannot send %s whose place is given by the link of one block, since it places it by its issue or its document and the words it quotes there. Ask again naming the document and quoting the words of that block.", write)
+	case ref.Kind == "artifact" && ref.Session != "":
+		return nil, elsewhere("a file of a conversation on the Agents page")
+	case ref.Kind != "issue" && ref.Kind != "artifact":
+		return nil, elsewhere(cmp.Or(goingRefOthers[ref.Kind], "something that is no issue or document"))
+	case goingRefVersion.MatchString(value):
+		return nil, fmt.Sprintf("the bar cannot send %s on a version of a document given by a link, since it writes on the document as it stands. Ask again naming the document without its version.", write)
+	}
+	owner, key := "project", ref.Project
+	if ref.IssueKey != "" {
+		owner, key = "issue", ref.IssueKey
+	}
+	twoPlaces := func(named string) string {
+		return fmt.Sprintf("the bar cannot send %s whose link, %s, names another place than %s. Ask again naming the one place it is for.", write, value, named)
+	}
+	for _, name := range []string{"issue", "project"} {
+		if named := goingText(arguments, name); named != "" && (name != owner || named != key) {
+			return nil, twoPlaces(named)
+		}
+	}
+	// An issue's reference beside a document of that issue names that document.
+	document := goingText(arguments, "artifact")
+	switch {
+	case ref.Kind == "artifact" && document != "" && document != ref.ID:
+		return nil, twoPlaces(document)
+	case ref.Kind == "artifact":
+		document = ref.ID
+	case action == "dispatch_suggest" && document == "":
+		document = "spec"
+	}
+	placed := maps.Clone(arguments)
+	delete(placed, "ref")
+	placed[owner] = key
+	if document != "" {
+		placed["artifact"] = document
+	}
+	return placed, ""
+}
+
+// goingRefOthers is what each kind of reference names that no write of goingRefWrites goes on,
+// in the words goingRefPlace refuses it with.
+var goingRefOthers = map[string]string{"ask": "an ask", "comment": "a comment", "message": "a message", "component": "a component"}
 
 // goingSourceRepository splits a source repository written as owner/name on its slash, the way
 // the server reads a repository elsewhere (strings.Cut), into the two segments the one-source
@@ -468,9 +539,9 @@ func goingJSONRequest(method, path string, body any) (goingSend, error) {
 }
 
 // requests is every request the call sends: the writes that land first, then the row's own, which
-// carries the call's condition and the file it reads.
+// carries the call's condition, the file it reads and whether it is the roster read.
 func (c goingCall) requests(route GoingRoute) ([]goingSend, error) {
-	own := goingSend{method: route.Method, path: goingPath(route.Pattern, c.path), query: c.query, condition: c.condition, file: c.file}
+	own := goingSend{method: route.Method, path: goingPath(route.Pattern, c.path), query: c.query, condition: c.condition, file: c.file, roster: c.roster}
 	switch {
 	case c.form != nil:
 		body, contentType, err := c.form.encode()
@@ -652,9 +723,10 @@ func goingTranslateResolveComment(ctx context.Context, read goingReader, call go
 // goingTranslateRoster sends read_roster, which takes no argument, as GET /api/v1/agents of the
 // goingReadSessionMax sessions seen last, the most the answer run's own roster read lists
 // (going_reads.go), so the route reads the open asks and activity of those alone and loads no more
-// rows of a roster of any size than it answers.
+// rows of a roster of any size than it answers. The model is told that answer with the claims of
+// each session and the gone sessions that hold one (goingRosterTold).
 func goingTranslateRoster(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	return goingCall{path: call.path, query: url.Values{"limit": {strconv.Itoa(goingReadSessionMax)}}}, nil
+	return goingCall{path: call.path, query: url.Values{"limit": {strconv.Itoa(goingReadSessionMax)}}, roster: true}, nil
 }
 
 // goingTranslateSearch sends dispatch_search's words as the search route's q, and its project,

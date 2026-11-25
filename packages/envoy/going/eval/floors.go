@@ -181,7 +181,9 @@ type Task struct {
 //
 // A task of any other kind holds Facts and Links, Chart for a chart task and Replies for a status
 // task, and an empty Allowed: it passes when the judge finds each fact in the answer, the answer
-// links each of Links, a chart's table holds Chart.Rows, and the store did not change.
+// links each of Links, a chart's table holds Chart.Rows, and the store did not change. The answer
+// is what the person reads as the run's answer: the text of its answer frames, the replies that
+// name no tool, and never that of a step header over the calls a reply names.
 type Grade struct {
 	// Approve is how the grader answers each plan the run shows the person: true approves it
 	// whole, false rejects it. It is nil on a task that asks for no change: there the grader

@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  The command bar's roster read names every session that holds a claim. Each session carries the
+  claims it holds on open issues (`claims`, each with its `issue` and `at`), and a session the
+  listener lists no more that still holds a claim is listed after the listener's sessions with
+  `state` `gone` and its claims, so "which agents are working now and on what" can say that a gone
+  session still holds an issue. Only claims on issues the run's person may read are named: a claim
+  on any other issue names neither that issue nor a gone session that holds nothing else. The read
+  still lists at most 50 sessions, the gone ones kept first, and its totals count the gone ones.
+  The bar's agent reads the roster through `GET /api/v1/agents?limit=50` and is told its answer
+  with those claims; the route's own answer to every other caller is unchanged.
+
+  A comment, a suggestion or a document edit the bar's model places by a `dispatch://` `ref`, as
+  the tools' specs offer, is now kept as the row of the change that names that place: an issue's
+  reference as the issue, a reference to an issue's document as the issue and that document, and
+  one to a project's document as the project and that document. Before, the bar refused every such
+  change. A `ref` of a block, an ask, a comment, a message, a component, a file of a conversation
+  or a version of a document, or one naming another place than the change names besides it, is
+  still refused, saying why and what to ask for instead.
+
+  The command bar's eval reads as a try's answer the text of its answer frames alone, the replies
+  that name no tool, which the bar shows as the answer; the text of a step header, which the bar
+  draws over its calls, is kept as the try's `header_text` and decides no pass and no floor. After
+  every try ends, the judge grades each try whose headers hold text again by the old rule, every
+  reply's text joined in order: that grade is the try's `old_rule`, a column of the report, and
+  the report lists each try whose verdict differs between the two rules.

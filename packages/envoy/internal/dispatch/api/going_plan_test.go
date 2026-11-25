@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
@@ -17,6 +16,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
@@ -59,6 +59,24 @@ func goingChange(tool string, arguments map[string]any, needs ...int) map[string
 		change["needs"] = needs
 	}
 	return change
+}
+
+// requireRefusalNames fails t unless refused is a CALL_REFUSED refusal whose words name each of
+// names as a word of its own: the facts the refusal must give - a change's number, an issue's
+// key, a field - whatever sentence it gives them in.
+func requireRefusalNames(t *testing.T, refused *agentwire.Error, names ...string) {
+	t.Helper()
+	if refused == nil || refused.Code != agentwire.CodeCallRefused {
+		t.Fatalf("the plan call answered %+v, want %s", refused, agentwire.CodeCallRefused)
+	}
+	words := strings.FieldsFunc(refused.Message, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("_-$", r)
+	})
+	for _, name := range names {
+		if !slices.Contains(words, name) {
+			t.Errorf("the refusal says %q, which does not name %s", refused.Message, name)
+		}
+	}
 }
 
 // proposing is the reply that proposes changes as a plan.
@@ -1708,13 +1726,7 @@ func TestAReopenBesideOtherFieldsIsProposedAsTwoChanges(t *testing.T) {
 	rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+closed, map[string]any{"status": "done"})
 
 	t.Run("a reopen beside a priority on a closed issue is refused, saying to propose two changes", func(t *testing.T) {
-		refused := propose(t, map[string]any{"issue": closed, "status": "todo", "priority": 0})
-		want := fmt.Sprintf(`change 0 (dispatch_issue_update): %s is closed, and Dispatch reopens an issue only by a change of its status alone: `+
-			`propose the reopen, dispatch_issue_update with {"issue":%q,"status":"todo"}, as one change, then the change of priority as a second change whose needs name the first`,
-			closed, closed)
-		if refused == nil || refused.Code != agentwire.CodeCallRefused || refused.Message != want {
-			t.Fatalf("the plan call answered %+v, want %s: %s", refused, agentwire.CodeCallRefused, want)
-		}
+		requireRefusalNames(t, propose(t, map[string]any{"issue": closed, "status": "todo", "priority": 0}), "0", closed, "priority")
 	})
 
 	t.Run("a reopen of its status alone is kept", func(t *testing.T) {
@@ -1735,13 +1747,7 @@ func TestAReopenBesideOtherFieldsIsProposedAsTwoChanges(t *testing.T) {
 		linked := rig.issue(t, "Closed with its link")
 		rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+linked, map[string]any{"external_links": []map[string]string{{"url": held}}})
 		rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+linked, map[string]any{"status": "done"})
-		refused := propose(t, map[string]any{"issue": linked, "status": "todo", "external_links": []any{held, added}})
-		want := fmt.Sprintf(`change 0 (dispatch_issue_update): %s is closed, and Dispatch reopens an issue only by a change of its status alone: `+
-			`propose the reopen, dispatch_issue_update with {"issue":%q,"status":"todo"}, as one change, then the change of external_links as a second change whose needs name the first`,
-			linked, linked)
-		if refused == nil || refused.Code != agentwire.CodeCallRefused || refused.Message != want {
-			t.Fatalf("the plan call answered %+v, want %s: %s", refused, agentwire.CodeCallRefused, want)
-		}
+		requireRefusalNames(t, propose(t, map[string]any{"issue": linked, "status": "todo", "external_links": []any{held, added}}), "0", linked, "external_links")
 		if refused := propose(t, map[string]any{"issue": linked, "status": "todo", "external_links": []any{held}}); refused != nil {
 			t.Fatalf("the plan call of a reopen beside the link the issue holds answered %+v, want the plan kept", refused)
 		}
@@ -1773,6 +1779,88 @@ func TestAReopenBesideOtherFieldsIsProposedAsTwoChanges(t *testing.T) {
 			t.Errorf("%s is %s (closed at %v) with priority %v, want todo, open, at P0", issue, read.Status, read.ClosedAt, read.Priority)
 		}
 	})
+}
+
+// TestAWritePlacedByItsRefIsTheRowOfTheCallNamingItsPlace: a comment, a suggestion and an edit of a
+// document, whose specs let a dispatch:// ref name their place, are read as the place it names
+// (goingRefPlace): each such change is kept as the same row - its tool, its arguments and what it
+// shows its person - as the change that names that issue, project or document. A ref the row
+// cannot show or the route cannot take - the link of a comment, of a block or of a version of a
+// document, or one naming another place than the change names besides it - refuses the plan,
+// naming the change, and keeps nothing.
+func TestAWritePlacedByItsRefIsTheRowOfTheCallNamingItsPlace(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	issue := decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "DEMO", "title": "Placed by its link", "spec": "# The mill\n\nThe quernstone grinds the oats.\n", "force": true,
+	})).Key
+	runbook := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/projects/DEMO/artifacts", map[string]any{
+		"name": "Mill runbook", "content": "# Mill runbook\n\nOil the spindle weekly.\n",
+	})).Artifact.Slug
+	edit := []any{map[string]any{"op": "insert", "markdown": "Grease the gears monthly.", "after": "end"}}
+	// kept is the one row the plan of a change of tool with arguments keeps, failing t where the
+	// plan is refused.
+	kept := func(t *testing.T, tool string, arguments map[string]any) goingPlanRowStored {
+		t.Helper()
+		run, refused := rig.proposedPlan(t, goingChange(tool, arguments))
+		if refused != nil {
+			t.Fatalf("%s %v was refused %+v, want its plan kept", tool, arguments, refused)
+		}
+		rows := rig.keptRows(t, run)
+		if len(rows) != 1 {
+			t.Fatalf("%s %v kept %d rows, want 1", tool, arguments, len(rows))
+		}
+		return rows[0]
+	}
+	for _, c := range []struct {
+		name, tool   string
+		byRef, named map[string]any
+	}{
+		{"a comment on an issue", "dispatch_comment",
+			map[string]any{"ref": "dispatch://" + issue, "body": "Reads well."},
+			map[string]any{"issue": issue, "body": "Reads well."}},
+		{"a comment on a quote of an issue's spec", "dispatch_comment",
+			map[string]any{"ref": "dispatch://" + issue + "/spec", "quote": "grinds the oats", "body": "Which oats?"},
+			map[string]any{"issue": issue, "artifact": "spec", "quote": "grinds the oats", "body": "Which oats?"}},
+		{"a suggestion in an issue's spec", "dispatch_suggest",
+			map[string]any{"ref": "dispatch://" + issue + "/spec", "quote": "grinds the oats", "replace_with": "grinds the barley"},
+			map[string]any{"issue": issue, "artifact": "spec", "quote": "grinds the oats", "replace_with": "grinds the barley"}},
+		{"an edit of a project's document", "dispatch_doc_edit",
+			map[string]any{"ref": "dispatch://DEMO/artifact/" + runbook, "ops": edit},
+			map[string]any{"project": "DEMO", "artifact": runbook, "ops": edit}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			placed, named := kept(t, c.tool, c.byRef), kept(t, c.tool, c.named)
+			if placed.tool != named.tool || !goingJSONEqual(placed.arguments, named.arguments) || !placed.shown.unchanged(named.shown) {
+				t.Errorf("the change given by its ref is kept as %s %s showing %+v, want the row of the change naming its place, %s %s showing %+v",
+					placed.tool, placed.arguments, placed.shown, named.tool, named.arguments, named.shown)
+			}
+		})
+	}
+
+	for _, c := range []struct {
+		name, tool string
+		arguments  map[string]any
+	}{
+		{"a comment given the link of a comment", "dispatch_comment",
+			map[string]any{"ref": "dispatch://" + issue + "/comment/01234567-0000-4000-8000-000000000001", "body": "Agreed."}},
+		{"a suggestion given the link of a block", "dispatch_suggest",
+			map[string]any{"ref": "dispatch://" + issue + "/spec#b-intro", "quote": "grinds the oats", "replace_with": "grinds the barley"}},
+		{"an edit given the link of a version", "dispatch_doc_edit",
+			map[string]any{"ref": "dispatch://DEMO/artifact/" + runbook + "@v1", "ops": edit}},
+		{"a comment whose link names another issue than it names", "dispatch_comment",
+			map[string]any{"issue": issue, "ref": "dispatch://DEMO-99999", "body": "Reads well."}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			run, refused := rig.proposedPlan(t, goingChange(c.tool, c.arguments))
+			requireRefusalNames(t, refused, "0", c.tool)
+			if kept := rig.count(t, `select count(*) from going_plans where run_id = $1::uuid`, run); kept != 0 {
+				t.Fatalf("the refused call kept %d plans, want none", kept)
+			}
+		})
+	}
 }
 
 // TestAPlanRowOfAPostShowsItsAuthorAndBodyUntilItIsDeleted: a plan's row of an edit or a delete of

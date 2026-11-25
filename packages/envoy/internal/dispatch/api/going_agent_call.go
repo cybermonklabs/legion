@@ -432,7 +432,8 @@ func (s *server) goingCallLandings(ctx context.Context, key goingCallKey) ([]*go
 // the refusal says what landed. A refusal of the tool's after only requests it sends before its
 // own (a close's reason) landed is the call's refusal, which says they stand. A read of an
 // uploaded file's version answers what its file's words make of the route's answer
-// (goingUploadedFile.told).
+// (goingUploadedFile.told), and the roster read the agents list with the claims of each session
+// and the gone sessions that hold one (goingRosterTold).
 func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallRequest, login string, doer goingInProcess) (answer agentwire.CallAnswer, refusal *agentwire.Error) {
 	key := goingCallKey{run: request.Run, step: request.Step, call: request.Call}
 	release, held := a.keys.lock(ctx, key, a.callKeyWait)
@@ -551,6 +552,11 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 		answer, answered = goingCallAnswerOf(recorded), spec.path
 		if spec.file != nil {
 			answer = spec.file.told(answer)
+		}
+		if spec.roster {
+			if answer, err = a.s.goingRosterTold(ctx, login, answer); err != nil {
+				return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
+			}
 		}
 		if answer.Status < http.StatusMultipleChoices || !write {
 			if answer.Status >= http.StatusMultipleChoices {

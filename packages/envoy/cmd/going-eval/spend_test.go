@@ -184,7 +184,7 @@ func TestReadFrameTakesEachCallsTokensAndEachCheckUnderItsTurn(t *testing.T) {
 		{"block", `{"kind":"chart"}`},
 		{"end", `{"state":"done","reason":"","offers":[]}`},
 	} {
-		if text := outcome.readFrame(frame.name, []byte(frame.data)); text != "" {
+		if text, _ := outcome.readFrame(frame.name, []byte(frame.data)); text != "" {
 			prose = append(prose, text)
 		}
 	}
