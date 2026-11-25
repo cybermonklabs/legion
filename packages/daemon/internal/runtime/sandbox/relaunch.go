@@ -1642,12 +1642,13 @@ const (
 // the pod as the one that suspension replaces and recording first that the daemon means to end it,
 // under the act of that replacement (displacement, suspendOver): the annotation this same write
 // sets answers for the roles of that pod, and the record answers for the pod's end itself, so both
-// read as the daemon's own. The record names pod, the pod the caller read and the annotation
-// names (meanToEndPod), and not the store's pod when the record is written, so the two always name
-// one pod. A pod that failed on the Sandbox's kept volume would leave the reset mark in the same
-// patch; a live pod shows no failed init container, so a launch's replacement writes none. It
-// returns the Sandbox as the patch left it, the one copy that carries the name: a migrating launch
-// reads it from there onto the Sandbox it creates in its place (replaceSupersededSandbox).
+// read as the daemon's own. The record names the uid the displacement carries, which is the uid
+// the annotation names (meanToEndPod), and not the store's pod when the record is written, so the
+// two always name one pod. A pod that failed on the Sandbox's kept volume would leave the reset
+// mark in the same patch; a live pod shows no failed init container, so a launch's replacement
+// writes none. It returns the Sandbox as the patch left it, the one copy that carries the name: a
+// migrating launch reads it from there onto the Sandbox it creates in its place
+// (replaceSupersededSandbox).
 func (r *Runtime) suspendDisplacing(ctx context.Context, s *sandbox, pod *corev1.Pod, kind replacementKind) (*sandbox, error) {
 	return r.suspendOver(ctx, s, pod, displacement{uid: pod.UID, kind: kind})
 }
@@ -1684,9 +1685,10 @@ func displacing(uid types.UID, kind replacementKind) map[string]*string {
 // records the end under an act of its own and sends the mode's operation (suspendedMode) among
 // the relabel's operations (ensureSandbox).
 type suspensionNames interface {
-	// meanToEnd records that the daemon means to end pod, the pod of the Sandbox s as it stands
-	// before the suspension, or records nothing (meanToEndPod, meanToEndPodOf).
-	meanToEnd(r *Runtime, s *sandbox, pod *corev1.Pod)
+	// meanToEnd records that the daemon means to end the pod the suspension of the Sandbox s takes
+	// down, the one the kind carries or the one the store holds for s, or records nothing
+	// (meanToEndPod, meanToEndPodOf).
+	meanToEnd(r *Runtime, s *sandbox)
 	// annotations is the suspension's annotations, in a map of their own, which suspendOver adds
 	// the reset mark to.
 	annotations() map[string]*string
@@ -1699,14 +1701,14 @@ type displacement struct {
 	kind replacementKind
 }
 
-// meanToEnd records the end of pod, the live pod the suspension replaces and the one uid names
-// (suspendDisplacing), under the act of that replacement.
-func (d displacement) meanToEnd(r *Runtime, _ *sandbox, pod *corev1.Pod) {
+// meanToEnd records the end of the pod uid, the live pod the suspension replaces and the one its
+// annotations name (suspendDisplacing, displacing), under the act of that replacement.
+func (d displacement) meanToEnd(r *Runtime, _ *sandbox) {
 	act := "a launch replaced the pod"
 	if d.kind == roundReplacement {
 		act = "an update round replaced the pod"
 	}
-	r.meanToEndPod(string(pod.UID), act)
+	r.meanToEndPod(string(d.uid), act)
 }
 
 func (d displacement) annotations() map[string]*string { return displacing(d.uid, d.kind) }
@@ -1719,7 +1721,7 @@ type ownEnd struct {
 	end string
 }
 
-func (ownEnd) meanToEnd(*Runtime, *sandbox, *corev1.Pod) {}
+func (ownEnd) meanToEnd(*Runtime, *sandbox) {}
 
 func (e ownEnd) annotations() map[string]*string {
 	ended, end := string(e.uid), e.end
@@ -1732,7 +1734,7 @@ func (e ownEnd) annotations() map[string]*string {
 // the bare JSON patch of the mode for it (sendSuspended) unless the pod calls for the reset mark.
 type daemonEnd struct{}
 
-func (daemonEnd) meanToEnd(r *Runtime, s *sandbox, _ *corev1.Pod) {
+func (daemonEnd) meanToEnd(r *Runtime, s *sandbox) {
 	r.meanToEndPodOf(s, daemonSuspendedAct)
 }
 
@@ -1795,7 +1797,7 @@ func (r *Runtime) suspendOver(ctx context.Context, s *sandbox, pod *corev1.Pod, 
 		annotations[volumeResetAnnotation] = &fault
 	}
 	if s.mode() != modeSuspended {
-		names.meanToEnd(r, s, pod)
+		names.meanToEnd(r, s)
 		if len(annotations) == 0 {
 			return s, r.sendSuspended(ctx, s)
 		}
