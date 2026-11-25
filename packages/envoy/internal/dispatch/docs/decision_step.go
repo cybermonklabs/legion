@@ -95,6 +95,7 @@ type DecisionStep struct {
 
 // NewDecisionStep is the step of a process serving commit, the commit it registers
 // (processes.Instance.Commit), over database, logging through logger (slog.Default when nil).
+// kept for one release: decisions-step
 func NewDecisionStep(database *store.Store, commit string, logger *slog.Logger) *DecisionStep {
 	if logger == nil {
 		logger = slog.Default()
@@ -191,6 +192,7 @@ func (c *stepConn) release(logger *slog.Logger) {
 // phase 1 does not wait on - so the boot waits on no table phase 1 does not read. Its context is
 // marked for the pool's nested-acquire guard (store.WithTransactionTracking), as every entry point
 // of the pool's transactions marks its own.
+// kept for one release: decisions-step
 func (s *DecisionStep) Boot(ctx context.Context) error {
 	ctx = store.WithTransactionTracking(ctx)
 	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
@@ -219,6 +221,7 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 // with work. A failure of a phase is logged
 // and tried again at the next tick; it answers a failure of the probes or of a lock. Its context is
 // marked for the pool's nested-acquire guard, as Boot's is.
+// kept for one release: decisions-step
 func (s *DecisionStep) Tick(ctx context.Context) error {
 	ctx = store.WithTransactionTracking(ctx)
 	work, err := s.probe(ctx)
@@ -261,6 +264,7 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 // Run ticks at once and then every interval (BlockIndexReconcileInterval) until ctx ends. It never
 // stops for want of work: a process of another build can go live after a tick found none, and the
 // next tick catches up what it writes. A tick that fails is logged and tried again at the next one.
+// kept for one release: decisions-step
 func (s *DecisionStep) Run(ctx context.Context) {
 	for {
 		if err := s.Tick(ctx); err != nil && ctx.Err() == nil {
@@ -292,6 +296,7 @@ type decisionStepWork struct {
 // with no other build live: this build's create sites write each node and marker in the write that
 // stores the row, so a row it finds is one another build wrote. Every other tick takes phase 1 to
 // owe nothing.
+// kept for one release: decisions-step
 func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 	var work decisionStepWork
 	var err error
@@ -312,6 +317,7 @@ func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 }
 
 // backfill runs phase 1 and logs what each of its passes stated.
+// kept for one release: decisions-step
 func (s *DecisionStep) backfill(ctx context.Context) error {
 	done, err := graphcensus.BackfillAsks(ctx, s.database)
 	for _, kind := range done {
@@ -328,6 +334,7 @@ func (s *DecisionStep) backfill(ctx context.Context) error {
 
 // anotherBuildLive reports whether processes.Live lists a process serving a commit other than
 // this process's own. An empty commit is one build with every other empty commit.
+// kept for one release: decisions-step
 func (s *DecisionStep) anotherBuildLive(ctx context.Context) (bool, error) {
 	live, err := processes.Live(ctx, s.database.Pool)
 	if err != nil {
@@ -525,6 +532,7 @@ func (s *DecisionStep) catchUp(ctx context.Context) (bool, error) {
 // events took its id after it: this pass's own does on a log no write holds open, and under writes
 // that overlap without a break an earlier pass's does, as soon as the writes open when it was
 // taken have ended. It waits on no transaction.
+// kept for one release: decisions-step
 func (s *DecisionStep) writerFloor(ctx context.Context) (int64, int64, error) {
 	mark, err := s.horizon.Mark(ctx)
 	if err != nil {

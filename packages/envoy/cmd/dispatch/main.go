@@ -470,6 +470,7 @@ func main() {
 	// catch-up and its later passes run on its own tick once the server listens, below: the boot
 	// reads only what the first phase reads, so a table it does not need, held by another
 	// transaction, keeps no process from serving.
+	// kept for one release: decisions-step
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
 	// kept for one release: decisions-step
 	if !boot.HoldDecisionsStep {
