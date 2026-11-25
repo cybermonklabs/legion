@@ -11,7 +11,6 @@ package cipherclient
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // testAudience is the broker's Google exchange audience in these rows, which a metadata or an
@@ -46,18 +46,6 @@ func startDetectMetadata(t *testing.T) *detectMetadata {
 	})
 	t.Setenv("GCE_METADATA_HOST", strings.TrimPrefix(base, "http://"))
 	return m
-}
-
-// closedAddress is a loopback address nothing listens on.
-func closedAddress(t *testing.T) string {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := lis.Addr().String()
-	lis.Close()
-	return addr
 }
 
 // externalAccountFile writes an external_account credentials file whose subject token is in a
@@ -187,7 +175,9 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 
 	t.Run("none", func(t *testing.T) {
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
-		t.Setenv("GCE_METADATA_HOST", closedAddress(t))
+		// A metadata server that is not there: a port the test holds and nothing listens on, so no
+		// other process can take it and answer as one (testport.Refused).
+		t.Setenv("GCE_METADATA_HOST", testport.Refused(t))
 		start := time.Now()
 		source, skipped, err := DetectMachineIdentity(context.Background(), testAudience)
 		elapsed := time.Since(start)

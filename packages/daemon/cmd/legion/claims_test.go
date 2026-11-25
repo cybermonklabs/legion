@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -949,20 +950,19 @@ func TestClaimsPrintsTheDaemonsRefusalAndFails(t *testing.T) {
 	}
 }
 
-// A daemon that does not answer at all fails the command, naming where it looked.
+// A daemon that does not answer at all fails the command, naming where it looked: a port the test
+// holds and nothing listens on, so every dial to it is refused.
 func TestClaimsFailsWhenNoDaemonAnswers(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	_, port, err := net.SplitHostPort(testport.Refused(t))
 	if err != nil {
-		t.Fatalf("reserve a port: %v", err)
+		t.Fatal(err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
 	d := &operatorDaemon{t: t, tokenFile: writeFile(t, "operator-token", claimsOperatorToken)}
 
-	code, out, errb := d.claims("list", "--port", strconv.Itoa(port), "--operator-token-file", d.tokenFile)
+	code, out, errb := d.claims("list", "--port", port, "--operator-token-file", d.tokenFile)
 
-	if code != 1 || out != "" || !strings.Contains(errb, "127.0.0.1:"+strconv.Itoa(port)) {
-		t.Fatalf("exit %d, stdout %q, stderr %q; want 1 naming 127.0.0.1:%d", code, out, errb, port)
+	if code != 1 || out != "" || !strings.Contains(errb, "127.0.0.1:"+port) {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want 1 naming 127.0.0.1:%s", code, out, errb, port)
 	}
 }
 

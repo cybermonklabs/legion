@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -39,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // chainValue is the value chainBroker releases for TEST_KEY. The use command's child prints its
@@ -358,18 +358,6 @@ func (m *metadataServer) metadataIdentityRequests() int {
 	return m.requests["/computeMetadata/v1/instance/service-accounts/default/identity"]
 }
 
-// closedAddress is a loopback address nothing listens on: a metadata server that is not there.
-func closedAddress(t *testing.T) string {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := lis.Addr().String()
-	lis.Close()
-	return addr
-}
-
 // chainBinary builds agent-secrets.
 func chainBinary(t *testing.T) string {
 	t.Helper()
@@ -404,7 +392,10 @@ func newChainRig(t *testing.T, binary string, broker *chainBroker) *chainRig {
 	r := &chainRig{t: t, binary: binary, home: t.TempDir(), runtime: shortTempDir(t), state: t.TempDir()}
 	r.env = map[string]string{
 		"HOME": r.home, "XDG_RUNTIME_DIR": r.runtime, "XDG_STATE_HOME": r.state, "PATH": "/usr/bin:/bin",
-		"GCE_METADATA_HOST": closedAddress(t),
+		// A metadata server that is not there: a port the test holds and nothing listens on
+		// (testport.Refused). The held socket is close-on-exec, so the binary the rig runs does not
+		// inherit it, and no other process on the machine can take the port and answer.
+		"GCE_METADATA_HOST": testport.Refused(t),
 	}
 	if broker != nil {
 		r.env["AGENT_SECRETS_URL"] = broker.URL()
