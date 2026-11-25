@@ -815,6 +815,14 @@ Its Postgres then moved from a `services:` container to the harness's own, for t
 the pull at 120 s and the connections read at its two-minute floor.
 4 + 4 + 12 + 2 min plus 135 s and 120 s = 26 min 15 s -> 27 min.
 
+The models step first ran without the agent's spec files: its two filters matched going-answer, going-answer-cancel, going-answer-safety and going-blocks, and none of the nine going-agent-*.e2e.ts files, so no lane ran the rows of the command bar's agent (INFRA-1588's checks c1, c2, c3, c4, c7, c8, c9, c10 and c16).
+It now names `going-agent-` as `e2e:models` does, and the Firefox row of `e2e:models:firefox` (going-agent-place) runs in a step of its own after a Firefox install.
+Its first reading on this runner: 76 s for its 20 rows, in job 139500196866 at 8a3e562b.
+The 41 agent rows ran in 61 s of row time on the builds farm at 03341908 and 1b87c2af, so (76 + 61) s x 1.15 = 158 s -> 3 min, and 1 min more until this runner reads them itself: 4 min.
+The Firefox install is the Chromium install's figure, 4 min: one browser's archives, with no apt, for the reason .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is gives, and a library the image lacked would fail the launch visibly.
+The Firefox step runs going-agent-place's five rows, which ran in 3.5 s of row time on Chromium, at the 4 min of the step before the models step, whose two rows are as short, until its first runs give it a reading.
+4 + 4 + 4 + 2 + 4 + 4 min plus 135 s and 120 s = 26 min 15 s -> 27 min.
+
 ## Why the embedder job builds contracts
 
 The e2e helpers the specs import read some of contracts' values from its built dist/, through Playwright's own Node resolution (the shard job's step of the same name), which takes the entries Dispatch imports alone.
@@ -833,7 +841,7 @@ Playwright directly, as the multiprocess job's sign-in step runs it:
 `e2e:models` stays the command for a local run.
 
 Its Postgres is the harness's own, from the image and with the connections the "Pull the embedder stack's Postgres image" and "Read the connections the embedder stack's Postgres must allow" steps pulled and read, as the step before runs it.
-Its 12 minutes are derived in .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets.
+Its 4 minutes, and the Firefox install's and the Firefox step's, are derived in .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets.
 
 ## Why the embedder job's upload runs on failure alone, and serves both browser steps
 

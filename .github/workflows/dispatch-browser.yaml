@@ -385,7 +385,7 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
-  # 4 + 4 + 12 + 2 min plus 135 s and 120 s = 26 min 15 s -> 27 min.
+  # 4 + 4 + 4 + 2 + 4 + 4 min plus 135 s and 120 s = 26 min 15 s -> 27 min.
   embedder:
     if: inputs.lane == 'pull-request' || inputs.lane == 'full'
     runs-on: ubuntu-24.04
@@ -447,14 +447,28 @@ jobs:
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           bun run e2e:embedder
         working-directory: packages/dispatch
-      - name: Browser-test the bar's answers against fake models
+      - name: Browser-test the bar's answers and its agent against fake models
         # why: .github/ci-notes/dispatch-browser.md#what-the-embedder-jobs-models-step-runs-and-why-it-calls-playwright-directly
-        # 9.9 min x 1.15 = 11.4 min -> 12 min.
-        timeout-minutes: 12
+        # (76 s + 61 s) x 1.15 = 158 s -> 3 min, plus 1 min until this runner reads the 41 agent rows.
+        timeout-minutes: 4
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          DISPATCH_E2E_MODELS=fake bunx playwright test --config e2e/playwright.config.ts --project=chromium going-answer going-blocks
+          DISPATCH_E2E_MODELS=fake bunx playwright test --config e2e/playwright.config.ts --project=chromium going-agent- going-answer going-blocks
+        working-directory: packages/dispatch
+      - name: Install Playwright Firefox
+        # Browsers only, no apt, as the Chromium install above:
+        # .github/ci-notes/dispatch-browser.md#what-the-embedder-jobs-models-step-runs-and-why-it-calls-playwright-directly
+        timeout-minutes: 4
+        run: bunx playwright install firefox
+        working-directory: packages/dispatch
+      - name: Browser-test the bar's side place in Firefox against fake models
+        # why: .github/ci-notes/dispatch-browser.md#what-the-embedder-jobs-models-step-runs-and-why-it-calls-playwright-directly
+        timeout-minutes: 4
+        run: |
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          DISPATCH_E2E_MODELS=fake bunx playwright test --config e2e/playwright.config.ts --project=firefox going-agent-place
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-upload-runs-on-failure-alone-and-serves-both-browser-steps
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

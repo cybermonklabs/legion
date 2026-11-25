@@ -2020,7 +2020,8 @@ BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
-BROWSER_MODELS_SPECS = "Browser-test the bar's answers against fake models"
+BROWSER_MODELS_SPECS = "Browser-test the bar's answers and its agent against fake models"
+BROWSER_MODELS_FIREFOX_SPECS = "Browser-test the bar's side place in Firefox against fake models"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
@@ -2044,14 +2045,15 @@ BROWSER_RECORD_STEP = "What the run left behind"
 # in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
 # pinned build step in the gate below names already, so this job adds no command of its own.
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
-# The seven steps that run the browser suite, named together wherever a Run or a read cites the
+# The eight steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
-# here, below the seven names, rather than beside the first of them.
+# here, below the eight names, rather than beside the first of them.
 BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
     f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}, "
     f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)}, "
-    f"{at_browser(BROWSER_MODELS_SPECS, BROWSER_EMBEDDER)} and "
+    f"{at_browser(BROWSER_MODELS_SPECS, BROWSER_EMBEDDER)}, "
+    f"{at_browser(BROWSER_MODELS_FIREFOX_SPECS, BROWSER_EMBEDDER)} and "
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)}"
 )
 STALL = "envoy-session-stall"
@@ -2270,7 +2272,7 @@ def browser_gate(filter, job):
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#pmdocFixtures` and `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#TABLE_PATH`, from the new URL TABLE_PATH holds, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds each stack's server port through it"),
         (f"{ENVOY}/going/decision_models.json",
-         f"{at_browser(BROWSER_MODELS_SPECS, BROWSER_EMBEDDER)} and the visual-bar rows of "
+         f"{at_browser(BROWSER_MODELS_SPECS, BROWSER_EMBEDDER)}, {at_browser(BROWSER_MODELS_FIREFOX_SPECS, BROWSER_EMBEDDER)} and the visual-bar rows of "
          f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} read it: e2e/visual-run.sh starts its stack with "
          "the fake models, `packages/dispatch/e2e/run-server.sh#decision_record` hands the server the model it marks chosen, and "
          "`packages/dispatch/e2e/fake-models-helpers.ts#decisionRecord` reads that model for the rows"),
