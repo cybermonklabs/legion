@@ -83,6 +83,7 @@ import {
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { parseArgs } from "node:util";
+import { joinUrl } from "../../packages/contracts/src/url-join";
 import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
 import { DISPATCH_TOOL_DEADLINE_MS } from "../../packages/envoy-client/src/dispatch-http";
 import {
@@ -377,12 +378,12 @@ export async function get<T>(
   rate: Rate,
   spend: Spend
 ): Promise<T> {
+  const url = joinUrl(config.url, path).href;
   let last = "";
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     await rate.take();
     spend.requests += 1;
     try {
-      const url = `${config.url}${path}`;
       // Presented afresh for each attempt, as DispatchClient does: a broker credential proves this
       // process's key per request, and a stale proof is what a retry would otherwise re-send. One
       // deadline bounds both, the one DispatchClient puts on each of its own requests.
