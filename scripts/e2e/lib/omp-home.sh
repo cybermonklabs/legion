@@ -12,12 +12,13 @@
 # exists, and neither PI_CONFIG_DIR nor OMP_CONFIG_ROOT reaches a pane (neither daemon's pane
 # allow-list carries them).
 #
-# DIR/.omp/natives links to the operator's native module cache (123 MiB per Oh My Pi version at the
-# pin, the one variant the CPU selects), which is $XDG_DATA_HOME/omp/natives when $XDG_DATA_HOME/omp
-# exists and $HOME/.omp/natives otherwise: the two places getNativesDir in @oh-my-pi/pi-natives'
-# native/loader-state.js reads when none of PI_NATIVES_DIR, OMP_DOWNLOAD_ROOT and OMP_CONFIG_ROOT
-# is set, as no Legion process sets them. A fresh home would download that module again; removing
-# DIR removes the link, never the cache. MISE_DATA_DIR and
+# DIR/.omp/natives links to the operator's native module cache (124 MiB per Oh My Pi version at the
+# pin, the one variant the CPU selects), which is $XDG_CACHE_HOME/omp/natives when XDG_CACHE_HOME is
+# set and $XDG_CACHE_HOME/omp exists, and $HOME/.omp/natives otherwise: the two places getNativesDir
+# in @oh-my-pi/pi-natives' native/natives-dir.js reads when none of PI_NATIVES_DIR,
+# OMP_DOWNLOAD_ROOT and OMP_CONFIG_ROOT is set, as no Legion process sets them, and PI_CONFIG_DIR is
+# unset or `.omp`. A fresh home would download that module again; removing DIR removes the link,
+# never the cache. MISE_DATA_DIR and
 # XDG_CONFIG_HOME are exported first as the operator's own, where each already resolves, so what the
 # daemon itself runs under DIR finds what it did under the operator's HOME: `mise` the same pinned
 # Oh My Pi, `secrets` its secretsd config (the daemon resolves provider_keys with it), and gh and jj
@@ -42,7 +43,7 @@ make_omp_home() {
     { echo "make_omp_home: jj config path --user failed, so the operator's jj config cannot be named" >&2; return 1; }
   listing=$(JJ_CONFIG=$files jj config list --user) ||
     { echo "make_omp_home: jj config list --user failed, so the operator's ~/ jj paths cannot be pinned" >&2; return 1; }
-  if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+  if [ -n "${XDG_CACHE_HOME:-}" ] && [ -e "$XDG_CACHE_HOME/omp" ]; then natives=$XDG_CACHE_HOME/omp/natives; fi
   export MISE_DATA_DIR="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
   export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
   mkdir -p "$natives" "$1/.omp"

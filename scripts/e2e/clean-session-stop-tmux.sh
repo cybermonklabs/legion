@@ -715,7 +715,7 @@ while IFS= read -r line; do note "$line"; done < <(
 # a HOME of the run's own. The caller's native-module cache is linked in, so a fresh home downloads
 # nothing and the caller's own ~/.omp is neither written nor removed.
 natives=$HOME/.omp/natives
-[ -z "${XDG_DATA_HOME:-}" ] || [ ! -d "$XDG_DATA_HOME/omp" ] || natives=$XDG_DATA_HOME/omp/natives
+[ -z "${XDG_CACHE_HOME:-}" ] || [ ! -e "$XDG_CACHE_HOME/omp" ] || natives=$XDG_CACHE_HOME/omp/natives
 mkdir -p "$natives"
 ln -sfT "$natives" "$omp_home/.omp/natives"
 
