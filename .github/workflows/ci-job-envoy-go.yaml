@@ -39,18 +39,18 @@ jobs:
     # seconds, the plain race-impossible step's seven 10-minute runs, which is 71; after that
     # step's measured 5 minutes (about 2 before the API's and delivery's xid window tests joined
     # it, which took 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s,
-    # and the API's claim model is not among them, running in envoy-go-claim-model) and about 2
-    # more for the priorities read's three tests (114 s on a four-CPU build pod, INFRA-5791), the
-    # unit step's own 20 is 28; after the unit step, which runs strictly fewer packages than the
+    # and the API's claim model is not among them, running in envoy-go-claim-model) and about 1
+    # more for the priorities read's four tests (54 s on a four-CPU build pod, INFRA-5791), the
+    # unit step's own 20 is 27; after the unit step, which runs strictly fewer packages than the
     # 35 minutes it measured before the race lane's left it and so cannot exceed that, the
-    # store-form count's own 5 is 48 (two packages, which go test starts at once with -p at least
+    # store-form count's own 5 is 47 (two packages, which go test starts at once with -p at least
     # 2, so its -timeout bounds the step); after that step's seconds, the skip counter's test's own
-    # timeout-minutes of 15 is 58; after that step's 15 at most, the database skip count's own
-    # timeout-minutes of 30 is 88 (its -timeout bounds each package, not the step, so the step has
+    # timeout-minutes of 15 is 57; after that step's 15 at most, the database skip count's own
+    # timeout-minutes of 30 is 87 (its -timeout bounds each package, not the step, so the step has
     # a limit of its own, and its comment below says why 30); after that step's 30 at most,
     # natslive's default 10, the bus matrix's own 5, the auth service's own 5, the edge grant's own
     # 5 and the edge listener's own 10 (its relay socket's rows wait out a 30 s token twice and a
-    # consumer's 60 s ack wait) are 123, the integration step's 5 is less, and the callout check's
+    # consumer's 60 s ack wait) are 122, the integration step's 5 is less, and the callout check's
     # own 6, after the seconds those two steps measure, is less too.
     timeout-minutes: 125
     services:
@@ -114,14 +114,14 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
-      # The priorities read's three tests over its corpus of production's counts run on a Postgres
+      # The priorities read's four tests over its corpus of production's counts run on a Postgres
       # that preloads pg_stat_statements (PG_STAT_STATEMENTS_TESTS in
       # .github/scripts/ci_job_reads.py): the bound's test reads each statement's database time from
-      # it, and INFRA-5791's checks run the three on such a server. A server loads that module only
+      # it, and INFRA-5791's checks run the four on such a server. A server loads that module only
       # at its start, and the service above takes no arguments for its server, so this step starts
       # one more Postgres, from the service's own image, which the runner already holds, on port
       # 5433, with the settings those checks name, and holds it to preloading the module before the
-      # step below runs the three on it. Its 3 minutes bound the seconds a server takes to start.
+      # step below runs the four on it. Its 3 minutes bound the seconds a server takes to start.
       - name: Start a Postgres that preloads pg_stat_statements
         timeout-minutes: 3
         run: |
@@ -156,14 +156,15 @@ jobs:
       # 17 s on a dev box. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
       # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
-      # delivery 4.106 s (INFRA-636). The API's last line runs the priorities read's three tests
-      # over its corpus of production's counts (13,298 issues, 678,943 events), each of which seeds
-      # its own, on the Postgres the step above starts (DISPATCH_TEST_DATABASE_URL), the API's other
-      # tests staying on the service: on a four-CPU build pod, with the read in one statement for
-      # each form (INFRA-5791), the bound's test
-      # (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan) took 62.2 s for its 840 reads,
-      # TestThePrioritiesReadKeepsItsPlansWithAProjectNamed 26.3 s and
-      # TestThePrioritiesReadAnswersAsTheMergeBaseAnswers 25.2 s, about 2 minutes together.
+      # delivery 4.106 s (INFRA-636). The API's last line runs the priorities read's four tests
+      # over its corpus of production's counts (13,298 issues, 678,943 events), which the first of
+      # them builds once and each reads a clone of (storetest.OpenFrom), on the Postgres the step
+      # above starts (DISPATCH_TEST_DATABASE_URL), the API's other tests staying on the service: on
+      # a four-CPU build pod (c4d-highmem-8, INFRA-5791), the bound's test
+      # (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan) took 47.1 s for the corpus's build
+      # and its 840 reads, TestThePrioritiesReadKeepsItsPlansWithAProjectNamed 1.4 s,
+      # TestThePrioritiesReadWalksIssuesOnceOnTheCorpus 1.3 s and
+      # TestThePrioritiesReadAnswersAsTheMergeBaseAnswers 4.5 s, 54.4 s for the package's run.
       # 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |

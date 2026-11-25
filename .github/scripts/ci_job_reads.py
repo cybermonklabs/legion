@@ -2088,7 +2088,7 @@ def by_name_job(path: Path) -> str:
 # INFRA-5791), keyed by path as TEXT_CHECK_TESTS is. Each carries `//go:build !race`, so the walk
 # below puts them in envoy-go's plain step, where they stay. The bound's test reads each
 # statement's database time from pg_stat_statements and stops where the server does not preload
-# it, and the three are checks whose server is a Postgres of the image CI pins started with
+# it, and the four are checks whose server is a Postgres of the image CI pins started with
 # shared_preload_libraries=pg_stat_statements and max_connections=200 (INFRA-5791's
 # verification). A server loads that module only at its start, and a service container takes no
 # arguments for its server, so the job's service cannot be that server. So the plain step runs
