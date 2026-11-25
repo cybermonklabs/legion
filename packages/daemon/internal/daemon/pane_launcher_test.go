@@ -12,10 +12,11 @@ import (
 )
 
 // A tmux daemon's boot writes the panes' launcher directory (workerbin.Install) for the legion
-// overrides.paneLegion names, and for its own executable where it names none, as in production.
-// Every script the directory holds execs that one legion: bin/legion and bin/gh always, and
-// bin/git and bin/jj where the boot's PATH leads to no image wrapper of that name. A boot that
-// left paneLegion unread would write this test binary into each script of the named case.
+// overrides.paneLegion names. Where it names none, the boot writes it for its own executable, as
+// in production. Every script the directory holds execs that one legion. bin/legion and bin/gh are
+// always there, and bin/git and bin/jj where the boot's PATH leads to no image wrapper of that
+// name. A boot that left paneLegion unread would write this test binary into each script of the
+// named case.
 func TestTheTmuxBootWritesThePaneLauncherForTheLegionItIsGiven(t *testing.T) {
 	t.Parallel()
 	self, err := os.Executable()
