@@ -70,6 +70,8 @@ type versionWrite struct {
 	// conversionCase): set by SnapshotVersion and SettleVersion (snapshotVersion) from the mark the
 	// step alone puts on its context (withDecisionStepWrite), which no route can send, and zero for
 	// every other version, which the restore's and the conversion's carry cases do not reach.
+	//
+	// kept for one release: decisions-step
 	steps decisionStepCases
 	// deferLarge is set from the mark a write's route puts on its context (WithDeferredBlockIndex)
 	// by SnapshotVersion, NamedVersion and RebuildDocument: a version of more blocks than a write
@@ -677,10 +679,10 @@ func refuseBlockPointers(ctx context.Context, tx pgx.Tx, artifactID string, tree
 
 // addressOfDocument is where document artifactID sits (refs.DocumentAddress): the address this
 // transaction recorded for an artifacts row it is creating (Ledger.RegisterPendingArtifact),
-// else the stored row's, read from its ref_key and issue_key columns. A stored address is left
-// without the document's own dispatch:// reference (DocumentAddress.Ref): its one reader -
-// refs.BlockTargets, which keys the write by its reference key and issue - reads none of it,
-// and the one reader of that field reads it off a pending address alone
+// else the stored row's, read from its ref_key, issue_key, project_key and session_id columns. A
+// stored address is left without the document's own dispatch:// reference (DocumentAddress.Ref):
+// its one reader - refs.BlockTargets, which keys the write by its reference key and issue - reads
+// none of it, and the one reader of that field reads it off a pending address alone
 // (Ledger.PendingArtifact). A stored row's address carries no pending parent either: a
 // transaction that is not creating the document creates no issue for it.
 func addressOfDocument(ctx context.Context, tx pgx.Tx, artifactID string) (refs.DocumentAddress, error) {
@@ -690,9 +692,9 @@ func addressOfDocument(ctx context.Context, tx pgx.Tx, artifactID string) (refs.
 	var address refs.DocumentAddress
 	var issueKey *string
 	if err := tx.QueryRow(ctx, `
-		select coalesce(ref_key, ''), issue_key
+		select coalesce(ref_key, ''), issue_key, coalesce(project_key, ''), coalesce(session_id, '')
 		from artifacts where id = $1
-	`, artifactID).Scan(&address.RefKey, &issueKey); err != nil {
+	`, artifactID).Scan(&address.RefKey, &issueKey, &address.Project, &address.Session); err != nil {
 		return refs.DocumentAddress{}, fmt.Errorf("read the address of document %s: %w", artifactID, err)
 	}
 	if issueKey != nil {
@@ -2013,7 +2015,7 @@ func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor 
 		authors:          actorSlice(capture.authors),
 		capture:          &capture,
 		docUpdateVersion: rendered.head,
-		steps:            decisionStepCasesOf(ctx),
+		steps:            decisionStepCasesOf(ctx), // kept for one release: decisions-step
 		deferLarge:       deferredBlockIndex(ctx),
 		closedIssue:      closedIssue,
 		settlement:       settles,

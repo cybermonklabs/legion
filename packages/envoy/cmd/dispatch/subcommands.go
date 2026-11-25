@@ -260,6 +260,8 @@ func openMigratedWithoutBlockSchema(ctx context.Context, label, databaseURL stri
 // read-only transaction), it refuses on out under the subcommand's label, since applying them is a
 // write; otherwise it opens the store and installs its block schema, as openMigrated does after
 // its migration run. The caller closes the returned store's pool.
+//
+// kept for one release: decisions-step
 func openUnmigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(out, label+": DATABASE_URL is required")
