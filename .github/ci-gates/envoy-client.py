@@ -1,6 +1,7 @@
 # The envoy_client filter's gate: what job envoy-client reads.
 GATE = gate("envoy_client", "envoy-client", reads=reads(
     ("packages/envoy-client/**", f"{at('envoy-client', 'Typecheck Envoy client')}, test and build in packages/envoy-client"),
+    (f"{ENVOY}/scripts/approve/**", at("envoy-client", "Typecheck approve-check's session (bunx tsc --noEmit -p ../envoy/scripts/approve)") + ": packages/envoy/scripts/approve/tsconfig.json compiles session.ts, scan.ts and dispatch-env.ts"),
     ("packages/cipher-client/**", f"{at('envoy-client', 'Typecheck Envoy client')} and its tests compile it; packages/envoy-client/src/broker-credential.ts imports brokerTokenClient from @legion/cipher-client/environment, chooseSignIn from @legion/cipher-client/signins and isFinalRefusal from @legion/cipher-client/token-client"),
     (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
     (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:17, dispatch-text.test.ts:128"),

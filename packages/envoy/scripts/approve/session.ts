@@ -5,12 +5,13 @@
 // the broker credential the TypeScript client builds from this process's environment. Each command
 // is one step of the check and prints one JSON line of what it saw, never a token or a placeholder.
 //
-// Dispatch serves under https://<the approve host> (DISPATCH_URL). On the local stack it listens on
-// loopback (APPROVE_CHECK_DISPATCH_LOCAL). A request through Cipher's proxy goes to the public URL,
-// which the proxy terminates and sends on to Dispatch's own address; a direct request is signed for
-// the public URL, as every request of a box is in production, and sent to the loopback address,
-// which stands in for the name resolving there. With APPROVE_CHECK_DISPATCH_LOCAL unset, the run is
-// on a box (k31 Part 1), and every request goes to the public URL itself.
+// Dispatch serves under https://<the approve host> (DISPATCH_URL), and on the local stack it also
+// listens on loopback (APPROVE_CHECK_DISPATCH_LOCAL): dispatch-env.ts reads both, for this file and
+// the scan alike. A request through Cipher's proxy goes to the public URL, which the proxy
+// terminates and sends on to Dispatch's own address; a direct request is signed for the public
+// URL, as every request of a box is in production, and sent to the loopback address, which stands
+// in for the name resolving there. With APPROVE_CHECK_DISPATCH_LOCAL unset, the run is on a box
+// (k31 Part 1), and every request goes to the public URL itself.
 //
 //   setup                         as the person: a project, an issue and its spec, saved to the state file
 //   approve                       the spec's version reviewed approved through the proxy (reviewArtifact)
@@ -28,36 +29,19 @@ import { readFileSync, writeFileSync } from "node:fs";
 import type { ApproveRoute } from "../../../envoy-client/src/bearer";
 import { brokerCredential } from "../../../envoy-client/src/broker-credential";
 import { DispatchClient } from "../../../envoy-client/src/dispatch-http";
-
-const env = process.env as Record<string, string | undefined>;
-
-function setting(name: string): string {
-  const value = (env[name] ?? "").trim();
-  if (value === "") fail(`${name} is unset`);
-  return value;
-}
-
-function fail(message: string): never {
-  process.stderr.write(`approve-session: ${message}\n`);
-  process.exit(2);
-}
+import { answerBody, directURL, env, fail, PUBLIC, setting } from "./dispatch-env";
 
 function say(answer: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify(answer)}\n`);
 }
 
-const PUBLIC = setting("DISPATCH_URL").replace(/\/+$/, "");
-const LOCAL = (env["APPROVE_CHECK_DISPATCH_LOCAL"] ?? "").trim().replace(/\/+$/, "");
-
-/** A fetch that sends a request of the public URL to Dispatch's loopback address, and one through
- *  a proxy as it is: the proxy itself reaches Dispatch's own address. */
+/** A fetch that sends a request of the public URL to Dispatch's loopback address (directURL), and
+ *  one through a proxy as it is: the proxy itself reaches Dispatch's own address. */
 const localFetch = Object.assign(
   async (input: Parameters<typeof fetch>[0], init?: RequestInit & { proxy?: string }) => {
     const url = String(input);
-    if (LOCAL === "" || init?.proxy !== undefined || !url.startsWith(PUBLIC)) {
-      return await fetch(input, init);
-    }
-    return await fetch(LOCAL + url.slice(PUBLIC.length), init);
+    const to = init?.proxy === undefined ? directURL(url) : url;
+    return await fetch(to === url ? input : to, init);
   },
   { preconnect: () => {} }
 ) as typeof fetch;
@@ -77,14 +61,7 @@ function state(): State {
 
 /** What one answer was: its status, Dispatch's or the proxy's code, and the proxy's own headers. */
 async function described(answer: Response): Promise<Record<string, unknown>> {
-  const text = await answer.text();
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = undefined;
-  }
-  const record = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+  const { text, record } = await answerBody(answer);
   return {
     status: answer.status,
     code: record["code"] ?? null,

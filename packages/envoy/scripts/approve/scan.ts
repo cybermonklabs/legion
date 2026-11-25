@@ -10,13 +10,13 @@
 //   scan.ts <broker log> <path>...
 //
 // It is a file of its own, apart from the session, so that it loads no part of envoy-client: it
-// needs node's builtins and the throwaway key of cipher-client's dpop.ts, which signs the proof of
-// its diagnostic.
+// needs node's builtins, the session's Dispatch settings of dispatch-env.ts, and the throwaway key
+// of cipher-client's dpop.ts, which signs the proof of its diagnostic.
 //
 // Dispatch serves under https://<the approve host> (DISPATCH_URL). The diagnostic's proof is signed
-// for that public URL. On the local stack the request goes to Dispatch's loopback address
-// (APPROVE_CHECK_DISPATCH_LOCAL), as the session sends a direct request; with it unset, the run is
-// on a box (k31 Part 1), and the request goes to the public URL itself.
+// for that public URL, and the request goes where the session sends a direct request
+// (dispatch-env.ts's directURL): Dispatch's loopback address on the local stack
+// (APPROVE_CHECK_DISPATCH_LOCAL), and with it unset, on a box (k31 Part 1), the public URL itself.
 //
 // The scan reads the environment of each process APPROVE_CHECK_SESSION_PIDS names. On the local
 // stack every step of the session is one process started with the one environment approve-check.sh
@@ -38,6 +38,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { newDpopKey } from "../../../cipher-client/src/dpop";
+import { answerBody, directURL, env, fail, LOCAL, PUBLIC } from "./dispatch-env";
 
 /** A JWK as the scan reads one: its members by name. */
 type Jwk = Record<string, unknown>;
@@ -50,22 +51,6 @@ function ecThumbprint(jwk: Jwk): string {
   const members = { crv: jwk["crv"], kty: jwk["kty"], x: jwk["x"], y: jwk["y"] };
   return createHash("sha256").update(JSON.stringify(members)).digest("base64url");
 }
-
-const env = process.env as Record<string, string | undefined>;
-
-function setting(name: string): string {
-  const value = (env[name] ?? "").trim();
-  if (value === "") fail(`${name} is unset`);
-  return value;
-}
-
-function fail(message: string): never {
-  process.stderr.write(`approve-scan: ${message}\n`);
-  process.exit(2);
-}
-
-const PUBLIC = setting("DISPATCH_URL").replace(/\/+$/, "");
-const LOCAL = (env["APPROVE_CHECK_DISPATCH_LOCAL"] ?? "").trim().replace(/\/+$/, "");
 
 /** What a walk of the named paths found: every file to read, every path it could not read, and
  *  every symbolic link whose target does not exist, which holds no data to read. */
@@ -207,13 +192,7 @@ function privateJwks(value: unknown, into: Jwk[]): void {
 /** What Dispatch said to one diagnostic: its status and its error code, `null` where its body is
  *  no JSON object or names none. */
 async function dispatchSaid(answer: Response): Promise<string> {
-  let body: unknown;
-  try {
-    body = JSON.parse(await answer.text());
-  } catch {
-    body = undefined;
-  }
-  const record = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+  const { record } = await answerBody(answer);
   return `${answer.status} ${String(record["code"] ?? null)}`;
 }
 
@@ -413,7 +392,7 @@ async function scan(): Promise<void> {
     const path = "/api/v1/projects";
     const url = PUBLIC + path;
     const said = await dispatchSaid(
-      await fetch((LOCAL === "" ? PUBLIC : LOCAL) + path, {
+      await fetch(directURL(url), {
         headers: {
           Authorization: `DPoP ${candidate}`,
           DPoP: await throwaway.proof({ method: "GET", url, accessToken: candidate }),
