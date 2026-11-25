@@ -32,6 +32,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/redact/answertest"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // The accounts and audience the browser suite's broker is configured with
@@ -168,28 +169,35 @@ func withdraw(t *command, pods ciphertest.Pods, file seeded) {
 }
 
 // devIssuerTokens is a Pods' Token minted by the dev issuer at issuer through its POST /_dev/mint,
-// for a random pod when podUID is empty.
+// the route joined onto issuer's path with its query kept (urljoin.Join), for a random pod when
+// podUID is empty. An issuer that is no absolute URL with a host ends the command in urljoin's
+// words, which quote none of it.
 func devIssuerTokens(t *command, issuer string) func(account, podUID string) string {
+	joined, err := urljoin.Join(issuer, "/_dev/mint")
+	if err != nil {
+		t.Fatalf("--issuer: %v", err)
+	}
+	mint := joined.String()
 	return func(account, podUID string) string {
 		body, err := json.Marshal(map[string]string{"subject": account, "audience": podAudience, "pod_uid": podUID})
 		if err != nil {
 			t.Fatalf("encode the mint request: %v", err)
 		}
-		response, err := http.Post(issuer+"/_dev/mint", "application/json", bytes.NewReader(body))
+		response, err := http.Post(mint, "application/json", bytes.NewReader(body))
 		if err != nil {
-			t.Fatalf("POST %s/_dev/mint: %v", issuer, err)
+			t.Fatalf("POST %s: %v", mint, err)
 		}
 		defer response.Body.Close()
 		answer, err := answertest.Read(response)
 		if err != nil {
-			t.Fatalf("read the answer to POST %s/_dev/mint: %v", issuer, err)
+			t.Fatalf("read the answer to POST %s: %v", mint, err)
 		}
 		var minted struct {
 			Token string `json:"token"`
 		}
 		if response.StatusCode != http.StatusOK || json.Unmarshal(answer, &minted) != nil || minted.Token == "" {
 			// The answer is printed only when it carries no token.
-			t.Fatalf("POST %s/_dev/mint for %s = %d %s, want 200 with a token", issuer, account, response.StatusCode, bytes.TrimSpace(answer))
+			t.Fatalf("POST %s for %s = %d %s, want 200 with a token", mint, account, response.StatusCode, bytes.TrimSpace(answer))
 		}
 		return minted.Token
 	}
