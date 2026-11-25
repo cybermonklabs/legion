@@ -1,7 +1,0 @@
-kind: Added
-body: |-
-  The plugin ships `claude-envoy:reviewing-documents`, which reviews a requirements document, a
-  plan or a spec before the work it guides starts.
-time: 2026-11-24T03:01:49Z
-custom:
-    Issue: INFRA-4849

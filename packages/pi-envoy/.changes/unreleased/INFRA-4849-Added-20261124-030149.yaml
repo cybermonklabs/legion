@@ -1,7 +1,0 @@
-kind: Added
-body: |-
-  The plugin ships `reviewing-documents`. It reviews a requirements document, a plan, a spec or a
-  design before the work it guides starts, and as a subagent it returns its findings.
-time: 2026-11-24T03:01:49Z
-custom:
-    Issue: INFRA-4849
