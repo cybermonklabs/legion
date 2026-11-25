@@ -261,6 +261,8 @@ function seededRecord(word: SeededWord) {
   return { id: `seed-${word}`, version: word === "implement" ? 2 : 1 };
 }
 
+/** The head of the world the stand-in is started on (world.json's `head`). */
+const WORLD_HEAD = "0".repeat(40);
 /** The stand-in, started on a port the kernel picks, with its own log and boot token file, on a
  * run directory holding `world`, which defaults to the world rig.sh builds, and in `phase` when
  * the caller names one. `completed` is the roles the run's world says completed their phase with
@@ -273,7 +275,10 @@ function seededRecord(word: SeededWord) {
  * the handoff words the run's seeds recorded before it (rig.sh's worker_run_world and its
  * runners): each is written into the run's fixture.json and held by its Dispatch under the
  * session of `SEEDED_SESSIONS`, beside the run's issue and its spec, approved at version 1
- * (`seeded`, which a row moves); none, by default, is a run with no seeds at all. `dir` is the
+ * (`seeded`, which a row moves); none, by default, is a run with no seeds at all. `heads` is the
+ * head each seeded implement and test record's body names (#5287's handoff shape), WORLD_HEAD
+ * where it names none, as rig.sh's seeds name the implementer's commit, the world's head in every
+ * world but those whose reviewer pushed a commit of its own above it. `dir` is the
  * run directory of an earlier stand-in of the same run, for the second agent of a run. `secret`
  * is the secret its registration answers (SKILL_SCENARIOS_CLAIM_SECRET), `SECRET` by default and
  * none for "", which leaves the stand-in to draw its own, as rig.sh's worker_boot does. It prints
@@ -296,6 +301,7 @@ async function standin(
       },
     } as Record<string, object>,
     seeds = undefined as readonly SeededWord[] | undefined,
+    heads = {} as Partial<Record<SeededWord, string>>,
     dir: given = undefined as string | undefined,
     secret = SECRET,
   } = {}
@@ -352,6 +358,9 @@ async function standin(
             issue_key: "LWEVAL-1",
             phase: word,
             author: { kind: "session", id: SEEDED_SESSIONS[word] },
+            ...(word === "implement" || word === "test"
+              ? { body: JSON.stringify({ head: heads[word] ?? WORLD_HEAD }) }
+              : {}),
           },
         ])
       ),
@@ -369,7 +378,7 @@ async function standin(
       key: "LWEVAL-1",
       branch: "legion/LWEVAL-1",
       pr: 1001,
-      head: "0".repeat(40),
+      head: WORLD_HEAD,
       ...world,
     })
   );
@@ -2790,14 +2799,16 @@ function unsampled(issue: unknown) {
 const ALL_SAMPLED = { extra: [], kinds: [], words: [] };
 
 // The record a threads-closed implementer reads before its first write (rig.sh's
-// run_threads_closed, correct: booted in `reviewing` on a world whose reviewer approved the
-// head and left threads open, the base requiring them resolved). Catches: the record of
+// run_threads_closed, booted in `reviewing`), here on a world whose head an approval stands on
+// and an open thread holds `BLOCKED`, the base requiring threads resolved, so the record holds the
+// round's wait on GitHub's merge state too. Catches: the record of
 // INFRA-764's round 25, 8 keys and `workers: {}`, in which every counted threads-closed run saw
 // no implementer row where rig.sh said the record held the implementer's completed round; a
 // record missing a key production's holds (the tester's read search names fourteen); a row whose
 // session, record or commit is no value of the run's world — the sessions are the ones the run's
 // Dispatch names each seeded record's author, the records the seeds' own ids and versions, the
-// commit the head the run began at; a locator in another shape than production's sandbox
+// commit the head each seeded record names (the next row holds it below a reviewer's commit); a
+// locator in another shape than production's sandbox
 // locator or naming another project or issue than the run's; a pull request, a gate or a slot
 // the world's other answers contradict; and a member in another kind than production's. The
 // members production holds and this read does not are named: `WORLD_NEVER_HOLDS`, and four of
@@ -2939,6 +2950,36 @@ test.skipIf(skip)(
         kinds: [],
       });
       expect(unsampled(issue)).toEqual(ALL_SAMPLED);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that gives the seeded implementer's and tester's rows the world's head
+// where the reviewer's own text commit stands above the commit their records name (rig.sh's
+// approved_world in accept, correct and crossing, whose seeds record both passes at the
+// implementer's commit): production's rows name the head each role's own completion named, and
+// the reviewer's push is no step of theirs, so a row naming the reviewer's commit says the
+// implementer and the tester finished at a head neither of them saw.
+test.skipIf(skip)(
+  "a seeded implementer's and tester's rows name the head their own records name, below a reviewer's commit",
+  async () => {
+    const below = "1".repeat(40);
+    const daemon = await standin("implementer", "reviewing", undefined, {
+      completed: "implementer",
+      seeds: ["plan", "implement", "test", "review"],
+      heads: { implement: below, test: below },
+    });
+    try {
+      await boots(daemon.post);
+      const { issue } = await served(daemon.body);
+      expect(issue.workers).toMatchObject({
+        implementer: { handoffCommit: below, handoffRecord: seededRecord("implement") },
+        tester: { handoffCommit: below, handoffRecord: seededRecord("test") },
+      });
+      expect(below).not.toBe(WORLD_HEAD);
     } finally {
       daemon.stop();
     }
@@ -3246,6 +3287,7 @@ function ownRecord(id: string, word: string, version: number, session = "01a0f2c
       phase: word,
       version,
       author: { kind: "session", id: session },
+      body: JSON.stringify({ head: WORLD_HEAD }),
     },
   };
 }

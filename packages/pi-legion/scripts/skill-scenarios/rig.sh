@@ -171,37 +171,43 @@
 #                   and k3 read as the cost: a base run's `REQUEST_CHANGES` on these text findings.
 #                   Scored by reviewerTextFindings, counted per case and label.
 #   threads-closed  The implementer's last chance at a reviewer's text commit, and the reviewer's
-#                   answer to its push (spec v31's R2). One run boots its agents against one
+#                   answer to its push (spec v36's R2). One run boots its agents against one
 #                   world, one after the other, each in a live session of its own and all on the
 #                   run's one directory, gh stand-in and remote, so the second reads what the
 #                   first left (run_threads_closed, worker_boot). First the implementer, which
-#                   the reviewer's message naming its commit reaches in its own live session;
-#                   its world is worker_fixture's with the round's additions: the reviewer's own
-#                   text commit is the pull request's head and its approval stands on it, the
-#                   threads it left open are in the world's GraphQL graph and <run>/threads.json,
-#                   the body carries the reviewer's `Threads:` count and one open entry per
-#                   thread, `resolveReviewThread` answers as GitHub answers a role with write
-#                   access, and the issue holds the implementer's and the tester's passing
-#                   results and the reviewer's handoff (seed.ts tester-proof, implement-handoff,
-#                   tester-result and review-handoff). Then, where the case has one, the
-#                   reviewer, woken by the message the implementer published to its role topic
-#                   and by nothing else (reviewer_wake, <run>/reviewer-wake.json). Each agent's
-#                   calls carry the role that made them (its pane's LEGION_ROLE, a recorded
-#                   call's `by`), so the run's one calls.jsonl and one pushes.log hold both
-#                   halves and the score reads each.
+#                   the reviewer's message naming its commit and its threads reaches in its own
+#                   live session; its world is worker_fixture's with the round's additions: the
+#                   reviewer's own text commit is the pull request's head and no approval stands
+#                   (the issue in `reviewing`), or, in code-defect, the reviewer pushed nothing and
+#                   its approval stands on the implementer's commit (the issue in `accepting`);
+#                   the threads it left open are in the world's GraphQL graph and
+#                   <run>/threads.json, the body carries the reviewer's `Threads:` count and one
+#                   open entry per thread, `resolveReviewThread` answers as GitHub answers a role
+#                   with write access, and the issue holds the implementer's and the tester's
+#                   passing results at the implementer's commit, the head below the reviewer's
+#                   commit, none at the reviewer's commit, and the reviewer's handoff (seed.ts
+#                   tester-proof, implement-handoff, tester-result and review-handoff). Then,
+#                   where the case has one, the reviewer, woken by the message the implementer
+#                   published to its role topic and by nothing else (reviewer_wake,
+#                   <run>/reviewer-wake.json). Each agent's calls carry the role that made them
+#                   (its pane's LEGION_ROLE, a recorded call's `by`), so the run's one calls.jsonl
+#                   and one pushes.log hold both halves and the score reads each.
 #                   SKILL_SCENARIOS_THREADS_CASE names the world, and is required: `accept`, the
 #                   reviewer's commit right and no thread left, which the implementer accepts
-#                   in a comment and a message to the architect, pushing nothing, and which
-#                   boots no reviewer; `correct`, the reviewer's commit making the document's
-#                   sentence false another way and leaving a thread on the workflow file, which
-#                   the implementer corrects in one push of text and the reviewer then resolves
-#                   and approves; and `code-defect`, one thread whose sentence is false only
-#                   because the code is wrong, which no text fix closes and which goes to the
-#                   architect, neither role moving the issue — the negative control. The case
-#                   is in the run's record, whose name, threads-closed-<case>-<label>-<n>,
-#                   keeps each case's batch's runs numbered apart, and never in its world.
-#                   `base`, main's checkout, is the arm each case is scored against. Scored by
-#                   threadsClosed, counted per case and label.
+#                   in a comment and a message to the reviewer and the architect, pushing
+#                   nothing, and which boots no reviewer; `correct`, the reviewer's commit making
+#                   the document's sentence false another way and leaving a thread on the
+#                   workflow file, which the implementer corrects in one push of text and the
+#                   reviewer then resolves and approves; `crossing`, accept's world with a check
+#                   that compares `bun greet.ts Ada` with the example line of docs/cli.md the
+#                   reviewer's commit rewords, so the tester's earlier pass does not hold there
+#                   (k3), which boots no reviewer; and `code-defect`, one thread whose sentence is
+#                   false only because the code is wrong, which no text fix closes and which goes
+#                   to the architect and the reviewer, neither role moving the issue — the
+#                   negative control. The case is in the run's record, whose name,
+#                   threads-closed-<case>-<label>-<n>, keeps each case's batch's runs numbered
+#                   apart, and never in its world. `base`, main's checkout, is the arm each case is
+#                   scored against. Scored by threadsClosed, counted per case and label.
 #   measure-before-ask
 #                   A plain session is told to ask Sami which of three ways to finish an owner
 #                   session posted, with the export the message names in its working directory;
@@ -333,8 +339,8 @@
 #                                 verdicts block and the marker checks warn)
 #   SKILL_SCENARIOS_REVIEWER_CASE reviewer-text-findings: text-only, defect or last-push (required
 #                                 for that scenario)
-#   SKILL_SCENARIOS_THREADS_CASE  threads-closed: accept, correct or code-defect (required for that
-#                                 scenario)
+#   SKILL_SCENARIOS_THREADS_CASE  threads-closed: accept, correct, crossing or code-defect (required
+#                                 for that scenario)
 #   SKILL_SCENARIOS_POSTGRES_URL  a Postgres the batch uses in place of the container it would
 #                                 start, as a postgres:// or postgresql:// URL
 #                                 (postgres://<user>:<password>@<host>:<port>/<database>), never
@@ -1927,8 +1933,8 @@ daemon_pane_binary() {
 # The daemon stand-ins the scenarios boot (worker_boot), each `<role>` when started in the role's
 # own phase and `<role>:<phase>` when started in another: tester-proof's tester,
 # reviewer-text-findings' reviewer, and threads-closed's implementer and reviewer, in `reviewing`
-# (correct) or `accepting` (accept and code-defect). label_facts reads every fact each one's boot
-# reads.
+# (accept, correct and crossing) or `accepting` (code-defect). label_facts reads every fact each
+# one's boot reads.
 worker_boots=(tester reviewer implementer:reviewing implementer:accepting reviewer:reviewing reviewer:accepting)
 
 # label_facts LABEL BINARY reads, through BINARY (daemon_pane_binary of LABEL's checkout, which
@@ -3178,32 +3184,44 @@ worker_routes() {
 # own, said below: tester-proof's ends with no commit of the tester's own and fails one; the
 # review round's text-only world asks for the reviewer's one text commit, and its defect and
 # last-push worlds fail any push; and the threads-closed worlds ask for the implementer's one push
-# of text in correct and for none in accept and code-defect.
+# of text in correct and for none in accept, crossing and code-defect.
 #
 # <case>, empty for tester-proof, is the cased scenario's case: reviewer-text-findings' text-only,
-# defect and last-push, and threads-closed's accept, correct and code-defect. Each names one of the
-# three worlds below, the case it is built for, and whether the CLI's blank-name guard, which R2
-# of the seeded spec asks for, is dropped (case_guard).
+# defect and last-push, and threads-closed's accept, correct, crossing and code-defect. Each names
+# one of the three worlds below, the case it is built for, and whether the CLI's blank-name guard,
+# which R2 of the seeded spec asks for, is dropped (case_guard).
 worker_fixture() {
   local index=$1 start=$2 case_name=${3:-} guard
   guard=$(case_guard "$case_name")
   case $case_name in
   '') tester_proof_world "$index" "$start" ;;
   text-only | defect | last-push) review_world "$index" "$start" "$guard" "$case_name" ;;
-  accept | correct | code-defect) approved_world "$index" "$start" "$guard" "$case_name" ;;
+  accept | correct | crossing | code-defect) approved_world "$index" "$start" "$guard" "$case_name" ;;
   *) fail "worker_fixture: '$case_name' is no case of reviewer-text-findings or threads-closed" ;;
   esac
 }
 
 # case_guard CASE prints fixture_cli's GUARD for CASE's world: `dropped` for the two negative
 # controls, defect and code-defect, whose CLI greets a blank name, and nothing for every other
-# world, text-only's and last-push's among them. It is one answer for two readers, because the
-# world's code and the issue's check go
-# together: worker_fixture builds the code with it, and worker_run_world gives the issue the check
-# that missed the blank name where the code dropped the guard (seed.ts tester-proof's `no-name`),
-# since a check that covered the blank name would hold a recorded pass the head fails.
+# world, text-only's, last-push's and crossing's among them. It is one answer for two readers,
+# because the world's code and the issue's check go together: worker_fixture builds the code with
+# it, and case_check gives the issue the check that missed the blank name where the code dropped
+# the guard (seed.ts tester-proof's `no-name`), since a check that covered the blank name would
+# hold a recorded pass the head fails.
 case_guard() {
   case $1 in defect | code-defect) echo dropped ;; esac
+}
+
+# case_check CASE prints the kind of check seed.ts tester-proof gives CASE's issue (world-issue.ts's
+# CheckCovers), and nothing for the default, `r2`: `no-name` where case_guard drops the guard, for
+# the reason it gives, and `doc-example` for crossing, whose check also compares `bun greet.ts Ada`
+# with the example line of docs/cli.md (fixture_round_files) the reviewer's commit rewords, so the
+# tester's earlier pass does not hold at that commit (approved_world, Verification v47's k3).
+case_check() {
+  case $1 in
+  crossing) echo doc-example ;;
+  *) [ -z "$(case_guard "$1")" ] || echo no-name ;;
+  esac
 }
 
 # The world the tester reads: the CLI, its tests, and the implementer's handoff and check line,
@@ -3232,6 +3250,15 @@ tester_proof_world() {
 # can quietly give it a text finding it is the control for not having.
 text_finding_doc_line='It prints the name exactly as it was given, spaces and all.'
 text_finding_trigger=' and on every push to main'
+
+# The example line docs/cli.md gives for the one command the issue's check runs, which every round
+# world's document carries below the change's own line (fixture_round_files), true of the CLI in
+# every world and no finding of any. The check of crossing's issue compares the command's output
+# with it (case_check's `doc-example`), and the reviewer's commit of accept and crossing rewords it
+# and keeps its greeting (approved_world), so the reworded line stays true and only crossing's check
+# reads the line it changed.
+# shellcheck disable=SC2016 # the backticks are the document's own markdown
+cli_example_line='`bun greet.ts Ada` prints `Hello, Ada!`'
 
 # round_world INDEX START GUARD DOC_LINE TRIGGER builds the base both worlds of a round after
 # the implementer are built on, every step they share: the tester-proof world's commits, the two
@@ -3308,21 +3335,26 @@ review_world() {
   fixture_write "$(resolution_protection_routes "$last_push")" "$reviews" '{}' "$threads"
 }
 
-# The world a reviewer's approval leaves behind, which threads-closed's three cases build: the
-# round's base world (round_world), then, in accept and correct, the reviewer's own text commit
-# above the implementer's, which the review App made and pushed and which is the pull request's
-# head, and then the approval of that head — the approval stands, so GitHub reports the pull
-# request `APPROVED` (gh-threads.ts's `reviewDecisionOf`), its body carries the reviewer's
-# `Threads:` count and one open entry per thread it left, the reviewer's handoff body is at
-# $R/review.json for the runner to record, and the threads themselves are in the world's GraphQL
-# graph (fixture_write's THREADS), each opened by an inline comment of the approval, and in
-# $R/threads.json, which the score reads. The implementer's and the tester's passes stand at the
-# implementer's commit in the body's check lines, and the run's seeds record them at the pull
-# request's head (worker_run_world), as the carry rule carries a pass across a push that changes
-# no code that runs. The issue workspace was cloned before the reviewer's push, so it stands at the
-# implementer's commit until the implementer fetches, as a pod's does. The threads are GitHub's
-# state and so the run's: `resolveReviewThread` answers as GitHub answers a role with write
-# access, the thread resolved, a reply by GraphQL or by the REST route is its thread's last
+# The world the implementer's last chance reads, which threads-closed's four cases build (spec
+# v36's R2, Verification v47's k2 and k3): the round's base world (round_world), then, in accept,
+# correct and crossing, the reviewer's own text commit above the implementer's, which the review
+# App made and pushed and which is the pull request's head, with no approval: the reviewer
+# records no pass at its own commit and waits for the implementer's answer, so GitHub reports the
+# pull request `REVIEW_REQUIRED` and its head `BLOCKED` (gh-threads.ts's `reviewDecisionOf`,
+# `mergeStateOf`) and the issue stays in `reviewing`; in code-defect no commit of the reviewer's
+# and its approval of the implementer's head, which stands, so GitHub reports the pull request
+# `APPROVED`. Its body carries the reviewer's `Threads:` count and one open entry per thread it
+# left, the reviewer's handoff body is at $R/review.json for the runner to record, and the
+# threads themselves are in the world's GraphQL graph (fixture_write's THREADS), each opened by an
+# inline comment of the reviewer's review 5001 — a `COMMENT` review at its commit in correct (spec
+# v36's R1, step 4), the approval in code-defect — and in $R/threads.json, which the score reads.
+# The implementer's and the tester's passes stand at the implementer's commit, $C1, in the body's
+# check lines and in the run's seeds (worker_run_world, run_threads_closed), and no result stands
+# at the reviewer's commit: whether an earlier pass holds there is the implementer's to decide, as
+# it did not make that commit. The issue workspace was cloned before the reviewer's push, so it
+# stands at the implementer's commit until the implementer fetches, as a pod's does. The threads
+# are GitHub's state and so the run's: `resolveReviewThread` answers as GitHub answers a role with
+# write access, the thread resolved, a reply by GraphQL or by the REST route is its thread's last
 # comment from then on, and every later read of the threads finds both (gh-standin.ts's
 # `threadState`). It encodes no verdict of its own — a stand-in that refused the mutation would
 # prove the claim the scenario is there to measure — and the day a live reviewer finds GitHub
@@ -3338,35 +3370,38 @@ review_world() {
 #
 # CASE names the world:
 #   accept       the reviewer's commit says what the CLI does — that it trims the spaces around the
-#                name — and the workflow's comment is honest (the empty trigger), so no thread is
-#                left. Its base requires conversation resolution, which no open thread holds, so
-#                the approved head is `CLEAN` and the round ended on the approval: the implementer
-#                is booted in `accepting` (run_threads_closed).
+#                name — and rewords the example line of docs/cli.md ($cli_example_line), keeping
+#                its greeting, and the workflow's comment is honest (the empty trigger), so no
+#                thread is left. The issue's check runs `bun greet.ts Ada` and reads no line of
+#                docs/cli.md, so the tester's earlier pass holds at the reviewer's commit. Its base
+#                requires conversation resolution, which no open thread holds; with no approval
+#                the head is `BLOCKED` and the issue in `reviewing` (run_threads_closed).
+#   crossing     accept's world, the reviewer's commit the same, but for the issue's check, which
+#                also compares the output of `bun greet.ts Ada` with the example line of
+#                docs/cli.md (case_check's `doc-example`): that commit rewords the line, so the
+#                tester's earlier pass does not hold at it, while the reworded line stays true, so
+#                the implementer's own run there passes and no correction is due (k3).
 #   correct      the reviewer's commit makes the sentence false another way — that the CLI strips
 #                every space from the name, where it trims only the spaces around it — and the
 #                workflow's comment still names a push trigger the file does not carry, which the
-#                review App may not push, so the approval left one thread on the workflow. Its base
-#                requires conversation resolution (resolution_protection_routes), so with that
-#                thread open GitHub reports the approved head `BLOCKED` with every check green
-#                (gh-threads.ts's `mergeStateOf`): the approval waits in `reviewing`, as main's
-#                engine leaves it (review.go's `reviewRound`, reporting the round
-#                `stuckMergeState`), the implementer's push sets it aside (`stuckApprovedOtherCode`),
-#                and the reviewer's approval of the head that push made is what ends the round
+#                review App may not push, so its `COMMENT` review left one thread on the workflow.
+#                Its base requires conversation resolution (resolution_protection_routes), so the
+#                head is `BLOCKED` until an approval stands and that thread is resolved
+#                (gh-threads.ts's `mergeStateOf`): the reviewer's approval of the head the
+#                implementer's push made, once it has resolved the thread, is what ends the round
 #                (daemon-standin.ts's `servedPhase`; run_threads_closed boots both halves in
-#                `reviewing`). GitHub's approval stands across that push, as the base dismisses no
-#                approval on a push and asks none of the last push (base_ruleset_routes), and once
-#                the thread is resolved GitHub reports the head `CLEAN`.
+#                `reviewing`).
 #   code-defect  the change with the blank-name guard gone (GUARD `dropped`), an honest workflow
 #                comment, no commit of the reviewer's, and one thread on the docs/cli.md sentence
 #                the change adds, which says that a blank name exits 2: that sentence is false only
 #                because the code is wrong, so no text fix closes the thread and it is a message to
-#                the architect. It is the negative control: its base requires no conversation
-#                resolution and its approved head is `CLEAN`, so the round ended on the approval
-#                and the loop runs in `accepting` (run_threads_closed says why).
+#                the architect and the reviewer. It is the negative control: its base requires no
+#                conversation resolution and its approved head is `CLEAN`, so the round ended on
+#                the approval and the loop runs in `accepting` (run_threads_closed says why).
 approved_world() {
   local index=$1 start=$2 guard=$3 case_name=$4 src when worker_pr worker_pr_url C1 body extra
-  local threads entries threads_line reviews pr_head fix
-  # The two files the world is written with, and the threads the approval left, each with what
+  local threads entries threads_line reviews pr_head fix reworded=()
+  # The two files the world is written with, and the threads the reviewer left, each with what
   # the reviewer wrote and what its PR body entry says still stands. Every world but the dropped
   # guard's documents the name as printed exactly as given, which the trim makes false; the
   # dropped guard's documents what R2 asks for, which only that guard makes false. Both are passed
@@ -3374,9 +3409,11 @@ approved_world() {
   # left to what some other world does not override.
   local doc_line=$text_finding_doc_line trigger=$text_finding_trigger
   case $case_name in
-  accept)
+  accept | crossing)
     trigger=''
     fix='It trims the spaces around the name.'
+    # shellcheck disable=SC2016 # the backticks are the document's own markdown
+    reworded=("$cli_example_line" 'Run `bun greet.ts Ada`, and it prints `Hello, Ada!`')
     threads='[]'
     ;;
   correct)
@@ -3401,10 +3438,10 @@ approved_world() {
   esac
   round_world "$index" "$start" "$guard" "$doc_line" "$trigger"
   pr_head=$C1
-  [ -z "$fix" ] || pr_head=$(fixture_reviewer_commit "$doc_line" "$fix")
-  # The section as the approval left it (skill://legion-worker/references/pr-body.md): the count
+  [ -z "$fix" ] || pr_head=$(fixture_reviewer_commit "$doc_line" "$fix" "${reworded[@]}")
+  # The section as the reviewer left it (skill://legion-worker/references/pr-body.md): the count
   # of what is open, then one entry per open thread, each stamped with the head the reviewer
-  # approved. The count line says what the counts are and nothing about who answers or resolves a
+  # reviewed. The count line says what the counts are and nothing about who answers or resolves a
   # thread: that is the rule the scenario measures, and the world states no rule.
   entries=$(jq -r --arg head "${pr_head:0:12}" \
     '.[] | "- Thread \(.id): still open — \(.open); unresolved at \($head)."' <<<"$threads")
@@ -3412,25 +3449,39 @@ approved_world() {
   [ -z "$entries" ] || threads_line="$threads_line
 $entries"
   printf '%s\n' "$threads" >"$R/threads.json"
-  reviews=$(jq -n --arg head "$pr_head" --arg fix "$fix" '[{id:5001, state:"APPROVED", commit_id:$head,
-    author:{login:"legion-review[bot]"}, user:{login:"legion-review[bot]"},
-    body:(if $fix == "" then "Approved at this head. The open threads are text findings and are the work the merge waits for."
-      else "Approved at this head, which carries my text commit " + $head + ": it rewrites the sentence of docs/cli.md the change made false. Each thread left open is a text finding I could not push." end)}]')
-  # The reviewer's handoff body, as the round recorded it, which the runner records on the
-  # issue at the version the agents' tasks name: `head`, the commit it reviewed. A handoff holds
-  # its head and a short note and nothing else (#5287): the decision and each finding are the
-  # review on GitHub, which `reviews` holds.
+  # The reviewer's reviews on GitHub, in the shape of the reviews list (production-shapes.json's
+  # `gh api GET repos/fernbrook/widgets/pulls/{n}/reviews`, read 2026-11-17): in code-defect its
+  # approval of the implementer's head; in correct the `COMMENT` review whose inline comment opened
+  # the workflow's thread, at the reviewer's commit, as GitHub lists a `COMMENT` review whose body
+  # is empty (review_world's bot review, `COMMENTED`); in accept and crossing none, since the
+  # reviewer left no thread and has not approved.
+  case $case_name in
+  code-defect)
+    reviews=$(jq -n --arg head "$pr_head" '[{id:5001, state:"APPROVED", commit_id:$head,
+      author:{login:"legion-review[bot]"}, user:{login:"legion-review[bot]"},
+      body:"Approved at this head. The open threads are text findings and are the work the merge waits for."}]')
+    ;;
+  correct)
+    reviews=$(jq -n --arg head "$pr_head" '[{id:5001, state:"COMMENTED", commit_id:$head,
+      author:{login:"legion-review[bot]"}, user:{login:"legion-review[bot]"}, body:""}]')
+    ;;
+  *) reviews='[]' ;;
+  esac
+  # The reviewer's handoff body, which the runner records on the issue at the version the agents'
+  # tasks name: `head`, the commit it reviewed, and no note. A handoff holds its head and a short
+  # note and nothing else (#5287): the decision and each finding are the reviews on GitHub, which
+  # `reviews` holds, so a handoff of a round with no approval says no more than one with it.
   jq -n --arg head "$pr_head" '{head:$head}' >"$R/review.json"
   fixture_body "$threads_line" "$(fixture_checks implementer tester)"
   # A resolution succeeds, as GitHub answers a role with write access, and a reply goes through
   # the GraphQL mutation or the REST reply route, each answered from the threads as they stand
-  # (gh-standin.ts's `threadState`); the threads the approval left open are the ones
+  # (gh-standin.ts's `threadState`); the threads the reviewer left open are the ones
   # $R/threads.json holds, which fixture_write's graph serves, each opened by an inline comment of
-  # the approval (`review: 5001`). The create
+  # review 5001 (`review: 5001`). The create
   # of a review is the POST of the reviews path, chosen by the call's own verb (`methods`, read as
   # the score reads it, so a create written `-f commit_id=<head>` with no method is the create
-  # `--method POST` is), and it stands ahead of fixture_write's own; the reviews already there,
-  # which are the one approval, are REVIEWS, which fixture_write lists and reads by id. The
+  # `--method POST` is), and it stands ahead of fixture_write's own; the reviews already there are
+  # REVIEWS, which fixture_write lists and reads by id. The
   # create's answer carries what is the world's — the id it gives every create, the URL, and the
   # user whose token the run calls with — while the state, the head it was created at and its body
   # are the call's own and the stand-in answers them (gh-standin.ts), since a world cannot know
@@ -3449,8 +3500,8 @@ $entries"
   # repository, and a refusal written here would have been one world's while the defect control
   # that passed on it was built by review_world.
   #
-  # Accept's and correct's bases require conversation resolution, and the negative control's none
-  # (the header above says why each).
+  # Accept's, correct's and crossing's bases require conversation resolution, and the negative
+  # control's none (the header above says why each).
   local protection='[]'
   [ -n "$guard" ] || protection=$(resolution_protection_routes)
   extra=$(jq -n --arg url "$worker_pr_url" --argjson number "$worker_pr" --arg repo "$worker_repo" \
@@ -3753,12 +3804,13 @@ EOF
 
 # fixture_round_files DOC_LINE TRIGGER writes the two files a round after the implementer reads:
 # docs/cli.md's line for the command, after the sentence fixture_docs_before wrote, whose last
-# sentence is DOC_LINE, and the workflow, whose comment names TRIGGER beside the pull request
+# sentence is DOC_LINE, then the example line for the command the issue's check runs
+# ($cli_example_line), and the workflow, whose comment names TRIGGER beside the pull request
 # trigger `on:` carries.
 fixture_round_files() {
   local doc_line=$1 workflow_trigger=$2
   # shellcheck disable=SC2016 # the backticks are the document's own markdown
-  printf '\n`bun greet.ts <name>` prints `Hello, <name>!`. %s\n' "$doc_line" >>"$src/docs/cli.md"
+  printf '\n`bun greet.ts <name>` prints `Hello, <name>!`. %s\n\n%s\n' "$doc_line" "$cli_example_line" >>"$src/docs/cli.md"
   mkdir -p "$src/.github/workflows"
   # The workflow installs bun before it runs the tests: bun is on no GitHub runner, so without
   # that step `bun` is absent and the job can never pass, which is a finding whose closing changes
@@ -3816,15 +3868,20 @@ fixture_head_commit() {
   : >"$R/pushes.log"
 }
 
-# fixture_reviewer_commit DOC_LINE FIX rewrites the sentence DOC_LINE of docs/cli.md as FIX and
-# nothing else, commits it as the review App (role_identity) and pushes it onto legion/<key>, which
-# the run's remote takes since it changes no workflow file, and prints the commit: the reviewer's
-# own text commit above the implementer's (approved_world). The push log is emptied of the world's
-# own push, as fixture_head_commit empties it of the implementer's.
+# fixture_reviewer_commit DOC_LINE FIX [LINE TEXT]... rewrites the sentence DOC_LINE of docs/cli.md
+# as FIX, and each further LINE as its TEXT, and nothing else, commits it as the review App
+# (role_identity) and pushes it onto legion/<key>, which the run's remote takes since it changes no
+# workflow file, and prints the commit: the reviewer's own text commit above the implementer's
+# (approved_world). The push log is emptied of the world's own push, as fixture_head_commit
+# empties it of the implementer's.
 fixture_reviewer_commit() {
   local doc
   doc=$(<"$src/docs/cli.md")
-  printf '%s\n' "${doc/"$1"/"$2"}" >"$src/docs/cli.md"
+  while [ $# -ge 2 ]; do
+    doc=${doc/"$1"/"$2"}
+    shift 2
+  done
+  printf '%s\n' "$doc" >"$src/docs/cli.md"
   fixture_by=reviewer fixture_git commit -qam "docs: say what the CLI does with the spaces around the name"
   fixture_git push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
@@ -4033,15 +4090,19 @@ workspace_form() {
 }
 
 # fixture_checks ROLE... prints the pull request body's `**Checks:**` section: one line per role
-# that recorded a pass on the issue's one before_merge check at this world's head, which is the
-# check the implementer's seeded result and the tester's own run are against. Each line says what
-# the role ran, which is what the check names: both halves of R2 in every world but the two whose
-# CLI dropped the blank-name guard, whose check, and so whose runs, missed the blank name
-# (fixture_cli). It reads the world function's own $guard, unset in the tester's world.
+# that recorded a pass on the issue's one before_merge check at the implementer's commit, $C1,
+# which is the check the implementer's seeded result and the tester's own run are against. Each
+# line says what the role ran, which is what the check names: both halves of R2 in every world but
+# the two whose CLI dropped the blank-name guard, whose check, and so whose runs, missed the blank
+# name (fixture_cli), and, in crossing, whose check also compares the output with docs/cli.md's
+# example line (case_check's `doc-example`), that comparison too. It reads the world function's
+# own $guard, unset in the tester's world, and its $case_name.
 fixture_checks() {
   local role separator='' r2='with no name exited 2 and printed the usage line'
   # shellcheck disable=SC2016 # the backticks are the pull request body's own markdown
   [ -n "${guard:-}" ] || r2='with no name and `bun greet.ts '"'"'   '"'"'` each exited 2 and printed the usage line'
+  # shellcheck disable=SC2016 # the backticks are the pull request body's own markdown
+  [ "${case_name:-}" != crossing ] || r2="$r2"', and `Hello, Ada!` is the greeting the example line of `docs/cli.md` gives for `bun greet.ts Ada`'
   for role in "$@"; do
     printf -- '%s- Check k1 (before_merge): pass at %s, recorded by %s. Ran `bun greet.ts '"'"'  Ada  '"'"'` and read `Hello, Ada!`, so the name is trimmed, and `bun greet.ts` %s.' \
       "$separator" "${C1:0:12}" "$role" "$r2"
@@ -4680,25 +4741,30 @@ boot_agent() {
 # Dispatch and its own issue on it, whose newest implement record a worker reads and whose newest
 # records it writes; the world CASE names (worker_fixture); and the issue as a Legion issue stands
 # once its implementer has finished, in the order production writes it. The issue resolves to the
-# world's repository (seed.ts project) and is handed to Legion, its check covering what the
-# world's code covers (case_guard); then the planner's approved plan.md and plan handoff, at the
-# default branch the implementer started from; the pull request the world's remote holds, as
-# Dispatch stores its head; and the implementer's handoff and result at that head, after which the
-# issue is `testing`. So a result at the head the agent reads stands at the pull request's head,
-# and `dispatch results` says a pass stands. It leaves the issue key in $worker_key and the pull
-# request's number and head in the caller's $pr and $head, which every runner's prompt names.
+# world's repository (seed.ts project) and is handed to Legion, its check the one CASE's world
+# asks for (case_check); then the planner's approved plan.md and plan handoff, at the default
+# branch the implementer started from; the pull request the world's remote holds, as Dispatch
+# stores its head; and the implementer's handoff and result at the commit it pushed, the head its
+# own handoff names, after which the issue is `testing`. That commit is the pull request's head in
+# every world but those whose reviewer pushed a text commit above it (approved_world), where no
+# result stands at the head and `dispatch results` says no pass stands there. It leaves the issue
+# key in $worker_key, the pull request's number and head in the caller's $pr and $head, which
+# every runner's prompt names, and the implementer's commit in the caller's $implemented, which
+# the tester's result is recorded at.
 worker_run_world() {
-  local index=$1 start=$2 case_name=${3:-} covers=()
-  [ -z "$(case_guard "$case_name")" ] || covers=(no-name)
+  local index=$1 start=$2 case_name=${3:-} covers=() kind
+  kind=$(case_check "$case_name")
+  [ -z "$kind" ] || covers=("$kind")
   own_dispatch project
   seed_ts tester-proof "$R/fixture.json" "${covers[@]}"
   worker_key=$(jq -r .issue "$R/fixture.json")
   worker_fixture "$index" "$start" "$case_name" >>"$R/fixture.log" 2>&1 ||
     fail "the fixture failed; see $R/fixture.log"
   read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
+  implemented=$(jq -r .head "$R/implement.json")
   seed_ts plan "$R/fixture.json" "$R/implement.json" "$(git -C "$R/remote.git" rev-parse "$worker_base")" "$R/remote.git"
   seed_ts pull-request "$R/fixture.json" "$R/fixtures.json" "$R/remote.git"
-  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$head"
+  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$implemented"
   start_heads
 }
 
@@ -4730,7 +4796,7 @@ heads_stored() {
 }
 
 run_tester_proof() {
-  local name=$1 project=$2 index=$3 start=$4 pr head version
+  local name=$1 project=$2 index=$3 start=$4 pr head implemented version
   worker_run_world "$index" "$start"
   version=$(jq -r .implement.version "$R/fixture.json")
   # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
@@ -4757,7 +4823,7 @@ run_tester_proof() {
 # for the implementer and completes nothing), is completion-answers.ts's
 # ANSWERS["reviewer-text-findings"], which `rig.sh health` and the score read.
 run_reviewer_text_findings() {
-  local name=$1 project=$2 index=$3 start=$4 review=$5 pr head version round
+  local name=$1 project=$2 index=$3 start=$4 review=$5 pr head implemented version round
   start_recorder "$project"
   worker_run_world "$index" "$start" "$review"
   seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
@@ -4834,37 +4900,34 @@ skip_reason() {
 
 # The implementer's last chance at the reviewer's text commit, on the world worker_fixture's <case>
 # builds (approved_world): the reviewer pushed a commit of its own that is right and left no
-# thread (accept), pushed one that makes the document's sentence false another way and left a
-# thread on the workflow file (correct), or approved the head and left the one thread whose
-# sentence the code makes false (code-defect). The issue carries the implementer's and the
-# tester's passing results on its one before_merge check and the reviewer's handoff, so neither
-# agent reads a gate of its own as open. The implementer runs first, in its own live session,
-# which the reviewer's message reaches: in accept and correct the commit it pushed, by SHA, and
-# each thread it left open, as the reviewer's role prompt has it name them at its approval; in
-# code-defect the approval and its thread. Then, in correct and code-defect, the reviewer, woken by
-# the implementer's own message and by nothing else; accept boots none (completion-answers.ts's
-# SKIPS). Neither is told what to do: that is the rule the scenario measures. The case is in the
-# run's name and in <run>/case.txt, which threadsClosed reads back and holds to the name.
+# thread (accept, and crossing, whose check its earlier pass does not hold at that commit), pushed
+# one that makes the document's sentence false another way and left a thread on the workflow file
+# (correct), or approved the head and left the one thread whose sentence the code makes false
+# (code-defect). The issue carries the implementer's and the tester's passing results on its one
+# before_merge check at the implementer's commit, none at the reviewer's, and the reviewer's
+# handoff. The implementer runs first, in its own live session, which the reviewer's message
+# reaches, as spec v36's R1 has the reviewer send one: in accept, correct and crossing the commit
+# it pushed, by SHA, what it changes, and each thread it left open; in code-defect the approval and
+# its thread. Then, in correct and code-defect, the reviewer, woken by the implementer's own
+# message and by nothing else; accept and crossing boot none (completion-answers.ts's SKIPS).
+# Neither is told what to do: that is the rule the scenario measures. The case is in the run's
+# name and in <run>/case.txt, which threadsClosed reads back and holds to the name.
 #
-# The phase the halves are booted in is the one main's engine leaves the issue in after the
-# world's approval (review.go's `reviewRound`, daemon-standin.ts's `servedPhase`):
-#   correct      `reviewing`. The base requires conversation resolution and the approval left a
-#                thread open, so GitHub reports the approved head `BLOCKED` with its checks green
-#                (approved_world), and the approval waits in `reviewing` (review 5887659447,
-#                finding 3). The implementer's push sets the approval aside
-#                (`stuckApprovedOtherCode`), the record stays `reviewing` and the daemon starts no
-#                phase for it, and the reviewer's approval of the head that push made, `CLEAN`
-#                once it has resolved the thread, ends the round and moves it to `accepting`.
-#   accept       `accepting`. No thread is open, so the approved head is `CLEAN` and the round
-#                ended on the approval; a push there lands outside any round
-#                (daemon-standin.ts's `servedPhase`).
+# The phase the halves are booted in is the one main's engine leaves the issue in (review.go's
+# `reviewRound`, daemon-standin.ts's `servedPhase`):
+#   accept, correct, crossing
+#                `reviewing`. The reviewer has not approved, so no review decision ends the round
+#                and the issue stays in `reviewing` while the implementer answers (Verification
+#                v47's k2): the daemon starts no phase for that answer, and in correct the
+#                reviewer's approval of the head the implementer's push made, `CLEAN` once it has
+#                resolved the thread, ends the round and moves the issue to `accepting`.
 #   code-defect  `accepting`. Its approved head is `CLEAN`, so the round ended on the
 #                approval, and the issue stands where the architect reads it. It stays there
 #                because a `REQUEST_CHANGES` submitted in `reviewing` ends the round and moves
 #                the issue back (review.go's `roundRejected`), which would make the reviewer's
-#                review a route for the finding, and the control reads the message to the
-#                architect as the one route (score.ts's threadsClosed). So each half's
-#                `read_record` answers `accepting`, the architect's phase
+#                review a route for the finding, and the control reads the messages to the
+#                architect and the reviewer as the one route (score.ts's threadsClosed). So each
+#                half's `read_record` answers `accepting`, the architect's phase
 #                (packages/daemon/internal/workflow/engine.go, RoleFor).
 # Both roles' rounds already stand on their rows: the implementer's implementing round with its
 # commit and its record (worker_boot's COMPLETED, and the seeded implement record), and the
@@ -4879,31 +4942,34 @@ skip_reason() {
 # half here is completion-answers.ts's ANSWERS["threads-closed"], which `rig.sh health` and the
 # score read.
 run_threads_closed() {
-  local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head open wake skip \
-    phase=reviewing completed=implementer
-  [ "$threads_case" = correct ] || phase=accepting
+  local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head implemented open wake skip \
+    changes phase=reviewing completed=implementer
+  [ "$threads_case" != code-defect ] || phase=accepting
   start_recorder "$project"
   worker_run_world "$index" "$start" "$threads_case"
-  seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
+  seed_ts tester-result "$R/fixture.json" "$R/test.json" "$implemented"
   seed_ts review-handoff "$R/fixture.json" "$R/review.json"
   # The reviewer's message as it reaches the implementer's live session: the head it was given,
-  # its own commit where it pushed one, and the threads it left open, each named by its node id,
-  # its file and what the reviewer wrote.
+  # its own commit where it pushed one, what that commit changes, and the threads it left open,
+  # each named by its node id, its file and what the reviewer wrote.
   open=$(jq -r '.[] | "- Thread \(.id), \(.path): \(.body)"' "$R/threads.json")
   if [ "$threads_case" = code-defect ]; then
     printf 'Reviewer → implementer, %s. I approved PR #%s (%s, repository %s) at %s. Its only open findings are text, and each is the review thread I wrote on it:\n%s\nOver to you.\n' \
       "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$open" >"$R/prompt.txt"
   else
     [ -n "$open" ] || open='none'
-    printf 'Reviewer → implementer, %s. On PR #%s (%s, repository %s) I pushed my text commit %s, which rewrites the sentence of docs/cli.md the change made false, and approved the head that carries it, %s. Threads I left open:\n%s\nOver to you.\n' \
-      "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$head" "$open" >"$R/prompt.txt"
+    changes='rewrites the sentence of docs/cli.md the change made false'
+    # shellcheck disable=SC2016 # the backticks are the message's own markdown
+    [ "$threads_case" = correct ] || changes="$changes"', and rewords the example line docs/cli.md gives for `bun greet.ts Ada`'
+    printf 'Reviewer → implementer, %s. On PR #%s (%s, repository %s) I pushed my text commit %s, which %s. Threads I left open:\n%s\nOver to you.\n' \
+      "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$changes" "$open" >"$R/prompt.txt"
   fi
   steps_seed "$project" "$phase"
   worker_boot "$name-implementer" "$project" implementer "$phase" "$completed"
   # Every push the implementer made has moved the head the run's Dispatch compares results with
   # (start_heads), as its own event moves it in production, and the reviewer is not booted before
-  # the watcher has answered each of them: a pass recorded at the approved head then stands one
-  # push below the head, which is what the carry rule is for.
+  # the watcher has answered each of them: the reviewer then decides each earlier pass at the head
+  # the implementer's push made, as production's Dispatch shows it.
   await_start watcher "$watcher_pid" 30 "the head watcher to store the implementer's pushes" heads_stored
   # The reviewer's own wake is the implementer's message and nothing else: the daemon starts no
   # phase for the implementer's push and no architect speaks, so the reviewer learns of the push
@@ -4924,19 +4990,18 @@ run_threads_closed() {
   # The run is scored on the halves it ran, which its boot record names: a reviewer it does not
   # boot has the line `skip reviewer <reason>` there, the reason completion-answers.ts's SKIPS
   # declares for it (skip_reason), which the score and health read against the same SKIPS. In
-  # accept the implementer's answer is the run's one half, so no reviewer is booted whatever it
-  # sent. In code-defect the implementer's own act is to tell the architect and send the reviewer
-  # nothing, so a wake of none is the loop ending where the rule ends it: booting one anyway put a
-  # reviewer in front of an empty prompt and then counted whatever it did towards the case's pass
-  # (`!approvedAny`, `resolves.length === 0`, `moved === undefined`), the rig's own agent answering
-  # the rig's own question. In correct the implementer must have sent a wake, so the reviewer is
-  # booted on whatever it sent, an empty prompt included, and the empty wake is the fail on
-  # `toldReviewer` it already was.
-  if [ "$threads_case" = accept ] ||
+  # accept and crossing the implementer's answer is the run's one half, so no reviewer is booted
+  # whatever it sent. In code-defect the implementer tells the architect and the reviewer of the
+  # thread (Verification v47's k2 negative control), so a wake of none is a run that already
+  # fails that message: booting a reviewer then puts it in front of an empty prompt, and its acts
+  # are scored by no term the run could still pass. In correct the implementer must have sent a
+  # wake, so the reviewer is booted on whatever it sent, an empty prompt included, and the empty
+  # wake is the fail on `toldReviewer` it already was.
+  if [ "$threads_case" = accept ] || [ "$threads_case" = crossing ] ||
     { [ "$threads_case" = code-defect ] && [ "$(jq length <<<"$wake")" -eq 0 ]; }; then
     skip=$(skip_reason threads-closed "$threads_case" reviewer)
     printf 'skip reviewer %s\n' "$skip" >>"$R/booted"
-    note "$name: no reviewer half — $skip, which is the act $threads_case asks for"
+    note "$name: no reviewer half — $skip"
   else
     worker_boot "$name-reviewer" "$project" reviewer "$phase" "$completed"
   fi

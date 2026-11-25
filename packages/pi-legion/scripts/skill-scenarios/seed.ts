@@ -10,7 +10,8 @@
 //                                          default repository, so every issue of it resolves to the
 //                                          repository the world is on; the world of every scenario
 //                                          but brainstorm
-//   seed.ts tester-proof <file> [no-name]  one run's own issue, the greet() issue a phase worker's
+//   seed.ts tester-proof <file> [no-name|doc-example]
+//                                          one run's own issue, the greet() issue a phase worker's
 //                                          world implements (world-issue.ts's words), handed to
 //                                          Legion as production hands it: `todo` by the person,
 //                                          then `in_progress` and the `legion` label by the daemon,
@@ -18,7 +19,10 @@
 //                                          a root's work waits behind; writes {issue, covers} to
 //                                          <file>. `no-name` gives its check the words that miss
 //                                          R2's blank name (the world whose CLI dropped the
-//                                          blank-name guard); without it the check covers R2
+//                                          blank-name guard), `doc-example` the words that also
+//                                          compare `bun greet.ts Ada` with docs/cli.md's example
+//                                          line (threads-closed's crossing); without either the
+//                                          check covers R2 (world-issue.ts's CheckCovers)
 //   seed.ts plan <file> <implement body file> <base commit> <remote>
 //                                          the issue's plan.md, a task for each file the diff on
 //                                          <remote> from <base commit> to the implement body's
@@ -183,6 +187,7 @@ import {
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 import {
   type CheckCovers,
+  isCheckCovers,
   WORLD_REPO,
   WORLD_SPEC,
   WORLD_TITLE,
@@ -702,12 +707,12 @@ export async function seedProject(): Promise<void> {
   console.log(`seeded ${WORLD_PROJECT} on ${WORLD_REPO}`);
 }
 
-/** `tester-proof <file> [no-name]`: the run's own greet() issue (world-issue.ts), whose spec
- * marks what rig.sh's worker_fixture meets as `requirement` blocks, and whose Verification
- * document holds the one `check` block the implementer's result and every role's own run are
- * recorded against, serving those requirements, in the words `covers` names. Then the issue is
- * handed to Legion as production hands it: the person moves it to `todo`, the daemon writes
- * `in_progress` with the `legion` label, which hands it the issue's status, and the person
+/** `tester-proof <file> [no-name|doc-example]`: the run's own greet() issue (world-issue.ts),
+ * whose spec marks what rig.sh's worker_fixture meets as `requirement` blocks, and whose
+ * Verification document holds the one `check` block the implementer's result and every role's own
+ * run are recorded against, serving those requirements, in the words `covers` names. Then the
+ * issue is handed to Legion as production hands it: the person moves it to `todo`, the daemon
+ * writes `in_progress` with the `legion` label, which hands it the issue's status, and the person
  * approves the spec, version 1, from its header. The issue is its tree's own root, and a root's
  * work waits behind its design gate until a person approves the spec the gate is on
  * (packages/daemon/internal/classify's `DesignGateOpen`), so an issue whose plan, code and tests
@@ -931,7 +936,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [no-name] | plan <file> <implement body file> <base commit> <remote> | pull-request <file> <gh answers file> <remote> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | steps <file> <project> <phase> [model] | capture-handoffs <file> <run dir> | capture-results <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [no-name|doc-example] | plan <file> <implement body file> <base commit> <remote> | pull-request <file> <gh answers file> <remote> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | steps <file> <project> <phase> [model] | capture-handoffs <file> <run dir> | capture-results <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -964,8 +969,14 @@ async function main(argv: string[]): Promise<boolean> {
     await captureAskgate(file, second);
   else if (command === "tester-proof" && file !== undefined && n === 2)
     await testerProofIssue(file);
-  else if (command === "tester-proof" && file !== undefined && second === "no-name" && n === 3)
-    await testerProofIssue(file, "no-name");
+  else if (
+    command === "tester-proof" &&
+    file !== undefined &&
+    second !== "r2" &&
+    isCheckCovers(second) &&
+    n === 3
+  )
+    await testerProofIssue(file, second);
   else if (
     command === "plan" &&
     file !== undefined &&

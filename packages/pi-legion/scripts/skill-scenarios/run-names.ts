@@ -70,11 +70,13 @@ export const SCENARIOS: Readonly<
     cases: ["text-only", "defect", "last-push"],
     world: "worker",
   },
-  // No case is a default: Verification v38's k2 names the case of every batch it runs, as k1 does
-  // reviewer-text-findings', so an unset variable is refused rather than read as one of them.
+  // No case is a default: Verification v47's k2 names the case of every batch it runs, as k1 does
+  // reviewer-text-findings', so an unset variable is refused rather than read as one of them. k2
+  // runs accept, correct and the code-defect control; k3 runs crossing, accept's world with a
+  // check its earlier pass does not hold at the reviewer's commit.
   "threads-closed": {
     variable: "SKILL_SCENARIOS_THREADS_CASE",
-    cases: ["accept", "correct", "code-defect"],
+    cases: ["accept", "correct", "crossing", "code-defect"],
     world: "worker",
   },
   brainstorm: { cases: [] },

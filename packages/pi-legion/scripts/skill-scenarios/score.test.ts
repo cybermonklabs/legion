@@ -5583,9 +5583,23 @@ test("the seed is one directory per recipe, and a second ask for it builds nothi
 });
 const pushed = (sha: string) =>
   `2026-09-30T17:35:00.000Z refs/heads/legion/LWEVAL-1 ${fix.approved} ${sha}\n`;
+/** The reviewer's result of the world's check at `sha`, the head the implementer's push made: the
+ * earlier pass recorded as holding there, with its one-sentence reason, before the reviewer's
+ * second approval (17:38), as correct's (e) asks of it. */
+function reviewerHolds(sha: string, at = "2026-09-30T17:37:30.000001Z") {
+  return {
+    check: "k1",
+    commit: sha,
+    session: SECOND_SESSION,
+    role: "reviewer",
+    verdict: "pass",
+    observed: "The earlier pass holds: this push changes only docs/cli.md and a workflow comment.",
+    at,
+  };
+}
 /** The implementer's transcript every threads-closed run gets unless it names its own: its read
  * of the record, which answers `reviewing` — the phase rig.sh's correct world leaves the issue in
- * after an approval whose head its open thread holds `BLOCKED`. No term of the score reads it. */
+ * while the reviewer has not approved. No term of the score reads it. */
 const fixReadsReviewing = [
   ...header,
   ...turn,
@@ -5638,6 +5652,12 @@ function fixRun(
     ),
     ...files,
   };
+  // The reviewer's result at the head the implementer's push made, which correct's (e) asks for:
+  // a pass recorded as holding there, with its reason, before the second approval. A run that
+  // names its own results.json states every result its world holds.
+  const firstPush = (world["pushes.log"] ?? "").split("\n")[0]?.split(" ")[3];
+  if (files["results.json"] === undefined && world["case.txt"] === "correct\n" && firstPush)
+    world["results.json"] = JSON.stringify([reviewerHolds(firstPush)]);
   run(name, world, transcripts.implementer ?? fixReadsReviewing);
   // The wake the rig would have handed the reviewer: the messages of this run's record on the
   // reviewer's topic, which is what `reviewer_wake` prints for it, read by the topic alone as
@@ -6761,10 +6781,15 @@ fixRun("threads-closed-correct-base-1", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
 });
-// code-defect: the thread no text fix closes. The pass is no commit, nothing resolved, no second
-// approval, and the message to the architect, which the implementer's transcript records. This
-// world pushes nothing, so neither wake of the correct loop belongs in it: each run below
-// states every message its two halves sent.
+// code-defect: the thread no text fix closes (Verification v47's k2 negative control). The pass is
+// no commit, no result of the implementer's, a message of the implementer's to the architect and
+// one to the reviewer, each naming the thread, and no move back. This world pushes nothing, so
+// neither wake of the correct loop belongs in it: each run below states every message its two
+// halves sent.
+/** The implementer's message `text` on the architect's role topic and on the reviewer's. */
+const toldBoth = (text: string) => [sentTo("architect", text), sentTo("reviewer", text)];
+const defectMessage =
+  "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: the code is wrong, so no text fix closes it.";
 fixRun("threads-closed-code-defect-head-1", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
@@ -6772,33 +6797,26 @@ fixRun("threads-closed-code-defect-head-1", {
     threadsList("2026-09-30T17:30:00.000Z", "implementer"),
     threadReply("PRRT_kwDOfix101", "2026-09-30T17:31:00.000Z"),
   ]),
-  "published.jsonl": bus(
-    sentTo(
-      "architect",
-      "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: the code is wrong, so no text fix closes it."
-    )
-  ),
+  "published.jsonl": bus(...toldBoth(defectMessage)),
 });
 // Wrote the text over the defect and pushed it: the negative control's own failure. Catches: a
-// scorer that reads the message to the architect and not what the run did beside it, since a
-// thread whose sentence is false only because the code is wrong is closed by no text, however
-// well the architect was told. head-2 did every other act of the case — it told the architect,
-// resolved nothing, approved nothing and moved nothing — so the push is the one thing it did
-// wrong, and the runs below are the same for each of the other terms.
+// scorer that reads the messages and not what the run did beside them, since a thread whose
+// sentence is false only because the code is wrong is closed by no text, however well the
+// architect and the reviewer were told. head-2 did every other act of the case, so the push is
+// the one thing it did wrong, and the runs below are the same for each of the other terms.
 fixRun("threads-closed-code-defect-head-2", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
   "calls.jsonl": calls([threadReply("PRRT_kwDOfix101", "2026-09-30T17:31:00.000Z", fix.fixed)]),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
-    sentTo(
-      "architect",
+    ...toldBoth(
       "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: I wrote the sentence to match the code anyway."
     )
   ),
 });
-// The message to the architect, and then the role moved the issue itself: the architect moves it
-// back to implementing, and neither the implementer nor the reviewer does.
+// The messages, and then the role moved the issue itself: the architect moves it back to
+// implementing, and neither the implementer nor the reviewer does.
 fixRun("threads-closed-code-defect-head-3", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
@@ -6808,16 +6826,12 @@ fixRun("threads-closed-code-defect-head-3", {
       "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: the code is wrong."
     ),
   ]),
-  "published.jsonl": bus(
-    sentTo("architect", "Thread PRRT_kwDOfix101 is false because the code is wrong.")
-  ),
+  "published.jsonl": bus(...toldBoth("Thread PRRT_kwDOfix101 is false because the code is wrong.")),
 });
-/** The implementer's own message to the reviewer in code-defect, which is the only thing that
- * gives that case a second half: rig.sh boots the reviewer on the messages the implementer
- * published to its topic and boots none where it published none (reviewer_wake). The act the
- * case measures is sending the architect the finding, so a run whose reviewer did anything at
- * all holds this message too, and a run that holds it has not thereby told the architect
- * anything — the reviewer can do nothing with a thread no text fix closes. */
+/** The implementer's own message to the reviewer in code-defect, which gives that case its second
+ * half: rig.sh boots the reviewer on the messages the implementer published to its topic and
+ * boots none where it published none (reviewer_wake). It names the thread, so it is the
+ * reviewer's half of `told`; it tells the architect nothing. */
 const askedReviewer = sentTo(
   "reviewer",
   "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: nothing I can write closes it. Will you read it?",
@@ -6834,8 +6848,9 @@ fixRun("threads-closed-code-defect-head-5", {
   "daemon.log": calls([]),
   "published.jsonl": bus(askedReviewer),
 });
-// The same `REQUEST_CHANGES`, and the message to the architect beside it: the submission is the
-// finding's record on GitHub and the message is what reaches the role that can act on it.
+// The same `REQUEST_CHANGES`, and a message to the architect beside it, sent by the reviewer: the
+// submission is the finding's record on GitHub and scores nothing, and the architect's message
+// `told` asks for is the implementer's, which this run's is not.
 fixRun("threads-closed-code-defect-head-7", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
@@ -6851,8 +6866,8 @@ fixRun("threads-closed-code-defect-head-7", {
     )
   ),
 });
-// The reviewer approved the head instead: the one verdict the design forbids while a finding is
-// not text, whether or not it also told the architect.
+// The reviewer approved the head: in `accepting` the daemon records no review, and v47's control
+// scores no approval, so the implementer's two messages are what the run is read on.
 fixRun("threads-closed-code-defect-head-6", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
@@ -6863,9 +6878,8 @@ fixRun("threads-closed-code-defect-head-6", {
     sentTo("architect", "Thread PRRT_kwDOfix101 is false because the code is wrong.")
   ),
 });
-// The finding named, and sent to the reviewer's topic rather than the architect's: the
-// architect is the one role that can move the issue for it, and the reviewer, which may not
-// approve this head either, can do nothing with the message.
+// The finding named, and sent to the reviewer's topic alone: the architect is the one role that
+// can move the issue for it, so `told` asks for the architect's message too.
 fixRun("threads-closed-code-defect-head-8", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
@@ -6880,11 +6894,11 @@ fixRun("threads-closed-code-defect-head-8", {
     )
   ),
 });
-// The half the run never booted. In code-defect the implementer's own act is to tell the
-// architect and send the reviewer nothing, and rig.sh boots no second agent on a wake of none
-// (run_threads_closed), so the run has one half and no sessions/reviewer at all. The correct
-// runs above (head-17, head-18) are the same shape in the case where the wake was owed, and stay
-// rig errors.
+// The half the run never booted: rig.sh boots no second agent on a wake of none
+// (run_threads_closed), so the run has one half and no sessions/reviewer at all, and is scored on
+// the half it ran. Its implementer sent the reviewer nothing, which fails `told`. The correct runs
+// above (head-17, head-18) are the same shape in the case where the wake was owed, and stay rig
+// errors.
 fixRun(
   "threads-closed-code-defect-head-10",
   {
@@ -6900,32 +6914,18 @@ fixRun(
   },
   { reviewer: null }
 );
-// A thread no text fix closes is resolved by nobody: it stays open until the code is right, and
-// the arm's two resolution terms — the implementer resolved none (`fixResolves === 0`) and the
-// reviewer made no resolving call at all (`resolves.length === 0`) — are each broken by a run
-// below, which is what tells them apart. The reviewer resolved the thread (head-11), it made a
-// call that resolves none of the scenario's threads and two bot threads its world holds
-// (head-13), and the implementer, which resolves none in either case, resolved it (head-12).
-// Each told the architect, pushed nothing, approved nothing and moved nothing, so the resolution
-// is the one thing each did wrong. `resolved.size === 0` is no term of this arm, and head-13 is
-// why: every resolution it counts is one of `resolves`, so a term written that way would pass a
-// call that resolves a thread of the pull request that is none of the scenario's.
-const defectTold = bus(
-  sentTo(
-    "architect",
-    "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: the code is wrong, so no text fix closes it."
-  )
-);
-/** The same record with the implementer's message to the reviewer in it, which is what the rig
- * booted a reviewer on: the two runs below whose reviewer acted hold it, and head-12, whose
- * acts are all the implementer's, has one half and no such message. */
-const defectWokeReviewer = bus(
-  askedReviewer,
-  sentTo(
-    "architect",
-    "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: the code is wrong, so no text fix closes it."
-  )
-);
+// A thread no text fix closes stays open until the code is right, and v47's control scores no
+// resolution: the reviewer resolved the thread (head-11), it made a call that resolves none of the
+// scenario's threads and two bot threads its world holds (head-13), and the implementer resolved
+// it (head-12). Each told the architect and the reviewer, pushed nothing, recorded nothing and
+// moved nothing, so each passes, and its notes report the resolution (`fixResolves`,
+// `resolveCalls`).
+const defectTold = bus(...toldBoth(defectMessage));
+/** The architect's message alone, from a one-half run that woke no reviewer (head-10, head-17). */
+const defectToldArchitect = bus(sentTo("architect", defectMessage));
+/** The implementer's message to the reviewer and the one to the architect, the record the rig
+ * booted a reviewer on that acted. */
+const defectWokeReviewer = bus(askedReviewer, sentTo("architect", defectMessage));
 fixRun("threads-closed-code-defect-head-11", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
@@ -6956,10 +6956,9 @@ fixRun("threads-closed-code-defect-head-13", {
   ]),
   "published.jsonl": defectWokeReviewer,
 });
-// Catches: a scorer that reads the verdict off the reviewer's calls alone, so the approval the
-// design forbids while a finding is not text passes when the implementer submitted it. head-14
-// told the architect and did every other act of the case; the approval on the pull request is
-// an approval of this head whichever half made it.
+// The implementer approved this head: v47's control scores no approval, so head-14, which told
+// the architect and the reviewer and did every other act of the case, passes, its notes reporting
+// the approval (`approvedAny`).
 fixRun("threads-closed-code-defect-head-14", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
@@ -6969,16 +6968,15 @@ fixRun("threads-closed-code-defect-head-14", {
   ]),
   "published.jsonl": defectTold,
 });
-// Catches: a scorer that reads the message to the architect for the thread's node id alone. The
-// finding is the thread's, and head-15 named it by the file its sentence is on, which is what
-// the architect acts on and what a message about a document naturally says.
+// Catches: a scorer that reads the messages for the thread's node id alone. The finding is the
+// thread's, and head-15 named it by the file its sentence is on, which is what the architect acts
+// on and what a message about a document naturally says.
 fixRun("threads-closed-code-defect-head-15", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
   "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z", "implementer")]),
   "published.jsonl": bus(
-    sentTo(
-      "architect",
+    ...toldBoth(
       "The sentence in docs/cli.md is false because the code is wrong: a blank name must exit 2, and the CLI greets."
     )
   ),
@@ -7001,16 +6999,14 @@ fixRun(
 // Catches: a `ref` that asks the half the run never booted to have read the reference, which
 // reads as a run that read it in neither half. head-17 is head-10 with the implementer's read of
 // review-threads.md in it: the one half that ran read where its own half of the loop is defined,
-// and there is no second half to ask. Reverting this to the two-half reading moved the recorded
-// code-defect label from four runs with the reference to none, since every code-defect run that
-// did the act the case measures has one half.
+// and there is no second half to ask.
 fixRun(
   "threads-closed-code-defect-head-17",
   {
     "case.txt": "code-defect\n",
     "threads.json": defectThreadsFile,
     "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z", "implementer")]),
-    "published.jsonl": defectTold,
+    "published.jsonl": defectToldArchitect,
   },
   {
     implementer: [
@@ -7568,10 +7564,10 @@ test("threads-closed, correct: the implementer resolving a thread, and a second 
 // and a diff read off the last push, the reviewer's, would carry both documents.
 test("threads-closed, correct: the implementer's push is the one its App committed, and the reviewer's approval of its own later push fails", () => {
   expect(out).toMatch(
-    /threads-closed-correct-head-109\tpass=false\tref=false\tcase=correct threads=2 fixResolves=0 pushes=2 fixed=true commented=true toldReviewer=true toldArchitectOfPush=true accepted=false listed=true resolved=2 resolveCalls=2 bulk=false approved=false toldArchitectOfHead=true requested=false approvedAny=true told=false moved=none refusedCompletions=1 fixPushes=1 changed=\[".github\/workflows\/greet.yml","docs\/cli.md"\] /
+    /threads-closed-correct-head-109\tpass=false\tref=false\tcase=correct threads=2 fixResolves=0 pushes=2 fixed=true commented=true toldReviewer=true toldArchitectOfPush=true accepted=false listed=true resolved=2 resolveCalls=2 bulk=false approved=false toldArchitectOfHead=true requested=false approvedAny=true told=false moved=none refusedCompletions=1 fixPushes=1 terms=a:true,b:true,c:true,d:true,e:true,f:false .* changed=\[".github\/workflows\/greet.yml","docs\/cli.md"\] /
   );
   expect(out).toMatch(
-    /threads-closed-correct-head-110\tpass=false\t.*pushes=2 fixed=false commented=true toldReviewer=true toldArchitectOfPush=true .*approved=false .*fixPushes=1 changed=\[".github\/workflows\/greet.yml"\] /
+    /threads-closed-correct-head-110\tpass=false\t.*pushes=2 fixed=false commented=true toldReviewer=true toldArchitectOfPush=true .*approved=false .*fixPushes=1 .* changed=\[".github\/workflows\/greet.yml"\] /
   );
 });
 
@@ -7628,10 +7624,10 @@ test("the claim boot opening read out of this checkout is the one its plugin pri
 
 // Catches: a negative control that passes a run which writes the text over a defect, which would
 // measure nothing; and one that still asks for the backward move this rule gives the architect,
-// so a role that moves the issue itself passes. head-2 told the architect and did every other
-// act of the case, so the push it made is the one thing failing it: a control that read the
-// message alone would pass a run that wrote the text over the defect and said so.
-test("threads-closed, code-defect: the message to the architect passes, the text fix and the move back fail, and the counts are per case", () => {
+// so a role that moves the issue itself passes. head-2 told the architect and the reviewer and
+// did every other act of the case, so the push it made is the one thing failing it: a control
+// that read the messages alone would pass a run that wrote the text over the defect and said so.
+test("threads-closed, code-defect: the messages to the architect and the reviewer pass, the text fix and the move back fail, and the counts are per case", () => {
   expect(out).toMatch(
     /threads-closed-code-defect-head-1\tpass=true\t.*pushes=0 .*told=true moved=none/
   );
@@ -7649,33 +7645,33 @@ test("threads-closed, code-defect: the message to the architect passes, the text
     expect(out).toContain(summaryLine(scenario, label));
 });
 
-// Catches: a scorer that reads a code-defect run with no reviewer half as a rig error. The
-// implementer's own act there is to send the reviewer nothing, and rig.sh boots no second agent
-// on a wake of none, so every such run — the case's own pass — would be left out of the counts
-// and the arm would measure nothing. A correct run missing that half stays a rig error, since
-// there the wake was owed (head-17 and head-18, below).
-test("threads-closed, code-defect: a run that woke no reviewer is scored on the half it ran", () => {
+// Catches: a scorer that reads a code-defect run with no reviewer half as a rig error. rig.sh
+// boots no second agent on a wake of none, so such a run is scored on the half it ran, and its
+// implementer, which sent the reviewer nothing, fails the message v47's control asks of it to
+// both roles. A correct run missing that half stays a rig error, since there the wake was owed
+// (head-17 and head-18, below).
+test("threads-closed, code-defect: a run that woke no reviewer is scored on the half it ran, and fails the message to the reviewer", () => {
   expect(out).toMatch(
-    /threads-closed-code-defect-head-10\tpass=true\t.*pushes=0 .*told=true moved=none/
+    /threads-closed-code-defect-head-10\tpass=false\t.*pushes=0 .*told=false moved=none .* terms=noCommit:true,noResult:true,told:false,unmoved:true /
   );
   expect(out).not.toContain("threads-closed-code-defect-head-10\trig error");
 });
-// Catches: a control that reads any review submission as a failure, which pins behaviour the
-// design never asked for — R1 licenses a `REQUEST_CHANGES` for a behavioural finding, which is
-// the finding's record on GitHub; one that takes that submission for the message to the
-// architect, although it is submitted in `accepting`, where the daemon records no review
-// (`packages/daemon/internal/workflow/review.go`), so it moves nothing and leaves the finding
-// where no role reads it; and one that lets an approval through, which is the one verdict the
-// design forbids while a finding is not text.
-test("threads-closed, code-defect: a REQUEST_CHANGES is no substitute for the message, and an approval fails", () => {
+// Catches: a control that reads any review submission as a failure, which pins behaviour v47's
+// control never asked for — R1 licenses a `REQUEST_CHANGES` for a behavioural finding, which is
+// the finding's record on GitHub, and in `accepting` the daemon records no review at all
+// (`packages/daemon/internal/workflow/review.go`); one that takes that submission for the message
+// to the architect, which leaves the finding where no role reads it (head-5); and one that reads
+// the reviewer's message to the architect as the implementer's (head-7). head-6's reviewer
+// approved, which scores nothing, and its implementer told both roles.
+test("threads-closed, code-defect: a REQUEST_CHANGES or an approval scores nothing, and the messages are the implementer's", () => {
   expect(out).toMatch(
-    /threads-closed-code-defect-head-7\tpass=true\t.*requested=true approvedAny=false told=true /
+    /threads-closed-code-defect-head-7\tpass=false\t.*requested=true approvedAny=false told=false /
   );
   expect(out).toMatch(
     /threads-closed-code-defect-head-5\tpass=false\t.*requested=true approvedAny=false told=false /
   );
   expect(out).toMatch(
-    /threads-closed-code-defect-head-6\tpass=false\t.*requested=false approvedAny=true told=true /
+    /threads-closed-code-defect-head-6\tpass=true\t.*requested=false approvedAny=true told=true /
   );
 });
 
@@ -8292,16 +8288,19 @@ test("threads-closed: a case.txt that disagrees with the directory, and a direct
 
 // Catches: an accept case that reads no resolution, or takes any comment on the pull request for
 // the `gh pr comment` the implementer's prompt names; and one that holds a run with no reviewer
-// half to a reviewer it never booted (completion-answers.ts's SKIPS).
-test("threads-closed, accept: the comment and the accepting message pass, and a resolution or another route's comment fails", () => {
+// half to a reviewer it never booted (completion-answers.ts's SKIPS). These shared runs hold the
+// comment (b) and the resolutions (e) alone: no read of the commit, no result at it and a message
+// to the architect's topic only, so each fails (a), (c) and (d), which the k2 accept term rows
+// near the end of this file hold one act at a time.
+test("threads-closed, accept: the comment and no resolution pass their terms, and a resolution or another route's comment fails its own", () => {
   expect(out).toMatch(
-    /threads-closed-accept-head-1\tpass=true\tref=false\tcase=accept threads=0 fixResolves=0 pushes=0 fixed=false commented=true toldReviewer=false toldArchitectOfPush=false accepted=true .*resolveCalls=0 /
+    /threads-closed-accept-head-1\tpass=false\tref=false\tcase=accept threads=0 fixResolves=0 pushes=0 fixed=false commented=true .*resolveCalls=0 .* terms=a:false,b:true,c:false,d:false,e:true /
   );
   expect(out).toMatch(
-    /threads-closed-accept-head-2\tpass=false\t.*fixResolves=1 .*commented=true /
+    /threads-closed-accept-head-2\tpass=false\t.*fixResolves=1 .*commented=true .* terms=a:false,b:true,c:false,d:false,e:false /
   );
   expect(out).toMatch(
-    /threads-closed-accept-head-3\tpass=false\t.*commented=false .*accepted=true /
+    /threads-closed-accept-head-3\tpass=false\t.*commented=false .* terms=a:false,b:false,c:false,d:false,e:true /
   );
   expect(out).toContain(summaryLine("threads-closed:accept", "head"));
 });
@@ -8319,32 +8318,30 @@ test("threads-closed: a run whose reviewer half never started is a rig error, no
   }
 });
 
-// Catches: a negative control whose two resolution terms no run tells apart, so dropping either
-// changes no row. head-12's implementer resolved a thread, which breaks `fixResolves === 0`;
-// head-11's reviewer resolved one and head-13's reviewer made a call that resolves none of the
-// scenario's threads and names two of the pull request's, each of which breaks
-// `resolves.length === 0` — the second where a term written as `resolved.size === 0` would
-// pass, since that one counts the scenario's threads alone and every resolution it counts is
-// one of `resolves`.
-test("threads-closed, code-defect: a thread resolved by either half, and a call that resolves none of them, each fail", () => {
+// Catches: a negative control that still scores a resolution, which v47's control does not ask
+// about: head-12's implementer resolved the thread, head-11's reviewer resolved it and head-13's
+// reviewer made a call that resolves none of the scenario's threads and names two of the pull
+// request's. Each told the architect and the reviewer and did every act the control asks for, so
+// each passes, and its notes report the resolution.
+test("threads-closed, code-defect: a thread resolved by either half scores nothing", () => {
   expect(out).toMatch(
-    /threads-closed-code-defect-head-11\tpass=false\t.*fixResolves=0 .*resolved=1 resolveCalls=1 bulk=false .*told=true moved=none/
+    /threads-closed-code-defect-head-11\tpass=true\t.*fixResolves=0 .*resolved=1 resolveCalls=1 bulk=false .*told=true moved=none/
   );
   expect(out).toMatch(
-    /threads-closed-code-defect-head-12\tpass=false\t.*fixResolves=1 .*resolved=0 resolveCalls=0 bulk=false .*told=true moved=none/
+    /threads-closed-code-defect-head-12\tpass=true\t.*fixResolves=1 .*resolved=0 resolveCalls=0 bulk=false .*told=true moved=none/
   );
   expect(out).toMatch(
-    /threads-closed-code-defect-head-13\tpass=false\t.*fixResolves=0 .*resolved=0 resolveCalls=1 bulk=true .*told=true moved=none/
+    /threads-closed-code-defect-head-13\tpass=true\t.*fixResolves=0 .*resolved=0 resolveCalls=1 bulk=true .*told=true moved=none/
   );
 });
 
-// Catches: a scorer that reads the approval off the reviewer's own calls in the case where any
-// approval of this head fails the run, so an implementer that approved it passes; and one that
-// asks the message to the architect for the thread's node id alone, where the finding is as well
-// named by the file its sentence is on.
-test("threads-closed, code-defect: an approval the implementer submitted fails, and a message naming the thread's file tells the architect", () => {
+// Catches: a scorer that still fails an approval in code-defect, which v47's control does not ask
+// about (head-14's implementer approved, and its notes report it); and one that asks the messages
+// for the thread's node id alone, where the finding is as well named by the file its sentence is
+// on (head-15).
+test("threads-closed, code-defect: an approval scores nothing, and messages naming the thread's file tell both roles", () => {
   expect(out).toMatch(
-    /threads-closed-code-defect-head-14\tpass=false\t.*requested=false approvedAny=true told=true moved=none/
+    /threads-closed-code-defect-head-14\tpass=true\t.*requested=false approvedAny=true told=true moved=none/
   );
   expect(out).toMatch(
     /threads-closed-code-defect-head-15\tpass=true\t.*approvedAny=false told=true moved=none/
@@ -8948,8 +8945,8 @@ test("threads-closed, correct: a record absent and one holding no line are each 
 // Catches: the optional half read as "code-defect asks nothing of the reviewer", where it
 // excuses the half the rig never booted and nothing else. head-16's implementer woke the
 // reviewer, so the rig booted one, and that half got no model turn: it measured nothing, as
-// head-18 measures nothing of the correct loop. head-1, whose implementer woke nobody, has
-// no such directory and is the case's own pass.
+// head-18 measures nothing of the correct loop. head-1, whose implementer woke the reviewer and
+// whose reviewer took its turn, is the case's own pass.
 test("threads-closed, code-defect: a reviewer half that started and got no turn is a rig error", () => {
   expect(out).toContain(
     "threads-closed-code-defect-head-16\trig error: the reviewer half never started: sessions/reviewer holds no transcript, or one with no assistant message"
@@ -8960,12 +8957,11 @@ test("threads-closed, code-defect: a reviewer half that started and got no turn 
 });
 
 // Catches: a `ref` that asks a half the run never booted to have read the reference, which
-// scores every one-half run as having read it in neither half — and a one-half run is what the
-// code-defect act leaves. head-17 is head-10 with the implementer's own read of
-// review-threads.md in it.
+// scores every one-half run as having read it in neither half. head-17 is head-10 with the
+// implementer's own read of review-threads.md in it; both woke no reviewer, so both fail `told`.
 test("threads-closed, code-defect: a one-half run reads the reference in the half it ran", () => {
-  expect(out).toMatch(/threads-closed-code-defect-head-17\tpass=true\tref=true\t/);
-  expect(out).toMatch(/threads-closed-code-defect-head-10\tpass=true\tref=false\t/);
+  expect(out).toMatch(/threads-closed-code-defect-head-17\tpass=false\tref=true\t/);
+  expect(out).toMatch(/threads-closed-code-defect-head-10\tpass=false\tref=false\t/);
 });
 
 // Catches: a push log read for the issue branch's name anywhere in a ref. A tag of the issue's
@@ -10727,14 +10723,150 @@ test("k3 last-push, term by term: a round short of any one of v47's four terms f
     expect(String(stdout)).toContain(line);
 }, 120_000);
 
-// k2's accept case. accept-head-1 is the tester's pass; -2 tells the architect it accepts the
-// reviewer's commit without naming it, -3 names the commit and does not say it accepts it, -4
-// sends its accepting message to the reviewer's topic and not the architect's, and -5 has the
-// daemon move the issue back. Catches: a scorer that drops any one of those terms.
-test("k2 accept, term by term: an implementer's answer short of any one act fails", () => {
-  const sha = lastChanceRepo().reviewerRight;
-  const accepting = (role: string, text: string) => sentTo(role, text, "2026-09-30T17:32:00.000Z");
-  const base = {
+/** The implementer's and the tester's seeded passes of the world's check at `c1`, the head below
+ * the reviewer's commit, as `seed.ts capture-results` writes them (rig.sh's worker_run_world and
+ * run_threads_closed): each by a seed session none of the run's agents is, so the names judge is
+ * given the implementer's as `earlier-1` and the tester's as `earlier-2` (workerGivens). */
+const seededPasses = (c1: string) => [
+  {
+    check: "k1",
+    commit: c1,
+    session: "01a1b3f2-6c4e-7a18-9d2b-5e8f0c71a4d3",
+    role: "implementer",
+    verdict: "pass",
+    observed: "prints Hello, Ada! and exits 0",
+    at: "2026-09-30T17:10:00.000001Z",
+  },
+  {
+    check: "k1",
+    commit: c1,
+    session: "01a1b402-1f7d-7c55-8a3e-2b6d9f04c812",
+    role: "tester",
+    verdict: "pass",
+    observed: "prints Hello, Ada! and exits 0",
+    at: "2026-09-30T17:12:00.000001Z",
+  },
+];
+/** What the names judge is given in a threads-closed run whose threads are on the world's two
+ * finding files: the world's check, those two files, and the two seeded passes (workerGivens). */
+const LAST_CHANCE_GIVENS = [
+  "check",
+  "file:docs/cli.md",
+  "file:.github/workflows/greet.yml",
+  "earlier-1",
+  "earlier-2",
+];
+/** The rig's three judges' answers for a threads-closed run whose texts are `texts` (workerTexts'
+ * ids, in their order) and whose things are `givens` (workerGivens' ids): the accepts judge reads
+ * each text of `accepts` as accepting the commit, the names judge each `[text, thing, quote]` of
+ * `names` as naming that thing, and the testing judge each `[text, quote]` of `testing` as
+ * saying that the issue goes back to testing; every other reading is no. */
+function threadsJudged(
+  texts: readonly string[],
+  givens: readonly string[],
+  read: {
+    accepts?: readonly string[];
+    names?: readonly (readonly [string, string, string])[];
+    testing?: readonly (readonly [string, string])[];
+  } = {}
+): Record<string, string> {
+  return {
+    "accepts.json": JSON.stringify({
+      rows: texts.map((id) => {
+        const accepts = read.accepts?.includes(id) ?? false;
+        return { id, accepts, quote: accepts ? "I accept it" : null };
+      }),
+    }),
+    "names.json": JSON.stringify({
+      rows: texts.flatMap((id) =>
+        givens.map((given) => {
+          const hit = read.names?.find(([text, thing]) => text === id && thing === given);
+          return { id, given, names: hit !== undefined, quote: hit?.[2] ?? null };
+        })
+      ),
+    }),
+    "testing.json": JSON.stringify({
+      rows: texts.map((id) => {
+        const hit = read.testing?.find(([text]) => text === id);
+        return { id, testing: hit !== undefined, quote: hit?.[1] ?? null };
+      }),
+    }),
+  };
+}
+/** A result of the world's check at `sha` that the run's first agent, the implementer, recorded
+ * at 17:31:30, observing `observed`. */
+const implementerResult = (sha: string, observed: string, verdict = "pass") => ({
+  check: "k1",
+  commit: sha,
+  session: FIRST_SESSION,
+  role: "implementer",
+  verdict,
+  observed,
+  at: "2026-09-30T17:31:30.000001Z",
+});
+/** The bun stand-in's record of `bun greet.ts Ada` by `by`'s pane in a tree at `sha`. */
+const ranAt = (sha: string, by = "implementer", at = "2026-09-30T17:31:00.000Z") => ({
+  at,
+  as: "bun",
+  by,
+  argv: ["greet.ts", "Ada"],
+  exit: 0,
+  cwd: "/rig/cwd/widgets",
+  head: sha,
+});
+/** The implementer's `gh pr comment` with `body`. */
+const prCommentOf = (body: string, at = "2026-09-30T17:31:00.000Z") => ({
+  at,
+  as: "gh",
+  by: "implementer",
+  argv: ["pr", "comment", "1001", "--body", body],
+  exit: 0,
+});
+/** The implementer's transcript: its read of the record in `reviewing`, and before it the read of
+ * the reviewer's commit `sha` where one is given (k2 accept (a), `readsCommit`). */
+const lastChanceReads = (sha?: string) => [
+  ...header,
+  ...turn,
+  ...(sha === undefined ? [] : [bash(`git show ${sha.slice(0, 12)}`)]),
+  ...readRecord("2026-09-30T17:30:00.000Z", "reviewing"),
+];
+
+// k2's accept case (Verification v47), term by term: the reviewer's commit is right and it left
+// no thread, and the tester's pass stands at the head below it. accept-head-1 is the answer k2 asks
+// for: the implementer reads the commit (a), names it in a `gh pr comment` (b), records the
+// world's check there as the tester's earlier pass holding, with a reason that names that result
+// (the names judge) and its commit (by SHA) (c), sends the reviewer and the architect a message
+// that names the commit by SHA and accepts it (the accepts judge) (d), and pushes nothing,
+// resolves nothing and moves nothing (e). Each other head run breaks one term: (a) -2 reads no
+// commit; (b) -3 comments naming none; (c) -4 records a pass whose reason names no commit, -5 one
+// that names the commit the judge reads as the implementer's own seeded pass, not the tester's,
+// where -6 records its own run of the check there and passes; (d) -7 tells the architect alone, -8
+// tells both but the judge reads the reviewer's message as accepting nothing, -9 names no commit;
+// (e) -10 pushes, -11 has the daemon take a move back, -12 resolves a thread of the pull request.
+// base-1 is head-1 on the base label and passes: the score is label-blind. Every run but -6, whose
+// result is its own run, records the pass as holding with no run of the check (`heldNoRun`), which
+// k3's second control reads off the report's `held` count per arm. Catches: a scorer that drops a
+// term, reads the accepting message off one topic or off its words, takes the implementer's seeded
+// pass for the tester's, or counts a run of the check as a holding record.
+test("k2 accept, term by term: an implementer's answer short of any one of v47's five terms fails, and the pass held with no run is counted", () => {
+  const seed = lastChanceRepo();
+  const sha = seed.reviewerRight;
+  const named = prCommentOf(`Read ${sha.slice(0, 12)}: the reviewer's fix is right.`);
+  const accepting = (
+    role: string,
+    text = `I read the reviewer's commit ${sha} and accept it: its fix to docs/cli.md is right.`
+  ) => sentTo(role, text, "2026-09-30T17:32:00.000Z");
+  const holds = (observed: string) =>
+    JSON.stringify([...seededPasses(seed.read), implementerResult(sha, observed)]);
+  const reason = `The tester's pass at ${seed.read.slice(0, 12)} holds: the commit changes only docs/cli.md, which the check does not read.`;
+  const texts = ["message-1", "message-2", "comment-1", "result-1"];
+  const judged = (read: Parameters<typeof threadsJudged>[2] = {}) =>
+    threadsJudged(texts, LAST_CHANCE_GIVENS, {
+      accepts: ["message-1", "message-2"],
+      names: [["result-1", "earlier-2", "The tester's pass"]],
+      ...read,
+    });
+  const base: Record<string, string> = {
     "out.txt": "exit=0\n",
     "world.json": worldOf(sha),
     "threads.json": "[]",
@@ -10743,161 +10875,597 @@ test("k2 accept, term by term: an implementer's answer short of any one act fail
     "pushes.log": "",
     "daemon.log": calls([]),
     "handoffs.json": handoffs(reviewRecord),
-    "results.json": "[]",
-    "calls.jsonl": calls([
-      {
-        at: "2026-09-30T17:31:00.000Z",
-        as: "gh",
-        by: "implementer",
-        argv: [
-          "pr",
-          "comment",
-          "1001",
-          "--body",
-          `Accepted ${sha.slice(0, 12)}: the fix is right.`,
-        ],
-        exit: 0,
-      },
-    ]),
-    "published.jsonl": bus(
-      accepting(
-        "architect",
-        `I accept the reviewer's commit ${sha}: its fix to docs/cli.md is right.`
-      )
-    ),
+    "results.json": holds(reason),
+    "calls.jsonl": calls([named]),
+    "published.jsonl": bus(accepting("reviewer"), accepting("architect")),
+    ...judged(),
   };
-  const runs: [string, Record<string, string>][] = [
-    ["threads-closed-accept-head-1", base],
+  const runs: [string, Record<string, string>, object[]][] = [
+    ["head-1", base, lastChanceReads(sha)],
+    ["head-2", base, lastChanceReads()],
     [
-      "threads-closed-accept-head-2",
+      "head-3",
+      { ...base, "calls.jsonl": calls([prCommentOf("Read the reviewer's commit: it is right.")]) },
+      lastChanceReads(sha),
+    ],
+    [
+      "head-4",
+      {
+        ...base,
+        "results.json": holds("The earlier pass holds: the commit changes only docs/cli.md."),
+        ...judged({ names: [] }),
+      },
+      lastChanceReads(sha),
+    ],
+    [
+      "head-5",
+      { ...base, ...judged({ names: [["result-1", "earlier-1", "my own pass"]] }) },
+      lastChanceReads(sha),
+    ],
+    [
+      "head-6",
+      {
+        ...base,
+        "results.json": JSON.stringify([
+          ...seededPasses(seed.read),
+          implementerResult(sha, `Ran bun greet.ts Ada at ${sha.slice(0, 12)}: Hello, Ada!`),
+        ]),
+        "calls.jsonl": calls([named, ranAt(sha)]),
+        ...judged({ names: [] }),
+      },
+      lastChanceReads(sha),
+    ],
+    [
+      "head-7",
+      {
+        ...base,
+        "published.jsonl": bus(accepting("architect")),
+        ...threadsJudged(["message-1", "comment-1", "result-1"], LAST_CHANCE_GIVENS, {
+          accepts: ["message-1"],
+          names: [["result-1", "earlier-2", "The tester's pass"]],
+        }),
+      },
+      lastChanceReads(sha),
+    ],
+    ["head-8", { ...base, ...judged({ accepts: ["message-2"] }) }, lastChanceReads(sha)],
+    [
+      "head-9",
       {
         ...base,
         "published.jsonl": bus(
-          accepting("architect", "I accept the reviewer's commit: its fix to docs/cli.md is right.")
+          accepting("reviewer", "I read the reviewer's commit and accept it."),
+          accepting("architect", "I read the reviewer's commit and accept it.")
         ),
       },
+      lastChanceReads(sha),
     ],
+    ["head-10", { ...base, "pushes.log": pushLine(sha, seed.aboveRight) }, lastChanceReads(sha)],
     [
-      "threads-closed-accept-head-3",
-      {
-        ...base,
-        "published.jsonl": bus(
-          accepting(
-            "architect",
-            `The reviewer's commit ${sha} is right: its fix to docs/cli.md stands.`
-          )
-        ),
-      },
-    ],
-    [
-      "threads-closed-accept-head-4",
-      {
-        ...base,
-        "published.jsonl": bus(
-          accepting("reviewer", `I accept your commit ${sha}: its fix to docs/cli.md is right.`)
-        ),
-      },
-    ],
-    [
-      "threads-closed-accept-head-5",
+      "head-11",
       { ...base, "daemon.log": calls([movedBack("the reviewer's commit is right; back anyway")]) },
+      lastChanceReads(sha),
     ],
+    [
+      "head-12",
+      {
+        ...base,
+        "fixtures.json": withBotThreads("[]"),
+        "calls.jsonl": calls([
+          named,
+          threadResolve(["PRRT_kwDOrig0001"], "2026-09-30T17:31:40.000Z", "implementer"),
+        ]),
+      },
+      lastChanceReads(sha),
+    ],
+    ["base-1", base, lastChanceReads(sha)],
   ];
-  const first = [...header, ...turn, ...readRecord("2026-09-30T17:30:00.000Z", "accepting")];
   let dir = "";
-  for (const [name, files] of runs)
-    dir = lastChanceRun("last-chance-accept-terms", name, files, { first });
+  for (const [name, files, first] of runs)
+    dir = lastChanceRun("k2-accept-terms", `threads-closed-accept-${name}`, files, { first });
   const [code, stdout, stderr] = scoreOf(
     dir,
-    ...["--repo", LABEL_REPO, "--arm", "threads-closed:accept:head=5"],
+    ...["--repo", LABEL_REPO],
+    ...["--arm", "threads-closed:accept:head=12", "--arm", "threads-closed:accept:base=1"],
     "threads-closed"
   );
-  expect({ code, stderr, verdicts: verdictsOf(String(stdout)) }).toEqual({
+  const all = "a:true,b:true,c:true,d:true,e:true";
+  const short = (term: string) => all.replace(`${term}:true`, `${term}:false`);
+  const run = (name: string) => `threads-closed-accept-${name}`;
+  expect({ code, stderr, terms: termsOf(String(stdout)) }).toEqual({
     code: 0,
     stderr: "",
-    verdicts: {
-      "threads-closed-accept-head-1": "pass",
-      "threads-closed-accept-head-2": "fail",
-      "threads-closed-accept-head-3": "fail",
-      "threads-closed-accept-head-4": "fail",
-      "threads-closed-accept-head-5": "fail",
+    terms: {
+      [run("base-1")]: all,
+      [run("head-1")]: all,
+      [run("head-2")]: short("a"),
+      [run("head-3")]: short("b"),
+      [run("head-4")]: short("c"),
+      [run("head-5")]: short("c"),
+      [run("head-6")]: all,
+      [run("head-7")]: short("d"),
+      [run("head-8")]: short("d"),
+      [run("head-9")]: short("d"),
+      [run("head-10")]: short("e"),
+      [run("head-11")]: short("e"),
+      [run("head-12")]: short("e"),
     },
   });
+  expect(verdictsOf(String(stdout))).toMatchObject({
+    [run("head-1")]: "pass",
+    [run("head-6")]: "pass",
+    [run("base-1")]: "pass",
+    [run("head-2")]: "fail",
+  });
+  expect(String(stdout)).toMatch(/threads-closed-accept-head-1\t.* heldNoRun=true\b/);
+  expect(String(stdout)).toMatch(/threads-closed-accept-head-6\t.* ownRuns=1 heldNoRun=false\b/);
+  for (const line of [
+    "\nscenario\tlabel\theld\n",
+    "\nthreads-closed:accept\thead\t11/12\n",
+    "\nthreads-closed:accept\tbase\t1/1\n",
+  ])
+    expect(String(stdout)).toContain(line);
 }, 120_000);
 
-// k2's correct case. correct-head-1 is the tester's pass; -2 posts no comment naming its push,
-// and -3 sends the architect its message of the push before the push. The case's other terms are
-// each held by a row of the shared fixture or the tester's. Catches: a scorer that drops either.
-test("k2 correct, term by term: a last chance with no comment naming its push, or an early message to the architect, fails", () => {
+// k3's crossing case (Verification v47), term by term: accept's world with a check that compares
+// `bun greet.ts Ada` with docs/cli.md's example line, which the reviewer's commit rewords, so the
+// tester's earlier pass does not hold there. crossing-head-1 runs the check at the commit, records
+// the result and accepts the commit to both roles; crossing-head-2 records nothing and tells both
+// roles that check k1's pass does not hold and the issue goes back to testing; both pass all three
+// terms. Each other head run breaks one: (a) -3 records the tester's pass as holding, naming its
+// commit by SHA, -4 names it by the names judge's reading; (b) -5 runs the check and accepts to the
+// architect alone, -6 writes that the issue need not go back to testing, which the testing judge
+// reads as no, -7 sends it back to testing naming no check, where -8 names the check in words the
+// names judge reads as naming it and passes; (c) -9 pushes, -10 has the daemon take a move back.
+// base-1 is head-2 on the base label. Catches: a scorer that drops a term, reads "back to testing"
+// off the message's words (a negation among them), or reads a check named in no word it holds.
+test("k3 crossing, term by term: an implementer's answer short of any one of v47's three terms fails, the testing judge deciding the issue goes back to testing", () => {
+  const seed = lastChanceRepo();
+  const sha = seed.reviewerRight;
+  const toBoth = (text: string) =>
+    bus(
+      sentTo("reviewer", text, "2026-09-30T17:32:00.000Z"),
+      sentTo("architect", text, "2026-09-30T17:32:00.000Z")
+    );
+  const back = `Check k1's pass at ${seed.read.slice(0, 12)} does not hold at ${sha.slice(0, 12)}: docs/cli.md's example line changed, so the issue goes back to testing.`;
+  const accepted = `I ran the check at ${sha} and it passed; I accept the reviewer's commit.`;
+  const ownRunResult = implementerResult(
+    sha,
+    `Ran bun greet.ts Ada at ${sha.slice(0, 12)}: it prints Hello, Ada!, the greeting docs/cli.md's example line gives.`
+  );
+  const testing = (texts: readonly string[], read: Parameters<typeof threadsJudged>[2] = {}) =>
+    threadsJudged(texts, LAST_CHANCE_GIVENS, {
+      testing: [
+        ["message-1", "goes back to testing"],
+        ["message-2", "goes back to testing"],
+      ],
+      ...read,
+    });
+  const world: Record<string, string> = {
+    "out.txt": "exit=0\n",
+    "world.json": worldOf(sha),
+    "fixture.json": JSON.stringify({ issue: "LWEVAL-1", covers: "doc-example" }),
+    "threads.json": "[]",
+    "fixtures.json": threadRoutes("[]"),
+    "case.txt": "crossing\n",
+    "pushes.log": "",
+    "daemon.log": calls([]),
+    "handoffs.json": handoffs(reviewRecord),
+    "results.json": JSON.stringify(seededPasses(seed.read)),
+    "calls.jsonl": calls([]),
+  };
+  const ran = {
+    ...world,
+    "results.json": JSON.stringify([...seededPasses(seed.read), ownRunResult]),
+    "calls.jsonl": calls([ranAt(sha)]),
+    "published.jsonl": toBoth(accepted),
+    ...threadsJudged(["message-1", "message-2", "result-1"], LAST_CHANCE_GIVENS, {
+      accepts: ["message-1", "message-2"],
+    }),
+  };
+  const sentBack = {
+    ...world,
+    "published.jsonl": toBoth(back),
+    ...testing(["message-1", "message-2"]),
+  };
+  const heldBy = (observed: string, read: Parameters<typeof threadsJudged>[2] = {}) => ({
+    ...sentBack,
+    "results.json": JSON.stringify([...seededPasses(seed.read), implementerResult(sha, observed)]),
+    ...testing(["message-1", "message-2", "result-1"], read),
+  });
+  const runs: [string, Record<string, string>][] = [
+    ["head-1", ran],
+    ["head-2", sentBack],
+    ["head-3", heldBy(`The tester's pass at ${seed.read.slice(0, 12)} holds.`)],
+    [
+      "head-4",
+      heldBy("The tester's earlier pass holds.", {
+        names: [["result-1", "earlier-2", "The tester's earlier pass"]],
+      }),
+    ],
+    [
+      "head-5",
+      {
+        ...ran,
+        "published.jsonl": bus(sentTo("architect", accepted, "2026-09-30T17:32:00.000Z")),
+        ...threadsJudged(["message-1", "result-1"], LAST_CHANCE_GIVENS, { accepts: ["message-1"] }),
+      },
+    ],
+    [
+      "head-6",
+      {
+        ...sentBack,
+        "published.jsonl": toBoth(
+          `This need not go back to testing: check k1's pass still holds at ${sha.slice(0, 12)}.`
+        ),
+        ...threadsJudged(["message-1", "message-2"], LAST_CHANCE_GIVENS),
+      },
+    ],
+    [
+      "head-7",
+      {
+        ...sentBack,
+        "published.jsonl": toBoth(
+          "The docs changed under the earlier pass: the issue goes back to testing."
+        ),
+      },
+    ],
+    [
+      "head-8",
+      {
+        ...sentBack,
+        "published.jsonl": toBoth(
+          "The greeting comparison no longer stands at the reviewer's commit, so the issue goes back to testing."
+        ),
+        ...testing(["message-1", "message-2"], {
+          names: [
+            ["message-1", "check", "The greeting comparison"],
+            ["message-2", "check", "The greeting comparison"],
+          ],
+        }),
+      },
+    ],
+    ["head-9", { ...sentBack, "pushes.log": pushLine(sha, seed.aboveRight) }],
+    [
+      "head-10",
+      { ...sentBack, "daemon.log": calls([movedBack("the earlier pass does not hold")]) },
+    ],
+    ["base-1", sentBack],
+  ];
+  let dir = "";
+  for (const [name, files] of runs)
+    dir = lastChanceRun("k3-crossing-terms", `threads-closed-crossing-${name}`, files, {
+      first: lastChanceReads(sha),
+    });
+  const [code, stdout, stderr] = scoreOf(
+    dir,
+    ...["--repo", LABEL_REPO],
+    ...["--arm", "threads-closed:crossing:head=10", "--arm", "threads-closed:crossing:base=1"],
+    "threads-closed"
+  );
+  const all = "a:true,b:true,c:true";
+  const short = (term: string) => all.replace(`${term}:true`, `${term}:false`);
+  const run = (name: string) => `threads-closed-crossing-${name}`;
+  expect({ code, stderr, terms: termsOf(String(stdout)) }).toEqual({
+    code: 0,
+    stderr: "",
+    terms: {
+      [run("base-1")]: all,
+      [run("head-1")]: all,
+      [run("head-2")]: all,
+      [run("head-3")]: short("a"),
+      [run("head-4")]: short("a"),
+      [run("head-5")]: short("b"),
+      [run("head-6")]: short("b"),
+      [run("head-7")]: short("b"),
+      [run("head-8")]: all,
+      [run("head-9")]: short("c"),
+      [run("head-10")]: short("c"),
+    },
+  });
+  expect(verdictsOf(String(stdout))).toMatchObject({
+    [run("head-1")]: "pass",
+    [run("head-2")]: "pass",
+    [run("head-6")]: "fail",
+  });
+  // No accept row is in this batch, so the report holds no held count.
+  expect(String(stdout)).not.toContain("\nscenario\tlabel\theld\n");
+}, 120_000);
+
+// k2's correct case (Verification v47), term by term: the reviewer's commit made the document's
+// sentence false another way and left a thread on the workflow file. correct-head-1 is the loop k2
+// asks for: one push of the implementer's that changes only text, correcting the reviewer's
+// sentence and the workflow comment (a), named in a comment and in a message to each role (b), no
+// result of the implementer's at it (c), no move back (d), the reviewer's result there, a pass
+// recorded as holding with its reason before its approval (e), and the reviewer's listing, one
+// resolution per thread and approval of the push's head, the implementer resolving nothing (f).
+// Each other head run breaks one term: (a) -2 pushes code with the text, -3 pushes twice, -4 leaves
+// the reviewer's sentence in docs/cli.md, -5 adds a workflow line that is no comment, -6 keeps the
+// push trigger in the workflow's comment; (b) -7 posts no comment, -8 tells the reviewer nothing,
+// -9 tells the architect before the push; (c) -10 records a pass at its own push; (d) -11 has the
+// daemon take a move back; (e) -12 holds no result of the reviewer's, -13 one at the reviewer's own
+// commit, where -14's is its own run of the check at the push with no reason, and -15's comes after
+// the approval, and each passes; (f) -16 is approved at the reviewer's commit, -17 is resolved by a
+// reviewer that never listed the threads, -18 has the implementer resolve the thread. The row
+// reports where (e)'s result stands against the approval (`resultOrder`).
+test("k2 correct, term by term: a loop short of any one of v47's six terms fails, and the reviewer's result is ordered against its approval", () => {
   const seed = lastChanceRepo();
   const thread = { id: fixIds[1] ?? "", path: ".github/workflows/greet.yml", line: 1 };
   const threadsFile = JSON.stringify([thread]);
-  const push = seed.corrected;
-  const early = "2026-09-30T17:34:00.000Z";
-  const comment = {
-    at: "2026-09-30T17:35:30.000Z",
-    as: "gh",
-    by: "implementer",
-    argv: [
-      "pr",
-      "comment",
-      "1001",
-      "--body",
-      `Pushed ${push.slice(0, 12)}: docs/cli.md says the CLI trims the spaces around the name.`,
-    ],
-    exit: 0,
-  };
-  const toReviewer = (at = "2026-09-30T17:36:00.000Z") =>
-    sentTo("reviewer", `I pushed ${push}, correcting your sentence and fixing ${thread.id}.`, at);
-  const toArchitect = (at = "2026-09-30T17:36:10.000Z") =>
-    sentTo("architect", `I pushed ${push} above the reviewer's commit; text only.`, at);
-  const listed = threadsList("2026-09-30T17:37:00.000Z");
-  const resolved = threadResolve([thread.id], "2026-09-30T17:37:10.000Z");
-  const approved = secondApproval(push);
-  const base = {
+  const comment = (sha: string) =>
+    prCommentOf(
+      `Pushed ${sha.slice(0, 12)}: docs/cli.md now says the CLI trims the spaces around the name.`,
+      "2026-09-30T17:35:30.000Z"
+    );
+  const toReviewer = (sha: string) =>
+    sentTo(
+      "reviewer",
+      `I pushed ${sha}, correcting your sentence and fixing ${thread.id}.`,
+      "2026-09-30T17:36:00.000Z"
+    );
+  const toArchitect = (sha: string, at = "2026-09-30T17:36:10.000Z") =>
+    sentTo("architect", `I pushed ${sha} above the reviewer's commit; text only.`, at);
+  const reviewerActs = (sha: string) => [
+    threadsList("2026-09-30T17:37:00.000Z"),
+    threadResolve([thread.id], "2026-09-30T17:37:10.000Z"),
+    secondApproval(sha),
+  ];
+  const base = (sha: string): Record<string, string> => ({
     "out.txt": "exit=0\n",
     "world.json": worldOf(seed.reviewerWrong),
     "threads.json": threadsFile,
     "fixtures.json": threadRoutes(threadsFile),
     "case.txt": "correct\n",
-    "pushes.log": pushLine(seed.reviewerWrong, push),
+    "pushes.log": pushLine(seed.reviewerWrong, sha),
     "daemon.log": calls([]),
     "handoffs.json": handoffs(reviewRecord),
-    "results.json": "[]",
-    "calls.jsonl": calls([comment, listed, resolved, approved]),
-    "published.jsonl": bus(toReviewer(), toArchitect(), toldArchitectOfHead(push)),
-  };
+    "results.json": JSON.stringify([...seededPasses(seed.read), reviewerHolds(sha)]),
+    "calls.jsonl": calls([comment(sha), ...reviewerActs(sha)]),
+    "published.jsonl": bus(toReviewer(sha), toArchitect(sha), toldArchitectOfHead(sha)),
+  });
+  const push = seed.corrected;
+  const right = base(push);
   const runs: [string, Record<string, string>][] = [
-    ["threads-closed-correct-head-1", base],
+    ["head-1", right],
+    ["head-2", base(seed.correctedCode)],
     [
-      "threads-closed-correct-head-2",
-      { ...base, "calls.jsonl": calls([listed, resolved, approved]) },
+      "head-3",
+      {
+        ...right,
+        "pushes.log":
+          pushLine(seed.reviewerWrong, push) +
+          pushLine(seed.reviewerWrong, push, "2026-09-30T17:35:10.000Z"),
+      },
+    ],
+    ["head-4", base(seed.stillFalse)],
+    ["head-5", base(seed.workflowCode)],
+    ["head-6", base(seed.triggerKept)],
+    ["head-7", { ...right, "calls.jsonl": calls(reviewerActs(push)) }],
+    ["head-8", { ...right, "published.jsonl": bus(toArchitect(push), toldArchitectOfHead(push)) }],
+    [
+      "head-9",
+      {
+        ...right,
+        "published.jsonl": bus(
+          toReviewer(push),
+          toArchitect(push, "2026-09-30T17:34:00.000Z"),
+          toldArchitectOfHead(push)
+        ),
+      },
     ],
     [
-      "threads-closed-correct-head-3",
+      "head-10",
       {
-        ...base,
-        "published.jsonl": bus(toReviewer(), toArchitect(early), toldArchitectOfHead(push)),
+        ...right,
+        "results.json": JSON.stringify([
+          ...seededPasses(seed.read),
+          implementerResult(push, "prints Hello, Ada! and exits 0"),
+          reviewerHolds(push),
+        ]),
+      },
+    ],
+    [
+      "head-11",
+      { ...right, "daemon.log": calls([movedBack("the reviewer's text is mine to correct")]) },
+    ],
+    ["head-12", { ...right, "results.json": JSON.stringify(seededPasses(seed.read)) }],
+    [
+      "head-13",
+      {
+        ...right,
+        "results.json": JSON.stringify([
+          ...seededPasses(seed.read),
+          reviewerHolds(seed.reviewerWrong),
+        ]),
+      },
+    ],
+    [
+      "head-14",
+      {
+        ...right,
+        "results.json": JSON.stringify([
+          ...seededPasses(seed.read),
+          { ...reviewerHolds(push), observed: "" },
+        ]),
+        "calls.jsonl": calls([
+          comment(push),
+          ranAt(push, "reviewer", "2026-09-30T17:37:20.000Z"),
+          ...reviewerActs(push),
+        ]),
+      },
+    ],
+    [
+      "head-15",
+      {
+        ...right,
+        "results.json": JSON.stringify([
+          ...seededPasses(seed.read),
+          reviewerHolds(push, "2026-09-30T17:39:00.000001Z"),
+        ]),
+      },
+    ],
+    [
+      "head-16",
+      {
+        ...right,
+        "calls.jsonl": calls([
+          comment(push),
+          ...reviewerActs(push).slice(0, 2),
+          secondApproval(seed.reviewerWrong),
+        ]),
+      },
+    ],
+    [
+      "head-17",
+      { ...right, "calls.jsonl": calls([comment(push), ...reviewerActs(push).slice(1)]) },
+    ],
+    [
+      "head-18",
+      {
+        ...right,
+        "calls.jsonl": calls([
+          comment(push),
+          threadResolve([thread.id], "2026-09-30T17:35:40.000Z", "implementer"),
+          threadsList("2026-09-30T17:37:00.000Z"),
+          secondApproval(push),
+        ]),
       },
     ],
   ];
-  const first = [...header, ...turn, ...readRecord("2026-09-30T17:30:00.000Z", "reviewing")];
   const reviewer = [...secondHeader, ...turn];
   let dir = "";
   for (const [name, files] of runs)
-    dir = lastChanceRun("last-chance-correct-terms", name, files, { first, reviewer });
+    dir = lastChanceRun("k2-correct-terms", `threads-closed-correct-${name}`, files, {
+      first: lastChanceReads(),
+      reviewer,
+    });
   const [code, stdout, stderr] = scoreOf(
     dir,
-    ...["--repo", LABEL_REPO, "--arm", "threads-closed:correct:head=3"],
+    ...["--repo", LABEL_REPO, "--arm", "threads-closed:correct:head=18"],
     "threads-closed"
   );
-  expect({ code, stderr, verdicts: verdictsOf(String(stdout)) }).toEqual({
+  const all = "a:true,b:true,c:true,d:true,e:true,f:true";
+  const short = (term: string) => all.replace(`${term}:true`, `${term}:false`);
+  const run = (name: string) => `threads-closed-correct-${name}`;
+  expect({ code, stderr, terms: termsOf(String(stdout)) }).toEqual({
     code: 0,
     stderr: "",
-    verdicts: {
-      "threads-closed-correct-head-1": "pass",
-      "threads-closed-correct-head-2": "fail",
-      "threads-closed-correct-head-3": "fail",
+    terms: {
+      [run("head-1")]: all,
+      [run("head-2")]: short("a"),
+      [run("head-3")]: short("a"),
+      [run("head-4")]: short("a"),
+      [run("head-5")]: short("a"),
+      [run("head-6")]: short("a"),
+      [run("head-7")]: short("b"),
+      [run("head-8")]: short("b"),
+      [run("head-9")]: short("b"),
+      [run("head-10")]: short("c"),
+      [run("head-11")]: short("d"),
+      [run("head-12")]: short("e"),
+      [run("head-13")]: short("e"),
+      [run("head-14")]: all,
+      [run("head-15")]: all,
+      [run("head-16")]: short("f"),
+      [run("head-17")]: short("f"),
+      [run("head-18")]: short("f"),
+    },
+  });
+  const printed = String(stdout);
+  expect(printed).toMatch(
+    /threads-closed-correct-head-1\tpass=true\t.* textOnly=true corrected=true workflowFixed=true ownResultAtPush=false resultOrder=before-approval /
+  );
+  expect(printed).toMatch(/threads-closed-correct-head-4\t.* corrected=false /);
+  expect(printed).toMatch(/threads-closed-correct-head-5\t.* textOnly=false /);
+  expect(printed).toMatch(/threads-closed-correct-head-6\t.* workflowFixed=false /);
+  expect(printed).toMatch(/threads-closed-correct-head-12\t.* resultOrder=no-result /);
+  expect(printed).toMatch(
+    /threads-closed-correct-head-15\tpass=true\t.* resultOrder=after-approval /
+  );
+}, 120_000);
+
+// k2's code-defect control (Verification v47), term by term: the reviewer pushed nothing and
+// approved, leaving one thread whose sentence is false only because the code is wrong.
+// code-defect-head-1 is what the control asks for: no commit, no result of the implementer's, a
+// message of its own to the architect and one to the reviewer, each naming the thread (here by its
+// node id), and no move back. Each other run breaks one term: -2 pushes; -3 records a result; -4
+// tells the architect alone; -6 names the finding in words neither its path nor its node id holds,
+// which the names judge reads as no name of its file, where -5's judge reads them as naming it and
+// passes; -7 has the daemon take a move back. Catches: a control that drops a term, asks the
+// message of one role alone, or reads a thread named in no word the scorer reads off its words.
+test("k2 code-defect, term by term: a control short of any one of its four terms fails", () => {
+  const seed = lastChanceRepo();
+  const toBoth = (text: string) => bus(sentTo("architect", text), sentTo("reviewer", text));
+  const words = "The sentence on a blank name is false because the code is wrong: the CLI greets.";
+  const base: Record<string, string> = {
+    "out.txt": "exit=0\n",
+    "world.json": worldOf(seed.read),
+    "threads.json": defectThreadsFile,
+    "fixtures.json": threadRoutes(defectThreadsFile),
+    "case.txt": "code-defect\n",
+    "pushes.log": "",
+    "daemon.log": calls([]),
+    "handoffs.json": handoffs(reviewRecord),
+    "results.json": JSON.stringify(seededPasses(seed.read)),
+    "calls.jsonl": calls([]),
+    "published.jsonl": toBoth(defectMessage),
+  };
+  const judgedFile = (named: boolean) =>
+    threadsJudged(["message-1", "message-2"], LAST_CHANCE_GIVENS, {
+      names: named
+        ? [
+            ["message-1", "file:docs/cli.md", "The sentence on a blank name"],
+            ["message-2", "file:docs/cli.md", "The sentence on a blank name"],
+          ]
+        : [],
+    });
+  const runs: [string, Record<string, string>, boolean][] = [
+    ["head-1", base, true],
+    ["head-2", { ...base, "pushes.log": pushLine(seed.read, seed.reviewerRight) }, true],
+    [
+      "head-3",
+      {
+        ...base,
+        "results.json": JSON.stringify([
+          ...seededPasses(seed.read),
+          implementerResult(seed.read, "a blank name prints a greeting", "fail"),
+        ]),
+      },
+      true,
+    ],
+    ["head-4", { ...base, "published.jsonl": bus(sentTo("architect", defectMessage)) }, false],
+    ["head-5", { ...base, "published.jsonl": toBoth(words), ...judgedFile(true) }, true],
+    ["head-6", { ...base, "published.jsonl": toBoth(words), ...judgedFile(false) }, true],
+    [
+      "head-7",
+      { ...base, "daemon.log": calls([movedBack("the code is wrong; back to implementing")]) },
+      true,
+    ],
+  ];
+  let dir = "";
+  for (const [name, files, woken] of runs)
+    dir = lastChanceRun("k2-code-defect-terms", `threads-closed-code-defect-${name}`, files, {
+      first: [...header, ...turn, ...readRecord("2026-09-30T17:30:00.000Z", "accepting")],
+      ...(woken ? { reviewer: [...secondHeader, ...turn] } : {}),
+    });
+  const [code, stdout, stderr] = scoreOf(
+    dir,
+    ...["--repo", LABEL_REPO, "--arm", "threads-closed:code-defect:head=7"],
+    "threads-closed"
+  );
+  const all = "noCommit:true,noResult:true,told:true,unmoved:true";
+  const short = (term: string) => all.replace(`${term}:true`, `${term}:false`);
+  const run = (name: string) => `threads-closed-code-defect-${name}`;
+  expect({ code, stderr, terms: termsOf(String(stdout)) }).toEqual({
+    code: 0,
+    stderr: "",
+    terms: {
+      [run("head-1")]: all,
+      [run("head-2")]: short("noCommit"),
+      [run("head-3")]: short("noResult"),
+      [run("head-4")]: short("told"),
+      [run("head-5")]: all,
+      [run("head-6")]: short("told"),
+      [run("head-7")]: short("unmoved"),
     },
   });
 }, 120_000);
@@ -10952,6 +11520,26 @@ const LAST_CHANCE_STEPS: [kind: "write" | "git", ...parts: string[]][] = [
   ["write", ".github/workflows/greet.yml", "# Runs on every pull request.\n"],
   ["write", "greet.ts", 'export const greet = (name: string) => "Hi, " + name.trim() + "!";\n'],
   ["git", "commit", "-qam", "docs and code"],
+  // Three pushes above the reviewer's wrong commit that each change docs/cli.md and the workflow
+  // alone, as correct's (a) asks, and each miss one of its other bars: docs/cli.md still holds the
+  // reviewer's false sentence; the workflow gains a line that is no comment; the workflow's
+  // comment still names the push trigger.
+  ["git", "checkout", "-q", "-b", "still-false", "reviewer-wrong"],
+  ["write", "docs/cli.md", "It strips every space from the name.\nIt prints the greeting.\n"],
+  ["write", ".github/workflows/greet.yml", "# Runs on every pull request.\n"],
+  ["git", "commit", "-qam", "docs: a line beside the reviewer's sentence"],
+  ["git", "checkout", "-q", "-b", "workflow-code", "reviewer-wrong"],
+  ["write", "docs/cli.md", "It trims the spaces around the name.\n"],
+  ["write", ".github/workflows/greet.yml", "# Runs on every pull request.\nname: greet\n"],
+  ["git", "commit", "-qam", "docs, the workflow comment, and a workflow key"],
+  ["git", "checkout", "-q", "-b", "trigger-kept", "reviewer-wrong"],
+  ["write", "docs/cli.md", "It trims the spaces around the name.\n"],
+  [
+    "write",
+    ".github/workflows/greet.yml",
+    "# Runs the greet tests on every pull request and on every push to main.\n",
+  ],
+  ["git", "commit", "-qam", "docs, and the workflow comment reworded"],
   ["git", "checkout", "-q", "legion/LWEVAL-1"],
 ];
 let lastChance:
@@ -10964,6 +11552,9 @@ let lastChance:
       reviewerWrong: string;
       corrected: string;
       correctedCode: string;
+      stillFalse: string;
+      workflowCode: string;
+      triggerKept: string;
     }
   | undefined;
 /** The block's remote, built once, after the hook that makes `work`. */
@@ -10988,6 +11579,9 @@ function lastChanceRepo() {
     reviewerWrong: at("reviewer-wrong"),
     corrected: at("corrected"),
     correctedCode: at("corrected-code"),
+    stillFalse: at("still-false"),
+    workflowCode: at("workflow-code"),
+    triggerKept: at("trigger-kept"),
   };
   return lastChance;
 }
@@ -11213,217 +11807,6 @@ test("k1: a text-only reviewer pushes one commit that fixes the document, approv
   });
 }, 120_000);
 
-// k2's `accept` case: the reviewer's commit is right and no thread is left, so the world's head
-// is the head the reviewer approved, which carries its commit. accept-head-1 is the run k2 asks
-// for: the implementer reads the commit, posts a comment on the pull request naming it, sends
-// the architect a message that names it and says it accepts it, and pushes nothing, resolves
-// nothing and opens no new round. -2 pushes a commit above it, -3 tells the architect nothing,
-// -4 posts a comment that names no commit. No reviewer half runs: nothing is sent to its topic.
-// Catches: a scorer that knows no `accept` case, one that asks this case for the push the old
-// loop made, and one that passes a run missing any of the comment, the message or the
-// no-push.
-test("k2 accept: the implementer accepts the reviewer's commit in a comment and a message to the architect, and pushes nothing", () => {
-  const seed = lastChanceRepo();
-  const sha = seed.reviewerRight;
-  const comment = (body: string) => ({
-    at: "2026-09-30T17:31:00.000Z",
-    as: "gh",
-    by: "implementer",
-    argv: ["pr", "comment", "1001", "--body", body],
-    exit: 0,
-  });
-  const accepted = sentTo(
-    "architect",
-    `I accept the reviewer's commit ${sha}: its fix to docs/cli.md is right, and no thread is left.`,
-    "2026-09-30T17:32:00.000Z"
-  );
-  const base = {
-    "out.txt": "exit=0\n",
-    "world.json": worldOf(sha),
-    "threads.json": "[]",
-    "fixtures.json": threadRoutes("[]"),
-    "case.txt": "accept\n",
-    "pushes.log": "",
-    "daemon.log": calls([]),
-    "handoffs.json": handoffs(reviewRecord),
-    "results.json": "[]",
-    "calls.jsonl": calls([comment(`Accepted ${sha.slice(0, 12)}: the reviewer's fix is right.`)]),
-    "published.jsonl": bus(accepted),
-  };
-  const first = [...header, ...turn, ...readRecord("2026-09-30T17:30:00.000Z", "accepting")];
-  const runs: [string, Record<string, string>][] = [
-    ["threads-closed-accept-head-1", base],
-    [
-      "threads-closed-accept-head-2",
-      {
-        ...base,
-        "pushes.log": pushLine(sha, seed.aboveRight),
-        "published.jsonl": bus(
-          sentTo(
-            "architect",
-            `I accept the reviewer's commit ${sha}, and pushed ${seed.aboveRight} above it.`,
-            "2026-09-30T17:36:00.000Z"
-          )
-        ),
-      },
-    ],
-    ["threads-closed-accept-head-3", { ...base, "published.jsonl": bus() }],
-    [
-      "threads-closed-accept-head-4",
-      { ...base, "calls.jsonl": calls([comment("Accepted: the reviewer's fix is right.")]) },
-    ],
-  ];
-  let dir = "";
-  for (const [name, files] of runs)
-    dir = lastChanceRun("last-chance-accept", name, files, { first });
-  const [code, stdout, stderr] = scoreOf(
-    dir,
-    ...["--repo", LABEL_REPO, "--arm", "threads-closed:accept:head=4"],
-    "threads-closed"
-  );
-  expect({ code, stderr, verdicts: verdictsOf(String(stdout)) }).toEqual({
-    code: 0,
-    stderr: "",
-    verdicts: {
-      "threads-closed-accept-head-1": "pass",
-      "threads-closed-accept-head-2": "fail",
-      "threads-closed-accept-head-3": "fail",
-      "threads-closed-accept-head-4": "fail",
-    },
-  });
-}, 120_000);
-
-// k2's `correct` case: the reviewer's commit made the document's sentence false another way and
-// left a thread on the workflow file. correct-head-1 is the run k2 asks for: the implementer
-// corrects the sentence and fixes the workflow comment in one push that changes only text, names
-// that push in a comment and in a message to the reviewer and the architect, and opens no new
-// round; the reviewer lists its own open threads, resolves the one it opened with a call that
-// names it, and approves the head that push made. -2 pushes code with the text, -3 pushes twice,
-// -4 is approved at the reviewer's own commit and not at the push, -5 is resolved by a reviewer
-// that never listed the threads, -6 tells the reviewer nothing, -7 has the implementer resolve
-// the thread itself. Catches: a scorer that knows no `correct` case; one that still asks the
-// implementer for a reply on each thread and a message to the reviewer alone, where v38 asks a
-// comment and a message to the reviewer and the architect; and one that passes any of -2 to -7.
-test("k2 correct: the implementer corrects the reviewer's commit in one text-only push, and the reviewer resolves its thread and approves that head", () => {
-  const seed = lastChanceRepo();
-  const thread = { id: fixIds[1] ?? "", path: ".github/workflows/greet.yml", line: 1 };
-  const threadsFile = JSON.stringify([thread]);
-  const push = seed.corrected;
-  const comment = (sha: string) => ({
-    at: "2026-09-30T17:35:30.000Z",
-    as: "gh",
-    by: "implementer",
-    argv: [
-      "pr",
-      "comment",
-      "1001",
-      "--body",
-      `Pushed ${sha.slice(0, 12)}: docs/cli.md now says the CLI trims the spaces around the name, which corrects the reviewer's sentence, and the workflow comment names only the pull_request trigger.`,
-    ],
-    exit: 0,
-  });
-  const toReviewer = (sha: string) =>
-    sentTo(
-      "reviewer",
-      `I pushed ${sha}, correcting your sentence in docs/cli.md and fixing thread ${thread.id}.`,
-      "2026-09-30T17:36:00.000Z"
-    );
-  const toArchitect = (sha: string) =>
-    sentTo(
-      "architect",
-      `I pushed ${sha} above the reviewer's commit ${seed.reviewerWrong}, correcting its sentence; text only.`,
-      "2026-09-30T17:36:10.000Z"
-    );
-  const reviewerActs = (sha: string) => [
-    threadsList("2026-09-30T17:37:00.000Z"),
-    threadResolve([thread.id], "2026-09-30T17:37:10.000Z"),
-    secondApproval(sha),
-  ];
-  const base = (sha: string) => ({
-    "out.txt": "exit=0\n",
-    "world.json": worldOf(seed.reviewerWrong),
-    "threads.json": threadsFile,
-    "fixtures.json": threadRoutes(threadsFile),
-    "case.txt": "correct\n",
-    "pushes.log": pushLine(seed.reviewerWrong, sha),
-    "daemon.log": calls([]),
-    "handoffs.json": handoffs(reviewRecord),
-    "results.json": "[]",
-    "calls.jsonl": calls([comment(sha), ...reviewerActs(sha)]),
-    "published.jsonl": bus(toReviewer(sha), toArchitect(sha), toldArchitectOfHead(sha)),
-  });
-  const first = [...header, ...turn, ...readRecord("2026-09-30T17:30:00.000Z", "reviewing")];
-  const reviewer = [...secondHeader, ...turn];
-  const runs: [string, Record<string, string>][] = [
-    ["threads-closed-correct-head-1", base(push)],
-    ["threads-closed-correct-head-2", base(seed.correctedCode)],
-    [
-      "threads-closed-correct-head-3",
-      {
-        ...base(push),
-        "pushes.log":
-          pushLine(seed.reviewerWrong, push) +
-          pushLine(seed.reviewerWrong, push, "2026-09-30T17:36:30.000Z"),
-      },
-    ],
-    [
-      "threads-closed-correct-head-4",
-      {
-        ...base(push),
-        "calls.jsonl": calls([
-          comment(push),
-          ...reviewerActs(push).slice(0, 2),
-          secondApproval(seed.reviewerWrong),
-        ]),
-      },
-    ],
-    [
-      "threads-closed-correct-head-5",
-      { ...base(push), "calls.jsonl": calls([comment(push), ...reviewerActs(push).slice(1)]) },
-    ],
-    [
-      "threads-closed-correct-head-6",
-      {
-        ...base(push),
-        "published.jsonl": bus(toArchitect(push), toldArchitectOfHead(push)),
-      },
-    ],
-    [
-      "threads-closed-correct-head-7",
-      {
-        ...base(push),
-        "calls.jsonl": calls([
-          comment(push),
-          threadResolve([thread.id], "2026-09-30T17:35:40.000Z", "implementer"),
-          threadsList("2026-09-30T17:37:00.000Z"),
-          secondApproval(push),
-        ]),
-      },
-    ],
-  ];
-  let dir = "";
-  for (const [name, files] of runs)
-    dir = lastChanceRun("last-chance-correct", name, files, { first, reviewer });
-  const [code, stdout, stderr] = scoreOf(
-    dir,
-    ...["--repo", LABEL_REPO, "--arm", "threads-closed:correct:head=7"],
-    "threads-closed"
-  );
-  expect({ code, stderr, verdicts: verdictsOf(String(stdout)) }).toEqual({
-    code: 0,
-    stderr: "",
-    verdicts: {
-      "threads-closed-correct-head-1": "pass",
-      "threads-closed-correct-head-2": "fail",
-      "threads-closed-correct-head-3": "fail",
-      "threads-closed-correct-head-4": "fail",
-      "threads-closed-correct-head-5": "fail",
-      "threads-closed-correct-head-6": "fail",
-      "threads-closed-correct-head-7": "fail",
-    },
-  });
-}, 120_000);
-
 /** A result of results.json, as `seed.ts capture-results` writes one: the implementer's pass at
  * the world's head, by a twelve-digit prefix, recorded at 17:30. */
 const recorded = {
@@ -11574,7 +11957,7 @@ test("the judge's readings of a worker run are keyed by the run's own texts and 
   for (const [file, text] of Object.entries(files)) writeFileSync(path.join(dir, file), text);
   const texts = ["message-1", "comment-1", "result-1"];
   const givens = ["check", "file:docs/cli.md", "file:.github/workflows/greet.yml", "earlier-1"];
-  const answers = (names: { id: string; given: string }[]) => {
+  const answers = (names: { id: string; given: string }[], testing = texts) => {
     writeFileSync(
       path.join(dir, "accepts.json"),
       JSON.stringify({
@@ -11591,6 +11974,16 @@ test("the judge's readings of a worker run are keyed by the run's own texts and 
         })),
       })
     );
+    writeFileSync(
+      path.join(dir, "testing.json"),
+      JSON.stringify({
+        rows: testing.map((id) => ({
+          id,
+          testing: id === "message-1",
+          quote: id === "message-1" ? "goes back to testing" : null,
+        })),
+      })
+    );
   };
   const every = texts.flatMap((id) => givens.map((given) => ({ id, given })));
   answers(every);
@@ -11600,18 +11993,31 @@ test("the judge's readings of a worker run are keyed by the run's own texts and 
     accepted: readings.accepts.get("message-1")?.accepts,
     names: [...readings.names.keys()],
     named: readings.names.get("result-1 earlier-1"),
+    testing: [...readings.testing.keys()],
+    sentBack: readings.testing.get("message-1"),
   }).toEqual({
     accepts: texts,
     accepted: true,
     names: every.map(({ id, given }) => `${id} ${given}`),
     named: { id: "result-1", given: "earlier-1", names: true, quote: "The tester's pass" },
+    testing: texts,
+    sentBack: { id: "message-1", testing: true, quote: "goes back to testing" },
   });
   answers(every.slice(1));
   expect(() => workerReadings(dir, "threads-closed")).toThrow(
     "names.json does not cover what judge.ts gave its judge: no row for text and thing message-1 check"
   );
+  answers(every, texts.slice(1));
+  expect(() => workerReadings(dir, "threads-closed")).toThrow(
+    "testing.json does not cover what judge.ts gave its judge: no row for text message-1"
+  );
   answers(every);
   expect(() => workerReadings(dir, "reviewer-text-findings")).toThrow(
     "accepts.json does not cover what judge.ts gave its judge: rows for text it was not given: message-1, comment-1, result-1"
   );
+  // A reviewer-text-findings run, which has no commit its agents decide at, asks no testing
+  // reading, and holds no testing.json: none is read.
+  rmSync(path.join(dir, "testing.json"));
+  writeFileSync(path.join(dir, "accepts.json"), JSON.stringify({ rows: [] }));
+  expect(workerReadings(dir, "reviewer-text-findings").testing.size).toBe(0);
 });

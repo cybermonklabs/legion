@@ -251,9 +251,10 @@ function allows(allowed: readonly string[], lines: readonly DaemonLine[], index:
  * last chance (spec v36's R1, steps 2 and 3, and Verification v47's k1), so it completes nothing
  * while it waits, and the world requires no completion of it.
  *
- * threads-closed boots the implementer in `reviewing` (correct) or `accepting` (accept and
- * code-defect), and then the reviewer in that phase where the case has a second half
- * (rig.sh's run_threads_closed, `SKIPS`). The world's seeds stand for each
+ * threads-closed boots the implementer in `reviewing` (accept, correct and crossing, whose
+ * reviewer pushed its own text commit and has not approved yet) or `accepting` (code-defect, whose
+ * reviewer approved and pushed nothing), and then the reviewer in that phase where the case has
+ * a second half (rig.sh's run_threads_closed, `SKIPS`). The world's seeds stand for each
  * role's completion of its round (seed-handoffs.ts: the implement record and the review record
  * are on those roles' rows, daemon-standin.ts's `HANDOFFS`), so a late completion of either is
  * one from a role whose row holds a completion, which a daemon of either shape refuses 409
@@ -317,17 +318,21 @@ export const BOOTED = "booted";
 
 /** Why a run may leave a role of its scenario's `boots` unbooted, keyed scenario → case → role:
  * the one reason rig.sh writes verbatim on that role's `skip` line of <run>/booted, and the one
- * health accepts there. threads-closed declares two: in accept the reviewer's commit is right and
- * it left no thread, so the implementer's last chance is the run's one half and no reviewer is
- * booted; in code-defect the implementer's own act is to tell the architect and send the reviewer
- * nothing, so a wake of none ends the loop where the rule ends it and rig.sh boots no reviewer
- * (run_threads_closed). */
+ * health accepts there. threads-closed declares three: in accept the reviewer's commit is right
+ * and it left no thread, and in crossing the same commit stands at a check its earlier pass does
+ * not hold at, so in both the implementer's last chance is the run's one half and no reviewer is
+ * booted; in code-defect the implementer tells the architect and the reviewer of the thread
+ * (Verification v47's k2 negative control), so a wake of none is a run that has already failed
+ * that message, and rig.sh boots no reviewer on it (run_threads_closed). */
 export const SKIPS: Readonly<
   Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>
 > = {
   "threads-closed": {
     accept: { reviewer: "the accept case scores the implementer's answer alone" },
-    "code-defect": { reviewer: "the implementer sent the reviewer nothing" },
+    crossing: { reviewer: "the crossing case scores the implementer's answer alone" },
+    "code-defect": {
+      reviewer: "the implementer sent the reviewer nothing, which fails the message the case asks",
+    },
   },
 };
 

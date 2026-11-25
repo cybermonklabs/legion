@@ -1167,11 +1167,13 @@ const Seeds = z.looseObject({
  * its record is seeded under, the phase its completion was of, the verdict it reported (a
  * tester's alone reports one, and the seeded tester's passed: seed-handoffs.ts records its
  * passing result and the status its pass moves the issue to), and whether it named a commit:
- * the implementer's names its code commit and the tester's the head it tested, both the pull
- * request's head when the run began (world.json's `head`, which the seeds record the implement
- * handoff and both results at: rig.sh's worker_run_world); a planner's and a reviewer's name
- * none, as production's rows of those two carry none (production-shapes.json's `legion
- * read_record`). */
+ * the implementer's names its code commit and the tester's the head it tested, each the head its
+ * own seeded record names (the record's body's `head`: rig.sh's fixture_implement and
+ * fixture_test_handoff write both at the implementer's commit, which the seeds record both results
+ * at: worker_run_world and its runners), and never a later push of another role's: the reviewer's
+ * text commit above it (rig.sh's approved_world) is no step of theirs, so their rows name the head
+ * before it, as production's do. A planner's and a reviewer's name none, as production's rows of
+ * those two carry none (production-shapes.json's `legion read_record`). */
 const SEEDED = [
   { role: "planner", word: "plan", phase: "planning", verdict: "", commit: false },
   { role: "implementer", word: "implement", phase: "implementing", verdict: "", commit: true },
@@ -1188,6 +1190,11 @@ const FiledIssue = z.looseObject({
   primary_artifact_id: z.string().min(1),
 });
 const SeededHandoff = HandoffRecord.extend({ author: Actor });
+/** The body of a seeded record whose role names a commit (SEEDED's `commit`), as far as the row
+ * reads it: the head the record names, as `dispatch handoff-write` stores the body, one JSON
+ * object in a string (#5287's handoff shape). */
+const SeededBody = z.object({ body: z.string() });
+const SeededHead = z.looseObject({ head: z.string().regex(/^[0-9a-f]{40}$/) });
 const Spec = z.looseObject({
   approval: z
     .looseObject({
@@ -1214,7 +1221,8 @@ interface History {
     readonly role: string;
     readonly session: string;
     readonly record: { readonly id: string; readonly version: number };
-    readonly commit: boolean;
+    /** The commit the role's row names, where its role names one (SEEDED's `commit`). */
+    readonly commit: string | undefined;
     readonly phase: string;
     readonly verdict: string;
   }[];
@@ -1226,14 +1234,16 @@ const seededHistory = async (): Promise<History> => {
   for (const { role: named, word, commit, phase, verdict } of SEEDED) {
     const record = seeds[word];
     if (record === undefined) continue;
-    const held = SeededHandoff.parse(
-      await dispatchRead(`/api/v1/handoffs/${encodeURIComponent(record.id)}`)
-    );
+    const answer: unknown = await dispatchRead(`/api/v1/handoffs/${encodeURIComponent(record.id)}`);
+    const held = SeededHandoff.parse(answer);
     if (held.issue_key !== issue || held.phase !== word || held.version !== record.version)
       throw new Error(
         `${SEEDS} names ${record.id} as version ${record.version} of ${issue}'s ${word} handoff, which the run's Dispatch holds as version ${held.version} of ${held.issue_key}'s ${held.phase} handoff`
       );
-    seeded.push({ role: named, session: held.author.id, record, commit, phase, verdict });
+    const head = commit
+      ? SeededHead.parse(JSON.parse(SeededBody.parse(answer).body)).head
+      : undefined;
+    seeded.push({ role: named, session: held.author.id, record, commit: head, phase, verdict });
   }
   return {
     admittedAt: filed.created_at,
@@ -1365,7 +1375,7 @@ if (HISTORY !== undefined) {
   CLAIMS.set("architect", claimOf(HISTORY.architect, "idle", launched(), true));
   for (const seed of HISTORY.seeded) {
     CLAIMS.set(seed.role, claimOf(seed.session, "idle", launched(), true));
-    HANDOFFS.set(seed.role, { commit: seed.commit ? world.head : undefined, record: seed.record });
+    HANDOFFS.set(seed.role, { commit: seed.commit, record: seed.record });
     LAST_HANDOFF.set(seed.role, seed.record.id);
     FACTS.add(factOf(seed.role, seed.phase, 0, seed.record.id, seed.verdict));
   }

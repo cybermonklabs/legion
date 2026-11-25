@@ -229,11 +229,12 @@ function scriptDefinitions(script: string): string[] {
 
 /** The shell a script of the tree's rig.sh starts with to run the rig's own functions: `set -euo
  * pipefail`, every function of the script defined as the script writes it, and its world's values
- * (`worker_repo`, `worker_base`, `world_*`, `text_finding_*`) as it assigns them. */
+ * (`worker_repo`, `worker_base`, `world_*`, `text_finding_*`, `cli_example_line`) as it assigns
+ * them. */
 export function rigShell(tree: Tree): string[] {
   const script = tree.text(rig("rig.sh"));
   const values = script.match(
-    /^(?:worker_repo|worker_base|world_[a-z_]+|text_finding_[a-z_]+)=.*$/gm
+    /^(?:worker_repo|worker_base|world_[a-z_]+|text_finding_[a-z_]+|cli_example_line)=.*$/gm
   );
   return ["set -euo pipefail", ...scriptDefinitions(script), ...(values ?? [])];
 }

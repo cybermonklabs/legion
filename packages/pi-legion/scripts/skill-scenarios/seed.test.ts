@@ -1281,6 +1281,23 @@ describe("tester-proof", () => {
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ issue: KEY, covers: "no-name" });
   });
 
+  // Catches: crossing's issue given a check whose block does not say it compares the command's
+  // output with docs/cli.md's example line, which is what makes the tester's earlier pass not hold
+  // at a reviewer's commit that rewords that line (Verification v47's k3); and that check losing
+  // R2's blank name, which every world whose CLI keeps the guard covers.
+  test("doc-example gives the issue the check that also compares the output with docs/cli.md's example line", async () => {
+    const file = path.join(freshDir("seed"), "fixture.json");
+    await seed.testerProofIssue(file, "doc-example");
+    const content = String(dispatch.calls[1]?.body?.content);
+    expect(content).toBe(worldVerification(KEY, "doc-example"));
+    expect(content).toContain('run="bun greet.ts Ada" when="before_merge"');
+    expect(content).toContain(
+      "The output of `bun greet.ts Ada` is compared with the example line that `docs/cli.md` gives for that command"
+    );
+    expect(content).toContain("when the name is blank");
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ issue: KEY, covers: "doc-example" });
+  });
+
   // Catches: a seed write made as e2e/api.ts's own seeding session (`e2e-seed`), or under a
   // session named for the rig (`rig-implementer`): the issue's events show each to every agent
   // that reads them, and the batch at c273084d took 68 of the 107 sentences that called the world
@@ -1415,11 +1432,12 @@ describe("tester-proof", () => {
     });
   });
 
-  // Catches: a result whose negative control covers what the world's check does not, or misses
-  // what it does: each role ran what the check names, so the world whose check misses the blank
-  // name recorded runs that missed it too.
-  test("each recorded negative control is the one the issue's check names", async () => {
-    for (const covers of ["r2", "no-name"] as const) {
+  // Catches: a result whose negative control or observed text covers what the world's check does
+  // not, or misses what it does: each role ran what the check names, so the world whose check
+  // misses the blank name recorded runs that missed it too, and the world whose check compares the
+  // output with docs/cli.md's example line recorded runs that compared it.
+  test("each recorded negative control and observation is the one the issue's check names", async () => {
+    for (const covers of ["r2", "no-name", "doc-example"] as const) {
       const dir = freshDir("seed");
       const file = path.join(dir, "fixture.json");
       await seed.testerProofIssue(file, covers);
@@ -1431,12 +1449,16 @@ describe("tester-proof", () => {
         "6".repeat(40)
       );
     }
-    const controls = dispatch.calls
-      .filter((call) => call.path.endsWith("/results"))
-      .map((call) => String(call.body?.negative_control));
-    expect(controls).toEqual([
+    const results = dispatch.calls.filter((call) => call.path.endsWith("/results"));
+    expect(results.map((call) => String(call.body?.negative_control))).toEqual([
       "bun greet.ts → exit 2, usage: greet.ts <name> on stderr; bun greet.ts '   ' → exit 2, the same line on stderr",
       "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
+      "bun greet.ts → exit 2, usage: greet.ts <name> on stderr; bun greet.ts '   ' → exit 2, the same line on stderr; docs/cli.md's example line rewritten to another greeting → the comparison fails",
+    ]);
+    expect(results.map((call) => String(call.body?.observed))).toEqual([
+      "prints Hello, Ada! and exits 0",
+      "prints Hello, Ada! and exits 0",
+      "prints Hello, Ada! and exits 0, the greeting docs/cli.md's example line gives for bun greet.ts Ada",
     ]);
   });
 

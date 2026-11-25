@@ -1,11 +1,11 @@
-// The ten judge prompts of the spec-writing and spec-rewrite scenarios, the two of the worker
-// scenarios reviewer-text-findings and threads-closed (`acceptsPrompt` and `namesPrompt`,
-// Verification v47's rule 8), and a zod schema for the answer of each. judge.ts writes each prompt
-// to prompt.txt in a directory that holds only that prompt's inputs, starts a fresh `omp -p` there
-// (rig.sh judge-omp) and validates the answer with the schema. Each prompt names the one file the
-// judge writes. These texts were written before any run: never change one to make a result
-// appear. A change that corrects a fact is recorded, with its old and new text, in the pull
-// request that makes it.
+// The ten judge prompts of the spec-writing and spec-rewrite scenarios, the three of the worker
+// scenarios reviewer-text-findings and threads-closed (`acceptsPrompt`, `namesPrompt` and
+// `testingPrompt`, Verification v47's rule 8 and k3's `crossing` (b)), and a zod schema for the
+// answer of each. judge.ts writes each prompt to prompt.txt in a directory that holds only that
+// prompt's inputs, starts a fresh `omp -p` there (rig.sh judge-omp) and validates the answer with
+// the schema. Each prompt names the one file the judge writes. These texts were written before
+// any run: never change one to make a result appear. A change that corrects a fact is recorded,
+// with its old and new text, in the pull request that makes it.
 import path from "node:path";
 import { z } from "zod";
 
@@ -487,6 +487,36 @@ export const namesPrompt: JudgePrompt<z.infer<typeof NamesOutput>> = {
         dir,
         "names.json",
         '{"rows":[{"id":"<text id>","given":"<thing id>","names":true|false,"quote":"<the words>"|null}]}'
+      ),
+    ].join("\n"),
+};
+
+/** testing.json in the run directory: one row for each text of texts.json, where there is a
+ * commit whose earlier passes the run's agents decide at, as for accepts.json (score.ts's
+ * `workerCoverage`). */
+export const TestingOutput = z.object({
+  rows: z.array(z.object({ id: words, testing: z.boolean(), quote: z.string().nullable() })),
+});
+export const testingPrompt: JudgePrompt<z.infer<typeof TestingOutput>> = {
+  name: "testing",
+  file: "testing.json",
+  profile: "bare",
+  schema: TestingOutput,
+  text: (dir) =>
+    [
+      "Agents worked on one pull request and its issue. One agent pushed a commit, and the agents wrote about it. You decide, for each text that an agent wrote, whether the text says that the issue goes back to testing.",
+      "",
+      "Read only the files in this directory:",
+      WORKER_TEXTS,
+      "",
+      "A text says that the issue goes back to testing when its writer states that the issue moves back to its testing phase, or that its testing step must run again before the work goes on. A text that says the issue need not go back to testing, asks whether it should, says that it was in testing before, or says this of some other issue does not say it.",
+      "",
+      "Write one row for each text, by its id. For a text that says the issue goes back to testing, `quote` holds the words that say it. Else `quote` is null.",
+      "",
+      ending(
+        dir,
+        "testing.json",
+        '{"rows":[{"id":"<text id>","testing":true|false,"quote":"<the words>"|null}]}'
       ),
     ].join("\n"),
 };

@@ -36,7 +36,7 @@ import { labelCheckout, labelShapes } from "./daemon-pane";
 import { WORLD_PROJECT } from "./run-names";
 import { GENERATION } from "./standin-record";
 import { runsStep, STEPS, stepEnd, stepRun, stepStart } from "./step-records";
-import { type CheckCovers, WORLD_REPO, worldPlan } from "./world-issue";
+import { CHECK_COVERS, type CheckCovers, DOCS_FILE, WORLD_REPO, worldPlan } from "./world-issue";
 
 /** One record a seed wrote on the run's issue. */
 const SeededRecord = z.object({ id: z.string(), version: z.number().int() });
@@ -45,7 +45,7 @@ const SeededRecord = z.object({ id: z.string(), version: z.number().int() });
  * record a seed has written on it. */
 export const TesterFixture = z.object({
   issue: z.string(),
-  covers: z.enum(["r2", "no-name"]).default("r2"),
+  covers: z.enum(CHECK_COVERS).default("r2"),
   plan: SeededRecord.optional(),
   implement: SeededRecord.optional(),
   test: SeededRecord.optional(),
@@ -92,11 +92,20 @@ const PHASE_SEED = {
 type HandoffPhase = keyof typeof PHASE_SEED;
 
 /** The negative control each role recorded beside its pass, as the check it ran names it: both
- * halves of R2 where the check covers R2, and the no-name half alone where the check is the one
- * that missed the blank name. */
+ * halves of R2 where the check covers R2, the no-name half alone where the check is the one that
+ * missed the blank name, and both halves of R2 with the comparison's own control where the check
+ * also compares the output with the example line of DOCS_FILE. */
 const NEGATIVE_CONTROL: Readonly<Record<CheckCovers, string>> = {
   r2: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr; bun greet.ts '   ' → exit 2, the same line on stderr",
   "no-name": "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
+  "doc-example": `bun greet.ts → exit 2, usage: greet.ts <name> on stderr; bun greet.ts '   ' → exit 2, the same line on stderr; ${DOCS_FILE}'s example line rewritten to another greeting → the comparison fails`,
+};
+/** What each role's pass observed, as the check it ran names it: the greeting and the exit, and,
+ * where the check compares the output with the example line of DOCS_FILE, that the two agree. */
+const OBSERVED: Readonly<Record<CheckCovers, string>> = {
+  r2: "prints Hello, Ada! and exits 0",
+  "no-name": "prints Hello, Ada! and exits 0",
+  "doc-example": `prints Hello, Ada! and exits 0, the greeting ${DOCS_FILE}'s example line gives for bun greet.ts Ada`,
 };
 
 /** The fixture `file` names. */
@@ -131,7 +140,7 @@ export async function phaseHandoff(
       commit,
       surface: "cli",
       run: "bun greet.ts Ada",
-      observed: "prints Hello, Ada! and exits 0",
+      observed: OBSERVED[fixture.covers],
       negative_control: NEGATIVE_CONTROL[fixture.covers],
       actor,
     });

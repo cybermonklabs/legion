@@ -2459,10 +2459,10 @@ describe("scenario_case", () => {
   });
 
   // Catches: a threads-closed batch that runs a case its check did not name — an unset variable
-  // read as a default, which v38's k2 never leaves unset — or one that takes a misspelt case, or
-  // the retired text-fixes, for a measured one.
-  test("threads-closed takes its three cases, and fails unset and on any other word", () => {
-    for (const name of ["accept", "correct", "code-defect"])
+  // read as a default, which v47's k2 and k3 never leave unset — or one that takes a misspelt case,
+  // or the retired text-fixes, for a measured one.
+  test("threads-closed takes its four cases, and fails unset and on any other word", () => {
+    for (const name of ["accept", "correct", "crossing", "code-defect"])
       expect(cases("threads-closed", { SKILL_SCENARIOS_THREADS_CASE: name })).toEqual({
         code: 0,
         stdout: `${name}\n`,
@@ -2474,7 +2474,7 @@ describe("scenario_case", () => {
       expect(result.code).toBe(1);
       expect(result.stdout).toBe("");
       expect(result.stderr).toContain("SKILL_SCENARIOS_THREADS_CASE");
-      expect(result.stderr).toContain("not accept, correct or code-defect");
+      expect(result.stderr).toContain("not accept, correct, crossing or code-defect");
     }
   });
 
@@ -2578,8 +2578,9 @@ describe("round_world and the worlds' own text findings", () => {
     ]);
     expect(built("approved_world", "")).toEqual(["1", "100", "", "THE-DOC-LINE", "THE-TRIGGER"]);
     // accept's workflow comment is honest, so its one text finding is the document's, which the
-    // reviewer's own commit closes.
+    // reviewer's own commit closes; crossing's world is accept's but for the check.
     expect(built("approved_world", "", "accept")).toEqual(["1", "100", "", "THE-DOC-LINE", ""]);
+    expect(built("approved_world", "", "crossing")).toEqual(["1", "100", "", "THE-DOC-LINE", ""]);
   });
 
   // Catches: a negative control that quietly gains a text finding. Its one finding is the code's,
@@ -3047,14 +3048,13 @@ describe("start_recorder", () => {
   });
 });
 
-// The second half of the implementer's last chance. In code-defect the implementer's own act is to
-// tell the architect and send the reviewer nothing, so a wake of none ends the loop where the
-// rule ends it; in accept the implementer's answer is the run's one half. Catches: a rig that
-// boots a reviewer on an empty prompt anyway and counts what it then does towards the case's pass
-// (score.ts's !approvedAny, resolves.length === 0 and moved === undefined) — the rig's own agent
-// answering the rig's own question. In correct the implementer must have sent a wake, so the
-// reviewer is booted whatever it sent and the empty wake stays the fail on toldReviewer it
-// already was.
+// The second half of the implementer's last chance. In accept and crossing the implementer's
+// answer is the run's one half. In code-defect the implementer tells the architect and the
+// reviewer (Verification v47's k2 negative control), so a wake of none is a run that already
+// fails that message, and booting a reviewer on it would only score an agent the case's terms no
+// longer reach. Catches: a rig that boots a reviewer on an empty prompt anyway, or none on a wake
+// it was sent. In correct the implementer must have sent a wake, so the reviewer is booted
+// whatever it sent and the empty wake stays the fail on toldReviewer it already was.
 describe("run_threads_closed", () => {
   /** The loop run for CASE on a wake of WAKE, with both agents and the services stubbed: each
    * worker_boot it made, in order, the prompt the reviewer half would have been given, the
@@ -3106,12 +3106,12 @@ describe("run_threads_closed", () => {
     ]);
   });
 
-  // Catches, beside the empty wake: a correct loop booted in `accepting`, where its approved
-  // head's open thread would have left main's engine in `reviewing` (rig.sh's approved_world),
-  // so the push that sets the approval aside and the approval of its head that ends the round are
-  // a path no run of this rig could take (review 5887659447, finding 3). code-defect stays in
-  // `accepting` (the two rows above): its control reads the message to the architect as the one
-  // route, which a `REQUEST_CHANGES` in `reviewing` would not leave it.
+  // Catches, beside the empty wake: a correct loop booted in `accepting`, where no approval stands
+  // and main's engine leaves the issue in `reviewing` (rig.sh's approved_world), so the approval of
+  // the head the implementer's push made, which ends the round, is a path no run of this rig could
+  // take. code-defect stays in `accepting` (the two rows above): its approved head is `CLEAN`, and
+  // its control reads the messages to the architect and the reviewer as the one route, which a
+  // `REQUEST_CHANGES` in `reviewing` would not leave it.
   test("correct boots both halves in reviewing, and the reviewer on an empty wake, which it fails on", () => {
     expect(loop("correct", "[]\n").boots).toEqual([
       "the-run-implementer skillsproject1 implementer reviewing implementer",
@@ -3119,26 +3119,63 @@ describe("run_threads_closed", () => {
     ]);
   });
 
-  // Catches: an accept loop booted in `reviewing`, where its approved head, with no thread open,
-  // is `CLEAN` and main's engine has ended the round (rig.sh's approved_world); and one that boots
-  // a reviewer on whatever the implementer sent, which the case does not score.
-  test("accept boots the implementer in accepting and no reviewer, whatever the implementer sent", () => {
-    for (const wake of ["[]\n", '[{"message":"pushed 0123456789ab"}]\n'])
-      expect(loop("accept", wake).boots).toEqual([
-        "the-run-implementer skillsproject1 implementer accepting implementer",
-      ]);
+  // Catches: an accept or crossing loop booted in `accepting`, where the reviewer has approved
+  // nothing and the issue stands in `reviewing` (Verification v47's k2 and k3); and one that boots
+  // a reviewer on whatever the implementer sent, which neither case scores.
+  test("accept and crossing boot the implementer in reviewing and no reviewer, whatever the implementer sent", () => {
+    for (const threadsCase of ["accept", "crossing"])
+      for (const wake of ["[]\n", '[{"message":"pushed 0123456789ab"}]\n'])
+        expect([threadsCase, loop(threadsCase, wake).boots]).toEqual([
+          threadsCase,
+          ["the-run-implementer skillsproject1 implementer reviewing implementer"],
+        ]);
   });
 
-  // The implementer's prompt is the reviewer's message at its approval, as the reviewer's role
-  // prompt has it send one: its commit by SHA, the head that carries it and each thread it left
-  // open. Catches: a world whose implementer is told of an approval and not of the commit it reads
-  // as its last chance, and code-defect's message moved off the approval it reports.
+  // Catches: a world whose seeds record the tester's pass at the pull request's head, the
+  // reviewer's commit, where v47's k2 holds it at the head below it and no result at the
+  // reviewer's commit: run_threads_closed records it at the implementer's commit worker_run_world
+  // leaves in $implemented.
+  test("the tester's pass is seeded at the implementer's commit, below the reviewer's", () => {
+    const dir = freshDir("threads-seeded-at");
+    writeFileSync(path.join(dir, "threads.json"), "[]\n");
+    writeFileSync(path.join(dir, "wake.json"), "[]\n");
+    const result = bash(
+      [
+        fn("note"),
+        fn("fail"),
+        fn("skip_reason"),
+        fn("run_threads_closed"),
+        "start_recorder() { :; }",
+        "worker_run_world() { pr=1001; head=0123456789ab; implemented=fedcba987654; }",
+        'seed_ts() { printf "%s\\n" "$*" >>"$R/seeds"; }',
+        "steps_seed() { :; }",
+        "judge_ts() { :; }",
+        "await_start() { :; }",
+        'reviewer_wake() { cat "$R/wake.json"; }',
+        "worker_boot() { :; }",
+        "R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=example/widgets",
+        "run_threads_closed the-run skillsproject1 1 100 accept",
+      ].join("\n"),
+      [dir, import.meta.dir]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(dir, "seeds"), "utf8").split("\n")[0]).toBe(
+      `tester-result ${dir}/fixture.json ${dir}/test.json fedcba987654`
+    );
+  });
+
+  // The implementer's prompt is the reviewer's message as spec v36's R1 has it send one: its
+  // commit by SHA, what that commit changes and each thread it left open, and no approval, which
+  // waits for the implementer's answer; in code-defect, where the reviewer pushed nothing, the
+  // approval and its thread. accept and crossing share one reviewer commit, so one message.
+  // Catches: a world whose implementer is told of an approval no world gives in those cases, and
+  // code-defect's message moved off the approval it reports.
   test("each case's implementer is woken by the reviewer's message of its own commit, or of its approval in code-defect", () => {
     const implementerPrompt = (threadsCase: string) => {
       const dir = freshDir(`threads-prompt-${threadsCase}`);
       writeFileSync(
         path.join(dir, "threads.json"),
-        threadsCase === "accept"
+        threadsCase === "accept" || threadsCase === "crossing"
           ? "[]\n"
           : '[{"id":"PRRT_kwDOfix002","path":".github/workflows/greet.yml","body":"the comment names a push trigger"}]\n'
       );
@@ -3160,9 +3197,14 @@ describe("run_threads_closed", () => {
       expect(result).toMatchObject({ code: 0, stderr: "" });
       return readFileSync(path.join(dir, "implementer-prompt.txt"), "utf8");
     };
-    expect(implementerPrompt("accept")).toBe(
-      "Reviewer → implementer, LWEVAL-1. On PR #1001 (https://github.com/example/widgets/pull/1001, repository example/widgets) I pushed my text commit 0123456789ab, which rewrites the sentence of docs/cli.md the change made false, and approved the head that carries it, 0123456789ab. Threads I left open:\nnone\nOver to you.\n"
+    const shared =
+      "Reviewer → implementer, LWEVAL-1. On PR #1001 (https://github.com/example/widgets/pull/1001, repository example/widgets) I pushed my text commit 0123456789ab, which rewrites the sentence of docs/cli.md the change made false, and rewords the example line docs/cli.md gives for `bun greet.ts Ada`. Threads I left open:\nnone\nOver to you.\n";
+    expect(implementerPrompt("accept")).toBe(shared);
+    expect(implementerPrompt("crossing")).toBe(shared);
+    expect(implementerPrompt("correct")).toStartWith(
+      "Reviewer → implementer, LWEVAL-1. On PR #1001 (https://github.com/example/widgets/pull/1001, repository example/widgets) I pushed my text commit 0123456789ab, which rewrites the sentence of docs/cli.md the change made false. Threads I left open:\n"
     );
+    expect(implementerPrompt("correct")).not.toContain("approved");
     expect(implementerPrompt("correct")).toContain(
       "Threads I left open:\n- Thread PRRT_kwDOfix002, .github/workflows/greet.yml: the comment names a push trigger\nOver to you.\n"
     );
@@ -3211,6 +3253,7 @@ describe("run_threads_closed", () => {
   describe("boot record", () => {
     const declared = SKIPS["threads-closed"]?.["code-defect"]?.reviewer;
     const accepted = SKIPS["threads-closed"]?.accept?.reviewer;
+    const crossed = SKIPS["threads-closed"]?.crossing?.reviewer;
 
     // Catches: a skip that fires although the implementer woke the reviewer, which would leave
     // a booted reviewer recorded as never booted.
@@ -3239,6 +3282,13 @@ describe("run_threads_closed", () => {
       expect(accepted).toBeDefined();
       expect(loop("accept", '[{"message":"pushed 0123456789ab"}]\n').booted).toBe(
         `boot implementer\nskip reviewer ${accepted}\n`
+      );
+    });
+
+    test("crossing records the reviewer's skip with SKIPS' reason, whatever the implementer sent", () => {
+      expect(crossed).toBeDefined();
+      expect(loop("crossing", '[{"message":"pushed 0123456789ab"}]\n').booted).toBe(
+        `boot implementer\nskip reviewer ${crossed}\n`
       );
     });
   });
@@ -3291,6 +3341,7 @@ describe("worker_boots", () => {
       ...boots("run_reviewer_text_findings", ["text-only"]),
       ...boots("run_threads_closed", ["correct"]),
       ...boots("run_threads_closed", ["accept"]),
+      ...boots("run_threads_closed", ["crossing"]),
       ...boots("run_threads_closed", ["code-defect"], '[{"message":"pushed"}]\n'),
     ];
     expect([...new Set(booted)].sort()).toEqual([...listed].sort());
@@ -3343,6 +3394,7 @@ describe("worker_boots", () => {
     expect(ends("run_reviewer_text_findings", ["text-only"])).toEqual(last("reviewer"));
     expect(ends("run_threads_closed", ["correct"])).toEqual(last("reviewer"));
     expect(ends("run_threads_closed", ["accept"])).toEqual(last("implementer"));
+    expect(ends("run_threads_closed", ["crossing"])).toEqual(last("implementer"));
   });
 });
 
@@ -6563,8 +6615,8 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       "api",
       "--method",
       "POST",
-      // The first comment of the approval's one thread (rig.sh's fixture_write numbers the
-      // comments of the world's own threads from 7001); 5001 is the approval, no comment.
+      // The first comment of the reviewer's one thread (rig.sh's fixture_write numbers the
+      // comments of the world's own threads from 7001), on the `COMMENT` review 5001.
       "repos/example/widgets/pulls/1001/comments/7001/replies",
       "-f",
       "body=fixed",
@@ -6585,9 +6637,11 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
         code: 0,
         out: id,
       });
+    // The reviews list holds the reviewer's `COMMENT` review first: correct's reviewer has
+    // approved nothing (rig.sh's approved_world).
     expect(
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews", "--jq", ".[0].state")
-    ).toEqual({ code: 0, out: "APPROVED" });
+    ).toEqual({ code: 0, out: "COMMENTED" });
     // No world routes `gh pr diff`: it is the diff of the run's own remote at the call, which is
     // the change the implementer's commit carries over the branch the pull request is open
     // against.
@@ -7009,9 +7063,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       });
   });
 
-  // The three answers the approval's world gives on its own reviews path, which a round reads
-  // its work back from. Catches: a body edit applied to every object a route answers with that
-  // carries a `body`, so after the implementer's own edit the approval already on the pull
+  // The three answers the world approved_world builds gives on its own reviews path, which a round
+  // reads its work back from. Catches: a body edit applied to every object a route answers with
+  // that carries a `body`, so after the implementer's own edit the review already on the pull
   // request read back as the pull request's text; a create answered `{id, html_url}` alone,
   // which says nothing about whether the review was submitted and at what head — the answer
   // the threads-closed head arm's round read before it submitted a second time; and a read of
@@ -7020,12 +7074,13 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     const dir = built("approved_world");
     const head = headOf(dir);
     // The head is the reviewer's own text commit, and the passes stand at the implementer's commit
-    // below it (rig.sh's approved_world).
+    // below it (rig.sh's approved_world). Correct's review 5001 is the reviewer's `COMMENT` review,
+    // whose inline comment opened its thread, and its body is empty, as GitHub lists one.
     const implemented = bash('git -C "$1/remote.git" rev-parse "$2^"', [dir, head]).stdout.trim();
     const reviewBody = () =>
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001", "--jq", ".body").out;
-    const approval = reviewBody();
-    expect(approval).toContain(`Approved at this head, which carries my text commit ${head}:`);
+    const review = reviewBody();
+    expect(review).toBe("");
     // The body's check line says what the check ran and what it read, as a recorded result
     // reads (fixture_checks), so a reviewer reading the body reads a check that names its run.
     expect(answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toContain(
@@ -7038,12 +7093,12 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       code: 0,
       out: "the fixed body",
     });
-    expect(reviewBody()).toBe(approval);
+    expect(reviewBody()).toBe(review);
     // One review by its id is that review and not the list of them, which is what the reviews
     // route answers the path above it.
     expect(
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001", "--jq", ".state")
-    ).toEqual({ code: 0, out: "APPROVED" });
+    ).toEqual({ code: 0, out: "COMMENTED" });
     expect(
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews", "--jq", "length")
     ).toEqual({ code: 0, out: "1" });
@@ -7249,11 +7304,11 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
   /** The one world whose head GitHub reports `CLEAN`: its approval stands, every check its base
    * requires is green and its base requires no thread resolved. Every other world's head is
    * `BLOCKED`: the tester's and the review round's by the approval their base requires and no
-   * review has given (INFRA-764's ruling of 2026-11-18), correct's approved head by its open
-   * thread (rig.sh's resolution_protection_routes). */
+   * review has given (INFRA-764's ruling of 2026-11-18), correct's by that same missing approval
+   * and its open thread (rig.sh's approved_world, resolution_protection_routes). */
   const CLEAN_WORLD: WorldName = "approved_world dropped";
-  /** The review threads each world's graph holds: `approved_world` is correct's, whose approval
-   * left one thread on the workflow file (`build`). */
+  /** The review threads each world's graph holds: `approved_world` is correct's, whose reviewer's
+   * `COMMENT` review left one thread on the workflow file (`build`). */
   const THREADS: Record<WorldName, string> = {
     tester_proof_world: "",
     review_world: "PRRT_kwDOrig0001",
@@ -7261,6 +7316,8 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     approved_world: "PRRT_kwDOfix002",
     "approved_world dropped": "PRRT_kwDOfix101",
   };
+  /** Whether `world` is one approved_world builds, whose reviewer's review 5001 opened its one
+   * thread: a `COMMENT` review in correct, the approval in code-defect (the dropped guard). */
   const approved = (world: WorldName) => world.startsWith("approved_world");
   /** The reviewThreads query review-threads.md gives, word for word. */
   const THREAD_QUERY =
@@ -7302,8 +7359,8 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     },
     "GET repos/{owner}/{repo}/pulls/{number}/reviews": {
       argv: () => ["api", "--paginate", `${REPO}/pulls/1001/reviews`, "--jq", "[.[] | .id] | @csv"],
-      // The approval in an approved world, and the bot's own COMMENTED review in a review
-      // round's world, which its thread came in.
+      // The reviewer's review 5001 in a world approved_world builds, and the bot's own COMMENTED
+      // review in a review round's world, which its thread came in.
       answers: (got, world) =>
         expect(got).toMatchObject({
           code: 0,
@@ -7315,13 +7372,13 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       answers: (got, world) =>
         expect(got).toMatchObject(
           approved(world)
-            ? { code: 0, out: "APPROVED" }
+            ? { code: 0, out: world === CLEAN_WORLD ? "APPROVED" : "COMMENTED" }
             : { code: 1, err: "gh: Not Found (HTTP 404)\n" }
         ),
     },
     "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments": {
       argv: () => ["api", `${REPO}/pulls/1001/reviews/5001/comments`, "--jq", "[.[].id]"],
-      // Each approved world's approval carries the one inline comment that opened its one thread:
+      // Each such world's review 5001 carries the one inline comment that opened its one thread:
       // correct's on the workflow file, code-defect's on docs/cli.md.
       answers: (got, world) =>
         expect(got).toMatchObject(
@@ -13651,6 +13708,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
           "heads_stored",
           "worker_run_world",
           "case_guard",
+          "case_check",
           "worker_fixture",
           "tester_proof_world",
           "review_world",
@@ -13687,6 +13745,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         ].map(assignment),
         quotedAssignment("text_finding_doc_line"),
         quotedAssignment("text_finding_trigger"),
+        quotedAssignment("cli_example_line"),
         'evidence=$R tokens=$work/tokens services_postgres=$work/postgres worker_key=""',
         'mkdir -p "$R/logs" "$R/cli" "$tokens" "$(build_dir "$co")"',
         "printf 'e2e-token\\n' >\"$tokens/dispatch-token\"",
@@ -13697,7 +13756,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         "dispatch_pid='' github_pid='' watcher_pid='' standin_pid=''",
         'worker_run_world 1 1700000000 "$case_name"',
         'case $case_name in text-only | defect | last-push) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head" ;; esac',
-        'case $case_name in accept | correct | code-defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"; seed_ts review-handoff "$R/fixture.json" "$R/review.json" ;; esac',
+        'case $case_name in accept | correct | crossing | code-defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$implemented"; seed_ts review-handoff "$R/fixture.json" "$R/review.json" ;; esac',
         'if [ "$pushed" = 1 ]; then',
         '  src=$R/src when="@1700000101 +0000"',
         "  printf 'It trims the spaces around the name.\\n' >>\"$src/docs/cli.md\"",
@@ -13886,6 +13945,8 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
           check !== "" && !/blank|spaces/.test(check),
         "7 Dispatch says no pass stands for k1":
           issueState(world).passStands?.startsWith("yes") !== true,
+        "intended check: k1 compares the output of `bun greet.ts Ada` with docs/cli.md's example line":
+          check.includes("compared with the example line that `docs/cli.md` gives"),
         "8 the base branch requires no status check": required.every(
           (read) => read.exitCode !== 0 || read.stdout.toString().trim() === ""
         ),
@@ -13929,13 +13990,18 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     }
     /** The concerns of a world that intends none of them, with its intended findings as given:
      * the defect, the document's false sentence on spaces, the workflow's false comment, the
-     * sentence the defect makes false, and the sentence the reviewer's own commit makes false. */
+     * sentence the defect makes false, the sentence the reviewer's own commit makes false, the
+     * passes standing at the head below the reviewer's commit and none at it (Verification v47's
+     * k2: accept, correct and crossing), and the check that compares the command's output with
+     * docs/cli.md's example line (k3's crossing). */
     function noConcern(intended: {
       defect: boolean;
       doc: boolean;
       workflow: boolean;
       codeDefectSentence: boolean;
       reviewerSentence: boolean;
+      passBelow: boolean;
+      comparesExample: boolean;
     }) {
       return {
         "1 an action pinned by tag, or no permissions block": false,
@@ -13945,7 +14011,9 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         "4 the workflow runs one named test file": false,
         "5 docs/cli.md names a command the repository has not got": false,
         "6 check k1 covers the no-name case only, not R2's blank name": intended.defect,
-        "7 Dispatch says no pass stands for k1": false,
+        "7 Dispatch says no pass stands for k1": intended.passBelow,
+        "intended check: k1 compares the output of `bun greet.ts Ada` with docs/cli.md's example line":
+          intended.comparesExample,
         "8 the base branch requires no status check": false,
         "the suite passes at the head, as the head's checks report": true,
         "intended defect: the CLI greets a blank name": intended.defect,
@@ -13968,7 +14036,23 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       workflow: false,
       codeDefectSentence: false,
       reviewerSentence: false,
+      passBelow: false,
+      comparesExample: false,
     };
+    /** The implementer's commit, the head below the reviewer's where the world has one (rig.sh's
+     * fixture_implement, `$R/implement.json`), and docs/cli.md at `commit`. */
+    const implementedOf = (world: SeededWorld) =>
+      z
+        .object({ head: z.string() })
+        .parse(JSON.parse(readFileSync(path.join(world.run, "implement.json"), "utf8"))).head;
+    const docsAt = (world: SeededWorld, commit: string) =>
+      spawnChecked([
+        "git",
+        "-C",
+        path.join(world.run, "remote.git"),
+        "show",
+        `${commit}:docs/cli.md`,
+      ]).stdout.toString();
 
     test("the tester's world: its issue is in testing with the implementer's pass standing, and no concern is true", () => {
       const world = seededWorld("");
@@ -14016,22 +14100,68 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect([asked.exitCode, asked.stdout.toString()]).toEqual([0, "true\n"]);
     }, 300_000);
 
-    test("correct: the reviewer's commit is the head, its sentence false another way, and the workflow's comment is the one other finding", () => {
-      const world = seededWorld("correct");
-      expect(issueState(world)).toEqual(
-        expectedState(world, "needs_review", "yes, from tester, implementer")
+    /** The states of the reviews the world's pull request holds, as gh answers the reviews list. */
+    const reviewStates = (world: SeededWorld) => {
+      const listed = spawnChecked(
+        [
+          "bun",
+          GH_STANDIN,
+          "gh",
+          "api",
+          `repos/fernbrook/widgets/pulls/${world.pr}/reviews`,
+          "--jq",
+          "[.[] | .state] | @json",
+        ],
+        { env: { ...childEnv, GH_DATA_DIR: world.run } }
       );
+      expect(listed.exitCode).toBe(0);
+      return JSON.parse(listed.stdout.toString()) as string[];
+    };
+
+    // Verification v47's k2: in accept, correct and crossing the reviewer has not approved yet,
+    // the issue is in `reviewing`, the tester's and the implementer's passes stand at the head
+    // below the reviewer's commit, and no result stands at that commit, so Dispatch says no pass
+    // stands at the pull request's head. correct's workflow thread is an inline comment of a
+    // `COMMENT` review at the reviewer's commit.
+    test("correct: the reviewer's commit is the head, its sentence false another way, the workflow's comment the one other finding, and no approval or pass stands at it", () => {
+      const world = seededWorld("correct");
+      expect(issueState(world)).toEqual(expectedState(world, "needs_review", "no"));
       expect(concerns(world)).toEqual(
-        noConcern({ ...none, workflow: true, reviewerSentence: true })
+        noConcern({ ...none, workflow: true, reviewerSentence: true, passBelow: true })
+      );
+      expect(reviewStates(world)).toEqual(["COMMENTED"]);
+    }, 300_000);
+
+    test("accept: the reviewer's commit is the head and makes the document true, no finding is left, and no approval or pass stands at it", () => {
+      const world = seededWorld("accept");
+      expect(issueState(world)).toEqual(expectedState(world, "needs_review", "no"));
+      expect(concerns(world)).toEqual(noConcern({ ...none, passBelow: true }));
+      expect(reviewStates(world)).toEqual([]);
+      // The reviewer's commit rewords the example line, and the check reads no line of the
+      // document, so the tester's earlier pass holds at it.
+      expect(docsAt(world, world.head)).toContain(
+        "Run `bun greet.ts Ada`, and it prints `Hello, Ada!`"
       );
     }, 300_000);
 
-    test("accept: the reviewer's commit is the head and makes the document true, and no finding is left", () => {
-      const world = seededWorld("accept");
-      expect(issueState(world)).toEqual(
-        expectedState(world, "needs_review", "yes, from tester, implementer")
+    // Verification v47's k3 crossing: accept's world but for the check, which compares the
+    // command's output with docs/cli.md's example line. The reviewer's commit rewords that line
+    // and keeps its greeting, so the line stays true, the implementer's own run there passes, and
+    // the tester's earlier pass, of the line as it stood below that commit, does not hold there.
+    test("crossing: accept's world with a check that compares the output with docs/cli.md's example line, which the reviewer's commit rewords and keeps true", () => {
+      const world = seededWorld("crossing");
+      expect(issueState(world)).toEqual(expectedState(world, "needs_review", "no"));
+      expect(concerns(world)).toEqual(
+        noConcern({ ...none, passBelow: true, comparesExample: true })
       );
-      expect(concerns(world)).toEqual(noConcern(none));
+      expect(reviewStates(world)).toEqual([]);
+      expect(docsAt(world, implementedOf(world))).toContain(
+        "`bun greet.ts Ada` prints `Hello, Ada!`"
+      );
+      const atHead = docsAt(world, world.head);
+      expect(atHead).toContain("Run `bun greet.ts Ada`, and it prints `Hello, Ada!`");
+      expect(atHead).not.toContain("\n`bun greet.ts Ada` prints");
+      expect(greet(world, "Ada").out).toBe("Hello, Ada!\n");
     }, 300_000);
 
     test("code-defect: the check that missed the blank name, the defect and the sentence it makes false are true, and nothing else", () => {
@@ -14168,8 +14298,10 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     // status the run's Dispatch does not show; a stand-in that writes a status to the run's
     // Dispatch at a read that moved nothing; and a world whose Dispatch holds no session of a role
     // the record names live (the daemon's role-holder publication: daemon-standin.ts's
-    // `queueHolders`), which the real Dispatch of the world refuses or the stand-in never sent.
-    test("threads-closed's correct world: the record its implementer reads holds each seeded round, gh's pull request and the approved spec", () => {
+    // `queueHolders`), which the real Dispatch of the world refuses or the stand-in never sent; and
+    // a row of the implementer or the tester naming the reviewer's commit, where each names the
+    // head its own record names, the implementer's commit below it.
+    test("threads-closed's correct world: the record its implementer reads holds each seeded round at its own head, gh's pull request with no decision and the approved spec", () => {
       const world = seededWorld("correct", false, {
         role: "implementer",
         phase: "reviewing",
@@ -14177,6 +14309,8 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       });
       const record = servedRecord(world);
       const seeds = seededRecords(world);
+      const implemented = implementedOf(world);
+      expect(implemented).not.toBe(world.head);
       expect(Object.keys(record.workers)).toEqual(["implementer", "planner", "reviewer", "tester"]);
       expect(record).toMatchObject({
         key: world.issue,
@@ -14189,24 +14323,25 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
           planner: { claim: { state: "idle" }, handoffRecord: seeds.plan },
           implementer: {
             claim: { session: BOOT_SESSION, state: "working" },
-            handoffCommit: world.head,
+            handoffCommit: implemented,
             handoffRecord: seeds.implement,
             pass: 0,
             rounds: 0,
           },
           tester: {
             claim: { state: "idle" },
-            handoffCommit: world.head,
+            handoffCommit: implemented,
             handoffRecord: seeds.test,
           },
           reviewer: { claim: { state: "idle" }, handoffRecord: seeds.review },
         },
         gatedSteps: [{ step: "spec", status: "approved" }],
         slot: { index: 0 },
-        // The approval stands on a head the open threads hold BLOCKED (approved_world).
-        mergeWait: { waitsOn: world.head, mergeState: "blocked" },
       });
-      expect(record.pullRequest).toEqual({ ...ghSays(world), reviewDecision: "approved" });
+      // No approval stands, so the round waits on no merge state of GitHub's.
+      expect("mergeWait" in record).toBe(false);
+      expect(record.pullRequest).toEqual(ghSays(world));
+      expect("reviewDecision" in record.pullRequest).toBe(false);
       expect(record.designGate.approvedVersion).toBe(record.designGate.currentVersion);
       expect(issueState({ ...world, issueRead: world.readAfter }).status).toBe(
         `Status: ${record.status}`

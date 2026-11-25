@@ -16,8 +16,9 @@
 //     score.ts's sharedRuns lists). Writes faults.json, decisions.json, findings.json,
 //     checkable.json, questions.json, numbers.json, preamble.json, proposal.json and
 //     shared-runs.json into each run directory. For a run of a worker scenario (score.ts's
-//     JUDGED_SCENARIOS), the two judges of Verification v47's rule 8 (`judgeWorker`): accepts and
-//     names. Writes accepts.json and names.json into each run directory.
+//     JUDGED_SCENARIOS), the three judges of `judgeWorker`: accepts and names (Verification v47's
+//     rule 8) and testing (k3's `crossing` (b)). Writes accepts.json, names.json and testing.json
+//     into each run directory.
 //
 // <work> is the directory that holds the run's `runs/` directory, or the `archive/runs/` rig.sh
 // moves a run to once it has ended, as score.ts reads it (`workOfRuns`). Seeded asks
@@ -53,6 +54,8 @@ import {
   SHARED_RUNS_RULE,
   SharedRunsFile,
   sharedRunPrompt,
+  TestingOutput,
+  testingPrompt,
 } from "./judge-prompts";
 import { Refused } from "./run-records";
 import {
@@ -368,13 +371,16 @@ export async function judgeRun(runDir: string, options: JudgeOptions = {}) {
 }
 
 /** `judge.ts run` for a run of a worker scenario (`scenario`, one of JUDGED_SCENARIOS): the
- * judges Verification v47's rule 8 has decide from the text what the agents of the run wrote
- * (score.ts's `workerTexts`): the accepts judge, whether each text accepts the commit
- * `workerCommit` names, and the names judge, whether each text names each thing `workerGivens`
- * lists. A commit named by a SHA prefix of seven characters or more is the scorer's to decide,
- * never a judge's. Writes accepts.json and names.json into the run directory, the answer of each
+ * judges that decide from the text what the agents of the run wrote (score.ts's `workerTexts`):
+ * the accepts judge, whether each text accepts the commit `workerCommit` names, and the names
+ * judge, whether each text names each thing `workerGivens` lists (Verification v47's rule 8); and
+ * the testing judge, whether each text says that the issue goes back to testing, which k3's
+ * `crossing` (b) asks of a message where an earlier pass does not hold at that commit. A commit
+ * named by a SHA prefix of seven characters or more is the scorer's to decide, never a judge's.
+ * Writes accepts.json, names.json and testing.json into the run directory, the answer of each
  * judge as it wrote it, and a file with no row for a judge that had nothing to read, which runs no
- * session: a run whose agents wrote no text, or (accepts) a scenario with no commit to accept. */
+ * session: a run whose agents wrote no text, or (accepts, testing) a scenario with no commit the
+ * run's agents decide at. */
 export async function judgeWorker(runDir: string, scenario: string, options: JudgeOptions = {}) {
   const runner = options.runner ?? rigRunner;
   const judging = path.join(workOf(runDir), "judging", path.basename(path.resolve(runDir)));
@@ -404,11 +410,25 @@ export async function judgeWorker(runDir: string, scenario: string, options: Jud
             covers: covers(namesPrompt.file),
           },
         ]),
+    ...(texts.length === 0 || commit === undefined
+      ? []
+      : [
+          {
+            dir: path.join(judging, testingPrompt.name),
+            prompt: testingPrompt,
+            inputs: { "texts.json": pretty(texts) },
+            covers: covers(testingPrompt.file),
+          },
+        ]),
   ] as Job<unknown>[];
-  const files = [acceptsPrompt.file, namesPrompt.file];
+  const files = [acceptsPrompt.file, namesPrompt.file, testingPrompt.file];
   refuseTaken([...files.map((name) => path.join(runDir, name)), ...jobs.map((job) => job.dir)]);
   await runAll(jobs, runner, options.parallel ?? 5);
-  const empty = { [acceptsPrompt.file]: AcceptsOutput, [namesPrompt.file]: NamesOutput };
+  const empty = {
+    [acceptsPrompt.file]: AcceptsOutput,
+    [namesPrompt.file]: NamesOutput,
+    [testingPrompt.file]: TestingOutput,
+  };
   for (const name of files) {
     const job = jobs.find((one) => one.prompt.file === name);
     const text =

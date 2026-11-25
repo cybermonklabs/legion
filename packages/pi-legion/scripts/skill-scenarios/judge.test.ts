@@ -14,7 +14,7 @@ import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { answerTurn, judgeRun } from "./judge";
 import { FAULT_ROWS } from "./judge-prompts";
-import { sharedRuns } from "./score";
+import { sharedRuns, workerReadings } from "./score";
 
 // The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
 // default, so each gets a minute, as rig.test.ts's do.
@@ -908,13 +908,25 @@ function workerRun(name: string, files: Record<string, string> = {}): string {
   return dir;
 }
 /** The answer of a worker judge that reads its own inputs: a row for each text, and for each
- * thing where it was given things; the architect message accepts the commit. */
+ * thing where it was given things; the architect message accepts the commit, and the testing judge
+ * reads it as sending the issue back to testing. */
 function workerAnswer(dir: string): [string, unknown] {
   const texts = JSON.parse(readFileSync(path.join(dir, "texts.json"), "utf8")) as { id: string }[];
   if (path.basename(dir) === "accepts")
     return [
       "accepts.json",
       { rows: texts.map(({ id }) => ({ id, accepts: id === "message-1", quote: null })) },
+    ];
+  if (path.basename(dir) === "testing")
+    return [
+      "testing.json",
+      {
+        rows: texts.map(({ id }) => ({
+          id,
+          testing: id === "message-1",
+          quote: id === "message-1" ? "check k1 still holds" : null,
+        })),
+      },
     ];
   const givens = JSON.parse(readFileSync(path.join(dir, "given.json"), "utf8")) as { id: string }[];
   return [
@@ -929,9 +941,10 @@ function workerAnswer(dir: string): [string, unknown] {
 
 // Catches: a worker run judged as a spec run, or not at all; a judge given a text another session
 // wrote, given no comment of the run's, or given more than its prompt's inputs; an earlier result
-// read as the run's own text rather than as a thing a text may name; and an answer that is not
-// the judge's own copied into the run directory.
-test("a threads-closed run's two judges read its agents' texts, against the reviewer's commit and the things they may name", async () => {
+// read as the run's own text rather than as a thing a text may name; the testing reading k3's
+// crossing (b) asks never asked, or asked of no text of the run's; and an answer that is not the
+// judge's own copied into the run directory, where the scorer reads it by the text's id.
+test("a threads-closed run's three judges read its agents' texts, against the reviewer's commit and the things they may name", async () => {
   const dir = workerRun("threads-closed-accept-head-1");
   const ran: Seen[] = [];
   await judgeRun(dir, { runner: fakeRunner(ran, workerAnswer) });
@@ -941,7 +954,14 @@ test("a threads-closed run's two judges read its agents' texts, against the revi
   ).toEqual([
     ["bare", "accepts", "accepts.json", ["commit.txt", "prompt.txt", "texts.json"]],
     ["bare", "names", "names.json", ["given.json", "prompt.txt", "texts.json"]],
+    ["bare", "testing", "testing.json", ["prompt.txt", "texts.json"]],
   ]);
+  expect(judge("testing")?.text).toContain(
+    "whether the text says that the issue goes back to testing"
+  );
+  expect(readFileSync(path.join(judge("testing")?.dir ?? "", "texts.json"), "utf8")).toBe(
+    readFileSync(path.join(judge("names")?.dir ?? "", "texts.json"), "utf8")
+  );
   const texts = JSON.parse(
     readFileSync(path.join(judge("names")?.dir ?? "", "texts.json"), "utf8")
   );
@@ -965,22 +985,32 @@ test("a threads-closed run's two judges read its agents' texts, against the revi
     "file file:.github/workflows/greet.yml",
     "result earlier-1",
   ]);
-  for (const name of ["accepts", "names"])
+  for (const name of ["accepts", "names", "testing"])
     expect(readFileSync(path.join(dir, `${name}.json`), "utf8")).toBe(
       readFileSync(path.join(judge(name)?.dir ?? "", `${name}.json`), "utf8")
     );
+  // The scorer reads the testing judge's answer by the text's id, as it reads the accepts judge's.
+  const readings = workerReadings(dir, "threads-closed");
+  expect({
+    testing: readings.testing.get("message-1"),
+    comment: readings.testing.get("comment-1")?.testing,
+  }).toEqual({
+    testing: { id: "message-1", testing: true, quote: "check k1 still holds" },
+    comment: false,
+  });
 });
 
 // Catches: a judge started where it has nothing to read, which spends a model session on it, and
 // an answer file left unwritten for it, which the score reads as a rig error.
-test("a reviewer-text-findings run runs no accepts judge, and a run whose agents wrote nothing runs none", async () => {
+test("a reviewer-text-findings run runs no accepts or testing judge, and a run whose agents wrote nothing runs none", async () => {
   const reviewer = workerRun("reviewer-text-findings-text-only-head-1");
   const ran: Seen[] = [];
   await judgeRun(reviewer, { runner: fakeRunner(ran, workerAnswer) });
   expect(ran.map((one) => path.basename(one.dir))).toEqual(["names"]);
-  expect(JSON.parse(readFileSync(path.join(reviewer, "accepts.json"), "utf8"))).toEqual({
-    rows: [],
-  });
+  for (const name of ["accepts", "testing"])
+    expect(JSON.parse(readFileSync(path.join(reviewer, `${name}.json`), "utf8"))).toEqual({
+      rows: [],
+    });
   const quiet = workerRun("threads-closed-accept-head-2", {
     "calls.jsonl": "",
     "published.jsonl": "",
@@ -991,5 +1021,6 @@ test("a reviewer-text-findings run runs no accepts judge, and a run whose agents
     ran: none.length,
     accepts: JSON.parse(readFileSync(path.join(quiet, "accepts.json"), "utf8")),
     names: JSON.parse(readFileSync(path.join(quiet, "names.json"), "utf8")),
-  }).toEqual({ ran: 0, accepts: { rows: [] }, names: { rows: [] } });
+    testing: JSON.parse(readFileSync(path.join(quiet, "testing.json"), "utf8")),
+  }).toEqual({ ran: 0, accepts: { rows: [] }, names: { rows: [] }, testing: { rows: [] } });
 });

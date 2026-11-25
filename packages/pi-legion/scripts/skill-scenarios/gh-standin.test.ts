@@ -4935,6 +4935,7 @@ const WORLD_VALUES = [
   "world_login",
   "text_finding_doc_line",
   "text_finding_trigger",
+  "cli_example_line",
   "world_remote_vcs",
 ];
 /** WORLD (with GUARD) built for real under a run directory of its own by rig.sh's own world
@@ -5662,17 +5663,18 @@ type ViewedReview = {
 // `commit_id`, `user`), and agents reading `.reviews[].commit.oid` read null (the architect's
 // ruling 1). `latestReviews` is GitHub's reading of the same reviews: the last of each author but
 // the pull request's own, which gh reads with no id and no commit (gh-view.ts's `latestReviews`).
-// The world's review here has its body updated, the run makes a review of its own, and its reply
-// to a thread is filed by GitHub in a `COMMENTED` review of its own (id 6_000_000 plus the reply's
-// databaseId, the first a run makes being 9001). Catches: a review in REST's shape; a list frozen
-// at the world's seed, missing the review the run made, the one GitHub filed its reply in, or the
-// body the run gave the world's review; and `latestReviews` that is `reviews`, holds an author's
-// earlier review, or names an id and a commit gh does not read.
+// The world's review here, correct's `COMMENT` review, has its body updated, the run makes a
+// review of its own, and its reply to a thread is filed by GitHub in a `COMMENTED` review of its
+// own (id 6_000_000 plus the reply's databaseId, the first a run makes being 9001). Catches: a
+// review in REST's shape; a list frozen at the world's seed, missing the review the run made, the
+// one GitHub filed its reply in, or the body the run gave the world's review; and `latestReviews`
+// that is `reviews`, holds an author's earlier review, or names an id and a commit gh does not
+// read.
 test("pr view's reviews are gh's: every review GitHub holds, and latestReviews its reading of them", () => {
   const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   for (const argv of [
-    ["api", "-X", "PUT", `${REVIEWS}/5001`, "-f", "body=Approved, and updated."],
+    ["api", "-X", "PUT", `${REVIEWS}/5001`, "-f", "body=One thread left, and updated."],
     [
       ...["api", "-X", "POST", REVIEWS, "-f", `commit_id=${head}`],
       ...["-f", "event=REQUEST_CHANGES", "-f", "body=One more finding."],
@@ -5699,7 +5701,7 @@ test("pr view's reviews are gh's: every review GitHub holds, and latestReviews i
       commit.oid,
     ])
   ).toEqual([
-    ["PRR_kwDOAAAAAc4AAE5001", "legion-review", "APPROVED", "Approved, and updated.", head],
+    ["PRR_kwDOAAAAAc4AAE5001", "legion-review", "COMMENTED", "One thread left, and updated.", head],
     ["PRR_kwDOAAAAAc4AAE5002", "widgets-reviewer", "CHANGES_REQUESTED", "One more finding.", head],
     ["PRR_kwDOAAAAAc4AAE6009001", "widgets-reviewer", "COMMENTED", "", head],
   ]);
@@ -5715,7 +5717,7 @@ test("pr view's reviews are gh's: every review GitHub holds, and latestReviews i
       commit.oid,
     ])
   ).toEqual([
-    ["", "legion-review", "APPROVED", ""],
+    ["", "legion-review", "COMMENTED", ""],
     ["", "widgets-reviewer", "COMMENTED", ""],
   ]);
 }, 60_000);
@@ -5774,19 +5776,19 @@ test("a pending review is the App's that wrote it alone, until it is submitted",
       ".data.repository.pullRequest.reviewThreads.nodes | length",
     ])[1],
   ];
-  // Correct's world holds one thread, the workflow's, and the pending review's comment opens a
-  // second.
+  // Correct's world holds one thread, the workflow's, on the reviewer's `COMMENT` review 5001, and
+  // the pending review's comment opens a second.
   const pending = [
-    [0, '[[5001,"APPROVED"],[5002,"PENDING"]]\n'],
-    '["APPROVED","PENDING"]\n',
+    [0, '[[5001,"COMMENTED"],[5002,"PENDING"]]\n'],
+    '["COMMENTED","PENDING"]\n',
     [0, "PENDING\n", ""],
     "2\n",
   ];
   expect(seen("reviewer")).toEqual(pending);
   expect(seen("tester")).toEqual(pending);
   expect(seen("implementer")).toEqual([
-    [0, '[[5001,"APPROVED"]]\n'],
-    '["APPROVED"]\n',
+    [0, '[[5001,"COMMENTED"]]\n'],
+    '["COMMENTED"]\n',
     [
       1,
       notFoundOf("https://docs.github.com/rest/pulls/reviews#get-a-review-for-a-pull-request"),
@@ -5805,8 +5807,8 @@ test("a pending review is the App's that wrote it alone, until it is submitted",
     ])[0]
   ).toBe(0);
   expect(seen("implementer")).toEqual([
-    [0, '[[5001,"APPROVED"],[5002,"APPROVED"]]\n'],
-    '["APPROVED","APPROVED"]\n',
+    [0, '[[5001,"COMMENTED"],[5002,"APPROVED"]]\n'],
+    '["COMMENTED","APPROVED"]\n',
     [0, "APPROVED\n", ""],
     "2\n",
   ]);
@@ -5948,11 +5950,13 @@ test("a thread comment's author is GraphQL's Bot by its slug, the viewer, resolv
 // removed, auto-merge — then `--` and the body. With `--comments` it prints the conversation's
 // comments and the reviews gh shows, in the order they were made, and nothing of the pull request
 // itself (prod-pr-view-comments.txt): a review GitHub filed a reply in, `COMMENTED` with no body, is
-// not shown. Catches: the world's object printed as JSON for either (the architect's ruling 2); a
-// line named or placed otherwise than gh's; and `--comments` printing the pull request's lines,
-// a comment with a review's status, or the review a reply is filed in.
+// not shown. The world is code-defect's, whose reviewer's approval with its body stands on the
+// pull request (correct's reviewer approved nothing, and its `COMMENT` review has no body, so gh
+// shows it in neither). Catches: the world's object printed as JSON for either (the architect's
+// ruling 2); a line named or placed otherwise than gh's; and `--comments` printing the pull
+// request's lines, a comment with a review's status, or the review a reply is filed in.
 test("pr view without --json prints gh's text, and --comments the comments and the reviews gh shows", () => {
-  const dir = worldDir("approved_world", "", { worldCase: "correct" });
+  const dir = worldDir("approved_world", "dropped", { worldCase: "code-defect" });
   const head = builtHead(dir);
   const raw = (...argv: string[]) => {
     const made = spawnChecked(["bun", STANDIN, "gh", ...argv], { env: callEnv(dir) });
@@ -6000,7 +6004,7 @@ test("pr view without --json prints gh's text, and --comments the comments and t
       entry(
         "legion-review",
         "approved",
-        `Approved at this head, which carries my text commit ${head}: it rewrites the sentence of docs/cli.md the change made false. Each thread left open is a text finding I could not push.`
+        "Approved at this head. The open threads are text findings and are the work the merge waits for."
       ),
       entry("widgets-reviewer", "none", "a note on the change"),
       entry("widgets-reviewer", "changes requested", "One more finding."),
@@ -6288,12 +6292,13 @@ for (const name of PINNED_GH)
 
 // #4326's text views, read whole on 2026-11-18 (the tester's prod-text-reads.json), are of a pull
 // request with no comment on its conversation, the state a world's pull request is in until an
-// agent posts one: approved_world's holds the approval alone. The loop above holds them after the
-// run's comment and reviews; this row holds them before any write. Catches: a view, or a
-// `--comments` list of a pull request with no conversation comment, that prints a line in a
+// agent posts one: code-defect's approved_world holds the reviewer's approval alone (correct's
+// `COMMENT` review has no body, which gh's `--comments` does not show). The loop above holds them
+// after the run's comment and reviews; this row holds them before any write. Catches: a view, or
+// a `--comments` list of a pull request with no conversation comment, that prints a line in a
 // shape #4326's has not got or leaves out one it has.
 test("a pull request no agent has commented on is viewed in #4326's line shapes", () => {
-  const dir = worldDir("approved_world", "", { worldCase: "correct" });
+  const dir = worldDir("approved_world", "dropped", { worldCase: "code-defect" });
   expect(ghCall(dir, "api", "repos/example/widgets/issues/1001/comments").out).toBe("[]");
   for (const name of ["gh pr view (text, small)", "gh pr view --comments (text, small)"]) {
     const read = pinnedRead(name);
