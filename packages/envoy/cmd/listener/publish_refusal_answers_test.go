@@ -236,6 +236,7 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 // the error is built exactly as confirmPublished builds it and classified by the code the handlers
 // call, so what is pinned is the answer, not the detection.
 func TestADeniedPublishIsRefusedPermanentlyAndNotRecordedAsBusUnavailable(t *testing.T) {
+	t.Parallel()
 	subject := contracts.RoleTopicPrefix + "reviewer"
 	// As internal/bus/confirm.go's confirmPublished names it: ErrPublishDenied around the subject
 	// and the connection's last error, which is nats.go's permissions violation.

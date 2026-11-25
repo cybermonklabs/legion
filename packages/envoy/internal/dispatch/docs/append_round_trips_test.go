@@ -406,9 +406,7 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	// (roomAppendLinger), so it reaches the lock a linger after the room applied it; roomWait
 	// covers that, as it covers the rest of the room's own work.
 	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob, replaceRun("Second.", "Second, bob."))
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
-		t.Fatal("the keystroke's append never came to wait on the room's lock")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	written := make(chan error, 1)
 	// The write's trips from here on are its own, so the first of them that takes the room's
 	// transaction-level lock names the connection it runs on (connOf).
@@ -425,7 +423,7 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	// queued, and the trips it has made say where it queued: its transaction, the document's
 	// owner row and the room's lock, with none of its append's.
 	writeConn := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", roomWait(t))
-	if err, early := storetest.WaitForQueuedBehind(t, holder, writeConn.PgConn().PID(), written, roomWait(t)); early {
+	if err, early := storetest.WaitForQueuedBehind(t, holder, writeConn.PgConn().PID(), written); early {
 		t.Fatalf("the live write answered %v before it queued behind the room's lock: it waited on no lock of the room", err)
 	}
 	for _, appended := range []string{"the append gate read", "the append's insert"} {

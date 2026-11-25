@@ -1,9 +1,10 @@
 /** What a move changed in a row's assertions, for the rows where the usual sentence is false.
  *
- *  `e2e/row-map.md` says of every moved row that the move touched no line of what it asserts,
- *  and that sentence is what dispatch://INFRA-1407's k2 is read from: a reviewer reads the map
- *  rather than the diff, so a row the sentence covers is a row nobody looks at. A row whose
- *  assertions really did move therefore needs its own line, and this is where it is written.
+ *  The row map, which `bun e2e/tools/row-map.ts` generates and git does not keep, says of every
+ *  moved row that the move touched no line of what it asserts, and that sentence is what
+ *  dispatch://INFRA-1407's k2 is read from: a reviewer reads the map rather than the diff, so a
+ *  row the sentence covers is a row nobody looks at. A row whose assertions really did move
+ *  therefore needs its own line, and this is where it is written.
  *
  *  A note is needed when a row's assertions are not the ones its pre-move copy made. The usual
  *  cause is a forward merge: `main` changes a row this layer has already moved, and the change
