@@ -159,6 +159,49 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
+// The retro run a claim serves (claims.serving_retro_run) and the retro run its pending task is
+// of (pending_task_deliveries.retro_run) round-trip beside the production check look the claim
+// serves and its task is of, as a restart reads them: a claim rebuilt without them would route
+// the report of its retro after a close as a phase completion (INFRA-5602). The claim also serves
+// a look and the task is of a run and an entry, so a column written under another's name is read
+// back as the wrong field and fails by its field. The claim and the delivery are compared whole
+// (sameClaim), the look's times as instants.
+func TestAClaimRoundTripsTheRetroRunItServesAndTheRetroRunOfItsTask(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-implementer")
+	want.ServingRetroRun = 4
+	want.Pending = &supervise.Delivery{
+		ID:          "delivery-1",
+		Task:        "Continue the issue. Issue: LEGION-209. Phase: retro.",
+		Generation:  4,
+		CheckLook:   supervise.CheckLook{Look: 2, OpenedAt: at(3)},
+		RetroRun:    5,
+		QueuedAt:    at(1),
+		DeliveredAt: at(2),
+	}
+
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	if err := store.PutDelivery(ctx, want.Token, *want.Pending); err != nil {
+		t.Fatalf("put delivery: %v", err)
+	}
+
+	got := onlyClaim(t, store)
+	if got.ServingRetroRun != want.ServingRetroRun {
+		t.Errorf("the claim read back serves retro run %d, want %d", got.ServingRetroRun, want.ServingRetroRun)
+	}
+	var gotRun supervise.RetroRun
+	if got.Pending != nil {
+		gotRun = got.Pending.RetroRun
+	}
+	if gotRun != want.Pending.RetroRun {
+		t.Errorf("the pending delivery read back is of retro run %d, want %d", gotRun, want.Pending.RetroRun)
+	}
+	sameClaim(t, got, want)
+}
+
 // The record of this task's sends that never reached a turn round-trips with the delivery: how
 // many failed, when the last of them failed and the error it failed with. A restart rebuilds
 // every claim from this table, so a record lost here is a claim that has waited days on a send

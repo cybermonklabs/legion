@@ -83,6 +83,10 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindRetroBound is the bound of a retro Legion runs after an issue's close, due
+	// RetroAfterCloseBound after the retro's start (RetroBound): it ends a retro nobody reported.
+	// The kind is declared here and runs on no lane until INFRA-5602's task t2.
+	OutboxKindRetroBound OutboxKind = "retro_bound"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -1314,6 +1318,23 @@ type SuperviseRequest struct {
 	// finishes a start without acting when the issue's check is not the one it names; zero names
 	// no instance (a row queued before the field) and is not fenced.
 	CheckOpenedAt time.Time `json:"checkOpenedAt,omitzero"`
+	// RetroRun is the run (the issue's generation) of the retro Legion runs after the issue's
+	// close that a start delivers, 0 for every other start. Like a look's start it runs after the
+	// close, where the issue stands in no phase and its tree may linger, so the outbox fences it
+	// on the run's open retro and its agent (RunRetro) instead of on the generation and the
+	// lingering tree. It names a role, no phase and no entry, and it is no start for news or for
+	// a slot. A release before this field refuses a row that carries it (DisallowUnknownFields),
+	// and the migration's way back deletes such rows. Declared here; the validation and the
+	// outbox's use of it land in INFRA-5602's tasks t2 and t4.
+	RetroRun uint64 `json:"retroRun,omitempty"`
+	// RetroWake marks the wake of a root architect whose claim the tree's close suspended, made
+	// while a retro after a close is open in its tree, so that the architect hears the finding
+	// the retro's agent published to its role topic. It is a start of the architect with a wake
+	// kind (WakeKind), and the outbox lets it through the guard that drops a wake for a claim
+	// the daemon suspended. A release before this field refuses a row that carries it, and the
+	// migration's way back deletes such rows. Declared here; the rules land in INFRA-5602's
+	// tasks t2 to t4.
+	RetroWake bool `json:"retroWake,omitempty"`
 	// Pause is the project pause a row serves (store's Pause, its id). A `pause_stop` row carries
 	// it always: its executor stops the claim for that pause, and finishes without acting once
 	// the pause has ended (decision 4 of dispatch://INFRA-3759). A start may carry the pause that
@@ -1719,6 +1740,18 @@ func (CheckLook) OutboxKind() OutboxKind { return OutboxKindCheckLook }
 type CheckBound struct{}
 
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
+
+// RetroBound is the bound of the retro Legion runs after the issue's close, due at the run's
+// row's bound_at (RunRetro.BoundAt, RetroAfterCloseBound after the retro's start): it ends the
+// retro as stopped, with no rating, when it is still open at that run. Generation is the run the
+// retro is of, so a row left over from an earlier run of the issue ends nothing. Declared here
+// with its kind (OutboxKindRetroBound); its lane, decode and validation land in INFRA-5602's
+// task t2.
+type RetroBound struct {
+	Generation uint64 `json:"generation"`
+}
+
+func (RetroBound) OutboxKind() OutboxKind { return OutboxKindRetroBound }
 
 // HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
 // put in front of one role of the issue on that role's own Envoy topic. Hook is the hook's name

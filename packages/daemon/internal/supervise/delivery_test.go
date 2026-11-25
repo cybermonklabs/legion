@@ -133,6 +133,133 @@ func TestARetiredLooksTaskLeavesItsLookOnTheClaimAndAPhaseTaskTakesItBack(t *tes
 	}
 }
 
+// The retro run a confirmed task's retire leaves on the claim, durably, as it leaves a look: the
+// agent of the retro Legion runs after an issue's close goes on working that retro in whatever
+// turn comes next, and the completion it reports there is still that retro's report
+// (api/handoff.go), where it would otherwise be refused as a completion on a done issue. A task
+// of a phase takes it back, since a worker in the workflow again reports its phase.
+func TestARetiredRetrosTaskLeavesItsRunOnTheClaimAndAPhaseTaskTakesItBack(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "Continue Closed. Issue: LEGION-209. Phase: retro.", Generation: 7, RetroRun: 7})
+	if p := h.pending(); p.RetroRun != 7 {
+		t.Fatalf("the queued delivery carries retro run %d, want the start's 7", p.RetroRun)
+	}
+	if stored, ok := h.store.delivery(testToken); !ok || stored.RetroRun != 7 {
+		t.Fatalf("the stored delivery is %+v, want it to carry retro run 7: a restart reads the run back", stored)
+	}
+	h.must(StreamTurnStart{Claim: testToken})
+	if got := h.claim().ServingRetro(); got != 7 {
+		t.Fatalf("during the retro's turn the claim serves retro run %d, want 7", got)
+	}
+	h.must(StreamTurnEnd{Claim: testToken})
+	if stored := h.store.load(testToken); stored.ServingRetroRun != 7 {
+		t.Fatalf("after the turn the stored claim serves retro run %d, want 7", stored.ServingRetroRun)
+	}
+	if got := h.claim().ServingRetro(); got != 7 {
+		t.Fatalf("after the turn the claim serves retro run %d, want 7: its next turn's report is still this retro's", got)
+	}
+
+	h.must(RequestDeliver{Claim: testToken, Task: "Continue Workflow. Issue: LEGION-209. Phase: testing.", Generation: 8, Phase: phase.Testing, Entry: 2})
+	h.must(StreamTurnStart{Claim: testToken})
+	if got := h.claim().ServingRetro(); got != 0 {
+		t.Fatalf("during the phase task's turn the claim serves retro run %d, want none: its completion is the phase's", got)
+	}
+	h.must(StreamTurnEnd{Claim: testToken})
+	if stored := h.store.load(testToken); stored.ServingRetroRun != 0 {
+		t.Fatalf("after the phase task's turn the stored claim serves retro run %d, want none", stored.ServingRetroRun)
+	}
+}
+
+// The retro run a claim serves outlasts what the daemon does to the claim's process: a restart
+// builds the machine again from what the store holds, and a resume of the claim's kept session
+// (the retro's agent suspended by an idle release or a close, then woken for the retro or a
+// finding) relaunches it. The claim's next turn there is still the retro's, as the run and the
+// entry are, so its report is taken and not refused.
+func TestAClaimServingARetroKeepsItAcrossARestartAndARelaunchOfItsSession(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "Continue Closed. Issue: LEGION-209. Phase: retro.", Generation: 7, RetroRun: 7})
+	h.must(StreamTurnStart{Claim: testToken})
+	h.must(StreamTurnEnd{Claim: testToken})
+	if got := h.claim().ServingRetro(); got != 7 {
+		t.Fatalf("after the retro's turn the claim serves retro run %d, want 7", got)
+	}
+
+	h.restart()
+	if got := h.claim().ServingRetro(); got != 7 {
+		t.Fatalf("after a daemon restart the claim serves retro run %d, want the 7 the store held", got)
+	}
+
+	before := h.generation()
+	h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
+	h.must(RequestResume{Claim: testToken})
+	h.wantCalls("Resume", 1)
+	h.relaunched()
+	if h.generation() == before {
+		t.Fatalf("the claim is at launch %d after the resume, want another launch of the kept session", h.generation())
+	}
+	if got := h.claim().ServingRetro(); got != 7 {
+		t.Fatalf("after a relaunch in the kept session the claim serves retro run %d, want 7", got)
+	}
+}
+
+// A claim that owes a look and a retro serves them in turn (INFRA-5602's s12), and each report is
+// routed to its own handler. A task queued behind the running turn of the other kind takes the
+// running turn's delivery onto the claim as what it was left serving, and leaves that marker
+// standing until the queued task's own turn confirms it: the look's report is still the look's
+// while the retro waits, and the retro's the retro's while a look waits. The confirmed task then
+// takes the other kind's marker back, so one claim never serves both.
+func TestARetroAndALookOfOneClaimAreServedInTurn(t *testing.T) {
+	opened := time.Date(2026, 11, 25, 6, 0, 0, 0, time.UTC)
+	look := CheckLook{Look: 2, OpenedAt: opened}
+	const lookTask, retroTask = "Production check of LEGION-209.", "Continue Closed. Issue: LEGION-209. Phase: retro."
+	lookTurn := func(h *harness) {
+		h.must(RequestDeliver{Claim: testToken, Task: lookTask, Generation: 7, CheckLook: look})
+	}
+	retroTurn := func(h *harness) {
+		h.must(RequestDeliver{Claim: testToken, Task: retroTask, Generation: 7, RetroRun: 7})
+	}
+	t.Run("a retro queued behind a look's running turn", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		lookTurn(h)
+		h.must(StreamTurnStart{Claim: testToken})
+		retroTurn(h)
+		if got, serving := h.claim().ServingCheck(), h.claim().ServingRetro(); got != look || serving != 0 {
+			t.Fatalf("while the look's turn runs the claim serves look %+v and retro run %d, want %+v and none: the retro's task is not taken yet", got, serving, look)
+		}
+		h.must(StreamTurnEnd{Claim: testToken})
+		h.must(StreamTurnStart{Claim: testToken})
+		if got, serving := h.claim().ServingCheck(), h.claim().ServingRetro(); serving != 7 || got != (CheckLook{}) {
+			t.Fatalf("while the retro's own turn runs the claim serves retro run %d and look %+v, want 7 and none", serving, got)
+		}
+		h.must(StreamTurnEnd{Claim: testToken})
+		if stored := h.store.load(testToken); stored.ServingRetroRun != 7 || stored.ServingCheckLook != (CheckLook{}) {
+			t.Fatalf("after the retro's turn the stored claim serves retro run %d and look %+v, want 7 and none", stored.ServingRetroRun, stored.ServingCheckLook)
+		}
+	})
+	t.Run("a look queued behind a retro's running turn", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		retroTurn(h)
+		h.must(StreamTurnStart{Claim: testToken})
+		lookTurn(h)
+		if got, serving := h.claim().ServingRetro(), h.claim().ServingCheck(); got != 7 || serving != (CheckLook{}) {
+			t.Fatalf("while the retro's turn runs the claim serves retro run %d and look %+v, want 7 and none: the look's task is not taken yet", got, serving)
+		}
+		h.must(StreamTurnEnd{Claim: testToken})
+		h.must(StreamTurnStart{Claim: testToken})
+		if got, serving := h.claim().ServingRetro(), h.claim().ServingCheck(); got != 0 || serving != look {
+			t.Fatalf("while the look's own turn runs the claim serves retro run %d and look %+v, want none and %+v", got, serving, look)
+		}
+		h.must(StreamTurnEnd{Claim: testToken})
+		if stored := h.store.load(testToken); stored.ServingRetroRun != 0 || stored.ServingCheckLook != look {
+			t.Fatalf("after the look's turn the stored claim serves retro run %d and look %+v, want none and %+v", stored.ServingRetroRun, stored.ServingCheckLook, look)
+		}
+	})
+}
+
 func TestADeliveryToAnIdleClaimIsSentAtOnce(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)

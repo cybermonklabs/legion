@@ -1660,6 +1660,34 @@ type CheckBound struct {
 
 func (f CheckBound) namedIssue() (string, bool) { return f.Issue, true }
 
+// RetroReport is the report of the retro Legion runs after issue Issue's close: the `legion`
+// tool's `handoff_complete` on a `done` issue, from the claim that serves the retro, carrying a
+// plan rating and its reason and no verdict and no commit (api/handoff.go). Generation is the
+// run the route read the claim as serving, so a report of a retro that a later run replaced is
+// refused rather than recorded against the newer one. Summary is what the agent says it found.
+// The workflow ends the retro's row as passed and writes the rating onto the retro's step record,
+// and writes no status. The route and the engine's case for it land in INFRA-5602's tasks t3 and
+// t4; the type stands here so that every list of facts holds it from the start.
+type RetroReport struct {
+	Issue      string
+	Claim      claim.Token
+	Generation uint64
+	Summary    string
+	PlanRating record.PlanRating
+}
+
+func (f RetroReport) namedIssue() (string, bool) { return f.Issue, true }
+
+// RetroBoundEnded is the bound of issue Issue's retro after its close coming due (the retro_bound
+// row at the run's bound_at): the retro of run Generation, if it is still open, ends as stopped
+// with no rating. Generation names the run, so a row of an earlier run ends nothing.
+type RetroBoundEnded struct {
+	Issue      string
+	Generation uint64
+}
+
+func (f RetroBoundEnded) namedIssue() (string, bool) { return f.Issue, true }
+
 // ListenerWake is one report the Envoy listener publishes on notifications.legion.wake, the one
 // subject whose consumer every daemon runs: the listener alone sees a message published to a
 // role topic with no live holder and a message sent to the agent subject of a session that is

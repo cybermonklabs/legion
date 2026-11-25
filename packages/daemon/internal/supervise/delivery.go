@@ -30,6 +30,17 @@ type CheckLook struct {
 	OpenedAt time.Time
 }
 
+// RetroRun names the retro Legion runs after an issue's close, by the run it is of (the issue's
+// generation, record.SuperviseRequest.RetroRun): the one number the start row that delivers the
+// retro's task carries. A claim serves it exactly as it serves a production check's look
+// (Claim.ServingRetro, as ServingCheck), so a completion from the claim is the retro's report
+// (api/handoff.go) and not a phase completion or a look's report. The zero value is a task, or a
+// claim, that is no retro's after a close: every phase task, a look's, an operator's own, a
+// resume. It is comparable, so the one rule that picks what a claim is serving reads it as it
+// reads the run, the entry and the look (serving). Declared here; the accessor and the carry land
+// in INFRA-5602's task t4.
+type RetroRun uint64
+
 // Delivery is a claim's pending task: at most one per claim, persisted, and sent only when the
 // claim is ready or idle and its connection is registered.
 //
@@ -82,7 +93,12 @@ type Delivery struct {
 	// look the claim's worker took (Claim.ServingCheck), and the report is of that look rather
 	// than of whichever look the check has reached (api/handoff.go, checkReport). The zero value
 	// is a task of no look: every phase task, an operator's own, a resume.
-	CheckLook   CheckLook
+	CheckLook CheckLook
+	// RetroRun is the run of the retro after a close this task is of, from the start row that
+	// queued it (record.SuperviseRequest.RetroRun). It says a turn's completion is that retro's
+	// report: the API routes on the run the claim's worker took (Claim.ServingRetro). The zero
+	// value is a task of no retro: every phase task, a look's, an operator's own, a resume.
+	RetroRun    RetroRun
 	Phase       phase.Phase
 	QueuedAt    time.Time
 	DeliveredAt time.Time

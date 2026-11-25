@@ -97,6 +97,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		ServingGeneration: 2, GivenEntry: 7, ServedEntry: 6,
 		Handshake:        supervise.EntryHandshake{Entry: 7, Generation: 3, QueuedAt: queuedAt, ConfirmedAt: openedAt},
 		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: openedAt},
+		ServingRetroRun:  3,
 		LastStartRow:     811, DeliveredRows: []int64{809, 811},
 		Locator: &runtime.Locator{
 			Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(podUID, 5),

@@ -590,6 +590,15 @@ func (p *PodRecords) ReleasedClaimByToken(ctx context.Context, tx pgx.Tx, token 
 	return oneReleasedClaim(ctx, tx, `and token = $4`, p.project, token, "role token")
 }
 
+// RetroWakeClaimByToken is the claim of this daemon's project whose token is token that a retro
+// after a close may wake: one the daemon suspended (a close or a linger took its issue out of the
+// workflow) or one a linger's end retired, and whether the project holds one. ReleasedClaimByToken
+// never finds either, since a release is the only suspension it reads. This is the stub of
+// INFRA-5602's task t4: it answers an error that names the task.
+func (p *PodRecords) RetroWakeClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error) {
+	return supervise.Claim{}, false, errRunRetroNotImplemented
+}
+
 // ReleasedClaimBySession is the released claim that kept session, and whether this daemon's
 // project holds one. A released claim keeps its session id, which is what lets a message
 // addressed to that session find the pod that must come back for it.

@@ -63,6 +63,22 @@ func (s *Store) openTreeLifecycle(ctx context.Context, project, tree string, aut
 // those opens, so there is nothing for the transaction to hold.
 func runNothing(context.Context, pgx.Tx) error { return nil }
 
+// errRunRetroNotImplemented is what the store methods of INFRA-5602's retro after a close answer
+// until task t2 and t4 write them (ReopenTreeForRetro, PodRecords.RetroWakeClaimByToken).
+var errRunRetroNotImplemented = errors.New("run_retros: not implemented until INFRA-5602 t2")
+
+// ReopenTreeForRetro reopens the lifecycle of project's tree for the retro Legion runs after a
+// close, where the tree's linger has ended and its cleanup has retired every claim (the retro's
+// agent must launch in a lifecycle the workflow runs). It answers the lifecycle and whether this
+// call reopened it: a tree absent from the table, or one already open under the workflow,
+// reopens nothing; a cleanup reserved and not yet confirmed is a wait (treelifecycle.ErrCleanupReserved),
+// so the reopen follows the cleanup's confirmation; a tree an operator holds is refused
+// (treelifecycle.ErrAuthorityHeld). This is the stub of INFRA-5602's task t4: it answers an error
+// that names the task.
+func (s *Store) ReopenTreeForRetro(ctx context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error) {
+	return treelifecycle.Lifecycle{}, false, errRunRetroNotImplemented
+}
+
 // AdmitClaim binds a new or reactivated claim to an open lifecycle and writes both in one short
 // globally serialized transaction. The caller receives the epoch it must carry through every later
 // launch; runtime work happens after this transaction commits. The project controller's claim

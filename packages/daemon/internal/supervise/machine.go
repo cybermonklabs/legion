@@ -252,6 +252,11 @@ type Claim struct {
 	// backs the worker's turn. The zero value is a claim that has retired no confirmed task of a
 	// look, which is every claim whose last task was a phase's.
 	ServingCheckLook CheckLook
+	// ServingRetroRun is the run of the retro after a close of the last confirmed delivery this
+	// claim retired, the retro side of ServingCheckLook: what ServingRetro answers with once no
+	// delivery backs the worker's turn. The zero value is a claim that has retired no confirmed
+	// task of a retro after a close, which is every claim whose last task was a phase's or a look's.
+	ServingRetroRun RetroRun
 	// LastStartRow is the outbox row id of the newest start run against this claim, and 0 for one
 	// no start has run for. A stop from an older row is one the newer start superseded: it was
 	// written to end a run that is over, and acting on it would stop the run that start began.
@@ -2481,6 +2486,15 @@ func (c Claim) ServingCheck() CheckLook {
 	}
 	return serving(c.Pending, deliveredCheckLook, retired, c.servedAnything(), c.openRoundHoldsTask())
 }
+
+// ServingRetro is the run of the retro after an issue's close that the task this claim's worker
+// took is of, and 0 for a claim that has taken none that carried one. It is what says a turn's
+// completion is that retro's report (api/handoff.go), as ServingCheck says a look's. The two
+// mark each other off: a phase task, and the confirmed task of the other kind, take the marker
+// back, and a task of one kind queued behind the running turn of the other leaves the running
+// turn's marker standing until its own task is confirmed. This is the stub of INFRA-5602's task
+// t4: it answers 0 for every claim.
+func (c Claim) ServingRetro() RetroRun { return 0 }
 
 // servedAnything is whether this claim's worker has taken any task at all — a run, an entry
 // or a look — which is what older work means for the look alone (ServingCheck). Only that

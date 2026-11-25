@@ -229,6 +229,101 @@ func TestTheRunAClaimServes(t *testing.T) {
 	}
 }
 
+// The retro run a claim's worker is on, which is what says a completion on a done issue is the
+// report of the retro Legion runs after its close (INFRA-5602), read from the same three sources
+// in the same order as the run, the entry and the look (serving): the task whose turn is running,
+// else what the claim was left serving, else, for a claim that has served nothing, the task it
+// may have read. It parts from the look in what takes it back. A phase task takes it back, as it
+// takes a look back, and so does the confirmed task of a look, as the confirmed task of a retro
+// takes the look back (ServingCheck): a task of the other kind queued behind a running turn
+// leaves that turn's marker standing, because it is only the task whose own turn runs that
+// changes which report the claim's worker makes. An operator's task, which carries neither, leaves
+// both alone.
+func TestTheRetroRunAClaimServes(t *testing.T) {
+	at := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	opened := time.Date(2026, 11, 25, 8, 0, 0, 0, time.UTC)
+	look := CheckLook{Look: 2, OpenedAt: opened}
+	for _, tc := range []struct {
+		name  string
+		claim Claim
+		retro RetroRun
+		look  CheckLook
+	}{
+		{name: "no task, no retro", claim: Claim{}},
+		{name: "a retro served, no task", claim: Claim{ServingGeneration: 4, ServingRetroRun: 4}, retro: 4},
+		{
+			name: "the retro's task, whose turn is running",
+			claim: Claim{ServingGeneration: 4, ServedEntry: 4, Pending: &Delivery{
+				Generation: 5, RetroRun: 5, DeliveredAt: at, ConfirmedAt: at}},
+			retro: 5,
+		},
+		{
+			name:  "a first retro task the agent may have read",
+			claim: Claim{Pending: &Delivery{Generation: 5, RetroRun: 5, DeliveredAt: at}},
+			retro: 5,
+		},
+		{
+			name: "an unread retro task on a claim that already serves a run",
+			claim: Claim{ServingGeneration: 4, ServedEntry: 3, Pending: &Delivery{
+				Generation: 4, RetroRun: 4, DeliveredAt: at}},
+		},
+		{
+			name: "an unread retro task on a claim that already serves a retro",
+			claim: Claim{ServingGeneration: 5, ServingRetroRun: 4, Pending: &Delivery{
+				Generation: 5, RetroRun: 5, DeliveredAt: at}},
+			retro: 4,
+		},
+		{
+			name:  "a retro task the agent refused, which it never read",
+			claim: Claim{Pending: &Delivery{Generation: 5, RetroRun: 5, Prompted: true}},
+		},
+		{
+			name: "an operator's task on a claim left serving a retro: the retro goes on",
+			claim: Claim{ServingGeneration: 4, ServingRetroRun: 4, Pending: &Delivery{
+				DeliveredAt: at, ConfirmedAt: at}},
+			retro: 4,
+		},
+		{
+			name: "a phase task on a claim left serving a retro: the retro goes with the phase work",
+			claim: Claim{ServingGeneration: 5, ServingRetroRun: 5, Pending: &Delivery{
+				Generation: 6, Entry: 6, Phase: phase.Testing, DeliveredAt: at, ConfirmedAt: at}},
+		},
+		{
+			name: "a look's task, whose turn is running, on a claim left serving a retro: the look takes the retro back",
+			claim: Claim{ServingGeneration: 5, ServingRetroRun: 5, Pending: &Delivery{
+				Generation: 5, CheckLook: look, DeliveredAt: at, ConfirmedAt: at}},
+			look: look,
+		},
+		{
+			name: "the retro's task, whose turn is running, on a claim left serving a look: the retro takes the look back",
+			claim: Claim{ServingGeneration: 5, ServingCheckLook: look, Pending: &Delivery{
+				Generation: 5, RetroRun: 5, DeliveredAt: at, ConfirmedAt: at}},
+			retro: 5,
+		},
+		{
+			name: "a retro task queued behind a look's turn: the look's marker stands, the retro's task is not taken yet",
+			claim: Claim{ServingGeneration: 5, ServingCheckLook: look, Pending: &Delivery{
+				Generation: 5, RetroRun: 5, DeliveredAt: at}},
+			look: look,
+		},
+		{
+			name: "a look's task queued behind a retro's turn: the retro's marker stands, the look's task is not taken yet",
+			claim: Claim{ServingGeneration: 5, ServingRetroRun: 5, Pending: &Delivery{
+				Generation: 5, CheckLook: look, DeliveredAt: at}},
+			retro: 5,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.claim.ServingRetro(); got != tc.retro {
+				t.Fatalf("ServingRetro() = %d, want %d", got, tc.retro)
+			}
+			if got := tc.claim.ServingCheck(); got != tc.look {
+				t.Fatalf("ServingCheck() = %+v, want %+v", got, tc.look)
+			}
+		})
+	}
+}
+
 // A running turn of the task's own is attributed by its confirmation, not by the read mark. When
 // the re-send's turn starts before that send is acknowledged — the send is still in flight — and
 // only then does the given-up prompt's refusal arrive, the refusal is judged against the prompt

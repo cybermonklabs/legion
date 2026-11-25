@@ -204,6 +204,12 @@ type IdleView struct {
 	// never reads it: it is here because the daemon's pass needs it to know whether it has a
 	// streak to end, and the view is the one read of the pod that pass already makes.
 	Holding bool
+	// RetroHolds is whether a retro Legion runs after a close is open for the issue, or for any
+	// issue of its tree where the issue is the tree's root (record.RunRetro.Open): the retro's
+	// agent, and for a root the architect a finding wakes, hold the pod, so the pod gate treats
+	// the issue as the workflow's to run while it stands (Standing.RetroHolds). Declared here; the
+	// store fills it and the gate reads it from INFRA-5602's task t4.
+	RetroHolds bool
 }
 
 // IsRoot is whether the issue is its tree's root, the one issue a root's own wait on a person
@@ -216,6 +222,11 @@ type Standing struct {
 	Phase   phase.Phase
 	Status  string
 	Lingers bool
+	// RetroHolds is whether a retro Legion runs after the issue's close is open for it
+	// (IdleView.RetroHolds). It leaves InWorkflow as it is and is the one field InWorkflowNotLingering
+	// will read to say the pod is still a retro's. Declared here; the gate reads it from
+	// INFRA-5602's task t4.
+	RetroHolds bool
 }
 
 // Standing is the issue's own standing, and RootStanding its tree root's.

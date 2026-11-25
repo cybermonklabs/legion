@@ -99,6 +99,12 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		CheckLook{Look: 2, OpenedAt: now},
 		CheckLook{Look: 1},
 		CheckBound{},
+		// A retro Legion runs after a close: the implementer's start of the run it is of, which carries
+		// no phase and no entry; the wake of the root architect while such a retro is open in its
+		// tree, a start with a wake kind; and the retro's bound, due 24 hours after its start.
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Continue Closed. Issue: LEGION-208. Phase: retro.", RetroRun: 3},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, Task: "A finding of the retro waits on your role topic.", WakeKind: pods.WakeRoleMessage, RetroWake: true},
+		RetroBound{Generation: 3},
 		RoleMessage{Role: "legion.sjawhar-legion.LEGION-208.implementer", Body: "Pull request #42: CI settled at c0de: unit failed."},
 		HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 			Count: 3, Counts: map[string]int{"testing-implementing": 1, "reviewing-implementing": 3},
@@ -294,7 +300,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish, OutboxKindStepRecord,
-		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindRetroBound}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -316,6 +322,11 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	}
 	if len(lanes) != len(every) {
 		t.Errorf("the lanes list %d kinds, want the %d the outbox stores", len(lanes), len(every))
+	}
+	// A retro's bound ends a retro in order with the starts and stops of its issue, as a production
+	// check's rows do, so it runs on the lifecycle lane.
+	if got := LaneOf(OutboxKindRetroBound); got != LaneLifecycle {
+		t.Errorf("LaneOf(%s) = %q, want %q", OutboxKindRetroBound, got, LaneLifecycle)
 	}
 	if lane := LaneOf("unsupported"); lane != "" {
 		t.Errorf("LaneOf of a kind that is not one = %q, want none", lane)
@@ -377,6 +388,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// supervise start the pause holds (op start above), so the pause lets the reconcile run,
 		// and at the resume each held start carries what it recorded.
 		OutboxKindDesignChanges: "",
+		// A retro's bound ends a retro nobody reported: a stop that starts no turn, so the pause lets
+		// it run, as it lets a stop of any other kind.
+		OutboxKindRetroBound: "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
@@ -555,6 +569,16 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
+		{name: "a retro bound without the run it bounds", payload: RetroBound{}, reason: "retro bound requires the run it bounds"},
+		{name: "a retro run on a start of a phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Phase: phase.Implementing, Task: "Continue.", RetroRun: 3}, reason: "a supervise retro run names a start"},
+		{name: "a retro run on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, RetroRun: 3}, reason: "a supervise retro run names a start"},
+		{name: "a retro run on a look's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check.", CheckLook: 2, RetroRun: 3}, reason: "a supervise retro run names a start"},
+		{name: "a retro run on a start that carries an entry", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Continue.", Entry: 4, RetroRun: 3}, reason: "a supervise retro run names a start"},
+		{name: "a retro run of the controller, which is no role of an issue", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleController, Generation: 3, Task: "Continue.", RetroRun: 3}, reason: "a supervise retro run names a start"},
+		{name: "a retro wake of a worker", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "A finding waits.", WakeKind: pods.WakeRoleMessage, RetroWake: true}, reason: "a supervise retro wake names a start"},
+		{name: "a retro wake with no wake kind", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, Task: "A finding waits.", RetroWake: true}, reason: "a supervise retro wake names a start"},
+		{name: "a retro wake on a start of a phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, Phase: phase.Implementing, Task: "A finding waits.", WakeKind: pods.WakeRoleMessage, RetroWake: true}, reason: "a supervise retro wake names a start"},
+		{name: "a retro wake on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, RetroWake: true}, reason: "a supervise retro wake names a start"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -696,6 +720,10 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a check wake without a reason", row: OutboxRow{ID: 42, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"look":1}`)}, reason: "check wake requires the reason it wakes the check"},
 		{name: "a check wake with an unknown field", row: OutboxRow{ID: 43, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"look":1,"reason":"the tester's own wake","build":"b00f"}`)}, reason: "unknown field"},
 		{name: "a check bound with a field", row: OutboxRow{ID: 41, Kind: OutboxKindCheckBound, Payload: json.RawMessage(`{"look":1}`)}, reason: "unknown field"},
+		{name: "a retro bound without the run it bounds", row: OutboxRow{ID: 70, Kind: OutboxKindRetroBound, Payload: json.RawMessage(`{}`)}, reason: "retro bound requires the run it bounds"},
+		{name: "a retro bound with an unknown field", row: OutboxRow{ID: 71, Kind: OutboxKindRetroBound, Payload: json.RawMessage(`{"generation":1,"agent":"legion-legion-legion-208-implementer"}`)}, reason: "unknown field"},
+		{name: "a stored retro run on a start of a phase", row: OutboxRow{ID: 72, Kind: OutboxKindSupervise, Payload: json.RawMessage(`{"op":"start","tree":"LEGION-208","role":"implementer","generation":3,"phase":"implementing","task":"Continue.","retroRun":3}`)}, reason: "a supervise retro run names a start"},
+		{name: "a stored retro wake of a worker", row: OutboxRow{ID: 73, Kind: OutboxKindSupervise, Payload: json.RawMessage(`{"op":"start","tree":"LEGION-208","role":"implementer","generation":3,"task":"A finding waits.","wakeKind":"role_message","retroWake":true}`)}, reason: "a supervise retro wake names a start"},
 		{name: "a role message with no body", row: OutboxRow{ID: 48, Kind: OutboxKindRoleMessage, Payload: json.RawMessage(`{"role":"legion.sjawhar-legion.LEGION-208.architect"}`)}, reason: "role message requires body"},
 		{name: "a hook prompt to an architect", row: OutboxRow{ID: 55, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
 		{name: "a hook prompt of a phase to itself", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"reviewing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: `a hook prompt names the move back that fired it; "reviewing" to "reviewing" is no move back`},
