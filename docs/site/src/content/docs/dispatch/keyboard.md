@@ -20,24 +20,26 @@ you gave those actions in their place. So single letters never interrupt your ty
 **Snooze**, priority or **Status** control is not a text field: a letter or a digit you press on
 it works as it does on the row or the page (see [Menus and lists](#menus-and-lists)).
 
-Outside a text field you were already typing in, only the keys that move or scroll repeat while
-you hold them down: `j`, `k` and the arrow keys that go to the next or previous row, card, column,
-turn, agent, component or pull request, the Board's `h` and `l`, `Space` and `Shift+Space` in the
-Inbox, the Board's move keys, `Shift+J`, `Shift+K`, `Shift+L` and `Shift+H`, where each repeat
-moves the card one more time, and `Home`, `End`, `Page Up` and `Page Down`. A held `Space` also
-repeats where nothing took its press, and the page scrolls by it. Every other key acts once for
-each press, the digits, `Enter` and `Escape` included. This is also true of the palette's actions
-when you give them a key. If you hold such a key down, it does nothing more: a held `1` that
-snoozes an ask picks no option of the ask after it, a held `Enter` presses a button once, and a
-held `Escape` closes one list or panel. A held key that puts the cursor in a text field types
-nothing there: a held `f` puts it in the Inbox's search box, and a held `b` or `p` opens its menu,
-each with nothing typed.
+Of the shortcuts, only the ones that move or scroll repeat while you hold their key down: `j`, `k`
+and the arrow keys that go to the next or previous row, card, column, turn, agent, component or
+pull request, the Board's `h` and `l`, `Space` and `Shift+Space` in the Inbox, the Board's move
+keys, `Shift+J`, `Shift+K`, `Shift+L` and `Shift+H`, where each repeat moves the card one more
+time, and `Home`, `End`, `Page Up` and `Page Down`. Every other shortcut acts once for each press,
+the digits included. This is also true of the palette's actions when you give them a key. A key
+that does something on the page acts once for each press as well, `Enter` and `Escape` included.
+If you hold such a key down, it does nothing more: a held `1` that snoozes an ask picks no option
+of the ask after it, a held `Enter` presses a button once, and a held `Escape` closes one list or
+panel. A held key that puts the cursor in a text field types nothing there: a held `f` puts it in
+the Inbox's search box, and a held `b` or `p` opens its menu, each with nothing typed.
 
-In a text field that had the focus before you pressed the key, typing repeats as usual: a held
-character, `Backspace` or `Delete`, and `Enter` in a box of several lines. This is also true in a
-menu's search box, where a held letter is typed again on each repeat. A held digit in a menu still
-picks its choice once, and a key that types or deletes acts once in a text field too when you hold
-it with `Ctrl`.
+Every other key repeats as it does on any web page. In a text field that had the focus before you
+pressed the key, typing repeats as usual: a held character, one you type with AltGr too,
+`Backspace` or `Delete`, and `Enter` in a box of several lines. This is also true in a menu's
+search box, where a held letter is typed again on each repeat, but a held digit in a menu still
+picks its choice once. The browser's own keys repeat too: a held `Ctrl+-` or `Ctrl+=` zooms one
+more step on each repeat, and a Mac text field's own keys with the Control key (`⌃`), such as
+`⌃H`, act on each repeat. A held `Space` repeats where nothing took its press, and the page
+scrolls by it.
 
 You can change each key, give an action a second key, or take its keys away. See
 [Change the keys](#change-the-keys).

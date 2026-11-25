@@ -942,9 +942,11 @@ function heldPage(bindings: readonly KeyBinding[], elements: readonly Element[])
 // The held-key rule the architect ruled on 2026-11-25T04:12Z (62b47002's "a held key acts once but
 // for the steps and scrolls that repeat"), which the window's capture phase applies before any
 // control hears a key (`Keymap.captureKeyDown`): a repeat of a key that acts - one whose press put
-// the caret in a field, an Enter on a button, an Escape on a panel's field - reaches nothing of the
-// page and is left to no action of the browser's. It types nothing in the field the press focused,
-// presses the button no second time, and closes no panel around a list an Escape closed.
+// the caret in a field, an Enter on a button, an Escape a panel took - reaches nothing of the page
+// and is left to no action of the browser's. It types nothing in the field the press focused,
+// presses the button no second time, and closes no panel around a list an Escape closed. The
+// ruling of 2026-11-25T09:24Z keeps a repeat only where it would act: an Escape on a panel's field
+// that nothing took acts on nothing, and its repeats go on.
 test("a held key that acts reaches nothing with its repeats: none types in the field its press focused, presses the focused button again, or closes the panel around it", () => {
   const row = document.createElement("button");
   const field = document.createElement("input");
@@ -974,7 +976,17 @@ test("a held key that acts reaches nothing with its repeats: none types in the f
     act(() => row.focus());
     expect(hold("Enter", 3), "Enter on a focused button").toEqual({ acted: 0, reached: 0 });
     act(() => trigger.focus());
-    expect(hold("Escape", 3), "Escape on a panel's field").toEqual({ acted: 0, reached: 0 });
+    expect(hold("Escape", 3), "Escape on a panel's field").toEqual({ acted: 3, reached: 3 });
+    // The panel's own Escape (`AnchoredPanel`'s `dismissOnEscape`) takes the press.
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === "Escape") event.preventDefault();
+    };
+    document.addEventListener("keydown", dismiss, true);
+    try {
+      expect(hold("Escape", 3), "Escape the panel took").toEqual({ acted: 0, reached: 0 });
+    } finally {
+      document.removeEventListener("keydown", dismiss, true);
+    }
   } finally {
     release();
   }
@@ -1024,11 +1036,13 @@ test("a held key that moves repeats wherever the focus has gone: a binding that 
   }
 });
 
-// The same rule's typing: in the field that had the focus before the press, a held key that
-// writes (`writesText`) repeats - a character, Space, Backspace and Delete, and Enter in a field of
-// lines - but Escape, Enter in a field of one line, which sends its form, a key held with Ctrl and
-// a character a control took (a menu's digit, which writes its choice) act once.
-test("in a field that had the focus before the press, a held key that writes repeats, and Escape, an Enter that sends, a Ctrl key and a character a control took act once", () => {
+// The same rule's typing: in the field that had the focus before the press, a held key that types
+// repeats - a character, Space, Backspace and Delete, and Enter in a field of lines - and so does a
+// key that nothing took and that acts on nothing there, Escape and Ctrl+Z among them (the ruling of
+// 2026-11-25T09:24Z, which ended the rule's stop of both), but Tab, Enter in a field of one line,
+// which sends its form, and a character a control took (a menu's digit, which writes its choice)
+// act once.
+test("in a field that had the focus before the press, a held key that writes repeats, and so do Escape and a Ctrl key that nothing took, and an Enter that sends and a character a control took act once", () => {
   const input = document.createElement("input");
   const lines = document.createElement("textarea");
   const menuBox = document.createElement("input");
@@ -1041,13 +1055,13 @@ test("in a field that had the focus before the press, a held key that writes rep
     for (const key of ["w", " ", "Backspace", "Delete"]) {
       expect(hold(key, 3), key).toEqual({ acted: 3, reached: 3 });
     }
-    for (const [key, init] of [
-      ["Escape", {}],
-      ["Tab", {}],
-      ["Enter", {}],
-      ["z", { ctrlKey: true }],
+    for (const [key, init, acted] of [
+      ["Escape", {}, 3],
+      ["Tab", {}, 0],
+      ["Enter", {}, 0],
+      ["z", { ctrlKey: true }, 3],
     ] as const) {
-      expect(hold(key, 3, init), key).toEqual({ acted: 0, reached: 0 });
+      expect(hold(key, 3, init), key).toEqual({ acted, reached: acted });
     }
     act(() => lines.focus());
     expect(hold("Enter", 3), "Enter in a field of lines").toEqual({ acted: 3, reached: 3 });
@@ -1057,6 +1071,54 @@ test("in a field that had the focus before the press, a held key that writes rep
     act(() => menuBox.focus());
     expect(hold("2", 3), "a digit the menu's box took").toEqual({ acted: 0, reached: 0 });
     expect(hold("w", 3), "a letter the menu's box typed").toEqual({ acted: 3, reached: 3 });
+  } finally {
+    release();
+  }
+});
+
+// The architect's ruling of 2026-11-25T09:24Z (the tester's rows at a20666a8): the guard stops only
+// the repeats of a key that would act, and reads what would act, not the modifier bits. A key that
+// no binding names, whose press nothing took, reaches the browser on each repeat: the browser's own
+// zoom on the page, a character typed with AltGr, which Windows reports as Ctrl+Alt, in the field
+// the press was made in, and a Mac text field's own Control+H, which deletes back.
+test("a held Ctrl+-, which no binding names, leaves each repeat on the page to the browser's zoom", () => {
+  const release = heldPage([], []);
+  try {
+    act(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    expect(hold("-", 3, { code: "Minus", ctrlKey: true }), "Ctrl+- on the page").toEqual({
+      acted: 3,
+      reached: 3,
+    });
+  } finally {
+    release();
+  }
+});
+
+test("in a text box the press was made in, a held character typed with AltGr, which Windows reports as Ctrl+Alt, repeats as a plain character does", () => {
+  const input = document.createElement("input");
+  const release = heldPage([], [input]);
+  try {
+    act(() => input.focus());
+    expect(
+      hold("@", 3, { altKey: true, code: "KeyQ", ctrlKey: true }),
+      "AltGr+Q, which types @"
+    ).toEqual({ acted: 3, reached: 3 });
+  } finally {
+    release();
+  }
+});
+
+test("in a text box the press was made in, a held Control+H, a Mac text field's own delete, repeats", () => {
+  const input = document.createElement("input");
+  const release = heldPage([], [input]);
+  try {
+    act(() => input.focus());
+    expect(hold("h", 3, { code: "KeyH", ctrlKey: true }), "Control+H").toEqual({
+      acted: 3,
+      reached: 3,
+    });
   } finally {
     release();
   }

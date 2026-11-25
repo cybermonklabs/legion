@@ -5,7 +5,6 @@ import {
   PANEL_ATTRIBUTE,
   takesText,
   typedOnMenuTrigger,
-  writesText,
 } from "../../components/key-targets";
 import { inputMethodKey } from "../../lib/input-method";
 
@@ -420,6 +419,17 @@ function physicalKey(event: KeyboardEvent): string {
   return event.code === "" ? event.key : event.code;
 }
 
+/** Whether a key would type or delete in a text field it lands in, whatever modifiers it is held
+ *  with: a character, Enter, Backspace or Delete. A repeat that lands in a field its press was not
+ *  made in is kept from it by what it would do there, not by its modifiers
+ *  (`Keymap.captureKeyDown`), so `writesText`, which takes a key held with Ctrl or Cmd for no
+ *  typing, is not the test: a character typed with AltGr, which Windows reports as Ctrl+Alt,
+ *  types too. */
+function editsText(event: KeyboardEvent): boolean {
+  const { key } = event;
+  return key.length === 1 || key === "Enter" || key === "Backspace" || key === "Delete";
+}
+
 /** `event` as the registry matches it. The space bar types `" "`, which no key text can hold (a
  *  chord splits on whitespace) and which would read as a key that holds its Shift already, as
  *  `?` does: as `Space` it has a name of its own, and Space and Shift+Space are two keys. */
@@ -460,12 +470,15 @@ export interface Keymap {
    * Reads a keydown in the window's capture phase, before every control and every other listener
    * of the page hears it (`KeymapProvider`): notes each press of a key until the key is let go
    * (`handleKeyUp`, `releaseKeys`), and keeps from the whole page each repeat of a held key that
-   * would act. A held key repeats only to move, or to type in the field that had the focus
-   * before its press; every other key acts once for each press - opens a field, opens or closes
-   * a layer, presses a button, sends, picks, ticks - however long it is held, and its repeats
-   * type nothing in a field its press moved the focus to, and press nothing on a control there.
-   * A press itself goes on untouched, so a control still takes its own keys before the registry
-   * reads them (`handleKeyDown`), and so does an input method's key.
+   * would act, and no other (`repeatGoesOn`). Each key that acts - opens a field, opens or closes
+   * a layer, presses a button, sends, picks, ticks - acts once for each press however long it is
+   * held, but for a binding that steps (`KeyBinding.repeats`), and its repeats type nothing in a
+   * field its press moved the focus to, and press nothing on a control there. Every other repeat
+   * reaches the browser untouched: a key that moves, typing in the field that had the focus
+   * before the press, and a key that no binding names and nothing took, such as the browser's
+   * zoom or a character typed with AltGr. A press itself goes on untouched, so a control still
+   * takes its own keys before the registry reads them (`handleKeyDown`), and so does an input
+   * method's key.
    */
   captureKeyDown(event: KeyboardEvent): void;
   /** The unfinished chord, or one with no keys; the same object until the chord changes. */
@@ -667,38 +680,55 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
     return { exact: undefined, partial: false };
   };
 
-  /** Repeats may continue a movement, or edit the same field. They must not start a new
-   *  action just because the press moved focus or changed which binding is enabled. */
+  /**
+   * Whether a repeat of a held key goes on to the page: the rule the architect ruled on
+   * 2026-11-25T09:24Z, which keeps a repeat from the page only where it would act there. `press`
+   * is the key's held press (`captureKeyDown`), none once the page has lost its release.
+   *
+   * Tab is kept, so that a fresh press is needed to leave the next layer, and a key that moves
+   * goes on to whatever has the focus now (`MOVING_KEYS`). A key a binding names goes on only to
+   * run again the binding that steps (`KeyBinding.repeats`) which its press ran: that binding took
+   * the press, and repeats by design. Any other repeat, of a key no binding names, is kept only
+   * where it would act:
+   * - its press was taken - a binding ran on it, or a control's handler or a panel's Escape
+   *   (`AnchoredPanel`) took it - so that its repeat would act again, but for the Backspace, the
+   *   Delete and an editor's Enter of a field the press was made in, which repeat as typing does;
+   * - its press moved the focus, or the page holds no press of it, and it would type or delete in
+   *   the field it lands in (`editsText`);
+   * - it is an Enter anywhere but a field of several lines, where it would press a button, follow a
+   *   link or send a form again, on its press's own element too.
+   * Every other repeat reaches the browser untouched: its zoom, a Mac text field's Control keys, a
+   * character typed with AltGr or with no modifier in the field that had the focus before the
+   * press, and Space where nothing took its press, which scrolls the page.
+   */
   const repeatGoesOn = (event: KeyboardEvent, press: HeldPress | undefined): boolean => {
-    // Tab can dismiss a layer. A fresh press is required to leave the next one.
     if (event.key === "Tab") return false;
     if (MOVING_KEYS[event.key] === true) return true;
-    const { target } = event;
-    // Neither way on below lets a repeat go on without a held press, nor from a press that ran no
-    // stepping binding and is not on the repeat's own element: the bindings need not be read then.
-    if (
-      press === undefined ||
-      (press.steps === undefined && (press.target !== target || !(target instanceof Element)))
-    ) {
-      return false;
-    }
     const { exact, partial } = resolve([pressOf(event)], isEditableTarget(event));
     if (exact !== undefined || partial) {
-      return exact?.binding.repeats === true && exact.binding.id === press.steps;
+      return exact?.binding.repeats === true && exact.binding.id === press?.steps;
     }
-    if (press.target !== target || !(target instanceof Element)) return false;
-    if (event.key === " ") return !press.event.defaultPrevented;
-    if (!takesText(target) || !writesText(event)) return false;
-    if (event.key === "Enter") {
-      if (event.altKey) return false;
-      // The editor handles its own paragraph breaks. An ordinary textarea only inserts
-      // a newline if its handler did not take the press.
-      return (
-        (target instanceof HTMLTextAreaElement && !press.event.defaultPrevented) ||
-        (target instanceof HTMLElement && target.isContentEditable)
-      );
+    const { target } = event;
+    const field = target instanceof Element && takesText(target);
+    const editor = target instanceof HTMLElement && target.isContentEditable;
+    if (event.key === "Enter" && !editor && !(target instanceof HTMLTextAreaElement)) return false;
+    if (press === undefined || press.target !== target) {
+      return press?.event.defaultPrevented !== true && !(field && editsText(event));
     }
-    return event.key.length !== 1 || !press.event.defaultPrevented;
+    if (!press.event.defaultPrevented) return true;
+    // The one way on from a press a control took, as the rule had it before the ruling: a text
+    // field's own Backspace and Delete, and an editor's Enter, held with no Ctrl or Cmd. An editor
+    // takes Backspace at a paragraph's start to join it to the one before, and Enter to break a
+    // paragraph, and each repeat does it again, as typing does; a field's Ctrl or Cmd key that
+    // its handler took, such as the one that sends, acts once.
+    return (
+      field &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      (event.key === "Backspace" ||
+        event.key === "Delete" ||
+        (event.key === "Enter" && !event.altKey && editor))
+    );
   };
 
   return {
@@ -777,9 +807,10 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         return;
       }
       if (repeatGoesOn(event, held.get(physicalKey(event)))) return;
-      // Kept from the browser's own action - a character typed, a button pressed, a form sent -
-      // and from every listener after this one: the window's own, a panel's Escape at the
-      // document's capture phase (`AnchoredPanel`), React's handlers and this registry's.
+      // A repeat that would act is kept from the browser's own action - a character typed in the
+      // field its press moved the focus to, a button pressed, a form sent - and from every listener
+      // after this one: the window's own, a panel's Escape at the document's capture phase
+      // (`AnchoredPanel`), React's handlers and this registry's.
       event.preventDefault();
       event.stopImmediatePropagation();
     },

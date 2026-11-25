@@ -64,9 +64,9 @@ export function typedOnMenuTrigger(target: EventTarget | null, press: TypedKey):
 
 /** The keys that only move the focus, the caret or the view: a send's hold on the composer lets
  *  them through, so the reader can still move about the draft and leave the composer by keyboard
- *  (`MentionComposer`), and a held one repeats on whatever control holds the focus now, so a held
- *  arrow walks the list a press of it opened, but for Tab, which takes a fresh press
- *  (`Keymap.captureKeyDown`). */
+ *  (`MentionComposer`), and a held one repeats on whatever control holds the focus now, whether
+ *  or not its press moved the focus or was taken, so a held arrow walks the list a press of it
+ *  opened, but for Tab, which takes a fresh press (`Keymap.captureKeyDown`). */
 export const MOVING_KEYS: Readonly<Record<string, true>> = {
   ArrowDown: true,
   ArrowLeft: true,
@@ -81,8 +81,10 @@ export const MOVING_KEYS: Readonly<Record<string, true>> = {
 
 /** Whether a key would write into a text field: held with no Ctrl or Cmd, a character, Enter,
  *  Backspace or Delete. A field an offer holds read only takes none of them, and says why
- *  (`KeptDraftOffers`' `typedOver`), and, of the keys that act, only such a key repeats in the
- *  field that had the focus before its press (`Keymap.captureKeyDown`). */
+ *  (`KeptDraftOffers`' `typedOver`). The keymap's rule for a held key does not read it
+ *  (`Keymap.captureKeyDown`): a character typed with AltGr, which Windows reports as Ctrl+Alt,
+ *  repeats in the field the press was made in as a plain one does, and so does a Mac text
+ *  field's own Control+H. */
 export function writesText(press: TypedKey): boolean {
   const { key } = press;
   if (press.ctrlKey || press.metaKey) return false;
