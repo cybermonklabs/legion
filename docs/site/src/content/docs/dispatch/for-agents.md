@@ -19,8 +19,12 @@ does. For text given inline, in `--content-file` or on stdin, it asks how Dispat
 text, and refuses a text that Dispatch would store under another spelling. For a Markdown `--path`
 file, it asks Dispatch to check the file's bytes, and never refuses their spelling. In both cases it
 also refuses what an upload refuses for the text alone, such as a text that makes more elements than
-one write may, or that holds markdown the parser refuses. When Dispatch cannot answer, the dry run
-says so on stderr and passes.
+one write may, or that holds markdown the parser refuses. Without `--force` that includes what
+Dispatch refuses only of a new document, such as an ask block that breaks its content rule or a
+block id written twice. With `--force`, which may replace a document Dispatch judges by looser
+rules, the dry run asks for none of those, so under a name the owner does not hold, which the call
+uploads as a new document, it passes with no warning a text that upload then refuses for one of
+them. When Dispatch cannot answer, the dry run says so on stderr and passes.
 The `dispatch` skill in this repository, `skills/dispatch/SKILL.md`, teaches the workflow. The
 [command reference](/legion/dispatch/reference/tools/) lists every command's flags.
 
@@ -228,6 +232,7 @@ An upload that replaces a file or a picture names the token of the version it re
 An upload under a name the owner holds, without `--force`, is refused before the upload is sent, and the refusal prints no token: for a file or a picture it names `--force` with the token your own `dispatch doc-read` printed, or `--force` alone where the version standing under the name states no token; for an upload of another kind than the name holds (Markdown is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file) it names another name, since Dispatch keeps one kind under one name.
 The command checks a Markdown text before it reads which names the owner holds, with a round trip to Dispatch that stores nothing.
 A text that check refuses for the text alone gets that refusal under a held name, as it does under a new one, even where the name holds a file or a picture.
+A text that is not blank, given inline, in `--content-file` or on stdin, and whose check got no answer from a Dispatch that has the round trip, is refused there too, before the held-name read: `Dispatch could not say how it would store this text, so nothing was uploaded`.
 A first upload of a name replaces no version, so it names no token.
 
 A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end
@@ -423,9 +428,10 @@ When the write landed but Dispatch has no answer to give for it (`409 KEY_COMMIT
 2xx reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A
 call that writes nothing (`dispatch related`, `dispatch result --dry-run`, the check an upload runs
 first) whose repeat reads `ANSWER_NOT_KEPT` is asked once more under a new key. If Dispatch keeps
-no answer again, `dispatch related` and `dispatch result --dry-run` exit 1. An upload of inline text
-that is not blank is refused, and the refusal says to send it again. Blank inline text and a
-Markdown `--path` file go up unchecked. When an attempt may have
+no answer again, `dispatch related` and `dispatch result --dry-run` exit 1. An upload of text that
+is not blank, given inline, in `--content-file` or on stdin, is refused, and the refusal says to
+send it again. Blank text given any of those ways, and a Markdown `--path` file, go up unchecked.
+When an attempt may have
 landed, the command settles only on a 2xx Dispatch wrote, read whole (not an empty, untyped or
 non-JSON one; a bodiless 204 or 205 is one; not one without exactly its request key once an
 earlier answer to the same write carried it), or on a final refusal: `Idempotency-Replayed: ?1`

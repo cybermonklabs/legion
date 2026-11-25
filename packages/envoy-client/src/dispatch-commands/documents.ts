@@ -756,7 +756,9 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // The check of the text alone, the one the dry run makes (artifactTextCheck chooses it for both),
   // so the call and its dry run refuse a text alike. It comes before the read of the held name
   // below, which the dry run does not make, so a text it refuses is refused for the text under a
-  // held name too, and the held name refuses only a text the check passes.
+  // held name too, and so is a text that is not blank, given inline, in --content-file or on stdin,
+  // whose check got no answer (`failed`, storedTextCheckFailed), which the dry run passes with a
+  // warning. The held name refuses only a text the check passes.
   //
   // Inline text takes storedTextCheck, which decides what each answer means for the call: text past
   // the bytes one document may hold is refused without asking, as the server refuses such an upload

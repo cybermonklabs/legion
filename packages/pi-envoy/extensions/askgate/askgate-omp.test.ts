@@ -351,9 +351,11 @@ test.skipIf(omp === undefined && !onActions)(
       port: 0,
       async fetch(request) {
         const route = new URL(request.url).pathname;
-        // The upload reads the issue's own documents before it posts, so it can refuse a name the
-        // issue already carries, and an empty list lets it through. An upload by --path asks the
-        // store no round trip, which only inline content asks, so the fake answers none.
+        // The upload of a Markdown --path file first asks the file round trip about its bytes
+        // (POST /api/v1/markdown/file-round-trip), which this fake answers 503 below, so the
+        // check goes unchecked and the upload goes on. It then reads the issue's own documents
+        // before it posts, so it can refuse a name the issue already carries, and an empty list
+        // lets it through.
         if (request.method === "GET" && route === "/api/v1/issues/DSP-1/artifacts") {
           return Response.json([]);
         }

@@ -947,9 +947,10 @@ replayed 2xx is no landing: the client asks the call once more under a new key, 
 afresh, and a second such answer is a `DispatchAnswerNotKeptError` (`code` `ANSWER_NOT_KEPT`,
 `status`), no `DispatchServiceError`. Its message says the call wrote nothing, that Dispatch kept
 no copy of its answer, and to run the command again, which asks under a new key: `dispatch related`
-and a `dispatch result --dry-run` exit 1 on one. `dispatch artifact` refuses an upload of inline
-text that is not blank when the check of that text got such an answer, saying to send it again;
-blank inline text and a Markdown `--path` file go up unchecked when their check gets no answer, as
+and a `dispatch result --dry-run` exit 1 on one. `dispatch artifact` refuses an upload of text
+that is not blank, given inline, read from `--content-file` or from stdin, when the check of that
+text got such an answer, saying to send it again; blank text given any of those ways and a
+Markdown `--path` file go up unchecked when their check gets no answer, as
 the account of the dry run further down says. A replayed refusal is the refusal Dispatch first
 gave, thrown as any other.
 
@@ -1290,7 +1291,8 @@ and exit 1, with Dispatch on or off, so `dispatch artifact` refuses such a text 
 Dispatch.
 A command whose call asks Dispatch something before it writes asks it in its dry run too, through
 its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/table.ts`). The one
-such step is `dispatch artifact`'s: for inline content, it makes the call's own stored-text check
+such step is `dispatch artifact`'s: for text given inline, read from `--content-file` or from
+stdin, it makes the call's own stored-text check
 (`storedTextCheck`), and refuses with the call's refusal and exit code a text the call refuses: one
 Dispatch would store under another spelling (`POST /api/v1/markdown/round-trip`, asked for every
 text but the empty string), or one the call refuses for the text alone. A text whose typed
@@ -1357,20 +1359,25 @@ its bytes, or a FIFO, a device or a socket, is asked nothing, by the call as by 
 only the call checks, since it needs more than the
 text, stays the call's: whether the owner holds the name, the token of a replacement, a
 replacement's own rules, a block pointer's target, whether a check proved by CI holds a recorded
-result, and the issue's state. The call checks the text, inline or a file's, before it reads
+result, and the issue's state. The call checks the text, however it is given, before it reads
 whether the owner holds the name, so a text the check refuses gets the same refusal from the call
-and its dry run under a held name too; a text the check passes, the call without `--force` still
+and its dry run under a held name too. A text that is not blank, given inline, read from
+`--content-file` or from stdin, whose check got no answer from a Dispatch that has the route, the
+call refuses there too, before it reads the name (`storedTextCheckFailed`), while its dry run
+passes it with the warning below. A text the check passes, the call without `--force` still
 refuses under a held name, and the dry run, which cannot know the name, passes it. With no
 Dispatch configured, the dry run and the call alike still refuse, with exit 1, once the flags are
 read and before the argument check (above), a document's text past 1 MiB, and one holding a
 U+0000 or a byte that is not UTF-8, whether it is given inline, read from `--content-file` or from
-stdin, or in a Markdown `--path` file. Any other inline text, and any other Markdown file the
-command reads, the dry run passes with a warning that the call is refused for the same reason, and
+stdin, or in a Markdown `--path` file. Any other text given inline, read from `--content-file` or
+from stdin, and any other Markdown file the command reads, the dry run passes with a warning that
+the call is refused for the same reason, and
 the call is refused for Dispatch being off, exit 2. The
 step waits at most 5 s. For a text it does not refuse before it asks, when it gets no answer (no
 Dispatch configured, any other failure, no answer in time, or a Dispatch without the route), the
 dry run passes, and one `dispatch: warning:` line on stderr says why and what the call does then,
-as the check's kind says it: inline text a Dispatch without
+as the check's kind says it: text given inline, read from `--content-file` or from stdin, that a
+Dispatch without
 the route cannot check, and blank text whose check got no answer, the call uploads unchecked; a
 file the call asks about once more, and uploads unchecked if that gets no answer either; any other
 text the call refuses until Dispatch answers.
