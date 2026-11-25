@@ -1115,44 +1115,52 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // meInboxBuild writes shape's statement over the request's arguments (meInboxBound, meInboxSlots)
 // and answers it with the constants it binds after them.
 //
-// The relations are read once either way, by the walk: the distinct relation kinds that touch each
-// of the person's nodes, read by a skip over an index led by the far end and the kind
+// The relations of the read with no state are read by the walk: the distinct relation kinds that
+// touch each of the person's nodes, read by a skip over an index led by the far end and the kind
 // (graph_tuples_as_of_in) and one over graph_tuples_current (one index probe a kind, kinds_in and
-// kinds_out), then each kind's current tuples through
-// graphstore.CurrentTupleRead, one index range a kind, each relation kind and end once a node
-// (tied). With no state the entries are those nodes. Under a state they are the page's own rows
-// in that state, read from the caches the page's lists read (meInboxPageRows). Either way the page's
-// rows and the walk's relations are put together by grouping the two by node (sides) rather than by
-// joining one to the other: the read costs one pass over the person's current tuples and one over
-// their page whatever the planner takes either to hold, and never the product of the two, which a
-// probe of the tuples between each row's node and the person's made it (the scale check, c-p99:
-// 8,002 probes, 71 s of 74, for the person whose history is a hundred times the median,
-// since every probe the planner chose read all the person's tuples of a kind and kept the row's),
-// and which a join made it under the plan Postgres keeps from the sixth execution, a plan for no
-// value of the arguments that takes the page to hold one row and loops over the whole walk for
-// each (12.2 s for that person, against 1.6 s for the plan of its own arguments). The visibility
-// predicate is over the node's own row of graph_nodes, read by its key for each node, in this
-// statement and bound once, and the counts are taken after it. What the page's rows draw is read
-// once for the page (meInboxPageReads).
+// kinds_out), then each kind's current tuples through graphstore.CurrentTupleRead, one index range
+// a kind, each relation kind and end once a node (tied), and the entries are those nodes. That walk
+// reads every current tuple of the person's, so its cost is their whole history, which is what that
+// read answers.
+//
+// Under a state the entries are the page's own rows in that state, read from the caches the page's
+// lists read (meInboxPageRows), and the walk reads only the tuples between the person's nodes and
+// the nodes those rows are (page_nodes): for each relation kind that touches the person, one keyed
+// probe from each of those nodes. A relation out of the person is read by graph_tuples_current on
+// its whole key, one index descent, and a relation into the person by graph_tuples_as_of_out from
+// the node, whose own tuples of a kind are few. The read into the person leaves out the `to_kind <>
+// 'value'` test, which every person node passes, so graph_tuples_as_of_in - keyed by the person,
+// which read all the person's tuples of a kind for each node it was asked about (the scale check,
+// c-p99: 8,002 probes, 71 s of 74, for the person whose history is a hundred times the median) - is
+// no index its plan can take. So the walk costs the state's rows and not the person's history:
+// every dismissal appends a dismissed tuple and every Mark all read a read_through tuple for each
+// thread it marks (api/read_marks.go), and a walk of every tuple read all of them for every state.
+// At 5,000 dismissed threads it read state=inbox in 71 ms and state=unread in 93 ms, against 12 ms
+// and 11 ms at 250, over the same rows in either state; reading that walk and keeping the state's
+// nodes left state=inbox at 89 ms, since the plan merged the two by sorting the whole walk
+// (TestTheOneReadsInboxStatesDoNotGrowWithTheDismissedHistory holds the keyed walk to the 250's
+// figures at 5,000). The counts are the entries', each a row of the state, so they too read the
+// state's rows and no tuple past their relations.
 //
 // Under state=dismissed the page's rows are read from their keys (page_keys,
 // meInboxDismissedKeys): the first offset + limit + 1 of the state's rows, in the order the page
 // answers in, which are the rows the page and its next_cursor are taken from, or every row where
-// ?kind= narrows the entries by their relations. The walk then reads only the tuples between the
-// person's nodes and the nodes those rows are (page_nodes). That is the page's cost and not the
-// person's history: every dismissal appends a dismissed tuple and every Mark all read a read_through
-// tuple for each thread it marks (api/read_marks.go), and the whole walk read all of them for a page
-// of 200. In the dismissed scale test the dismissals and Mark all read runs it times append some
-// 35,000 such tuples to the person, before the page 50,000 deep is timed and after page 1 is: the
-// walk then read 11,830 tuples for each of three kinds, and the deep page read a p50 of 44 ms
-// against 24 ms for page 1 over the same plan. Each of these reads is keyed from the page's node:
-// a relation out of the person by graph_tuples_current on its whole key, one index descent, and a
-// relation into the person by graph_tuples_as_of_out from the node, whose own tuples of a kind are
-// few. The read into the person leaves out the `to_kind <> 'value'` test, which every person node
-// passes, so graph_tuples_as_of_in - keyed by the person, the index that made each probe of the
-// scale check above read all the person's tuples of a kind - is no index its plan can take. A
-// page's nodes are at most offset + limit + 1, where the states the page does not cut (inbox and
-// unread) answer every row, so they keep the one pass over the person's tuples.
+// ?kind= narrows the entries by their relations, and the page's nodes are those rows. That state is
+// the person's whole pile, so its page is cut before the walk: in the dismissed scale test the
+// dismissals and Mark all read runs it times append some 35,000 dismissed and read_through tuples to
+// the person, and a walk of every tuple then read 11,830 tuples for each of three kinds for a page
+// of 200. state=inbox and state=unread answer every row of their state, whose count is the live
+// rows' and not the history's, so their page's nodes are every row of the state.
+//
+// Either way the page's rows and the walk's relations are put together by grouping the two by node
+// (sides) rather than by joining one to the other, so the read costs one pass over the walk and one
+// over the page whatever the planner takes either to hold, and never the product of the two, which
+// a join made it under the plan Postgres keeps from the sixth execution, a plan for no value of the
+// arguments that takes the page to hold one row and loops over the whole walk for each (12.2 s for
+// the person whose history is a hundred times the median, against 1.6 s for the plan of its own
+// arguments). The visibility predicate is over the node's own row of graph_nodes, read by its key
+// for each node, in this statement and bound once, and the counts are taken after it. What the
+// page's rows draw is read once for the page (meInboxPageReads).
 func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	slots := shape.slots()
 	args := &meInboxArgs{values: make([]any, slots.first)}
@@ -1169,21 +1177,25 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	// rows already.
 	visible := meInboxVisible("g.node_kind", "g.node_id")
 	order := meInboxOrderOf(shape)
-	// The walk's reach: the relations of every node tied to the person, or under state=dismissed of
-	// the page's own nodes alone, whose rows are read from the page's keys (above).
+	// The walk's reach: the relations of every node tied to the person, or under a state of the
+	// page's own nodes alone (above).
 	pageKeys, pageNodes, walkFrom := ``, ``, ``
 	inbound := `t.to_kind = k.node_kind and t.to_id = k.node_id and t.kind = k.kind
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + atHorizon
 	outbound := `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
-	if shape.state == myRepliesStateDismissed {
-		pageKeys = `
+	if shape.state != "" {
+		cut := ``
+		if shape.state == myRepliesStateDismissed {
+			pageKeys = `
 	page_keys(node_kind, node_id, page, moment) as materialized (` + meInboxDismissedKeys(shape) + `
 	),`
+			cut = `
+		limit ` + meInboxDismissedLimit
+		}
 		pageNodes = `
 	page_nodes(node_kind, node_id) as materialized (
-		select pr.node_kind, pr.node_id from page_rows pr
-		limit ` + meInboxDismissedLimit + `
+		select pr.node_kind, pr.node_id from page_rows pr` + cut + `
 	),`
 		walkFrom = `
 		cross join page_nodes p`
