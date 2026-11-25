@@ -10,6 +10,7 @@ import {
   surfaceMutedStrongBg,
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
+  toolbarControlHeight,
 } from "../theme/classes";
 import { TruncatedText } from "./TruncatedText";
 
@@ -33,11 +34,14 @@ const selectedChip: Record<ChipTone, string> = {
  * selected fill; `removable` appends a `×` glyph and the whole chip is the remove control, so the
  * host names the action in `aria-label` (`Remove Label: docs filter`). The chip is never wider
  * than its row: text that does not fit ends in an ellipsis, and a host whose text can be that
- * long passes the whole of it as `title`.
+ * long passes the whole of it as `title`. `inToolbar` is a host's that stands it among a table
+ * toolbar's controls, where from 1280 px up it takes their one height (`toolbarControlHeight`)
+ * rather than 44 px.
  */
 export function Chip({
   "aria-label": ariaLabel,
   children,
+  inToolbar = false,
   onClick,
   removable = false,
   selected,
@@ -46,6 +50,7 @@ export function Chip({
 }: {
   "aria-label"?: string;
   children: ReactNode;
+  inToolbar?: boolean;
   onClick: () => void;
   removable?: boolean;
   selected?: boolean;
@@ -56,7 +61,7 @@ export function Chip({
     <button
       aria-label={ariaLabel}
       aria-pressed={selected}
-      className={`inline-flex min-h-11 max-w-full shrink-0 items-center gap-1 rounded-full border px-3 text-xs font-medium whitespace-nowrap ${controlHoverBorder} ${
+      className={`inline-flex min-h-11 max-w-full shrink-0 items-center gap-1 rounded-full border px-3 text-xs font-medium whitespace-nowrap ${inToolbar ? `${toolbarControlHeight} ` : ""}${controlHoverBorder} ${
         selected === true ? selectedChip[tone] : restingChip
       }`}
       onClick={onClick}

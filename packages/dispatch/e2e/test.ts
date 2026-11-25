@@ -110,7 +110,7 @@ import {
   sqlLiteral,
 } from "./seed";
 import { type RowLogin, type SignInLogin, signIn } from "./users";
-import { workspaceSessions } from "./workspace";
+import { reviewSessions } from "./workspace";
 
 /** Bytes this process drew once, when it loaded this module, and folds into every `rowKey`: a
  *  second run of the suite against the same database, or a retry in a new worker, draws others,
@@ -533,7 +533,7 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
       await use(async () => {
         if (seeded?.into === databasesEmptied()) {
           await putDeliverySettings(seeded.settings);
-          await setLiveSessions(workspaceSessions);
+          await setLiveSessions(reviewSessions);
           return seeded.seed;
         }
         await resetDatabase();

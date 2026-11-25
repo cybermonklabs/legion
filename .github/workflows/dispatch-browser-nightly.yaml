@@ -186,6 +186,7 @@ jobs:
           cache: false
       # Restored only: the harness builds the Dispatch server, which this job needs and no job
       # of this family saves a cache for.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

@@ -14,6 +14,7 @@ import {
 } from "../web/src/features/refs/ref-preview-timing";
 import { fixedKey } from "./api";
 import { seedReference } from "./hover-preview";
+import { pauseClock } from "./page-clock";
 import { stubbed } from "./stub/stub-test";
 
 /** The key this file's recordings were made under. */
@@ -25,17 +26,11 @@ const test = stubbed(() => seedReference(CORE));
 // `web/src/features/shell/useDwell.ts`, which exports nothing a spec can import.
 const DWELL_MS = 1_000;
 
-/** Hold the page's clock still, so a check about an open or a close delay cannot race it.
- * `pauseAt` takes a time on the page's own installed clock, which the jumps above a call site
- * have already carried past the Node process's own `Date.now()`; asking it to move backwards
- * refuses, so the lead of a second is taken from the page's reading of its clock. `pauseAt` runs
- * every page timer that falls due inside the jump, so no call site may have one armed that the
- * jump must not fire: at three of them the card is open, so its open timer has fired and no
- * close is armed, and at the fourth the card is closed under a held button, which arms nothing
- * at all. */
-async function pauseClock(page: Page): Promise<void> {
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
-}
+// Each `pauseClock` below holds the page's clock still, so a check about an open or a close delay
+// cannot race it. It fires every page timer due inside its second, so no call site may have one
+// armed that the jump must not fire: at three of them the card is open, so its open timer has
+// fired and no close is armed, and at the fourth the card is closed under a held button, which
+// arms nothing at all.
 
 /** Put a board card in the middle of the board's scroller, clear of both edge zones. dnd-kit
  * scrolls the board while a card is held near either edge (`IssueBoard.tsx` turns the mandatory

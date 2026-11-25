@@ -749,6 +749,19 @@ def ceiling_reads(job, workflow=""):
     return reads((CEILING, f"{at(job, CEILING_STEP, workflow)} runs it"))
 
 
+# Every job with a Postgres service turns the service's crash safety off in its
+# CRASH_SAFETY_STEP, which runs .github/scripts/pg-crash-safety-off.sh, before its tests
+# (.github/scripts/check-workflow-files.sh refuses a job that does not). The check reads the
+# step's run: line, not what the script runs, so each such gate declares the script.
+CRASH_SAFETY = ".github/scripts/pg-crash-safety-off.sh"
+CRASH_SAFETY_STEP = "Turn crash safety off on the service"
+
+
+def crash_safety_reads(job, workflow="", step=CRASH_SAFETY_STEP):
+    """pg-crash-safety-off.sh itself, which `job`'s crash-safety step runs."""
+    return reads((CRASH_SAFETY, f"{at(job, step, workflow)} runs it"))
+
+
 # The forced-order steps run packages/envoy/scripts/forced-order.sh, whose go test builds each
 # package's TestForcedOrder tests under -tags odatrace and -race against a copy of nats-server
 # that the script hooks with internal/testnats/testdata/hooked/v<version>, and replaces through a
@@ -824,7 +837,7 @@ def two_builds_go_reads():
          "cmd/dispatch/twobuild_harness_test.go checks, and "
          f"{at(TWO_BUILDS_SAME_JOB, 'Build this tree as the previous build', job_file(TWO_BUILDS_JOB))} "
          "writes the one its own Go step runs against"),
-    ) + ceiling_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
+    ) + ceiling_reads(TWO_BUILDS_JOB) + crash_safety_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
 
 
 # ---------------------------------------------------------------- reading a Go file as text
@@ -1976,9 +1989,8 @@ SESSIONS_STEP = "Test the session message-wait script"
 # (ci_filter_coverage.gate_read_sets), so a change to a harness or its subject selects the job
 # and exactly that step's filter is in the list it reads.
 #
-# Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
-# so each of those gates reads it and a change to it runs them all;
-# scripts/priorities-seed-check.test.sh, which is not among them, carries its own helpers.
+# Every harness sources test-lib.sh for its `check`, `is` and `summary`, so each of those gates
+# reads it and a change to it runs them all.
 SCRIPTS = ".github/scripts"
 TEST_LIB = f"{SCRIPTS}/test-lib.sh"
 
@@ -2114,6 +2126,8 @@ def browser_gate(filter, job):
         # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
         # `build:dispatch`, whose three entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "`packages/dispatch/e2e/inbox-cli.e2e.ts#runDispatch` runs it through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry`"),
+        (f"{FIX}/priority-ids.json", "`packages/dispatch/e2e/priorities.e2e.ts#idFixture` reads the shared list of the priority "
+                                     "id rule's cases by path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "`packages/dispatch/e2e/engine-reading.ts#blockSchema`"),
         (f"{ENVOY}/internal/dispatch/api/testdata/visual-shot-reads.json",
          "read at module load by packages/dispatch/e2e/visual-guard.ts (SHOT_READS_FILE), which "
