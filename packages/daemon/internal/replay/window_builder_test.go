@@ -2282,26 +2282,46 @@ func bootAcceptingWindow(t *testing.T) Window {
 	return b.build()
 }
 
-// A boot draws every stretch under way, whatever piece of its work runs (driver.bootConflicts): an
-// issue that stands in accepting at a boot, whose stretch the record ends in merging, draws there at
-// merging's chance for a stretch that spans a boot (assumption 3). The test replays
+// A boot draws every stretch under way, whatever piece of its work runs (driver.bootConflicts), at
+// the chance of the phase the record ends it in, and a conflict it draws enters in that phase: where
+// the issue stands in another phase at the boot, the conflict waits for the stretch's end in the
+// fitted phase and enters there, with no draw of its own (drawConflict). The test replays
 // bootAcceptingWindow under legion-v20.42.5 at the seeds 1 to 3: ACME-1's stretch, under way in its
-// architect's accepting at the boot at 10:45, draws its conflict there at the fitted chance of 1,
-// and ACME-1 moves back from accepting to implementing at 10:45. It fails where a boot draws only a
-// running piece whose own move ends its stretch, for which ACME-1 is signed off at 11:30 and moves
-// back from merging at 12:30.
-func TestAStretchUnderWayDrawsAtABootWhateverPieceRuns(t *testing.T) {
+// architect's accepting at the boot at 10:45 and ended in merging by the record, draws once, at the
+// boot, in accepting, at merging's fitted chance of 1, at the place of its merging piece from 11:45,
+// and the conflict waits; ACME-1 is signed off at 11:30 and moves back by conflict once, from
+// merging at 12:30, its stretch's end. It fails where the boot's conflict enters in accepting at
+// the boot, and where the stretch's end draws again.
+func TestABootsConflictInALaterPhaseEntersAtTheStretchsEnd(t *testing.T) {
 	t.Parallel()
+	place := drawPlace(stretchDraw{issue: "ACME-1", start: clock(11, 45), phase: phase.Merging})
 	for seed := int64(1); seed <= 3; seed++ {
-		_, log, _ := replayLoopWindow(t, bootAcceptingWindow(t), "legion-v20.42.5", seed)
+		var draws []conflictDraw
+		out := t.TempDir()
+		if _, err := Run(context.Background(), RunConfig{Window: bootAcceptingWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch,
+			Seed: seed, Slowdown: 1, PGDSN: replayDSN(t), Out: out, onDraw: func(draw conflictDraw) {
+				if draw.at.issue == "ACME-1" {
+					draws = append(draws, draw)
+				}
+			}}); err != nil {
+			t.Fatalf("replay the window under legion-v20.42.5 at seed %d: %v", seed, err)
+		}
+		if len(draws) != 1 {
+			t.Errorf("at seed %d ACME-1 drew %d times (%+v), want once, at the boot at 10:45", seed, len(draws), draws)
+		} else if draw := draws[0]; drawPlace(draw.at) != place || !draw.boot || !draw.drawn.Equal(clock(10, 45)) || draw.running != phase.Accepting ||
+			draw.chance != 1 || draw.outcome != drawnDeferred {
+			t.Errorf("at seed %d ACME-1 drew %s at %s (a boot's: %t), in %s, at %v, making %q; want %s at the boot at 10:45, in accepting, at 1, making %q",
+				seed, drawPlace(draw.at), stamp(draw.drawn), draw.boot, draw.running, draw.chance, draw.outcome, place, drawnDeferred)
+		}
+		log := replayLog(t, out)
 		back := linesAt(log, func(line replayLine) bool {
 			return line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.Trigger == workflow.TriggerConflict
 		})
 		from := linesAt(log, func(line replayLine) bool {
-			return line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.Trigger == workflow.TriggerConflict && line.From == string(phase.Accepting)
+			return line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.Trigger == workflow.TriggerConflict && line.From == string(phase.Merging)
 		})
-		if want := []time.Time{clock(10, 45)}; !slices.EqualFunc(back, want, time.Time.Equal) || !slices.EqualFunc(from, want, time.Time.Equal) {
-			t.Errorf("at seed %d ACME-1 moved back by conflict at %s, from accepting at %s; want once, from accepting at 10:45:00, the boot", seed,
+		if want := []time.Time{clock(12, 30)}; !slices.EqualFunc(back, want, time.Time.Equal) || !slices.EqualFunc(from, want, time.Time.Equal) {
+			t.Errorf("at seed %d ACME-1 moved back by conflict at %s, from merging at %s; want once, from merging at 12:30:00, its stretch's end", seed,
 				describeTimes(back), describeTimes(from))
 		}
 	}

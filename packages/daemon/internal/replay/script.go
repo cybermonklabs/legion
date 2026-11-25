@@ -120,15 +120,12 @@ type piece struct {
 	// piece runs at the generation the issue stands at when it opens, and its move is entered at
 	// that generation, as a drawn piece's is (moveGeneration).
 	leftUnrun bool
-	// stretchDrawn says the stretch the piece's move ends drew its conflict already: the piece
-	// goes on with a stretch past its recorded end (stretchEnds), which is not drawn a second
-	// time, or drew it at a boot inside it (bootConflicts). drew is, for
-	// a merge-forward piece, the piece whose stretch drew the conflict, and resumes says that piece
-	// stands paused by a conflict a boot's read found while it ran, which the merge forward's end
-	// resumes (mergedForward).
-	stretchDrawn bool
-	drew         *piece
-	resumes      bool
+	// drew is, for a merge-forward piece, the piece whose stretch drew the conflict, and resumes
+	// says that piece stands paused by a conflict a boot's read found while it ran, which the merge
+	// forward's end resumes (mergedForward). Whether a stretch drew is its live stretch's
+	// (liveStretch), not a piece's.
+	drew    *piece
+	resumes bool
 	// acts is every act of the piece, by its offset from the start.
 	acts []act
 

@@ -239,21 +239,25 @@ type driver struct {
 	// draw by the run's seed and the draw's place (seedDraw), stretchDraws how many draws each
 	// stretch has made, by its place with no count (stretchDraw), lastDraw the place of each
 	// issue's latest stretch draw, at which the loop of a conflict it made is drawn (drawnLoop),
-	// stretchFrom the replay's start of the stretch each issue stands in, and waiting each issue's
-	// conflict past the review that waits for merging (waitingConflict). heads counts the heads the
-	// replay's own pull request records moved to, which names each, and numbers is the number of
-	// each of those records.
-	conflicts    ConflictModel
-	merges       baseMerges
-	loops        []conflictLoop
-	draws        *rand.Rand
-	drawSource   *rand.PCG
-	stretchDraws map[stretchDraw]int
-	lastDraw     map[string]stretchDraw
-	stretchFrom  map[string]time.Time
-	waiting      map[string]waitingConflict
-	heads        int
-	numbers      *pullRequestNumbers
+	// stretchFrom the replay's start of the stretch each issue stands in, stretches the live stretch
+	// of each issue whose stretch the run has read, which holds its one draw (liveStretch),
+	// liveStretches how many live stretches the run has numbered, and waiting each issue's conflict
+	// past the review that waits for merging (waitingConflict). heads counts the heads the replay's
+	// own pull request records moved to, which names each, and numbers is the number of each of
+	// those records.
+	conflicts     ConflictModel
+	merges        baseMerges
+	loops         []conflictLoop
+	draws         *rand.Rand
+	drawSource    *rand.PCG
+	stretchDraws  map[stretchDraw]int
+	lastDraw      map[string]stretchDraw
+	stretchFrom   map[string]time.Time
+	stretches     map[string]*liveStretch
+	liveStretches int
+	waiting       map[string]waitingConflict
+	heads         int
+	numbers       *pullRequestNumbers
 	// noWork is each issue the replay admitted with no work, recorded or drawn (neverStartedWork),
 	// whose slot-hours the run counts (Divergence.NoWorkSlotHours).
 	noWork map[string]bool
@@ -601,6 +605,11 @@ func (d *driver) observe() error {
 			if startsStretch(from, to) {
 				d.stretchFrom[key] = d.clock.Instant()
 			}
+			// A move that begins a stretch or breaks one ends the live stretch the issue stood in,
+			// with its draw and any conflict that waited for its end.
+			if startsStretch(from, to) || breaksStretch(to) {
+				delete(d.stretches, key)
+			}
 			if to == phase.Done {
 				delete(d.inFlight, key)
 			}
@@ -621,6 +630,7 @@ func (d *driver) observe() error {
 			d.placeUnstarted(key)
 			d.placeReopens(key)
 			delete(d.waiting, key)
+			delete(d.stretches, key)
 			tree := line.str("tree")
 			for _, waiting := range slices.Sorted(maps.Keys(d.signOffs)) {
 				if waiting != key && d.treeOf(waiting) == tree {
@@ -795,6 +805,7 @@ func (d *driver) run() error {
 	w, t := d.window, d.trace
 	end := w.End()
 	d.clock.advance(w.From)
+	d.stretches = map[string]*liveStretch{}
 	// The process that runs at the window's start is the newest that started before it; a boot
 	// at the start itself is applied as a boot. It is built before the start state, which asks its
 	// engine for the resume task of each owed start it seeds (seed, SeedAndReport).

@@ -10,6 +10,9 @@ body: |-
     `collect-merges` adds each base branch's first-parent history from GitHub. Both send GET
     requests alone. `neutralize` renames the private names of a window for test data. `run`
     replays a window, and `scorecard` reads the same measures from the record of a window.
+    `run` writes a line of its own to the run's log for each conflict draw, `replay: a stretch's
+    conflict drawn`, with the issue, its stretch, the running and the fitted phase, the chance, the
+    number drawn and the outcome; no daemon writes that line, and no measure reads it.
     `validate` checks a replay against the record (`--main-only` runs the main branch alone, with
     its seeds), `forecast` checks it against a recorded change of the rule, and `compare` compares
     the rules on two windows, gives the reason for each rule, and writes each issue's first slot

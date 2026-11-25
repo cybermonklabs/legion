@@ -561,11 +561,18 @@ Such a move back is not entered as recorded, because the stretch that it ends dr
 Each draw of a stretch takes its value from `--seed`, the issue, and the place of the stretch in the record: the phase and the recorded start of the work segment that ends it, and how many times the stretch drew before.
 The loop of a conflict that it draws takes its value from the same place.
 So a draw never depends on the draws before it, and two rules at one seed draw the same value for each stretch that both run, also where one rule ends a stretch earlier or runs a stretch that the other does not.
-A daemon's boot reads each pull request again, so the run also reads, for each phase, the share of the window's conflicts out of that phase that came within 15 minutes after a boot.
-At a boot, each stretch under way draws there in that share of the phase in which its issue stands, whatever work segment of the stretch runs: an issue in accepting whose stretch the record ends in merging draws there too.
-It draws at the chance that it would draw at its end, in the phase in which the record ends it, and a conflict that it draws enters there: the issue moves back, or a role merges the base forward and the work goes on after it, or the conflict waits for merging, as the rule's path has it.
-A stretch makes this choice at the first boot inside it, and a stretch that does not draw there draws at its end.
-A stretch that draws no conflict at a boot goes on and does not draw again at its end.
+A daemon's boot reads each pull request again, so the model gives each phase a chance of its own for a stretch that spans a boot (assumption 3).
+At a boot, each stretch under way draws there, whatever work segment of the stretch runs, at that chance of the phase in which the record ends the stretch, with the merges up to the boot: an issue in accepting whose stretch the record ends in merging draws there at merging's chance.
+Where the issue stands at the boot in that phase, a conflict that it draws enters there: the issue moves back, or a role merges the base forward and the work goes on after it, or the conflict waits for merging, as the rule's path has it.
+Where the issue stands in another phase of the stretch, the conflict waits for the stretch's end in the phase whose chance it drew at, and enters there without a draw of its own.
+Where the stretch breaks or ends in another phase first, that conflict is dropped.
+A stretch makes this choice at the first boot inside it, and a stretch that no boot reads inside draws at its end.
+A stretch draws once.
+It keeps that draw through its moves on to the next phase, a hold, a recorded conflict loop that it passes over and a merge forward, so a stretch that draws no conflict, at a boot or at its end, does not draw again, at a later boot or at a later end in another phase.
+A move back, the merge, a move out of the stretch's phases or the issue's leave ends the stretch, and the stretch after it draws its own.
+`run` writes a line of its own to `log.jsonl` for each draw, at the moment of the draw, with the msg `replay: a stretch's conflict drawn`.
+Its attributes are `issue`, `stretch` (the number of the issue's stretch in the run), `running` (the phase of the work segment that ran at the draw), `fitted` (the phase in which the record ends the stretch, whose chance the draw read), `start` (the replay's start of the stretch), `merges`, `by` (`boot` or `end`), `chance`, `u` (the number drawn) and `outcome`: `clean`, `conflict`, or `deferred` for a conflict that waits for the stretch's end.
+No daemon writes that line, and neither timeline reads a move or a measure from it.
 Under a rule whose conflicting head moves back, an issue whose stretch draws a conflict runs a recorded conflict loop, drawn with `--seed` among the loops of the window whose conflict left the same phase.
 Where the window records no loop from that phase, the replay draws among the loops that left a later phase, and cuts the drawn loop at its first work segment in that phase or a later one, so the issue returns to the phase that its conflict left.
 Where the window records only loops that left an earlier phase, the replay draws among those, and after the loop the issue goes back to the phase that its conflict left through copies of its own last work segments in each phase between.
@@ -624,7 +631,7 @@ Last, it prints each assumption that the run rests on, with the number of outbox
 
 | File | What it holds |
 | --- | --- |
-| `log.jsonl` | The daemon's lines on the simulated clock. |
+| `log.jsonl` | The daemon's lines on the simulated clock, and the replay's own line of each conflict draw (`replay: a stretch's conflict drawn`). |
 | `scorecard.json` | The measures read from the states that the daemon's own admission passes left, the snapshot timeline. |
 | `scorecard-line.json` | The same measures read back from `log.jsonl` and the replay's Dispatch events, as the measures of a record are read, the line timeline. |
 | `run.json` | What ran, what it counted, the gap of each measure between the two timelines, and the conflict model. |
@@ -1893,10 +1900,12 @@ Under every rule, a stretch that ends in merging draws at the rate of the part i
 A daemon's boot reads each pull request again.
 So a stretch that a boot read the pull requests inside has a chance of its own in its phase, and the tool reads that phase's stretches that span a boot apart.
 At a boot, each stretch under way draws there, once, at its phase's chance for a stretch that spans a boot, whatever work segment of the stretch runs.
-A stretch that conflicts there ends at the boot, and the stretch after its loop takes a draw of its own.
+A conflict that it draws there enters at the boot where the issue stands in the phase in which the record ends the stretch, and the stretch after its loop takes a draw of its own.
+Where the issue stands in another phase, the conflict enters at the stretch's end in that phase, without a draw of its own, and not at all where the stretch breaks or ends in another phase first.
 A stretch that draws none at a boot draws no more.
 A stretch that spans no boot draws at its end at its phase's other chance.
 A draw reads no boot after its own moment.
+A stretch keeps its one draw through its moves on to the next phase, a hold, a recorded loop that it passes over and a merge forward; only a move back, the merge, a move out of the stretch's phases or the issue's leave ends it.
 
 A drawn conflict's work is a recorded loop that the tool draws among every loop of the record that ends before the end of the run-out, the loops of the reach before the window's start among them.
 A loop still open at the end of the run-out has no known length and is left out, so the longest loops are drawn a little less often than the record ran them.

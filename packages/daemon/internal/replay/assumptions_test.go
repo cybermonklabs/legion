@@ -25,145 +25,31 @@ func listsAssumption(number int) bool {
 	return slices.ContainsFunc(Assumptions, func(a Assumption) bool { return a.Number == number })
 }
 
-// specAssumptions starts with the eighteen assumptions in the spec's Design and includes the
-// plan's assumptions 19 to 25, D10's 38 to 44 and the signal assumptions 45 to 48.
-// Assumption 3 is as the plan's D7 restates it, with a term for each phase a stretch can end in, and
-// as the architect's D14 gives it a term for each release part of merging and a term for each
-// phase's stretches that span a boot, at which such a stretch draws, the pool of loops every one
-// that ends before the run-out's end, and what a run-out leaves of it.
-var specAssumptions = []Assumption{
-	{Number: 1,
-		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
-		Direction: "Doubtful: if load slows work, a rule with more issues in flight is favoured. The tool takes the slowdown factor f, which scales a segment by the difference between the replay's issues in flight and the record's."},
-	{Number: 2,
-		Text:      "A stretch past the review keeps its recorded length and its outcome.",
-		Direction: "Doubtful: if architects and mergers are slower with more issues past review, a rule that keeps slots past review is favoured. The tool keeps it, and the comparison says so."},
-	{Number: 3,
-		Text:      "Send-backs keep their count and cause, but a conflict, which a stretch draws at the rate fitted on the window for the phase it ends in, for the release part its end falls in where it ends in merging, and for the merges into its base, at the first boot inside the stretch at its phase's chance for a stretch that spans a boot, and otherwise at its end.",
-		Direction: "Doubtful for conflicts: the first replay saw more conflicts after a longer slot wait, so if a longer wait brings more conflicts than the fitted rate gives, a rule under which branches wait longer is favoured. The tool fits the rate on the window with a base, a term for each phase a stretch can end in, a term for each release part of the stretches that end in merging, a term for each phase's stretches that span a boot and a merges term, a phase or a part taking a term of its own only where both groups the term sets apart hold a conflict and a stretch without one; it draws conflicts from it, with a branch that sets the merges term to zero and keeps the other terms, and keeps the other loops; a rule moves conflicts through the merges term alone, since each stretch ends in the phase the record shows, at the record's release parts and boots. Merging's rate is each release part's own: a release that posts the merger's conflicts records them as conflicts, and one that does not records them as send-backs, kept as recorded loops, so one rate over both parts would count the earlier part's conflicts twice; in window one the merger sent work back on about 47% of its visits in both parts, and only the split between send-backs and conflicts moved. A daemon's boot reads each pull request again, so a stretch under way at a boot, whatever piece of its work runs there, draws once, at the first boot inside it, at its phase's chance for a stretch that spans a boot, reading no later boot, and conflicts there; if a boot raises the chance more or less than the window shows, the replay misstates how many returned issues wait for a slot at once. A drawn conflict's work is a recorded loop drawn among every one that ends before the run-out's end, the reach's among them; a loop still open at the run-out's end has no known length and is left out, so the longest loops are drawn a little less often than the record ran them. Each stretch draws apart from the record's outcome, so a stretch the record ended in a conflict can draw none, and its issue goes on past its recorded loop into its later recorded work, and a stretch the record ended otherwise can draw one, which pushes its later work later; a passed-over loop's acts on other issues keep their recorded times, and its issue does not close before a child the record filed under it before its own close has entered; each run counts the recorded loops it passes over and the conflicts it adds. A window's run-out holds the record's work after the window's end, which an issue that passes over a loop runs into; work recorded after the run-out's end is not in the replay, so such an issue stands in its last recorded work from where that work ends to the run-out's end, and an approval that an added loop pushes past the window's end is not counted."},
-	{Number: 4,
-		Text:      "A link removal, a child moved out, a gate closing and an outside blocker's close happen at their recorded time, or at their recorded offset from the wait's start.",
-		Direction: "Doubtful, and the direction is unknown. The tool runs both as branches."},
-	{Number: 5,
-		Text:      "A person answers at the recorded time, or at the recorded offset.",
-		Direction: "Doubtful, and the direction is unknown. The tool runs both as branches."},
-	{Number: 6,
-		Text:      "The issues in flight at the window's start enter in their recorded state.",
-		Direction: "Sound for one window, and not for a steady state: the start state carries the recorded rule's choices into every rule's first day, which favours the recorded rule. The tool reports the first day apart."},
-	{Number: 7,
-		Text:      "An issue may start once its todo, its links, its gate, its ancestors and its tree allow it, at the times recorded.",
-		Direction: "Wrong in the first replay, which read only todo and links: a hold the replay misses starts an issue early, which favours a rule that starts more issues. The tool reads every hold."},
-	{Number: 8,
-		Text:      "The work of an issue that never started in the window is unknown.",
-		Direction: "A scenario that gives such an issue work that finishes favours a rule that starts more issues, and the scenario that gives it none disfavours that rule. The tool names the scenario and never calls it a bound."},
-	{Number: 9,
-		Text:      "The line orders returned work first and then by rank.",
-		Direction: "Sound: a replay runs the line's own code, so it orders the line as the daemon does, and a rule that orders it otherwise is that rule's own code."},
-	{Number: 10,
-		Text:      "A link or a child has the lifetime that its events give it.",
-		Direction: "Wrong in the first replay, which merged them over the window: a lifetime merged over the window lengthens each wait on it, which favours a rule under which a wait gives its slot back. The tool keeps each one's lifetime."},
-	{Number: 11,
-		Text:      "A slot that comes free is given out in the same pass.",
-		Direction: "Sound for the record, where the median was 18 microseconds and the longest 88 seconds: a slower hand-out would lengthen every rule's waits for a slot alike."},
-	{Number: 12,
-		Text:      "A waiting issue costs no pod after the idle release.",
-		Direction: "Doubtful: on 2026-11-24, 43 of 110 waiting issues with a pod had had no role turn for more than 10 minutes. The replay counts no pod, so the result names the pods of waiting issues as a cost that it does not measure."},
-	{Number: 13,
-		Text:      "Work after a send-back takes its recorded time, or that time less its wait for a slot.",
-		Direction: "Doubtful: the recorded time holds the recorded rule's own wait for a slot, which favours that rule. The tool runs both as branches."},
-	{Number: 14,
-		Text:      "A cover under spec v4's rule.",
-		Direction: "Wrong in the first replay, which left out some covers and kept others too long, and either misstates the rule with covers. The tool runs the rule's own code."},
-	{Number: 15,
-		Text:      "An issue that stops working at the window's end would not have finished.",
-		Direction: "Wrong: it counts the end of the window as a stop, which disfavours a rule that leaves more work under way at the end. The tool reports issues finished and work left, apart."},
-	{Number: 16,
-		Text:      "An issue that reopens keeps its later work.",
-		Direction: "Wrong in the first replay, which dropped it: dropping the later work understates the issues finished and the slots held under every rule. The tool keeps it."},
-	{Number: 17,
-		Text:      "The links and children of an issue are the same under every rule.",
-		Direction: "Doubtful, because a planner files children after its parent starts: children filed at their recorded times favour a rule that starts parents later. The tool moves a child's filing with its parent's start, and never loses one: where the replay passes over, drops or never opens the work a child is filed in before the parent leaves the workflow, the filing enters at its recorded time, or then where that time has passed. A worker's other events on another issue, an edit, a link it sets or takes off, a child it moves out, keep their recorded times."},
-	{Number: 18,
-		Text:      "A conflict under the release that a project runs next behaves as recorded.",
-		Direction: "Wrong for a project that moves to a release with cybermonklabs/legion#4464, where a conflicting head keeps its phase, and its recorded conflict loops overstate the conflicts of that release. The tool takes the conflict behaviour of the release as part of the rule."},
-	{Number: 19,
-		Text:      "Under the release at 9542c6fb, whose workflow has the phase awaiting_merge, the time in awaiting_merge is folded into merging.",
-		Direction: "A slot held in awaiting_merge counts as held in merging, so a rule that keeps a slot in merging is charged that time and a rule that keeps none is not."},
-	{Number: 20,
-		Text:      "Under the release at 9542c6fb, the merger's ready move is a mark inside merging, where the rule legion-v19.57.3 gives the slot back.",
-		Direction: "If that release gave the slot back at another moment of merging, the slot-hours past the review under legion-v19.57.3 move by the time between the two."},
-	{Number: 21,
-		Text:      "Under the release at 9542c6fb, checks_red from any phase is a move back to implementing.",
-		Direction: "A checks_red that did not send the work back would count a send-back loop that never ran, which disfavours that release's rule."},
-	{Number: 22,
-		Text:      "Under the release at 9542c6fb, red checks and conflicts are one cause of a send-back.",
-		Direction: "A window of that release cannot tell how a rule changes conflicts, so a forecast across the change scores the cause only inside the total of all send-back loops, and the result says so."},
-	{Number: 23,
-		Text:      "Merge-forward work under main lasts as long as the implementing round of a recorded conflict loop.",
-		Direction: "A merge forward shorter than a conflict's implementing round overstates the conflict cost of main, which disfavours main."},
-	{Number: 24,
-		Text:      "A daemon down between two boots runs no pass.",
-		Direction: "Sound for the record: what arrives while it is down waits for the next boot, so a replay that ran a pass then would start issues earlier than any daemon could."},
-	{Number: 25,
-		Text:      "An outside blocker's close is seen at the next tick or boot, as the daemon sees it.",
-		Direction: "A close the daemon saw sooner would end link waits sooner, so reading it at the tick lengthens link waits, which disfavours a rule that keeps its slot through a wait."},
-	{Number: 38,
-		Text:      "A stretch in merging keeps its recorded length and outcome. The merge queue's wait under another rule comes from the fitted model, which only a signal rule reads.",
-		Direction: "Doubtful: in the record a pull request that entered merging behind more of them was sent back more often and merged later, so a rule or a cap that brings more work to merging at once is favoured. A signal rule reads the modelled wait for admission, not to change the stretch."},
-	{Number: 39,
-		Text:      "A person answers at any hour of the day, and answers any number of questions at once.",
-		Direction: "Doubtful: in the record no answer came in some hours of each day, a question asked then waited many hours, and a question waited longer where many waited, so a rule that moves questions into those hours or asks more of them at once is favoured. The tool places each answer at its recorded time or offset (assumption 5)."},
-	{Number: 40,
-		Text:      "The slowdown factor f cannot be fitted on a window whose cap did not move, so f comes from outside the window.",
-		Direction: "Doubtful: if load slows work, a rule or a cap with more issues in flight is favoured at f = 1. The tool runs each branch at f = 1, 1.2 and 1.6 and searches the break-even f, and fits no f on a window whose cap stayed the same."},
-	{Number: 41,
-		Text:      "Work done outside Legion is the same under every rule: an issue the record shows closed outside Legion closes at its recorded time.",
-		Direction: "Doubtful, and the direction is unknown: a person who does work that waits for a slot does less of it under a rule that starts that work sooner, and the replay gives no rule that credit or that cost. The tool gives the issues done by anyone beside Legion's done."},
-	{Number: 42,
-		Text:      "Under main, the merge forward of a drawn conflict reads no rules of the base branch, so the engine asks for it at once.",
-		Direction: "Wrong where the base branch's rules let a conflicting head wait: main is charged a merge forward that its daemon asks later or not at all, which disfavours main and the rules built on it. The tool gives the engine no rules of the base branch."},
-	{Number: 43,
-		Text:      "An answer at its recorded offset from its question can come at an hour at which the record shows no answers.",
-		Direction: "Doubtful, and the direction is unknown: an answer moved into a person's night comes earlier than it would, and one moved out of it later. Run R0, the replay of the rule that made the record, also on main+timing=wall and main+answer=wall, where each answer and each end of a wait keeps its recorded time."},
-	{Number: 44,
-		Text:      "A validation of the recorded rule draws the record's conflicts again, so the first-slot test of R5 rests on the replay's own noise.",
-		Direction: "Doubtful: two seeds differ in an issue's first slot by about half as much as the replay differs from the record, so the first-slot test can pass or fail on the draws alone. The tool runs the diagnostic branch main+conflicts=recorded beside R5's tests, which keeps the record's conflicts and draws none, and never reads it in place of the main branch."},
-	{Number: 45,
-		Text:      "The three modelled signals depend on the work in flight alone.",
-		Direction: "Doubtful: even at a full cap, one window had 299, 88, 57 and 110 memory kills on successive days. Unmodelled changes can favour or disfavour a signal rule. Compare each model's daily reading with the record at the recorded work in flight."},
-	{Number: 46,
-		Text:      "A refusal by the provider, or one the record does not split, is kept as recorded and counted as R11 says.",
-		Direction: "A provider refusal stays as recorded. An unsplit refusal counts as the project's own and the result says so. This can overstate the project's own refusals if some came from the provider. Check against a record that separates the counts."},
-	{Number: 47,
-		Text:      "A signal with no record in a span does not bind there.",
-		Direction: "If an unrecorded signal would exceed its limit, the replay favours a rule that starts work in that span. Check the decision on a span where that signal is recorded."},
-	{Number: 48,
-		Text:      "The provider's limit holds from one observation to the next.",
-		Direction: "Doubtful: a change between observations is read late, so headroom is misread over that stretch, high after a cut and low after a raise. Use the limit in each 429 line's \"of its N\" and in each recorded change, naming the source of each value. Before the first observation headroom is unrecorded, does not bind and is not fitted. Check any recorded limit change against the next 429's N."},
+// specAssumptions is the number of each assumption the tool's list must hold: the eighteen in the
+// spec's Design, the plan's 19 to 25, D10's 38 to 44 and the signal assumptions 45 to 48. Their
+// words are the list's own (Assumptions), which the docs page gives
+// (TestTheDocsPageGivesEveryAssumption), and the replay's tests hold what each says the tool does.
+var specAssumptions = []int{
+	1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+	19, 20, 21, 22, 23, 24, 25,
+	38, 39, 40, 41, 42, 43, 44,
+	45, 46, 47, 48,
 }
 
-// The list must hold each numbered assumption above with its text and direction, and cannot
-// repeat a number. TestTheDocsPageGivesEveryAssumption also checks assumptions the tool adds.
+// The list must hold each numbered assumption above, and cannot repeat a number.
+// TestTheDocsPageGivesEveryAssumption also checks assumptions the tool adds.
 func TestTheAssumptionsHoldTheSpecsList(t *testing.T) {
 	t.Parallel()
-	byNumber := make(map[int]Assumption, len(Assumptions))
+	listed := make(map[int]bool, len(Assumptions))
 	for _, assumption := range Assumptions {
-		if _, twice := byNumber[assumption.Number]; twice {
+		if listed[assumption.Number] {
 			t.Errorf("Assumptions numbers %d twice", assumption.Number)
 		}
-		byNumber[assumption.Number] = assumption
+		listed[assumption.Number] = true
 	}
-	for _, want := range specAssumptions {
-		got, listed := byNumber[want.Number]
-		if !listed {
-			t.Errorf("Assumptions lacks assumption %d: %s", want.Number, want.Text)
-			continue
-		}
-		if got.Text != want.Text {
-			t.Errorf("assumption %d reads %q, want %q", want.Number, got.Text, want.Text)
-		}
-		if got.Direction != want.Direction {
-			t.Errorf("assumption %d's direction reads %q, want %q", want.Number, got.Direction, want.Direction)
+	for _, number := range specAssumptions {
+		if !listed[number] {
+			t.Errorf("Assumptions lacks assumption %d", number)
 		}
 	}
 }

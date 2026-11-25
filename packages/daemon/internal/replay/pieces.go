@@ -435,7 +435,8 @@ func (d *driver) generationAt(key string, at time.Time) uint64 {
 // conflict is kept and not drawn (keepConflict, assumption 35). Under the branch's Conflicts
 // recorded no stretch draws, and each recorded conflict is made as recorded (recordedConflict).
 // Otherwise, where the move ends a stretch in which a head can conflict (spec R2, assumption 3),
-// the stretch first draws whether its head conflicts (drawConflict), and a drawn conflict the daemon
+// the stretch's end comes first (drawConflict): a stretch that has not drawn draws whether its head
+// conflicts, a conflict a boot's read drew for it in this phase enters, and a conflict the daemon
 // acts on takes the move's place; otherwise the move enters as recorded (enterRecorded).
 func (d *driver) enterMove(p *piece) error {
 	if p.move() == nil {
@@ -447,7 +448,7 @@ func (d *driver) enterMove(p *piece) error {
 	if d.cfg.Branch.recordedConflicts() {
 		return d.recordedConflict(p)
 	}
-	if d.drawsAtEnd(p) {
+	if stretchPhase(p.phase) && endsStretch(p.move()) {
 		conflicted, err := d.drawConflict(p)
 		if err != nil || conflicted {
 			return err
@@ -633,9 +634,9 @@ func (d *driver) merged(key string, move *Move, to phase.Phase, refuse func(stri
 // conflict (MoveDraw, assumption 3), where the replay's stretch did not conflict, or merged its
 // base forward and kept its phase (mergedForward): the stretch goes on past the loop the record
 // ran for its conflict, whose work the replay passes over (passOver), with the work the record
-// shows after the loop returned to the phase it left, which opens at once and is not drawn a second
-// time. A version or a registration of a root's design in that work keeps its recorded time
-// (keepDesignTimes).
+// shows after the loop returned to the phase it left, which opens at once in the same live stretch
+// (liveStretch), so neither it nor any later end of that stretch draws a second time. A version or
+// a registration of a root's design in that work keeps its recorded time (keepDesignTimes).
 func (d *driver) stretchEnds(p *piece) error {
 	pieces := d.script.pieces[p.issue]
 	for _, next := range pieces[p.index+1:] {
@@ -643,7 +644,6 @@ func (d *driver) stretchEnds(p *piece) error {
 			continue
 		}
 		if next.returnsTo(p.phase) {
-			next.stretchDrawn = true
 			d.keepDesignTimes(next)
 			d.openPiece(next, d.clock.Instant(), false)
 			return nil

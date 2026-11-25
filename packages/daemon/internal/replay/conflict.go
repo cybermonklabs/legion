@@ -964,21 +964,26 @@ func recordedLoops(s script) []conflictLoop {
 	return loops
 }
 
-// drawsAtEnd says whether p's end is the end of a stretch that draws whether its head conflicts:
-// a piece in a stretch phase whose recorded move (piece.move) ends the stretch (endsStretch), the
-// stretch not having drawn already (piece.stretchDrawn).
-func (d *driver) drawsAtEnd(p *piece) bool {
-	return !p.stretchDrawn && stretchPhase(p.phase) && endsStretch(p.move())
-}
-
-// drawConflict draws, at the replay's end of the stretch p ends, whether its head conflicts with
-// its base (spec R2, assumption 3), by the stretch's chance from its start to now (drawStretch). It
-// answers whether the stretch conflicted and the daemon acted on the conflict (conflictFor), which
-// then plays what the daemon made of it, the recorded move that ends the stretch not entered. A
-// conflict at a stretch the record ended otherwise is counted (addsLoop).
+// drawConflict is the replay's end of the stretch p ends, a piece in a stretch phase whose recorded
+// move (piece.move) ends it (endsStretch), in the issue's live stretch (liveStretch; spec R2,
+// assumption 3). Where a boot's read drew a conflict for the stretch while the issue stood in
+// another phase (bootConflicts), and p stands in the phase whose chance that draw read, the
+// conflict enters now, with no draw of its own; an end in another phase drops it. A stretch that
+// drew already ends as the record shows, and one that has not draws now, by its chance from its
+// start to now (drawAt). It answers whether the stretch conflicted and the daemon acted on the
+// conflict (conflictFor), which then plays what the daemon made of it, the recorded move that ends
+// the stretch not entered. A conflict at a stretch the record ended otherwise is counted (addsLoop).
 func (d *driver) drawConflict(p *piece) (bool, error) {
-	if !d.drawStretch(p, d.stretchStart(p), d.clock.Instant()) {
-		return false, nil
+	stretch := d.liveStretchOf(p.issue)
+	won := stretch.won == p.phase
+	stretch.won = ""
+	if !won {
+		if stretch.drew {
+			return false, nil
+		}
+		if draw := d.recordDraw(stretch, d.drawAt(p, d.stretchStart(p), d.clock.Instant(), false), p.phase); !draw.conflicted {
+			return false, nil
+		}
 	}
 	conflicted, err := d.conflictFor(p, false, false)
 	if conflicted {
@@ -1053,12 +1058,101 @@ func (d *driver) seedDraw(at stretchDraw, stream uint64) {
 	d.drawSource.Seed(mix64(uint64(d.cfg.Seed)^stream), at.hash())
 }
 
-// conflictDraw is one draw of a stretch's conflict as a run made it (driver.drawAt): its place, the
-// uniform draw u, the chance u was read against and whether it made a conflict.
+// conflictDraw is one draw of a stretch's conflict as a run made it (driver.drawAt), as the run
+// tells of it (RunConfig.onDraw) and writes its line (conflictDrawnLine): its place, whose phase is
+// the one the record ends the stretch in, whose chance the draw reads (the fitted phase); the number
+// of the issue's live stretch (liveStretch.id); the phase of the piece that ran at the draw, the
+// place's own at a stretch's end; the replay's start of the stretch, the moment of the draw and M
+// between them; whether a boot's read made it (bootConflicts) or the stretch's end (drawConflict);
+// the uniform draw u, the chance u was read against, whether it made a conflict, and what the run
+// made of it (outcome).
 type conflictDraw struct {
-	at         stretchDraw
-	u, chance  float64
-	conflicted bool
+	at           stretchDraw
+	stretch      int
+	running      phase.Phase
+	start, drawn time.Time
+	merges       int
+	boot         bool
+	u, chance    float64
+	conflicted   bool
+	outcome      string
+}
+
+// The outcomes of a draw (conflictDraw.outcome): no conflict, which leaves the stretch to go on as
+// the record shows; a conflict, which the daemon is handed at once; and a conflict a boot's read
+// drew while the issue stood in another phase than the fitted one, which enters at the stretch's end
+// in the fitted phase (liveStretch.won).
+const (
+	drawnClean    = "clean"
+	drawnConflict = "conflict"
+	drawnDeferred = "deferred"
+)
+
+// conflictDrawnLine is the msg of the line a run writes to its log for each draw of a stretch's
+// conflict (driver.recordDraw), at the moment of the draw: the issue, the number of its live
+// stretch, the running and the fitted phase, the replay's start of the stretch, M, whether a boot's
+// read or the stretch's end made the draw, the chance, u and the outcome. The line is the replay's
+// own: no daemon writes it, the trace reads nothing of it (TraceReads) and the run's tap takes none
+// of it, so no move and no measure is read from it.
+const conflictDrawnLine = "replay: a stretch's conflict drawn"
+
+// liveStretch is an issue's stretch as the replay runs it, its live stretch: from the move that
+// begins it (startsStretch) to the move that breaks it (breaksStretch) or the issue's leave
+// (driver.observe). It draws once (drew), at the first boot's read inside it (bootConflicts) or at
+// its end (drawConflict), and that draw holds for the whole of it: through its moves on to the next
+// phase, a hold, a recorded conflict loop it passes over (stretchEnds) and a merge forward. id
+// numbers it in the run, in the order the run first reads the stretches, as its draw's line gives
+// it. won is the fitted phase of a conflict a boot's read drew while the issue stood in another
+// phase of the stretch: the conflict enters at the stretch's end in that phase, with no draw of its
+// own, and the stretch's end in another phase or its break first drops it.
+type liveStretch struct {
+	id   int
+	drew bool
+	won  phase.Phase
+}
+
+// liveStretchOf is key's live stretch, begun now where the run holds none of key's.
+func (d *driver) liveStretchOf(key string) *liveStretch {
+	if stretch, ok := d.stretches[key]; ok {
+		return stretch
+	}
+	d.liveStretches++
+	stretch := &liveStretch{id: d.liveStretches}
+	d.stretches[key] = stretch
+	return stretch
+}
+
+// drewStretch says whether key's live stretch has drawn.
+func (d *driver) drewStretch(key string) bool {
+	stretch, ok := d.stretches[key]
+	return ok && stretch.drew
+}
+
+// recordDraw keeps draw, a draw of stretch made while a piece in running ran: the stretch draws no
+// more, a conflict drawn while the issue stood in another phase than the fitted one waits for the
+// stretch's end in the fitted phase (liveStretch.won), and the run tells of the draw
+// (RunConfig.onDraw) and writes its line (conflictDrawnLine). It answers draw with its live
+// stretch, its running phase and its outcome.
+func (d *driver) recordDraw(stretch *liveStretch, draw conflictDraw, running phase.Phase) conflictDraw {
+	stretch.drew = true
+	draw.stretch, draw.running, draw.outcome = stretch.id, running, drawnClean
+	switch {
+	case !draw.conflicted:
+	case running != draw.at.phase:
+		stretch.won, draw.outcome = draw.at.phase, drawnDeferred
+	default:
+		draw.outcome = drawnConflict
+	}
+	if d.cfg.onDraw != nil {
+		d.cfg.onDraw(draw)
+	}
+	by := "end"
+	if draw.boot {
+		by = "boot"
+	}
+	d.log.Info(conflictDrawnLine, "issue", draw.at.issue, "stretch", draw.stretch, "running", string(draw.running), "fitted", string(draw.at.phase),
+		"start", draw.start, "merges", draw.merges, "by", by, "chance", draw.chance, "u", draw.u, "outcome", draw.outcome)
+	return draw
 }
 
 // nextDraw is the place of the next draw of p's stretch (stretchDraw), counted as made under the
@@ -1073,13 +1167,6 @@ func (d *driver) nextDraw(p *piece) stretchDraw {
 	return at
 }
 
-// drawStretch draws, at end, the replay's end of p's stretch from start, whether its head conflicts
-// with its base (drawAt), at the chance of a stretch that spans no boot: a stretch the replay had
-// under way at a boot drew there, and draws no more (bootConflicts).
-func (d *driver) drawStretch(p *piece, start, end time.Time) bool {
-	return d.drawAt(p, start, end, false)
-}
-
 // drawAt draws whether the head of p's stretch, from start in the replay, conflicts with its base at
 // at, the stretch's end or, with boot, the read of a boot inside it (spec R2, assumption 3): with M
 // the merges into the issue's base branch strictly after start and strictly before at but the
@@ -1088,8 +1175,8 @@ func (d *driver) drawStretch(p *piece, start, end time.Time) bool {
 // stretch ending in, at M (ConflictModel.chanceAt): with the term of the release part at falls in
 // for a stretch that ends in merging, and the boot term of that phase for a boot's draw. A draw
 // reads no boot after at. A stretch whose M may hold its own merge is counted
-// (ConflictModel.DrawnOwnMergeUnknown).
-func (d *driver) drawAt(p *piece, start, at time.Time, boot bool) bool {
+// (ConflictModel.DrawnOwnMergeUnknown). It answers the draw, which its caller keeps (recordDraw).
+func (d *driver) drawAt(p *piece, start, at time.Time, boot bool) conflictDraw {
 	repo, own := "", 0
 	if iss, known := d.trace.Issues[p.issue]; known {
 		repo, own = iss.Repo, ownPullRequest(iss)
@@ -1101,25 +1188,24 @@ func (d *driver) drawAt(p *piece, start, at time.Time, boot bool) bool {
 	place := d.nextDraw(p)
 	d.seedDraw(place, conflictStream)
 	u, chance := d.draws.Float64(), d.conflicts.chanceAt(p.phase, merges, at, boot)
-	if d.cfg.onDraw != nil {
-		d.cfg.onDraw(conflictDraw{at: place, u: u, chance: chance, conflicted: u < chance})
-	}
-	return u < chance
+	return conflictDraw{at: place, start: start, drawn: at, merges: merges, boot: boot, u: u, chance: chance, conflicted: u < chance}
 }
 
 // bootConflicts draws, at a boot's read of the pull requests (bootRead), the conflict of each
 // stretch under way that spans it (assumption 3): the boot reads each pull request again, so the
 // window's stretches that spanned a boot have a chance of their own in their phase (the model's boot
-// term), and a conflict the read finds enters at the boot. An issue's stretch is the one its running
-// piece stands in, whatever piece of the stretch that is (stretchEndOf), begun before the boot and
-// ending after it, and not one that keeps its recorded conflict (keepsOpenLoop) or drew already. It
-// draws once, at the first boot inside it, at the chance the model gives a stretch that spans a boot
-// in the phase the record ends it in, with M counted to the boot, at the draw's place of its ending
+// term). An issue's stretch is the one its running piece stands in, whatever piece of the stretch
+// that is (stretchEndOf), begun before the boot and ending after it, and not one that keeps its
+// recorded conflict (keepsOpenLoop) or whose live stretch drew already (liveStretch). It draws
+// once, at the first boot inside it, at the chance the model gives a stretch that spans a boot in
+// the phase the record ends it in, with M counted to the boot, at the draw's place of its ending
 // piece (drawAt): a boot reads no later boot, and its draw stands for the stretch's whole chance. A
-// stretch that draws none goes on and draws no more, at a later boot or at its end
-// (piece.stretchDrawn); one that draws a conflict ends at the boot with it (bootConflict), and the
-// stretch after its loop takes a draw of its own. Under the branch's Conflicts recorded no stretch
-// draws, at a boot or at its end.
+// stretch that draws none goes on and draws no more, at a later boot or at its end. A conflict
+// drawn where the running piece stands in that phase ends the stretch at the boot (bootConflict),
+// and the stretch after its loop takes a draw of its own; one drawn where the running piece stands
+// in another phase of the stretch waits for the stretch's end in that phase, where it enters with
+// no draw of its own (drawConflict), and the stretch's end in another phase or its break first
+// drops it. Under the branch's Conflicts recorded no stretch draws, at a boot or at its end.
 func (d *driver) bootConflicts() error {
 	if d.cfg.Branch.recordedConflicts() {
 		return nil
@@ -1131,19 +1217,17 @@ func (d *driver) bootConflicts() error {
 				continue
 			}
 			q := d.stretchEndOf(p)
-			if q == nil || d.keepsOpenLoop(q) {
+			if q == nil || d.keepsOpenLoop(q) || d.drewStretch(key) {
 				continue
 			}
 			start := d.stretchStart(q)
 			if !start.Before(now) || q == p && !p.at.Add(p.length).After(now) {
 				continue
 			}
-			if !d.drawAt(q, start, now, true) {
-				q.stretchDrawn = true
-				break
-			}
-			if err := d.bootConflict(p, q); err != nil {
-				return err
+			if draw := d.recordDraw(d.liveStretchOf(key), d.drawAt(q, start, now, true), p.phase); draw.outcome == drawnConflict {
+				if err := d.bootConflict(p, q); err != nil {
+					return err
+				}
 			}
 			break
 		}
@@ -1152,11 +1236,10 @@ func (d *driver) bootConflicts() error {
 }
 
 // stretchEndOf is the piece of p's issue's work whose recorded move ends the stretch p, a piece
-// running in a stretch phase, stands in, where that stretch has not drawn already: p itself, or a
-// later piece, every piece between them in a stretch phase and ending in a move on to the next phase
-// of the stretch, a held sign-off or a hold the record shows released. Nil where the record shows
-// the stretch cut by the issue's leave, held to the inputs' end or open at it, or p is a merge
-// forward, whose stretch drew already.
+// running in a stretch phase, stands in: p itself, or a later piece, every piece between them in a
+// stretch phase and ending in a move on to the next phase of the stretch, a held sign-off or a hold
+// the record shows released. Nil where the record shows the stretch cut by the issue's leave, held
+// to the inputs' end or open at it, or p is a merge forward, whose stretch drew already.
 func (d *driver) stretchEndOf(p *piece) *piece {
 	for _, q := range d.script.pieces[p.issue][p.index:] {
 		if !stretchPhase(q.phase) || q != p && q.state != pieceWaiting {
@@ -1166,9 +1249,6 @@ func (d *driver) stretchEndOf(p *piece) *piece {
 		case endMove:
 			if !endsStretch(q.move()) {
 				continue
-			}
-			if q.stretchDrawn {
-				return nil
 			}
 			return q
 		case endHeldSignOff:
@@ -1183,14 +1263,13 @@ func (d *driver) stretchEndOf(p *piece) *piece {
 	return nil
 }
 
-// bootConflict plays the conflict that q's stretch drew at a boot (bootConflicts) through the
-// daemon's own path for a conflicting head (conflictFor), the stretch cut there in p, the piece of
-// it that runs: where the daemon moves the issue back, the rest of p's work is cut (cutPiece), and
-// the issue's work after the loop draws its own stretch where it reaches q; where it keeps the
-// phase, the rest of p's work goes on after the merge forward, or with the conflict waiting for
-// merging; and where it does not act on the conflict, p goes on. Either way but the move back the
-// stretch is drawn (piece.stretchDrawn). A conflict at a stretch the record ended otherwise is
-// counted (addsLoop).
+// bootConflict plays the conflict that q's stretch drew at a boot (bootConflicts), p the piece of it
+// that runs there, in q's phase, through the daemon's own path for a conflicting head
+// (conflictFor), the stretch cut there in p: where the daemon moves the issue back, the rest of p's
+// work is cut (cutPiece), and the issue's work after the loop draws its own stretch where it
+// reaches q; where it keeps the phase, the rest of p's work goes on after the merge forward, or
+// with the conflict waiting for merging; and where it does not act on the conflict, p goes on. A
+// conflict at a stretch the record ended otherwise is counted (addsLoop).
 func (d *driver) bootConflict(p, q *piece) error {
 	conflicted, err := d.conflictFor(p, false, true)
 	if err != nil {
@@ -1198,9 +1277,6 @@ func (d *driver) bootConflict(p, q *piece) error {
 	}
 	if conflicted {
 		d.addsLoop(q)
-	}
-	if !conflicted || p.state != pieceCancelled {
-		q.stretchDrawn = true
 	}
 	return nil
 }
@@ -1362,7 +1438,6 @@ func (d *driver) conflictFor(p *piece, kept, cut bool) (bool, error) {
 		d.used[assumeConflictToMerger] = true
 		if cut {
 			d.waiting[p.issue] = waitingConflict{drew: p, round: d.mergeForwardRound(p, kept)}
-			p.stretchDrawn = true
 			return true, nil
 		}
 		return true, d.waitForMerging(p, kept)
@@ -1489,7 +1564,7 @@ func (d *driver) mergeForwardRound(p *piece, kept bool) *piece {
 func (d *driver) mergeForwardPiece(drew *piece, visit *Visit, at phase.Phase, role claim.Role, round *piece) *piece {
 	now := d.clock.Instant()
 	forward := &piece{issue: drew.issue, visit: visit, phase: at, role: role, opens: opensOnStart, ends: endMergeForward,
-		drew: drew, stretchDrawn: true, start: now, m: d.script.inFlightAt(now)}
+		drew: drew, start: now, m: d.script.inFlightAt(now)}
 	if round != nil {
 		forward.start, forward.end, forward.m = round.start, round.end, round.m
 	}
@@ -1585,14 +1660,14 @@ func (d *driver) mergerMergesForward(key string) {
 // mergedForward ends a merge-forward segment: the merge of the base by the role asked lands on the
 // replay's own pull request record as a new head (intake.PullRequestSynchronized, whose handler
 // records the merge forward landed). A merge forward asked at a boot while the work of the stretch
-// that drew it still ran (piece.resumes) resumes that work, which goes on to its own end, its
-// stretch drawn. A merge forward asked at once, in the phase of the conflict, goes on with the
-// stretch that drew it, not drawn a second time: past its recorded conflict loop where the record
-// ended it in a conflict (stretchEnds), and otherwise by its recorded move. The merger's merge
-// forward of a conflict that waited for merging (mergerMergesForward), in another phase than the
-// conflict's, comes after that stretch already went on: the issue's next work in merging, which
-// the merger's start opened this segment in its place, opens now, and is not drawn a second time
-// either.
+// that drew it still ran (piece.resumes) resumes that work, which goes on to its own end in the
+// live stretch that drew (liveStretch). A merge forward asked at once, in the phase of the
+// conflict, goes on with the stretch that drew it, not drawn a second time: past its recorded
+// conflict loop where the record ended it in a conflict (stretchEnds), and otherwise by its recorded
+// move. The merger's merge forward of a conflict that waited for merging (mergerMergesForward), in
+// another phase than the conflict's, comes after that stretch already went on: the issue's next
+// work in merging, which the merger's start opened this segment in its place, opens now, in the
+// same live stretch, and is not drawn a second time either.
 func (d *driver) mergedForward(forward *piece) error {
 	pr, err := d.pullRequestOf(forward.issue)
 	if err != nil {
@@ -1606,7 +1681,6 @@ func (d *driver) mergedForward(forward *piece) error {
 	}
 	drew := forward.drew
 	if forward.resumes {
-		drew.stretchDrawn = true
 		return d.resumePiece(drew)
 	}
 	if forward.phase != drew.phase {
@@ -1614,7 +1688,6 @@ func (d *driver) mergedForward(forward *piece) error {
 		if i := forward.index + 1; i < len(pieces) {
 			next := pieces[i]
 			if next.waitsForStart(forward.role, forward.phase) {
-				next.stretchDrawn = true
 				d.openPiece(next, d.clock.Instant(), false)
 			}
 		}

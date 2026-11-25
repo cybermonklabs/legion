@@ -1137,10 +1137,14 @@ func byPlace(draws []conflictDraw) map[string]conflictDraw {
 // under main and under keep-past-review, whose slots past the review hold ACME-3 back to the first
 // merge, 90 minutes or so after main gives it ACME-1's slot at 10:15, so the two rules reach their
 // stretches in another order. With the window to 18:00 every stretch ends inside it under both
-// rules: both draw the same five stretches, in another order, each the same draw and each the same
-// conflict. With the window to 13:30, ACME-3's last stretch, which ends by 13:00 under main and
-// after 13:50 under keep-past-review, draws under main alone, and every other stretch draws alike
-// under both.
+// rules. The record holds five stretches, but neither replay makes ACME-2's recorded move back at
+// 10:20: under both rules a conflicting head in reviewing keeps its phase while the implementer
+// merges the base forward, and a stretch that draws no conflict passes over the recorded loop, so
+// ACME-2's return to reviewing and its merge go on in the live stretch that drew in reviewing
+// (liveStretch), which draws once. Both rules so draw four stretches, in another order, each the
+// same draw and each the same conflict, ACME-2's once, in reviewing, and never in merging. With the
+// window to 13:30, ACME-3's last stretch, which ends by 13:00 under main and after 13:50 under
+// keep-past-review, draws under main alone, and every other stretch draws alike under both.
 func TestTwoRulesAtOneSeedShareEachStretchsDraw(t *testing.T) {
 	t.Parallel()
 	replayDSN(t)
@@ -1155,8 +1159,23 @@ func TestTwoRulesAtOneSeedShareEachStretchsDraw(t *testing.T) {
 		t.Parallel()
 		window := sharedDrawsWindow(t, clock(18, 0))
 		main, kept := drawsUnder(t, window, record.MainRule.Name), drawsUnder(t, window, "keep-past-review")
-		if len(main) != 5 || len(kept) != 5 {
-			t.Fatalf("main drew %v and keep-past-review %v, want the window's five stretches each", places(main), places(kept))
+		for _, run := range []struct {
+			rule  string
+			draws []conflictDraw
+		}{{record.MainRule.Name, main}, {"keep-past-review", kept}} {
+			var phases []phase.Phase
+			for _, draw := range run.draws {
+				if draw.at.issue == "ACME-2" {
+					phases = append(phases, draw.at.phase)
+				}
+			}
+			if !slices.Equal(phases, []phase.Phase{phase.Reviewing}) {
+				t.Errorf("under %s ACME-2 drew in %v, want once, in reviewing: its return and its merge go on in the stretch that drew there", run.rule, phases)
+			}
+		}
+		if len(main) != 4 || len(kept) != 4 {
+			t.Fatalf("main drew %v and keep-past-review %v, want four stretches each, ACME-2's return and merge in the live stretch that drew in reviewing",
+				places(main), places(kept))
 		}
 		if slices.Equal(places(main), places(kept)) {
 			t.Errorf("both rules drew the stretches in one order, %v, so the window moves no draw in the run's order", places(main))
@@ -1360,20 +1379,22 @@ func TestTheRecordedConflictsBranchKeepsTheRecordsConflicts(t *testing.T) {
 
 // drawRateAt is how often, over 4000 seeds, the stretch of a piece in ph that ends at end draws a
 // conflict in a run of in's window, and the chance the run's draw read: one draw a seed, through
-// the driver's own draw of a stretch at its end (drawStretch), every count of it started afresh. M
-// is 0, the window's merges holding no commit.
+// the driver's own draw of a stretch (drawAt) at its end, every count of it started afresh. M is 0,
+// the window's merges holding no commit.
 func drawRateAt(t *testing.T, in *windowInputs, key string, ph phase.Phase, end time.Time) (rate, chance float64) {
 	t.Helper()
 	const samples = 4000
 	source := rand.NewPCG(0, 0)
 	d := driver{trace: in.trace, merges: in.merges, conflicts: in.conflicts, drawSource: source, draws: rand.New(source),
-		stretchDraws: map[stretchDraw]int{}, lastDraw: map[string]stretchDraw{}, cfg: RunConfig{onDraw: func(draw conflictDraw) { chance = draw.chance }}}
+		stretchDraws: map[stretchDraw]int{}, lastDraw: map[string]stretchDraw{}}
 	p := &piece{issue: key, phase: ph, start: end.Add(-time.Minute)}
 	conflicts := 0
 	for seed := range int64(samples) {
 		d.cfg.Seed = seed
 		clear(d.stretchDraws)
-		if d.drawStretch(p, p.start, end) {
+		draw := d.drawAt(p, p.start, end, false)
+		chance = draw.chance
+		if draw.conflicted {
 			conflicts++
 		}
 	}
