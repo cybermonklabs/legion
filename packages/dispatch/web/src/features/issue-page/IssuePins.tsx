@@ -1,5 +1,5 @@
 import { type InfiniteData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import type { DispatchEvent, DisplayTree } from "../../api/types";
@@ -31,13 +31,12 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
 /**
  * The reader's pins, as links to what they pinned: each pinned ask, comment and message by its
  * first line, a link to its own address, which focuses its row in the outline, with its Unpin
- * beside it. A pin of what the outline draws no row for - a thread agents wrote among
- * themselves - links to its address too, which opens the history at it, and an old pin of a
- * handoff opens the history. Each line of the history the reader pinned
- * (`IssueHistory.tsx`'s Pin, an `event:<id>` pin) is listed under them: who did it and what the
- * line says, with a link that opens the history and its Unpin. The pins are one list, drawn 20 at
- * a time with Show more under them. The pin of a row itself is the focused row's, in its facts
- * (`FocusedNodeFacts.tsx`).
+ * beside it. A pin of what the outline draws no row for - a thread the history holds - links to
+ * its address too, which opens the history at it, and an old pin of a handoff opens the history.
+ * Each line of the history the reader pinned (`history-entries.tsx`'s Pin, an `event:<id>` pin)
+ * is listed under them: who did it and what the line says, with a link that opens the history
+ * and its Unpin. The pins are one list, drawn 20 at a time with Show more under them. The pin of
+ * a row itself is the focused row's, in its facts (`FocusedNodeFacts.tsx`).
  *
  * The words come from the reads the outline and the history are drawn from, so the list costs no
  * request of its own: each read here is the outline's, by its definition (`useIssueTree.ts`) and
@@ -105,27 +104,41 @@ export function IssuePins({
           : undefined;
     return post === undefined ? undefined : { post, words: recordWords(post.body, post.body_tree) };
   };
-  const list = useRef<HTMLUListElement>(null);
   // The pins are one list, 20 at a time with Show more under them (`useListPages`): the pins of
   // asks, comments and messages first, and the history's lines after them.
-  const pages = useListPages();
+  const pages = useListPages<HTMLUListElement>();
   const drawnPins = pins.slice(0, pages.drawn);
   const drawnEventPins = eventPins.slice(0, Math.max(0, pages.drawn - pins.length));
   const heading = useRef<HTMLHeadingElement>(null);
-  // An Unpin takes its pin's row away, and the focus with it: the focus goes on to the next
-  // pin's link, else the one before, else the section's heading, rather than falling to the
-  // page. Every row holds its pin's link as a child of its own; an event pin's actor is a link
-  // further in, inside its line.
+  // An Unpin takes its pin's row away, and the focus with it: once the list is drawn without
+  // that row, the focus goes to the pin drawn in its place - the next pin, or the first of the
+  // next page where the row was the last one drawn - else the one before, else the section's
+  // heading, rather than falling to the page. A reader who has put the focus elsewhere by then
+  // keeps it there. Every row holds its pin's link as a child of its own; an event pin's actor is
+  // a link further in, inside its line.
+  const unpinned = useRef<{ readonly at: number; readonly id: string } | null>(null);
   const unpin = (id: string) => {
-    const rows = [...(list.current?.children ?? [])];
-    const at = rows.findIndex((row) => row instanceof HTMLElement && row.dataset.pin === id);
-    const neighbour = rows[at + 1] ?? (at > 0 ? rows[at - 1] : undefined);
+    const rows = [...(pages.list.current?.children ?? [])];
+    unpinned.current = {
+      at: rows.findIndex((row) => row instanceof HTMLElement && row.dataset.pin === id),
+      id,
+    };
+    writePin(queryClient, issueKey, { id, op: "unpin" });
+  };
+  useLayoutEffect(() => {
+    const press = unpinned.current;
+    if (press === null) return;
+    const rows = [...(pages.list.current?.children ?? [])];
+    if (rows.some((row) => row instanceof HTMLElement && row.dataset.pin === press.id)) return;
+    unpinned.current = null;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    const neighbour = rows[press.at] ?? (press.at > 0 ? rows[press.at - 1] : undefined);
     const next = [...(neighbour?.children ?? [])].find(
       (child) => child instanceof HTMLAnchorElement
     );
     (next ?? heading.current)?.focus();
-    writePin(queryClient, issueKey, { id, op: "unpin" });
-  };
+  });
   const link = `dispatch-inline-link ${ROW_LINK} ${pageInkText}`;
   return (
     <section aria-label={CONTROL_LABELS.pinned} data-testid="issue-pins">
@@ -143,7 +156,7 @@ export function IssuePins({
         </p>
       ) : (
         <>
-          <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={list}>
+          <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={pages.list}>
             {drawnPins.map((pin) => {
               const id = conversationItemId(pin.kind, pin.id);
               const record = pinned(pin.kind, pin.id);
@@ -204,11 +217,7 @@ export function IssuePins({
               );
             })}
           </ul>
-          {pages.more(
-            pins.length + eventPins.length,
-            (index) => list.current?.children[index],
-            "mt-1"
-          )}
+          {pages.more(pins.length + eventPins.length, undefined, "mt-1")}
         </>
       )}
     </section>

@@ -10,7 +10,6 @@ import { type LegionRole, roleToken } from "@legion/contracts";
 
 import type { DispatchEvent, IssueAskThreadRow, IssueSteps } from "../web/src/api/types";
 import { conversationItemId, pinnedItemMarker } from "../web/src/features/issue/pins";
-import { LIST_PAGE } from "../web/src/features/issue-page/details-leaves";
 import { KEY_REPORTS, PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   ANSWER_LINES,
@@ -20,6 +19,7 @@ import {
   NODE_TYPE_NAMES,
   sentenceCase,
 } from "../web/src/features/issue-page/page-words";
+import { PAGE_SIZE, showMoreName } from "../web/src/features/issue-page/show-more-fixture";
 import {
   agentRow,
   getUnsubscribeCalls,
@@ -121,9 +121,9 @@ import {
   historyShowMoreState,
   newestHistoryEntry,
   olderPageAnswered,
+  putStepExperiment,
   rowFacts,
   seededHistoryEntry,
-  showMoreLeft,
   stepRun,
   stepsSection,
   stepsUnread,
@@ -131,6 +131,7 @@ import {
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { viewportAt } from "./issue-page-p";
+import { tabWalk } from "./issue-page-v";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { setCreatedAt, setEventCreatedAt } from "./seed";
 import { navigateInApp, ONE_PIXEL_PNG } from "./sends";
@@ -188,10 +189,6 @@ async function allEvents(key: string): Promise<DispatchEvent[]> {
   }
 }
 
-/** How many entries the history draws at first, and how many more each press of its Show more
- *  draws (`HISTORY_PAGE` in `history-model.ts`). */
-const HISTORY_DRAWS = 20;
-
 /**
  * Presses the history's Show more by `press` until it reaches `end`: `uncounted`, where every
  * entry the history has read is drawn and the control says no number, or `gone`, where no
@@ -209,7 +206,7 @@ async function readHistoryDown(
   press: (control: Locator) => Promise<void>,
   end: "gone" | "uncounted"
 ): Promise<void> {
-  const most = Math.ceil(events / HISTORY_DRAWS) + Math.ceil(events / 200) + 1;
+  const most = Math.ceil(events / PAGE_SIZE) + Math.ceil(events / 200) + 1;
   for (let presses = 0; ; presses += 1) {
     const state = await historyShowMoreState(page);
     if (state === end || state === "gone") return;
@@ -579,8 +576,8 @@ const activityAgent = {
 };
 
 // The issue's history is the list in Details that `/activity` opens: every event no row of the
-// outline draws, and the threads agents wrote among themselves, whole - two agents' posts and a
-// thread the Legion daemon began.
+// outline draws, and the threads the history holds, whole - two agents' posts and a thread the
+// Legion daemon began.
 // What the outline draws - an ask, answered or retracted - is not in it, and nothing the
 // history draws is a row of the outline.
 // The source's row carried `@pr`, and this copy does not: the pull-request lane holds its 150
@@ -642,8 +639,8 @@ test("the history lists the events and the agents' threads the outline does not 
       );
       await expect(rows.filter({ hasText: description })).toHaveCount(1);
     }
-    // The threads agents wrote among themselves, each once, whole, with its Reply - and no row
-    // of the outline.
+    // The threads the history holds, each once, whole, with its Reply - and no row of the
+    // outline.
     for (const thread of [resolved, open, message]) {
       await seededHistoryEntry(page, historyItem(page, thread.id), thread.created_at);
       await expect(historyItem(page, thread.id)).toHaveCount(1);
@@ -1429,21 +1426,21 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
       (control) => control.click(),
       "uncounted"
     );
-    const loadOlder = historyNextPage(page);
-    await expect(loadOlder).toBeVisible();
-    await loadOlder.scrollIntoViewIfNeeded();
+    const showMore = historyNextPage(page);
+    await expect(showMore).toBeVisible();
+    await showMore.scrollIntoViewIfNeeded();
     await nextFrames(page);
     const clip = await historyViewport(page);
-    const loadOlderBox = await loadOlder.boundingBox();
-    expect(loadOlderBox).not.toBeNull();
-    expect(loadOlderBox?.y ?? -1).toBeGreaterThanOrEqual(clip.top);
-    expect((loadOlderBox?.y ?? 0) + (loadOlderBox?.height ?? 0)).toBeLessThanOrEqual(clip.bottom);
+    const showMoreBox = await showMore.boundingBox();
+    expect(showMoreBox).not.toBeNull();
+    expect(showMoreBox?.y ?? -1).toBeGreaterThanOrEqual(clip.top);
+    expect((showMoreBox?.y ?? 0) + (showMoreBox?.height ?? 0)).toBeLessThanOrEqual(clip.bottom);
 
     const entry = await readingAnchor(page, clip);
     const anchor = historyPanel(page).locator(`[data-history-entry="${entry}"]`);
     const before = (await anchor.boundingBox())?.y;
     expect(before, `the entry the reader is on, ${entry}, has no box`).toBeDefined();
-    await loadOlder.click();
+    await showMore.click();
 
     // The proof the older page landed is the oldest entry of all: the issue's own creation,
     // which only the page beneath the first 200 holds.
@@ -1541,7 +1538,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
     const file = historyPanel(page)
       .locator("[data-history-uploads]")
       .getByRole("link", { exact: true, name: newest });
-    const loadOlder = historyNextPage(page);
+    const showMore = historyNextPage(page);
     const dispatched = (control: Locator) => control.dispatchEvent("click");
 
     // By pointer: the reader is on the newest file of the run, and the older page lands.
@@ -1551,7 +1548,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
     await readHistoryDown(page, issue.key, events, dispatched, "uncounted");
     await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
-    await expect(loadOlder).toBeVisible();
+    await expect(showMore).toBeVisible();
     const run = historyPanel(page).locator("[data-history-uploads]");
     const firstPage = Number(await run.getAttribute("data-history-uploads"));
     expect(
@@ -1561,7 +1558,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
     await putFileAtCentre();
     const before = (await file.boundingBox())?.y;
     expect(before, `${newest} has no box`).toBeDefined();
-    await loadOlder.dispatchEvent("click");
+    await showMore.dispatchEvent("click");
     await expect(
       historyPanel(page).locator("[data-history-uploads]"),
       "the older page did not extend the run"
@@ -1581,7 +1578,7 @@ test("loading older keeps the reader's place on an upload run the older page ext
     await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await putFileAtCentre();
-    await loadOlder.focus();
+    await showMore.focus();
     await page.keyboard.press("Enter");
     await expect(historyPanel(page).locator("[data-history-uploads]")).toHaveAttribute(
       "data-history-uploads",
@@ -1666,8 +1663,8 @@ test("Show more by keyboard keeps the focus in view when the older page it reads
       historyPanel(page).getByText("Between the uploads"),
       "the message between the uploads is not drawn on the first page"
     ).toHaveCount(1);
-    const loadOlder = historyNextPage(page);
-    await loadOlder.focus();
+    const showMore = historyNextPage(page);
+    await showMore.focus();
     await nextFrames(page);
     await page.keyboard.press("Enter");
     await expect(run, "the older page did not extend the run").toHaveAttribute(
@@ -1790,7 +1787,7 @@ test("Show more pressed as the focus reaches it hands the focus to the first lon
   const issue = await createIssue({ project: "CORE", title: "Long turns under Show more" });
   // Each turn is about a thousand pixels at Details' width, as the long turns of the real issue
   // were; five more than the history draws at first, so one press draws them.
-  for (let index = 0; index < HISTORY_DRAWS + 5; index += 1) {
+  for (let index = 0; index < PAGE_SIZE + 5; index += 1) {
     await createMessage(
       issue.key,
       {
@@ -1813,7 +1810,7 @@ test("Show more pressed as the focus reaches it hands the focus to the first lon
     await more.focus();
     await page.keyboard.press("Enter");
     // The issue's creation, the oldest entry, is drawn with the five turns: every entry is.
-    await expect(historyEntries(page)).toHaveCount(HISTORY_DRAWS + 6);
+    await expect(historyEntries(page)).toHaveCount(PAGE_SIZE + 6);
     await expect(more, "Show more stayed with every entry drawn").toHaveCount(0);
     await nextFrames(page);
     const clip = await historyViewport(page);
@@ -1830,13 +1827,198 @@ test("Show more pressed as the focus reaches it hands the focus to the first lon
     ).toBe(true);
     expect(
       await historyEntries(page)
-        .nth(HISTORY_DRAWS)
+        .nth(PAGE_SIZE)
         .evaluate((entry) => entry.contains(document.activeElement)),
       "Show more did not hand the focus to the first entry it drew"
     ).toBe(true);
   } finally {
     await context.close();
   }
+});
+
+/** How many entries the last Show more of the row below draws: the issue's creation and 13 of the
+ *  daemon's notes, dated a day before every entry above them, fewer than a press draws. */
+const EARLIER_DAY_ENTRIES = 14;
+
+/**
+ * An issue whose history holds `2 * PAGE_SIZE` notes of the Legion daemon's, each a thread of its
+ * own, and under them `EARLIER_DAY_ENTRIES` entries dated a day before the oldest of those notes:
+ * the issue's creation and the notes the daemon wrote first, each with its event. The history's
+ * last Show more draws those, under the line that names their day. Answers the issue's key and
+ * the time those entries are dated to.
+ */
+async function seedEarlierDayUnderLastPage(): Promise<{ earlierAt: string; key: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "An earlier day under Show more" });
+  const notes: { readonly created_at: string; readonly id: string }[] = [];
+  for (let index = 0; index < 2 * PAGE_SIZE + EARLIER_DAY_ENTRIES - 1; index += 1) {
+    notes.push(await createMessage(issue.key, { body: `The daemon's note ${index}.` }, asDaemon));
+  }
+  const earlier = new Set(notes.slice(0, EARLIER_DAY_ENTRIES - 1).map((note) => note.id));
+  const oldestLater = notes[EARLIER_DAY_ENTRIES - 1];
+  if (oldestLater === undefined) throw new Error(`${issue.key} holds no later note`);
+  // A day before the oldest of the later notes, so the earlier entries' day comes before the day
+  // of every later note, whenever the seed ran.
+  const earlierAt = new Date(
+    new Date(oldestLater.created_at).getTime() - 24 * 60 * 60 * 1_000
+  ).toISOString();
+  const events = (await getIssueEvents(issue.key, { limit: 200 })).filter(
+    (event) =>
+      event.type === "issue.created" ||
+      (event.type === "message.created" && earlier.has(event.payload.id))
+  );
+  if (events.length !== EARLIER_DAY_ENTRIES) {
+    throw new Error(
+      `${issue.key} recorded ${events.length} events of its earlier entries, not ${EARLIER_DAY_ENTRIES}`
+    );
+  }
+  await Promise.all([
+    ...[...earlier].map((id) => setCreatedAt("messages", id, earlierAt)),
+    ...events.map((event) => setEventCreatedAt(event.id, earlierAt)),
+  ]);
+  return { earlierAt, key: issue.key };
+}
+
+// Show more pressed by keyboard hands the focus to the first entry it drew, and brings that entry
+// into Details' view by the least scroll, a scroll of Details' box alone that leaves the page
+// where it was (`IssueHistory.tsx`). The last press of this history draws the entries of an
+// earlier day, so the line that names that day stands above the first of them, where the control
+// stood. Tab reaches the control from the entries above it and Enter presses it, up to the last
+// press. A Tab leaves the control anywhere from the middle of Details' view to its foot, so before
+// that press the reader's own scroll puts it at the foot, where the tester's Tab had left it: the
+// first entry the press draws then stands under the day's line, below the view. Found by the
+// tester on a running build of 82e96bda with a copy of a large real issue, at 1440 by 900 after
+// four presses: the press of "Show more (14 left)" left the focus on the first added entry's link,
+// its top at 849 px in a view that ended at 847, wholly below it.
+// SLOW(>=2s): 53 notes written and 14 entries dated a day back, and at each of two widths one load
+// of the history, read down by Tab and Enter.
+test("a keyboard press of the history's last Show more leaves the focus in view", async ({
+  browser,
+}) => {
+  // The seed's 53 notes, and at each of the two widths a load and about a hundred presses of Tab.
+  test.setTimeout(120_000);
+  const { earlierAt, key } = await seedEarlierDayUnderLastPage();
+  const total = 2 * PAGE_SIZE + EARLIER_DAY_ENTRIES;
+  // Enough presses of Tab to pass every control of the entries one press draws: each note's time,
+  // its author and its Reply.
+  const tabs = 5 * PAGE_SIZE;
+  // Each width's outcome, so one run says every width the last press failed at.
+  const failures: string[] = [];
+  for (const size of [DESKTOP, PHONE]) {
+    const context = await reader(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize(size);
+      await gotoIssue(page, `/issues/${key}/activity`);
+      await expect(marginShell(page), "/activity did not open Details").toBeVisible();
+      await newestHistoryEntry(page);
+      // The reader's focus starts on the history's heading, above its first entry: a load of
+      // `/activity` opens Details at the history, and puts no focus in it.
+      await historyHeading(page).focus();
+      await expect(historyHeading(page), "the history's heading took no focus").toBeFocused();
+      const more = historyShowMore(page);
+      const entries = historyEntries(page);
+
+      // The first press draws the next of the later notes, and hands the focus to the first.
+      await tabWalk(page, tabs)(
+        historyShowMore(page),
+        `Tab did not bring the focus to ${CONTROL_LABELS.show_more} before the first press`
+      );
+      await expect(more).toHaveText(showMoreName(total - PAGE_SIZE));
+      await page.keyboard.press("Enter");
+      await expect(entries).toHaveCount(2 * PAGE_SIZE);
+      await expect
+        .poll(
+          () => focusInside(entries.nth(PAGE_SIZE)),
+          "the first press did not hand the focus to the first entry it drew"
+        )
+        .toBe(true);
+
+      // The last press, made with the control at the foot of Details' view.
+      await tabWalk(page, tabs)(
+        historyShowMore(page),
+        `Tab did not bring the focus to ${CONTROL_LABELS.show_more} before the last press`
+      );
+      await expect(more, "the next press does not draw the earlier day's entries").toHaveText(
+        showMoreName(EARLIER_DAY_ENTRIES)
+      );
+      const view = await historyViewport(page);
+      const reached = await boxOf(more, CONTROL_LABELS.show_more);
+      await scrollHistoryBy(page, reached.y + reached.height - view.bottom);
+      await detailsStandStill(page, "the reader's scroll");
+      await expect(more, "the reader's scroll took the focus off Show more").toBeFocused();
+      const pressedAt = await boxOf(more, CONTROL_LABELS.show_more);
+      expect(
+        Math.abs(pressedAt.y + pressedAt.height - view.bottom) <= 1,
+        `at ${size.width} px Show more stands at ${Math.round(pressedAt.y)} to ${Math.round(pressedAt.y + pressedAt.height)} px, not at the foot of Details' view at ${Math.round(view.bottom)}, so the row proves nothing`
+      ).toBe(true);
+      const daysBefore = await historyPanel(page)
+        .locator("[data-history-day]")
+        .evaluateAll((days) => days.map((day) => day.getAttribute("data-history-day")));
+      // One read before the press, with Details' box standing still: where the page stands.
+      const pageBefore = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+      await page.keyboard.press("Enter");
+      await expect(entries, "the last press did not draw the earlier day's entries").toHaveCount(
+        total
+      );
+      await expect(more, "Show more stayed with every entry drawn").toHaveCount(0);
+      await detailsStandStill(page, `the last ${CONTROL_LABELS.show_more}`);
+
+      // The first entry the press drew is the first of a day the history had not drawn, the
+      // earlier one, under the line that names it.
+      const earlierDay = await historyDayOf(page, earlierAt);
+      expect(
+        daysBefore,
+        "the history drew the earlier day before its last press, so the row proves nothing"
+      ).not.toContain(earlierDay.date);
+      const first = entries.nth(2 * PAGE_SIZE);
+      const day = first.locator("xpath=ancestor::li[@data-history-day][1]");
+      await expect(
+        day,
+        "the first entry the last press drew is not of the earlier day"
+      ).toHaveAttribute("data-history-day", earlierDay.date);
+      await expect(day.locator(":scope > p"), "no line names the earlier day").toHaveText(
+        earlierDay.label
+      );
+      await expect(
+        first.locator("xpath=preceding-sibling::*"),
+        "the first entry the last press drew is not the first under its day's line"
+      ).toHaveCount(0);
+
+      // Two reads once Details' box has stood still for two frames: where the press left the
+      // focus, and the view it left.
+      const landed = await first.evaluate((entry) => {
+        const active = document.activeElement;
+        const box =
+          active === null || active === document.body ? null : active.getBoundingClientRect();
+        return {
+          focus: box === null ? null : { bottom: box.bottom, top: box.top },
+          onEntry: entry.contains(active),
+          page: { x: window.scrollX, y: window.scrollY },
+        };
+      });
+      const shown = await historyViewport(page);
+      const pressed = `at ${size.width} px the last ${CONTROL_LABELS.show_more}`;
+      if (!landed.onEntry) {
+        failures.push(`${pressed} did not hand the focus to the first entry it drew`);
+      }
+      if (landed.focus === null) {
+        failures.push(`${pressed} left the focus on the page`);
+      } else if (landed.focus.top < shown.top - 1 || landed.focus.bottom > shown.bottom + 1) {
+        failures.push(
+          `${pressed} left the focus at ${Math.round(landed.focus.top)} to ${Math.round(landed.focus.bottom)} px, ${landed.focus.bottom > shown.bottom + 1 ? "below" : "above"} Details' view (${Math.round(shown.top)} to ${Math.round(shown.bottom)})`
+        );
+      }
+      if (landed.page.x !== pageBefore.x || landed.page.y !== pageBefore.y) {
+        failures.push(
+          `${pressed} scrolled the page from ${pageBefore.x}, ${pageBefore.y} px to ${landed.page.x}, ${landed.page.y}`
+        );
+      }
+    } finally {
+      await context.close();
+    }
+  }
+  expect(failures, failures.join("; ")).toEqual([]);
 });
 
 /** The words of a long agents' turn: `parts` paragraphs, each `TURN_PARAGRAPH`. */
@@ -2074,10 +2256,10 @@ test("the history draws 20 entries at a time and its control says how many are l
     const page = await context.newPage();
     await openHistory(page, issue.key, newest);
     const entries = historyEntries(page);
-    await expect(entries, "the history drew 45 entries, not 20").toHaveCount(HISTORY_DRAWS);
+    await expect(entries, "the history drew 45 entries, not 20").toHaveCount(PAGE_SIZE);
     const more = historyShowMore(page);
     await expect(more, "Show more does not say that 25 entries are left").toHaveText(
-      showMoreLeft(25)
+      showMoreName(25)
     );
 
     await more.click();
@@ -2087,7 +2269,7 @@ test("the history draws 20 entries at a time and its control says how many are l
       "a press of Show more took the first entries away"
     ).toHaveAttribute("data-history-entry", `thread:${newest.id}`);
     await expect(more, "Show more does not say that 5 entries are left").toHaveText(
-      showMoreLeft(5)
+      showMoreName(5)
     );
 
     await more.click();
@@ -3148,8 +3330,8 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     );
     expect(
       place,
-      `the turn is entry ${place} of the history, among its first ${HISTORY_DRAWS}, so the row proves nothing`
-    ).toBeGreaterThanOrEqual(HISTORY_DRAWS);
+      `the turn is entry ${place} of the history, among its first ${PAGE_SIZE}, so the row proves nothing`
+    ).toBeGreaterThanOrEqual(PAGE_SIZE);
 
     // Pinned's link to the turn, followed again while Details is open, brings the turn back on
     // screen from where the reader scrolled to Pinned, above the history.
@@ -4900,9 +5082,9 @@ test("the facts of a focused ask hold its edit history, its recipients and its c
 /** The architecture repository of the row below, whose model holds `MANY_COMPONENTS`. */
 const LISTS_ARCHITECTURE = "acme/lists-architecture";
 
-/** How many entries each list of the row below holds: five past the `LIST_PAGE` Details draws at
+/** How many entries each list of the row below holds: five past the `PAGE_SIZE` Details draws at
  *  first. */
-const LONG_LIST = LIST_PAGE + 5;
+const LONG_LIST = PAGE_SIZE + 5;
 
 /** The ids of the components of the row below's model, one file each: `part-01` and on. */
 const MANY_COMPONENTS = Array.from(
@@ -5013,14 +5195,14 @@ async function showEveryEntry(
   what: string,
   focused: (index: number) => Promise<boolean> = (index) => focusInside(entries.nth(index))
 ): Promise<void> {
-  for (let drawn = LIST_PAGE; drawn < total; drawn += LIST_PAGE) {
+  for (let drawn = PAGE_SIZE; drawn < total; drawn += PAGE_SIZE) {
     await expect(entries, `${what} drew another count than ${drawn}`).toHaveCount(drawn);
     await expect(more, `${what}'s Show more does not say ${total - drawn} are left`).toHaveText(
-      showMoreLeft(total - drawn)
+      showMoreName(total - drawn)
     );
     await more.click();
     await expect(entries, `${what}'s Show more did not draw the next entries`).toHaveCount(
-      Math.min(drawn + LIST_PAGE, total)
+      Math.min(drawn + PAGE_SIZE, total)
     );
     await expect
       .poll(() => focused(drawn), `${what}'s Show more left the focus off the first entry it drew`)
@@ -5046,7 +5228,7 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
 
     const blocks = detailsRow(page, PROPERTY_LABELS.blocks);
     const blocking = blocks.getByRole("link");
-    await expect(blocking, "Blocks drew 10 entries, not 20").toHaveCount(LIST_PAGE);
+    await expect(blocking, "Blocks drew 10 entries, not 20").toHaveCount(PAGE_SIZE);
     await showEveryEntry(
       blocking,
       blocks.getByRole("button", { name: CONTROL_LABELS.show_more }),
@@ -5821,5 +6003,102 @@ test("Steps in Details draws a run whose record reaches the server after its eve
       { timeout: 10_000 }
     );
     await expect(stepRun(page, late)).toHaveCount(1);
+  });
+});
+
+/**
+ * Two issues whose steps ran as Legion's daemon writes them (`putStep`, then `putStepExperiment`
+ * for each run that names an experiment): `named`, whose first generation drew the variant `a` of
+ * the experiment `planning` in one task and whose newest, the second, drew its variant `b` in two
+ * tasks; and `unnamed`, whose first generation drew that same variant `a` and whose newest, the
+ * second, names none.
+ */
+async function seedExperiment(): Promise<{ named: string; unnamed: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const named = await createIssue({ project: "CORE", title: "Runs of an experiment" });
+  const unnamed = await createIssue({ project: "CORE", title: "Runs of a newest run with none" });
+  const write = async (
+    key: string,
+    generation: number,
+    task: string,
+    drawn?: Parameters<typeof putStepExperiment>[2]
+  ) => {
+    const id = crypto.randomUUID();
+    await putStep(key, id, {
+      agent: `legion-core-${key.toLowerCase()}-implementer`,
+      ended_at: stepAt(`${9 + generation}:30`),
+      generation,
+      kind: "step",
+      model: "anthropic/claude-opus-5",
+      result: "passed",
+      role: "implementer",
+      started_at: stepAt(`${9 + generation}:00`),
+      step: 2,
+      task,
+      type: "implementation",
+    });
+    if (drawn !== undefined) await putStepExperiment(key, id, drawn);
+  };
+  const first = { experiment: "planning", variant: "a" };
+  const newest = { experiment: "planning", variant: "b" };
+  await write(named.key, 1, "default", first);
+  await write(named.key, 2, "default", newest);
+  await write(named.key, 2, "docs", newest);
+  await write(unnamed.key, 1, "default", first);
+  await write(unnamed.key, 2, "default");
+  return { named: named.key, unnamed: unnamed.key };
+}
+
+// Where the records of the issue's newest run, its highest generation, name an experiment,
+// Details' steps draw "Experiment <experiment>: variant <variant>" once, directly under their
+// heading and above their first task group, at 1440 px and at 390 px, and not the variant the
+// first generation drew. Where no record of the newest run names one, though the first
+// generation's does, they draw no such line. It carries no `@phone` tag: it reads the same markup
+// in the same order at both widths, which it sets itself, and the phone changes none of it.
+// SLOW(>=2s): nine step and experiment records written, and two issues loaded at two widths.
+test("Steps in Details names the experiment and the variant of the newest run once above its tasks, and none where none is named", async ({
+  browser,
+}) => {
+  await phase(browser, seedExperiment, async (page, seeded) => {
+    for (const width of [1440, 390]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seeded.named}`);
+      await openDetails(page);
+      const section = stepsSection(page);
+      await expect(
+        section.getByRole("heading", { level: 2 }),
+        `the steps of ${seeded.named} do not count its three runs at ${width} px`
+      ).toHaveText(`${CONTROL_LABELS.steps} (3)`);
+      const line = section.locator("[data-step-variant]");
+      await expect(
+        line,
+        `Details draws no experiment line for the newest run of ${seeded.named} at ${width} px`
+      ).toHaveCount(1);
+      await expect(line, `the experiment line at ${width} px`).toHaveText(
+        "Experiment planning: variant b"
+      );
+      await expect(
+        section.getByText(/^Experiment /u),
+        `the steps draw more than one experiment line at ${width} px`
+      ).toHaveCount(1);
+      await expect(section.locator("[data-step-task]")).toHaveCount(2);
+      await expect(
+        section.locator("h2 + [data-step-variant] ~ [data-step-task]"),
+        `the experiment line is not directly under the heading and above both task groups at ${width} px`
+      ).toHaveCount(2);
+
+      await gotoIssue(page, `/issues/${seeded.unnamed}`);
+      await openDetails(page);
+      await expect(
+        section.getByRole("heading", { level: 2 }),
+        `the steps of ${seeded.unnamed} do not count its two runs at ${width} px`
+      ).toHaveText(`${CONTROL_LABELS.steps} (2)`);
+      await expect(section.locator("[data-step-run]")).toHaveCount(2);
+      await expect(
+        section.getByText(/^Experiment /u),
+        `the steps of ${seeded.unnamed} draw an experiment its newest run does not name at ${width} px`
+      ).toHaveCount(0);
+      await expect(section.locator("[data-step-variant]")).toHaveCount(0);
+    }
   });
 });

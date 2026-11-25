@@ -1,6 +1,6 @@
 import type { LegionRole } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, type RefObject, useRef } from "react";
+import type { ReactNode, RefObject } from "react";
 
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type { IssueCollaboratorPerson } from "../../api/types";
@@ -96,14 +96,11 @@ export function IssueCollaboratorList({
   owner: RefObject<HTMLElement | null>;
 }): ReactNode {
   const query = useQuery(issueCollaboratorsQuery(issueKey));
-  // Each list's pages, and the box its entries are drawn in, where a press of its Show more
-  // finds the first entry it drew.
+  // Each list's pages, which hold the box its entries are drawn in, where a press of its Show
+  // more finds the first entry it drew.
   const legionPages = useListPages();
-  const legionList = useRef<HTMLElement>(null);
-  const otherPages = useListPages();
-  const otherList = useRef<HTMLUListElement>(null);
-  const peoplePages = useListPages();
-  const peopleList = useRef<HTMLUListElement>(null);
+  const otherPages = useListPages<HTMLUListElement>();
+  const peoplePages = useListPages<HTMLUListElement>();
   // The Retry the reader pressed goes with its line once the read lands, and the focus with it:
   // the focus goes to the control that opens the list rather than fall to the page, as Unpin in
   // Pinned hands it on (`IssuePins.tsx`). It is never disabled while it reads again, so a read
@@ -155,7 +152,7 @@ export function IssueCollaboratorList({
         <section
           aria-label={CONTROL_LABELS.collaborators_legion}
           className="space-y-3"
-          ref={legionList}
+          ref={legionPages.list}
         >
           <SectionHeading>{CONTROL_LABELS.collaborators_legion}</SectionHeading>
           {groupsDrawn(sections.legion, ({ agents }) => agents, legionPages.drawn).map(
@@ -200,14 +197,14 @@ export function IssueCollaboratorList({
           )}
           {legionPages.more(
             sections.legion.reduce((count, { agents }) => count + agents.length, 0),
-            (index) => legionList.current?.querySelectorAll("li")[index]
+            (index) => legionPages.list.current?.querySelectorAll("li")[index]
           )}
         </section>
       )}
       {sections.others.length === 0 ? null : (
         <section aria-label={CONTROL_LABELS.collaborators_others} className="space-y-2">
           <SectionHeading>{CONTROL_LABELS.collaborators_others}</SectionHeading>
-          <ul className="space-y-2" ref={otherList}>
+          <ul className="space-y-2" ref={otherPages.list}>
             {sections.others.slice(0, otherPages.drawn).map((agent) => (
               <Row
                 detail={<Worked lastAt={agent.last_at} reasons={agent.reasons} />}
@@ -218,13 +215,13 @@ export function IssueCollaboratorList({
               />
             ))}
           </ul>
-          {otherPages.more(sections.others.length, (index) => otherList.current?.children[index])}
+          {otherPages.more(sections.others.length)}
         </section>
       )}
       {sections.people.length === 0 ? null : (
         <section aria-label={CONTROL_LABELS.collaborators_people} className="space-y-2">
           <SectionHeading>{CONTROL_LABELS.collaborators_people}</SectionHeading>
-          <ul className="space-y-2" ref={peopleList}>
+          <ul className="space-y-2" ref={peoplePages.list}>
             {sections.people.slice(0, peoplePages.drawn).map((person) => (
               <Row
                 detail={<Worked lastAt={person.last_at} reasons={person.reasons} />}
@@ -233,7 +230,7 @@ export function IssueCollaboratorList({
               />
             ))}
           </ul>
-          {peoplePages.more(sections.people.length, (index) => peopleList.current?.children[index])}
+          {peoplePages.more(sections.people.length)}
         </section>
       )}
     </section>

@@ -13,3 +13,16 @@ export function scrollingAncestor(element: HTMLElement | null): HTMLElement | nu
   }
   return null;
 }
+
+/** The change of a box's `scrollTop` that brings an element at `at` into the box's view `view`
+ *  by the least scroll: the scroll `scrollIntoView({ block: "nearest" })` makes. None where the
+ *  element lies wholly in the view or spans the whole of it. Else an element no taller than the
+ *  view comes in by its top from above the view and by its foot from below it, and a taller one
+ *  by its other edge, so that it fills the view. */
+export function nearestScroll(at: DOMRect, view: DOMRect): number {
+  const above = at.top < view.top;
+  const below = at.bottom > view.bottom;
+  if (above === below) return 0;
+  const fits = at.height <= view.height;
+  return above === fits ? at.top - view.top : at.bottom - view.bottom;
+}

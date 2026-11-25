@@ -871,6 +871,16 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     this.ownScroll.move(before, scrolledBy(scroller));
   }
 
+  /** Moves the box the host named by `delta`, a scroll the host makes of that box itself, as the
+   *  history brings the control a press of its Show more gives the focus to into Details' view,
+   *  and marks the offset that left the box at as this anchor's own (`ownScroll`), as every
+   *  scroll of the anchor's own is: its event is no scroll of the reader's, and records no place.
+   *  Where the rows scroll in the document it moves nothing, since a host scrolls its own box and
+   *  never the page. */
+  scrollBox(delta: number): void {
+    if (this.scrollerElement() !== null) this.scrollBy(delta);
+  }
+
   /** A scroll of what scrolls the rows: the box the host named, or the document. Where it is
    *  this anchor's own (`ownScroll`), it records nothing: the place was just put back. Where the
    *  host takes the box over, `ownedScrolled` reads the event. Any other host's is the reader's,

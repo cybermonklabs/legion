@@ -6,18 +6,18 @@
 #   scripts/e2e/plan-ratings-read.sh INFRA INFRA-123
 #
 # It exits 0 and prints `PASS: …`, with the issue's plan, ratings, time and count of failed steps,
-# only when the read lists <ISSUE> with a plan, at least one rating, each rating with a reason,
-# and a count of failed steps. A time the command prints as `-` is Dispatch knowing no span of the
-# issue's step records (no record has a start, none has an end, or the latest end is before the
-# earliest start), which says nothing of the plan or its ratings: the verdict names that time
-# `unknown` and judges the line by the rest. The other issues of the project are not judged: a
-# finished issue Legion never ran, or ran before the release that rates each plan, lists `plan
-# none` and `ratings none`, which is true of what Dispatch holds of it. It exits 1 and prints one
-# `FAIL: …` line per fault when the read lists finished issues and <ISSUE>'s line does not hold,
-# or lists no line of <ISSUE>. It exits 2 and prints `UNKNOWN: <reason>` when it could read
-# nothing to judge: the read lists no finished issue at all, the command failed, or its answer is
-# no read of the project; so an empty or failed read is never a pass. A usage error is exit 2 too,
-# with the usage on stderr.
+# and its variant where its line names one, only when the read lists <ISSUE> with a plan, at least
+# one rating, each rating with a reason, and a count of failed steps. A time the command prints as
+# `-` is Dispatch knowing no span of the issue's step records (no record has a start, none has an
+# end, or the latest end is before the earliest start), which says nothing of the plan or its
+# ratings: the verdict names that time `unknown` and judges the line by the rest. The other issues
+# of the project are not judged: a finished issue Legion never ran, or ran before the release that
+# rates each plan, lists `plan none` and `ratings none`, which is true of what Dispatch holds of
+# it. It exits 1 and prints one `FAIL: …` line per fault when the read lists finished issues and
+# <ISSUE>'s line does not hold, or lists no line of <ISSUE>. It exits 2 and prints
+# `UNKNOWN: <reason>` when it could read nothing to judge: the read lists no finished issue at all,
+# the command failed, or its answer is no read of the project; so an empty or failed read is never
+# a pass. A usage error is exit 2 too, with the usage on stderr.
 #
 # It runs where the operator runs `dispatch` by hand, with the operator's own credential: the
 # `dispatch` command on PATH (packages/envoy-client's bin), the session the operator's shell names
@@ -44,9 +44,11 @@ read_dispatch plans --project "$project"
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
 # (packages/envoy-client/src/dispatch-commands/plans.ts):
-#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps|->)> ratings <none|<r>/<most> "<reason>", …> time <-|<h>h<m>m> failed steps <n>
-# Each reason is a JSON string, so a quotation mark or a line break in it keeps the issue on one
-# line; the ratings are separated by `, ` outside those strings.
+#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps|->)> ratings <none|<r>/<most> "<reason>", …> time <-|<h>h<m>m> failed steps <n>[ variant <experiment>/<variant>]
+# The line ends with ` variant <experiment>/<variant>` where the records of the issue's newest run
+# name an experiment, and at `failed steps <n>` where they name none. Each reason is a JSON string,
+# so a quotation mark or a line break in it keeps the issue on one line; the ratings are separated
+# by `, ` outside those strings.
 awk -v project="$project" -v issue="$issue" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit }
   # ratingsOf reads the ratings text of one line: the number of ratings it lists, 0 for `none`,
@@ -86,7 +88,7 @@ awk -v project="$project" -v issue="$issue" '
   NF == 0 { next }
   {
     line = $0
-    if ($2 != "closed" || $4 != "plan" || !match(line, / time (-|[0-9]+h[0-9]+m) failed steps [0-9]+$/)) unknown("the line is no finished issue: " line)
+    if ($2 != "closed" || $4 != "plan" || !match(line, / time (-|[0-9]+h[0-9]+m) failed steps [0-9]+( variant [a-z0-9-]+\/[a-z0-9-]+)?$/)) unknown("the line is no finished issue: " line)
     tail = substr(line, RSTART + 1)
     lead = length($1 " closed " $3 " plan ")
     middle = substr(line, lead + 1, RSTART - lead - 1)
@@ -108,6 +110,7 @@ awk -v project="$project" -v issue="$issue" '
     if (reasonless) faults[++count] = issue " lists a rating with no reason: " line
     if (spent == "-") spent = "unknown"
     said = "plan " plan ", ratings " ratings ", time " spent ", failed steps " failed
+    if (parts[7] != "") said = said ", variant " parts[7]
   }
   END {
     if (status) exit status

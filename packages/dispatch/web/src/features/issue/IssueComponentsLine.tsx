@@ -82,6 +82,9 @@ export function componentChipIds(
     : [];
 }
 
+/** Each chip the line draws with a `limit`, by the mark it then carries, in the line's order. */
+export const COMPONENT_CHIP = "[data-component-chip]";
+
 /**
  * The `Components:` line of the issue header's metadata rail: the issue's effective
  * attachment as chips. An explicit set lists its live component ids and marks each id a
@@ -112,7 +115,9 @@ export function IssueComponentsLine({
   issue: Pick<Issue, "components" | "key" | "project" | "status" | "title">;
   /** How many chips the line draws, the first of its components and then of its retired ones
    *  as one list, for a host that draws the control that shows the next ones (the new issue
-   *  page's Details): each chip past them is hidden. With none, every chip is drawn. */
+   *  page's Details): each chip past them is hidden, and each chip carries
+   *  `data-component-chip`, by which that host finds it in the list's order. With none, every
+   *  chip is drawn, and none carries that mark. */
   limit?: number;
 }): ReactNode {
   const tooltips = useTooltips();
@@ -192,6 +197,7 @@ export function IssueComponentsLine({
           {(components.ids ?? []).map((id) => (
             <span
               className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgePrimary.bg} ${badgePrimary.text}` : pageLabelChip}`}
+              data-component-chip={limit === undefined ? undefined : ""}
               hidden={drawnChips?.has(id) === false}
               key={id}
               {...page?.authorText}
@@ -202,6 +208,7 @@ export function IssueComponentsLine({
           {(components.unknown ?? []).map((id) => (
             <span
               className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgeHigh.bg} ${badgeHigh.text}` : pageWaitingChip}`}
+              data-component-chip={limit === undefined ? undefined : ""}
               hidden={drawnChips?.has(id) === false}
               key={id}
               title={

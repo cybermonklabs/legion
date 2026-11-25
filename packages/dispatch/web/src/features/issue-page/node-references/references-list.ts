@@ -6,7 +6,9 @@ import type {
   MessageWithTrees,
 } from "../../../api/types";
 import { isBlockItemKind } from "../../refs/block-reference";
+import type { DispatchReferenceRoute } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
+import { NODE_REFERENCES_WORDS } from "../page-words";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-references";
 
 /**
@@ -26,8 +28,9 @@ import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-referen
  * of it. The page holds those words for the comments, messages and questions of the
  * focused node's own issue, which the outline reads (`issueItemWords`); a reference in them is
  * named as the outline's row names it, from the page's one batched read of what its references
- * point at; every other node is named by the word of its tie or of its kind, with its issue and
- * its time.
+ * point at, and by the page's word for what it points at where that read names nothing
+ * (`namedWords`); every other node is named by the word of its tie or of its kind, with its
+ * issue and its time.
  *
  * Pure, so the rows are read without a browser: the component draws them and holds the reads.
  */
@@ -64,7 +67,11 @@ export interface ReferenceRow {
   /** What the row draws of the citing item's words, where it is a comment, a message or a
    *  question of the focused node's own issue and the page holds its words (`issueItemWords`):
    *  every one of them, with no cut, and each reference they write named (`namedWords`); `""`
-   *  for every other node, which the component names by its word. Never the read's own text. */
+   *  for every other node, which the component names by its word. Never the read's own text.
+   *  The component draws the whole string as text the page did not author. One part of it can
+   *  be the page's own word all the same: the word for the kind of a reference the read has
+   *  not named (`unnamedWords`). That word is one of `NODE_REFERENCES_WORDS.kinds`, a table
+   *  the page declares, so it needs no mark of its own to be a declared word. */
   readonly words: string;
 }
 
@@ -168,12 +175,13 @@ export function referenceRows(
 
 /**
  * The words a citing item is named by: all of them, with no cut, since a row of a node's
- * references is no place the page may shorten, its runs of white space one space each, with each
+ * references is no place the page shortens, its runs of white space one space each, with each
  * reference they write named as the outline's row names it (`rowReferenceWords`): an issue by its
  * key and its title, anything else by its target's words. The server's reading of a bare
  * `dispatch://` reference is a link whose words are the address itself, so the words write it as
- * typed; words holding a reference the read has not named are `""`, and the row is named by its
- * word, since an address is no name. `issues` is `knownIssueKeys(names)`.
+ * typed; a reference the read has not named is drawn by the page's word for what it names
+ * (`unnamedWords`), since an address is no name, and the rest of the words stay. `issues` is
+ * `knownIssueKeys(names)`.
  */
 function namedWords(
   words: string,
@@ -184,11 +192,42 @@ function namedWords(
   let written = "";
   let at = 0;
   for (const one of rowReferences(whole, issues)) {
-    if ((names.get(one.reference) ?? "").trim() === "") return "";
-    const named = rowReferenceWords(one, names);
     written += whole.slice(at, one.start);
-    written += named.key === undefined ? named.words : `${named.key} ${named.words}`;
+    if ((names.get(one.reference) ?? "").trim() === "") {
+      written += unnamedWords(one.route);
+    } else {
+      const named = rowReferenceWords(one, names);
+      written += named.key === undefined ? named.words : `${named.key} ${named.words}`;
+    }
     at = one.end;
   }
   return `${written}${whole.slice(at)}`;
+}
+
+/**
+ * What a citing item's words draw for a reference the page's batched read names nothing for:
+ * an issue by its key alone, as the outline's row draws one whose title has not come
+ * (`rowReferenceWords`), and anything else by the page's word for its kind, as the list names a
+ * node it holds no words of (`NODE_REFERENCES_WORDS.kinds`): a question, a comment or a message
+ * by its own word, a block of any of them by its item's, and a document, a block of one or an
+ * agent's file by the word for a document. Never its address, its slug, its id or a document's
+ * file name.
+ */
+function unnamedWords(route: DispatchReferenceRoute): string {
+  switch (route.kind) {
+    case "ask":
+    case "comment":
+    case "message":
+      return NODE_REFERENCES_WORDS.kinds[route.kind];
+    case "document":
+      return NODE_REFERENCES_WORDS.kinds[route.item?.kind ?? "artifact"];
+    case "agent-artifact":
+    case "artifact":
+    case "plan":
+    case "spec":
+    case "verification":
+      return NODE_REFERENCES_WORDS.kinds.artifact;
+    default:
+      return route.key;
+  }
 }

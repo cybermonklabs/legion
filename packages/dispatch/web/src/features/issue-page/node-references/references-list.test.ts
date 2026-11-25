@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 
 import { graphNode } from "../../../__tests__/graph-fixture";
 import type { DisplayTree, GraphEdge } from "../../../api/types";
+import { buildDispatchReference } from "../../refs/routes";
+import { NODE_REFERENCES_WORDS } from "../page-words";
 import { issueItemWords, referenceRows } from "./references-list";
 
 const AT = "2026-11-15T10:00:00Z";
@@ -229,6 +231,61 @@ test("a citing item is named by all of its words, with no cut", () => {
     }),
   ]);
   expect(rows[0]?.words).toBe(paragraphs.join(" "));
+});
+
+// A citing comment's words cite two nodes by their bare addresses: a comment the page's batched
+// read names, and a question it names nothing for, as for a node no outline node cites. The row
+// draws every word of the citing comment, the named comment by its name, and the question by the
+// page's word for a question, never by its address. It drew the citing comment by its kind's word
+// alone where any reference in its words had no name.
+test("a citing item whose words cite a named node and one with no name draws all its words, the second by its kind's word", () => {
+  const named = buildDispatchReference({ id: "c-2", key: "LAY-2", kind: "comment" });
+  const unnamed = buildDispatchReference({ id: "a-3", key: "LAY-2", kind: "ask" });
+  const text = `Compare ${named} with ${unnamed} before the review.`;
+  const words = commentWords({ "c-1": reading(text) });
+  const rows = referenceRows(
+    words,
+    [
+      edge({
+        excerpt: text,
+        id: "c-1",
+        kind: "mentions",
+        nodeKind: "comment",
+        ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
+      }),
+    ],
+    new Map([[named, "The rail follows the statement"]])
+  );
+  const line = rows[0]?.words ?? "";
+  expect(line).toBe(
+    `Compare The rail follows the statement with ${NODE_REFERENCES_WORDS.kinds.ask} before the review.`
+  );
+  expect(line, "the row draws the unnamed question's address").not.toContain(unnamed);
+  expect(line, "the row draws the unnamed question's id").not.toContain("a-3");
+});
+
+// A citing comment's words cite a question of a project document by its bare address, which the
+// page's batched read names nothing for. The row draws the question by the page's word for a
+// question, as it draws an issue's question, never by its address. It drew it by the word for a
+// document, the document the question is asked on.
+test("a citing item whose words cite a project document's question with no name draws it by the word for a question", () => {
+  const unnamed = buildDispatchReference({
+    item: { id: "a-4", kind: "ask" },
+    kind: "document",
+    project: "LAY",
+    slug: "design",
+  });
+  const text = `Answer ${unnamed} before the review.`;
+  const rows = referenceRows(commentWords({ "c-1": reading(text) }), [
+    edge({
+      excerpt: text,
+      id: "c-1",
+      kind: "mentions",
+      nodeKind: "comment",
+      ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
+    }),
+  ]);
+  expect(rows[0]?.words).toBe(`Answer ${NODE_REFERENCES_WORDS.kinds.ask} before the review.`);
 });
 
 test("a node the read carries no words and no address of is still one row", () => {

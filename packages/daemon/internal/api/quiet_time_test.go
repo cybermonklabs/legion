@@ -106,9 +106,9 @@ func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
 		t.Fatalf("quietTimeContract = %d, want %d, the contract whose entry in version.go added each issue's measure of its tree's quiet time",
 			quietTimeContract, addedQuietTime)
 	}
-	if quietTimeContract > DaemonAPIVersion {
+	if quietTimeContract > DaemonAPIVersion() {
 		t.Fatalf("quietTimeContract = %d, above DaemonAPIVersion %d: no caller could be served the fields",
-			quietTimeContract, DaemonAPIVersion)
+			quietTimeContract, DaemonAPIVersion())
 	}
 }
 

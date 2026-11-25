@@ -435,9 +435,10 @@ export function historyDownTo(
  * adds runs under it, and moves no file of a run drawn. A newer upload within a minute of the
  * newest run's newest upload joins that run and splits off its uploads more than a minute older
  * than itself into a run of their own, and the panel draws the newer part on under the key the
- * run had (`IssueHistory.tsx`). A run lists its files newest first, as the history lists every
- * entry, and is named by its newest upload, so an older page that extends it adds files under
- * the ones the reader is on and leaves its name: the entry is neither moved nor drawn anew.
+ * run had (`history-entries.tsx`'s `runKeys`). A run lists its files newest first, as the history
+ * lists every entry, and is named by its newest upload, so an older page that extends it adds
+ * files under the ones the reader is on and leaves its name: the entry is neither moved nor drawn
+ * anew.
  */
 function uploadRuns(
   uploads: readonly { readonly event: DispatchEvent; readonly file: UploadedFile }[]
