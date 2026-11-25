@@ -32,6 +32,7 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 	"maps"
 	"os"
@@ -169,16 +170,11 @@ func main() {
 				stack = append(stack, n)
 				if failure, checked := handoff(pkg.TypesInfo, n, tokenSource); checked {
 					handoffs++
-					pos := pkg.Fset.Position(n.Pos())
-					rel, err := filepath.Rel(root, pos.Filename)
-					if err != nil {
-						rel = pos.Filename
-					}
 					verdict := "ok"
 					if failure != "" {
 						verdict, failed = "FAIL", failed+1
 					}
-					lines = append(lines, fmt.Sprintf("%s\t%s:%d:%d\ttoken source or HTTP client handed to another module\t%s", verdict, rel, pos.Line, pos.Column, cmp.Or(failure, "a token source the boundary made, or a client RefusalClient made")))
+					lines = append(lines, fmt.Sprintf("%s\t%s\ttoken source or HTTP client handed to another module\t%s", verdict, listed(pkg.Fset, root, n.Pos()), cmp.Or(failure, "a token source the boundary made, or a client RefusalClient made")))
 				}
 				id, ok := n.(*ast.Ident)
 				if !ok {
@@ -194,11 +190,6 @@ func main() {
 				}
 				refs++
 				fileRefs[name]++
-				pos := pkg.Fset.Position(id.Pos())
-				rel, err := filepath.Rel(root, pos.Filename)
-				if err != nil {
-					rel = pos.Filename
-				}
 				verdict, why := "ok", "called across redact.OAuth2"
 				scoped := throughScope(pkg.TypesInfo, stack)
 				switch {
@@ -220,7 +211,7 @@ func main() {
 				if via != "" {
 					why += "; called through " + via
 				}
-				lines = append(lines, fmt.Sprintf("%s\t%s:%d:%d\t%s\t%s", verdict, rel, pos.Line, pos.Column, key, why))
+				lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s", verdict, listed(pkg.Fset, root, id.Pos()), key, why))
 				return true
 			})
 		}
@@ -256,6 +247,17 @@ func main() {
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// listed is p as a line of the listing names it: its file relative to root where filepath.Rel can
+// make it so, its line and its column.
+func listed(fset *token.FileSet, root string, p token.Pos) string {
+	pos := fset.Position(p)
+	rel, err := filepath.Rel(root, pos.Filename)
+	if err != nil {
+		rel = pos.Filename
+	}
+	return fmt.Sprintf("%s:%d:%d", rel, pos.Line, pos.Column)
 }
 
 // httpClientKind is the kind of a library function or method that answers an HTTP client or
