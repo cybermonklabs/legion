@@ -910,7 +910,8 @@ export class EnvoyApiError extends Error {
     } catch {
       // A body that is not JSON is no error of the listener's: the message names it below.
     }
-    const parsed = ErrorWireSchema.safeParse(body).data;
+    const result = ErrorWireSchema.safeParse(body);
+    const parsed = result.success ? result.data : undefined;
     const tokens = shown.tokens ?? "";
     const carried = typeof tokens === "string" ? [tokens] : [...tokens];
     const said = (field: string): string => redactRemoteText(field, carried);
