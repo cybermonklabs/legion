@@ -55,7 +55,7 @@ func (r *intakeRig) handBacksOf() map[uint64]int {
 // TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt: R3 applies no message of a daemon the
 // setting named before, and a message holds the durable's ack floor for about 11 minutes at the
 // most. A write of the setting that names another daemon ends the hold of the message that holds
-// the project's owed read, whatever store that message is of (released_holder): the message is
+// the project's owed read, whatever store that message is of (released_holders): the message is
 // finished unapplied at its next delivery, holds no read and makes none, and its store is marked as
 // no daemon of the project. INFRA's setting names B, which never answers: each read of it waits out
 // the client's window, readWindow, and moves the intake's clock RequestTimeout on, so a read that
@@ -111,7 +111,7 @@ func TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt(t *testing.T) {
 		if after := rig.handBacksOf()[held] - atWrite; after > 1 {
 			t.Errorf("the held message at %d went back %d more times after the write naming %s, want at most the one in flight at the write", held, after, name)
 		}
-		if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.foreignStateIDs, marks) || c.releasedHolder != nil {
+		if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.foreignStateIDs, marks) || len(c.releasedHolders) != 0 {
 			t.Errorf("INFRA's cursor after the write naming %s is %s, want the stores %v marked as no daemon of INFRA and no message to release", name, c, marks)
 		}
 	}
@@ -153,7 +153,7 @@ func TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt(t *testing.T) {
 // stops answering after its good starting read at 10: each read of it waits out the client's
 // window and moves the intake's clock RequestTimeout on. A gap's message at 12 holds the owed read.
 // The setting then names a second URL that serves INFRA's own store at 13: the daemon moved. The
-// write ends the message's hold (released_holder), and the write's starting read of the second URL
+// write ends the message's hold (released_holders), and the write's starting read of the second URL
 // is good, gives the cursor the store and clears its record (previous_state_id). The held message
 // is judged at its next delivery: it is finished unapplied, writes nothing at or below the read's
 // 13, and its store, the cursor's own, is not marked as no daemon of INFRA.
@@ -187,7 +187,7 @@ func TestAHeldMessageOfTheStoreASettingNamedBeforeWritesNothingWhenTheNewURLServ
 		return fmt.Sprintf("the write's starting read of the URL the daemon moved to is not recorded: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
 	})
 	if c := cursorOf(t, rig.database, "INFRA"); c.stateID == nil || *c.stateID != rigStateID || c.previousStateID != nil || len(c.foreignStateIDs) != 0 ||
-		c.releasedHolder != nil || c.readOwed || c.readHolder != nil {
+		len(c.releasedHolders) != 0 || c.readOwed || c.readHolder != nil {
 		t.Errorf("INFRA's cursor is %s, want it at the read's 13 in the store %s, no store recorded or marked, no message to release, nothing owed and no holder", c, rigStateID)
 	}
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) || !slices.Contains(got, `"implementing"`) {
@@ -199,6 +199,131 @@ func TestAHeldMessageOfTheStoreASettingNamedBeforeWritesNothingWhenTheNewURLServ
 	}
 	if served := relocated.served(); served != 1 {
 		t.Errorf("the URL the daemon moved to served %d reads, want the write's starting read alone", served)
+	}
+}
+
+// TestASecondWriteOfAnotherDaemonKeepsTheReleaseOfAMessageStillOut: R3-i bounds how long one
+// message holds the durable's ack floor at stateMaxHolds hand-backs, about 11 minutes, and a write
+// of the setting that names another daemon ends the hold of the message that holds the project's
+// owed read: the cursor records that message as released until it comes back
+// (released_holders), and at its next delivery it is finished unapplied, holds no read and makes
+// none. INFRA's setting names A, which refuses every read, so no read gives the cursor a store and
+// no write records one. A's message H1 holds the read that A's failed starting read left owed,
+// which is not due yet. A write naming B ends H1's hold while H1 waits out its hand-back. B's
+// message H2 then holds B's starting read, which is not due either, and a write naming C ends
+// H2's hold before H1 has come back. The cursor records both, H1 first. At their next deliveries
+// both are finished unapplied, each logged once with its own store (writeReleasedLine), neither
+// goes back to the stream again or makes a read, and the record is empty after. C's starting read
+// is made once, by the call that a write's wake deferred to the end of the minute, and no message
+// of A or B is applied.
+//
+// H1 is still out when the write naming C lands by construction, not by a race. The test sets the
+// intake's clock left before A's next read is due, so H1 goes back to the stream for about left,
+// the time until that read is due, and the two writes and H2's hold come well inside it. B's
+// starting read is due at that same moment, since whole reads of one project start ReadRetryAfter
+// apart whatever the setting names. So H1, H2 and the deferred call all come back at about the end
+// of left, in no fixed order, and the test asserts no order among them.
+//
+// The test catches a cursor that keeps one released holder: the write naming C records H2 over H1,
+// and H1's next delivery is judged as any message's. At 8a18f054 the cursor kept one
+// (released_holder): the write naming C recorded H2 over H1, so H1 was not released and was judged
+// as any message of another store, making C's starting read or holding a store read of C from a
+// count of 1.
+func TestASecondWriteOfAnotherDaemonKeepsTheReleaseOfAMessageStillOut(t *testing.T) {
+	const aRun, aStore = "d5a8c3e1-9f2b-4d76-8a0e-3b7c1f6d2e94", "2f9d6b3a-8e1c-4a57-b6d0-9c4e7a1f3b82"
+	// left is how long before A's next read is due H1 goes back to the stream.
+	const left = 15 * time.Second
+	rig := newIntakeRig(t)
+	a := newFakeDaemon(t, "")
+	a.refuses(http.StatusServiceUnavailable)
+	seedLegionProject(t, rig.database, "INFRA", a.URL)
+	rig.start()
+	rig.awaitWholeReads(1)
+	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[0], ReadReasonStart, false)
+	due := lastReadStartedAt(t, rig, "INFRA").Add(ReadRetryAfter)
+	rig.clock.advance(due.Add(-left).Sub(rig.clock.now()))
+
+	// hold has the daemon named name publish a message of store under run, waits for that message
+	// to go back to the stream holding INFRA's owed read, and answers its stream sequence.
+	hold := func(name, run, store string) uint64 {
+		t.Helper()
+		rig.publishIn("INFRA", run, store, time.Now().UTC().Truncate(time.Microsecond), false, change(1, "INFRA-1", moved("phase", "merging")))
+		held := rig.lastStreamSeq()
+		rig.waitFor(time.Minute, func() bool { return rig.handBacksOf()[held] >= 1 }, func() string {
+			return fmt.Sprintf("%s's message never went back to the stream holding INFRA's read: %v", name, rig.logRecords(heldLine))
+		})
+		return held
+	}
+	// write names named in INFRA's setting, with the write's wake, and answers the messages that
+	// INFRA's cursor records as released after the write.
+	write := func(name string, named *fakeDaemon) []int64 {
+		t.Helper()
+		if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+			t.Fatalf("point INFRA at %s: %v", name, err)
+		}
+		released := cursorOf(t, rig.database, "INFRA").releasedHolders
+		rig.wake <- struct{}{}
+		return released
+	}
+
+	h1 := hold("A", aRun, aStore)
+	if delay, _ := rig.logRecords(heldLine)[0]["delay"].(float64); time.Duration(delay) > left || time.Duration(delay) < left-5*time.Second {
+		t.Fatalf("A's message went back to the stream for %s, want the %s or so left of the minute, so it is still out at the second write", time.Duration(delay), left)
+	}
+	b := newFakeDaemon(t, "")
+	b.refuses(http.StatusServiceUnavailable)
+	if released := write("B", b); !slices.Equal(released, []int64{int64(h1)}) {
+		t.Fatalf("INFRA's released holders after the write naming B are %v, want A's message at %d alone", released, h1)
+	}
+	h2 := hold("B", bRun, bStore)
+	c := newFakeDaemon(t, daemonStateIn("INFRA", 20, inPhase("implementing"), cStore, cRun))
+	if released, want := write("C", c), []int64{int64(h1), int64(h2)}; !slices.Equal(released, want) {
+		t.Errorf("INFRA's released holders after the write naming C are %v, want %v: A's message, still out, then B's", released, want)
+	}
+
+	rig.waitFor(time.Minute, func() bool { return len(cursorOf(t, rig.database, "INFRA").releasedHolders) == 0 }, func() string {
+		return fmt.Sprintf("INFRA's cursor still records released messages a minute after the write naming C: %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	testwait.Holds(5*time.Second, 25*time.Millisecond, func() bool { return len(rig.logRecords(writeReleasedLine)) >= 2 })
+	var released []string
+	for _, line := range rig.logRecords(writeReleasedLine) {
+		released = append(released, fmt.Sprintf("%v %v %v", line["streamSeq"], line["stateId"], line["level"]))
+	}
+	slices.Sort(released)
+	want := []string{fmt.Sprintf("%d %s INFO", h1, aStore), fmt.Sprintf("%d %s INFO", h2, bStore)}
+	slices.Sort(want)
+	if !slices.Equal(released, want) {
+		t.Errorf("the releases logged = %v, want %v: A's message and B's, each once at INFO with its store", released, want)
+	}
+	for name, held := range map[string]uint64{"A": h1, "B": h2} {
+		if handBacks := rig.handBacksOf()[held]; handBacks != 1 {
+			t.Errorf("%s's message at %d went back to the stream %d times, want once, before the write that ended its hold", name, held, handBacks)
+		}
+	}
+	rig.waitFor(time.Minute, rig.finishedThrough(h2), func() string {
+		return fmt.Sprintf("the released messages are not finished a minute after the write naming C: %+v", rig.consumerInfo())
+	})
+	rig.waitFor(20*time.Second, func() bool {
+		cur := cursorOf(t, rig.database, "INFRA")
+		return cur.stateID != nil && *cur.stateID == cStore
+	}, func() string {
+		return fmt.Sprintf("C's starting read is not recorded: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+
+	if cur := cursorOf(t, rig.database, "INFRA"); !slices.Equal(slices.Sorted(slices.Values(cur.foreignStateIDs)), slices.Sorted(slices.Values([]string{aStore, bStore}))) ||
+		len(cur.releasedHolders) != 0 || cur.readOwed || cur.readHolder != nil {
+		t.Errorf("INFRA's cursor is %s, want A's store and B's marked as no daemon of INFRA, no message recorded as released, nothing owed and no holder", cur)
+	}
+	if served := []int{a.served(), b.served(), c.served()}; !slices.Equal(served, []int{1, 0, 1}) {
+		t.Errorf("A, B and C served %v reads, want [1 0 1]: A's failed starting read and C's starting read alone, and no read of a released message", served)
+	}
+	if reads := wholeReadsOf(t, rig.database, "INFRA"); len(reads) != 2 {
+		t.Errorf("INFRA's whole reads are %v, want A's failed starting read and C's starting read alone", reads)
+	} else {
+		requireWholeRead(t, reads[1], ReadReasonStart, true)
+	}
+	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) {
+		t.Errorf("the phase's history is %v: a released message was applied", got)
 	}
 }
 

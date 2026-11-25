@@ -11,7 +11,6 @@ package legion
 // readPosition, Intake.position, lockPosition, lockCursor).
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -39,14 +38,19 @@ const holdAtLeast = time.Second
 // Intake.startingPoint), so neither adds a read to the hold. A write of the setting that names the
 // URL the setting named already leaves the holder and its count as they are, whether the cursor
 // follows that URL or no daemon yet, and one that names another URL ends the hold: the message is
-// acknowledged unapplied at its next delivery (settingWritten, cursor.releasedHolder,
+// acknowledged unapplied at its next delivery (settingWritten, cursor.releasedHolders,
 // outcomeReleased), and a message of the newly named daemon may hold the read from a count of 1.
-// A holder that has gone back stateMaxHolds times holds the read no more: that delivery is
+// The cursor records each message so released until it comes back, maxReleasedHolders at the
+// most. A holder that has gone back stateMaxHolds times holds the read no more: that delivery is
 // acknowledged, the cursor names no holder from then on (readAnswer.release), and the read stays
 // owed (ReadReasonRetry) for the project's next message, boot, settings change or take-over, which
 // makes it once it is due, as R3 makes every failed read. So each message holds the durable's ack
 // floor below it for about 11 minutes at the most, however many take-overs and writes of the
-// setting there are, and a take-over replays at most that long of messages (consumerConfig).
+// setting there are, and a take-over replays at most that long of messages (consumerConfig). One
+// case is past that bound: a write of another URL that ends a hold while maxReleasedHolders
+// messages released before it are all still out. The oldest record then goes, and that message is
+// judged as any message at its next delivery: it may hold a read again from a count of 1, for
+// about 11 minutes more.
 const stateMaxHolds = 10
 
 // owedRead is a whole read to make: the setting whose daemon it reads, the reason its legion_reads
@@ -168,17 +172,25 @@ type cursor struct {
 	previousStateID  *string
 	previousStateURL *string
 	foreignStateIDs  []string
-	// releasedHolder is the stream sequence of the message that held the owed read when a write of
-	// the setting that named another URL reset the cursor (settingWritten), whatever daemon the
-	// cursor followed, none included, and nil for none: that message is finished unapplied at its
-	// next delivery, which clears it (releases, endHold).
-	releasedHolder *int64
+	// releasedHolders is the stream sequence of each message whose hold of the owed read a write of
+	// the setting that named another URL ended (settingWritten), whatever daemon the cursor
+	// followed, none included, and which has not come back since: the newest last,
+	// maxReleasedHolders at the most, and empty, never nil, for none. Each is finished unapplied
+	// at its next delivery, which takes its own sequence out and no other (releases, endHold).
+	// Past maxReleasedHolders the oldest record goes (reset): its message is judged as any other.
+	releasedHolders []int64
 }
 
 // maxForeignStores is how many stores a cursor marks as no daemon of its project
 // (foreignStateIDs). Past it the oldest mark goes, and that store's next message makes one store
 // read again, at most once a ReadRetryAfter.
 const maxForeignStores = 8
+
+// maxReleasedHolders is how many messages a cursor records as released (releasedHolders): each a
+// message whose hold a write of another URL ended, until it comes back. Past it the oldest record
+// goes (reset). That message is judged as any message at its next delivery, which applies nothing
+// of a store other than the cursor's, and it may hold a read again from a count of 1.
+const maxReleasedHolders = 8
 
 // maxSkippedStores is how many stores a cursor keeps the highest sequence skipped past
 // stateMaxWaiting of (skippedStateIDs). During a whole read that may verify a store the cursor does
@@ -444,14 +456,14 @@ func (c cursor) marking(stateID string) []string {
 	if c.holdsStore(stateID) || c.isPrevious(stateID) {
 		return without(c.foreignStateIDs, stateID)
 	}
-	return marked(c.foreignStateIDs, stateID)
+	return marked(c.foreignStateIDs, stateID, maxForeignStores)
 }
 
-// releases reports whether the message at stream sequence seq is the one whose hold of the owed
-// read a write of the setting ended (releasedHolder). 0, a message with no JetStream metadata, is
-// none.
+// releases reports whether the message at stream sequence seq is one whose hold of the owed read a
+// write of the setting ended and which has not come back since (releasedHolders). 0, a message
+// with no JetStream metadata, is none.
 func (c cursor) releases(seq int64) bool {
-	return seq != 0 && c.releasedHolder != nil && *c.releasedHolder == seq
+	return seq != 0 && slices.Contains(c.releasedHolders, seq)
 }
 
 // heldBy reports whether the message at stream sequence seq is the one that holds the owed read
@@ -505,21 +517,22 @@ func (c cursor) skips(stateID string, seq int64) (stateIDs []string, seqs []int6
 	return stateIDs, seqs
 }
 
-// marked is stores, the stores a cursor marks as no daemon of its project (foreignStateIDs), with
-// stateID marked as the newest: at the end, and once. Past maxForeignStores the oldest marks go.
-func marked(stores []string, stateID string) []string {
-	kept := without(stores, stateID)
-	kept = append(kept, stateID)
-	if n := len(kept); n > maxForeignStores {
-		kept = kept[n-maxForeignStores:]
+// marked is values with value as the newest: at the end, and once. Past limit the oldest go. A
+// cursor so keeps the stores it marks as no daemon of its project (foreignStateIDs,
+// maxForeignStores) and the messages it records as released (releasedHolders, maxReleasedHolders).
+func marked[T comparable](values []T, value T, limit int) []T {
+	kept := without(values, value)
+	kept = append(kept, value)
+	if n := len(kept); n > limit {
+		kept = kept[n-limit:]
 	}
 	return kept
 }
 
 // without is values without value, in their order and never nil: the array columns
-// foreign_state_ids and read_reasons are not null.
-func without(values []string, value string) []string {
-	kept := make([]string, 0, len(values)+1)
+// foreign_state_ids, released_holders and read_reasons are not null.
+func without[T comparable](values []T, value T) []T {
+	kept := make([]T, 0, len(values)+1)
 	for _, one := range values {
 		if one != value {
 			kept = append(kept, one)
@@ -534,12 +547,12 @@ func without(values []string, value string) []string {
 // array columns are not null. It is the cursor of a project with no row (scanCursor), and the
 // base of the cursor that a write of the setting resets a row to (cursor.reset).
 func emptyCursor() cursor {
-	return cursor{readReasons: []string{}, foreignStateIDs: []string{}, skippedStateIDs: []string{}, skippedSeqs: []int64{}}
+	return cursor{readReasons: []string{}, foreignStateIDs: []string{}, releasedHolders: []int64{}, skippedStateIDs: []string{}, skippedSeqs: []int64{}}
 }
 
 // cursorColumns is the legion_event_cursors select list scanCursor reads, in scan order.
 const cursorColumns = `state_url, run, last_seq, read_reasons, last_read_started_at, read_holder, read_holds, state_id,
-	schema_version, previous_state_id, previous_state_url, foreign_state_ids, released_holder, skipped_state_ids, skipped_seqs`
+	schema_version, previous_state_id, previous_state_url, foreign_state_ids, released_holders, skipped_state_ids, skipped_seqs`
 
 // scanCursor decodes one cursorColumns row, or no row as a cursor that does not exist
 // (emptyCursor). The array columns are not null, so a row's arrays are never nil either. So no
@@ -549,7 +562,7 @@ func scanCursor(row pgx.Row) (cursor, error) {
 	current := cursor{exists: true}
 	err := row.Scan(&current.stateURL, &current.run, &current.lastSeq, &current.readReasons, &current.lastReadStartedAt,
 		&current.readHolder, &current.readHolds, &current.stateID, &current.schemaVersion, &current.previousStateID,
-		&current.previousStateURL, &current.foreignStateIDs, &current.releasedHolder, &current.skippedStateIDs, &current.skippedSeqs)
+		&current.previousStateURL, &current.foreignStateIDs, &current.releasedHolders, &current.skippedStateIDs, &current.skippedSeqs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return emptyCursor(), nil
 	}
@@ -564,7 +577,7 @@ func scanCursor(row pgx.Row) (cursor, error) {
 func writeCursor(ctx context.Context, tx pgx.Tx, project string, c cursor) error {
 	_, err := tx.Exec(ctx, `
 		insert into legion_event_cursors (project, state_url, run, last_seq, read_reasons, last_read_started_at, read_holder,
-			read_holds, state_id, schema_version, previous_state_id, previous_state_url, foreign_state_ids, released_holder,
+			read_holds, state_id, schema_version, previous_state_id, previous_state_url, foreign_state_ids, released_holders,
 			skipped_state_ids, skipped_seqs)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		on conflict (project) do update set
@@ -574,10 +587,10 @@ func writeCursor(ctx context.Context, tx pgx.Tx, project string, c cursor) error
 			read_holder = excluded.read_holder, read_holds = excluded.read_holds, state_id = excluded.state_id,
 			schema_version = excluded.schema_version, previous_state_id = excluded.previous_state_id,
 			previous_state_url = excluded.previous_state_url, foreign_state_ids = excluded.foreign_state_ids,
-			released_holder = excluded.released_holder, skipped_state_ids = excluded.skipped_state_ids,
+			released_holders = excluded.released_holders, skipped_state_ids = excluded.skipped_state_ids,
 			skipped_seqs = excluded.skipped_seqs
 	`, project, c.stateURL, c.run, c.lastSeq, c.readReasons, c.lastReadStartedAt, c.readHolder, c.readHolds, c.stateID,
-		c.schemaVersion, c.previousStateID, c.previousStateURL, c.foreignStateIDs, c.releasedHolder, c.skippedStateIDs,
+		c.schemaVersion, c.previousStateID, c.previousStateURL, c.foreignStateIDs, c.releasedHolders, c.skippedStateIDs,
 		c.skippedSeqs)
 	return err
 }
@@ -605,16 +618,21 @@ func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL strin
 // reset is the cursor that a write of the setting naming stateURL resets c to (resetCursor): a
 // cursor that follows no daemon, with every column at its empty value (emptyCursor) but these.
 //   - lastReadStartedAt is c's.
-//   - releasedHolder is c's readHolder where a message held the read, and c's releasedHolder
-//     otherwise. resetCursor resets a cursor that names a holder only for a write of another URL
-//     than the setting named, which ends that hold whatever daemon c followed, none included.
+//   - releasedHolders is c's with c's readHolder added as the newest, where a message held the
+//     read, and c's otherwise. resetCursor resets a cursor that names a holder only for a write of
+//     another URL than the setting named, which ends that hold whatever daemon c followed, none
+//     included. Past maxReleasedHolders the oldest record goes (marked): that message is judged as
+//     any message at its next delivery.
 //   - previousStateID and previousStateURL are none where the write names the URL recorded there.
 //     They are c's store and URL where c followed a URL other than the write's and held a store,
 //     and c's own pair otherwise.
 func (c cursor) reset(stateURL string) cursor {
 	next := emptyCursor()
 	next.exists, next.lastReadStartedAt = true, c.lastReadStartedAt
-	next.releasedHolder = cmp.Or(c.readHolder, c.releasedHolder)
+	next.releasedHolders = c.releasedHolders
+	if c.readHolder != nil {
+		next.releasedHolders = marked(c.releasedHolders, *c.readHolder, maxReleasedHolders)
+	}
 	next.previousStateID, next.previousStateURL = c.previousStateID, c.previousStateURL
 	switch {
 	case c.previousStateURL != nil && *c.previousStateURL == stateURL:
@@ -695,7 +713,7 @@ func lockCursor(ctx context.Context, tx pgx.Tx, project string) (stateURL string
 // afterRead is the cursor that read, made for owed, leaves (recordWhole). c is the cursor as the
 // read's record finds it, and read.stateURL is the setting's URL: the cursor left follows the
 // setting's daemon. Every column that the rules below do not name keeps c's value,
-// released_holder among them.
+// released_holders among them.
 //
 // Every read clears the reasons the cursor owed when it was decided (owed.clears). A failed one
 // owes the read for retry (ReadReasonRetry), and after it each reason that a message added while

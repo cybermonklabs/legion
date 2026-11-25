@@ -658,7 +658,7 @@ func TestASettingDeletedDuringAHoldDropsTheHeldMessage(t *testing.T) {
 // after a failed read) or no daemon yet (S0h, a message that holds the starting read, which was not
 // due when it came). A write of the setting's own URL leaves that cursor exactly as it was, every
 // column, and keeps the held part. A write of another URL, made on that same cursor written again,
-// resets it, deletes the held part and records 42 as released (released_holder), in both cases, so
+// resets it, deletes the held part and records 42 as released (released_holders), in both cases, so
 // 42 is finished unapplied at its next delivery.
 //
 // At 0a0ea48a the write of the same URL reset the cursor that followed no daemon yet, dropping 42
@@ -727,13 +727,61 @@ func TestAWriteOfTheSameURLKeepsTheHoldAndAWriteOfAnotherURLRecordsItsRelease(t 
 			held()
 			write(anotherURL)
 			c := cursorOf(t, database, "INFRA")
-			if c.readOwed || c.readHolder != nil || c.readHolds != 0 || c.releasedHolder == nil || *c.releasedHolder != 42 {
+			if c.readOwed || c.readHolder != nil || c.readHolds != 0 || !slices.Equal(c.releasedHolders, []int64{42}) {
 				t.Errorf("INFRA's cursor after a write of another URL is %s, want it reset, nothing owed, no holder and no hand-back counted, with 42 recorded as released", c)
 			}
 			if parts := heldPartCount(t, database, "INFRA"); parts != 0 {
 				t.Errorf("%d parts held after a write of another URL, want none", parts)
 			}
 		})
+	}
+}
+
+// TestTheReleasedHoldersKeepTheNewestEight: R3-i bounds how long one message holds the durable's
+// ack floor at stateMaxHolds hand-backs, about 11 minutes. A write of the setting that names
+// another URL ends the hold of the message that holds the owed read, and the cursor records that
+// message as released until it comes back (released_holders), the newest last, maxReleasedHolders
+// at the most. The test writes INFRA's cursor by hand: it follows the setting's URL, owes the read
+// for retry and names stream sequence 109 as its holder, gone back twice, and it records the eight
+// messages 101 to 108 as released, none of which has come back. A write of another URL, the ninth
+// release, records 109 as the newest and drops the oldest record, 101: the cursor then records 102
+// to 109. A write of a third URL after it finds no holder and keeps those eight as they are.
+//
+// The test catches a cursor that keeps one released holder, one that drops the earlier records
+// when it adds one, and one that records more than eight. At 8a18f054 the cursor kept one
+// (released_holder): each write of another URL that found a holder recorded it over the one
+// before, so after this write the cursor would record 109 alone, and 102 to 108 would be judged as
+// any message at their next deliveries.
+func TestTheReleasedHoldersKeepTheNewestEight(t *testing.T) {
+	const settingURL, anotherURL, thirdURL = "http://127.0.0.1:1", "http://another-daemon.example", "http://third-daemon.example"
+	const holder = 101 + maxReleasedHolders
+	database, _ := configured(t, settingURL)
+	released := make([]int64, 0, maxReleasedHolders)
+	for i := range int64(maxReleasedHolders) {
+		released = append(released, 101+i)
+	}
+	if _, err := database.Pool.Exec(t.Context(), `
+		insert into legion_event_cursors (project, state_url, read_reasons, last_read_started_at, read_holder, read_holds, released_holders)
+		values ('INFRA', $1, '{retry}', now() - interval '10 seconds', $2, 2, $3)
+	`, settingURL, holder, released); err != nil {
+		t.Fatalf("write INFRA's cursor: %v", err)
+	}
+	write := func(stateURL string) {
+		t.Helper()
+		if _, err := PutSettings(t.Context(), database.Pool, "INFRA", stateURL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+			t.Fatalf("write INFRA's setting naming %s: %v", stateURL, err)
+		}
+	}
+
+	write(anotherURL)
+	want := append(slices.Clone(released[1:]), holder)
+	if c := cursorOf(t, database, "INFRA"); !slices.Equal(c.releasedHolders, want) || c.readHolder != nil || c.readHolds != 0 || c.readOwed {
+		t.Errorf("INFRA's cursor after a ninth write of another URL that found a holder is %s, want %v recorded as released: the newest %d, the oldest, %d, dropped and the holder %d last; and no holder, no hand-back counted and nothing owed",
+			c, want, maxReleasedHolders, released[0], holder)
+	}
+	write(thirdURL)
+	if c := cursorOf(t, database, "INFRA"); !slices.Equal(c.releasedHolders, want) {
+		t.Errorf("INFRA's cursor after a write of a third URL that found no holder is %s, want the %v recorded before it kept", c, want)
 	}
 }
 
@@ -794,7 +842,7 @@ func TestTwoFirstWritesOfOneURLTakeTurnsAndTheSecondKeepsTheHold(t *testing.T) {
 		t.Fatalf("write LINUX's setting a second time with the same URL: %v", err)
 	}
 	if c := cursorOf(t, database, "LINUX"); c.stateURL != "" || c.readHolder == nil || *c.readHolder != 42 || c.readHolds != 3 ||
-		!slices.Equal(c.readReasons, []string{ReadReasonStart}) || c.releasedHolder != nil {
+		!slices.Equal(c.readReasons, []string{ReadReasonStart}) || len(c.releasedHolders) != 0 {
 		t.Errorf("LINUX's cursor after the second write of the URL the first wrote is %s, want it as the first left it: following no daemon yet, the starting read owed and held by 42, gone back 3 times, and no release recorded", c)
 	}
 }

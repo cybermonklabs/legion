@@ -490,13 +490,13 @@ type cursorRow struct {
 	previousStateID  *string
 	previousStateURL *string
 	foreignStateIDs  []string
-	releasedHolder   *int64
+	releasedHolders  []int64
 }
 
 func (r cursorRow) String() string {
-	return fmt.Sprintf("{stateUrl=%q lastSeq=%s readOwed=%v readReasons=%v readHolder=%s readHolds=%d run=%s stateId=%s previousStateId=%s previousStateUrl=%s foreignStateIds=%v releasedHolder=%s}",
+	return fmt.Sprintf("{stateUrl=%q lastSeq=%s readOwed=%v readReasons=%v readHolder=%s readHolds=%d run=%s stateId=%s previousStateId=%s previousStateUrl=%s foreignStateIds=%v releasedHolders=%v}",
 		r.stateURL, orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.readHolder), r.readHolds, orNone(r.run), orNone(r.stateID), orNone(r.previousStateID),
-		orNone(r.previousStateURL), r.foreignStateIDs, orNone(r.releasedHolder))
+		orNone(r.previousStateURL), r.foreignStateIDs, r.releasedHolders)
 }
 
 func cursorOf(t *testing.T, database *store.Store, project string) cursorRow {
@@ -504,10 +504,10 @@ func cursorOf(t *testing.T, database *store.Store, project string) cursorRow {
 	var row cursorRow
 	if err := database.Pool.QueryRow(context.Background(),
 		`select state_url, last_seq, read_owed, run, state_id, read_reasons, read_holder, read_holds, previous_state_id,
-			previous_state_url, foreign_state_ids, released_holder
+			previous_state_url, foreign_state_ids, released_holders
 		from legion_event_cursors where project = $1`, project).Scan(
 		&row.stateURL, &row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons, &row.readHolder, &row.readHolds,
-		&row.previousStateID, &row.previousStateURL, &row.foreignStateIDs, &row.releasedHolder); err != nil {
+		&row.previousStateID, &row.previousStateURL, &row.foreignStateIDs, &row.releasedHolders); err != nil {
 		t.Fatalf("read the cursor of %s: %v", project, err)
 	}
 	return row

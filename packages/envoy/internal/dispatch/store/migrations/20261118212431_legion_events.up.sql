@@ -38,7 +38,7 @@
 --   row naming another daemon than the setting is no starting point, so the intake reads the
 --   setting's daemon whole. A write of the setting (legion.PutSettings) sets it to '', which no
 --   setting names, and every column below but last_read_started_at, previous_state_id,
---   previous_state_url and released_holder to its empty value: that is what makes a PUT of the
+--   previous_state_url and released_holders to its empty value: that is what makes a PUT of the
 --   same URL a fresh whole read, made once a minute has passed since the project's newest whole
 --   read began. A write of the URL the setting names already while a message holds the owed read
 --   (read_holder) leaves the row as it is instead, whether the row follows that URL or '': that
@@ -117,7 +117,7 @@
 -- - foreign_state_ids is each store that is no daemon of the project, the newest last, 8 at the
 --   most (legion's maxForeignStores): past 8 the oldest goes. A good whole read made for a message
 --   of another store (`store`) that finds state_id unchanged adds that message's store, and so
---   does the message whose hold of the owed read released_holder records, at its next delivery,
+--   does each message whose hold of the owed read released_holders records, at its next delivery,
 --   unless its store is previous_state_id or state_id. A good read whose state_id is in it takes
 --   that store out, and every write of the setting that resets the row empties it, since a store
 --   in it is only no daemon that the setting named before the write. The intake treats a message
@@ -130,14 +130,18 @@
 --   URL in another store a read verified, calls for a `store` read, so a daemon that a redeploy
 --   started behind that URL in such a store is found again. A read that finds the row's store
 --   unchanged leaves the mark, and never marks previous_state_id. Empty for none.
--- - released_holder is the stream sequence of the state message that held the owed read when a
---   write of the setting that names another URL reset the row, whatever state_url the row held, ''
---   included. Such a write sets it to read_holder where read_holder is set, and every
---   other write keeps it. At that message's next delivery the intake acknowledges it unapplied, it
---   holds no read, its store goes into foreign_state_ids as above, and the intake clears this
---   column. So a write that names another URL ends the hold of the message before it within one
---   read's 60 s and a second, and a message of the newly named daemon may hold the read from a
---   count of 1. Null for none.
+-- - released_holders is the stream sequence of each state message whose hold of the owed read a
+--   write of the setting that names another URL ended, whatever state_url the row held, ''
+--   included, and which has not come back since: the newest last, 8 at the most (legion's
+--   maxReleasedHolders). Such a write adds read_holder as the newest where read_holder is set,
+--   and every other write keeps the array. At such a message's next delivery the intake
+--   acknowledges it unapplied, it holds no read, its store goes into foreign_state_ids as above,
+--   and the intake takes its sequence out of the array, and no other. So a write that names
+--   another URL ends the hold of the message before it within one read's 60 s and a second,
+--   however many such writes come before that message comes back, and a message of the newly
+--   named daemon may hold the read from a count of 1. Past 8 the oldest entry goes: its message
+--   is judged as any message at its next delivery, which applies nothing of a store other than
+--   state_id, and it can hold a read again from a count of 1. Empty for none.
 -- - skipped_state_ids and skipped_seqs are, pair by pair (the check holds them to one length), a
 --   store and the highest seq of a state message of that store that the intake acknowledged
 --   unapplied because it arrived while legion's stateMaxWaiting messages of the project waited,
@@ -215,7 +219,7 @@ create table legion_event_cursors (
   previous_state_id text,
   previous_state_url text,
   foreign_state_ids text[] not null default '{}',
-  released_holder bigint,
+  released_holders bigint[] not null default '{}',
   skipped_state_ids text[] not null default '{}',
   skipped_seqs bigint[] not null default '{}',
   check (cardinality(skipped_state_ids) = cardinality(skipped_seqs))

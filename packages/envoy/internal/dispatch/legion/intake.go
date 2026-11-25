@@ -179,8 +179,9 @@ const refusedLine = "legion intake: the database refuses a state message for goo
 const heldLine = "legion intake: a state message goes back to the stream until its project's owed whole read is due"
 
 // writeReleasedLine is the log line of a message whose hold of its project's owed whole read a
-// write of the project's Legion setting ended (cursor.releasedHolder), at INFO, on the one delivery
-// after the write that acknowledges it unapplied, naming its stream sequence and its store.
+// write of the project's Legion setting ended (cursor.releasedHolders), at INFO, on the one
+// delivery after the write that acknowledges it unapplied, naming its stream sequence and its
+// store.
 const writeReleasedLine = "legion intake: a write of the project's Legion setting ended a state message's hold of the owed whole read, so it is acknowledged unapplied"
 
 // releasedLine is the log line of a message that went back to the stream stateMaxHolds times
@@ -610,15 +611,17 @@ func (in *Intake) deliver(m delivery.HeldMessage) {
 	}
 }
 
-// endHold finishes, inside tx, the message whose hold of project's owed read a write of the
-// setting ended (cursor.releases): it clears released_holder, marks stateID, the message's store,
-// as no daemon of the project (foreign_state_ids, cursor.marking) unless it is the store the write
-// recorded or the cursor's own store, and commits. The message is acknowledged unapplied and holds
-// no read (outcomeReleased).
-func endHold(ctx context.Context, tx pgx.Tx, project string, current cursor, stateID string) (outcome, error) {
+// endHold finishes, inside tx, the message at stream sequence seq whose hold of project's owed read
+// a write of the setting ended (cursor.releases): it takes seq out of released_holders and keeps
+// every other message recorded there, each of which its own next delivery finishes; it marks
+// stateID, the message's store, as no daemon of the project (foreign_state_ids, cursor.marking)
+// unless it is the store the write recorded or the cursor's own store, and commits. current is the
+// cursor tx locked, so no other write of the row lands between. The message is acknowledged
+// unapplied and holds no read (outcomeReleased).
+func endHold(ctx context.Context, tx pgx.Tx, project string, current cursor, seq int64, stateID string) (outcome, error) {
 	if _, err := tx.Exec(ctx, `
-		update legion_event_cursors set released_holder = null, foreign_state_ids = $2 where project = $1
-	`, project, current.marking(stateID)); err != nil {
+		update legion_event_cursors set released_holders = $2, foreign_state_ids = $3 where project = $1
+	`, project, without(current.releasedHolders, seq), current.marking(stateID)); err != nil {
 		return outcomeDone, fmt.Errorf("end the hold of a state message of %s: %w", project, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1072,7 +1075,7 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 	}
 	if current.releases(attempt.seq) {
 		attempt.cursor = current
-		result, err := endHold(ctx, tx, project, current, message.StateID)
+		result, err := endHold(ctx, tx, project, current, attempt.seq, message.StateID)
 		return result, nil, err
 	}
 	held, err := heldParts(ctx, tx, project)

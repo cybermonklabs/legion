@@ -114,7 +114,7 @@ func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (ou
 	case !found:
 		return outcomeDropped, nil
 	case current.releases(attempt.seq):
-		return endHold(ctx, tx, project, current, message.StateID)
+		return endHold(ctx, tx, project, current, attempt.seq, message.StateID)
 	case current.drops(message, stateURL) && !in.readsNow(project) && !current.heldBy(attempt.seq):
 		return outcomeForgotten, nil
 	}

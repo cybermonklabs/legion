@@ -248,12 +248,15 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 //     a read makes its starting read when that minute ends (Intake.startingPoint). A mark says
 //     only that its store is no daemon the setting named before the write, so no mark outlives a
 //     write. A reset that finds a message holding the owed read comes only from a write of another
-//     URL, which ends that hold: it records the stream sequence of that message
-//     (released_holder), whatever daemon the cursor followed, none included. A reset that finds no
-//     holder keeps the one recorded already. The message so recorded is finished unapplied at its
-//     next delivery, which clears the record and marks the message's store as no daemon of the
-//     project, unless it is the store recorded below or the cursor's own (cursor.releases,
-//     endHold). A write that names another daemon records the store the cursor held with the URL
+//     URL, which ends that hold: it adds the stream sequence of that message to the messages
+//     recorded as released (released_holders), the newest last, whatever daemon the cursor
+//     followed, none included. A reset that finds no holder keeps those recorded already. Each
+//     message so recorded is finished unapplied at its next delivery, which takes its own record
+//     out and no other, and marks the message's store as no daemon of the project, unless it is
+//     the store recorded below or the cursor's own (cursor.releases, endHold). The cursor records
+//     maxReleasedHolders such messages at the most: past that the oldest record goes, and that
+//     message is judged as any message at its next delivery, so it may hold a read again from a
+//     count of 1. A write that names another daemon records the store the cursor held with the URL
 //     it followed, or keeps the pair recorded already where it held none, as the store of the
 //     daemon the setting named before (previous_state_id, previous_state_url): the intake
 //     finishes each message of that store unapplied (outcomeForgotten). A write of the URL
