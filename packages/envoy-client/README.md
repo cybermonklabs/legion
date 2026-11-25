@@ -1424,6 +1424,7 @@ environment. It sends the request with this session's broker token and a new DPo
 tool holds no credential and signs nothing.
 
 The proxy sends the method, the path, the query, the end-to-end headers and the body of a request.
+It adds the path of the request to the path of the Dispatch URL, and it does not decode the query.
 It does not copy `Host` or a hop-by-hop header, and it replaces `Authorization` and `DPoP`. It asks
 Dispatch for no content encoding (`Accept-Encoding: identity`). It gives back Dispatch's status,
 end-to-end headers and body as Dispatch sent them, a binary body included. An answer that carries
@@ -1513,7 +1514,7 @@ Dispatch's.
 | Answer | When |
 | --- | --- |
 | `400 PROXY_TARGET_REFUSED` | The request target names a host: `http://…` or `//…`. |
-| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use, where one exists. For a write that no `dispatch` command sends, the error says so. |
+| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use, where one exists. For a write that no `dispatch` command sends, the error says so. The proxy also refuses a target that holds a `#` or a control character, and a path with a `.` or `..` segment (plain or percent-encoded), a backslash, or `%2F` or `%5C` in either case: each can reach another route than the one the target names. |
 | `502 PROXY_TRADE_REFUSED` | The token has ended and the broker refused a new one. The error is in the broker's words, and the proxy sends nothing to Dispatch. |
 | `502 PROXY_DISPATCH_UNREACHABLE` | Dispatch did not answer. |
 

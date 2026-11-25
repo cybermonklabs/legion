@@ -465,7 +465,8 @@ the socket takes connections, with `DISPATCH_PROXY_SOCKET` set to the socket's p
 inherits the proxy's standard input, standard output and standard error. The proxy sends each
 request to the Dispatch server and the session that a `dispatch` command resolves in the same
 environment. It sends the request with the session's broker token and a new DPoP proof, so the
-tool holds no credential and signs nothing.
+tool holds no credential and signs nothing. It adds the path of the request to the path of the
+Dispatch URL, and it does not decode the query.
 
 The proxy gives back Dispatch's status, end-to-end headers and body as Dispatch sent them, a binary
 body included. An answer that carries `Transfer-Encoding` as well as `Content-Length` is the one
@@ -548,7 +549,7 @@ answers 403 or 404 itself, so each 403 and 404 is Dispatch's answer.
 | Answer | When |
 | --- | --- |
 | `400 PROXY_TARGET_REFUSED` | The request target names a host: `http://…` or `//…`. |
-| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use, where one exists. For a write that no `dispatch` command sends, the error says so. |
+| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use, where one exists. For a write that no `dispatch` command sends, the error says so. The proxy also refuses a target that holds a `#` or a control character, and a path with a `.` or `..` segment (plain or percent-encoded), a backslash, or `%2F` or `%5C` in either case: each can reach another route than the one the target names. |
 | `502 PROXY_TRADE_REFUSED` | The token has ended and the broker refused a new one. The error is in the broker's words, and the proxy sends nothing to Dispatch. |
 | `502 PROXY_DISPATCH_UNREACHABLE` | Dispatch did not answer. |
 

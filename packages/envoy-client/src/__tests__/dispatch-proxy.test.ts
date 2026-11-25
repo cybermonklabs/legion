@@ -1222,6 +1222,74 @@ test("sends no request whose target names a route its raw form does not: a # and
   expect((await finish(run)).code).toBe(0);
 }, 15_000);
 
+test("sends each target under the path of the Dispatch URL to that server, an @ and a // as data, and refuses a #, a percent-encoded / or \\ and a control character with 405 PROXY_METHOD_REFUSED", async () => {
+  const broker = standInBroker({ kind: "token", seconds: 3600 });
+  const dispatch = standInDispatch();
+  // A Dispatch URL with a path of its own: the proxy sends the path of each request under it.
+  const run = await startedProxy(podProxyEnvironment(broker.url, `${dispatch.url}/dispatch`));
+  const body = JSON.stringify({ body: "Posted under the path of the Dispatch URL." });
+  function keyedComment(target: string): string {
+    return [
+      `POST ${target} HTTP/1.1`,
+      "Host: dispatch",
+      "Content-Type: application/json",
+      `Idempotency-Key: ${randomUUID()}`,
+      `Content-Length: ${Buffer.byteLength(body)}`,
+      "Connection: close",
+      "",
+      body,
+    ].join("\r\n");
+  }
+
+  // A read whose query holds a %2F, a read whose @ and // are data in its path and its query, and
+  // the keyed comment POST. The stand-in serves no route under /dispatch, so each answer is its
+  // own 404.
+  const sent = [
+    rawGet("/api/v1/issues?project=DSP&q=a%2Fb"),
+    rawGet("/api/@evil.example/v1?next=//evil.example/x&at=user@evil.example"),
+    keyedComment(COMMENTS),
+  ];
+  for (const request of sent) {
+    expect(refusalOf(await rawRequest(run.socket, request)).code).toBe("NOT_FOUND");
+  }
+  expect(dispatch.received.map((asked) => [asked.method, asked.path, asked.query])).toEqual([
+    ["GET", "/dispatch/api/v1/issues", "?project=DSP&q=a%2Fb"],
+    ["GET", "/dispatch/api/@evil.example/v1", "?next=//evil.example/x&at=user@evil.example"],
+    ["POST", `/dispatch${COMMENTS}`, ""],
+  ]);
+  // Each reached the stand-in's own host, with a proof for the URL it was sent to.
+  for (const asked of dispatch.received) {
+    expect(asked.headers.host).toBe(`127.0.0.1:${dispatch.port}`);
+    expect(jwtPart(asked.headers.dpop ?? "", 1).htu).toBe(`${dispatch.url}${asked.path}`);
+  }
+
+  const refused = [
+    // A fragment: a bare #, and one after the query.
+    rawGet("/api/v1/issues#"),
+    rawGet("/api/v1/issues?project=DSP#top"),
+    // A percent-encoded backslash in either case, and a percent-encoded slash in the comment POST.
+    rawGet("/api/v1/issues%5CDSP-1"),
+    rawGet("/api/v1/issues%5cDSP-1"),
+    keyedComment("/api/v1/issues/DSP-1%2Fx/comments"),
+    // A control character: a tab in the path, and U+007F in the path and in the query.
+    rawGet("/api/v1/is\tsues"),
+    rawGet("/api/v1/issues\x7f"),
+    rawGet("/api/v1/issues?project=DSP\x7f"),
+  ];
+  for (const request of refused) {
+    const line = request.slice(0, request.indexOf("\r\n"));
+    const answer = await rawRequest(run.socket, request);
+    expect({ line, status: answer.status, code: refusalOf(answer).code }).toEqual({
+      line,
+      status: 405,
+      code: "PROXY_METHOD_REFUSED",
+    });
+  }
+  // None of them reached Dispatch.
+  expect(dispatch.received).toHaveLength(sent.length);
+  expect((await finish(run)).code).toBe(0);
+}, 15_000);
+
 test("gives back a 302 as it is and follows no redirect", async () => {
   const broker = standInBroker({ kind: "token", seconds: 3600 });
   const dispatch = standInDispatch();

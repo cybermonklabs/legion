@@ -8,6 +8,7 @@ import {
 } from "node:http";
 import { constants } from "node:os";
 import type { Duplex } from "node:stream";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { brokerTokenFor } from "./broker-credential";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import { DISPATCH_TOOL_DEADLINE_MS, tokenNotLive } from "./dispatch-http";
@@ -334,8 +335,13 @@ async function listen(server: Server, socket: string): Promise<void> {
  * among them, to `clientError`: each is answered 405 on its socket.
  */
 function proxyServer(run: DispatchProxyRun, tally: Tally): Server {
+  // Dispatch's URL, parsed once with no fragment, and its own path with no `/` at its end, so `/`
+  // alone is the empty path. `serve` sends each request to a copy of this URL.
+  const dispatch = new URL(run.config.url);
+  dispatch.hash = "";
+  const base = withoutTrailingSlashes(dispatch.pathname);
   const server = createServer((request, response) => {
-    serve(request, response, run, tally).catch((error: unknown) => {
+    serve(request, response, run, dispatch, base, tally).catch((error: unknown) => {
       if (!response.headersSent) {
         answerRefusal(response, DISPATCH_UNREACHABLE, messageFor(error));
         return;
@@ -422,16 +428,32 @@ function resolvesElsewhere(path: string): boolean {
   });
 }
 
+/** A `#`, which starts a fragment, or a control character: U+007F, or a code unit below U+0020. */
+const FRAGMENT_OR_CONTROL = /[#\u007f]|[^\u0020-\uffff]/;
+
 /**
- * Why the proxy sends no `method` to `path`, naming the dispatch command to use instead where a
- * `dispatch` command sends the request; undefined for the two kinds of request it sends (R2, R5):
- * a GET under `/api/`, and the comment POST that carries an `Idempotency-Key`.
+ * Why the proxy sends nothing for the raw request `target`, whose path is `path`: a path that does
+ * not start with `/` or that {@link resolvesElsewhere}, or a target that holds a `#` or a control
+ * character. The URL the proxy would send reads each of these another way than the target does: a
+ * `#` starts a fragment, which no request sends, and `new URL` drops a tab or a line break. A
+ * control character has no place in a request target (RFC 9112, section 3.2). Undefined for a
+ * target with none of them.
+ */
+function elsewhereRefusal(target: string, path: string): string | undefined {
+  if (path.startsWith("/") && !resolvesElsewhere(path) && !FRAGMENT_OR_CONTROL.test(target)) {
+    return undefined;
+  }
+  return `${SENDS} The target ${JSON.stringify(target)} reaches another route than the one it names (a dot segment, a backslash, a # or a control character). Name the route's own path, or read it with dispatch api.`;
+}
+
+/**
+ * Why the proxy sends no `method` to `path`, the path of the URL it would send below Dispatch's
+ * own path, naming the dispatch command to use instead where a `dispatch` command sends the
+ * request; undefined for the two kinds of request it sends (R2, R5): a GET under `/api/`, and the
+ * comment POST that carries an `Idempotency-Key`.
  */
 function methodRefusal(method: string, path: string, key: string | undefined): string | undefined {
   const quoted = JSON.stringify(path);
-  if (!path.startsWith("/") || resolvesElsewhere(path)) {
-    return `${SENDS} The path ${quoted} reaches another route than the one it names (a dot segment or a backslash). Name the route's own path, or read it with dispatch api.`;
-  }
   if (method === "GET") {
     return path.startsWith("/api/")
       ? undefined
@@ -467,6 +489,29 @@ function writeCommand(method: string, path: string): string | undefined {
  *  not empty, and each other part takes only itself. */
 function fills(part: string, segment: string): boolean {
   return part.startsWith("{") ? segment !== "" : part === segment;
+}
+
+/** A percent-encoded `/` or `\`, in either case. */
+const ENCODED_SEPARATOR = /%(?:2f|5c)/i;
+
+/**
+ * Why the proxy sends nothing to `url`, the URL it built for a request, checked whole as it would
+ * send it: undefined only where its origin is Dispatch's, its path is under Dispatch's own path
+ * `base` and `/api/`, it has no fragment, and its path holds no {@link ENCODED_SEPARATOR}. An
+ * empty fragment counts too: `hash` reads it as no fragment, and `href` keeps its `#`, which a
+ * URL holds nowhere else. Dispatch's server decodes a `%2F` before it routes a path that no API
+ * route takes, so `/api/%2F..%2Fmetrics` is `/metrics` there.
+ */
+function outboundRefusal(url: URL, dispatch: URL, base: string): string | undefined {
+  if (
+    url.origin === dispatch.origin &&
+    url.pathname.startsWith(`${base}/api/`) &&
+    !url.href.includes("#") &&
+    !ENCODED_SEPARATOR.test(url.pathname)
+  ) {
+    return undefined;
+  }
+  return `${SENDS} The URL it would send for ${JSON.stringify(url.pathname.slice(base.length))} is outside /api/ of the Dispatch server, has a fragment, or holds a percent-encoded / or \\ (%2F or %5C, in either case), which Dispatch's server can decode into another route. Name the route's own path, or read it with dispatch api.`;
 }
 
 /** The names a `Connection` header lists, each a header of this hop alone. */
@@ -541,11 +586,18 @@ interface Sent {
   readonly fresh: boolean;
 }
 
-/** One request through the proxy: the target rule, the method and path rule, then the send. */
+/**
+ * One request through the proxy: the two target rules on the raw target (a host, then another
+ * route), the method and path rule on the path of the URL it would send, the check of that URL
+ * whole, then the send. `dispatch` is Dispatch's URL as {@link proxyServer} parsed it, and `base`
+ * its own path.
+ */
 async function serve(
   request: IncomingMessage,
   response: ServerResponse,
   run: DispatchProxyRun,
+  dispatch: URL,
+  base: string,
   tally: Tally
 ): Promise<void> {
   // The raw request target, as the tool wrote it: `node:http` keeps it unparsed.
@@ -559,18 +611,29 @@ async function serve(
     );
     return;
   }
-  const path = target.split("?", 1)[0] ?? "";
-  const key = request.headers["idempotency-key"];
-  const refusal = methodRefusal(method, path, Array.isArray(key) ? key.join(", ") : key);
+  const at = target.indexOf("?");
+  const path = at === -1 ? target : target.slice(0, at);
+  // The URL it sends: a copy of Dispatch's, with only its path and its query set from the target.
+  // The target is never parsed as a reference, so nothing in it can change the origin.
+  const outbound = new URL(dispatch);
+  outbound.pathname = `${base}${path}`;
+  outbound.search = at === -1 ? "" : target.slice(at);
+  const header = request.headers["idempotency-key"];
+  const key = Array.isArray(header) ? header.join(", ") : header;
+  // The method and path rule reads the path that the URL holds below Dispatch's own path, and the
+  // URL is checked whole last, so the request it sends is the one each rule passed.
+  const refusal =
+    elsewhereRefusal(target, path) ??
+    methodRefusal(method, outbound.pathname.slice(base.length), key) ??
+    outboundRefusal(outbound, dispatch, base);
   if (refusal !== undefined) {
     answerRefusal(response, METHOD_REFUSED, refusal);
     return;
   }
 
   const body = method === "GET" ? undefined : await wholeBody(request);
-  // The path starts with `/api/`, so the relative reference names no scheme of its own, and a
-  // Dispatch URL with a path of its own keeps it, as `readRoute` builds its URL.
-  const url = new URL(target.slice(1), `${run.config.url}/`).href;
+  // One URL for the proof and for the fetch.
+  const url = outbound.href;
   const headers = forwardedHeaders(request.headers);
   // A tool that hangs up stops the trade it waits on, and Dispatch's answer on its way.
   const upstream = new AbortController();
