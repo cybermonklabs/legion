@@ -24,8 +24,8 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * of the outline, and what it is written to. With nothing set it writes a new comment on the
  * issue, or a question with the Question chip pressed. A row's Reply - its control, or `r` - sets
  * it to reply to that row, and an open question's Answer - its control, one of its options, or
- * `a` - sets the answer the writer holds to that question, which the line does not send
- * (`answer`); Escape, or the line's own control, sets it back.
+ * `a` - sets the writer's answer to that question (`answer`), which the line does not send.
+ * Escape and the line's own control end a reply, not an answer, which another aim or a send clears.
  *
  * The state lives above the outline and the line both, because each sets it and both draw it:
  * a row draws the options the reader picked as picked, and the line names what it replies to.
@@ -520,8 +520,8 @@ export interface StatementItem extends Pick<TreeNode, "author" | "text" | "tree"
   readonly artifact: string;
   /** The statement's node id, `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`): its row,
    *  which a landing names (`Landing.under`, of kind `statement`) and `IssueTree.tsx`'s
-   *  `landingParent` finds by node id. A comment anchored to the statement is drawn in the margin
-   *  beside it, and not under its row. */
+   *  `landingParent` finds by node id. A comment anchored to the statement is not drawn under its
+   *  row but as a row under the issue, at the outline's end; no margin beside it draws it yet. */
   readonly id: string;
   readonly kind: "statement";
 }

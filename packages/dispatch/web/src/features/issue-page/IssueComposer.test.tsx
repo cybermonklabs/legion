@@ -1377,11 +1377,11 @@ test("under a view a sent write leaves no landing and gives the focus back where
 });
 
 // R11: `r` on a statement aims the box at it: the target line names it by the page's word for its
-// kind and draws none of its words, and the placeholder says the comment goes beside the
+// kind and draws none of its words, and the placeholder says the comment is on the
 // statement. The comment sent carries the statement's whole words as its anchor's quote, with no
 // occurrence, so words the document holds twice are refused rather than anchored to the wrong
-// block. The margin beside the statement draws the comment, and no row of the outline, so once
-// it lands the reader is back on the statement's own row.
+// block. Once it lands the reader is back on the statement's own row; the outline draws the
+// comment as a row under the issue, at its end, and no margin beside the statement draws it yet.
 test("a statement's target line names its kind, and its comment carries its words as the quote and lands on its row", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -1508,9 +1508,9 @@ test("a refused comment on a statement keeps its words and its statement, throug
 // over its refused send - as a reload brings one back - lands as every send from the box lands
 // (R4). The box mounted again shows the statement the refusal was written for, so Send there is
 // that refusal's own and goes. The held send keeps the statement's row beside its words, so once
-// the comment lands the outline brings the statement's row on screen and gives it the focus - the
-// margin beside it draws the comment, which has no row of its own - rather than giving the focus
-// back to where the reader came from.
+// the comment lands the outline brings the statement's row on screen and gives it the focus,
+// rather than giving it back to where the reader came from. The comment itself is drawn as a row
+// under the issue, at the outline's end; no margin beside the statement draws it yet.
 test("a comment on a statement sent again from a box mounted over its refused send lands on the statement's row", async () => {
   const user = userEvent.setup();
   stub(

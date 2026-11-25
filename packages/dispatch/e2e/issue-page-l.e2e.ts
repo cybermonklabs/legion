@@ -1047,7 +1047,7 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
           rest?.width ?? 0,
           `the field at rest is ${rest?.width.toFixed(0)} px wide ${at}`
         ).toBeGreaterThanOrEqual(240);
-        // The box's placeholders in their phone words: on the issue, under a row, beside a
+        // The box's placeholders in their phone words: on the issue, under a row, on a
         // statement, and over the reader's own comment.
         for (const words of [
           CONTROL_LABELS.issue_placeholder_phone,
@@ -1673,8 +1673,8 @@ function statementCases(seeded: StatementsSeed): {
  * spec to the statement's block, or a block inside it, with that quote, as `blocks`, the spec's
  * blocks, which the caller reads once, since no comment changes them; the focus is back on the
  * statement's row; and, once the page's read of the issue's comments holds the comment, no row of
- * it is drawn under the statement, since the margin beside a statement draws a comment on its
- * text.
+ * it is drawn under the statement. The outline draws it as a row under the issue, at its end, and
+ * no margin beside the statement draws it yet; neither is checked here.
  */
 async function commentOnStatement(
   page: Page,
@@ -1772,7 +1772,7 @@ async function commentOnStatement(
 // statement's words - not its first line, not the issue it cites, no address - since the
 // statement stands whole in its own row; the placeholder is the statement's own. What is sent is
 // a comment on the statement's text, anchored in the spec to its block by its whole words and no
-// occurrence, drawn in no row under it, the margin beside it being the comment's place; the focus
+// occurrence, drawn in no row under it but under the issue at the outline's end; the focus
 // is back on the statement's row, and the box then writes on the issue again. A statement of two
 // paragraphs is anchored to the statement itself, and one whose words the spec holds twice is
 // refused, in the page's words and with no Retry, the draft and the target kept. The row after

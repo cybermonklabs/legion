@@ -32,8 +32,9 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
  * The controls a row draws are worked by keys too, and for the same reason the moves are: the
  * tree is one tab stop, so the only tab stops inside a row are the focused row's scrolling
  * blocks, and Tab from a row leaves the tree past them. The arrows press the fold control, `o`
- * the one that pins the body open, `r` and `a` Reply and Answer - the line `a` sets draws an open
- * question's options as chips of its own - `Shift+K` presses Keep, `Shift+C` presses Change and
+ * the one that pins the body open, `r` and `a` Reply and Answer - `a` sets the writer's answer
+ * (`OutlineWriter.answer`), and `f` passes over the options the question's own row draws
+ * (`NodeRow.tsx`'s `NodeOptions`) - `Shift+K` presses Keep, `Shift+C` presses Change and
  * puts the caret in the form it opens, and `f` steps through the row's links and then through
  * every other control no key presses - Copy reference, Change answer, a command's Copy - where
  * Enter follows or presses the one it stopped on. So every control of the focused row is
@@ -131,8 +132,9 @@ const SCROLL_KEYS: Record<string, true> = {
 
 /** The marks of the controls a row draws that a key of this keymap presses, which `f` leaves to
  *  that key: the fold control (the arrows), Keep and Change (`Shift+K`, `Shift+C`), Reply and
- *  Answer (`r`, `a`), and an open question's options, which the line `a` sets draws as chips of
- *  its own (`NodeRow.tsx`'s `NodeOptions`). */
+ *  Answer (`r`, `a`), and an open question's options, drawn on the question's own row
+ *  (`NodeRow.tsx`'s `NodeOptions`), which `f` passes over too though no key presses one: `a`
+ *  sets the writer's answer (`OutlineWriter.answer`) and picks no option. */
 const KEYED_CONTROLS = [
   "[data-node-bullet]",
   rowActionSelector("keep"),

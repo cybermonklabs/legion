@@ -279,7 +279,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
   // The new issue page's one box, at the foot of its outline: with no target it writes a comment
   // or a question on the issue; aimed at a row of the outline it writes a reply under it, which
   // under a message goes to that thread's target; and on the reader's own comment it writes a new
-  // text of it. It answers no ask, and no control of the new page sends an answer yet
+  // text of it. It answers no ask, and nothing sends the answer the page's writer holds yet
   // (`OutlineWriter.answer` in `outline-writer.tsx`). The line's name changes with what it
   // writes, so it is reached by the attribute its form carries for the purpose.
   {
