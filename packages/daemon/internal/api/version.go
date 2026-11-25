@@ -3929,6 +3929,8 @@ package api
 // number INFRA-3118's architect allocated to it under INFRA's controller's ruling of
 // 2026-11-24T18:27Z, by which that architect allocates the numbers until INFRA-1569's #5399
 // merges. From this entry answers.go's SupportedContracts names `gateBasisContract` after
-// `causeTimesContract`, 256's constant. Read the base's own number at the next forward merge, and
-// take this change's number from whoever allocates the numbers then, rather than from this line.)
+// `causeTimesContract`, 256's constant. At the merge of main c227d0466191, which still carries
+// 256, this change keeps 276, since #5399 was still open (read 2026-11-25T00:03Z). Read the base's
+// own number at the next forward merge, and take this change's number from whoever allocates the
+// numbers then, rather than from this line.)
 const DaemonAPIVersion = 276
