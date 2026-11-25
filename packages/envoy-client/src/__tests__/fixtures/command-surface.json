@@ -1,5 +1,5 @@
 {
-  "commands": 41,
+  "commands": 42,
   "refusals": 29,
   "runs": [
     {
@@ -20,6 +20,28 @@
       "outcome": "result",
       "text": [
         "No person wrote to this session in the last 72 hours."
+      ]
+    },
+    {
+      "tool": "dispatch_api",
+      "call": "valid",
+      "args": {
+        "path": "/api/v1/issues/DSP-1/events?limit=200"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/events?limit=200",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "[]"
       ]
     },
     {

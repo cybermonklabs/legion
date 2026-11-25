@@ -1,0 +1,43 @@
+kind: Changed
+custom:
+  Issue: pr4392
+body: |-
+  On every Kubernetes deployment, with `dispatch_token_broker` on or off, each end of an update
+  round names a role that had not answered only where that role's unpushed work may be on the disk
+  of the round's pod. That holds at the daemon's replacement of the pod, at a replacement by issue
+  or at a launch, and in the message that the pod went. The work may be there in three cases. An
+  agent of the role registered a session in that pod: each claim's machine keeps, in memory, the
+  pods its agents registered in, and nothing takes a pod out, so a role that registered in the pod
+  and lost its session since is named, with no session or with a new one. The pod's disk holds
+  work from before the pod only on a kept volume an earlier pod of the same issue mounted.
+  An idle release leaves no saved workspace. At each role start on a kept volume, the store
+  records the pod and volume in `issue_pod_disks` (migration `20261124182040_issue_pod_disks`)
+  and marks the pod if the store already recorded an earlier pod on the same volume. The first
+  pod of a volume stays unmarked. No role starts in a pod of a kept
+  volume while the store cannot write that pod's record: the start is refused with a sentence that
+  names the pod and its volume, and charged as a launch failure. The record holds after a daemon
+  restart, and the issue's close or its tree's close deletes the issue's rows. Save where the
+  sweep's replacement of the pod names fewer (below), every end of a round over a marked pod names
+  every role that had not answered and has a session or a pod in its set: a role the round passes
+  over, a role the daemon or the operator took over after the earlier pod went, a woken role
+  whose launch the wake pacing delays or whose own launch replaces the pod, and a role that was
+  suspended already when the earlier pod went. So such an end can name a role whose
+  work the pod does not hold. A role that failed before the round opened is no member of it, so no
+  end names it as one that lost work; the sweep's replacement, through a process in the pod or
+  through a claim whose launch waits on it, names a failed role with a session on its line, and the
+  replacement through a process names it in its message too where the read of the workspace found
+  work or failed; and a role that fails after it joined the round stays a member. A role with no
+  session and no pod in its set, as one that never ran an agent and is refused for the pod with no
+  session, is named at no end. The sweep's replacement, through a process in the pod or through a
+  claim whose launch waits on it, names a role the round passed over on its line only where the
+  role has a session, and so does its message through a process. And after a daemon restart, a role
+  whose stored claim shows a session it held, now or abandoned, is named for every pod, so the
+  daemon errs towards naming a role. A pod that ran before this release has no row, so where the
+  earlier pods of a kept volume ran before it, the first pod of that volume that this release
+  records is not marked for those pods; a role whose stored claim showed a session at
+  the restart into this release is named all the same. The one case in which an end names fewer
+  roles than an earlier release, which named every member that had not answered: at a round over a
+  pod the store does not mark, a role whose session came from another pod and that has not
+  registered in the round's pod is not named for it, since no work from before the pod is on that
+  pod's disk. When no role is left to name, the daemon writes no message. The line of a pod that
+  went with no such role logs the members that had not answered under `ranNoWorkerInPod`.

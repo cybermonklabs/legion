@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/ciphertest"
+
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -46,7 +48,8 @@ var processDSN string
 // builds its readers from on the database its way back left
 // (TestKeptDecisionsTheReleaseBeforeLeftAreToldOnceAfterTheRenameAndComeBackOnTheWayBack). It
 // drops the migrated template testDSN and isolatedOutboxPool clone their databases from
-// (testpg.Main), removes the directory the tests' Envoy binaries were built into
+// (testpg.Main), drops the database of this binary's own that every secrets-broker rig makes its
+// schema in (ciphertest.Run), removes the directory the tests' Envoy binaries were built into
 // (testbuild.Main), and removes the NATS container the package's tests share (testnats.Main).
 //
 // It names one gh for every daemon the tests boot, LEGION_GH_PATH, this test binary: a boot
@@ -103,6 +106,8 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(testpg.Main("legion_daemon_test", func() int {
-		return testbuild.Main(func() int { return testnats.Main(m) })
+		return ciphertest.Run(func() int {
+			return testbuild.Main(func() int { return testnats.Main(m) })
+		})
 	}))
 }

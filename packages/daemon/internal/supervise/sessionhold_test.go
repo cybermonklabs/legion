@@ -301,10 +301,13 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 }
 
 // sessionRecorder is a Registrar that records the session of every registration a machine
-// starts.
+// starts, and the names of every release it asks, answering each release with the next of
+// releaseErrs, nil once they run out.
 type sessionRecorder struct {
-	mu       sync.Mutex
-	sessions []string
+	mu          sync.Mutex
+	sessions    []string
+	releaseErrs []error
+	releases    [][]string
 }
 
 func (r *sessionRecorder) KeepPodSession(_ context.Context, s PodSession) (func(), error) {
@@ -314,10 +317,29 @@ func (r *sessionRecorder) KeepPodSession(_ context.Context, s PodSession) (func(
 	return func() {}, nil
 }
 
+func (r *sessionRecorder) ReleasePodSessions(_ context.Context, names []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.releases = append(r.releases, slices.Clone(names))
+	if len(r.releaseErrs) == 0 {
+		return nil
+	}
+	err := r.releaseErrs[0]
+	r.releaseErrs = r.releaseErrs[1:]
+	return err
+}
+
 func (r *sessionRecorder) registered() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.sessions)
+}
+
+// released is the names of every release the machine asked, in order.
+func (r *sessionRecorder) released() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.releases)
 }
 
 // The pod's session registration is held as an enrollment is (ensureRegistered, plan E's t-e-54):
