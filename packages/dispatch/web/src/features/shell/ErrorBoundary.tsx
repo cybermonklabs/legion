@@ -19,16 +19,28 @@ interface ErrorBoundaryState {
   message: string | undefined;
 }
 
-/** The class of an action under an error's heading: the reload `ErrorView` draws, and any other
+/** The class of an action under an error's heading: the reload (`ReloadButton`), and any other
  *  control a caller adds beside it. */
 export const ERROR_ACTION_CLASS = `mt-3 text-sm font-medium underline ${dangerText}`;
+
+/** The button that reloads the tab, labelled `children`: the last control of an error drawn in
+ *  a part's place (`ErrorView`), and of the line that stands in the pending-writes indicator's
+ *  place while its chunk cannot load (`ChangesNotSent`, `features/writes/write-hosts.tsx`). One
+ *  piece, so a change to how the tab reloads reaches both. */
+export function ReloadButton({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <button className={ERROR_ACTION_CLASS} onClick={() => window.location.reload()} type="button">
+      {children}
+    </button>
+  );
+}
 
 /**
  * How the reader is told that a part of Dispatch failed, in that part's place: a region that
  * stopped rendering (`ErrorBoundary`) and a surface that could not open (`askedSurface`). One
  * piece, so the two look the same: the heading that says what failed, what the caller adds under
- * it, and last a button that reloads the tab, labelled `reload`. The caller gives the element its
- * role, and its place on the page (`className`).
+ * it, and last a button that reloads the tab, labelled `reload` (`ReloadButton`). The caller
+ * gives the element its role, and its place on the page (`className`).
  */
 export function ErrorView({
   children,
@@ -41,9 +53,7 @@ export function ErrorView({
     <section {...section} className={`rounded-xl border p-4 ${calloutDangerBorder} ${className}`}>
       <h2 className={`text-base font-semibold ${textPrimaryOnCanvas}`}>{heading}</h2>
       {children}
-      <button className={ERROR_ACTION_CLASS} onClick={() => window.location.reload()} type="button">
-        {reload}
-      </button>
+      <ReloadButton>{reload}</ReloadButton>
     </section>
   );
 }

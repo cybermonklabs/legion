@@ -1,8 +1,8 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 
-import { calloutWarningBorder, surfaceBg, textSecondaryOnSurface } from "../../theme/classes";
+import { calloutWarningBorder, surfaceBg } from "../../theme/classes";
 import { ChunkBoundary } from "../shell/ChunkBoundary";
-import { chunk, chunkComponent } from "../shell/chunk-component";
+import { type Chunk, chunk, chunkComponent } from "../shell/chunk-component";
 import {
   importWhenOnline,
   keptUntilRejected,
@@ -10,8 +10,9 @@ import {
   renderChunk,
 } from "../shell/chunk-loads";
 import { useContentDrawn } from "../shell/content-drawn";
-import { ERROR_ACTION_CLASS, ErrorView } from "../shell/ErrorBoundary";
+import { ErrorView, ReloadButton } from "../shell/ErrorBoundary";
 import { KeptWrites } from "./KeptWrites";
+import { PENDING_WRITES_FRAME, PendingWritesStatus } from "./pending-writes-frame";
 import { changesCount, indicatorWrites, keptRecords, keptWrites } from "./shown-writes";
 import type { KeptWrite } from "./write-storage";
 import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from "./write-store";
@@ -48,19 +49,34 @@ import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from ".
  * (`ChangesNotSent`); a list whose render throws draws an alert in its place (`CouldNotShow`).
  * A change of which writes a list shows, or of where one stands - a write pressed or gone, one
  * refused or late - draws the list afresh (`reset`, `shownWritesKey`, `keptRecordsKey`), which
- * asks for the indicator's chunk again; the indicator's last write going is no such change,
- * since the list it would draw is empty (`PendingWritesHost`). A boundary that never reset would
- * leave the reader on a page no recovery reload follows - the boundary says when none does - with
- * no Retry, Discard or Stop trying for the life of the page. The indicator's chunk is started
- * once the page has drawn, so a reader who presses a write usually finds it in already.
+ * asks for the indicator's chunk again, and the line stays in the indicator's place while that
+ * download is out, also through an outage (`WhileIndicatorLoads`); the indicator's last write
+ * going is no such change, since the list it would draw is empty (`PendingWritesHost`). A
+ * boundary that never reset would leave the reader on a page no recovery reload follows - the
+ * boundary says when none does - with no Retry, Discard or Stop trying for the life of the page.
+ * The indicator's chunk is started once the page has drawn, so a reader who presses a write
+ * usually finds it in already.
  */
 const pendingWritesChunk = chunk<object>(() =>
   import("./PendingWritesIndicator").then((module) => module.PendingWritesIndicator)
 );
 
-// While its chunk is still on its way the indicator draws nothing, as it would with no write to
-// show.
-const PendingWritesIndicator = chunkComponent(pendingWritesChunk, null);
+/**
+ * What the indicator draws while its chunk is on its way, which its host hands down
+ * (`pendingWritesHost`): nothing, as it would with no write to show, until a download of the
+ * chunk has failed online, and from then on the line in its place (`ChangesNotSent`). Each change
+ * of `reset` draws the indicator afresh, and it asks for its chunk again as it mounts
+ * (`chunkComponent`), which offline waits for the network (`importWhenOnline`). With nothing
+ * drawn meanwhile, the line would go at each such change, and stay away for a whole outage, which
+ * is when the reader needs it. So it stays through every later ask of the chunk, until the chunk
+ * draws the indicator or no write is left.
+ */
+const WhileIndicatorLoads = createContext<ReactNode>(null);
+
+/** The indicator's loading fallback: what its host hands down (`WhileIndicatorLoads`). */
+function IndicatorLoading(): ReactNode {
+  return useContext(WhileIndicatorLoads);
+}
 
 /**
  * What stands in a list's place once its render has thrown: an alert that says which list could
@@ -86,32 +102,44 @@ function CouldNotShow({ className, list }: { className: string; list: string }):
 }
 
 /**
- * What stands in the indicator's place while its chunk cannot load online: a line that counts
- * the writes the indicator shows, "1 change not sent", with "Not saved" once Dispatch has refused
- * one, and a Reload, as a region that stopped rendering offers (`ErrorView`). The indicator is
- * the one place where a reader learns that a write is still out or was refused, and where they
- * press Retry or Discard. The leave prompt shows only as the reader leaves the page, and the next
- * write draws the indicator again only for a reader who makes one. So the failure is never
- * silent. The line is in the entry and reads the host's rows, so it needs no chunk. It draws
- * nothing once no write is left. Its role is `status`, as the indicator's own line is: a screen
- * reader says it when it changes, and it takes no focus.
+ * What stands in the indicator's place once its chunk has failed to download online: a line that
+ * counts the writes the indicator shows, "1 change not sent", with "Not saved" once Dispatch has
+ * refused one, and a Reload, as a region that stopped rendering offers (`ErrorView`). The
+ * indicator is the one place where a reader learns that a write is still out or was refused, and
+ * where they press Retry or Discard. The leave prompt shows only as the reader leaves the page,
+ * and the next write draws the indicator again only for a reader who makes one. So the failure is
+ * never silent: the line stays until the chunk draws the indicator, through every later ask of
+ * the chunk, online or offline (`WhileIndicatorLoads`). The line is in the entry and reads the
+ * host's rows, so it needs no chunk. It draws nothing once no write is left. It stands where the
+ * indicator stands, in the indicator's frame and status line (`pending-writes-frame.tsx`), with a
+ * border of its own.
  */
 function ChangesNotSent({ rows }: { rows: readonly Write[] }): ReactNode {
   if (rows.length === 0) return null;
   const count = changesCount(rows.length);
   const refused = rows.some((row) => row.status === "refused");
   return (
-    <div
-      className={`w-full max-w-md rounded-xl border px-3 py-2 text-xs shadow-lg ${surfaceBg} ${calloutWarningBorder}`}
-    >
-      <p aria-live="polite" className={`font-medium ${textSecondaryOnSurface}`} role="status">
+    <div className={`${PENDING_WRITES_FRAME} ${surfaceBg} ${calloutWarningBorder}`}>
+      <PendingWritesStatus>
         {refused ? `${count} not sent — Not saved` : `${count} not sent`}
-      </p>
-      <button className={ERROR_ACTION_CLASS} onClick={() => window.location.reload()} type="button">
-        Reload
-      </button>
+      </PendingWritesStatus>
+      <ReloadButton>Reload</ReloadButton>
     </div>
   );
+}
+
+/** The line, as the indicator's boundary draws it once a download of the indicator's chunk has
+ *  failed online (`notLoaded`). It tells the host so (`failed`), and the host then hands the line
+ *  down as the indicator's loading fallback (`WhileIndicatorLoads`). */
+function NotLoaded({
+  failed,
+  rows,
+}: {
+  failed: (failed: boolean) => void;
+  rows: readonly Write[];
+}): ReactNode {
+  useEffect(() => failed(true), [failed]);
+  return <ChangesNotSent rows={rows} />;
 }
 
 /**
@@ -165,64 +193,84 @@ function keptRecordsKey(records: readonly KeptWrite[]): string {
   return records.map((record) => `${record.key}:${record.state.status}`).join(",");
 }
 
-/** The pending-writes indicator, for the shell's status corner. */
-export function PendingWritesHost(): ReactNode {
-  const rows = useWriteSelection("indicator", indicatorWrites);
-  const shown = useMemo(() => shownWritesKey(rows), [rows]);
-  // What the boundary draws afresh on (`ChunkBoundary`'s `reset`): the last list of writes the
-  // indicator showed. An empty list is no change of it, so the last write going leaves it as it
-  // was. A boundary that failed would otherwise draw the indicator afresh for a list that draws
-  // nothing, and the indicator asks for its chunk as it draws (`chunkComponent`), which can spend
-  // one of the tab's recovery reloads (`DeploymentResilience.tsx`) for that empty list; the next
-  // write the reader presses asks again. It is empty only until the first row, so it says too
-  // whether the indicator is mounted: from the first row on, and never unmounted for want of
-  // one. The indicator draws nothing itself while nothing is pending, and the focus it hands on
-  // as its panel goes - after a Discard or a Stop trying that takes the last row away - is a
-  // layout effect of its own (`usePanelFocusReturn`), which runs only in a commit it is still
-  // mounted in. Unmounted in the commit its last row goes, it would leave the focus on the
-  // page's body. Set in the render that sees the change, so that render draws it already.
-  const [reset, setReset] = useState("");
-  if (shown !== "" && shown !== reset) setReset(shown);
-  // The indicator's chunk is started here, after the page has drawn
-  // (`features/shell/content-drawn.ts`): an effect runs after the commit it belongs to, so a
-  // landing does not ask for it before its first paint, and a landing that draws a live document
-  // asks only once its first block is in. Nobody is waiting on it yet, which is what
-  // `prefetchChunk` tells the chunk-failure recovery. So are the kinds of write: the take-up
-  // asked for them as the person signed in, and this finds that download in or on its way. One
-  // the take-up lost before the page drew, with no reload to follow - the page was being left,
-  // the reader chose to stay at the leave prompt that the writes the reload kept
-  // (`WriteStorage.load`) or a write pressed meanwhile open, or the tab's recovery reloads are
-  // spent - is asked for again here, and its evaluation ends the take-up (`kindsRegistered`) with
-  // no press to ask for them (`Writes.run`).
-  const drawn = useContentDrawn();
-  useEffect(() => {
-    if (!drawn) return;
-    prefetchChunk(pendingWritesChunk.load);
-    prefetchWriteKinds();
-  }, [drawn]);
-  // A list whose render threw keeps its alert in its place until `reset` changes, and then draws
-  // again, so a fault that one write's row brings ends with that row. The alert goes with the
-  // last write as well: with no write left, the list has nothing it could not show. A list whose
-  // chunk could not load keeps the line that counts its writes in its place until `reset`
-  // changes too, and the line goes with the last write: with no write left, no change is out
-  // (`ChangesNotSent`).
-  return reset === "" ? null : (
-    <ChunkBoundary
-      fallback={
-        shown === "" ? null : (
-          <CouldNotShow
-            className={`w-full max-w-md shadow-lg ${surfaceBg}`}
-            list="the changes waiting to save"
-          />
-        )
-      }
-      notLoaded={<ChangesNotSent rows={rows} />}
-      reset={reset}
-    >
-      <PendingWritesIndicator />
-    </ChunkBoundary>
-  );
+/**
+ * The pending-writes indicator's host over `source`, the indicator's chunk: the shell's
+ * (`PendingWritesHost`), and, in `write-hosts.test.tsx`, hosts over a chunk of the row's own,
+ * whose downloads the row fails, holds and answers as a deploy or an outage does the indicator's.
+ * The shell's chunk cannot stand in those rows: once a row has drawn the indicator it is in, and
+ * `chunk` keeps it.
+ */
+export function pendingWritesHost(source: Chunk<object>): () => ReactNode {
+  const PendingWritesIndicator = chunkComponent(source, <IndicatorLoading />);
+  return function PendingWritesHost(): ReactNode {
+    const rows = useWriteSelection("indicator", indicatorWrites);
+    const shown = useMemo(() => shownWritesKey(rows), [rows]);
+    // What the boundary draws afresh on (`ChunkBoundary`'s `reset`): the last list of writes the
+    // indicator showed. An empty list is no change of it, so the last write going leaves it as it
+    // was. A boundary that failed would otherwise draw the indicator afresh for a list that draws
+    // nothing, and the indicator asks for its chunk as it draws (`chunkComponent`), which can
+    // spend one of the tab's recovery reloads (`DeploymentResilience.tsx`) for that empty list;
+    // the next write the reader presses asks again. It is empty only until the first row, so it
+    // says too whether the indicator is mounted: from the first row on, and never unmounted for
+    // want of one. The indicator draws nothing itself while nothing is pending, and the focus it
+    // hands on as its panel goes - after a Discard or a Stop trying that takes the last row away -
+    // is a layout effect of its own (`usePanelFocusReturn`), which runs only in a commit it is
+    // still mounted in. Unmounted in the commit its last row goes, it would leave the focus on the
+    // page's body. Set in the render that sees the change, so that render draws it already.
+    const [reset, setReset] = useState("");
+    if (shown !== "" && shown !== reset) setReset(shown);
+    // Whether a download of the indicator's chunk has failed online under this host: the line
+    // its boundary draws then sets it (`NotLoaded`). From then on the host hands the line down as
+    // the indicator's loading fallback (`WhileIndicatorLoads`). It is never cleared: once the
+    // chunk is in, the indicator draws no fallback.
+    const [chunkFailed, setChunkFailed] = useState(false);
+    // The indicator's chunk is started here, after the page has drawn
+    // (`features/shell/content-drawn.ts`): an effect runs after the commit it belongs to, so a
+    // landing does not ask for it before its first paint, and a landing that draws a live
+    // document asks only once its first block is in. Nobody is waiting on it yet, which is what
+    // `prefetchChunk` tells the chunk-failure recovery. So are the kinds of write: the take-up
+    // asked for them as the person signed in, and this finds that download in or on its way. One
+    // the take-up lost before the page drew, with no reload to follow - the page was being left,
+    // the reader chose to stay at the leave prompt that the writes the reload kept
+    // (`WriteStorage.load`) or a write pressed meanwhile open, or the tab's recovery reloads are
+    // spent - is asked for again here, and its evaluation ends the take-up (`kindsRegistered`)
+    // with no press to ask for them (`Writes.run`).
+    const drawn = useContentDrawn();
+    useEffect(() => {
+      if (!drawn) return;
+      prefetchChunk(source.load);
+      prefetchWriteKinds();
+    }, [drawn]);
+    // A list whose render threw keeps its alert in its place until `reset` changes, and then
+    // draws again, so a fault that one write's row brings ends with that row. The alert goes with
+    // the last write as well: with no write left, the list has nothing it could not show. A list
+    // whose chunk could not load keeps the line that counts its writes in its place until `reset`
+    // changes too, and then while the indicator drawn afresh asks for its chunk again, until the
+    // chunk draws the indicator. The line goes with the last write: with no write left, no change
+    // is out (`ChangesNotSent`).
+    return reset === "" ? null : (
+      <WhileIndicatorLoads value={chunkFailed ? <ChangesNotSent rows={rows} /> : null}>
+        <ChunkBoundary
+          fallback={
+            shown === "" ? null : (
+              <CouldNotShow
+                className={`w-full max-w-md shadow-lg ${surfaceBg}`}
+                list="the changes waiting to save"
+              />
+            )
+          }
+          notLoaded={<NotLoaded failed={setChunkFailed} rows={rows} />}
+          reset={reset}
+        >
+          <PendingWritesIndicator />
+        </ChunkBoundary>
+      </WhileIndicatorLoads>
+    );
+  };
 }
+
+/** The pending-writes indicator, for the shell's status corner. */
+export const PendingWritesHost = pendingWritesHost(pendingWritesChunk);
 
 /** What a lapsed session keeps, for the sign-in page. */
 export function KeptWritesHost(): ReactNode {

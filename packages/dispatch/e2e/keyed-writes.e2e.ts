@@ -1592,6 +1592,71 @@ test("a pending-writes indicator whose chunk failed to download online asks for 
   }
 });
 
+// The same failure, and then the browser goes offline, and Dispatch refuses the one write: the
+// row answers the status change held at the network with a refusal while the browser is offline.
+// The refusal draws the indicator afresh (`ChunkBoundary`'s `reset`), and its ask for the chunk
+// fails offline, so it waits for the network (`importWhenOnline`,
+// `web/src/features/shell/chunk-loads.ts`). The line stays in the indicator's place all the while
+// and says that the change is not saved (`WhileIndicatorLoads`,
+// `web/src/features/writes/write-hosts.tsx`): an outage is when the reader needs it most, and a
+// line that went with each later ask of the chunk would leave the corner empty until the network
+// came back. Once it is back, the indicator asks again, and draws the refusal with its Retry and
+// Discard in the line's place.
+// SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
+test("a pending-writes indicator whose chunk failed to download online keeps the line in its place while the browser is offline, says there that its one write is not saved once Dispatch refuses it, and draws once the browser is back online", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "An indicator through an outage" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const { page, spent, statusChange } = await failTheIndicatorOverAHeldWrite(alice, issue.key);
+    await expect(changesNotSent(page)).toHaveText("1 change not sent");
+    // Each ask for the indicator's chunk that fails because the browser is offline.
+    const failedOffline: string[] = [];
+    page.on("requestfailed", (request) => {
+      if (
+        PENDING_WRITES_CHUNK.test(new URL(request.url()).pathname) &&
+        request.failure()?.errorText === "net::ERR_INTERNET_DISCONNECTED"
+      ) {
+        failedOffline.push(request.url());
+      }
+    });
+
+    await alice.setOffline(true);
+    await statusChange.fulfill(STATUS_REFUSED);
+    await expect(
+      changesNotSent(page),
+      "the line left the indicator's place once the refusal asked for its chunk offline"
+    ).toHaveText("1 change not sent — Not saved");
+    await expect
+      .poll(() => failedOffline.length, {
+        message: "the refusal did not ask for the indicator's chunk while offline",
+      })
+      .toBeGreaterThan(0);
+    await expect(
+      changesNotSent(page),
+      "the line left the indicator's place while its ask waited for the network"
+    ).toHaveText("1 change not sent — Not saved");
+    await expect(pendingWrites(page)).toHaveCount(0);
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    expect(await tabReloads(page), "the failures reloaded the page").toEqual(spent);
+
+    // `holdFirstRequest` lets every later request for the indicator's chunk through.
+    await alice.setOffline(false);
+    const refused = pendingWrites(page);
+    await expect(refused, "the network coming back did not draw the indicator").toContainText(
+      "Not saved:"
+    );
+    await expect(refused.getByRole("button", { exact: true, name: "Retry" })).toBeVisible();
+    await expect(refused.getByRole("button", { exact: true, name: "Discard" })).toBeVisible();
+    await expect(changesNotSent(page)).toHaveCount(0);
+    expect(await tabReloads(page), "asking again reloaded the page").toEqual(spent);
+  } finally {
+    await alice.close();
+  }
+});
+
 /** Lapses alice's session as Dispatch does when it stops naming her: the sign-in check answers
  *  401 from here on, and the page reads it again on the word another tab of this browser sends
  *  when who is signed in there may have changed (`SignInChannel`, `askSignInAgain`), sent here

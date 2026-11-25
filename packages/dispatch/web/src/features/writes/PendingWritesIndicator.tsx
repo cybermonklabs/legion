@@ -21,6 +21,7 @@ import {
 import { focusOnDocument } from "../shell/roving";
 import { conflictWords } from "./conflicts";
 import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write";
+import { PENDING_WRITES_FRAME, PendingWritesStatus } from "./pending-writes-frame";
 import { StopTrying } from "./StopTrying";
 import {
   changesCount,
@@ -242,16 +243,16 @@ export function PendingWritesIndicator(): ReactNode {
   return (
     <section
       aria-label="Pending changes"
-      className={`w-full max-w-md rounded-xl border px-3 py-2 text-xs shadow-lg ${card} ${
+      className={`${PENDING_WRITES_FRAME} ${card} ${
         actionable ? calloutWarningBorder : borderDefault
       }`}
       data-testid="pending-writes"
       ref={panel}
     >
       {out.length === 0 ? null : (
-        <p aria-live="polite" className={`font-medium ${textSecondaryOnSurface}`} role="status">
+        <PendingWritesStatus>
           {late ? `Dispatch has not confirmed ${count} — still trying` : `Saving ${count}…`}
-        </p>
+        </PendingWritesStatus>
       )}
       {named.length === 0 ? null : (
         <ul className={`max-h-48 space-y-1 overflow-y-auto ${out.length === 0 ? "" : "mt-2"}`}>

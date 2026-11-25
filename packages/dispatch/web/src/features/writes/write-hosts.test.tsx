@@ -1,15 +1,21 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import type { ComponentType, ReactNode } from "react";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
-import { failingChunkComponent } from "../../__tests__/failing-chunk";
+import { settle } from "../../__tests__/fake-clock";
 import { keepWrite, keyMinted } from "../../__tests__/kept-sends-harness";
 import { ApiError, api, type WriteRequest } from "../../api/client";
+import { chunk } from "../shell/chunk-component";
 import { chunkLoadsOut } from "../shell/chunk-loads";
-import { KeptWritesHost, loadWriteKinds, PendingWritesHost } from "./write-hosts";
+import {
+  KeptWritesHost,
+  loadWriteKinds,
+  PendingWritesHost,
+  pendingWritesHost,
+} from "./write-hosts";
 import type { KeptWrite } from "./write-storage";
 import { kindsRegistered, plainWrite, type Writes, writesOf } from "./write-store";
 
@@ -203,13 +209,6 @@ function Fault(): never {
   throw new Error("A row of the list failed to render");
 }
 
-/** A part of the same place whose chunk fails to download online: it throws into the
- *  indicator's render what the indicator's own `chunkComponent` throws when its chunk fails after
- *  a deploy. It stands for that chunk, which a row cannot fail: once any row of this process has
- *  drawn the indicator, its chunk is in, and `chunk` keeps it. This one keeps no failed download,
- *  so each mount asks again and fails again. The kept list holds no chunk: it is in the entry. */
-const NotLoaded = failingChunkComponent();
-
 /** Each list of writes, by its host: the name of the list's own region, and the name of the
  *  alert that stands in its place once its render has thrown. */
 const lists = [
@@ -237,17 +236,109 @@ function pressARefusedWrite(writes: Writes, label: ReactNode): void {
 
 /** Draws `Host` over a store of alice's, and presses one write that the indicator shows and
  *  Dispatch refuses, whose label is `label` (`pressARefusedWrite`): each list draws the label of
- *  a refused write, the kept list as a write of alice's that the page keeps. Answers the view. */
-function drawARefusedWrite(Host: () => ReactNode, label: ReactNode): RenderResult {
+ *  a refused write, the kept list as a write of alice's that the page keeps. With `held`, the
+ *  write waits for alice's sign-out in another tab (`Writes.holdFor`), so it stays out until the
+ *  row releases it. Answers the view and the store. */
+function drawARefusedWrite(
+  Host: () => ReactNode,
+  label: ReactNode,
+  { held = false } = {}
+): { view: RenderResult; writes: Writes } {
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const writes = writesOf(client);
+  if (held) writes.holdFor("alice");
   const view = render(
     <QueryClientProvider client={client}>
       <Host />
     </QueryClientProvider>
   );
-  pressARefusedWrite(writesOf(client), label);
-  return view;
+  pressARefusedWrite(writes, label);
+  return { view, writes };
+}
+
+/** One download of the indicator's chunk, for a row to fail, hold or answer. */
+type Download = ReturnType<typeof Promise.withResolvers<ComponentType<object>>>;
+
+/**
+ * The indicator's chunk as a row's own: a host of the indicator over it (`pendingWritesHost`),
+ * and each download of the chunk in the order the host and the indicator ask for them. The
+ * shell's own chunk cannot stand for it: once a row has drawn the indicator, that chunk is in,
+ * and `chunk` keeps it. `end` fails every download still out, and each later one as it is asked
+ * for, so that a row that fails leaves none out: a download out under `renderChunk` stays counted
+ * for the later rows of this file (`chunkLoadsOut`), and an indicator whose download failed
+ * offline asks again once the browser is back online (`importWhenOnline`).
+ */
+function indicatorChunk(): { downloads: Download[]; end: () => void; Host: () => ReactNode } {
+  const downloads: Download[] = [];
+  let ended = false;
+  const end = () => {
+    ended = true;
+    for (const download of downloads) {
+      download.reject(new TypeError("Failed to fetch dynamically imported module"));
+    }
+  };
+  const Host = pendingWritesHost(
+    chunk<object>(() => {
+      const download = Promise.withResolvers<ComponentType<object>>();
+      downloads.push(download);
+      if (ended) end();
+      return download.promise;
+    })
+  );
+  return { downloads, end, Host };
+}
+
+/** Fails `download` as a deploy fails the indicator's chunk, and lets what that sets draw. */
+async function failDownload(download: Download | undefined): Promise<void> {
+  await act(async () => {
+    download?.reject(new TypeError("Failed to fetch dynamically imported module"));
+    await settle();
+  });
+}
+
+/** Answers `download` with the indicator itself, from the module the shell's chunk loads. The
+ *  import is a run-time one, as the shell's is: a static one would load the module before the
+ *  file's rows begin, and the cold-load lane would no longer hold the shell's own load of it
+ *  (`hold-lazy-loads.ts`). */
+async function drawTheIndicator(download: Download | undefined): Promise<void> {
+  const { PendingWritesIndicator } = await import("./PendingWritesIndicator");
+  await act(async () => {
+    download?.resolve(PendingWritesIndicator);
+    await settle();
+  });
+}
+
+/**
+ * Draws a host of the indicator over a chunk of the row's own (`indicatorChunk`), presses one
+ * write that the indicator shows and Dispatch refuses, held for alice's sign-out in another tab
+ * so it stays out (`drawARefusedWrite`), and fails online the download the indicator mounts on:
+ * the host asks for the chunk once it has drawn, and the indicator joins that download as the
+ * write draws it. React reports the failure the indicator's boundary caught on the console, which
+ * stays quiet for the row (`logged`). Answers once the line in the indicator's place counts that
+ * write, with the chunk's downloads and `end`, the console's spy, the view and the store; a step
+ * that fails here unmounts the view and ends the downloads first.
+ */
+async function failTheIndicatorOverAHeldWrite(): Promise<{
+  downloads: Download[];
+  end: () => void;
+  logged: Mock<typeof console.error>;
+  view: RenderResult;
+  writes: Writes;
+}> {
+  const { downloads, end, Host } = indicatorChunk();
+  const logged = quietConsoleError();
+  const { view, writes } = drawARefusedWrite(Host, "CORE-1 set to done", { held: true });
+  try {
+    expect(downloads, "the host and the indicator did not share one download").toHaveLength(1);
+    await failDownload(downloads[0]);
+    expect(await screen.findByRole("status")).toHaveTextContent(/^1 change not sent$/u);
+  } catch (error) {
+    view.unmount();
+    end();
+    throw error;
+  }
+  return { downloads, end, logged, view, writes };
 }
 
 // A fault in a list's render draws an alert in the list's place that says which list could not
@@ -258,7 +349,7 @@ test.each(
   lists
 )("the %s whose render throws draws an alert in its place", async (_list, Host, region, list) => {
   const logged = quietConsoleError();
-  const view = drawARefusedWrite(Host, <Fault />);
+  const { view } = drawARefusedWrite(Host, <Fault />);
   try {
     const alert = await screen.findByRole("alert", { name: `Could not show ${list}.` });
     expect(alert).toHaveTextContent(`Could not show ${list}.`);
@@ -277,32 +368,21 @@ test.each(
 // (`ChangesNotSent`), counts the changes not sent, says "Not saved" once Dispatch refuses one, and
 // offers a Reload. The indicator is the one place a reader learns that a write is still out or was
 // refused, so its failure is never silent. The line goes with the last write. Alice's write waits
-// for her sign-out in another tab (`Writes.holdFor`), so it stays out, and the indicator names it
-// by its label: the part that stands for the indicator's chunk draws there, and fails. Released,
-// the write goes out and Dispatch refuses it, which draws the indicator afresh (`reset`), and the
-// part fails again. The Discard of the refused write, which the indicator alone offers, is the
-// store's here.
+// for her sign-out in another tab, so it stays out while the indicator's chunk fails
+// (`failTheIndicatorOverAHeldWrite`). Released, the write goes out and Dispatch refuses it, which
+// draws the indicator afresh (`reset`), and its chunk fails again. The Discard of the refused
+// write, which the indicator alone offers, is the store's here.
 test("a pending-writes indicator whose chunk fails to download online draws a line in its place that counts the changes not sent, says when one is not saved, reloads, and goes with the last write", async () => {
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const writes = writesOf(client);
-  writes.holdFor("alice");
-  const logged = quietConsoleError();
+  const { downloads, end, logged, view, writes } = await failTheIndicatorOverAHeldWrite();
   const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
-  const view = render(
-    <QueryClientProvider client={client}>
-      <PendingWritesHost />
-    </QueryClientProvider>
-  );
   try {
-    pressARefusedWrite(writes, <NotLoaded />);
-    const line = await screen.findByRole("status");
-    expect(line).toHaveTextContent(/^1 change not sent$/u);
     expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(logged).toHaveBeenCalled();
 
     act(() => writes.release("alice"));
+    await waitFor(() => expect(downloads).toHaveLength(2));
+    await failDownload(downloads[1]);
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent(/^1 change not sent — Not saved$/u)
     );
@@ -321,6 +401,7 @@ test("a pending-writes indicator whose chunk fails to download online draws a li
     reload.mockRestore();
     logged.mockRestore();
     view.unmount();
+    end();
   }
 });
 
@@ -330,24 +411,12 @@ test("a pending-writes indicator whose chunk fails to download online draws a li
 // too: it does not count it, and it does not say "Not saved" for it. Once the page hands the
 // conflict back (`unclaim`), the line counts it and says "Not saved". The conflict here is a text
 // the page claims with no write of it sent (`Writes.claimUnsent`), so nothing goes out. Alice's
-// other write waits for her sign-out in another tab (`Writes.holdFor`), so it stays out, and the
-// part that stands for the indicator's chunk draws in its label, and fails.
+// other write waits for her sign-out in another tab, so it stays out while the indicator's chunk
+// fails (`failTheIndicatorOverAHeldWrite`), and the chunk fails again as the page hands the
+// conflict back.
 test("the line in a pending-writes indicator's place leaves out a conflict a page holds, and counts it once the page hands it back", async () => {
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const writes = writesOf(client);
-  writes.holdFor("alice");
-  const logged = quietConsoleError();
-  const view = render(
-    <QueryClientProvider client={client}>
-      <PendingWritesHost />
-    </QueryClientProvider>
-  );
+  const { downloads, end, logged, view, writes } = await failTheIndicatorOverAHeldWrite();
   try {
-    pressARefusedWrite(writes, <NotLoaded />);
-    const line = await screen.findByRole("status");
-    expect(line).toHaveTextContent(/^1 change not sent$/u);
-
     let claimed = -1;
     act(() => {
       claimed = writes.claimUnsent({
@@ -364,6 +433,8 @@ test("the line in a pending-writes indicator's place leaves out a conflict a pag
     );
 
     act(() => writes.unclaim(claimed));
+    await waitFor(() => expect(downloads).toHaveLength(2));
+    await failDownload(downloads[1]);
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent(/^2 changes not sent — Not saved$/u)
     );
@@ -371,6 +442,88 @@ test("the line in a pending-writes indicator's place leaves out a conflict a pag
   } finally {
     logged.mockRestore();
     view.unmount();
+    end();
+  }
+});
+
+// Once the indicator's chunk has failed to download online, the line stays in the indicator's
+// place through every later ask of the chunk, until the chunk draws the indicator
+// (`WhileIndicatorLoads`). A write pressed after the failure draws the indicator afresh
+// (`reset`), which asks for the chunk again, and the row holds that download. The line counts the
+// new write while the download is out, and once it comes down the indicator takes the line's
+// place. With nothing drawn meanwhile, the corner would be empty for as long as the download took.
+test("the line in a pending-writes indicator's place stays, and counts a write pressed after the chunk failed online, while the next download of the chunk is out, and the indicator takes its place once that download lands", async () => {
+  const { downloads, end, logged, view, writes } = await failTheIndicatorOverAHeldWrite();
+  try {
+    pressARefusedWrite(writes, "CORE-2 set to done");
+    expect(downloads, "the write pressed after the failure did not ask for the chunk").toHaveLength(
+      2
+    );
+    expect(
+      screen.queryByRole("status")?.textContent,
+      "the line left the indicator's place while the next download was out"
+    ).toBe("2 changes not sent");
+    expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument();
+
+    await drawTheIndicator(downloads[1]);
+    const indicator = await screen.findByRole("region", { name: "Pending changes" });
+    expect(indicator).toHaveTextContent(
+      "CORE-2 set to done — Waiting for a sign-out in another tab"
+    );
+    expect(screen.queryByText(/\bnot sent\b/u)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
+  } finally {
+    logged.mockRestore();
+    view.unmount();
+    end();
+  }
+});
+
+// The same failure online, and then the browser goes offline, and Dispatch refuses the held write
+// as it goes out. The refusal draws the indicator afresh (`reset`), and its ask for the chunk
+// fails offline, so it waits for the network (`importWhenOnline`). The line stays in the
+// indicator's place all the while, and says that the change is not saved (`WhileIndicatorLoads`):
+// an outage is when the reader needs it most. Once the browser is back online the indicator asks
+// again, and draws the refusal, with its Retry and Discard, as that download lands.
+test("the line in a pending-writes indicator's place stays while the browser is offline after the chunk failed online, and says the change is not saved once Dispatch refuses it", async () => {
+  const { downloads, end, logged, view, writes } = await failTheIndicatorOverAHeldWrite();
+  const onLine = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine");
+  const online = () => {
+    Reflect.deleteProperty(navigator, "onLine");
+    if (onLine !== undefined) Object.defineProperty(Navigator.prototype, "onLine", onLine);
+  };
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+  try {
+    act(() => writes.release("alice"));
+    await waitFor(() => expect(downloads).toHaveLength(2));
+    await failDownload(downloads[1]);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("status")?.textContent,
+        "the line left the indicator's place while the browser was offline"
+      ).toBe("1 change not sent — Not saved")
+    );
+    expect(downloads, "the indicator asked for its chunk again while offline").toHaveLength(2);
+    expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    online();
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await settle();
+    });
+    expect(downloads, "the indicator did not ask again once back online").toHaveLength(3);
+    await drawTheIndicator(downloads[2]);
+    const indicator = await screen.findByRole("region", { name: "Pending changes" });
+    expect(indicator).toHaveTextContent("Not saved: CORE-1 set to done");
+    expect(within(indicator).getByRole("button", { name: "Retry" })).toBeVisible();
+    expect(screen.queryByText(/\bnot sent\b/u)).not.toBeInTheDocument();
+  } finally {
+    online();
+    logged.mockRestore();
+    view.unmount();
+    end();
+    window.dispatchEvent(new Event("online"));
   }
 });
 
