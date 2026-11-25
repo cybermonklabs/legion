@@ -317,6 +317,12 @@ const PostHistoryPageLimit = 200
 // server's refusal and the dashboard's title fields cannot drift apart.
 const IssueTitleMax = 1000
 
+// PriorityIDMax is the longest priority id, in characters, that POST /api/v1/priorities writes:
+// the bound of an id the caller names and the length the id it derives from a title is cut to.
+// Generated from PRIORITY_ID_MAX in packages/contracts so the server's refusal and the server's
+// cut cannot drift apart.
+const PriorityIDMax = 200
+
 // DispatchBlockUnits is the longest one block of a comment, comment edit, message, broadcast or
 // ask part may be, in UTF-16 units. Generated from DISPATCH_BLOCK_UNITS in packages/contracts;
 // the server enforces it, names it in its refusal, and publishes it through GET /api/v1/limits.

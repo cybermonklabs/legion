@@ -109,8 +109,8 @@ type manifestType struct {
 	Name       string                       `json:"name"`
 	Content    string                       `json:"content"`
 	Attributes map[string]manifestAttribute `json:"attributes"`
-	// Parents are the typed blocks this type stands in, at the end of one's own content; a type
-	// that names none is a block of its own wherever a block stands.
+	// Parents are the typed blocks this type stands in, at the end of that block's own content; a
+	// type that names none is a block of its own wherever a block stands.
 	Parents []string `json:"parents"`
 }
 
@@ -563,14 +563,14 @@ func typedBlockID(name string) string { return "tb-" + name }
 //
 // Where each block stands is the manifest's to say. A type that names no parents is a block of
 // the document's own, in manifest order. A type that names parents, as the reading names the
-// decision and the ask, stands only at the end of a block of one of them, after that block's own
-// content, so it is written there: in the block of the first of its parents the document writes,
-// after that parent's content, in manifest order among that parent's other such types. A parent's
-// fence is one colon longer than the longest fence inside it, which is how markdown closes the
-// inner block before the outer one. A type none of whose parents the document writes fails the
-// test, as does one the document reaches through no block of its own. So a document of types
-// that name no parents, as every manifest before the reading's is, is the one this helper wrote
-// before it read parents, byte for byte.
+// decision and the ask, stands only at the end of a block of one of them, so it is written there:
+// in the block of the first of its parents the document writes, after that block's own content,
+// in manifest order among that parent's other such types. A parent's fence is one colon longer
+// than the longest fence inside it, which is how markdown closes the inner block before the outer
+// one. A type none of whose parents the document writes fails the test, as does one the document
+// reaches through no block of its own. So a document of types that name no parents, as every
+// manifest before the reading's is, is each type's three-colon block in manifest order, under the
+// document's heading.
 func typedBlocksMarkdown(t *testing.T, manifest, reader blockManifest) string {
 	t.Helper()
 	var written []manifestType

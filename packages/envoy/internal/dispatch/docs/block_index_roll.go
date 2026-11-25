@@ -420,6 +420,9 @@ var rollNow time.Time
 // sweep. A pass that fails, or stops with work left, leaves the debt, which only a pass that
 // finishes clears, so no row is left without its node, no node without its row and no stale lens
 // live. A node the sweep leaves is logged with the reason.
+//
+// The pass and the sweep stay for good: a rollback to any earlier release, and a write an older
+// build makes in any later roll, still reach them.
 func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick, owed *time.Time) (more bool, err error) {
 	if owed == nil {
 		return false, nil

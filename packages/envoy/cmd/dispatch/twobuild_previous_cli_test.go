@@ -185,9 +185,8 @@ func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneB
 // is no window and the node holds the answer throughout.
 //
 // The previous build writes the spec and a person answers its one ask there; the previous build
-// stops and leaves the fleet, with the ask's node still holding no answer beside a build from
-// before that, and holding the answer beside one that states it; through this build an agent
-// changes one word of the spec's prose, the spec's first accepted write on a fleet of one build.
+// stops and leaves the fleet; through this build an agent changes one word of the spec's prose,
+// the spec's first accepted write on a fleet of one build.
 // In both cases the version that write settles into keeps on the ask's opening line the state, the
 // answerer and the time the previous build's own version stored (R10), and none of selected,
 // answer and invalid; and the previous build's CLI then requests approval of the spec against this
@@ -199,12 +198,7 @@ func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatch
 	statesAnswers := previousStatesAnswersOnAskNodes(t, ctx, builds)
 	t.Logf("the %s states a person's answer on the ask's node as it records it: %t", builds.previousName(), statesAnswers)
 	current := builds.startCurrent(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"})
-	project := uniqueProjectKey(t, "PRW")
-	previous.createProject(t, project, "The window before the catch-up")
-	issue, spec := previous.createIssueIn(t, project, "An answered ask", answeredBeforeTheCatchUpSpec)
-	ship := settledAskOf(t, previous, issue, "ship")
-	answerThrough(t, previous, ship, "Ship", "Ship it now.")
-	waitForNoSettlementOwed(t, ctx, builds, spec)
+	issue, spec, ship := answeredThroughThePrevious(t, ctx, builds, "PRW", "The window before the catch-up", "An answered ask")
 
 	// The previous build's version of its answer: the opener the previous build's CLI reads.
 	answeredVersion, answeredMarkdown := latestVersionOf(t, previous, spec)
@@ -226,12 +220,17 @@ func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatch
 	stop(t, previous)
 	waitForThePreviousBuildToLeaveTheFleet(t, builds)
 	// Beside a build that states no answer on an ask's node, the window: the held step has stated
-	// no answer on it. Beside one that states answers, the node holds the answer it recorded.
+	// no answer on it. Beside one that states answers, the node holds the answer it recorded: state
+	// answered, and the answerer and the time the previous build's own version stored.
 	nodeState, nodeAnsweredBy, nodeAnsweredAt := askNodeAnswerOf(t, ctx, builds, ship)
 	if statesAnswers {
 		if nodeState != asks.StateAnswered {
 			t.Fatalf("the %s stated the answer to the probe's ask on that ask's node, and not the answer to ask %s on its own: the node holds state %q, answered_by %q and answered_at %q, want the answer it recorded",
 				builds.previousName(), ship, nodeState, nodeAnsweredBy, nodeAnsweredAt)
+		}
+		if at, err := time.Parse(time.RFC3339Nano, nodeAnsweredAt); nodeAnsweredBy != answeredBy || err != nil || !at.Equal(answeredAt) {
+			t.Fatalf("the node of ask %s holds answered_by %q and answered_at %q, want %q and %v, which the previous build's version %d stored",
+				ship, nodeAnsweredBy, nodeAnsweredAt, answeredBy, answered.Attrs["answered_at"], answeredVersion)
 		}
 	} else if nodeState == asks.StateAnswered {
 		t.Fatalf("the node of ask %s holds the previous build's answer while this build's decisions step is held: the row does not reach the window before the catch-up", ship)
@@ -281,25 +280,35 @@ func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatch
 }
 
 // previousStatesAnswersOnAskNodes answers whether the previous build states a person's answer on
-// the ask's node as it records it. Through that build it makes a project of its own and an issue
-// whose spec holds one ask, answers the ask, waits until the spec owes no settlement, and reads the
-// ask's node: state answered is a build that states the answer there itself, and any other state,
-// or none, a build from before that. It runs while the previous build's process is the only one
-// live, before this build starts, so the previous build is the only process that can have written
-// the node: this build's boot, and its decisions step even held, must not be what wrote it, and
-// neither has run yet. The probe's ask stays as it is for the rest of the row: no process answers
-// it again, and this build's held step states nothing on its node.
+// the ask's node as it records it. Through that build it answers the one ask of a spec of a
+// project of its own (answeredThroughThePrevious), and reads the ask's node: state answered is a
+// build that states the answer there itself, and any other state, or none, a build from before
+// that. It runs while the previous build's process is the only one live, so that build is the only
+// process that can have written the node: this build has not started, so neither its boot nor its
+// decisions step, held or not, can have written it. The probe's ask stays as it is for the rest of
+// the row: no process answers it again, and this build's held step states nothing on its node.
 func previousStatesAnswersOnAskNodes(t *testing.T, ctx context.Context, builds *twoBuilds) bool {
 	t.Helper()
-	previous := builds.previous()
-	project := uniqueProjectKey(t, "PRP")
-	previous.createProject(t, project, "Whether the previous build states answers on ask nodes")
-	issue, spec := previous.createIssueIn(t, project, "An ask the previous build answers alone", answeredBeforeTheCatchUpSpec)
-	ask := settledAskOf(t, previous, issue, "ship")
-	answerThrough(t, previous, ask, "Ship", "Ship it now.")
-	waitForNoSettlementOwed(t, ctx, builds, spec)
+	_, _, ask := answeredThroughThePrevious(t, ctx, builds, "PRP", "Whether the previous build states answers on ask nodes", "An ask the previous build answers alone")
 	state, _, _ := askNodeAnswerOf(t, ctx, builds, ask)
 	return state == asks.StateAnswered
+}
+
+// answeredThroughThePrevious makes, through the previous build, a project whose key starts with
+// prefix and whose name is projectName, and in it an issue titled issueTitle whose spec is
+// answeredBeforeTheCatchUpSpec; it waits for the ask of the spec's block ship, answers it there as
+// the test's person, and waits until the spec owes no settlement. It answers the issue, the spec
+// and the ask.
+func answeredThroughThePrevious(t *testing.T, ctx context.Context, builds *twoBuilds, prefix, projectName, issueTitle string) (issue, spec, ask string) {
+	t.Helper()
+	previous := builds.previous()
+	project := uniqueProjectKey(t, prefix)
+	previous.createProject(t, project, projectName)
+	issue, spec = previous.createIssueIn(t, project, issueTitle, answeredBeforeTheCatchUpSpec)
+	ask = settledAskOf(t, previous, issue, "ship")
+	answerThrough(t, previous, ask, "Ship", "Ship it now.")
+	waitForNoSettlementOwed(t, ctx, builds, spec)
+	return issue, spec, ask
 }
 
 // stringAttr is node's attribute name as a string, or "" where it holds none or another kind.

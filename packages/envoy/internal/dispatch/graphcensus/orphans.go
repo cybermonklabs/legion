@@ -88,6 +88,9 @@ var ErrNotOrphaned = errors.New("the node is not an orphaned document's")
 // that got there first has committed its row when the read runs, and the node is left: the answer
 // is ErrNotOrphaned, as it is for every node it leaves. An address that names no issue is no
 // removable document's, which only an issue's are, and is left too.
+//
+// It stays for good: a rollback to any earlier release, and a write an older build makes in any
+// later roll, still reach it.
 func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) error {
 	issue, _, found := strings.Cut(ref, "/")
 	if !found {

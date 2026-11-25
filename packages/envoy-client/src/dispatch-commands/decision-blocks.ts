@@ -80,6 +80,7 @@ export async function refuseOpenDecisionBlocks(
   let live: Promise<{ readonly served: boolean; readonly asks: readonly TextAsk[] }> | undefined;
   const liveText = () =>
     (live ??= client.docRead(artifact.id).then((text) => ({
+      // kept for one release: release-before-text
       served: text.asks !== undefined && text.asks !== null,
       asks: liveTextAsks(text),
     })));
@@ -151,6 +152,7 @@ export async function refuseOpenDecisionBlocks(
     const text = await liveText();
     // kept for one release: release-before-text
     if (!text.served && recordsSettled) return undefined;
+    // kept for one release: release-before-text
     if (!text.served && recordsOpen) return openCopy(named, openerAsks(openers));
     const copies = text.asks.filter((copy) => copy.block_id === block.id);
     const settled =

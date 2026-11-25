@@ -45,9 +45,11 @@ var subcommands = []subcommand{
 	{"backfill-graph-store", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
 	}},
+	// kept for one release: decisions-step
 	{"restore-answered-asks", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return runDecisionsStep(ctx, "restore-answered-asks", false, args, env, stdout, stderr)
 	}},
+	// kept for one release: decisions-step
 	{"convert-decisions", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return runDecisionsStep(ctx, "convert-decisions", true, args, env, stdout, stderr)
 	}},
@@ -379,6 +381,8 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 // on such a failure, on another build live, or on any other error, 2 on a usage error or a
 // --project the projects table holds no row of under that exact key, which it refuses before any
 // phase runs, and 0 otherwise.
+//
+// kept for one release: decisions-step
 func runDecisionsStep(ctx context.Context, name string, convert bool, args []string, env settingValues, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -441,6 +445,8 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 // ask@person@v<version>; what became of the document's sections; whether it retired the
 // document; the versions it wrote; what became of the spec's approval; and each approval it
 // superseded, with the asks, as their nodes and their blocks, whose restore superseded it.
+//
+// kept for one release: decisions-step
 func writeDecisionIssue(w io.Writer, name string, issue docs.DecisionIssue, dryRun bool) {
 	moved, renamed := 0, 0
 	for _, ask := range issue.Restored {
