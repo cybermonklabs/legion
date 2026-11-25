@@ -1176,7 +1176,10 @@ func (w *workflowRuntime) phaseRole(ctx context.Context, key string) (claim.Role
 	if issue == nil {
 		return "", nil
 	}
-	return workflow.OpenPhaseRole(issue.Phase), nil
+	if roles := workflow.OpenRolesOf(issue.Phase, false); len(roles) > 0 {
+		return roles[0], nil
+	}
+	return "", nil
 }
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a
