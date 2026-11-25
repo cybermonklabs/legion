@@ -810,13 +810,11 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 }
 
 // guardGet is one GET of url, a route joined onto an endpoint's URL, with bearer when it is not
-// empty. A url that does not parse (url.URL.String can write text url.Parse refuses, such as an
-// IPv6 zone escape) is refused in fixed words: url.Parse's error, which http.NewRequest's carries,
-// quotes the URL whole, user information and query included.
+// empty. A url that does not parse is refused (errJoinedURLUnparsed).
 func guardGet(ctx context.Context, client *http.Client, url, bearer string) (int, redact.Answer, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, redact.Answer{}, errors.New("the endpoint's URL joined with the route does not parse (it is not printed)")
+		return 0, redact.Answer{}, errJoinedURLUnparsed
 	}
 	req.Header.Set("Accept", "application/json")
 	if bearer != "" {

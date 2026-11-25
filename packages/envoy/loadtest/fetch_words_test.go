@@ -23,10 +23,10 @@ import (
 func TestAFetchPrintsNoCredentialOfItsURL(t *testing.T) {
 	base := userinfoEcho(t)
 	address := base + "/debug/pprof/heap"
-	fetch := func(t *testing.T, base string) string {
+	fetch := func(t *testing.T, endpoint string) string {
 		t.Helper()
 		var logged strings.Builder
-		fetchTo(base, "/debug/pprof/heap", filepath.Join(t.TempDir(), "heap.pprof"), 10*time.Second, log.New(&logged, "", 0))
+		fetchTo(endpoint, "/debug/pprof/heap", filepath.Join(t.TempDir(), "heap.pprof"), 10*time.Second, log.New(&logged, "", 0))
 		return logged.String()
 	}
 	t.Run("twin", func(t *testing.T) {

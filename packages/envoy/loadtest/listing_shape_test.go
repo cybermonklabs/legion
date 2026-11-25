@@ -13,7 +13,7 @@ import (
 // id (out-of-shape); and refuses one whose entry names no id, which dispatchID takes as naming
 // nothing: an empty string (no-id-empty), a null (no-id-null) and an absent member (no-id-absent).
 func TestAListingNamesEachArtifactByAnIDInDispatchsShape(t *testing.T) {
-	const id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+	const id = memberUUID
 	key := shapeKey("1")
 	t.Run("in-shape", func(t *testing.T) {
 		listing, err := readListing(key, []byte(`[{"id":"`+id+`","kind":"doc"}]`))

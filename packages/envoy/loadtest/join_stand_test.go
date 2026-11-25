@@ -66,8 +66,8 @@ func joinRefusedURLs(path string) (unparsed, reparsed string) {
 
 // joinRequireTwins runs a refusal row's twins, each of which shows that http.NewRequest's error
 // quotes every one of redacttest's credentials, so a row whose printed text holds none of them has
-// kept them out: for unparsed with route appended (twin) and, unless reparsed is empty, for
-// reparsed, which url.Parse takes, with route joined onto it (reparsed-twin).
+// kept them out: for unparsed with route appended (twin) and for reparsed, which url.Parse takes,
+// with route joined onto it (reparsed-twin).
 func joinRequireTwins(t *testing.T, unparsed, reparsed, route string) {
 	t.Helper()
 	requireQuoted := func(t *testing.T, raw string) {
@@ -77,9 +77,6 @@ func joinRequireTwins(t *testing.T, unparsed, reparsed, route string) {
 		}
 	}
 	t.Run("twin", func(t *testing.T) { requireQuoted(t, unparsed+route) })
-	if reparsed == "" {
-		return
-	}
 	t.Run("reparsed-twin", func(t *testing.T) {
 		parsed, err := url.Parse(reparsed)
 		if err != nil {

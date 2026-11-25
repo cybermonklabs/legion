@@ -204,9 +204,7 @@ func (f *replayFetcher) fetchLog(ctx context.Context, key string, number int, un
 	}
 }
 
-// listedArtifact is one entry of GET /api/v1/issues/{key}/artifacts. Its id decodes only in
-// Dispatch's shape (dispatchID), so a listing that names an artifact by any other id does not
-// decode.
+// listedArtifact is one entry of GET /api/v1/issues/{key}/artifacts.
 type listedArtifact struct {
 	ID        dispatchID      `json:"id"`
 	Name      string          `json:"name"`
