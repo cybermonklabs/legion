@@ -431,8 +431,11 @@ proofs=$(sed -n 's/^proofs=//p' "$real_output")
 check "a schedule run of the repository's own data passes" "$(is "$status" 0)"
 check "and emits every hosted row a dispatch_only does not keep to its dispatch" "$(is "$(proof_scripts)" "$hosted_scripts")"
 # The proofs whose panes run the pinned Oh My Pi are the hosted rows that have the job install it,
-# and no other row does.
-for name in $hosted_scripts; do
+# and no other row does. A dispatch_only row is held too: its workflow_dispatch selects it.
+every_hosted_script=$(python3 -c 'import json, pathlib, sys
+rows = json.loads(pathlib.Path(sys.argv[1]).read_text())["hosted"]
+print(" ".join(sorted(row["script"] for row in rows)))' "$script_dir/../e2e-scripts.json")
+for name in $every_hosted_script; do
   : > "$real_output"
   set +e
   out=$(EVENT=workflow_dispatch REQUESTED="$name" GITHUB_OUTPUT="$real_output" "$check_script" 2>&1)
