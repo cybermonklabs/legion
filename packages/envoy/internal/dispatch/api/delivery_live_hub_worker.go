@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"maps"
+	"net/http"
 	"slices"
 	"strconv"
 	"time"
@@ -363,6 +364,31 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	// board shows no session, so it names none.
 	read.issues = board.issueKeys()
 	return legionBoardCompute(board, now), nil
+}
+
+// readLegionIssueView is a legion_issue view's read: GET /api/v1/issues/{key}/legion's body, through
+// the route's own readLegionIssue, so the view and the route answer one body. A key Dispatch holds
+// no issue of is that function's *apiError, NOT_FOUND in the route's words, which the hub refuses
+// the view's subscribers with once (viewReads.refusal). A project that names no daemon is the body
+// whose configured is false and never an error, so this view, unlike the board, is never refused
+// LEGION_NOT_CONFIGURED. It names no issue in read.issues: no Dispatch event moves the body, which
+// only its project's notifications and its issue's runs move (dirtyLegionProject, dirtyLegionIssue).
+// An issue of a project the view's reader does not see (projectSeenBy, on the key's project, which
+// is the issue's: parseLegionIssueLiveView) is refused as a key Dispatch holds no issue of, before
+// anything of it is read, as the board's read refuses a project its reader does not see.
+func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	seen, err := projectSeenBy(ctx, h.server.deps.Store.Pool, spec.reader, spec.project)
+	if err != nil {
+		return nil, err
+	}
+	if !seen {
+		return nil, errorf(http.StatusNotFound, "NOT_FOUND", "not found")
+	}
+	answer, err := h.server.readLegionIssue(ctx, spec.issue)
+	if err != nil {
+		return nil, err
+	}
+	return answer, nil
 }
 
 // readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges

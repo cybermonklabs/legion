@@ -1337,7 +1337,8 @@ func addRoute(d *destinations, route *string) error {
 	return nil
 }
 
-// addClaimantRoute delivers a person's answer, comment or untargeted message on an issue to
+// addClaimantRoute delivers a person's answer, comment or untargeted message on an issue - and
+// the edit or the delete of a post of either kind - to
 // claimant, the session that holds the issue's claim, on its own topic. Otherwise it reaches the
 // claimant only when the claimant subscribed to the whole issue, or happens to be the route, a
 // follower of the ask, or an author the thread or document names, and the session working the
@@ -1345,7 +1346,7 @@ func addRoute(d *destinations, route *string) error {
 // an agent's events reach nobody new through here, even the ones that notify. A new comment the
 // claimant's own mention of it delivers is left to that mention (destinations.addWorkingSession,
 // the mention rule); a claimant whose mention failed gets this copy instead, and the comment's
-// edit, resolution and reopening are never left to it. The claim is the one the batch
+// edit, delete, resolution and reopening are never left to it. The claim is the one the batch
 // read when the event is published (readBatch, routing), not when it was written, so a retry after
 // the claim moved reaches the new claimant. A claimant that is also the route, a follower or an
 // author gets one copy: destinations adds a subject once per event. The claimant's subject is an
@@ -1409,8 +1410,8 @@ func payloadPreviousClaimSession(payload any) string {
 // byte the text of the version it names, docs.MoveApprovalAsk) reaches no follower. The event's
 // own actor is skipped, and a follower whose own mention of a new comment delivers it is left to
 // that mention (destinations.addSession, the mention rule); a follower whose mention failed gets
-// this copy instead. Only the reply's creation is left to the mention; its edit, resolution and
-// reopening reach every follower. A topic the route already reaches is not added twice.
+// this copy instead. Only the reply's creation is left to the mention; its edit, delete,
+// resolution and reopening reach every follower. A topic the route already reaches is not added twice.
 func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 	var askID string
 	switch event.Type {
@@ -1420,7 +1421,7 @@ func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 		}
 	case "ask.answered", "ask.handed_back", "ask.resolved":
 		askID = payloadString(event.Payload, "id")
-	case "comment.created", "comment.resolved", "comment.reopened", "comment.edited":
+	case "comment.created", "comment.resolved", "comment.reopened", "comment.edited", "comment.deleted":
 		askID = payloadString(event.Payload, "ask_id")
 	}
 	if askID == "" {
@@ -1441,11 +1442,11 @@ func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 	return nil
 }
 
-// addPrimaryDocumentAuthors delivers a person's comment, or its edit, on an issue with no route and
-// no session claimant (takesPrimaryAuthors) to every session the issue's primary document credits,
-// each on its own topic: a session that writes an issue's spec without a claim still hears the
-// comments on it. The comment's own thread does not matter: a comment in an ask's thread, or a
-// reply, reaches those sessions too. The batch reads them
+// addPrimaryDocumentAuthors delivers a person's comment, its edit or its delete, on an issue
+// with no route and no session claimant (takesPrimaryAuthors) to every session the issue's
+// primary document credits, each on its own topic: a session that writes an issue's spec
+// without a claim still hears the comments on it. The comment's own thread does not matter: a
+// comment in an ask's thread, or a reply, reaches those sessions too. The batch reads them
 // for all such events in one query (loadLookups, loadPrimaryDocumentAuthors); when that query
 // failed, its error ends the event's destinations here. The actor is skipped (recipientFilter),
 // and a session whose own mention of the comment delivers it is left to that mention
@@ -1473,18 +1474,20 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // document, directly to the involved sessions' own topics, regardless of the issue's route (which
 // may point at an entirely different reviewer) and regardless of whether the event's owner is an
 // issue or a project document (which has no route at all). Without this, the sessions in a thread
-// never learn of the human's reply, resolution, reopening, or edit, and the agent that wrote a
-// document never learns of a new comment on it or of a person's edit to it.
+// never learn of the human's reply, resolution, reopening, edit or delete, and the agent that
+// wrote a document never learns of a new comment on it or of a person's edit to it.
 //
-// A reply (reply_to set), and its edit, reach every session that wrote a comment in the thread,
-// its root and each reply, and, where the claim below does not leave them out, every session the
-// thread's document credits, which the batch reads for all its replies in one query (loadLookups,
-// loadCommentRecipients); when that query failed, its error ends the event's destinations here. A
-// new comment on a document (no reply_to and no ask_id), and its edit, reach every session that
-// document credits under that same claim (loadDocumentSessionAuthors, whose failed query ends the
-// event's destinations here too); a new comment on an issue's conversation names no document and
-// reaches no author. A resolution or a reopening reaches the thread root's author only, so the
-// reopening a reply makes tells no new session twice.
+// A reply (reply_to set), its edit and its delete reach every session that wrote a comment in
+// the thread, its root and each reply, and, where the claim below does not leave them out, every
+// session the thread's document credits, which the batch reads for all its replies in one query
+// (loadLookups, loadCommentRecipients); when that query failed, its error ends the event's
+// destinations here. A new comment on a document (no reply_to and no ask_id), its edit and its
+// delete reach every session that document credits under that same claim
+// (loadDocumentSessionAuthors, whose failed query ends the event's destinations here too); a new
+// comment on an issue's conversation names no document and reaches no author. A message reply
+// (in_reply_to set), its edit and its delete reach the session that wrote the message it
+// answers. A resolution or a reopening reaches the thread root's author only, so the reopening a
+// reply makes tells no new session twice.
 // artifact.human_edited, which the notice sweep appends once a person's quiet window on a document
 // ends (docs.sendEditNotice), reaches every session the document its payload's artifact_id names
 // credits, read the same way. Ask threads are not walked here: their asker and repliers are the
@@ -1493,7 +1496,7 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // (destinations.addSession, the mention rule); an author whose mention failed is added instead.
 //
 // A session the read names as a credit of a document alone is left out where a person's comment,
-// or its edit, is on an issue a session claims: the credits of a document are
+// its edit or its delete is on an issue a session claims: the credits of a document are
 // not a second reason to deliver what the claimant already hears on its own topic. The conditions
 // are exactly those under which that claimant was added: both read the one predicate
 // (takesClaimantRoute, where the rule is stated) - the event names an issue, its actor is a
@@ -1591,7 +1594,7 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 	}
 
 	switch event.Type {
-	case "comment.created", "comment.edited":
+	case "comment.created", "comment.edited", "comment.deleted":
 		switch replyTo := payloadString(event.Payload, "reply_to"); {
 		case payloadString(event.Payload, "ask_id") != "":
 			// An ask's thread reaches the ask's followers (addFollowerRoutes).
@@ -1633,7 +1636,7 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 				return err
 			}
 		}
-	case "message.created", "message.answered":
+	case "message.created", "message.answered", "message.edited", "message.deleted":
 		if inReplyTo := payloadString(event.Payload, "in_reply_to"); inReplyTo != "" {
 			if err := considerLoaded(look.messageAuthor(inReplyTo)); err != nil {
 				return err
@@ -1782,7 +1785,8 @@ func payloadSummary(event model.Event, slug string) string {
 		detail = fmt.Sprintf("%v version %v", values["phase"], values["version"])
 	case strings.HasPrefix(event.Type, "ask."):
 		detail = text.HeadRunes(payloadString(event.Payload, "question"), 120)
-	case event.Type == "message.created", event.Type == "message.answered":
+	case event.Type == "message.created", event.Type == "message.answered",
+		event.Type == "message.edited", event.Type == "message.deleted":
 		detail = payloadString(event.Payload, "body")
 	case strings.HasPrefix(event.Type, "comment."), strings.HasPrefix(event.Type, "suggestion."):
 		detail = payloadString(event.Payload, "body")

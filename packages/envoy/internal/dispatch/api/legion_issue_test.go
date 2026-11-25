@@ -729,13 +729,13 @@ func TestALegionIssueViewNamesItsIssueAndNothingElse(t *testing.T) {
 			}
 		}
 	})
-	t.Run("a legion_issue view of INFRA-7 is its issue, its key's project and a key of its own", func(t *testing.T) {
+	t.Run("a legion_issue view of INFRA-7 is its issue, its key's project and a shape of its own", func(t *testing.T) {
 		spec, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: issueLegionKind, Issue: named})
 		if refusal != nil {
 			t.Fatalf("a legion_issue view of INFRA-7: %+v", refusal)
 		}
-		if spec.kind != issueLegionKind || spec.issue != "INFRA-7" || spec.project != "INFRA" || spec.key != "legion_issue|INFRA-7|" {
-			t.Fatalf("the spec = %+v, want kind legion_issue, issue INFRA-7, project INFRA and key legion_issue|INFRA-7|", spec)
+		if spec.kind != issueLegionKind || spec.issue != "INFRA-7" || spec.project != "INFRA" || spec.shape != "legion_issue|INFRA-7|" {
+			t.Fatalf("the spec = %+v, want kind legion_issue, issue INFRA-7, project INFRA and shape legion_issue|INFRA-7|", spec)
 		}
 	})
 	t.Run("a timeline, measures, pipeline or legion view with an issue of any type is that view without one", func(t *testing.T) {

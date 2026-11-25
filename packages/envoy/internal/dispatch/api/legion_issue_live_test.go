@@ -54,8 +54,9 @@ type legionIssuePage struct {
 
 // openLegionIssuePage subscribes a page to key's view at rig, and requires its snapshot to be
 // GET /api/v1/issues/{key}/legion's body (L-1, L-15) and to name key alone (L-14). The view's key
-// is the parse's of the frame the page subscribes with, so unread matches the notes of exactly
-// the view the hub holds for it.
+// is the one the hub reads the view under for the reader the page subscribes as (readFor,
+// subscribeFrame's everyReader), so unread matches the notes of exactly the view the hub holds
+// for it.
 func openLegionIssuePage(t *testing.T, hub string, rig *hubRig, key string) *legionIssuePage {
 	t.Helper()
 	view := legionIssueSubscription(key)
@@ -63,6 +64,7 @@ func openLegionIssuePage(t *testing.T, hub string, rig *hubRig, key string) *leg
 	if refusal != nil {
 		t.Fatalf("the legion_issue view of %s: refusal = %+v, want none", key, refusal)
 	}
+	spec.readFor(everyReader)
 	page := &legionIssuePage{hub: hub, rig: rig, conn: newFakeLiveConn(), key: key, view: spec.key}
 	rig.hub.Subscribe(page.conn, subscribeFrame(legionIssueSub, view))
 	snapshot := page.conn.snapshot(t, legionIssueSub)
