@@ -53,8 +53,8 @@ function verifiedIssue(): IssueDetails {
   };
 }
 
-/** The block ids of the spec's one statement and of the check of the Verification document that
- *  serves it. */
+/** The block ids of the spec's first statement, which the check serves, and of that check of the
+ *  Verification document. */
 const STATEMENT = "r1";
 const CHECK = "c1";
 

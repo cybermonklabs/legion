@@ -26,15 +26,19 @@ export function isContentsEntry(
   return child.type === "comment" || producing.has(child.id);
 }
 
-/** The ids of the messages of `root`, the whole tree, under which or under a reply in whose
- *  thread the tree places a node that is no message, at any depth (`placesNode`). A transcluded
- *  copy and the branch under it were produced at their own place, so none of them is read. */
+/** The ids of the messages of `root`, the whole tree, that begin a thread - under no comment and
+ *  no message, the only messages `isContentsEntry` reads - under which or under a reply in whose
+ *  thread the tree places a node that is no message, at any depth (`placesNode`). Only a
+ *  thread's first message is tested, so each thread is read once and the walk is linear in the
+ *  tree. A transcluded copy and the branch under it were produced at their own place, so none of
+ *  them is read. */
 export function producingMessages(root: TreeNode): ReadonlySet<string> {
   const ids = new Set<string>();
   const walk = (node: TreeNode): void => {
+    const inThread = node.type === "comment" || node.type === "message";
     for (const child of node.children) {
       if (child.transcluded) continue;
-      if (child.type === "message" && placesNode(child)) ids.add(child.id);
+      if (!inThread && child.type === "message" && placesNode(child)) ids.add(child.id);
       walk(child);
     }
   };

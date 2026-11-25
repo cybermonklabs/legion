@@ -484,14 +484,15 @@ export function SpecFilterBody({
     tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(request.id))?.focus();
   }, [request, takeRequest]);
   // An address that names a row puts the focus on it once every read the tree's rows come from
-  // has settled (`useAddressLanding`), looking again at each drawing of the columns, and the
-  // landing's hold keeps it on screen while the page grows above it - with the statements, which
-  // the coverage read draws (`tree-drafts.ts`'s `addRequirements`), or the spec's blocks where
-  // they answer first, and with what the page draws after the reads (the names, the cuts once
-  // measured).
+  // has settled (`useAddressLanding`), looking again each time the statements the view draws
+  // change, and the landing's hold keeps it on screen while the page grows above it - with the
+  // statements, which the coverage read draws (`tree-drafts.ts`'s `addRequirements`), or the
+  // spec's blocks where they answer first, and with what the page draws after the reads (the
+  // names, the cuts once measured).
+  const drawn = useMemo(() => statements.map((node) => node.id).join(" "), [statements]);
   const landingHold = useAddressLanding({
     acts: addressActs,
-    drawn: statements.map((node) => node.id).join(" "),
+    drawn,
     id: readsSettled ? reveal : undefined,
     tree,
   });

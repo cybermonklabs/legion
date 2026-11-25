@@ -1998,19 +1998,13 @@ test("a key that only scrolls the page keeps the reader's place in the Spec view
   test.setTimeout(120_000);
   const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 200)));
   await phase(browser, seed, async (page, seeded) => {
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
     const body = issuePage(page).locator("[data-spec-body]");
     const statements = body.locator("[data-spec-statement]");
-    const traffic = watchApiRequests(page);
-    await openPreset(page, seeded.key, "spec");
-    await expectLoadSettled(traffic);
     await expect(
       statements,
       "the Spec view does not draw every statement of the spec and the long one"
     ).toHaveCount(seeded.requirements.length + 1);
-    const long = body.locator(
-      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
-    );
     // A script's focus, which starts no hold of the reader's: the keys below are the reader's.
     await long.focus();
     await expect(long, "the long statement does not take the focus").toBeFocused();
@@ -2051,19 +2045,13 @@ test("a press on a Spec statement's words puts the caret at the press and keeps 
   test.setTimeout(120_000);
   const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 600)));
   await phase(browser, seed, async (page, seeded) => {
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
     const body = issuePage(page).locator("[data-spec-body]");
     const statements = body.locator("[data-spec-statement]");
-    const traffic = watchApiRequests(page);
-    await openPreset(page, seeded.key, "spec");
-    await expectLoadSettled(traffic);
     await expect(
       statements,
       "the Spec view does not draw every statement of the spec and the long one"
     ).toHaveCount(seeded.requirements.length + 1);
-    const long = body.locator(
-      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
-    );
     // A turn of the wheel, the reader's own act, stands the long statement's top 200 px above the
     // screen, with the rest of its 600 words on screen under the column heads.
     const heads = body.locator("[data-spec-head]");

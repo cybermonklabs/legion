@@ -2329,9 +2329,10 @@ async function pressAfterKind({
   }
 }
 
-/** Statement r1's words for `pressAfterKind` with a placeholder in inline HTML, `<name>`, before
- *  the words `after`, drawn from the server's reading and held by the editor as an atom. */
-function withInlineHtml(after: string) {
+/** Statement r1's words for `pressAfterKind`: a placeholder in inline HTML, `<name>`, and the
+ *  words after it, drawn from the server's reading and held by the editor as an atom. */
+function withInlineHtml() {
+  const after = " first, then the rest.";
   const text = `Kept by <name>${after}`;
   return {
     drawn: (words: HTMLElement) => {
@@ -2358,14 +2359,14 @@ function withInlineHtml(after: string) {
 // it is `<name>` in the view and "by" in the editor, so the word pressed is found nowhere to set
 // the count right.
 test("a press after inline html lands in the word pressed", async () => {
-  await pressAfterKind({ ...withInlineHtml(" first, then the rest."), into: 3 });
+  await pressAfterKind({ ...withInlineHtml(), into: 3 });
 });
 
 // The atom holds no text, so the end of the text before it and the start of the text after it
 // have one count. A press at the start of the text after it - on the left half of its first
 // character - puts the caret there, after the atom, and not before it.
 test("a press at the start of the text after inline html lands after it", async () => {
-  await pressAfterKind({ ...withInlineHtml(" first, then the rest."), into: 0 });
+  await pressAfterKind({ ...withInlineHtml(), into: 0 });
 });
 
 // A mention of a block is drawn as a chip by the block's words, while the editor holds the
@@ -2616,6 +2617,31 @@ test("a statement or a cell a key moves the focus to is scrolled down from under
   }
 });
 
+/** The page a hold case reads, which happy-dom does not lay out: its size observers, which the
+ *  case calls by hand (`resize`); its boxes - the column heads from 0 to 31 px, each element the
+ *  case's own `boxOf` gives a box, and every other at 200 px; and `window.scrollBy`, which moves
+ *  nothing and keeps each call (`scrolledBy`). `restore` gives every one back. */
+function layOutPage(boxOf: (element: HTMLElement) => DOMRect | undefined) {
+  const sizes = installResizeObserver();
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
+    return boxOf(this) ?? new DOMRect(0, 200, 600, 48);
+  });
+  const scrolls = spyOn(window, "scrollBy").mockImplementation(() => {});
+  return {
+    resize: sizes.resize,
+    restore: () => {
+      scrolls.mockRestore();
+      boxes.mockRestore();
+      sizes.restore();
+    },
+    // `scrollBy`'s first overload takes a number; the body calls the one that takes options.
+    scrolledBy: (): unknown[] => scrolls.mock.calls.map((call): unknown => call[0]),
+  };
+}
+
 // A key or a press holds the item it leaves the focus in where it stands while the page grows
 // (`holdWhereItStands`), and does not bring it on screen again by the page's rule, which puts an
 // item taller than the screen at its top. A decision cell is as tall as its whole run of
@@ -2628,18 +2654,13 @@ test("a statement or a cell a key moves the focus to is scrolled down from under
 // start and as the page grows.
 test("a press on a decision cell's words deep in a run taller than the screen moves no page", async () => {
   const user = userEvent.setup();
-  const sizes = installResizeObserver();
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
-    if (this.hasAttribute("data-spec-cell")) {
+  const page = layOutPage((element) => {
+    if (element.hasAttribute("data-spec-cell")) {
       return new DOMRect(0, -2 * window.innerHeight, 280, 4 * window.innerHeight);
     }
-    if (this.hasAttribute("data-spec-cell-words")) return new DOMRect(0, 75, 280, 120);
-    return new DOMRect(0, 200, 600, 48);
+    if (element.hasAttribute("data-spec-cell-words")) return new DOMRect(0, 75, 280, 120);
+    return undefined;
   });
-  const scrolls = spyOn(window, "scrollBy").mockImplementation(() => {});
   const run = ["r1", "r2", "r3"];
   const { read, view } = drawBody(
     issueTree([...run.map((block) => statement(block)), decisionNode("d1")]),
@@ -2659,18 +2680,13 @@ test("a press on a decision cell's words deep in a run taller than the screen mo
     await user.click(words);
     await waitFor(() => expect(document.activeElement).toBe(cell));
     // The observers' first call, in the frame after they start, and the page growing.
-    sizes.resize(document.body);
-    sizes.resize(document.body);
-    expect(
-      scrolls.mock.calls.map((call): unknown => call[0]),
-      "the press moved the page"
-    ).toEqual([]);
+    page.resize(document.body);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the press moved the page").toEqual([]);
   } finally {
     view.unmount();
     read.mockRestore();
-    scrolls.mockRestore();
-    boxes.mockRestore();
-    sizes.restore();
+    page.restore();
   }
 });
 
@@ -2681,18 +2697,12 @@ test("a press on a decision cell's words deep in a run taller than the screen mo
 // the page's rule leaves where it is, and then one from a screen above the window to two below it.
 test("a key that moves the focus to a statement taller than the screen moves no page", async () => {
   const user = userEvent.setup();
-  const sizes = installResizeObserver();
   let readOn = false;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
-    if (readOn && this.dataset.nodeId === "spec#b-r2" && this.hasAttribute("data-spec-statement")) {
-      return new DOMRect(0, -window.innerHeight, 600, 3 * window.innerHeight);
-    }
-    return new DOMRect(0, 200, 600, 48);
-  });
-  const scrolls = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const page = layOutPage((element) =>
+    readOn && element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+      ? new DOMRect(0, -window.innerHeight, 600, 3 * window.innerHeight)
+      : undefined
+  );
   const linked = "**R2.** Read [the guide](https://example.com/guide) first.";
   const { read, view } = drawBody(
     issueTree([statement("r1"), statement("r2", { text: linked, tree: displayTree(linked) })])
@@ -2708,22 +2718,17 @@ test("a key that moves the focus to a statement taller than the screen moves no 
     readOn = true;
     await user.keyboard("f");
     expect(document.activeElement, "f did not reach the link in the statement's words").toBe(link);
-    sizes.resize(document.body);
-    sizes.resize(document.body);
+    page.resize(document.body);
+    page.resize(document.body);
     await user.keyboard("{Escape}");
     expect(document.activeElement, "Escape did not give the statement back").toBe(tall);
-    sizes.resize(document.body);
-    sizes.resize(document.body);
-    expect(
-      scrolls.mock.calls.map((call): unknown => call[0]),
-      "a key moved the page"
-    ).toEqual([]);
+    page.resize(document.body);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "a key moved the page").toEqual([]);
   } finally {
     view.unmount();
     read.mockRestore();
-    scrolls.mockRestore();
-    boxes.mockRestore();
-    sizes.restore();
+    page.restore();
   }
 });
 
@@ -2733,35 +2738,27 @@ test("a key that moves the focus to a statement taller than the screen moves no 
 // screen, and the statement held 120 px further down once the page has grown.
 test("a page that grows above a held statement keeps the statement where it stands", async () => {
   const user = userEvent.setup();
-  const sizes = installResizeObserver();
   let top = 200;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
-    if (this.dataset.nodeId === "spec#b-r2" && this.hasAttribute("data-spec-statement")) {
-      return new DOMRect(0, top, 600, 48);
-    }
-    return new DOMRect(0, 200, 600, 48);
-  });
-  const scrolls = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const page = layOutPage((element) =>
+    element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+      ? new DOMRect(0, top, 600, 48)
+      : undefined
+  );
   const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
   try {
     act(() => rowOf(view, "spec#b-r1").focus());
     await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(rowOf(view, "spec#b-r2"));
     top += 120;
-    sizes.resize(document.body);
+    page.resize(document.body);
     expect(
-      scrolls.mock.calls.map((call): unknown => call[0]),
+      page.scrolledBy(),
       "the hold left the statement where the page's growth pushed it"
     ).toEqual([{ top: 120 }]);
   } finally {
     view.unmount();
     read.mockRestore();
-    scrolls.mockRestore();
-    boxes.mockRestore();
-    sizes.restore();
+    page.restore();
   }
 });
 
@@ -2773,19 +2770,12 @@ test("a page that grows above a held statement keeps the statement where it stan
 // it scrolled.
 test("a placing after the press counts as where the held statement stands", async () => {
   const user = userEvent.setup();
-  const sizes = installResizeObserver();
   let top = 200;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
-    if (this.dataset.nodeId === "spec#b-r2" && this.hasAttribute("data-spec-statement")) {
-      return new DOMRect(0, top, 600, 48);
-    }
-    return new DOMRect(0, 200, 600, 48);
-  });
-  const scrolls = spyOn(window, "scrollBy").mockImplementation(() => {});
-  const scrolledBy = (): unknown[] => scrolls.mock.calls.map((call): unknown => call[0]);
+  const page = layOutPage((element) =>
+    element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+      ? new DOMRect(0, top, 600, 48)
+      : undefined
+  );
   const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
   try {
     const pressed = rowOf(view, "spec#b-r2");
@@ -2799,20 +2789,18 @@ test("a placing after the press counts as where the held statement stands", asyn
     act(() => {
       window.dispatchEvent(new Event("scroll"));
     });
-    sizes.resize(document.body);
-    expect(scrolledBy(), "the hold scrolled the page back over the placing").toEqual([]);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the hold scrolled the page back over the placing").toEqual([]);
     top += 40;
-    sizes.resize(document.body);
+    page.resize(document.body);
     expect(
-      scrolledBy(),
+      page.scrolledBy(),
       "the hold left the placed statement where the page's growth pushed it"
     ).toEqual([{ top: 40 }]);
   } finally {
     view.unmount();
     read.mockRestore();
-    scrolls.mockRestore();
-    boxes.mockRestore();
-    sizes.restore();
+    page.restore();
   }
 });
 

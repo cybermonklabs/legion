@@ -18,7 +18,8 @@ export function statementWordsAt(target: EventTarget): HTMLElement | null {
 }
 
 /** The mark of a reference's link in a node's drawn words, which holds the reference as its text
- *  wrote it (`row-references.ts`'s `ROW_WRITTEN`). */
+ *  wrote it: a copy of `row-references.ts`'s private `ROW_WRITTEN`, which goes once that file
+ *  exports it. */
 const REFERENCE_WRITTEN = "data-row-written";
 
 /**
