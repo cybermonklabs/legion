@@ -45,20 +45,15 @@ type testingJudgement struct {
 // known yet whether a CI job runs it, since Dispatch tells that only in a state, by naming the
 // job's case (ci_case) there.
 //
-// leaveCI leaves out each check a CI job runs, the one whose held state names its job's case,
-// whatever that state is. That is the testing move once INFRA-5392's end hold makes the end of a
-// task hold its CI checks: a failure of such a check reaches the implementer at once by a message of
-// its own (tellCIFailure), and the review, the acceptance and the end of the task read it. The
-// testing move passes Config.TestingLeavesCI, which the daemon wires false until INFRA-5392 turns
-// it on with that hold, since a task whose steps after testing hold no review and no acceptance
-// would otherwise end with no gate on its CI checks. Reading every check, one with no result while
-// its CI run goes on waits as well, since that is no state the check ends at, and a fail or a pass
-// and a fail is a fail whatever its CI run says.
+// Each check a CI job runs, the one whose held state names its job's case, is left out, whatever
+// that state is: its failure is the fix's or the owner's (fixRule, INFRA-4843 R15a's message), and
+// the end of the task holds it until it passes at the task's head (retroHold), so the testing step
+// judges only the checks that no CI job runs.
 //
 // Every other state of a check judged is conclusive, and one that is not yes fails: a fail, a pass
 // and a fail, and a state Dispatch published because a read it needed failed (read_failed), which
 // is a state of the check all the same. false is no set held at the head, which judges nothing.
-func judgeStates(head record.HeadStates, leaveCI bool) (testingJudgement, bool) {
+func judgeStates(head record.HeadStates) (testingJudgement, bool) {
 	if head.Checks == nil {
 		return testingJudgement{}, false
 	}
@@ -68,7 +63,7 @@ func judgeStates(head record.HeadStates, leaveCI bool) (testingJudgement, bool) 
 		switch {
 		case !held:
 			judgement.Waiting = append(judgement.Waiting, check)
-		case leaveCI && state.CICase != "":
+		case state.CICase != "":
 			continue
 		case state.State == stateYes:
 			continue
@@ -111,9 +106,8 @@ func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest)
 // holds through the record's (record.Store.StatesFenceReached), since each event the tester's
 // results caused has a serial at or below it: below that fence the states held may be the ones from
 // before those results. At the fence it decides only once every check it reads holds a conclusive
-// state there (judgeStates with Config.TestingLeavesCI: every check, those a CI job runs among
-// them, as the daemon wires it, until INFRA-5392's end hold makes the end of a task hold the checks
-// a CI job runs; only the checks that no CI job runs, once INFRA-5392 turns it on): a head with no
+// state there (judgeStates: the checks that no CI job runs, since the end of the task holds each
+// one a CI job runs): a head with no
 // set held, or a check the judgement waits for, a check with no state among them, moves nothing,
 // whatever the other checks read, since a later state of the waiting check changes what the task
 // must name. Then every check it reads passing moves the issue on to the task's next step, and the
@@ -143,7 +137,7 @@ func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return err
 	}
-	judgement, judged := judgeStates(held, e.cfg.TestingLeavesCI)
+	judgement, judged := judgeStates(held)
 	switch {
 	case !judged:
 		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForSet})

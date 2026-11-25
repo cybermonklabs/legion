@@ -173,9 +173,7 @@ func askedOfImplementer(t *testing.T, engine *Engine, moves ...TriggerKind) *fix
 // leavingCIEngine is returnEngine whose testing move leaves out the checks a CI job runs, the
 // narrowed testing step a fix stands beside.
 func leavingCIEngine() *Engine {
-	engine := returnEngine()
-	engine.cfg.TestingLeavesCI = true
-	return engine
+	return returnEngine()
 }
 
 // A fix that opens while the implementer owes the merge forward of the head takes that merge as its

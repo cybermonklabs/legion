@@ -167,15 +167,6 @@ type Config struct {
 	// or "" for an issue, names no directory, and the task names the branch alone: an API-only
 	// daemon and every test that runs no runtime.
 	WorkspaceDir func(record.Issue) string
-	// TestingLeavesCI is whether the testing move leaves out each check a CI job runs, the one
-	// whose state names its job's case (judgeStates' leaveCI, which decideTesting reads from here
-	// alone): true, the move reads only the checks that no CI job runs, and a failure of one a CI
-	// job runs reaches the implementer by its own message (tellCIFailure) while the later steps go
-	// on. The daemon wires it false (engineConfig) until INFRA-5392's end hold makes the end of a
-	// task hold its checks that a CI job runs, and INFRA-5392 turns it on with that hold: before
-	// then a task whose steps after testing hold no review and no acceptance would end with no gate
-	// on those checks. The zero value reads every check.
-	TestingLeavesCI bool
 }
 
 // Engine interprets the table of each issue's walk (Walk: Table, or the table of its plan's line)

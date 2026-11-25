@@ -70,9 +70,10 @@ func (e *Engine) refuseFixName(ctx context.Context, tx pgx.Tx, pass *fixPass, ch
 	if err2 != nil || !told {
 		return err2
 	}
-	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "ci-failed", Role: claim.RoleArchitect, Phase: record.StandsAt(issue), Reason: fmt.Sprintf(
-		"Check %s fails at %s of task %s of %s, and no fix of task %s can run: Legion cannot name a branch beside it (%v). Decide with the person: send the task back with request_backward_move, or stop it with stop_task.",
-		check, pass.head, w.Task, issue.Key, w.Task, err)})
+	notice := ciFailedNotice(issue, w, check, pass.head, false)
+	notice.Reason = fmt.Sprintf("Check %s fails at %s of task %s of %s, and no fix of task %s can run: Legion cannot name a branch beside it (%v). "+
+		"Decide with the person: send the task back with request_backward_move, or stop it with stop_task.", check, pass.head, w.Task, issue.Key, w.Task, err)
+	return e.notice(ctx, tx, issue.Key, notice)
 }
 
 // UpdatePushes is where each role of issue key pushes at an update round's ask (supervise.UpdatePush,
