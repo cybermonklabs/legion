@@ -353,9 +353,9 @@ func takeOverIdleReleases(ctx context.Context, tx pgx.Tx, project string) ([]Tak
 	for _, taken := range marks {
 		// The kinds and the op are the release's own rows and nothing else (daemon's
 		// idleReleaseRows, unownedReleaseRows), so a row of the issue another transaction numbered
-		// inside the range — a delivery, a start — is left to run. The check (issue_bundle) of a
-		// mark whose issue is the project's is the last statement's too; the kind is here for a
-		// mark from before #4115 on another project's issue, whose check that statement leaves.
+		// inside the range — a delivery, a start — is left to run. issue_bundle stays among the
+		// kinds for a mark written before #4115 that names another project's issue, whose check
+		// only this delete finishes; the function's doc says why.
 		if _, err := tx.Exec(ctx, `delete from outbox where issue = $1 and id between $2 and $3
 			and (kind in ('issue_bundle', 'issue_release') or (kind = 'supervise' and payload->>'op' = 'release'))`,
 			taken.issue, taken.mark.first, taken.mark.last); err != nil {
