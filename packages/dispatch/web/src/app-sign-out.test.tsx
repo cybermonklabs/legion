@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
@@ -29,6 +29,13 @@ import { writesOf } from "./features/writes/write-store";
 // suspended resource outside `act`. So the module is loaded here, with the test file, and no row
 // starts or waits for it.
 import "./features/margin/Margin";
+import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });
@@ -180,7 +187,7 @@ test("another person signed in from another tab finds none of the drafts the per
   const app = renderApp({ whoAmI: async () => ({ event_head: "0", kind: "user", login }) });
   const tab = new BroadcastChannel("dispatch-sign-in");
   const unsent = unsentDraftsOf(app.queryClient);
-  const draft = { body: "Alice's unsent reply", mentions: [], replacement: "" };
+  const draft = { body: "Alice's unsent reply", replacement: "" };
   const reply = renderHook(() => useReplyDraft("ask-1"));
   try {
     await screen.findByText(wholeText("Signed in as alice"));
@@ -232,7 +239,7 @@ test("after another person's sign-in, a reload of the same tab brings back none 
   const whoAmI = async () => ({ event_head: "0", kind: "user" as const, login });
   let app = renderApp({ whoAmI });
   const tab = new BroadcastChannel("dispatch-sign-in");
-  const draft = { body: "Alice's unsent reply", mentions: [], replacement: "" };
+  const draft = { body: "Alice's unsent reply", replacement: "" };
   try {
     await screen.findByText(wholeText("Signed in as alice"));
     const unsent = unsentDraftsOf(app.queryClient);

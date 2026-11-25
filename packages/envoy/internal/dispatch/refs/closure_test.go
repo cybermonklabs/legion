@@ -183,7 +183,7 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	fixture := newClosureFixture(t)
 	wantMembers := mainsDepthOneMembers(t, fixture.database, "CORE-1")
-	references, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1")
+	references, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read the closure: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	}
 	recorder := &statementRecorder{Queryer: tx}
 	read := time.Now()
-	references, err := Closure(ctx, recorder, model.Actor{}, fixture.issue)
+	references, err := Closure(ctx, recorder, model.Actor{}, fixture.issue, "")
 	took := time.Since(read)
 	_ = tx.Rollback(ctx)
 	if err != nil {
@@ -551,7 +551,7 @@ func depthOneDiff(t *testing.T, database *store.Store, issueKey string, reached 
 			t.Fatalf("main's statement answers %s at no depth 1 for %s, so the fixture decides nothing; its rows of depth 1: %v", refKey, issueKey, want)
 		}
 	}
-	references, err := Closure(context.Background(), database.Pool, model.Actor{}, issueKey)
+	references, err := Closure(context.Background(), database.Pool, model.Actor{}, issueKey, "")
 	if err != nil {
 		t.Fatalf("read %s's references: %v", issueKey, err)
 	}
@@ -722,7 +722,7 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 		insertIndexedItem(t, tx, ItemMessage, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/by-message-block-md.")
 		question := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE/artifact/by-question-md first?", model.AskOption{Label: "Yes"})
 		mentions := NewReader(ctx, tx, question.Author, "ask", question.ID, itemBlockServer).Mentions(question.Question)
-		if _, err := replaceRefs(ctx, tx, "ask", question.ID, text.Refs(mentions), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "ask", question.ID, text.Refs(mentions), nil, false); err != nil {
 			t.Fatalf("index the ask's own references: %v", err)
 		}
 		indexAskPartsAt(t, tx, question, 1)

@@ -8,12 +8,12 @@
 GATE = gate("envoy_go_race", "envoy-go-race",
      runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")]
      + [forced_order_run("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP, ENVOY, ENVOY_FORCED_ORDER_TEST_PKGS)]
-     + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, ENVOY_FORCED_ORDER_PKGS)
-        for server in ENVOY_FORCED_ORDER_SERVERS],
+     + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, pkgs)
+        for server, pkgs in ENVOY_FORCED_ORDER_PKGS.items()],
      reads=ceiling_reads("envoy-go-race") + crash_safety_reads("envoy-go-race")
      + reads((FORCED_ORDER_TEST, f"{at('envoy-go-race', ENVOY_FORCED_ORDER_TEST_STEP)} runs it"))
      + forced_order_reads("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP)
-     + [read for server in ENVOY_FORCED_ORDER_SERVERS
+     + [read for server in ENVOY_FORCED_ORDER_PKGS
         for read in forced_order_reads("envoy-go-race", envoy_forced_order_step(server))]
      + setup_go("envoy-go-race", f"{ENVOY}/go.mod")
      + go_modules("envoy-go-race"))

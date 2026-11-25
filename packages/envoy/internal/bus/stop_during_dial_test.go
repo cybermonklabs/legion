@@ -1,15 +1,11 @@
 package bus_test
 
 import (
-	"bytes"
-	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // A recovery that is dialling when Drain stops the client neither installs the connection its dial
@@ -20,19 +16,14 @@ import (
 func TestARecoveryStoppedMidDialInstallsNothingAndLogsNoError(t *testing.T) {
 	_, uri := startNATS(t)
 	proxy := startRelayProxy(t, uri)
-	client, err := bus.ConnectOwningStream([]string{proxy.url()})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{proxy.url()}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
 
-	var logs bytes.Buffer
-	var logsMu sync.Mutex
-	logtest.SetDefault(t, slog.NewJSONHandler(writerFunc(func(p []byte) (int, error) {
-		logsMu.Lock()
-		defer logsMu.Unlock()
-		return logs.Write(p)
-	}), nil))
+	logs := clientLogs.fromHere()
 
 	proxy.delay.Store(int64(time.Second))
 	client.Conn.Close()
@@ -47,18 +38,10 @@ func TestARecoveryStoppedMidDialInstallsNothingAndLogsNoError(t *testing.T) {
 	if client.Connected() {
 		t.Fatal("the recovery installed the connection it dialled after Drain stopped the client")
 	}
-	logsMu.Lock()
-	defer logsMu.Unlock()
-	for _, line := range strings.Split(logs.String(), "\n") {
-		if strings.Contains(line, `"level":"ERROR"`) {
-			t.Fatalf("a recovery stopped by Drain logged an error: %s", line)
-		}
+	if line := logs.errorLine(); line != "" {
+		t.Fatalf("a recovery stopped by Drain logged an error: %s", line)
 	}
 }
-
-type writerFunc func([]byte) (int, error)
-
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 // A recovery whose dial is failing when Close stops the client ends at the stop: it logs the
 // cancellation and never a reconnect failure. Its dial retries a lost server for up to ten
@@ -68,25 +51,14 @@ func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 func TestARecoveryDiallingALostServerEndsAtTheStop(t *testing.T) {
 	_, uri := startNATS(t)
 	proxy := startRelayProxy(t, uri)
-	client, err := bus.ConnectOwningStream([]string{proxy.url()})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{proxy.url()}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
 
-	var logs bytes.Buffer
-	var logsMu sync.Mutex
-	logtest.SetDefault(t, slog.NewJSONHandler(writerFunc(func(p []byte) (int, error) {
-		logsMu.Lock()
-		defer logsMu.Unlock()
-		return logs.Write(p)
-	}), nil))
-
-	logged := func(fragment string) bool {
-		logsMu.Lock()
-		defer logsMu.Unlock()
-		return strings.Contains(logs.String(), fragment)
-	}
+	logs := clientLogs.fromHere()
 
 	proxy.refuse.Store(true)
 	proxy.delay.Store(int64(500 * time.Millisecond))
@@ -99,18 +71,14 @@ func TestARecoveryDiallingALostServerEndsAtTheStop(t *testing.T) {
 	client.Close()
 
 	deadline := time.Now().Add(3 * time.Second)
-	for !logged("envoy nats recovery cancelled") {
+	for !strings.Contains(logs.String(), "envoy nats recovery cancelled") {
 		if time.Now().After(deadline) {
 			t.Fatal("the recovery was still dialling 3s after Close stopped the client")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	time.Sleep(2 * time.Second)
-	logsMu.Lock()
-	defer logsMu.Unlock()
-	for _, line := range strings.Split(logs.String(), "\n") {
-		if strings.Contains(line, `"level":"ERROR"`) {
-			t.Fatalf("a recovery stopped by Close logged an error: %s", line)
-		}
+	if line := logs.errorLine(); line != "" {
+		t.Fatalf("a recovery stopped by Close logged an error: %s", line)
 	}
 }
