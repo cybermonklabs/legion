@@ -327,15 +327,19 @@ export function AskReplyComposer({
         labelClassName={`block text-sm font-medium ${textSecondaryOnCanvas}`}
         onChange={(change) => setBody(change.body)}
         onDrop={
-          uploadOwner === undefined || held
+          uploadOwner === undefined
             ? undefined
-            : (event) => upload.drop(event, uploadOwner, ask.id)
+            : (event) => {
+                if (!held) upload.drop(event, uploadOwner, ask.id);
+              }
         }
         onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || held })}
         onPaste={
-          uploadOwner === undefined || held
+          uploadOwner === undefined
             ? undefined
-            : (event) => upload.paste(event, uploadOwner, ask.id)
+            : (event) => {
+                if (!held) upload.paste(event, uploadOwner, ask.id);
+              }
         }
         replyBox
         writing={dispatchWritingBox("ask-thread-reply", "comment")}

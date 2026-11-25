@@ -1674,8 +1674,8 @@ export function AgentsPage(): ReactNode {
   const [filters, setFilters] = useAgentFilters();
   const search = filters.search;
   // The picked roles no live session carries, which the empty state names rather than letting
-  // the reader read this list as every role there is: a role is here only while a
-  // session holds it.
+  // the reader read this list as every role there is: a role is here only while a session
+  // holds it.
   const unheldRoles = filters.roles.filter(
     (role) => !agents.some((agent) => (agent.roles ?? []).includes(role))
   );

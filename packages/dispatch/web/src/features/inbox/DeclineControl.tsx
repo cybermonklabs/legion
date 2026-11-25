@@ -63,11 +63,11 @@ export function declineRefusal(error: Error): string {
  * (`DISPATCH_EVENT_BODY_MAX`), which the field names as its own description so a reader who
  * cannot see it is told it too. Typing stops at that bound, where the count reaches zero. A
  * pick writes into the box without typing, so a reference taken near the bound can pass it:
- * the count then reads below zero and **Decline to answer** is disabled until the note is
- * shorter, so the bound is met here rather than as a refusal from the server. While the decline
- * is out the note and both controls are held (`held-press.ts`), never disabled: the one the
- * reader pressed keeps the focus, the dialog's Tab cycle keeps all three, so a Tab never leaves
- * the open dialog, and a press of either control does nothing.
+ * the count then reads below zero and **Decline to answer** is disabled until the note is shorter,
+ * so the bound is met here rather than as a refusal from the server. While the decline is out
+ * the note and both controls are held (`held-press.ts`), never disabled: the one the reader
+ * pressed keeps the focus, the dialog's Tab cycle keeps all three, so a Tab never leaves the
+ * open dialog, and a press of either control does nothing.
  */
 function DeclineDialog({
   error,
@@ -172,8 +172,8 @@ function DeclineDialog({
             </button>
             <button
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={left < 0}
               {...heldPress(held, () => onSubmit(note.trim()))}
+              disabled={left < 0}
               type="button"
             >
               {held ? "Declining…" : "Decline to answer"}
@@ -229,8 +229,7 @@ export function DeclineControl({
   // declines (`AskPress`), so its landing reads again the ask it was made on, whichever ask the
   // card is drawn for by then. Its label holds the question's plain-text projection, the words
   // the card draws: the reading list's `write-label` (`DISPATCH_READING_SURFACES`) says why. The
-  // press carries that line as it reads at the press (`DeclineButton`'s `useQuestionLabel`), so
-  // it names its own ask's question too.
+  // press carries that line as it reads at the press, so it names its own ask's question too.
   const options: OutstandingAnswerWriteOptions<Ask, DeclinePress> = {
     label: (press) => `Decline of “${press.questionWords}”`,
     method: "POST",
@@ -289,6 +288,8 @@ function DeclineButton({
   write,
 }: DeclineDrawn & { write: OutstandingAnswerWrite<DeclinePress> }): ReactNode {
   const held = write.isPending && !write.late;
+  // The words the card draws for the question, which the press carries as its label reads it
+  // (`questionWords`): this is the component that draws them, so it reads them.
   const question = useQuestionLabel(ask);
   useReleaseWhenLate(submitGuard, write.late);
   return (

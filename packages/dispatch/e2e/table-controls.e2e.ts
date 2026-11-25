@@ -12165,3 +12165,503 @@ test("at 390 the selection bar's return to the row marked last, with its checkbo
     landings.map((landing) => landing.text).join("; ")
   ).toEqual(landings.map(() => true));
 });
+
+// INFRA-3135, round 28 (the tester's), by the architect's rulings of 2026-11-25 13:01Z ("a count
+// is drawn once every read it counts has answered; a read that a count does not count never hides
+// it") and 17:5xZ (F5: while a Claimed-by narrowing that needs the agent registry is on, and
+// before the registry's first read answers or settles on its error, no column draws a count;
+// after that the per-value rule applies). Measured at 5a444912 in builds Job
+// infra-3135-f8-h1-sn5q6, in Chromium, Firefox and WebKit at 1440x900: with the agent list
+// (`GET /api/v1/agents`) refused every time and Nobody or lapsed picked, the header filters draw
+// their counts once the page says it could not check which claims have lapsed, and lose them
+// again while each later poll of the list is out: Assignee offers "alice" where it offered
+// "alice, 2 issues" a moment before. The list has never answered, so each poll's read puts the
+// registry's query back to pending (`isError` false, `known` false), and
+// `registryPending = wantsFree && !registry.known && !registry.isError` (IssuesTable.tsx:505)
+// then hides every column's count, where the registry's first read settled long before. The rows
+// the list holds are the same before and during that read: every claim counts as held while no
+// read has answered. The control: before the poll, with the list's first read settled on its
+// error, the same filters draw these counts.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): one project on the List, read with the agent list refused, and one poll of the list held.
+test("with the agent list refused, the project List's header filters keep each count the list does not decide while a later poll of the list is out @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  const alice = await createIssue({ project: "CORE", title: "Harbour crane" });
+  await patchIssue(alice.key, { assignee: "alice", labels: ["alpha"], priority: 1 });
+  const bob = await createIssue({ project: "CORE", title: "Signal tower" });
+  await patchIssue(bob.key, { assignee: "bob", priority: 2 });
+  const more = await createIssue({ project: "CORE", title: "Ferry ramp" });
+  await patchIssue(more.key, { assignee: "alice", labels: ["alpha"], priority: 1 });
+  // The agent list answers 500 while `holding` is false, and is held, unanswered, while it is true.
+  let holding = false;
+  const held: Route[] = [];
+  await page.route(
+    (url) => url.pathname === "/api/v1/agents",
+    async (route) => {
+      if (holding) {
+        held.push(route);
+        return;
+      }
+      await route.fulfill({
+        body: '{"error":{"code":"INTERNAL","message":"agent list refused"}}',
+        contentType: "application/json",
+        status: 500,
+      });
+    }
+  );
+  /** Each option of one header filter, by its accessible name, read once it holds `count`, in
+   *  sorted order: an option that draws a count is named by its `aria-label` (`alice, 2 issues`),
+   *  and one that draws none by its label's own text (`alice`), its check mark left out. */
+  const headerFilterOptions = async (header: string, count: number): Promise<string[]> => {
+    const trigger = page.getByRole("button", {
+      name: new RegExp(`^Filter ${header}(?:: \\d+ picked)?$`, "u"),
+    });
+    await trigger.click();
+    const options = listOf(trigger).getByRole("option");
+    await expect(options).toHaveCount(count);
+    const names = await options.evaluateAll((elements) =>
+      elements.map(
+        (element) =>
+          element.getAttribute("aria-label") ??
+          Array.from(element.children)
+            .filter((child) => child.getAttribute("aria-hidden") !== "true")
+            .map((child) => child.textContent ?? "")
+            .join("")
+            .trim()
+      )
+    );
+    await page.keyboard.press("Escape");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    return names.sort();
+  };
+  // The counts that read the issues alone, which answered.
+  const filters = [
+    { count: 2, header: "Assignee", wanted: ["alice, 2 issues", "bob, 1 issue"] },
+    { count: 2, header: "Priority", wanted: ["P1, 2 issues", "P2, 1 issue"] },
+    { count: 1, header: "Labels", wanted: ["alpha, 2 issues"] },
+  ];
+  /** What each filter offers that is not one of its wanted counts, written for a message. */
+  const lacking = async (where: string): Promise<string[]> => {
+    const wrong: string[] = [];
+    for (const { count, header, wanted } of filters) {
+      const offered = await headerFilterOptions(header, count);
+      for (const want of wanted)
+        if (!offered.includes(want))
+          wrong.push(
+            `${where}: ${header} offers ${offered.join(" | ")} where it should hold "${want}"`
+          );
+    }
+    return wrong;
+  };
+  await page.goto("/projects/CORE/issues?unclaimed=1");
+  for (const key of [alice.key, bob.key, more.key])
+    await expect(page.locator(`[data-issue-row="${key}"]`)).toBeVisible();
+  // The control: the list's first read has settled on its error, as the page says, and every
+  // count the list does not decide is drawn.
+  await expect(page.getByTestId("unclaimed-unchecked")).toBeVisible();
+  await expect.poll(() => lacking("first read refused"), { timeout: 10_000 }).toEqual([]);
+  // The shell's next poll of the list (every 15 s, `AGENT_REGISTRY_POLL_MS`) is held: its read is
+  // out while the filters are read again.
+  holding = true;
+  await expect
+    .poll(() => held.length, { message: "a later poll of the agent list", timeout: 20_000 })
+    .toBeGreaterThan(0);
+  const whileOut = await lacking("a later poll held");
+  holding = false;
+  for (const route of held.splice(0))
+    await route
+      .fulfill({
+        body: '{"error":{"code":"INTERNAL","message":"agent list refused"}}',
+        contentType: "application/json",
+        status: 500,
+      })
+      .catch(() => undefined);
+  expect(whileOut, whileOut.join("; ")).toEqual([]);
+});
+
+// INFRA-3135, round 28 (the tester's), by the architect's ruling of 2026-11-25 05:3xZ (every
+// landing of the selection bar's return takes the least scroll to its nearest edge, and a landing
+// partly in sight is shown whole). Measured at 5a444912 in builds Job infra-3135-f8-h3-wwf5b and
+// at 4f1ad776 in infra-3135-f8-b3-4prbk: with two Inbox threads marked and the checkbox of the
+// row marked last cut by 30% at the bottom edge of what the reader sees (the list's box at
+// 1440x900, the window at 390x664), the bar's Dismiss lands the focus on the checkbox of the row
+// now at the place in Chromium and Firefox, shown whole by a scroll of the cut alone (5 px), and
+// 4f1ad776 shows it whole in all three engines. In WebKit at 5a444912 the box (1440) or the window (390)
+// instead moves back by the rows the Dismiss took away - 162 px in the box, 940 px in the window
+// - and the focus is left on that checkbox wholly below the reader's sight (its top at 1027 px
+// under a box that ends at 876, at 1593 px in a window 664 px high), with no scroll to show it:
+// `ViewportAnchor.showFocused` (features/shell/ViewportAnchor.tsx:679) leaves a control wholly out
+// of sight where it is, and by the time it reads the landing, the anchoring has moved it out.
+// The race is WebKit's: this row failed 4 of 6 WebKit repeats at 5a444912 (builds Jobs
+// infra-3135-infra-3135-red28-krw9f and -final28-wglpb), both widths together in a failing run,
+// and it passes in every Chromium and Firefox run there, where the landing is right; at 4f1ad776
+// WebKit's landing at 1440 was whole in 3 of 3 probe runs. So a pass at a fixed head counts only
+// over 8 or more WebKit repeats (the architect, 2026-11-25 21:20Z).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): eighty threads seeded, and two Dismiss presses read once the scroll settles.
+test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom of the reader's sight shows the checkbox of the row now at the place whole by the least scroll, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  for (let index = 0; index < 80; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Thread issue ${index}` });
+    await seedCommentThread(
+      issue.key,
+      `Thread ${index}: when does it run?`,
+      `At 0${index % 10}:00.`
+    );
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  /** The part of the window the reader sees the Inbox's rows in: the list's own box where it
+   *  scrolls (a desktop), else the window; and that scroller's scroll. */
+  const readerSight = () =>
+    page.evaluate(() => {
+      const box = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+      const scrolls =
+        box !== null &&
+        box.scrollHeight > box.clientHeight + 1 &&
+        getComputedStyle(box).overflowY !== "visible";
+      const frame = scrolls && box !== null ? box.getBoundingClientRect() : null;
+      return {
+        bottom: Math.min(window.innerHeight, frame?.bottom ?? window.innerHeight),
+        scroll: scrolls && box !== null ? box.scrollTop : window.scrollY,
+        top: Math.max(0, frame?.top ?? 0),
+      };
+    });
+  /** The rect of the checkbox of the Inbox row `id`. */
+  const checkboxRect = (id: string) =>
+    page.evaluate((id) => {
+      const own = document
+        .querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`)
+        ?.getBoundingClientRect();
+      return {
+        bottom: own?.bottom ?? Number.NaN,
+        height: own?.height ?? Number.NaN,
+        top: own?.top ?? Number.NaN,
+      };
+    }, id);
+  const landings: { ok: boolean; text: string }[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    const where = `Inbox at ${size.width}x${size.height}`;
+    await page.setViewportSize(size);
+    await page.goto("/?group=none");
+    await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
+    // The rows read once the poll above found the list drawn; they only name the rows marked and
+    // the one after them.
+    const ids = await page
+      .locator("[data-inbox-row]")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+    const upper = ids[12] ?? "";
+    const lower = ids[13] ?? "";
+    const after = ids[14] ?? "";
+    // The lower row first, so the row marked last is the upper one.
+    for (const id of [lower, upper]) await inboxRow(page, id).getByRole("checkbox").first().check();
+    await expect(bar).toBeVisible();
+    // The upper row's checkbox is cut by 30% of its height at the bottom of the reader's sight.
+    const view = await readerSight();
+    const own = await checkboxRect(upper);
+    const by = own.bottom - (view.bottom + own.height * 0.3);
+    await page.evaluate((by) => {
+      const box = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+      if (
+        box !== null &&
+        box.scrollHeight > box.clientHeight + 1 &&
+        getComputedStyle(box).overflowY !== "visible"
+      )
+        box.scrollBy(0, by);
+      else window.scrollBy(0, by);
+    }, by);
+    await settledScrollTop(page);
+    await settledScrollTop(page.getByTestId("inbox-list"));
+    await nextFrames(page);
+    const before = await readerSight();
+    const placed = await checkboxRect(upper);
+    const cut = placed.bottom - before.bottom;
+    await bar.getByRole("button", { name: /selected threads$/u }).focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.locator(`[data-inbox-row="${lower}"]`)).toHaveCount(0, { timeout: 15_000 });
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            (id) =>
+              document.activeElement ===
+              document.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`),
+            after
+          ),
+        { message: `${where}: the focus is not on the checkbox of the row now at the place` }
+      )
+      .toBe(true);
+    await settledScrollTop(page);
+    await settledScrollTop(page.getByTestId("inbox-list"));
+    await nextFrames(page);
+    // One read is the answer: both rows have gone, the focus has landed and the scroll has held
+    // still, so nothing moves the focus or the rows after this.
+    const now = await readerSight();
+    // Read in the same settled moment as the sight above, so it is where the press left it.
+    const landed = await checkboxRect(after);
+    const scrolled = Math.round(now.scroll - before.scroll);
+    landings.push({
+      ok:
+        landed.top >= now.top - 1 &&
+        landed.bottom <= now.bottom + 1 &&
+        Math.abs(scrolled) <= cut + 1,
+      text:
+        `${where}: the checkbox of the row marked last was cut by ${Math.round(cut * 10) / 10} px, ` +
+        `the rows scrolled ${scrolled} px, and the checkbox now at the place stands at top ` +
+        `${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
+        `${Math.round(now.top)} to ${Math.round(now.bottom)}`,
+    });
+  }
+  expect(
+    landings.map((landing) => landing.ok),
+    landings.map((landing) => landing.text).join("; ")
+  ).toEqual(landings.map(() => true));
+});
+
+// INFRA-3135, round 28 (the tester's), by the architect's rulings of 2026-11-25 05:1xZ (the rule
+// reads the checkbox, the control that takes the focus, and not its row), 05:3xZ (every landing of
+// the selection bar's return takes the least scroll to its nearest edge, and a landing partly in
+// sight is shown whole) and 20:3xZ, which counts this row at 390x664, a size the spec names.
+// Measured at 5a444912 in builds Jobs infra-3135-f8-h3-wwf5b and
+// infra-3135-infra-3135-probe28c-cqhhk and at 4f1ad776 in infra-3135-f8-b3-4prbk, in Chromium and
+// WebKit at 390x664 (Firefox lands whole): on the project List of an epic's ninety issues, with
+// the table's box standing 60 px below the window's top, the two rows marked last near the end of
+// the list and the box scrolled back to its top, so neither is drawn, the box ends at y 494 while
+// the selection bar stands, and CORE-4's checkbox stands at 483 to 496, cut by 2 px at that edge.
+// Take out of epic lands the focus on that checkbox and scrolls the box 3 px, the least scroll that
+// shows it whole in the box as it stood. In the frame the bar goes, the box's bottom edge moves up
+// 20 px, to 474, while the rows move by the 3 px scroll alone, and the checkbox, now at 480 to 493, is left
+// wholly below the box's edge. The landing measures the box before the bar's going has changed it,
+// and does not read the checkbox again once it has.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): ninety issues of an epic seeded, and one Take out of epic read once the box settles.
+test("at 390 Take out of epic with the rows marked last far below the view and not drawn lands the focus on a checkbox wholly in the box's sight, or on the table, by no more than the least scroll @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 664, width: 390 });
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Table epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  for (let index = 0; index < 90; index++) {
+    await createIssue({ parent: epic.key, project: "CORE", title: `Epic row ${index}` });
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const box = page.getByTestId("issues-table-scroll");
+  await page.goto(`/projects/CORE/issues?f.epic=${encodeURIComponent(`${epic.key} · Table epic`)}`);
+  await expect.poll(() => page.locator("[data-issue-row]").count()).toBeGreaterThanOrEqual(12);
+  // The box's top 60 px below the window's top, and the box scrolled to its end, where it draws
+  // the rows near the end of the list.
+  await box.evaluate((node) => {
+    window.scrollBy(0, node.getBoundingClientRect().top - 60);
+    node.scrollTop = node.scrollHeight;
+  });
+  await settledScrollTop(box);
+  await settledScrollTop(page);
+  await nextFrames(page);
+  const order = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("[data-issue-row]")]
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
+      .map((row) => row.getAttribute("data-issue-row") ?? "")
+  );
+  const upper = order[order.length - 4] ?? "";
+  const lower = order[order.length - 3] ?? "";
+  // The lower row first, so the row marked last is the upper one.
+  for (const key of [lower, upper]) {
+    const mark = page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+    await mark.focus();
+    await page.keyboard.press("Space");
+    await expect(mark).toBeChecked();
+  }
+  await expect(bar).toContainText("2 selected");
+  await box.evaluate((node) => {
+    node.scrollTop = 0;
+  });
+  await settledScrollTop(box);
+  await settledScrollTop(page);
+  await nextFrames(page);
+  await expect(page.locator(`[data-issue-row="${upper}"]`)).toHaveCount(0);
+  /** The part of the window the box shows its rows in, below its sticky head; the box's and the
+   *  window's scroll; and the rect of each drawn row's checkbox, by the row's key. */
+  const takeOutView = () =>
+    page.evaluate(() => {
+      const node = document.querySelector<HTMLElement>('[data-testid="issues-table-scroll"]');
+      const frame = node?.getBoundingClientRect();
+      const head = node?.querySelector("thead")?.getBoundingClientRect();
+      const marks: Record<string, { bottom: number; top: number }> = {};
+      for (const row of document.querySelectorAll<HTMLElement>("[data-issue-row]")) {
+        const own = row.querySelector('input[type="checkbox"]')?.getBoundingClientRect();
+        if (own !== undefined)
+          marks[row.getAttribute("data-issue-row") ?? ""] = { bottom: own.bottom, top: own.top };
+      }
+      const focused = document.activeElement;
+      return {
+        bottom: Math.min(window.innerHeight, frame?.bottom ?? 0),
+        boxScroll: node?.scrollTop ?? 0,
+        focusedRow:
+          focused instanceof HTMLInputElement && focused.type === "checkbox"
+            ? (focused.closest("[data-issue-row]")?.getAttribute("data-issue-row") ?? null)
+            : null,
+        onTable: focused !== null && focused === node?.querySelector("table"),
+        focusedName: focused?.getAttribute("aria-label") ?? focused?.tagName ?? "nothing",
+        marks,
+        top: Math.max(0, head?.bottom ?? frame?.top ?? 0),
+        windowScroll: window.scrollY,
+      };
+    });
+  const before = await takeOutView();
+  await bar.getByRole("button", { exact: true, name: "Take out of epic" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(bar).toHaveCount(0, { timeout: 15_000 });
+  await settledScrollTop(box);
+  await settledScrollTop(page);
+  await nextFrames(page);
+  // One read is the answer: the bar has gone and the box and the window have held still, so
+  // nothing moves the focus or the rows after this.
+  const now = await takeOutView();
+  const scrolled =
+    Math.abs(now.boxScroll - before.boxScroll) + Math.abs(now.windowScroll - before.windowScroll);
+  const landed = now.focusedRow === null ? undefined : now.marks[now.focusedRow];
+  const was = now.focusedRow === null ? undefined : before.marks[now.focusedRow];
+  // The least scroll that shows the landed checkbox whole, from where it stood before the press.
+  const least =
+    was === undefined ? 0 : Math.max(0, was.bottom - before.bottom, before.top - was.top);
+  const where =
+    `the focus is on ${now.focusedName}` +
+    (landed === undefined
+      ? ""
+      : ` at top ${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)}, in the box's sight from ${Math.round(now.top)} to ${Math.round(now.bottom)}`) +
+    `, and the box and the window scrolled ${Math.round(scrolled)} px where the least is ${Math.round(least)} px`;
+  const whole =
+    landed !== undefined && landed.top >= now.top - 1 && landed.bottom <= now.bottom + 1;
+  expect(now.focusedRow !== null || now.onTable, where).toBe(true);
+  expect(now.onTable || (whole && scrolled <= least + 1), where).toBe(true);
+});
+
+// INFRA-3135, round 28 (the tester's), by the architect's rulings of 2026-11-25 05:3xZ (every
+// landing of the selection bar's return takes the least scroll to its nearest edge, and a landing
+// partly in sight is shown whole) and 20:3xZ, which counts this row: it is the 70%-cut rule of the
+// round-27 row on Take out of epic (eba5a52d), on the Inbox's Snooze, since the shared bar carries
+// one rule on both pages. Measured at 5a444912 in builds Job infra-3135-f8-h3-wwf5b and at
+// 4f1ad776 in infra-3135-f8-b3-4prbk, at 1440x900: with two asks marked and the checkbox of the
+// row marked last cut by 70% at the bottom edge of the Inbox list's box, the bar's Snooze
+// (Tomorrow) lands the focus on the checkbox of the row now at the place in Chromium and Firefox,
+// shown whole by a scroll of the cut (11 px). In WebKit it leaves the focus on the page body.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): thirty asks seeded, and one Snooze read once the list's box settles.
+test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's bottom edge shows the checkbox of the row now at the place whole by the least scroll @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "ASKS", name: "Asks" });
+  for (let index = 0; index < 30; index++) {
+    const owner = await createIssue({ force: true, project: "ASKS", title: `Ask owner ${index}` });
+    await createAsk(owner.key, { question: `Ask ${index}: which way?` }, SURFACE_SESSION);
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  const list = page.getByTestId("inbox-list");
+  /** The part of the window the list's box shows its rows in, and the box's scroll. */
+  const readerSight = () =>
+    list.evaluate((box) => {
+      const frame = box.getBoundingClientRect();
+      return {
+        bottom: Math.min(window.innerHeight, frame.bottom),
+        scroll: box.scrollTop,
+        top: Math.max(0, frame.top),
+      };
+    });
+  /** The rect of the checkbox of the Inbox row `id`. */
+  const checkboxRect = (id: string) =>
+    page.evaluate((id) => {
+      const own = document
+        .querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`)
+        ?.getBoundingClientRect();
+      return {
+        bottom: own?.bottom ?? Number.NaN,
+        height: own?.height ?? Number.NaN,
+        top: own?.top ?? Number.NaN,
+      };
+    }, id);
+  await page.goto("/?group=none");
+  await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
+  // The rows read once the poll above found the list drawn; they only name the rows marked and
+  // the one after them.
+  const ids = await page
+    .locator("[data-inbox-row]")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+  const upper = ids[12] ?? "";
+  const lower = ids[13] ?? "";
+  const after = ids[14] ?? "";
+  // The lower row first, so the row marked last is the upper one.
+  for (const id of [lower, upper]) await inboxRow(page, id).getByRole("checkbox").first().check();
+  await expect(bar).toBeVisible();
+  // The upper row's checkbox is cut by 70% of its height at the bottom edge of the list's box.
+  const view = await readerSight();
+  const own = await checkboxRect(upper);
+  await list.evaluate(
+    (box, by) => box.scrollBy(0, by),
+    own.bottom - (view.bottom + own.height * 0.7)
+  );
+  await settledScrollTop(list);
+  await nextFrames(page);
+  const before = await readerSight();
+  const placed = await checkboxRect(upper);
+  const cut = placed.bottom - before.bottom;
+  const trigger = listTrigger(bar, "Snooze selected asks");
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("tom");
+  await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.locator(`[data-inbox-row="${lower}"]`)).toHaveCount(0, { timeout: 15_000 });
+  await settledScrollTop(list);
+  await settledScrollTop(page);
+  await nextFrames(page);
+  // One read is the answer: both rows have gone and the box has held still, so nothing moves the
+  // focus or the rows after this.
+  const now = await readerSight();
+  // Read in the same settled moment as the sight above, so it is where the press left it.
+  const landed = await checkboxRect(after);
+  // The focus read once, in that same settled moment: nothing moves it after the box holds still.
+  const focused = await page.evaluate(
+    (id) => ({
+      name:
+        document.activeElement?.getAttribute("aria-label") ??
+        document.activeElement?.tagName ??
+        "nothing",
+      onMark:
+        document.activeElement ===
+        document.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`),
+    }),
+    after
+  );
+  const scrolled = Math.round(now.scroll - before.scroll);
+  const text =
+    `the checkbox of the row marked last was cut by ${Math.round(cut * 10) / 10} px; the focus is on ` +
+    `${focused.name}, the box scrolled ${scrolled} px, and the checkbox now at the place stands at ` +
+    `top ${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
+    `${Math.round(now.top)} to ${Math.round(now.bottom)}`;
+  expect(
+    focused.onMark &&
+      landed.top >= now.top - 1 &&
+      landed.bottom <= now.bottom + 1 &&
+      Math.abs(scrolled) <= cut + 1,
+    text
+  ).toBe(true);
+});

@@ -1266,8 +1266,8 @@ export function MentionComposer({
                     onKeyDown={(event) => {
                       // With the picker open its own listener took this Enter and stopped it
                       // before this ran: the key takes the row under it rather than adding an
-                      // option nobody asked for. An Enter that ends an input method's
-                      // composition is the input method's.
+                      // option nobody asked for.
+                      // An Enter that ends an input method's composition is the input method's.
                       if (event.key === "Enter" && !inputMethodKey(event.nativeEvent)) {
                         event.preventDefault();
                         addAskOption();

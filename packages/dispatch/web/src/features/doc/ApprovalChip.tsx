@@ -306,10 +306,9 @@ function RequestChangesDialog({
           >
             Request changes
           </h2>
-          {/* While the write is out the text box is held (`MentionField`'s `held`: read-only
-              and `aria-disabled`, its picker shut) and the submit held (`heldPress`), a press of
-              it doing nothing, on both sides of `NoTooltips`: `disabled` drops the focus to the
-              body in a browser, and Tab would then leave the dialog. */}
+          {/* While the write is out the text box is held (`heldField`): read-only, never
+              `disabled`, which drops the focus to the body in a browser, and Tab would then
+              leave the dialog. */}
           <MentionField
             className="text-sm aria-disabled:opacity-50"
             body={reason}
