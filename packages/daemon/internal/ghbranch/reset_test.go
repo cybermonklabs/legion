@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
@@ -27,7 +28,13 @@ const resetBranch = "legion/ACME-1"
 // reset is Reset of legion/ACME-1 on acme/widgets from base, with fallback, from the merged head.
 func (g *github) reset(t *testing.T, base, fallback string) (Result, error) {
 	t.Helper()
-	return Reset(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), resetBranch, base, fallback, mergedCommit)
+	api := g.serve(t)
+	return Reset(context.Background(), widgets(api), graphQL(api), ghrepo.MustParse("acme/widgets"), resetBranch, base, fallback, mergedCommit)
+}
+
+// graphQL is GitHub's GraphQL endpoint under api, called with the installation token.
+func graphQL(api string) githubrest.Client {
+	return githubrest.Client{Token: "installation-token", API: githubrest.GraphQLEndpoint(api)}
 }
 
 // wantNoWrite fails the test for any create or move the fake answered.
@@ -39,7 +46,8 @@ func (g *github) wantNoWrite(t *testing.T) {
 }
 
 // A branch that stands at the merged head moves to the base's head: one move of its own ref, with
-// force, since a squash merge leaves the base on a commit that does not descend from the merged head.
+// force, since a squash merge leaves the base on a commit that does not descend from the merged
+// head, and made only while the branch still points at the merged head (updateRefs's beforeOid).
 // Nothing is created and nothing is compared.
 func TestResetMovesABranchAtTheMergedHeadToTheBase(t *testing.T) {
 	g := &github{refs: map[string]string{"main": baseHead, resetBranch: mergedCommit}}
@@ -50,26 +58,59 @@ func TestResetMovesABranchAtTheMergedHeadToTheBase(t *testing.T) {
 	if want := (Result{Outcome: Moved, Base: "main", Head: baseHead, Tip: mergedCommit}); got != want {
 		t.Fatalf("Reset = %+v, want %+v", got, want)
 	}
-	if len(g.patches) != 1 || g.patches[0].branch != resetBranch || g.patches[0].body["sha"] != baseHead || g.patches[0].body["force"] != true || len(g.patches[0].body) != 2 {
-		t.Fatalf("moves = %+v, want one of %s to %s with force", g.patches, resetBranch, baseHead)
+	if len(g.patches) != 1 || g.patches[0].branch != resetBranch || g.patches[0].body["sha"] != baseHead ||
+		g.patches[0].body["before"] != mergedCommit || g.patches[0].body["force"] != true {
+		t.Fatalf("moves = %+v, want one of %s from %s to %s with force", g.patches, resetBranch, mergedCommit, baseHead)
 	}
 	if len(g.creates) != 0 || len(g.compares) != 0 {
 		t.Fatalf("creates %v and compares %v, want neither", g.creates, g.compares)
 	}
-	if want := []string{"/repos/acme/widgets/git/ref/heads/main", "/repos/acme/widgets/git/ref/heads/" + resetBranch}; !slices.Equal(g.reads(), want) {
+	if want := []string{"/repos/acme/widgets/git/ref/heads/main", "/repos/acme/widgets/git/ref/heads/" + resetBranch, "/repos/acme/widgets"}; !slices.Equal(g.reads(), want) {
 		t.Fatalf("reads %v, want %v", g.reads(), want)
 	}
 }
 
-// A move GitHub refuses is an error naming the ref, both commits and GitHub's answer.
+// A move GitHub refuses while the branch still points at the merged head is an error naming the
+// ref, both commits and GitHub's answer.
 func TestResetNamesTheMoveOfTheBranchGitHubRefused(t *testing.T) {
-	g := &github{refs: map[string]string{"main": baseHead, resetBranch: mergedCommit},
-		patch: func() (int, string) { return http.StatusUnprocessableEntity, `{"message":"Object does not exist"}` }}
+	g := &github{refs: map[string]string{"main": baseHead, resetBranch: mergedCommit}, refuse: "Object does not exist"}
 	_, err := g.reset(t, "main", "main")
 	want := "move refs/heads/" + resetBranch + " on acme/widgets from " + mergedCommit + " to " + baseHead +
-		`: GitHub answered PATCH /git/refs/heads/` + resetBranch + ` with 422: {"message":"Object does not exist"}`
+		`: GitHub answered the GraphQL query with errors: Object does not exist`
 	if errorText(err) != want {
 		t.Fatalf("Reset error = %q, want %q", errorText(err), want)
+	}
+	if g.refs[resetBranch] != mergedCommit {
+		t.Fatalf("the branch is at %s after the refused move, want it left at %s", g.refs[resetBranch], mergedCommit)
+	}
+}
+
+// A push that lands on the branch between Reset's read of its tip and its move is not overwritten:
+// GitHub refuses the move, which names the merged head as the commit the branch must point at, and
+// Reset reads the branch again and judges its new tip as any other. A tip that holds commits the
+// base does not is left (Left), naming that tip, and one that holds the base stands (Stands).
+func TestResetKeepsAPushBetweenItsReadAndItsMove(t *testing.T) {
+	for _, tc := range []struct {
+		name, pushed, status string
+		outcome              Outcome
+	}{
+		{name: "a push of more work", pushed: laterCommit, status: "diverged", outcome: Left},
+		{name: "a push of the base merged in", pushed: holdingCommit, status: "ahead", outcome: Stands},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &github{refs: map[string]string{"main": baseHead, resetBranch: mergedCommit},
+				pushAfterRead: map[string]string{resetBranch: tc.pushed}, compared: map[string]string{baseHead + "..." + tc.pushed: tc.status}}
+			got, err := g.reset(t, "main", "main")
+			if err != nil {
+				t.Fatalf("Reset: %v", err)
+			}
+			if want := (Result{Outcome: tc.outcome, Base: "main", Head: baseHead, Tip: tc.pushed}); got != want {
+				t.Fatalf("Reset = %+v, want %+v", got, want)
+			}
+			if len(g.patches) != 0 || g.refs[resetBranch] != tc.pushed {
+				t.Fatalf("moves %v, the branch at %s; want the push %s kept", g.patches, g.refs[resetBranch], tc.pushed)
+			}
+		})
 	}
 }
 
@@ -167,7 +208,8 @@ func TestResetFallsBackToTheDefaultBranchForAGoneBase(t *testing.T) {
 // as Create refuses it.
 func TestResetRefusesABranchNameTheRulesMatch(t *testing.T) {
 	g := &github{refs: map[string]string{"main": baseHead}}
-	_, err := Reset(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/"+theHost, "main", "main", mergedCommit)
+	api := g.serve(t)
+	_, err := Reset(context.Background(), widgets(api), graphQL(api), ghrepo.MustParse("acme/widgets"), "legion/"+theHost, "main", "main", mergedCommit)
 	var refused *leakguard.Refusal
 	if !errors.As(err, &refused) || strings.Contains(err.Error(), theHost) {
 		t.Fatalf("Reset of a branch naming a host = %v, want a leak guard refusal that does not carry the name", err)

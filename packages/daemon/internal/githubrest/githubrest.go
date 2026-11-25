@@ -28,9 +28,9 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 }
 
 // Client calls GitHub with an installation token. Its API is a repository's REST base
-// (RepositoryAPI), which Get, Post, Patch, GetPages and GetListPages take paths under; an empty
-// endpoint is api.github.com. A client whose API is GitHub's GraphQL endpoint (GraphQLEndpoint)
-// sends queries (GraphQL) instead.
+// (RepositoryAPI), which Get, Post, GetPages and GetListPages take paths under; an empty endpoint
+// is api.github.com. A client whose API is GitHub's GraphQL endpoint (GraphQLEndpoint) sends
+// queries (GraphQL) instead.
 //
 // ETags, when set, makes every GET the client sends conditional: it carries the ETag GitHub last
 // answered for the same URL under the same Scope (If-None-Match), and GitHub's 304, which says the
@@ -64,13 +64,6 @@ func (c Client) Get(ctx context.Context, path string, into any) error {
 // when into is not nil. An answer other than 2xx is an *Answer.
 func (c Client) Post(ctx context.Context, path string, body, into any) error {
 	return c.send(ctx, http.MethodPost, path, body, into)
-}
-
-// Patch sends body, as JSON, to path under the client's API with PATCH, and reads GitHub's answer
-// into into when into is not nil. An answer other than 2xx is an *Answer. It is the write that
-// moves a ref GitHub already has (PATCH /git/refs/heads/<branch>).
-func (c Client) Patch(ctx context.Context, path string, body, into any) error {
-	return c.send(ctx, http.MethodPatch, path, body, into)
 }
 
 // send sends body, as JSON, to path under the client's API with method, and reads GitHub's answer

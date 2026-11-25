@@ -791,7 +791,9 @@ type rateLimit struct {
 // made. A read GitHub refuses for its rate limit is a failed read instead, and the next read
 // waits for the longer of the runtime's wait and GitHub's Retry-After. The read of the base's
 // rules either makes on a conflicting answer (readBaseRules) is no exception: a rate limit there
-// reads as rules the daemon could not read.
+// reads as rules the daemon could not read. The move of a next change's branch is GraphQL
+// (ghbranch.Reset), and its budget is left out too: it is one call of a row that runs once per
+// change, and GitHub's limit on it fails that row, whose retry waits for GitHub's Retry-After.
 var githubBudgets = map[record.OutboxKind][]githubrest.Budget{
 	record.OutboxKindIssueBranch: {githubrest.BudgetCore, githubrest.BudgetSecondary},
 }
@@ -4528,12 +4530,14 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 
 // startBranchAtBase moves the branch of issue's next change to the head of the base its last pull
 // request merged into (ghbranch.Reset), as the implement App, as createBranch writes a branch: from
-// the merged head alone, a missing branch made there, a tip that already holds the base left. A
-// base GitHub no longer has, or one the merge snapshot does not name, is the recorded default
-// branch. A tip that is neither the merged head nor holds the base is left where it stands: its
-// commits are someone's work. The owning architect is told so (`next-change-workspace`), and has
-// the base merged forward before the change's first task, which the start of the working copy
-// also says to its role where the branch is behind the base (supervise's startedNote).
+// the merged head alone, a missing branch made there, a tip that already holds the base left. The
+// move is GitHub's GraphQL updateRefs, made only while the branch still points at the merged head,
+// so a push that lands after the row's read stays on the branch. A base GitHub no longer has, or
+// one the merge snapshot does not name, is the recorded default branch. A tip that is neither the
+// merged head nor holds the base is left where it stands: its commits are someone's work. The
+// owning architect is told so (`next-change-workspace`), and has the base merged forward before the
+// change's first task, which the start of the working copy also says to its role where the branch
+// is behind the base (supervise's startedNote).
 func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, issue record.Issue, from record.BranchFrom) error {
 	base := from.Base
 	if base == "" {
@@ -4545,7 +4549,8 @@ func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, is
 	if err != nil {
 		return err
 	}
-	result, err := ghbranch.Reset(moving, github, repo, workspace.Bookmark(issue.Key), base, issue.DefaultBranch, from.MergedHead)
+	graphql := githubrest.Client{Token: github.Token, API: githubrest.GraphQLEndpoint(r.githubAPI)}
+	result, err := ghbranch.Reset(moving, github, graphql, repo, workspace.Bookmark(issue.Key), base, issue.DefaultBranch, from.MergedHead)
 	if err != nil {
 		return fmt.Errorf("move the branch of %s to %s for its next change, which its roles' starts wait for: %w", issue.Key, base, err)
 	}
@@ -4565,11 +4570,19 @@ func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, is
 
 // branchLeftNotice is the owning architect's notice of a next change's branch left where it
 // stands (startBranchAtBase): where its tip is, why Legion did not move it, and what to do first.
+// A merge snapshot that names only its pull request gives no merged head (record.BranchFrom), and
+// then the notice says Legion does not know it rather than print an empty commit.
 func branchLeftNotice(issue string, from record.BranchFrom, result ghbranch.Result) record.Notice {
 	branch := workspace.Bookmark(issue)
+	why := fmt.Sprintf("Its tip is not the merged head %s and does not hold the head %s of %s, so Legion did not move it.",
+		from.MergedHead, result.Head, result.Base)
+	if from.MergedHead == "" {
+		why = fmt.Sprintf("Legion does not know the head that the last pull request merged. The tip does not hold the head %s of %s, so Legion did not move it.",
+			result.Head, result.Base)
+	}
 	return record.Notice{Kind: "next-change-workspace", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("Legion left branch %s where it stands, at %s. Its tip is not the merged head %s and does not hold the head %s of %s, so Legion did not move it. Merge %s into %s before the next change's first task.",
-			branch, result.Tip, from.MergedHead, result.Head, result.Base, result.Base, branch)}
+		Reason: fmt.Sprintf("Legion left branch %s where it stands, at %s. %s Merge %s into %s before the next change's first task.",
+			branch, result.Tip, why, result.Base, branch)}
 }
 
 // removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The
