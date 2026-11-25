@@ -54,7 +54,11 @@ func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 			go func() { answered <- tc.read(deadline) }()
 			var pid int
 			testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "the stand-in git to start its child and record its pid",
-				func() bool { var running bool; pid, running = ghroutetest.RecordedHelper(child, childSeconds); return running })
+				func() bool {
+					var running bool
+					pid, running = ghroutetest.RecordedHelper(child, childSeconds)
+					return running
+				})
 			deadline.pass()
 			err := testwait.Receive(t, tc.name+" whose git never answers and whose child holds its output to end once its deadline passed", answered)
 			if err == nil || !strings.Contains(err.Error(), tc.refused) {

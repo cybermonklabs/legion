@@ -24,6 +24,7 @@ import (
 // names an id holds the one it names, and a repeat live carries is kept for its first holder
 // alone.
 func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
+	t.Parallel()
 	spec, _, _ := docstest.LoadSpec(rand.New(rand.NewPCG(715, 1)), "LOAD-1", 25_000)
 
 	// The ask each case below starts from, as the document holds it before the upload: the id is
@@ -406,6 +407,7 @@ func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 // block the document holds. docs' test of the same name holds the same rule through the document
 // upload path and the store: the parent tuples a one-item edit of a 1,980-item list appends.
 func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
+	t.Parallel()
 	const listDocument = "Opening paragraph.\n\n- Alpha item\n- Beta item\n- Gamma item\n\nClosing paragraph.\n"
 
 	t.Run("a list whose one item's text changed keeps its id", func(t *testing.T) {
@@ -593,6 +595,7 @@ func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
 // `---`, `***` and `___` all read as the one hr node (parseBlock), so an upload rewriting one
 // leaves it unchanged, and it keeps its id as every unchanged block does.
 func TestAnUploadGivesAChangedLeafAFreshID(t *testing.T) {
+	t.Parallel()
 	const document = "---\ntitle: Alpha\n---\n\nOpening paragraph.\n\n- Alpha item\n- Beta item\n\nClosing paragraph.\n"
 	const old, edited = "title: Alpha", "title: Beta"
 	doc, frag, live, markdown := liveMarkdown(t, document)

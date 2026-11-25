@@ -1,3 +1,8 @@
+/** a kept attempt is what Dispatch stores from the fake Envoy's answer to its publish on the
+ *  topic of a role with no registry entry, read back on a message and a mention; the registry
+ *  read that decides it and the no-holder failure of a role whose project does not answer are
+ *  the server's */
+
 import { roleToken } from "@legion/contracts";
 
 import {
