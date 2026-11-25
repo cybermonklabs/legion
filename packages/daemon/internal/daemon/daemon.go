@@ -1936,7 +1936,7 @@ func (s *supervision) waitingWakes() []supervise.WaitingWake {
 // holds no such row allocates nothing.
 //
 // A row this daemon's pacer still holds in its queue carries no moment of its own
-// (record.CatchUpHeldAt), so the state names it with the pacer's estimate for its place
+// (record.CatchUpIsHeld), so the state names it with the pacer's estimate for its place
 // (catchUpPacing.estimate), and leaves out a held row that has no place yet, whose join is under
 // way. A row with a moment of its own is one a release before the pacing's two queues reserved
 // for it, named by that moment.
@@ -1960,7 +1960,7 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 			return nil, fmt.Errorf("the architect of the catch-up on row %d: %w", row.ID, err)
 		}
 		due := row.NextAt.UTC()
-		if due.Equal(record.CatchUpHeldAt) {
+		if record.CatchUpIsHeld(due) {
 			due = pacing.estimate(row.ID)
 			if due.IsZero() {
 				continue

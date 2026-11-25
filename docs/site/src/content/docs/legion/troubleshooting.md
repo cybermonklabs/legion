@@ -953,7 +953,9 @@ its `wake` (the claim's entry under `.issues` of the same `legion state --json` 
 launch it waits for.
 The controller's `fresh_session` refuses such a claim with `CLAIM_UNSETTLED` while it reads
 `working`, `launching` or `shim_connected`: its launch is already in flight, and runs when the
-pacing lets it out, no earlier than the `dueAt` the list names.
+pacing lets it out, no earlier than the `dueAt` the list names unless a wake ahead of it leaves.
+That `dueAt` is the pacing's estimate at the read, and it can move: a later read can name an
+earlier or a later one.
 A claim that reads `registered`, `ready` or `idle` it suspends and starts again in a fresh session
 at once.
 A project pause's stop of such a claim records the relaunch as owed for the pause's end, even when

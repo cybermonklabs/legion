@@ -480,7 +480,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	}
 	if m.launchWaits() {
 		m.log.Info("supervise: a registration on another plugin contract reached a claim whose relaunch waits its turn; that turn replaces this process and nothing is relaunched or charged here",
-			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "due", m.wake.at)
+			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "due", m.wake.due())
 		return claim.StalePluginContract(got, m.deps.PluginContract)
 	}
 	var err error

@@ -227,13 +227,13 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 	if m.wake != nil && m.claim.Locator == nil {
 		if m.wake.park == nil {
 			m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
-				"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
+				"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.due())
 		}
 		return m.suspendedFor(ctx, request, true)
 	}
 	if m.wake != nil && request.Pause != 0 {
 		m.log.Info("supervise: a project pause's stop reached a claim whose paced relaunch waits over the process it would replace; stopping that process now",
-			"reason", request.Reason, "pause", request.Pause, "kind", m.wake.kind, "due", m.wake.at, "incarnation", m.claim.Locator.Incarnation)
+			"reason", request.Reason, "pause", request.Pause, "kind", m.wake.kind, "due", m.wake.due(), "incarnation", m.claim.Locator.Incarnation)
 		return m.letProcessGoFor(ctx, request, true, stopOwed)
 	}
 	switch held := m.held; {

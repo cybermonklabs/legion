@@ -160,18 +160,19 @@ type WaitingWake struct {
 }
 
 // wake is a launch the pacing holds until the pacer lets its place out: its place in the pacing's
-// queues (place), the moment the pacing estimated at the park for the lines the claim writes of it
-// (at), the moment it took that place, which the line it writes reports as how long it waited,
-// what kind of wake it is for that line, the state the gate found the claim in — which a request
-// that never waits restores before it acts, over a claim parked with no process (dropWakeFor) —
-// the launch itself, and, for a launch, the same launch raised anew.
+// queues (place), the moment it took that place, which the line it writes reports as how long it
+// waited, what kind of wake it is for that line, the state the gate found the claim in — which a
+// request that never waits restores before it acts, over a claim parked with no process
+// (dropWakeFor) — the launch itself, and, for a launch, the same launch raised anew. It keeps no
+// moment of its own: a line the claim writes of a waiting wake names the pacer's estimate for its
+// place as the line is written (due), since a wake ahead leaving, the jitter of the turns ahead
+// and a message wake going ahead all move that estimate after the park.
 type wake struct {
 	// place is the wake's place in the pacing's queues (wakepace.Place), nil for a launch the
 	// pause's gate held before the pacing saw it and for a start that waits at its issue pod's
 	// gate (pause, park). While it waits, TimerWake is bound to it (bindWake), and every path that
 	// spends or abandons the wake gives it up (placeTimer, reparkWake, runDroppedLaunchForRetry).
 	place  *wakepace.Place
-	at     time.Time
 	joined time.Time
 	kind   WakeKind
 	state  ClaimState
@@ -453,9 +454,8 @@ func (t placeTimer) Stop() bool {
 }
 
 // parkWake is the park the gate, the re-park and the pause's let-out share (reserveWake,
-// reparkWake, letOutHeldLaunch), once TimerWake is bound to the wake's place (bindWake): the moment
-// the pacer estimates for that place is kept for the lines the claim writes of the wake
-// (wake.at), and waiting waits on the machine (waitOnMachine), which is what reserveWake states.
+// reparkWake, letOutHeldLaunch), once TimerWake is bound to the wake's place (bindWake): waiting
+// waits on the machine (waitOnMachine), which is what reserveWake states.
 //
 // The credit of the refresh gate this machine may hold outlives a park of this lane's own kind
 // and no other (endRefreshLane, dispatch://INFRA-2712 R1): that wake is the one the credit was
@@ -473,7 +473,6 @@ func (t placeTimer) Stop() bool {
 // raises one later is held to the rule by ending its decision, with nothing for this park to
 // remember (endRefreshLane).
 func (m *Machine) parkWake(ctx context.Context, waiting *wake) error {
-	waiting.at = waiting.place.Estimate()
 	return m.waitOnMachine(ctx, waiting)
 }
 
@@ -501,10 +500,9 @@ func (m *Machine) takeEarlierPlace(carried *wakepace.Place) bool {
 		return false
 	}
 	m.log.Info("supervise: the relaunch a report of the recorded death parked takes the place the boot took for it",
-		"due", w.at, "queue", carried.Queue().String())
+		"due", carried.Estimate(), "queue", carried.Queue().String())
 	w.place = carried
 	m.rebindWake(carried)
-	w.at = carried.Estimate()
 	return true
 }
 
@@ -944,7 +942,7 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 	dropped := m.wake
 	request, _ := requestName(ev)
 	m.log.Info("supervise: a request that does not wait reached a claim the wake pacing holds over no process; dropping the wake",
-		"request", request, "kind", dropped.kind, "due", dropped.at, "state", dropped.state)
+		"request", request, "kind", dropped.kind, "due", dropped.due(), "state", dropped.state)
 	m.claim.State = dropped.state
 	m.detachWake()
 	m.wake = nil
@@ -1047,10 +1045,13 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 		}
 	}
 	waiting := m.wake
+	// The estimate is read before the disarm gives the place up (placeTimer): a place that left
+	// estimates the zero time.
+	due := waiting.due()
 	m.wake = nil
 	m.disarm(TimerWake)
 	m.log.Info("supervise: an operator's task reached a claim whose paced launch waits over the process it replaces; that launch runs now and the task goes to the process it starts",
-		"kind", waiting.kind, "due", waiting.at, "state", m.claim.State)
+		"kind", waiting.kind, "due", due, "state", m.claim.State)
 	m.wakeLetOut(m.deps.Clock.Now())
 	return m.runWake(ctx, waiting, false)
 }
@@ -1091,7 +1092,7 @@ func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, droppe
 		m.disarm(TimerPause)
 	}
 	m.log.Info("supervise: an operator's retry reached a claim whose paced launch waits over no process; that launch runs now",
-		"kind", dropped.kind, "due", dropped.at, "state", dropped.state)
+		"kind", dropped.kind, "due", dropped.due(), "state", dropped.state)
 	dropped.leave()
 	m.claim.State = StateLaunching
 	m.wakeLetOut(m.deps.Clock.Now())
@@ -1130,7 +1131,7 @@ func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 		return
 	}
 	m.log.Info("supervise: the request launched nothing; the wake the pacing holds keeps its place",
-		"kind", dropped.kind, "due", dropped.at, "state", dropped.state, "pause", dropped.pause)
+		"kind", dropped.kind, "due", dropped.due(), "state", dropped.state, "pause", dropped.pause)
 	var err error
 	if dropped.pause != 0 {
 		err = m.pauseGate(ctx, dropped, dropped.pause)
@@ -1140,7 +1141,7 @@ func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 	}
 	if err != nil {
 		m.log.Warn("supervise: the wake that keeps its place could not be written; it waits in memory alone",
-			"kind", dropped.kind, "due", dropped.at, "error", err)
+			"kind", dropped.kind, "due", dropped.due(), "error", err)
 	}
 }
 

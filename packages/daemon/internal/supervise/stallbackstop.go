@@ -36,10 +36,12 @@ type StallBackstopStop struct {
 	LastStep time.Time
 	Bound    time.Duration
 	End      ProcessEnd
-	// WakeDue is when the launch the pacing parked is due to run, the moment the pacer estimates
-	// for its place when the stop is built (wakepace.Place.Estimate, reserveWake), carried so the
-	// owner's notice names that moment rather than guessing at the wait (the daemon's
-	// stallBackstopEnds). It is the zero time for every other end, which queues no wake.
+	// WakeDue is the moment the pacer estimated, when the stop was built, that it lets out the
+	// place of the launch the pacing parked (wakepace.Place.Estimate, reserveWake), carried so the
+	// owner's notice names that estimate rather than guessing at the wait (the daemon's
+	// stallBackstopEnds). It is an estimate and no due moment: a wake ahead leaving moves the
+	// let-out earlier, and the jitter of the turns ahead or a message wake going ahead moves it
+	// later, so the notice says so. It is the zero time for every other end, which queues no wake.
 	WakeDue time.Time
 	// StopUnconfirmed is whether the runtime left the process this end let go possibly running:
 	// it refused the stop and the machine went on anyway, or the daemon's own stop cut the launch
@@ -148,7 +150,7 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	}
 	if m.wake != nil {
 		m.log.Info("supervise: the stall backstop found this claim already queued for a wake; its turn is left to that wake",
-			"kind", m.wake.kind, "due", m.wake.at, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
+			"kind", m.wake.kind, "due", m.wake.due(), "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
 		return nil
 	}
 	suspended := m.held != nil

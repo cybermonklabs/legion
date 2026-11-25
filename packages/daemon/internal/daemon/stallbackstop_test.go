@@ -894,9 +894,12 @@ func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *te
 // (letGo), the take-back the launch itself makes can be refused by the store (runWake), the
 // launch can fail its own write or its start (launchTries, relaunchLater, fail), and an
 // operator's task can run the launch before it is due (runParkedLaunchNow). None of them
-// writes this owner a second notice. And the wait is the wake's own due time, which the
-// machine carries on its report (supervise.StallBackstopStop.WakeDue), not a guess at how long
-// a wave takes.
+// writes this owner a second notice. And the moment it names is the pacer's estimate for the
+// wake's place when the stop was built, which the machine carries on its report
+// (supervise.StallBackstopStop.WakeDue), not a guess at how long a wave takes; the notice says
+// it is an estimate, which a wake ahead leaving moves earlier and the jitter of the wakes ahead
+// or a message wake going ahead moves later, and so says the claim waits until the pacing lets
+// the launch out rather than until that moment.
 func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T) {
 	t.Parallel()
 	rig := newBackstopRig(t)
@@ -933,9 +936,11 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 	for _, want := range []string{
 		"the daemon took back the implementer's task without ending its turn and queued the replacement launch",
 		"still owed",
-		"the launch that replaces it is queued in the daemon's wake pacing and is due at " + stallInstant(parked.At),
-		"what the park settled is that launch queued and the claim waiting on it until then",
-		"What comes due at " + stallInstant(parked.At) + " may be nothing at all, or not the launch the park queued",
+		"the launch that replaces it is queued in the daemon's wake pacing, which estimated, when the daemon read it for this notice, that it lets the launch out at " + stallInstant(parked.At),
+		"a wake ahead of it leaving the pacing can move that moment earlier",
+		"or a wake for a role with a message waiting going ahead of it, can move it later",
+		"What the park settled is that launch queued and the claim waiting on it until the pacing lets it out",
+		"What the pacing lets out then may be nothing at all, or not the launch the park queued",
 		"a suspension waiting for this claim",
 		"the lifecycle recheck every launch makes refusing this one",
 		"the tree's close dropping the queued launch",

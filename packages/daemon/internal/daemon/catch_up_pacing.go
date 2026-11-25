@@ -215,7 +215,7 @@ func (p *catchUpPacing) restore(ctx context.Context, records record.Store, proje
 		return err
 	}
 	for _, row := range rows {
-		if row.NextAt.Equal(record.CatchUpHeldAt) {
+		if record.CatchUpIsHeld(row.NextAt) {
 			if err := p.join(ctx, row.ID, row.Issue); err != nil {
 				return fmt.Errorf("restore held catch-up %d: %w", row.ID, err)
 			}

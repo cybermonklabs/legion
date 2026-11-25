@@ -4745,7 +4745,7 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 	if m.launchWaits() {
 		m.log.Info("supervise: an observation of the process a waiting launch replaces decides nothing; its turn replaces that process",
 			"incarnation", observation.Locator.Incarnation, "observed", string(observation.Kind),
-			"detail", observation.Detail, "due", m.wake.at)
+			"detail", observation.Detail, "due", m.wake.due())
 		return nil
 	}
 	switch observation.Kind {
@@ -4834,7 +4834,7 @@ func (m *Machine) probe(ctx context.Context, alive func(context.Context) error, 
 	}
 	if m.launchWaits() {
 		m.log.Info("supervise: the process a waiting launch replaces is not probed; its turn replaces that process",
-			"incarnation", m.claim.Locator.Incarnation, "due", m.wake.at)
+			"incarnation", m.claim.Locator.Incarnation, "due", m.wake.due())
 		return nil
 	}
 	observation, err := m.deps.Runtime.Probe(ctx, *m.claim.Locator)

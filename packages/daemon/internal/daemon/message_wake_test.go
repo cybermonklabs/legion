@@ -106,13 +106,14 @@ func (r *priorityWakeRig) seed(state supervise.ClaimState) supervise.Claim {
 
 // start seeds a released implementer and runs the start row a wake of kind queues for it
 // (workflow's wakeRow), which resumes it by rule: a paced launch that waits in the queue its
-// class names.
+// class names. The row is created at the rig's clock, as the wake's own transaction creates it
+// (record.OutboxRow.CreatedAt), which is the moment the executor marks a message wake at.
 func (r *priorityWakeRig) start(kind string) supervise.Claim {
 	r.t.Helper()
 	c := r.seed(supervise.StateSuspended)
 	row := mustOutboxRow(r.t, c.Issue, record.SuperviseRequest{Op: "start", Tree: c.Tree, Role: c.Role,
 		Generation: 1, WakeKind: kind}, r.clock.Now())
-	row.ID = int64(r.issue)
+	row.ID, row.CreatedAt = int64(r.issue), r.clock.Now()
 	if err := r.runner.execute(r.t.Context(), row); err != nil {
 		r.t.Fatalf("execute %s start of %s: %v", kind, c.Token, err)
 	}
@@ -315,7 +316,7 @@ func TestARestartKeepsTheMessageMark(t *testing.T) {
 	}
 	row := mustOutboxRow(t, message.Issue, record.SuperviseRequest{Op: "start", Tree: message.Tree, Role: message.Role,
 		Generation: 1, WakeKind: pods.WakeRoleMessage}, r.clock.Now())
-	row.ID = int64(r.issue)
+	row.ID, row.CreatedAt = int64(r.issue), r.clock.Now()
 	if err := r.runner.execute(t.Context(), row); err != nil {
 		t.Fatal(err)
 	}
@@ -332,6 +333,61 @@ func TestARestartKeepsAReportedMark(t *testing.T) {
 	unfinished := r.seed(supervise.StateLaunching)
 	r.report(unfinished, intake.ListenerWakeRole)
 	r.restart(older.Token, unfinished.Token)
+}
+
+// R1: a start row whose wake carried a role message marks its claim at the row's own creation,
+// the moment the wake was raised, so the same row run again after the role has taken a turn,
+// with no message since, writes a mark that does not stand: that turn read the message. The
+// claim's next wake, a displaced relaunch here, then waits in the other queue, behind the wakes
+// queued before it. Negative control: marked at the moment the row runs (the executor's
+// r.now() in place of row.CreatedAt), the retry's mark is later than the turn and stands, in
+// the store and in the machine, and the relaunch takes the message queue and runs first, so
+// this test fails.
+func TestARetriedMessageStartAfterATurnMarksNothingThatStands(t *testing.T) {
+	r := newPriorityWakeRig(t)
+	c := r.seed(supervise.StateIdle)
+	row := mustOutboxRow(t, c.Issue, record.SuperviseRequest{Op: "start", Tree: c.Tree, Role: c.Role,
+		Generation: 1, WakeKind: pods.WakeRoleMessage}, r.clock.Now())
+	row.ID, row.CreatedAt = int64(r.issue), r.clock.Now()
+	if err := r.runner.execute(t.Context(), row); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := r.sup.Machine(c.Token)
+	if got := m.Claim(); !got.MessageMarked() {
+		t.Fatalf("the start left %s marked at %s; want a mark that stands before the role's turn", c.Token, got.MessageMarkAt)
+	}
+	// Each step is a second, short of the interval, so the bucket earns no token and every wake
+	// raised below waits its turn.
+	r.clock.advance(time.Second)
+	if err := m.Handle(t.Context(), supervise.StreamTurnStart{Claim: c.Token}); err != nil {
+		t.Fatal(err)
+	}
+	r.clock.advance(time.Second)
+	if err := r.runner.execute(t.Context(), row); err != nil {
+		t.Fatalf("run the start row again: %v", err)
+	}
+	claims, err := r.st.Claims(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := map[string]supervise.Claim{"in the machine": m.Claim()}
+	for _, stored := range claims {
+		if stored.Token == c.Token {
+			held["in the store"] = stored
+		}
+	}
+	if len(held) != 2 {
+		t.Fatalf("the store holds no claim %s", c.Token)
+	}
+	for where, got := range held {
+		if got.MessageMarked() {
+			t.Fatalf("%s, the retried start left %s marked at %s after its turn at %s; want no mark that stands",
+				where, c.Token, got.MessageMarkAt, got.LastTurnStart)
+		}
+	}
+	other := r.wave(3, pods.WakeChecks)
+	r.observe(c, true)
+	wantWakeOrder(t, r.run(4), append(other, c.Token))
 }
 
 // R2: with 20 displaced relaunches paced, the relaunch of a role whose own process died runs at

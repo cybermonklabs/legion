@@ -1998,13 +1998,14 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	} else if waits {
 		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
 	}
-	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
+	if earlier, due, held := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
 		// A catch-up the wake pacing still holds in its queue has no moment of its own
-		// (record.CatchUpHeldAt), so this row waits for the pacer's estimate of its place
-		// (catchUpPacing.estimate), or parkedWakeBound where that comes first (parkedWait): the
-		// estimate moves as wakes ahead of the place leave or a message wake goes ahead of it, and
-		// a held row with no place yet has none, so the row reads again within the bound.
-		if due.Equal(record.CatchUpHeldAt) {
+		// (earlierNoticeFor's held, record.CatchUpIsHeld), so this row waits for the pacer's
+		// estimate of its place (catchUpPacing.estimate), or parkedWakeBound where that comes
+		// first (parkedWait): the estimate moves as wakes ahead of the place leave or a message
+		// wake goes ahead of it, and a held row with no place yet has none, so the row reads again
+		// within the bound.
+		if held {
 			estimate := r.catchUps.estimate(earlier)
 			if !estimate.After(r.now()) {
 				estimate = r.now().Add(parkedWakeBound)
@@ -2729,10 +2730,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// The listener's report that raised the wake marked the claim in its own transaction
 		// (workflow's listenerWake), and that mark stands unless the role has taken a turn since,
 		// so the write here keeps it; it marks a row a daemon before this release queued. The
+		// mark is the row's own creation time, which is the moment the wake that wrote it was
+		// raised (the outbox's created_at), and not the moment this attempt runs: a row retried
+		// or held until after the role has taken a turn would otherwise write a mark later than
+		// that turn, which read the message, and the mark would stand, so the claim's next wake,
+		// whatever raised it, would take the message queue. Marked at the row's time, such a
+		// retry writes a mark that does not stand (the store's MarkClaimMessageTx). The
 		// machine is told the mark the store holds, in whatever state the claim is: a start that
 		// meets a wake already waiting asks for no launch, and that wake moves by the mark alone.
 		if payload.WakeKind == pods.WakeRoleMessage || payload.WakeKind == pods.WakeAgentMessage {
-			mark, err := store.MarkClaimMessage(ctx, r.pool, token, r.now().UTC())
+			mark, err := store.MarkClaimMessage(ctx, r.pool, token, row.CreatedAt.UTC())
 			if err != nil {
 				return err
 			}

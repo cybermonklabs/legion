@@ -933,9 +933,17 @@ func (n Notice) Published(id int64) (Notice, string) {
 // queue has no moment of its own until then (dispatch://INFRA-5682 R1), and the row has to stand
 // in the outbox meanwhile, so that a restart finds it and joins it to the queue again (the
 // daemon's catchUpPacing). The outbox runs a row only once it is due, so no lane takes a held row
-// up, and a reader of a notice's due moment that meets this one reads the pacer's estimate for
-// the row's place instead (the daemon's pacedCatchUps and deliverNotice).
+// up, and a reader of a notice's due moment that meets this one (CatchUpIsHeld) reads the pacer's
+// estimate for the row's place instead (the daemon's pacedCatchUps and deliverNotice).
 var CatchUpHeldAt = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// CatchUpIsHeld is whether at, a row's next_at or a notice's PacedAt, is CatchUpHeldAt: the
+// moment of a catch-up the wake pacing still holds in its queue, which is no due moment. It is the
+// one test of that moment the daemon's readers make, so none of them takes the moment for a
+// deadline (the daemon's earlierNoticeFor, pacedCatchUps and catchUpPacing.restore).
+func CatchUpIsHeld(at time.Time) bool {
+	return at.Equal(CatchUpHeldAt)
+}
 
 // ControllerNotice is a Notice for the project's controller topic (notify.ControllerTopic) alone,
 // in an outbox row of its own, so its publish retries apart from the architect's notice row. It is
