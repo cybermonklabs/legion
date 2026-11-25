@@ -187,6 +187,7 @@ var settingsEmitted = map[string]string{
 	"Variant.Weight":                                 "projects.<KEY>.experiments.<name>.variants[].weight",
 	"Variant.ConfigFiles":                            "projects.<KEY>.experiments.<name>.variants[].config_files",
 	"Variant.InstructionsPath":                       "projects.<KEY>.experiments.<name>.variants[].instructions",
+	"Variant.TextsPath":                              "projects.<KEY>.experiments.<name>.variants[].texts (the folder's path alone, never the texts it holds)",
 	"Variant.Plan":                                   "projects.<KEY>.experiments.<name>.variants[].plan",
 	"Gates.Design":                                   "gates.design",
 	"GitHubApps.Implement":                           "github_apps.implement",
@@ -807,6 +808,45 @@ func TestTheSettingsCarryThePlanOfAVariant(t *testing.T) {
 	}
 	if !back[1].SetsPlan() {
 		t.Error("the declared planning sets no plan, want it to")
+	}
+}
+
+// An arm's folder of texts rides the settings as the file writes it, the folder's path alone,
+// absent where the arm names none, and the declared list the settings give back carries it on the
+// same arm. The folder is under a whole volume the operator's pod block mounts, as the loader
+// requires under kubernetes. The fault caught is experimentsOf or DeclaredExperiments leaving the
+// path out.
+func TestTheSettingsCarryTheTextsOfAVariant(t *testing.T) {
+	const folder = "/etc/legion-texts/shorter"
+	body := settingsFixtureFile
+	for _, edit := range [][2]string{
+		{"  WIDGETS:\n", "  WIDGETS:\n    experiments:\n      prompts:\n        variants:\n          - {name: folder, texts: " + folder + "}\n          - {name: control}\n"},
+		{"          secret: {name: fixture-operator-creds}\n", "          secret: {name: fixture-operator-creds}\n        - name: operator-texts\n          config_map: {name: legion-operator-texts}\n"},
+		{"        - {volume: operator-creds, mount_path: /etc/legion-operator/creds}\n", "        - {volume: operator-creds, mount_path: /etc/legion-operator/creds}\n        - {volume: operator-texts, mount_path: /etc/legion-texts}\n"},
+	} {
+		if !strings.Contains(body, edit[0]) {
+			t.Fatalf("the fixture holds no line %q to add the arm's folder at", edit[0])
+		}
+		body = strings.Replace(body, edit[0], edit[1], 1)
+	}
+	settings := SettingsOf(loadSettingsFile(t, body))
+	variants := settings.Projects["WIDGETS"].Experiments[0].Variants
+	if variants[0].Texts != folder || variants[1].Texts != "" {
+		t.Fatalf("the arms' folders = %q and %q, want %s and none", variants[0].Texts, variants[1].Texts, folder)
+	}
+	encoded, err := json.Marshal(settings.Projects["WIDGETS"].Experiments[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(encoded, []byte(`"texts":"`+folder+`"`)) || bytes.Count(encoded, []byte(`"texts"`)) != 1 {
+		t.Errorf("the experiment's settings = %s, want the key texts on the folder's arm alone", encoded)
+	}
+	back := settings.Projects["WIDGETS"].DeclaredExperiments("WIDGETS")
+	if len(back) != 2 || back[1].Name != "prompts" {
+		t.Fatalf("declared experiments = %+v, want memory then prompts", back)
+	}
+	if got := back[1].Variants[0].TextsPath; got != folder {
+		t.Errorf("the declared arm folder's texts = %q, want %s", got, folder)
 	}
 }
 

@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // troubleshootingExtract is the copy of the troubleshooting page's refusal table committed beside
@@ -206,6 +208,17 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		return refusalFile{project: "    experiments: {plan-length: {mode: random, variants: [{name: long, config_files: [" +
 			overlay + "], instructions: " + missing + "}, {name: control}]}}\n"}.refuse(t)
 	},
+	// An arm's folder of texts: each row driven by the fixture textsRefusals keeps for its refusal,
+	// which TestEveryTextsRefusalIsInTheTroubleshootingTable holds to the table the other way round.
+	`projects.<KEY>.experiments.<NAME>.variants.<ARM>.texts "…" must be a clean absolute path: …`:                                                                      textsRefusals["a relative path"],
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM> names texts, and worker_backends.<role> is claude, which reads no folder of texts: …":                            textsRefusals["a role on claude"],
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.texts <folder> is under no runtime.kubernetes.pod.volume_mounts mount_path: …":                                   textsRefusals["a folder under no mount"],
+	"projects.<KEY>.experiments.<NAME> and projects.<KEY>.experiments.<NAME> each give a folder of texts to the <role>, which would then read two folders: …":          textsRefusals[string(texts.TwoFolders)],
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.texts: texts folder <folder>: the folder does not exist [gone]":                                                  textsRefusals[string(texts.Gone)],
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.texts: texts folder <folder>: … [unreadable]":                                                                    textsRefusals[string(texts.Unreadable)],
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.texts: texts folder <folder>: manifest.json: the folder holds no manifest.json [no-manifest]":                    textsRefusals[string(texts.NoManifest)],
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.texts: texts folder <folder>: <file>: the folder holds this file, and manifest.json does not list it [unlisted]": textsRefusals[string(texts.Unlisted)],
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.texts: texts folder <folder>: <file>: no role the experiment reaches reads Legion's text at this path [unread]":  textsRefusals[string(texts.Unread)],
 	// An experiment that sets how each issue is done: each arm's `plan`.
 	`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner or default (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: alone}, {name: b, plan: default}]}}\n"}.refuse(t)

@@ -3,16 +3,22 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
+	"slices"
+	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // bootReads is what boot reads from the configuration, the daemon's environment and the files they
@@ -45,10 +51,11 @@ type variantInstructions struct {
 // and getenv for the OMP invocation) and the files they name, writing nothing: the project token,
 // the operator bearer's file, operator configuration colliding with Legion's own
 // (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
-// (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
-// file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
-// file, or under dispatch_token_broker the transition token's file where the configuration names
-// one, and the runtime's own reads (readTmux, readSandbox).
+// (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, every
+// declared variant's folder of texts (readArmTexts), the file of every hook that reads its words
+// from one (`hooks[].prompt_file`), the Dispatch bearer's file, or under dispatch_token_broker the
+// transition token's file where the configuration names one, and the runtime's own reads
+// (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check refuses
 // whatever boot refuses before its first write, with one exception: under dispatch_token_broker,
@@ -127,6 +134,19 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 			r.variantInstructions = append(r.variantInstructions, variantInstructions{experiment: experiment.Name, variant: variant, contents: contents})
 		}
 	}
+	// Every declared variant's folder of texts, read as each launch of its arm reads it again and
+	// refused for what no such launch could run (readArmTexts), whatever the mode, for the
+	// instructions' reason: a unit already drawn into an arm runs with its folder under any mode.
+	for _, experiment := range cfg.ExperimentsDeclared() {
+		for _, variant := range experiment.Variants {
+			if variant.TextsPath == "" {
+				continue
+			}
+			if err := readArmTexts(cfg, experiment, variant); err != nil {
+				return bootReads{}, err
+			}
+		}
+	}
 	// The loader takes dispatch_token_broker only beside dispatch_url, and the transition file only
 	// beside the broker, so the broker reads no bearer file. A launch's Dispatch credential is the
 	// bearer, or under the broker the role's own trade and the shared token
@@ -156,6 +176,66 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 		return bootReads{}, err
 	}
 	return r, nil
+}
+
+// readArmTexts is boot's read of the folder of texts that variant, an arm of experiment, names
+// (config.Variant.TextsPath), refused under the arm's key (config.Variant.TextsField) and, through
+// the texts.Fault, naming the folder, the file and the cause: a folder texts.Read refuses (gone,
+// unreadable, holding no manifest or one it cannot read, holding a file the manifest does not
+// list, lacking one it lists, holding a path outside the four trees, or holding a link that
+// leaves it); under runtime kubernetes, a file of it the operator's mount does not carry into the
+// pods (config.CheckTextsFilesMounted, the manifest among them); and a role part at a path of
+// Legion's that no launch of a role the experiment reaches reads (textsPartRead), which would
+// stand in the folder as a replacement of nothing. The loader has refused the arm's other faults
+// already (config's checkTextsArms): a role it reaches on another harness, a folder outside the
+// pods' mounts, and a second experiment giving a folder to one of its roles.
+//
+// A digest that is not that of Legion's text at its path, and a path where Legion has no text,
+// are no refusal here: they are a folder cut from another release of Legion's texts, from which
+// each launch falls back to Legion's own (texts.CheckRoleParts), so a new release never stops a
+// deployment whose folders were cut from the one before it. Nothing is kept: each launch reads
+// the folder again.
+func readArmTexts(cfg config.Config, experiment config.Experiment, variant config.Variant) error {
+	field := variant.TextsField()
+	folder, err := texts.Read(variant.TextsPath)
+	if err != nil {
+		return fmt.Errorf("%s: %w", field, err)
+	}
+	files := slices.Sorted(maps.Keys(folder.Manifest.Files))
+	if k := cfg.Runtime.Kubernetes; k != nil {
+		if err := config.CheckTextsFilesMounted(k.Pod, field, folder.Dir, append([]string{texts.ManifestName}, files...)); err != nil {
+			return err
+		}
+	}
+	read := textsPartRead(cfg, experiment)
+	for _, file := range files {
+		if !strings.HasPrefix(file, "roles/") && !strings.HasPrefix(file, "go/") {
+			continue
+		}
+		if info, err := fs.Stat(prompts.Texts(), file); err != nil || info.IsDir() || read(file) {
+			continue
+		}
+		// A *texts.Fault, as texts.Read refuses with, so one errors.As reads both.
+		var unread error = &texts.Fault{Dir: folder.Dir, Path: file, Cause: texts.Unread}
+		return fmt.Errorf("%s: %w", field, unread)
+	}
+	return nil
+}
+
+// textsPartRead is whether a launch of a role experiment reaches reads the role part at a path of
+// Legion's (prompts.PartReaders), as a folder of texts names it: some role whose launch composes
+// the part is one the experiment reaches (config.Experiment.Reaches) and runs on a harness whose
+// launch is told it (cfg.BackendFor; a part that names no harness is told to every one). The
+// controller runs in no experiment, so a part only its launches read is read by none, as is a
+// part no launch reads at all and a path where Legion has no text.
+func textsPartRead(cfg config.Config, experiment config.Experiment) func(path string) bool {
+	readers := prompts.PartReaders()
+	return func(path string) bool {
+		r := readers[path]
+		return slices.ContainsFunc(r.Roles, func(role claim.Role) bool {
+			return experiment.Reaches(role) && (len(r.Backends) == 0 || slices.Contains(r.Backends, cfg.BackendFor(role)))
+		})
+	}
 }
 
 // natsConnection is the NATS user the daemon's own connection authenticates as: its own seed

@@ -167,6 +167,26 @@ projects:
   #                                    # owner-alone is refused, since this release does not carry
   #                                    # it out. Each issue keeps the plan of its draw for its
   #                                    # whole life, whatever this file says later
+  #     shorter-reviews: {mode: random, roles: [reviewer], variants: [{name: shorter, texts: /etc/legion-texts/shorter}, {name: control}]}
+  #                                    # an experiment whose arm runs another version of Legion's
+  #                                    # texts: texts is a folder whose files mirror the paths of
+  #                                    # Legion's texts, roles/<p> and go/<p> the role prompt parts
+  #                                    # of packages/daemon/internal/prompts, agents/<name>.md and
+  #                                    # skills/<skill>/<p> the plugins' agents and skills, beside
+  #                                    # one manifest.json, {"files": {"<path>": "sha256:<hex>"}},
+  #                                    # the digest of Legion's text each file replaces. Each role
+  #                                    # the experiment reaches of a unit drawn into the arm reads
+  #                                    # the folder's text in place of Legion's wherever the folder
+  #                                    # holds one, and a launch whose folder no longer matches
+  #                                    # this release's texts runs Legion's own and says why. Every
+  #                                    # role it reaches runs on omp, and no two experiments give a
+  #                                    # folder to one role. Under runtime: kubernetes the folder
+  #                                    # must be under a whole-volume mount below: uncomment the
+  #                                    # operator-texts volume and mount, a ConfigMap
+  #                                    # legion-operator-texts whose items give manifest.json and
+  #                                    # each file its path, and mount it on the daemon's own pod at
+  #                                    # the same path, since the daemon reads the folder at boot
+  #                                    # and again before each launch
 # leak_check:                          # optional: the deployment's shared public leak check, which
 #   repository: example-org/deployment # the daemon reads at the worker image's pin
 #   manifest_sha256: <64 hex digits>   # (LEGION_LEAK_CHECK_TAG) and pushes to every pod: the
@@ -564,6 +584,9 @@ runtime:
         #   config_map: {name: legion-operator-memory}
         # - name: operator-experiments # an experiment variant's config_files overlays (above)
         #   config_map: {name: legion-operator-experiments}
+        # - name: operator-texts       # an experiment variant's folder of texts (above): a key holds
+        #                              # no `/`, so each file is an item at its path in the folder
+        #   config_map: {name: legion-operator-texts, items: [{key: manifest.json, path: manifest.json}, {key: roles-reviewer.md, path: roles/reviewer.md}]}
       volume_mounts:
         - {volume: operator-route, mount_path: /home/legion/.omp/profiles/legion/agent/models.yml, sub_path: models.yml}
         - {volume: operator-route, mount_path: /etc/legion-operator/overlay.yml, sub_path: overlay.yml}
@@ -574,6 +597,7 @@ runtime:
         # - {volume: operator-roles, mount_path: /etc/legion-operator-roles} # role_config_files' overlays
         # - {volume: operator-memory, mount_path: /etc/legion-memory} # memory.config_files' overlays
         # - {volume: operator-experiments, mount_path: /etc/legion-experiments} # a variant's config_files overlays
+        # - {volume: operator-texts, mount_path: /etc/legion-texts/shorter} # a variant's folder of texts
 
 # The daemon reports, at boot, in `legion state` and to the controller on every tick, each worker
 # capability the deployment's own configuration closes or leaves open (LEGION-578): the secrets

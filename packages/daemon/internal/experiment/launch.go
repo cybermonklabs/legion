@@ -42,7 +42,7 @@ type Launch struct {
 func ForLaunch(declared []config.Experiment, stateDir string) Launch {
 	namesFile := func(experiment config.Experiment) bool {
 		return slices.ContainsFunc(experiment.Variants, func(variant config.Variant) bool {
-			return len(variant.ConfigFiles) > 0 || variant.InstructionsPath != ""
+			return len(variant.ConfigFiles) > 0 || variant.InstructionsPath != "" || variant.TextsPath != ""
 		})
 	}
 	return Launch{
@@ -60,11 +60,12 @@ func ForLaunch(declared []config.Experiment, stateDir string) Launch {
 // read.
 //
 // It is none at all where no declared arm names a file: an experiment whose every arm names
-// neither a config file nor an instructions path contributes nothing to any launch, since there
-// is nothing for a drawn unit to run with whichever arm it drew. A project none of whose declared
-// experiments names a file — the common deployment, which writes no `memory` block and declares
-// no experiment of its own, and so declares the memory experiment at mode off and nothing else —
-// therefore has no record to read, and pays no transaction per worker spawn.
+// neither a config file, an instructions path nor a folder of texts contributes nothing to any
+// launch, since there is nothing for a drawn unit to run with whichever arm it drew. A project
+// none of whose declared experiments names a file — the common deployment, which writes no
+// `memory` block and declares no experiment of its own, and so declares the memory experiment at
+// mode off and nothing else — therefore has no record to read, and pays no transaction per worker
+// spawn.
 func (l Launch) Keys(tree, issue string) []string {
 	if !l.namesFile {
 		return nil
@@ -154,9 +155,9 @@ func DeclaredVariants(declared []config.Experiment) []runtime.Variant {
 
 // arm is one declared arm as a runtime reads it: the experiment's name and the arm's, as a draw
 // records them, the overlays the arm names, the key the operator wrote them under, whether the
-// `memory` block declares the arm, and the roles its experiment reaches. It is the
-// one place a config.Variant becomes a runtime.Variant, so the arms a launch runs in and the arms
-// a runtime is built with carry the same fields.
+// `memory` block declares the arm, the roles its experiment reaches, and the folder of texts the
+// arm names. It is the one place a config.Variant becomes a runtime.Variant, so the arms a launch
+// runs in and the arms a runtime is built with carry the same fields.
 func arm(experiment config.Experiment, variant config.Variant) runtime.Variant {
 	return runtime.Variant{
 		Experiment:       experiment.Name,
@@ -165,5 +166,6 @@ func arm(experiment config.Experiment, variant config.Variant) runtime.Variant {
 		ConfigFilesField: variant.ConfigFilesField,
 		MemoryBlock:      variant.MemoryBlock,
 		Roles:            experiment.Roles,
+		Texts:            variant.TextsPath,
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	configpkg "github.com/sjawhar/legion/daemon/internal/config"
 )
 
@@ -166,6 +167,44 @@ func TestShippedLegionYAMLExamplesPlanningExperimentPassesCheckConfig(t *testing
 		return got.Name == want.Name && got.Weight == want.Weight && got.Plan == want.Plan && len(got.ConfigFiles) == 0
 	}) {
 		t.Errorf("the planning variants = %+v, want %+v", declared[0].Variants, want)
+	}
+}
+
+// The example's commented experiment whose arm names a folder of texts, uncommented with the
+// operator-texts volume and mount its folder is under, loads: the arm carries the folder, which a
+// whole-volume mount of the pods holds, for a role the example runs on Oh My Pi. `legion config
+// check` then reads the folder from the daemon's own disk, which holds none at the example's path,
+// and refuses for that alone, naming the arm, the folder and the cause. So the shipped lines stay
+// commented, where TestShippedLegionYAMLExamplePassesCheckConfig holds the example's own check.
+func TestShippedLegionYAMLExamplesTextsExperimentLoadsAndIsReadAtBoot(t *testing.T) {
+	config := stageShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"  # WIDGETS:",
+			"  #   experiments:",
+			"  #     shorter-reviews: {mode: random",
+			"        # - name: operator-texts",
+			"        #   config_map: {name: legion-operator-texts",
+			"        # - {volume: operator-texts, mount_path: /etc/legion-texts/shorter}",
+		)
+		return strings.Replace(example, "\n  WIDGETS: {}", "\n  # WIDGETS: {}", 1)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := cfg.Projects["WIDGETS"].Experiments
+	if len(declared) != 1 || declared[0].Name != "shorter-reviews" || !slices.Equal(declared[0].Roles, []legionclaim.Role{legionclaim.RoleReviewer}) {
+		t.Fatalf("the WIDGETS experiments = %+v, want shorter-reviews alone, reaching the reviewer", declared)
+	}
+	if got := declared[0].Variants; len(got) != 2 || got[0].TextsPath != "/etc/legion-texts/shorter" || got[1].TextsPath != "" {
+		t.Fatalf("the shorter-reviews variants = %+v, want the arm shorter naming /etc/legion-texts/shorter beside a control", got)
+	}
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+	want := "legion config check: projects.WIDGETS.experiments.shorter-reviews.variants.shorter.texts: texts folder /etc/legion-texts/shorter: the folder does not exist [gone]\n"
+	if code != 1 || out.Len() != 0 || errb.String() != want {
+		t.Fatalf("legion config check = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
 	}
 }
 

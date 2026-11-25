@@ -592,8 +592,8 @@ type SpawnSpec struct {
 // that names no overlay adds nothing to PI_CONFIG_FILES, so a launch carrying only such arms names
 // the overlays a unit in no experiment gets; its prompt still ends with the copy of any
 // instructions those arms name (PromptParts.VariantInstructionsPaths). Only an arm that names
-// neither file is the control the others are measured against, and a launch carrying such arms
-// alone is the launch a unit in no experiment gets.
+// neither file and no folder of texts is the control the others are measured against, and a
+// launch carrying such arms alone is the launch a unit in no experiment gets.
 //
 // The instructions an arm names are no field of this: no runtime reads them off an arm, and what
 // a launch's prompt ends with is the daemon's own copy of each of them
@@ -618,6 +618,11 @@ type SpawnSpec struct {
 // Roles is the issue roles the arm's experiment reaches (config.Experiment.Roles), nil for every
 // issue role: a role it leaves out never starts on the arm's overlays, so the readers of every
 // tail a role may start on pass the arm over for that role (Reaches, RoleOverlayValues).
+//
+// Texts is the folder of texts the arm names (config.Variant.TextsPath), "" for an arm that
+// names none: the folder whose files a launch of a role the arm reaches reads in place of
+// Legion's texts, and which, under kubernetes, the operator's pod mounts hold at this same path.
+// An arm that names no folder leaves every launch as it was before the key existed.
 type Variant struct {
 	Experiment       string
 	Name             string
@@ -625,6 +630,7 @@ type Variant struct {
 	ConfigFilesField string
 	MemoryBlock      bool
 	Roles            []claim.Role
+	Texts            string
 }
 
 // Reaches is whether a launch of role may start on this arm's overlays: every issue role where

@@ -88,6 +88,32 @@ func TestProjectExperimentsTakeAVariantWithInstructionsAndNoOverlay(t *testing.T
 	}
 }
 
+// A variant may name a folder of texts and no other file: `texts` is the folder's clean absolute
+// path, which the arm carries as the file writes it, beside the control arm that names nothing.
+// The declared list names the key the operator wrote it under, which a refusal of the folder
+// names the arm by, and the loader reads no folder: that is boot's (internal/daemon's readBoot).
+func TestProjectExperimentsTakeAVariantWithTexts(t *testing.T) {
+	block := "{alpha: {mode: random, variants: [{name: shorter, texts: /etc/legion-texts/shorter}, {name: control}]}}"
+	cfg, err := Load(writeConfigFile(t, experimentsFile(block, "")), noEnv)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []Variant{{Name: "shorter", Weight: 1, TextsPath: "/etc/legion-texts/shorter"}, {Name: "control", Weight: 1}}
+	if got := cfg.Projects["DEMO"].Experiments[0].Variants; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Variants = %+v, want %+v", got, want)
+	}
+	declared := cfg.ExperimentsDeclared()
+	if len(declared) != 2 || declared[1].Name != "alpha" {
+		t.Fatalf("ExperimentsDeclared = %+v, want memory then alpha", declared)
+	}
+	if got, want := declared[1].Variants[0].TextsField(), "projects.DEMO.experiments.alpha.variants.shorter.texts"; got != want {
+		t.Errorf("the arm's TextsField = %q, want %q", got, want)
+	}
+	if got := declared[1].Variants[0].TextsPath; got != "/etc/legion-texts/shorter" {
+		t.Errorf("the declared arm's TextsPath = %q, want the file's", got)
+	}
+}
+
 // `roles` carries the issue roles an experiment's arms reach, in the file's order, and a block that
 // names none carries no roles, which is every role: Reaches answers both for a role inside and
 // outside the list.
@@ -172,11 +198,11 @@ func TestProjectExperimentsTakeMemoryUnderTheKey(t *testing.T) {
 // twice, a mode or a unit that is no word of its own, a roles list that is no list, empty, names a
 // role that is not an issue role or names one twice, a variants list that is missing, no list or
 // empty, one variant where the mode draws, a weight that is not a whole number above zero, an
-// overlay or an instructions path no role could load, a mode on that names no on_variant, an
-// on_variant that is no variant of its experiment, and the four shapes of `experiments.memory`
-// the name memory forbids: beside the block, naming `plan`, with other variants, and drawn for each
-// issue. The other rules of `plan` are refused as well, each by a row of
-// TestThePlanOfAVariantIsRefused.
+// overlay, an instructions path or a folder of texts no role could load, a mode on that names no
+// on_variant, an on_variant that is no variant of its experiment, and the four shapes of
+// `experiments.memory` the name memory forbids: beside the block, naming `plan`, with other
+// variants, and drawn for each issue. The other rules of `plan` are refused as well, each by a row
+// of TestThePlanOfAVariantIsRefused, and the other rules of `texts` by the tests after it.
 func TestProjectExperimentsRefusals(t *testing.T) {
 	cases := []struct{ name, block, body, extra, want string }{
 		{name: "the key is not a mapping", block: "[alpha]",
@@ -253,6 +279,14 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 			want: `projects.DEMO.experiments.alpha.variants.only.instructions "/etc/../etc/memory.md" must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
 		{name: "an instructions path that is not a string", block: "{alpha: {variants: [{name: only, instructions: [/etc/memory.md]}]}}",
 			want: "projects.DEMO.experiments.alpha.variants.only.instructions must be a string"},
+		{name: "a relative texts folder", block: "{alpha: {variants: [{name: only, texts: shorter}]}}",
+			want: `projects.DEMO.experiments.alpha.variants.only.texts "shorter" must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
+		{name: "an unclean texts folder", block: "{alpha: {variants: [{name: only, texts: /etc/legion-texts/../shorter}]}}",
+			want: `projects.DEMO.experiments.alpha.variants.only.texts "/etc/legion-texts/../shorter" must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
+		{name: "a texts folder with a trailing slash", block: "{alpha: {variants: [{name: only, texts: /etc/legion-texts/}]}}",
+			want: `projects.DEMO.experiments.alpha.variants.only.texts "/etc/legion-texts/" must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
+		{name: "a texts folder that is not a string", block: "{alpha: {variants: [{name: only, texts: [/etc/legion-texts]}]}}",
+			want: "projects.DEMO.experiments.alpha.variants.only.texts must be a string"},
 		{name: "a mode on that names no on_variant", block: "{alpha: {mode: on, variants: [{name: only}, {name: other}]}}",
 			want: "projects.DEMO.experiments.alpha is on and names no on_variant: mode on gives every unit one variant, so name the one it gives (only, other)"},
 		{name: "an on_variant that is no variant of its experiment", block: "{alpha: {mode: on, on_variant: third, variants: [{name: only}, {name: other}]}}",
@@ -430,6 +464,113 @@ func TestProjectExperimentsUnderKubernetesMustBeInTheOperatorsMounts(t *testing.
 				t.Fatalf("Variants[0].ConfigFiles = %v, want the variant's one file", cfg.Projects["LEGSMOKE"].Experiments[0].Variants[0].ConfigFiles)
 			case tc.want != "" && (err == nil || err.Error() != tc.want):
 				t.Fatalf("LoadForValidation error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A folder of texts is read only by an Oh My Pi launch, so an arm that names one is refused while
+// worker_backends puts a role its experiment reaches on Claude Code, naming the arm and the role,
+// in words that name the fix its `roles` allows: every issue role where it names none, and the
+// role it names where it names some. A texts-only arm is held to it, though it names no overlay.
+// The same reviewer on Claude Code beside an experiment that reaches only the implementer, or
+// only the architect, who always runs on Oh My Pi, loads.
+func TestATextsFolderForAClaudeRoleIsRefused(t *testing.T) {
+	const extra = "worker_backends: {reviewer: claude}\n"
+	reach := func(roles string) string {
+		return "{alpha: {mode: random" + roles + ", variants: [{name: shorter, texts: /etc/legion-texts/shorter}, {name: control}]}}"
+	}
+	for _, tc := range []struct{ name, roles, want string }{
+		{name: "every issue role", roles: "",
+			want: "projects.DEMO.experiments.alpha.variants.shorter names texts, and worker_backends.reviewer is claude, which reads no folder of texts: put every issue role on omp, or take texts out of the variant"},
+		{name: "the reviewer among its roles", roles: ", roles: [implementer, reviewer]",
+			want: "projects.DEMO.experiments.alpha.variants.shorter names texts, and worker_backends.reviewer is claude, which reads no folder of texts: put every role its roles names on omp, or take texts out of the variant"},
+		{name: "the implementer alone", roles: ", roles: [implementer]"},
+		{name: "the architect alone", roles: ", roles: [architect]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfigFile(t, experimentsFile(reach(tc.roles), extra)), noEnv)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("Load with the Claude reviewer outside the experiment's roles = %v, want it to load", err)
+			case tc.want != "" && (err == nil || err.Error() != tc.want):
+				t.Fatalf("Load error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Under kubernetes a role reads the folder in its own pod, at the path the daemon reads it at, so
+// the folder must be under one of the operator's mounts, which every role's pod carries, and that
+// mount must be of a whole volume: the folder at the mount itself, or deeper under it, loads,
+// beneath a volume that projects items as beneath one that projects every key, since which files
+// the folder holds is boot's to read. A folder no mount holds, the sub_path mount of a file, and a
+// folder under one, are refused, naming the arm's key and the folder, at mode off as at any mode.
+func TestATextsFolderUnderKubernetesMustBeUnderAnOperatorMount(t *testing.T) {
+	const key = "projects.LEGSMOKE.experiments.alpha.variants.shorter.texts "
+	for _, tc := range []struct{ name, folder, want string }{
+		{name: "the mount of a whole volume", folder: "/etc/legion-creds"},
+		{name: "a folder deeper than the mount", folder: "/etc/legion-creds/texts/shorter"},
+		{name: "a folder under a volume that projects items", folder: "/etc/legion-route/texts"},
+		{name: "a folder no mount holds", folder: "/etc/legion-texts/shorter",
+			want: key + "/etc/legion-texts/shorter is under no runtime.kubernetes.pod.volume_mounts mount_path: a role's pod sees only the image and the operator's mounts, so mount the volume that holds the folder there, at the path the daemon reads it at"},
+		{name: "a folder beside a sub_path mount", folder: "/etc/legion-operator/texts",
+			want: key + "/etc/legion-operator/texts is under no runtime.kubernetes.pod.volume_mounts mount_path: a role's pod sees only the image and the operator's mounts, so mount the volume that holds the folder there, at the path the daemon reads it at"},
+		{name: "the sub_path mount of a file", folder: "/etc/legion-operator/overlay.yml",
+			want: key + "/etc/legion-operator/overlay.yml is under the sub_path mount /etc/legion-operator/overlay.yml of volume operator-route, which mounts one key of it and no folder: mount the volume that holds the folder whole, with no sub_path"},
+		{name: "a folder under a sub_path mount", folder: "/etc/legion-operator/overlay.yml/texts",
+			want: key + "/etc/legion-operator/overlay.yml/texts is under the sub_path mount /etc/legion-operator/overlay.yml of volume operator-route, which mounts one key of it and no folder: mount the volume that holds the folder whole, with no sub_path"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			block := "{alpha: {mode: off, variants: [{name: shorter, texts: " + tc.folder + "}, {name: control}]}}"
+			cfg, err := LoadForValidation(writeConfigFile(t, kubernetesExperimentsFile(block, "")), noEnv)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("LoadForValidation: %v", err)
+			case tc.want == "" && cfg.Projects["LEGSMOKE"].Experiments[0].Variants[0].TextsPath != tc.folder:
+				t.Fatalf("Variants[0].TextsPath = %q, want %s", cfg.Projects["LEGSMOKE"].Experiments[0].Variants[0].TextsPath, tc.folder)
+			case tc.want != "" && (err == nil || err.Error() != tc.want):
+				t.Fatalf("LoadForValidation error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// One role reads one folder: two experiments each with an arm that names a folder are refused
+// where the roles they reach meet, since a unit drawn into both would have that role read two
+// folders, and the refusal names both experiments and the first role they share. An experiment
+// that names no roles reaches every issue role, so beside it any experiment with a folder is
+// refused. Two experiments whose folders reach different roles load, as do two arms of one
+// experiment that each name a folder (a unit is drawn into one of them) and an experiment with a
+// folder beside one whose arms name only overlays for the same role.
+func TestTwoExperimentsWhoseFolderArmsReachOneRoleAreRefused(t *testing.T) {
+	folder := func(name, roles, texts string) string {
+		return name + ": {mode: random" + roles + ", variants: [{name: folder, texts: " + texts + "}, {name: control}]}"
+	}
+	for _, tc := range []struct{ name, block, want string }{
+		{name: "both reach the reviewer",
+			block: "{" + folder("first", ", roles: [reviewer]", "/etc/legion-texts/first") + ", " + folder("second", ", roles: [implementer, reviewer]", "/etc/legion-texts/second") + "}",
+			want:  "projects.DEMO.experiments.first and projects.DEMO.experiments.second each give a folder of texts to the reviewer, which would then read two folders: name the reviewer in the roles of one of the two alone"},
+		{name: "every issue role beside the tester",
+			block: "{" + folder("first", "", "/etc/legion-texts/first") + ", " + folder("second", ", roles: [tester]", "/etc/legion-texts/second") + "}",
+			want:  "projects.DEMO.experiments.first and projects.DEMO.experiments.second each give a folder of texts to the tester, which would then read two folders: name the tester in the roles of one of the two alone"},
+		{name: "the reviewer beside every issue role",
+			block: "{" + folder("first", ", roles: [reviewer]", "/etc/legion-texts/first") + ", " + folder("second", "", "/etc/legion-texts/second") + "}",
+			want:  "projects.DEMO.experiments.first and projects.DEMO.experiments.second each give a folder of texts to the reviewer, which would then read two folders: name the reviewer in the roles of one of the two alone"},
+		{name: "the reviewer and the architect",
+			block: "{" + folder("first", ", roles: [reviewer]", "/etc/legion-texts/first") + ", " + folder("second", ", roles: [architect]", "/etc/legion-texts/second") + "}"},
+		{name: "two arms of one experiment",
+			block: "{first: {mode: random, variants: [{name: one, texts: /etc/legion-texts/one}, {name: two, texts: /etc/legion-texts/two}, {name: control}]}}"},
+		{name: "a folder beside overlays for the same role",
+			block: "{" + folder("first", ", roles: [reviewer]", "/etc/legion-texts/first") + ", second: {mode: random, roles: [reviewer], variants: [{name: open, config_files: [/etc/legion-experiments/open.yml]}, {name: control}]}}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfigFile(t, experimentsFile(tc.block, "")), noEnv)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("Load: %v, want it to load", err)
+			case tc.want != "" && (err == nil || err.Error() != tc.want):
+				t.Fatalf("Load error = %v, want %q", err, tc.want)
 			}
 		})
 	}

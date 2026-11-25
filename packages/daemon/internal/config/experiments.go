@@ -3,11 +3,13 @@ package config
 import (
 	"fmt"
 	"maps"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -119,7 +121,7 @@ func (experiment Experiment) Reaches(role claim.Role) bool {
 // Variant is one arm of an experiment: the name a draw records, the weight that draw gives the arm
 // against its siblings, and the files a unit drawn into the arm runs with. An arm that names no
 // file at all is the control a randomisation is measured against, which is why nothing here
-// requires either file key.
+// requires any file key.
 type Variant struct {
 	// Name is the variant's own name, unique within its experiment, and what a draw records as
 	// the arm it drew.
@@ -137,6 +139,14 @@ type Variant struct {
 	// of a unit drawn into this arm, after the deployment's own instructions; empty where the arm
 	// names none.
 	InstructionsPath string
+	// TextsPath is `texts`, a folder whose files mirror the paths of Legion's texts (the role
+	// prompt parts, the agents and the skills) beside one manifest.json, which the daemon reads at
+	// boot, and again at each launch: each role the experiment reaches of a unit drawn into this
+	// arm reads the folder's text in place of Legion's wherever the folder holds one; empty where
+	// the arm names none. The loader refuses it where the experiment reaches a role on a harness
+	// other than Oh My Pi, outside the operator's pod mounts under kubernetes, and where another
+	// experiment gives a folder to a role this one reaches too (checkTextsArms).
+	TextsPath string
 	// ConfigFilesField is the key the operator wrote ConfigFiles under, whole:
 	// `projects.<KEY>.memory.config_files` for the arm the `memory` block declares, and
 	// `projects.<KEY>.experiments.<name>.variants.<arm>.config_files` for an arm of the
@@ -159,6 +169,14 @@ type Variant struct {
 	// none. A draw records it beside the arm (record.Assignment.Plan), and the issue keeps that
 	// word for its whole life, whatever the file says later.
 	Plan PlanGroup
+}
+
+// TextsField is the key the operator wrote TextsPath under, whole:
+// `projects.<KEY>.experiments.<name>.variants.<arm>.texts`, which a refusal of the folder names
+// the arm by. It is the arm's ConfigFilesField with its last element changed, so it stands on the
+// arms of the declared list alone, as that key does (Project.ExperimentsDeclared).
+func (variant Variant) TextsField() string {
+	return strings.TrimSuffix(variant.ConfigFilesField, ".config_files") + ".texts"
 }
 
 // MemoryExperimentName is the name of the experiment the `memory` block is: the block and the key
@@ -433,10 +451,11 @@ func readMode(value *yaml.Node, key string) (ExperimentMode, error) {
 // readVariants is an experiment's `variants`: a sequence of at least one arm, each a mapping with
 // a `name` the experiment names once, an optional `weight` (a whole number above zero, 1 where the
 // arm names none), optional `config_files` read as `role_config_files`' lists are
-// (readOverlayFiles), an optional `instructions` path the daemon reads at boot, and an optional
-// `plan`, one of the words of PlanGroup. Neither file key is required: the arm that names no file
-// is the control the others are measured against. `plan: owner-alone` is refused: this release
-// does not carry it out.
+// (readOverlayFiles), an optional `instructions` path the daemon reads at boot, an optional
+// `texts` folder the daemon reads at boot too, and an optional `plan`, one of the words of
+// PlanGroup. No file key is required: the arm that names no file is the control the others are
+// measured against, and an arm may name any one of them alone. `plan: owner-alone` is refused:
+// this release does not carry it out.
 func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 	if value.Kind != yaml.SequenceNode {
 		return nil, fmt.Errorf("%s must be a sequence of variant blocks", key)
@@ -485,6 +504,11 @@ func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 		}
 		if instructions := fields["instructions"]; instructions != nil {
 			if variant.InstructionsPath, err = cleanAbsolutePath(instructions, field+".instructions"); err != nil {
+				return nil, err
+			}
+		}
+		if texts := fields["texts"]; texts != nil {
+			if variant.TextsPath, err = cleanAbsolutePath(texts, field+".texts"); err != nil {
 				return nil, err
 			}
 		}
@@ -624,7 +648,9 @@ func checkExperimentPlans(experiments []Experiment, key string) error {
 //
 // It also refuses a project two of whose experiments set `plan` (Experiment.SetsPlan): each draws
 // for every new issue, so each issue would hold two words on how it is done, which may disagree,
-// and one experiment's measurement would run under the other's arms.
+// and one experiment's measurement would run under the other's arms. After those, the arms that
+// name a folder of texts are held to the rules of their own (checkTextsArms), under any mode for
+// the same reason as the overlays.
 func checkExperiments(cfg Config) error {
 	for _, name := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		project := cfg.Projects[name]
@@ -649,6 +675,108 @@ func checkExperiments(cfg Config) error {
 					return err
 				}
 			}
+		}
+		if err := checkTextsArms(cfg, "projects."+name, declared); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkTextsArms refuses the folders of texts the project's declared arms name
+// (Variant.TextsPath) that some role of a unit drawn into them could not read as one version of
+// Legion's texts: an arm whose experiment reaches a role on a harness other than Oh My Pi, since
+// only an Oh My Pi launch reads a folder, which the architect always is; under runtime kubernetes,
+// a folder the operator's pod mounts do not hold whole (checkTextsMount), since a role reads it
+// in its pod at the path the daemon reads it at; and two experiments each with an arm naming a
+// folder whose roles meet (Experiment.Reaches, every issue role where an experiment names none),
+// since a unit drawn into both would have that role read two folders at once. Two arms of one
+// experiment may each name a folder: a unit is drawn into one arm of an experiment. key is the
+// project's own path, `projects.<KEY>`. The folder's own files are boot's to read
+// (internal/daemon's readBoot), so `legion config check` refuses those too.
+func checkTextsArms(cfg Config, key string, declared []Experiment) error {
+	// giver is the experiment that gives each issue role a folder, of those read so far.
+	giver := map[claim.Role]string{}
+	for _, experiment := range declared {
+		folders := false
+		for _, variant := range experiment.Variants {
+			if variant.TextsPath == "" {
+				continue
+			}
+			folders = true
+			for _, role := range claim.Roles {
+				if !experiment.Reaches(role) {
+					continue
+				}
+				if backend := cfg.BackendFor(role); backend != runtime.BackendOmp {
+					fix := "put every issue role on " + string(runtime.BackendOmp)
+					if experiment.Roles != nil {
+						fix = "put every role its roles names on " + string(runtime.BackendOmp)
+					}
+					return fmt.Errorf("%s names texts, and worker_backends.%s is %s, which reads no folder of texts: %s, or take texts out of the variant",
+						strings.TrimSuffix(variant.ConfigFilesField, ".config_files"), role, backend, fix)
+				}
+			}
+			if k := cfg.Runtime.Kubernetes; k != nil {
+				if err := checkTextsMount(k.Pod, variant.TextsField(), variant.TextsPath); err != nil {
+					return err
+				}
+			}
+		}
+		if !folders {
+			continue
+		}
+		for _, role := range claim.Roles {
+			if !experiment.Reaches(role) {
+				continue
+			}
+			if other, given := giver[role]; given {
+				return fmt.Errorf("%s.experiments.%s and %s.experiments.%s each give a folder of texts to the %s, which would then read two folders: name the %s in the roles of one of the two alone",
+					key, other, key, experiment.Name, role, role)
+			}
+			giver[role] = experiment.Name
+		}
+	}
+	return nil
+}
+
+// checkTextsMount refuses folder, the folder of texts the arm's key field names, unless a mount of
+// the operator's pod block (runtime.kubernetes.pod.volume_mounts), which every role's pod carries,
+// holds it as a directory: the deepest mount at or above it, as the kernel resolves the path,
+// mounting a whole volume, the folder itself or one above it. A sub_path mount carries one key of
+// its volume, never the folder's tree of files. It is checkRoleConfigMount's directory form: a
+// file must be the item of a directory mount or a sub_path mount of its own, and a folder the
+// opposite. Which files the folder holds is boot's to read, and whether a volume that projects
+// items projects each of them (CheckTextsFilesMounted).
+func checkTextsMount(pod PodConfig, field, folder string) error {
+	var holder *corev1.VolumeMount
+	for i, mount := range pod.VolumeMounts {
+		if folder != mount.MountPath && !strings.HasPrefix(folder, mount.MountPath+"/") {
+			continue
+		}
+		if holder == nil || len(mount.MountPath) > len(holder.MountPath) {
+			holder = &pod.VolumeMounts[i]
+		}
+	}
+	switch {
+	case holder == nil:
+		return fmt.Errorf("%s %s is under no %s.volume_mounts mount_path: a role's pod sees only the image and the operator's mounts, so mount the volume that holds the folder there, at the path the daemon reads it at", field, folder, podKey)
+	case holder.SubPath != "":
+		return fmt.Errorf("%s %s is under the sub_path mount %s of volume %s, which mounts one key of it and no folder: mount the volume that holds the folder whole, with no sub_path", field, folder, holder.MountPath, holder.Name)
+	}
+	return nil
+}
+
+// CheckTextsFilesMounted refuses a file of the folder of texts the arm's key field names that the
+// operator's pod mounts do not carry under runtime kubernetes: files are the files boot read in the
+// folder, by their paths there (the manifest and every file it lists), and each must be a file a
+// role's pod sees at the folder's path (checkRoleConfigMount), which under a ConfigMap or Secret
+// volume that projects items is one of those items, since the kubelet writes nothing else there.
+// The loader has held the folder itself to the mounts (checkTextsMount); only boot knows its files.
+func CheckTextsFilesMounted(pod PodConfig, field, folder string, files []string) error {
+	for _, file := range files {
+		if err := checkRoleConfigMount(pod, field, path.Join(folder, file)); err != nil {
+			return err
 		}
 	}
 	return nil
