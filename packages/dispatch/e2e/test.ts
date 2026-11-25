@@ -283,10 +283,10 @@ export function rowPerson(logical: string): RowLogin {
  *  and `user_sessions` rows, so the list of everyone who has signed in reads at the next row's
  *  start as it read at this one's. The login is a `RowLogin` (e2e/users.ts), as `rowPerson`'s
  *  is, so `asUser`, `signIn` and the `signedIn` option take it. */
-export function fixedPerson(name: string, why: string): RowLogin {
-  const login = fixedLogin(name, why);
-  namedPeople.add(login);
-  return login;
+export function fixedPerson(login: string, why: string): RowLogin {
+  const fixed = fixedLogin(login, why);
+  namedPeople.add(fixed);
+  return fixed;
 }
 
 /** A `signedIn` value that signs the default context in as the row's own person for `login`. */

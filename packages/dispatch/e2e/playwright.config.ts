@@ -76,9 +76,9 @@ const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
 // `testIgnore` holds the pattern, and so does every project that names a `testIgnore` of its own,
 // since a project's overrides this one's. A moved row lives in such a file rather than carrying an
 // annotation, because a real-stack spec takes its `test` from e2e/test.ts, which empties the
-// database once per worker, resets the fakes before every row and signs the default context in: a
-// stubbed row left among them would pay that fixture for nothing (packages/dispatch/README.md,
-// "The stubbed layer").
+// database before the worker's first row and before the review corpus's seed, resets the fakes
+// before every row and signs the default context in: a stubbed row left among them would pay that
+// fixture for nothing (packages/dispatch/README.md, "The stubbed layer").
 const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which

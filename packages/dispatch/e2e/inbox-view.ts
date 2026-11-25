@@ -113,7 +113,7 @@ export async function seedEveryField(): Promise<{
     const ask = await createAsk(
       issue.key,
       { question: `${title}: what is the rule?`, ...(urgency === undefined ? {} : { urgency }) },
-      asSession()
+      asSession(THREAD_SESSION)
     );
     rows.push({
       assignee,
@@ -138,7 +138,7 @@ export async function seedEveryField(): Promise<{
   await createComment(
     handed,
     { ask_id: handedAsk?.id, body: "Checking the lease now.", turn: "agent" },
-    asSession()
+    asSession(THREAD_SESSION)
   );
   await question("Clock drift", 3, "med", "alice");
   // Carol's question: the third holder, and the row that was nobody's before every project
@@ -175,7 +175,7 @@ export async function seedEveryField(): Promise<{
   const approval = await requestApproval(
     approvalIssue.primary_artifact_id,
     { summary: "The window draft." },
-    asSession()
+    asSession(THREAD_SESSION)
   );
   if (approval.ask === null) throw new Error("the approval request recorded no ask");
   rows.push({

@@ -51,10 +51,11 @@ import {
 import { type Browser, type BrowserContext, expect, type Page, rowKey, test } from "./test";
 import { signIn } from "./users";
 
-// The database's reset, once per worker, and the fakes' before every row are the `test` this file
-// imports (e2e/test.ts); the store's block schema is neither - the reset keeps the schema's own
-// nodes (`e2e/seed.ts`) - so it is put back here as well as at the row's end: a row that failed
-// before its own restore must not leave the next one, or the lane's other specs, on another schema.
+// The database's reset, before the worker's first row and before the review corpus's seed, and
+// the fakes' before every row are the `test` this file imports (e2e/test.ts); the store's block
+// schema is neither - the reset keeps the schema's own nodes (`e2e/seed.ts`) - so it is put back
+// here as well as at the row's end: a row that failed before its own restore must not leave the
+// next one, or the lane's other specs, on another schema.
 test.beforeEach(async () => {
   await restoreStoreSchema();
 });

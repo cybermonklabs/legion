@@ -147,12 +147,13 @@ test("a writer inside the docs layer when its room fails is told, and the room r
     "the failed-room probe is opt-in: it holds a durable append for 20 s and cancels a backend"
   );
   test.setTimeout(240_000);
-  // The `test` of this suite empties the database once per worker, not before each row
-  // (e2e/test.ts), so this row empties it itself. This body is read as one procedure by hand, on
-  // two checkouts at once (the header above), and what the probe starts from is the first thing a
-  // reader of that comparison needs: a row whose 40 s are spent on one append cannot be read
-  // against another tree's run without it. It empties through `resetDatabase`, which counts the
-  // database as the worker's, so the datasets the worker keeps are written again after it.
+  // The `test` of this suite empties the database before the worker's first row and before the
+  // review corpus's seed, not before each row (e2e/test.ts), so this row empties it itself. This
+  // body is read as one procedure by hand, on two checkouts at once (the header above), and what
+  // the probe starts from is the first thing a reader of that comparison needs: a row whose 40 s
+  // are spent on one append cannot be read against another tree's run without it. It empties
+  // through `resetDatabase`, which counts the database as the worker's, so the datasets the worker
+  // keeps are written again after it.
   await resetDatabase();
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({

@@ -66,25 +66,29 @@ async function expectAnswer(dialog: Locator, words: string, answer: SearchRespon
  *  in an answer read at a row's start and first in the page's (nightly 45541644067). The page
  *  asks for the words and its own project, `numberProject`, which narrows nothing, and for no
  *  other member: a search the page narrowed by a filter the reader did not choose fails here,
- *  as an answer read apart from the page would have shown. */
-async function pageAnswer(
-  page: Page,
-  words: string,
-  numberProject: string
-): Promise<SearchResponse> {
-  const answered = await page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return (
-      url.pathname === "/api/v1/search/results" &&
-      url.searchParams.get("q") === words &&
-      !url.searchParams.has("keywords_only")
-    );
-  });
-  expect(
-    Object.fromEntries(new URL(answered.url()).searchParams),
-    `the members of the page's whole search for "${words}"`
-  ).toEqual({ number_project: numberProject, q: words });
-  return (await answered.json()) as Result<"/api/v1/search/results", "get">;
+ *  as an answer read apart from the page would have shown. A row starts this wait before it
+ *  types and awaits it later. A step that throws in between makes the row close its context,
+ *  which can reject the wait before anything awaits it. So the wait's rejection is handled the
+ *  moment the wait starts, and the promise returned is that same wait, which still rejects for
+ *  the row that awaits it. */
+function pageAnswer(page: Page, words: string, numberProject: string): Promise<SearchResponse> {
+  const answer = (async () => {
+    const answered = await page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/v1/search/results" &&
+        url.searchParams.get("q") === words &&
+        !url.searchParams.has("keywords_only")
+      );
+    });
+    expect(
+      Object.fromEntries(new URL(answered.url()).searchParams),
+      `the members of the page's whole search for "${words}"`
+    ).toEqual({ number_project: numberProject, q: words });
+    return (await answered.json()) as Result<"/api/v1/search/results", "get">;
+  })();
+  void answer.catch(() => {});
+  return answer;
 }
 
 /** No project of the stack has a key or a name holding `words`. The bar lists every project whose
@@ -193,9 +197,6 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
     const priorityAnswer = pageAnswer(page, "priority p2", core);
-    // If an earlier step throws, closing the context can reject this wait before we await it.
-    // Observe that rejection now and still await the original below.
-    void priorityAnswer.catch(() => {});
     await input.fill("priority p2");
     const setP2 = actions.getByRole("option", { name: "Set priority P2" });
     await expect(actions.getByRole("option")).toHaveCount(1);
@@ -302,7 +303,6 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     await page.keyboard.press("Control+k");
     await expect(input).toHaveValue("");
     const issueAnswer = pageAnswer(page, "issue", core);
-    void issueAnswer.catch(() => {});
     await input.fill("issue");
     await expectAnswer(dialog, "issue", await issueAnswer);
     await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
@@ -359,7 +359,6 @@ test("a query that holds a card move further in moves no card on Enter", async (
     ] as const) {
       await page.keyboard.press("Control+k");
       const answer = pageAnswer(page, query, core);
-      void answer.catch(() => {});
       await input.fill(query);
       await expect(actions.getByRole("option", { name: move })).toHaveCount(1);
       await expect(dialog.getByText("Searching…")).toHaveCount(0);
@@ -382,7 +381,6 @@ test("a query that holds a card move further in moves no card on Enter", async (
     });
     await page.keyboard.press("Control+k");
     const nextAnswer = pageAnswer(page, "next", core);
-    void nextAnswer.catch(() => {});
     await input.fill("next");
     const nextMove = actions.getByRole("option", { name: "Move card to the next status" });
     await expect(nextMove).toHaveCount(1);

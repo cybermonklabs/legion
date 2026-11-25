@@ -63,7 +63,8 @@ import { ONE_PIXEL_PNG } from "./sends";
  * tree those of `e2e/issue-page-i.e2e.ts`, for the redesigned issue page. A row needs one of these
  * calls and nothing else: each seed makes its own project, under the row's own key
  * (`layoutProject`), its component model, repository and sessions, beside what the rows before it
- * wrote, since the suite's `test` empties the database once per worker and not before each row.
+ * wrote, since the suite's `test` empties the database before the worker's first row and before
+ * the review corpus's seed, not before each row.
  *
  * Every write goes through `e2e/api.ts`, as a person for a human's write and under the agent
  * bearer for a session's, with two exceptions that are not Dispatch's own state: the component

@@ -190,12 +190,13 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
       const { resetDatabase } = await import("../seed");
       const { signIn } = await import("../users");
       // The one reset of the database before each row left in the suite: a real-stack row makes
-      // its data under keys of its own and its worker empties the database once (e2e/test.ts),
-      // but a stubbed row seeds under keys it fixes (`fixedKey`, e2e/api.ts), since its recording
-      // holds them, so the next row's seed would meet them and fail; and what it records must be
-      // the server's answer to its own seed alone, which only an emptied database gives. It runs
-      // only in record mode - `bun run e2e:stub:record` by hand and the nightly's re-record job -
-      // and never in a gating lane, which replays and reaches no database.
+      // its data under keys of its own and its worker empties the database before its first row
+      // and before the review corpus's seed, not before each row (e2e/test.ts), but a stubbed row
+      // seeds under keys it fixes (`fixedKey`, e2e/api.ts), since its recording holds them, so the
+      // next row's seed would meet them and fail; and what it records must be the server's answer
+      // to its own seed alone, which only an emptied database gives. It runs only in record mode -
+      // `bun run e2e:stub:record` by hand and the nightly's re-record job - and never in a gating
+      // lane, which replays and reaches no database.
       await resetDatabase();
       await signIn(context, "alice");
       const value = await seed();

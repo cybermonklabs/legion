@@ -13,11 +13,12 @@ import { asUser } from "./users";
 //
 // Every word a row writes and types holds the row's own project key (`keyedSearchWord`,
 // e2e/search.ts). The bar searches every project of the stack, and the worker empties its
-// database once, before its first row, so the issues an earlier row wrote - the other row of
-// this file, or another repeat of this one - hold the same bare words and would be listed beside
-// the row's own. The search by meaning is the row's own for the same reason: the fake embedder
-// draws a group's vector from the group's words (`keyOf`, e2e/fake-embedder.ts), so the vectors
-// stored for an earlier row's issues are nowhere near this row's query.
+// database before its first row and before the review corpus's seed, not before each row, so the
+// issues an earlier row wrote - the other row of this file, or another repeat of this one - hold
+// the same bare words and would be listed beside the row's own. The search by meaning is the
+// row's own for the same reason: the fake embedder draws a group's vector from the group's words
+// (`keyOf`, e2e/fake-embedder.ts), so the vectors stored for an earlier row's issues are nowhere
+// near this row's query.
 
 interface TiersFixture {
   /** The word typed, the row's own: two seeded issues hold it and the third does not. */

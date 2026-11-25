@@ -238,8 +238,8 @@ export function chromeTexts(page: Page): Promise<string[]> {
 }
 
 /** The logical key of the project `seedPlanMarks` makes, which it makes under the running row's
- *  own key for it (`rowKey`, e2e/test.ts), since the database is emptied once per worker and not
- *  before each row. */
+ *  own key for it (`rowKey`, e2e/test.ts), since the database is emptied before the worker's
+ *  first row and before the review corpus's seed, not before each row. */
 const MARKS_PROJECT = "MARKS";
 
 /** The words `seedPlanMarks` gives its two tasks and its two statements: each starts bold and

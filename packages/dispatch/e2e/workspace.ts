@@ -169,9 +169,9 @@ function liveWorkspace(sessionId: (name: WorkspaceSessionName) => string) {
 
 /** Sends the workspace's broadcast as `person` (alice unless the caller names another) to three
  *  of the sessions `sessionId` names, and writes the planner's reply to its copy: the broadcast
- *  `seedWorkspace` sends, and the one a row that needs a broadcast of its own sends again
- *  (`seedReviewBroadcast`, e2e/review-seed.ts). Answers its id and its recipients, in the order
- *  sent. */
+ *  `seedWorkspace` sends, and the new copy `reviewCorpus` (e2e/test.ts) sends for each later
+ *  reader of the corpus (`seedReviewBroadcast`, e2e/review-seed.ts). Answers its id and its
+ *  recipients, in the order sent. */
 export async function sendWorkspaceBroadcast({
   person,
   sessionId = fixedSessionId,

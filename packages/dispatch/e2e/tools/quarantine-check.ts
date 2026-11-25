@@ -416,11 +416,20 @@ export function decide(
           "checked."
       );
     }
-    if (reading.kind === "gone") absent.push(row);
-    else if (reading.kind === "ownTitle") ownTitle.push({ listed: reading.listed, row });
-    else if (reading.kind === "unmatched") unmatched.push({ row, runs: named });
-    else if (reading.kind === "unlisted") unlisted.push({ row, runs: named });
-    if (reading.kind !== "listed") continue;
+    switch (reading.kind) {
+      case "gone":
+        absent.push(row);
+        continue;
+      case "ownTitle":
+        ownTitle.push({ listed: reading.listed, row });
+        continue;
+      case "unmatched":
+        unmatched.push({ row, runs: named });
+        continue;
+      case "unlisted":
+        unlisted.push({ row, runs: named });
+        continue;
+    }
     const { change } = reading;
     const fix = fixReadings.find((fixReading) => rowName(fixReading.entry) === name)?.entry;
     const commits = rowCommits(change, fix);

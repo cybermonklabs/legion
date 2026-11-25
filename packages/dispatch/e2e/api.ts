@@ -386,9 +386,10 @@ function del<P extends PathsOf<"delete">>(
 
 /** A project key `createProject` takes: the running row's own, `rowKey(...)` (e2e/test.ts), or a
  *  key fixed on purpose, `fixedKey(...)`, which names why. A real-stack row that wrote a literal
- *  key would make a project another row of its worker makes too, since no reset empties the
- *  database between them (e2e/test.ts), so the brand turns that row into a type error on its own
- *  pull request rather than a collision in a later run. */
+ *  key would make a project another row of its worker makes too, since the database is emptied
+ *  before the worker's first row and before the review corpus's seed, not before each row
+ *  (e2e/test.ts), so the brand turns that row into a type error on its own pull request rather
+ *  than a collision in a later run. */
 export type RowKey = string & { readonly rowKey: unique symbol };
 
 /** `key` as a key `createProject` takes, for a caller that makes its project under a fixed key on

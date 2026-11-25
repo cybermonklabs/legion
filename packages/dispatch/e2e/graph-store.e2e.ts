@@ -39,10 +39,11 @@ import { asUser, type SignInLogin } from "./users";
 /** The writer the store's own delivery writer carries (`outbox.graphWriter`). */
 const OUTBOX_WRITER = `'{"kind": "system", "id": "dispatch-outbox"}'::jsonb`;
 
-// The database's reset, once per worker, and the fakes' before every row are the `test` this file
-// imports (e2e/test.ts); the store's block schema is neither - the reset keeps the schema's own
-// nodes (`e2e/seed.ts`) - so a row that moved them puts them back here as well as at its end: a
-// row that failed before its own restore must not leave the next one on another schema.
+// The database's reset, before the worker's first row and before the review corpus's seed, and
+// the fakes' before every row are the `test` this file imports (e2e/test.ts); the store's block
+// schema is neither - the reset keeps the schema's own nodes (`e2e/seed.ts`) - so a row that
+// moved them puts them back here as well as at its end: a row that failed before its own restore
+// must not leave the next one on another schema.
 test.beforeEach(async () => {
   await restoreStoreSchema();
 });
@@ -291,9 +292,9 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
  *
  * Every name it writes under is the row's own - the project (`rowKey`), `person` and bob
  * (`rowPerson`), and the session (`rowSessionId`, e2e/test.ts) - since the worker empties its
- * database once, before its first row, and not before this one: a page of the stack's alice
- * would also list what every row before this one wrote as her, and a session another row named
- * would carry its deliveries here.
+ * database before its first row and before the review corpus's seed, not before this one: a page
+ * of the stack's alice would also list what the rows before this one wrote as her, and a session
+ * another row named would carry its deliveries here.
  *
  * Two of the store's facts a browser run does not reach by itself, and each is written here as
  * the writer that owns it writes it in a deployment:

@@ -1,7 +1,8 @@
 /** A row's names are its own in every copy of it a run makes, and their suffix holds no vowel.
  *
- *  The database is emptied once per worker, so a row reads beside what every row before it on
- *  the worker wrote (e2e/test.ts). Playwright 1.64.1 gives each `--repeat-each` copy of a row a
+ *  The database is emptied before the worker's first row and before the review corpus's seed,
+ *  not before each row, so a row reads beside what the rows before it on the worker wrote
+ *  (e2e/test.ts). Playwright 1.64.1 gives each `--repeat-each` copy of a row a
  *  `testId` and a worker of its own (`RowIdentity`, e2e/row-names.ts), and the derivation reads
  *  `repeatEachIndex` beside `testId` as well. These rows hold that derivation for one `testId`
  *  they give both copies, which Playwright 1.64.1 never gives two copies: two copies that differ

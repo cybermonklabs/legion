@@ -36,12 +36,12 @@ test("database reset clears fake Envoy subscribers before the next issue", async
     },
   ]);
   // The one reset this file calls itself, and the row is about it: the `test` of this suite
-  // empties the database once per worker and resets the fakes before each row (e2e/test.ts), and
-  // this call proves what an emptying of the database does IN a row - the fake Envoy's
-  // subscribers go with the tables, so the recycled issue key below starts with none. Deleting it
-  // would leave the row asserting nothing. It empties through `resetDatabase`, which counts the
-  // database as the worker's, so the datasets the worker keeps are written again for the rows
-  // after this one.
+  // empties the database before the worker's first row and before the review corpus's seed, and
+  // resets the fakes before each row (e2e/test.ts), and this call proves what an emptying of the
+  // database does IN a row - the fake Envoy's subscribers go with the tables, so the recycled
+  // issue key below starts with none. Deleting it would leave the row asserting nothing. It
+  // empties through `resetDatabase`, which counts the database as the worker's, so the datasets
+  // the worker keeps are written again for the rows after this one.
   await resetDatabase();
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "No stale subscriber" });

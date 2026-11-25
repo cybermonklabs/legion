@@ -15,9 +15,10 @@ import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The reset that empties the database (`resetDatabase`, e2e/seed.ts) - once per worker, before
- * its first row, and where a row empties it itself - empties `user_document_reads`, and waits at
- * most 5 s for the table. A page that opens a document marks it read (PUT
+ * The reset that empties the database (`resetDatabase`, e2e/seed.ts) - before the worker's first
+ * row, before the review corpus's seed, and where a row empties it itself - empties
+ * `user_document_reads`, and waits at most 5 s for the table. A page that opens a document marks
+ * it read (PUT
  * /api/v1/me/documents/{id}/read), and a row that ends right after closes that page while the
  * write is in flight. When the database's disk stops answering at that moment, the write's commit
  * waits for it: Postgres flushes a commit record with its interrupts held, so the cancel the

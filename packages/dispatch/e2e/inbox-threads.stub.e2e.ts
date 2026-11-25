@@ -44,7 +44,7 @@ const repliesList = stubbed(async () => {
   await createProject({ key: CORE, name: "Core" });
   for (const title of ["Ledger rollout", "Mirror retries"]) {
     const issue = await createIssue({ project: "CORE", title });
-    await createAsk(issue.key, { question: `${title}: ship tonight?` }, asSession());
+    await createAsk(issue.key, { question: `${title}: ship tonight?` }, asSession(THREAD_SESSION));
   }
   await setPendingCredentialRequests([
     {

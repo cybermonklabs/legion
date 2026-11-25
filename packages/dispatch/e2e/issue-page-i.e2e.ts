@@ -158,7 +158,8 @@ interface OpenedTree {
  *  page itself (`gotoIssue`, `expectOpeningLanded`, `focusThePage`): each row below asserts the
  *  key or the tree property it is about first, and `expectTreeDrawn` after it. The seed writes
  *  under the row's own keys (`layoutProject`), beside what the rows before it wrote: the suite's
- *  `test` empties the database once per worker, not before each row. */
+ *  `test` empties the database before the worker's first row and before the review corpus's
+ *  seed, not before each row. */
 async function openTree(browser: Browser): Promise<OpenedTree> {
   const seeded = await seedWholeIssue();
   const context = await asUser(browser, "alice");

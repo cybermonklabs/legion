@@ -34,8 +34,9 @@ const samplingInterval = 100;
 // that would land on one process while the other loads the room.
 const spec = "Use SQLite for the cache.\n\nEnd of spec.\n";
 
-// The database's reset, once per worker, and the fakes' before every row are the `test` this file
-// imports (e2e/test.ts); the round-robin proxy's log is neither, so it is cleared here.
+// The database's reset, before the worker's first row and before the review corpus's seed, and
+// the fakes' before every row are the `test` this file imports (e2e/test.ts); the round-robin
+// proxy's log is neither, so it is cleared here.
 test.beforeEach(async () => {
   const reset = await fetch(new URL("/_proxy/reset", baseUrl), { method: "POST" });
   expect(reset.status, "POST /_proxy/reset").toBe(204);

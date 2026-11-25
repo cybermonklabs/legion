@@ -356,10 +356,11 @@ ${storeDeletes
  * installations would otherwise let a later row's reconcile succeed against repositories it
  * never seeded, and the fake embedder, whose counted calls and seeded markers belong to the row
  * that made them. No key a row makes separates that state, so the real-stack suite resets the
- * fakes before every row (`freshFakes`, e2e/test.ts), while it empties the database once per
- * worker; `resetDatabase` resets them beside its delete. All settle before this returns, a
- * failed one included, so one failing still lets the others finish and none runs on into the
- * next row. It is the timing fixture's part `reset-fakes` (e2e/measure.ts).
+ * fakes before every row (`freshFakes`, e2e/test.ts), while it empties the database before the
+ * worker's first row and before the review corpus's seed; `resetDatabase` resets them beside its
+ * delete. All settle before this returns, a failed one included, so one failing still lets the
+ * others finish and none runs on into the next row. It is the timing fixture's part `reset-fakes`
+ * (e2e/measure.ts).
  */
 export async function resetFakes(): Promise<void> {
   await measured("reset-fakes", async () => {

@@ -96,9 +96,9 @@ const SELECTORS = {
 /**
  * Runs `body` on a page signed in as the reader, with the new issue page turned on, after `seed`
  * has written the issue it reads under the row's own keys (`rowKey`, `e2e/test.ts`), beside what
- * the rows before it wrote: the database is emptied once per worker, not before each row. A row
- * seeds once; the viewport starts at the desktop width in every project, and a row that reads
- * the phone sets it itself.
+ * the rows before it wrote: the database is emptied before the worker's first row and before the
+ * review corpus's seed, not before each row. A row seeds once; the viewport starts at the desktop
+ * width in every project, and a row that reads the phone sets it itself.
  */
 export async function phase<T>(
   browser: Browser,

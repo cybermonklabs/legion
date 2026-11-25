@@ -45,9 +45,10 @@ import { rowKey } from "./test";
 
 /** The project every seed of `e2e/issue-layout-seed.ts` makes, and the one the rows of
  *  `e2e/issue-page-i.e2e.ts` write their own issues in beside a seed's: the running row's own key
- *  for `LAY` (`rowKey`, e2e/test.ts), since the database is emptied once per worker and not
- *  before each row. Every call in one phase of a row (`phase`, e2e/issue-page.ts) answers the
- *  same key, so an issue a row writes after its seed lands in the project the seed made. */
+ *  for `LAY` (`rowKey`, e2e/test.ts), since the database is emptied before the worker's first row
+ *  and before the review corpus's seed, not before each row. Every call in one phase of a row
+ *  (`phase`, e2e/issue-page.ts) answers the same key, so an issue a row writes after its seed
+ *  lands in the project the seed made. */
 export function layoutProject(): RowKey {
   return rowKey("LAY");
 }

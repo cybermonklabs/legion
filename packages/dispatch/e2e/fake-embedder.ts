@@ -99,10 +99,10 @@ function vectorOf(text: string): number[] {
  *  item a row means it to find are one text to this fake, and the text itself where it holds
  *  none of them. The group's words and not its place in the list: every row seeds its groups
  *  from the first place, and the vectors the server stored for an earlier row's items stay in
- *  the database, which the worker empties once, before its first row. Keyed by place, a later
- *  row's query would take the vector of every earlier row's first group, a cosine of 1 with
- *  items it never wrote. A row whose words hold its own key (`keyedSearchWord`, e2e/search.ts)
- *  takes a vector no other row's items were given. */
+ *  the database, which the worker empties before its first row and before the review corpus's
+ *  seed, not before each row. Keyed by place, a later row's query would take the vector of every
+ *  earlier row's first group, a cosine of 1 with items it never wrote. A row whose words hold its
+ *  own key (`keyedSearchWord`, e2e/search.ts) takes a vector no other row's items were given. */
 function keyOf(text: string): string {
   const lowered = text.toLowerCase();
   const group = state.markers.find((words) => words.some((word) => lowered.includes(word)));

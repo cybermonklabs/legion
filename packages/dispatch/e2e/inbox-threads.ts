@@ -60,12 +60,12 @@ export function rowThreadSession(sessionId: (logical: string) => string): FakeSe
 }
 
 /** The session as an author: what a write of its own names itself. */
-export function sessionActor(session: FakeSession = THREAD_SESSION): Actor {
+export function sessionActor(session: FakeSession): Actor {
   return { id: session.session_id, kind: "session" };
 }
 
 /** The options a write made as the session carries. */
-export function asSession(session: FakeSession = THREAD_SESSION) {
+export function asSession(session: FakeSession) {
   return { actor: sessionActor(session), as: "agent" as const };
 }
 

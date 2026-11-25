@@ -1,10 +1,10 @@
 /** Each stack's Postgres server, from one of the two providers a caller names.
  *
  *  A stack is a whole harness of its own (`e2e/harness-pool.ts`), and its worker empties its
- *  database once, before its first row (`workerDatabase` in e2e/test.ts, through `resetDatabase`
- *  in `e2e/seed.ts`), deleting whatever another stack's rows had written there, so two stacks
- *  cannot share one: the pool starts a server per stack and hands it to that stack's Dispatch
- *  servers and psql as `DATABASE_URL`.
+ *  database before its first row and before the review corpus's seed (`workerDatabase` and
+ *  `reviewCorpus` in e2e/test.ts, through `resetDatabase` in `e2e/seed.ts`), deleting whatever
+ *  another stack's rows had written there, so two stacks cannot share one: the pool starts a
+ *  server per stack and hands it to that stack's Dispatch servers and psql as `DATABASE_URL`.
  *
  *  - `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names: a
  *    developer's path on a machine with Docker and no Postgres binaries, and the path of every

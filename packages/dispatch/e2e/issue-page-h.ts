@@ -83,7 +83,7 @@ export function filesList(page: Page): Locator {
 
 /** The logical key of the project every issue of the seed is in, which `seedDetailsIssue` makes
  *  under the running row's own key for it (`rowKey`, e2e/test.ts), since the database is emptied
- *  once per worker and not before each row. */
+ *  before the worker's first row and before the review corpus's seed, not before each row. */
 const PROJECT = "DET";
 /** The repository ONE carries, which the fake GitHub serves with one pull request: the row's own,
  *  `acme/detail-` and the project's key in lower case, since Dispatch links one address from one
@@ -154,8 +154,8 @@ export interface DetailsSeed {
 /**
  * The issues the rows of `issue-page-h.e2e.ts` read, as alice, written through Dispatch with
  * `main`'s helpers, in a project, a repository, a session and a priority of the row's own, beside
- * what the rows before it wrote: the suite's `test` empties the database once per worker, not
- * before each row.
+ * what the rows before it wrote: the suite's `test` empties the database before the worker's
+ * first row and before the review corpus's seed, not before each row.
  *
  * - **ONE** has a parent, the twenty labels, a repository, a pull request and one other link, a
  *   component, the planner's claim, the route `role:architect`, an advanced priority, eleven

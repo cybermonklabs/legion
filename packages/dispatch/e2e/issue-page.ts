@@ -50,11 +50,12 @@ export function viewportAt(width: number): { height: number; width: number } {
   return { height: width >= 768 ? 900 : 844, width };
 }
 
-/** The rows that have run a `phase`. The database is emptied once per worker, not before each
- *  row (`workerDatabase`, `e2e/test.ts`), and a row's first `phase` seeds under the row's own
- *  keys (`rowKey`), beside what other rows wrote. A later `phase` of the same row moves the row on
- *  to a phase of its own first (`nextRowPhase`), so it seeds under keys no phase before it wrote,
- *  beside what those phases left, as a row seeds beside other rows. */
+/** The rows that have run a `phase`. The database is emptied before the worker's first row and
+ *  before the review corpus's seed, not before each row (`workerDatabase`, `reviewCorpus`,
+ *  `e2e/test.ts`), and a row's first `phase` seeds under the row's own keys (`rowKey`), beside
+ *  what other rows wrote. A later `phase` of the same row moves the row on to a phase of its own
+ *  first (`nextRowPhase`), so it seeds under keys no phase before it wrote, beside what those
+ *  phases left, as a row seeds beside other rows. */
 const phasedRows = new WeakSet<TestInfo>();
 
 /**
