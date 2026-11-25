@@ -16,14 +16,16 @@
 // between their steps.
 
 // The forced-order state writer of nats-server v2.15.1, which server.patch calls in place of the
-// server's own. packages/envoy/scripts/forced-order.sh adds it to the server package beside the
-// shared ../zz_measure.go.
+// server's own, and the hooks of its duplicate-id window, which read fields of its own (stream.ddwin,
+// v2.10.29 has none and keeps the window in the stream's config). packages/envoy/scripts/forced-order.sh
+// adds it to the server package beside the shared ../zz_measure.go.
 package server
 
 import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // measureWriteFile is v2.15.1's writeFileWithOptionalSync followed by writeAtomicallyWithTemp,
@@ -65,4 +67,47 @@ func (o *consumerFileStore) measureWriteFile(name string, data []byte, perm fs.F
 		}
 	}
 	return nil
+}
+
+// measureDedupeReset reports a stream update whose duplicate window changes, past its re-arm of
+// the stream's purge of remembered duplicate ids and before the store of the new window, so a
+// purge that runs here measures the ids' ages against oldWindow, the window being replaced. The
+// update re-arms that purge only while the stream remembers an id; the report comes either way,
+// and a hold here parks a purge of its own only for a stream that remembers one. It reports
+// nothing when the two windows are the same, since the update touches the purge only when they
+// differ.
+//
+// It takes no lock the point's own caller holds: the update holds the stream's lock here, so the
+// stream's name is the update's own (a stream is never renamed) and the store directory the
+// server's. It does not wait for the purge the re-arm fires either, so the two reports can come
+// in either order; both are after that re-arm and before the store of the new window.
+func measureDedupeReset(mset *stream, name string, oldWindow, newWindow time.Duration, point string) {
+	if MeasureHook.Load() == nil || oldWindow == newWindow {
+		return
+	}
+	measure(&MeasureEvent{Point: point, Store: measureStoreDir(mset), Stream: name, Window: oldWindow, NewWindow: newWindow})
+}
+
+// measureDedupePurged reports a purge of remembered duplicate ids that has done its work, with
+// the dedupe lock still held, so the window and the count it reports are the purge's own: the
+// window it measured the ids' ages against (that lock is held for the whole purge, so no update
+// can have stored another meanwhile) and the ids it kept. It must not take that lock again, and
+// it takes no lock a stream update parked at dedupe.reset holds, so the report comes while that
+// update waits.
+func measureDedupePurged(mset *stream, point string) {
+	if MeasureHook.Load() == nil {
+		return
+	}
+	measure(&MeasureEvent{Point: point, Store: measureStoreDir(mset), Stream: mset.getCfgName(),
+		Window: mset.ddwin, Remembered: len(mset.ddmap)})
+}
+
+// measureStoreDir is the store directory of the server the stream runs in, or none for a stream
+// with no server. It takes the server's options lock alone, which no caller of a duplicate-window
+// point holds.
+func measureStoreDir(mset *stream) string {
+	if mset == nil || mset.srv == nil {
+		return _EMPTY_
+	}
+	return mset.srv.getOpts().StoreDir
 }

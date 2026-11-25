@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -101,17 +103,10 @@ func TestARepeatWhoseCopyReadDoesNotAnswerAnswers503(t *testing.T) {
 // the window cut to seconds, standing in for the 72 hours of the deployed one, so the stream
 // forgets the id.
 //
-// The cut is two stream updates, and that works around a defect of nats-server v2.15.1, not a
-// choice of style. A stream update whose duplicate window changes re-arms the stream's purge of
-// remembered ids to fire in a microsecond (server/stream.go:2796-2799) before it stores the new
-// window (server/stream.go:2978-2981). A purge that runs between the two (server/stream.go:5628)
-// reads the old window: after a cut from 72 hours it keeps the id and re-arms itself for about 72
-// hours, and the duplicate check is a lookup of the id with no test of its age
-// (server/stream.go:5619), so the stream never forgets the id and every repeat answers the 503.
-// The second update re-arms the purge once the first one's window is stored, so whichever window
-// that purge reads, the old or the new, is seconds long. The listener's keeper puts the deployed
-// 72 hours back every 30 s from its start (bus.defaultKeepInterval), and a pass between the cut and
-// the forget keeps the id under 72 hours again, so the row holds the keeper off.
+// The cut is two stream updates, which cutTheDuplicateWindow below carries with the nats-server
+// defect they work around. The listener's keeper puts the deployed 72 hours back every 30 s from
+// its start (bus.defaultKeepInterval), and a pass between the cut and the forget keeps the id
+// under 72 hours again, so the row holds the keeper off.
 func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
 	rig, _ := newSenderLimitRigOnServer(t, bus.WithKeepInterval(backgroundReadsHeld))
 	js := rig.harness.client.JS()
@@ -139,14 +134,8 @@ func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the stream: %v", err)
 	}
-	// Two cuts, 4 s then 3 s: see the comment above the test for the nats-server defect they work
-	// around. Each changes the window, so each re-arms the stream's purge.
-	config := info.Config
-	for _, window := range []time.Duration{4 * time.Second, 3 * time.Second} {
-		config.Duplicates = window
-		if _, err := js.UpdateStream(&config); err != nil {
-			t.Fatalf("cut the stream's duplicate window to %s: %v", window, err)
-		}
+	if err := cutTheDuplicateWindow(js, info.Config, forgottenIdWindow); err != nil {
+		t.Fatal(err)
 	}
 	var fresh heldAnswer
 	waitFor(t, 30*time.Second, "a repeat to be stored once the stream forgets the id", func() bool {
@@ -157,4 +146,41 @@ func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
 		t.Fatalf("the repeat after the stream forgot the id answered the first copy's event %s, want its own", fresh.envelope.EventID)
 	}
 	fresh.requireHeld(t, "the repeat after the stream forgot the id", heldCopy(t, rig.harness.client, subject), false)
+}
+
+// forgottenIdWindow is the duplicate window the row above cuts the stream's to: seconds, standing
+// in for the 72 hours of the deployed one.
+const forgottenIdWindow = 3 * time.Second
+
+// cutTheDuplicateWindow cuts the stream config's stream to the duplicate window window, in two
+// stream updates: one to a second more than window, then one to window itself. config is the
+// stream's own, as StreamInfo answered it, and is left as it was.
+//
+// Two updates work around a defect of nats-server v2.15.1 and v2.15.3, not a choice of style. A
+// stream update whose duplicate window changes re-arms the stream's purge of remembered ids to
+// fire in a microsecond (server/stream.go:2796-2799) before it stores the new window
+// (server/stream.go:2978-2981); the purge takes the dedupe lock alone, which the update holds
+// across neither step, so a purge runs between the two and reads the window being replaced. After
+// a cut from 72 hours it keeps the id and re-arms itself for about 72 hours, and the duplicate
+// check is a lookup of the id with no test of its age (server/stream.go:5619), so the stream never
+// forgets the id and every repeat answers the stored-copy 503. The second update re-arms the purge
+// once the first one's window is stored, so whichever window that purge reads, the old or the new,
+// is seconds long.
+//
+// This cut can go back to one update when packages/envoy/go.mod moves to a nats-server release
+// that stores the new window before it re-arms the purge. The proof to run then is the
+// forced-order row TestForcedOrderARepeatIsStoredThoughThePurgeRanAtTheCut
+// (forced_order_dedupe_window_test.go), ported to that release first: its hold point is this
+// defect's own order, so on a release without it testnats.DedupeReset is gone (hooks.go's
+// missing), and the row must then hold wherever that release lets a purge run during an update
+// and await the window that purge reads, which is the new one. With the row ported, cut this
+// helper to one update: it must pass, where on v2.15.1 it fails 5 of 5.
+func cutTheDuplicateWindow(js natsgo.JetStreamContext, config natsgo.StreamConfig, window time.Duration) error {
+	for _, step := range []time.Duration{window + time.Second, window} {
+		config.Duplicates = step
+		if _, err := js.UpdateStream(&config); err != nil {
+			return fmt.Errorf("cut the stream's duplicate window to %s: %w", step, err)
+		}
+	}
+	return nil
 }
