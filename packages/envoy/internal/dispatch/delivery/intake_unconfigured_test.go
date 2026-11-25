@@ -9,21 +9,15 @@ package delivery
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// unconfiguredBindWithin bounds the wait for an intake with no settings to bind its durable: a
-// bind takes a hold and a consumer lease and creates the durable, which is seconds, not this.
-const unconfiguredBindWithin = 30 * time.Second
 
 // openedForKey is the `pull_request` envelope GitHub's `opened` makes for a pull request of
 // deliveryRepo whose branch is legion/<key> and whose body names the issue on a `Dispatch:` line,
@@ -37,22 +31,6 @@ func openedForKey(number int, key, sha string) map[string]string {
 		"head_ref": "legion/" + key, "head_repo": deliveryRepo, "head_sha": sha, "base_ref": "main",
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
-}
-
-// awaitUnconfiguredBind waits, on unconfiguredBindWithin, for the delivery durable to be push-bound
-// to a deliver subject other than notOn ("" for any), and answers what the server reports of it.
-func awaitUnconfiguredBind(t *testing.T, natsClient *bus.Client, notOn string) *natsgo.ConsumerInfo {
-	t.Helper()
-	var info *natsgo.ConsumerInfo
-	var err error
-	waitFor(t, unconfiguredBindWithin, func() bool {
-		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.PushBound && info.Config.DeliverSubject != notOn
-	}, func() string {
-		return fmt.Sprintf("the intake of a deployment with no delivery settings did not bind its durable within %s: %+v, %v",
-			unconfiguredBindWithin, info, err)
-	})
-	return info
 }
 
 // headRows is how many pull_request_heads rows deliveryRepo's pull request number has.
@@ -71,9 +49,9 @@ func headRows(t *testing.T, ctx context.Context, pool *store.Pool, number int) i
 // binds its durable, writes the head row attributed to KEY, and the read `dispatch results` makes
 // (NewestPullRequestHead) finds that head, so a check CI proves is derived at it rather than read
 // as no_head. The branch names an issue held to the pull request's repository, so no commit
-// message is read and GitHub is asked nothing. A workflow run in the same deployment is the
-// delivery timeline's alone, so it is acknowledged and fetches nothing, and no delivery_settings
-// row appears.
+// message is read and GitHub is asked nothing. A workflow run and a merge in the same deployment
+// are the delivery timeline's: the run is acknowledged and fetches nothing, and the merge writes
+// its head row and no delivery row.
 func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -86,7 +64,7 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 	natsClient := intakeTestClient(t)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settings, unrenamed())
 	startIntake(t, intake)
-	awaitUnconfiguredBind(t, natsClient, "")
+	awaitPushBound(t, natsClient, "", "the intake of a deployment with no delivery settings did not bind its durable")
 
 	const number = 5801
 	sha := "5801580158015801580158015801580158015801"
@@ -104,32 +82,36 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 		t.Fatalf("NewestPullRequestHead(%s) = %+v, found %t, %v; want %s#%d at %s", key, newest, found, err, deliveryRepo, number, sha)
 	}
 
+	const merged = 5802
+	mergedEnvelope := openedForKey(merged, key, "5802580258025802580258025802580258025802")
+	mergedEnvelope["action"], mergedEnvelope["merged"], mergedEnvelope["author"] = "closed", "true", "octocat"
+	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", merged, mergedEnvelope)
 	publishWorkflowEnvelope(t, natsClient, "acme", "widgets", ".github/workflows/deploy.yml", 9101)
 	awaitAcknowledged(t, natsClient)
+	if rows := headRows(t, ctx, pool, merged); rows != 1 {
+		t.Fatalf("%s#%d, merged with no delivery settings, has %d head rows, want 1", deliveryRepo, merged, rows)
+	}
+	var delivered int
+	if err := pool.QueryRow(ctx, `select count(*) from delivery_pull_requests`).Scan(&delivered); err != nil {
+		t.Fatalf("count the delivery rows: %v", err)
+	}
+	if delivered != 0 {
+		t.Fatalf("delivery_pull_requests rows = %d after a merge with no delivery settings, want 0", delivered)
+	}
 	if runs := countRuns(t, ctx, pool); runs != 0 {
 		t.Fatalf("delivery_runs rows = %d after a workflow run with no delivery settings, want 0", runs)
 	}
 	if mints := fake.tokenMints.Load(); mints != 0 {
-		t.Fatalf("minted %d installation tokens, want none: the branch attributes the pull request and a workflow run fetches nothing without settings", mints)
-	}
-	if _, err := GetSettings(ctx, pool); !errors.Is(err, ErrNoSettings) {
-		t.Fatalf("GetSettings after the envelopes = %v, want ErrNoSettings: the intake writes no delivery_settings row", err)
+		t.Fatalf("minted %d installation tokens, want none: the branch attributes the pull requests, and with no settings a merge and a workflow run fetch nothing", mints)
 	}
 }
 
 // The first bind of a deployment that never had the durable starts at the stream's next message,
 // as an explicit start sequence: a pull request opened before the bind, which the stream still
 // holds, gets no head row from it. A take-over of that durable before it has acknowledged anything
-// replays none of it either, and a pull request opened after the take-over gets its row.
-//
-// The explicit start and the take-over's floor of OptStartSeq (takeOverConfig) are the rule
-// docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md
-// records from nats-server v2.10.29, which reports a fresh consumer's ack floor as 0, so a take-over
-// at the floor plus one would hand the new holder the stream from its first message. This test
-// proves no replay on the server it runs, and does not isolate that floor: on v2.15.1 the server
-// reports the floor as the stream's last sequence, and a mutant without the floor of OptStartSeq,
-// or without the explicit start, passes here too. The rule stays as the guard for a server version
-// where the trap exists, and it is the one bus.SessionConsumers follows for the same shape.
+// replays none of it either, and a pull request opened after the take-over gets its row. This test
+// runs on nats-server v2.15.1; the rows of the take-over's start that no server here can show are
+// TestATakeOverStartsAtTheFloorRuleOrTheTip's (takeOverStart says why).
 func TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -152,7 +134,7 @@ func TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart(t *te
 		stopFirst()
 		<-firstDone
 	})
-	bound := awaitUnconfiguredBind(t, publisher, "")
+	bound := awaitPushBound(t, publisher, "", "the first bind did not bind the durable")
 	if bound.Config.DeliverPolicy != natsgo.DeliverByStartSequencePolicy || bound.Config.OptStartSeq != stored+1 {
 		t.Fatalf("the first bind created the durable with deliver policy %v at start %d, want an explicit start at %d, the message after the one the stream held",
 			bound.Config.DeliverPolicy, bound.Config.OptStartSeq, stored+1)
@@ -162,7 +144,7 @@ func TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart(t *te
 
 	second := newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	startIntake(t, second)
-	awaitUnconfiguredBind(t, publisher, bound.Config.DeliverSubject)
+	awaitPushBound(t, publisher, bound.Config.DeliverSubject, "the take-over did not bind the durable afresh")
 	publishPullRequestEnvelope(t, publisher, "acme", "widgets", after, openedForKey(after, key, "5902590259025902590259025902590259025902"))
 	awaitAcknowledged(t, publisher)
 	if rows := headRows(t, ctx, pool, after); rows != 1 {

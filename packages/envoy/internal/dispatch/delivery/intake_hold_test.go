@@ -928,7 +928,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind the newer build's process: %v", err)
 	}
-	awaitPushBound(t, publisher, "the newer build's process is not bound")
+	awaitPushBound(t, publisher, "", "the newer build's process is not bound")
 
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 	// Several of the standby's attempts (durableBindInterval): long enough that one that was
@@ -1008,7 +1008,7 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind the previous build's process: %v", err)
 	}
-	awaitPushBound(t, publisher, "the previous build's process is not bound")
+	awaitPushBound(t, publisher, "", "the previous build's process is not bound")
 
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 	time.Sleep(3 * durableBindInterval)
