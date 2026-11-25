@@ -312,7 +312,7 @@ func checkSupervision(opts Options) error {
 	case opts.CacheRepositories == nil:
 		return refuse("no repository set for the repository caches")
 	}
-	if err := opts.RepositoryCache.check(); err != nil {
+	if err := opts.RepositoryCache.check(opts.Pod.ServiceAccount); err != nil {
 		return refuse("%v", err)
 	}
 	host, ok := strings.CutPrefix(opts.StreamURL, "tcp://")
@@ -879,16 +879,17 @@ func serviceAccountOr(name string) string {
 }
 
 // accountDrift is the ServiceAccount p runs as, and whether it is not account, the one this
-// runtime creates every pod with (runtime.kubernetes.pod.service_account). A pod runs as the
-// account it was created with for its whole life — the field is fixed on the pod, and nothing the
-// daemon writes to the Sandbox moves it — so an operator who changes service_account reaches a
-// running pod only by replacing it: until then its agents hold the identity the old account
-// grants, whatever the configuration now says they may reach. Such a pod is replaced by its own
-// update round, which first asks every worker in it to do the steps of its update message
+// runtime creates a pod of p's kind with: runtime.kubernetes.pod.service_account for every pod but
+// a cache pod whose bucket is on, which runs as the cache's own account (cachePodAccount). A pod
+// runs as the account it was created with for its whole life — the field is fixed on the pod, and
+// nothing the daemon writes to the Sandbox moves it — so an operator who changes service_account
+// reaches a running pod only by replacing it: until then its agents hold the identity the old
+// account grants, whatever the configuration now says they may reach. Such a pod is replaced by
+// its own update round, which first asks every worker in it to do the steps of its update message
 // (supervise.UpdateTask), where a round covers its kind (roundCovers, PodDrift), by the next
 // launch of one of its roles where no round does (relaunch), and by reconcileCachePod at the next
 // ensure of a cache's (a sweep, or a new issue pod of its repository); ReconcileOrphans warns of
-// each one it finds, as all of them do for imageDrift.
+// each one it finds but a cache's, as all of them do for imageDrift.
 // The comparison is of the live pod's spec.ServiceAccountName, never the Sandbox's stored
 // template: the API server keeps a named account as written. It reads an unset account as
 // `default` on both sides, because the two sides spell the same account differently — the daemon

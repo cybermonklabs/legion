@@ -142,6 +142,15 @@ type RepositoryCacheConfig struct {
 	RefreshMinutes int
 	RetainHours    int
 	Resources      Reservation
+	// Bucket is `bucket`: the Cloud Storage bucket each cache keeps the packs it serves in, which
+	// an issue pod's fetch downloads through the short-lived signed addresses its cache gives it.
+	// ServiceAccount is `service_account`: the Kubernetes ServiceAccount the cache pods alone run
+	// as, the one the bucket's grant goes to. The two are set together or not at all, and "" for
+	// both, the default, is off: each cache pod then runs as runtime.kubernetes.pod.service_account,
+	// as every other pod does, and serves /tar alone. ServiceAccount is never the account every
+	// other pod runs as (readCacheBucket), so no issue pod holds the bucket's grant.
+	Bucket         string
+	ServiceAccount string
 }
 
 // defaultRepositoryCache is the cache when the file sets none of it: a 20Gi volume, enough for one
@@ -749,7 +758,7 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.TestPostgres, err = readTestPostgres(fields["test_postgres"]); err != nil {
 		return nil, err
 	}
-	if block.RepositoryCache, err = readRepositoryCache(fields["repository_cache"]); err != nil {
+	if block.RepositoryCache, err = readRepositoryCache(fields["repository_cache"], block.Pod.ServiceAccount); err != nil {
 		return nil, err
 	}
 	if block.IdleRelease, err = readIdleRelease(fields["idle_release"]); err != nil {
@@ -810,8 +819,10 @@ func readSetup(value *yaml.Node) ([]string, error) {
 // sets, the default (DefaultRepositoryCache) for each it leaves out, its reservation field by field
 // as a role's is (settledRequest: a raised limit alone is requested in full). A zero volume, refresh
 // or retention is refused with the negatives, as no size and no interval, and a request past its
-// limit is refused naming both, as the API server would refuse the pod.
-func readRepositoryCache(value *yaml.Node) (RepositoryCacheConfig, error) {
+// limit is refused naming both, as the API server would refuse the pod. The bucket and the cache's
+// own account are read as one pair (readCacheBucket) against podAccount, the file's
+// runtime.kubernetes.pod.service_account, "" where it sets none.
+func readRepositoryCache(value *yaml.Node, podAccount string) (RepositoryCacheConfig, error) {
 	const key = kubernetesKey + ".repository_cache"
 	settled := defaultRepositoryCache
 	if value == nil || value.Tag == "!!null" {
@@ -859,7 +870,80 @@ func readRepositoryCache(value *yaml.Node) (RepositoryCacheConfig, error) {
 	if err := requestsUnderLimits(key+".resources", settled.Resources); err != nil {
 		return RepositoryCacheConfig{}, err
 	}
+	if settled.Bucket, settled.ServiceAccount, err = readCacheBucket(fields, key, podAccount); err != nil {
+		return RepositoryCacheConfig{}, err
+	}
 	return settled, nil
+}
+
+// defaultServiceAccount is the ServiceAccount Kubernetes runs a pod as when its spec names none:
+// the namespace's own `default`, which every Legion pod runs as while
+// runtime.kubernetes.pod.service_account is unset. The Sandbox runtime reads an unset account the
+// same way (serviceAccountOr, internal/runtime/sandbox), whose own constant this package cannot
+// import, since that package's imports reach this one.
+const defaultServiceAccount = "default"
+
+// readCacheBucket reads repository_cache's `bucket` and `service_account`, under key, from fields:
+// the Cloud Storage bucket each cache keeps its packs in and the ServiceAccount the cache pods alone
+// run as, both "" when the file sets neither, which is off. The pair is set whole or not at all,
+// so one alone is refused naming the other: the cache pods run as an account of their own only to
+// write the bucket, and they write it as no other. A blank value is refused, as optionalString
+// refuses one, and so is one still holding a `${…}` placeholder (unfilledPlaceholder). The bucket
+// must have the shape cloudStorageBucketName holds it to. The account must not be the one every
+// other pod runs as: podAccount, the file's runtime.kubernetes.pod.service_account, or
+// defaultServiceAccount where the file sets none, since the bucket's grant to that account would
+// reach every pod of the deployment.
+func readCacheBucket(fields map[string]*yaml.Node, key, podAccount string) (bucket, account string, err error) {
+	if bucket, err = optionalString(fields["bucket"], key+".bucket"); err != nil {
+		return "", "", err
+	}
+	if account, err = optionalString(fields["service_account"], key+".service_account"); err != nil {
+		return "", "", err
+	}
+	if err := unfilledPlaceholder(key+".bucket", bucket, "the Cloud Storage bucket's name"); err != nil {
+		return "", "", err
+	}
+	if err := unfilledPlaceholder(key+".service_account", account, "the ServiceAccount the cache pods run as"); err != nil {
+		return "", "", err
+	}
+	switch {
+	case bucket == "" && account == "":
+		return "", "", nil
+	case account == "":
+		return "", "", fmt.Errorf("%s.bucket needs %s.service_account: the cache pods alone write the bucket, and they run as a ServiceAccount no other pod runs as to hold its grant alone", key, key)
+	case bucket == "":
+		return "", "", fmt.Errorf("%s.service_account needs %s.bucket: the cache pods run as a ServiceAccount of their own only to write the bucket", key, key)
+	case !cloudStorageBucketName(bucket):
+		return "", "", fmt.Errorf("%s.bucket %q must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots", key, bucket)
+	case podAccount != "" && account == podAccount:
+		return "", "", fmt.Errorf("%s.service_account %q must differ from %s.service_account, the account every other pod runs as: the bucket's grant to it would reach every pod", key, account, podKey)
+	case podAccount == "" && account == defaultServiceAccount:
+		return "", "", fmt.Errorf("%s.service_account %q must differ from the account every other pod runs as, the namespace's %s while %s.service_account is unset: the bucket's grant to it would reach every pod",
+			key, account, defaultServiceAccount, podKey)
+	}
+	return bucket, account, nil
+}
+
+// cloudStorageBucket is the characters of a Cloud Storage bucket's name and its two ends: lowercase
+// letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit
+// (https://cloud.google.com/storage/docs/buckets#naming).
+var cloudStorageBucket = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*[a-z0-9]$`)
+
+// cloudStorageBucketName reports whether name has a Cloud Storage bucket's shape: cloudStorageBucket's
+// characters, 3 to 222 of them, and 1 to 63 between two dots, so a name with no dot is 3 to 63
+// long. It holds the shape alone, which is what keeps an address (`gs://…`), a capital or a path
+// out of the configuration; the rest of Cloud Storage's rules (no `goog` prefix, no name that is an
+// IP address) are its own, which it applies where the bucket is made, before any cache reads it.
+func cloudStorageBucketName(name string) bool {
+	if len(name) < 3 || len(name) > 222 || !cloudStorageBucket.MatchString(name) {
+		return false
+	}
+	for part := range strings.SplitSeq(name, ".") {
+		if part == "" || len(part) > 63 {
+			return false
+		}
+	}
+	return true
 }
 
 // readIdleRelease reads `runtime.kubernetes.idle_release`, settled: each member the file sets and

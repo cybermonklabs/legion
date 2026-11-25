@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -42,16 +43,27 @@ import (
 
 // RepositoryCache is runtime.kubernetes.repository_cache: the volume each cache Sandbox owns, how
 // often its process fetches GitHub, how long the cache of a repository the cache set no longer
-// holds is kept before the sweep deletes it, and the one container's reservation.
+// holds is kept before the sweep deletes it, the one container's reservation, and the Cloud Storage
+// bucket each cache keeps its packs in with the ServiceAccount the cache pods alone run as, the one
+// holding the bucket's grant. Bucket and ServiceAccount are set together or not at all: both "" is
+// off, and a cache pod then runs as Options.Pod.ServiceAccount, as every other pod does
+// (cachePodAccount).
 type RepositoryCache struct {
-	Volume    resource.Quantity
-	Refresh   time.Duration
-	Retain    time.Duration
-	Resources corev1.ResourceRequirements
+	Volume         resource.Quantity
+	Refresh        time.Duration
+	Retain         time.Duration
+	Resources      corev1.ResourceRequirements
+	Bucket         string
+	ServiceAccount string
 }
 
-// check is why c is no configuration a runtime can make caches with, or nil.
-func (c RepositoryCache) check() error {
+// check is why c is no configuration a runtime whose other pods run as podAccount
+// (Options.Pod.ServiceAccount) can make caches with, or nil. Besides the sizes and the reservation,
+// it holds the bucket's pair as config's loader does (readCacheBucket): the bucket and the cache's
+// account set together or not at all, and the cache's account never the one every other pod runs
+// as, read as accountDrift reads an unset account (serviceAccountOr), since the bucket's grant to
+// that account would reach every pod.
+func (c RepositoryCache) check(podAccount string) error {
 	switch {
 	case c.Volume.Sign() <= 0:
 		return fmt.Errorf("repository cache volume %s is not a positive quantity", c.Volume.String())
@@ -59,8 +71,21 @@ func (c RepositoryCache) check() error {
 		return fmt.Errorf("repository cache refresh %s is not positive", c.Refresh)
 	case c.Retain <= 0:
 		return fmt.Errorf("repository cache retention %s is not positive", c.Retain)
+	case (c.Bucket == "") != (c.ServiceAccount == ""):
+		return fmt.Errorf("repository cache bucket %q and ServiceAccount %q are set together or not at all: the cache pods run as an account of their own only to write the bucket", c.Bucket, c.ServiceAccount)
+	case c.ServiceAccount != "" && c.ServiceAccount == serviceAccountOr(podAccount):
+		return fmt.Errorf("repository cache ServiceAccount %s is the one every other pod runs as: the bucket's grant to it would reach every pod", c.ServiceAccount)
 	}
 	return checkRequirements("the repository cache", c.Resources)
+}
+
+// cachePodAccount is the ServiceAccount a cache pod runs as: the cache's own
+// (RepositoryCache.ServiceAccount) while its bucket is on, else the one every other pod runs as
+// (runtime.kubernetes.pod.service_account), "" for the namespace's default. It is the one reading of
+// that choice: the pod template is written with it (cachePodTemplate) and a cache pod is held to it
+// (reconcileCachePod), so a cache pod the template makes is never drifted.
+func (r *Runtime) cachePodAccount() string {
+	return cmp.Or(r.cacheConfig.ServiceAccount, r.pod.ServiceAccount)
 }
 
 // CacheStatus is a repository's cache as the runtime's stores show it: the repository, exactly as
@@ -141,7 +166,11 @@ func (r *Runtime) cacheManifest(repo ghrepo.Repository) sandbox {
 // TMPDIR for the fetch's one-shot credential and a readinessProbe of GET /readyz on
 // repocache.Port, which needs no token. Restarted Always. It carries no model-route volume,
 // provider key, operator mount or Dispatch variable: the process reads GitHub and serves pods,
-// nothing else.
+// nothing else. It runs as cachePodAccount, and while the cache's bucket is on its container is
+// also told the bucket (repocache.BucketEnv), which is all the bucket changes: the argv and the
+// Secret's projection are the same either way. The token automount stays off with the bucket on
+// too: on GKE the cache's Google identity comes from the node's metadata server through Workload
+// Identity, never from a mounted Kubernetes token.
 func (r *Runtime) cachePodTemplate(name string, repo ghrepo.Repository) podTemplate {
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
 	container := corev1.Container{
@@ -171,6 +200,9 @@ func (r *Runtime) cachePodTemplate(name string, repo ghrepo.Repository) podTempl
 		Resources:       r.cacheConfig.Resources,
 		SecurityContext: restrictedContainer(),
 	}
+	if r.cacheConfig.Bucket != "" {
+		container.Env = append(container.Env, corev1.EnvVar{Name: repocache.BucketEnv, Value: r.cacheConfig.Bucket})
+	}
 	kubeletLiteral(&container)
 	return podTemplate{
 		Metadata: podMetadata{
@@ -180,7 +212,7 @@ func (r *Runtime) cachePodTemplate(name string, repo ghrepo.Repository) podTempl
 		Spec: corev1.PodSpec{
 			RestartPolicy:                corev1.RestartPolicyAlways,
 			AutomountServiceAccountToken: new(false),
-			ServiceAccountName:           r.pod.ServiceAccount,
+			ServiceAccountName:           r.cachePodAccount(),
 			EnableServiceLinks:           new(false),
 			// OnRootMismatch, as an issue pod's: the clone on the cache's volume is the pod user's
 			// already, so a restart does not wait for the kubelet to re-own every file of it.
@@ -427,27 +459,33 @@ func (r *Runtime) cacheURL(name string) string {
 
 // reconcileCachePod makes s's pod (again) when it must be: s is Suspended (a fresh create, or one a
 // failed earlier run left Suspended), s's pod template reserves other than the configuration's
-// runtime.kubernetes.repository_cache.resources (templateResized: the operator changed them), or
-// the pod it owns runs an image other than the runtime's (imageDrift), runs as a ServiceAccount
-// other than the configured runtime.kubernetes.pod.service_account (accountDrift: the account is
-// fixed for the pod's life, so a cache pod reaches the new one only by being made again), or has
-// ended (terminal: evicted, say). A pod it would replace while that pod still runs waits until the
-// cache serves no stream (cacheStreams), for either drift: replacing it ends every tar it is
-// sending, which fails each fetch reading one and has the daemon make its issue pod again, so the
-// replacement is left to a later sweep while a tar is sent or queued. It then suspends s when it
-// is not already, waits the old pod out (awaitPodGone), and sets the pod template, on the
-// runtime's image and reservation, and Running in one patch, as relaunch does. The Sandbox and
-// its volume are kept through every replacement: a drifted pod costs a new pod, not a new clone.
-// A Running Sandbox whose template reserves what the configuration does, and whose pod is live on
-// the right image under the right account or not made yet — the controller makes one — is left
-// alone.
+// runtime.kubernetes.repository_cache.resources (templateResized: the operator changed them) or
+// binds the cache to another bucket or account than the configuration now does (templateRebound:
+// the bucket turned on or off, or another bucket or account configured), or the pod it owns runs an
+// image other than the runtime's (imageDrift), runs as a ServiceAccount other than the one a cache
+// pod runs as now (cachePodAccount, accountDrift: the account is fixed for the pod's life, so a
+// cache pod reaches the new one only by being made again), or has ended (terminal: evicted, say).
+// The account is the cache's own while its bucket is on, so a cache pod on the account every other
+// pod runs as is made again then, and the configuration's runtime.kubernetes.pod.service_account
+// otherwise. A pod it would replace while that pod still runs waits until the cache serves no
+// stream (cacheStreams), for any drift: replacing it ends every tar it is sending, which fails each
+// fetch reading one and has the daemon make its issue pod again, so the replacement is left to a
+// later sweep while a tar is sent or queued. It then suspends s when it is not already, waits the
+// old pod out (awaitPodGone), and sets the pod template, on the runtime's image, reservation,
+// bucket and account, and Running in one patch, as relaunch does. The Sandbox and its volume are
+// kept through every replacement: a drifted pod costs a new pod, not a new clone. A Running Sandbox
+// whose template reserves and binds what the configuration does, and whose pod is live on the right
+// image under the right account or not made yet — the controller makes one — is left alone, so the
+// pod a replacement makes is accepted by the next ensure.
 func (r *Runtime) reconcileCachePod(ctx context.Context, s *sandbox, repo ghrepo.Repository) error {
 	pod := r.storedPod(s.Name)
 	owned := ownedBy(pod, s.UID) && pod.DeletionTimestamp == nil
+	account := r.cachePodAccount()
 	_, imageDrifted := imageDrift(pod, r.image)
-	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
+	_, accountDrifted := accountDrift(pod, account)
 	drifted := imageDrifted || accountDrifted
-	if s.mode() != modeSuspended && !templateResized(s, r.cacheConfig.Resources) && (!owned || (!drifted && !terminal(pod))) {
+	rewritten := templateResized(s, r.cacheConfig.Resources) || templateRebound(s, r.cacheConfig.Bucket, account)
+	if s.mode() != modeSuspended && !rewritten && (!owned || (!drifted && !terminal(pod))) {
 		return nil
 	}
 	if s.mode() != modeSuspended && owned && !terminal(pod) {
@@ -470,7 +508,8 @@ func (r *Runtime) reconcileCachePod(ctx context.Context, s *sandbox, repo ghrepo
 	); err != nil {
 		return fmt.Errorf("set sandbox %s running: %w", s.Name, err)
 	}
-	r.log.Info("sandbox runtime: repository cache pod started", "sandbox", s.Name, "repo", repo.String(), "image", r.image)
+	r.log.Info("sandbox runtime: repository cache pod started", "sandbox", s.Name, "repo", repo.String(), "image", r.image,
+		"serviceAccount", serviceAccountOr(account), "bucket", r.cacheConfig.Bucket)
 	return nil
 }
 
@@ -483,6 +522,35 @@ func templateResized(s *sandbox, want corev1.ResourceRequirements) bool {
 		if c.Name == cacheContainer {
 			return !equality.Semantic.DeepEqual(c.Resources, want)
 		}
+	}
+	return true
+}
+
+// templateRebound is whether s's pod template binds the cache otherwise than bucket and account,
+// the configuration's bucket ("" while it is off) and the account a cache pod runs as now
+// (cachePodAccount): its cache container told another bucket (repocache.BucketEnv), or one where
+// the configuration names none, or none where it names one, or the template's ServiceAccount
+// another account, each read as accountDrift reads one (serviceAccountOr). It reads the template,
+// as templateResized does, since the template is the pod the controller makes next: a template
+// written before the bucket was turned on or off would make the next pod on the old binding though
+// no pod is live yet to drift, and a template written for another bucket makes a pod that runs as
+// the right account and writes the wrong bucket, which no reading of the pod's account shows.
+func templateRebound(s *sandbox, bucket, account string) bool {
+	spec := s.Spec.PodTemplate.Spec
+	if serviceAccountOr(spec.ServiceAccountName) != serviceAccountOr(account) {
+		return true
+	}
+	for _, c := range spec.Containers {
+		if c.Name != cacheContainer {
+			continue
+		}
+		told := ""
+		for _, e := range c.Env {
+			if e.Name == repocache.BucketEnv {
+				told = e.Value
+			}
+		}
+		return told != bucket
 	}
 	return true
 }

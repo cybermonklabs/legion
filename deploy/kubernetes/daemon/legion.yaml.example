@@ -452,6 +452,13 @@ runtime:
     #   retain_hours: 168              # the last live record that names its repository; and its one container's reservation,
     #   resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # as a pod's.
     #                                  # These are the defaults. Issue pods reach the cache pods on port 8418.
+    #   bucket: example-legion-packs   # Off unless both are set: the Cloud Storage bucket each cache keeps
+    #   service_account: legion-repository-cache   # its packs in, and the ServiceAccount the cache pods alone run as,
+    #                                  # never pod.service_account. Issue pods download the packs through
+    #                                  # addresses their cache signs, falling back to /tar, and hold no grant.
+    #                                  # Create the bucket and the account before setting them; remove both
+    #                                  # before rolling back to a daemon that does not know them.
+    #                                  # docs/kubernetes.md, The repository cache, "The bucket".
     # memory_guard:                    # the memory guard in each issue pod's launcher: when the pod's anonymous
     #   issue_pods:                    # memory reaches act_percent (50 to 90) of the container's memory limit and
     #     enabled: true                # the processes it may end hold at least floor_percent (1 to 50) of it, it

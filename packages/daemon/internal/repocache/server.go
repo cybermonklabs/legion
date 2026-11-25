@@ -47,6 +47,15 @@ const tokenFileEnv = "LEGION_PROVISION_TOKEN_FILE"
 // literal.
 const CacheTokenFileEnv = "LEGION_REPOSITORY_CACHE_TOKEN_FILE"
 
+// BucketEnv names the variable that tells a cache's container the Cloud Storage bucket it keeps
+// each pack it serves in (runtime.kubernetes.repository_cache.bucket). The daemon sets it on the
+// cache container alone, and only where the bucket is configured, together with the ServiceAccount
+// the cache pods alone run as (runtime.kubernetes.repository_cache.service_account), the one that
+// holds the bucket's grant: no issue pod or controller pod is told it, since an issue pod reads the
+// packs through the addresses its cache signs and holds no grant of its own. A cache told no bucket
+// serves /tar alone, and a cache of an earlier release ignores the variable.
+const BucketEnv = "LEGION_REPOSITORY_CACHE_BUCKET"
+
 // Options is one cache's: the repository, the volume its bare clone lives on (at
 // <Root>/<owner>/<repo>.git, workspace.FeedRepository's layout), the provisioning token's file, the
 // file holding the bearer token its clients present (read again for every request, so a token the
