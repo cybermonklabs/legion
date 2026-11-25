@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0044_person_subjects.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0045_person_subjects.up.sql
 -- An address is held by one account of the identity provider at a time, and Dispatch decides
 -- which. When another Google account takes an address Dispatch holds for a person, Dispatch
 -- names the account it replaced, by its issuer and its `sub` (POST /v1/person-subjects/revoke),
@@ -18,7 +18,7 @@
 -- Each is null on every row written before this migration, and on a machine login whose approval
 -- an older Dispatch relayed: such a row is read as possibly the replaced account's, and the revoke
 -- ends it too. A sign-in row with none recorded is ended by its next trade, which writes a row of
--- its own (0045 refuses any change of a recorded account). The two columns of each pair are set
+-- its own (0046 refuses any change of a recorded account). The two columns of each pair are set
 -- together or not at all, and neither is ever empty, so a row either names one account or says
 -- plainly that it names none. An issuer is stored as oidc.CanonicalIssuer spells it, which is the
 -- spelling Dispatch names it by.
@@ -90,19 +90,19 @@
 -- create it empty, and let the broker migrate it) together with Dispatch's database, never one
 -- alone, for the reason Dispatch's runbook gives (docs/site/src/content/docs/dispatch/running-
 -- dispatch.md, "Signing people in"). This file was numbered 0032, then 0033, then 0037, then 0040,
--- then 0041, then 0042, until it was merged onto bases whose 0032 to 0043 are other migrations
--- (0032_oauth_pod_sessions_binding, then 0033_credential_request_dismissals to 0036_request_notify,
--- then 0037_pod_carry_launcher to 0039_pod_session_registrars, then 0040_enrollment_projects, then
--- 0041_request_secrets_target, then 0042_oauth_narrowed_access_tokens and
--- 0043_request_secrets_github_app_field). A broker database an earlier head of this branch
--- migrated recorded this file and its followers under those numbers (0032 to 0034, 0033 to 0035,
--- 0037 to 0039, 0040 to 0044, 0041 to 0047, or 0042 to 0048). The migrator records each file's
--- identity and refuses a version recorded under another file (pgmigrate's identity check), so
--- such a database refuses this head at its next boot, naming version 40, 41 or 42, the first it
--- recorded under another file; one migrated before that check arrived holds no identity to
--- compare, takes those numbers for the base's files and fails at this file's first statement with
--- SQLSTATE 42701 (the column already exists). Reset either the same way, with its Dispatch
--- database.
+-- then 0041, then 0042, then 0044, until it was merged onto bases whose 0032 to 0044 are other
+-- migrations (0032_oauth_pod_sessions_binding, then 0033_credential_request_dismissals to
+-- 0036_request_notify, then 0037_pod_carry_launcher to 0039_pod_session_registrars, then
+-- 0040_enrollment_projects, then 0041_request_secrets_target, then
+-- 0042_oauth_narrowed_access_tokens and 0043_request_secrets_github_app_field, then
+-- 0044_nats_hold). A broker database an earlier head of this branch migrated recorded this file
+-- and its followers under those numbers (0032 to 0034, 0033 to 0035, 0037 to 0039, 0040 to 0044,
+-- 0041 to 0047, 0042 to 0048, or 0044 to 0050). The migrator records each file's identity and
+-- refuses a version recorded under another file (pgmigrate's identity check), so such a database
+-- refuses this head at its next boot, naming version 40, 41, 42 or 44, the first it recorded under
+-- another file; one migrated before that check arrived holds no identity to compare, takes those
+-- numbers for the base's files and fails at this file's first statement with SQLSTATE 42701 (the
+-- column already exists). Reset either the same way, with its Dispatch database.
 alter table person_signins
   add column issuer text,
   add column subject text,

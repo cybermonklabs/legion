@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0048_person_standing_deadline.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0049_person_standing_deadline.up.sql
 -- An IAP deployment's Dispatch puts a deadline on every answer that a person is not held
 -- (not_held_until): the last active Workspace Directory answer plus 24 hours, or the answer's own
 -- as_of once that passed. The broker keeps it with the answer, written under the same answered_at

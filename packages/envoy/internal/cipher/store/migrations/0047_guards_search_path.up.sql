@@ -1,4 +1,4 @@
--- 0046_guards_search_path.up.sql — the guards of the broker's record of replaced accounts resolve
+-- 0047_guards_search_path.up.sql — the guards of the broker's record of replaced accounts resolve
 -- their names and operators under a search_path of their own: pg_catalog, the schema the broker's
 -- tables are in, pg_temp.
 --
@@ -8,12 +8,12 @@
 -- making either needs no right a writer does not already hold (CREATE on the database, and the
 -- TEMP right PUBLIC holds). So each of these resolves at run time something a session can own:
 --
---   guard_replaced_person_subjects (0044) compares `<` for the generation and reads
+--   guard_replaced_person_subjects (0045) compares `<` for the generation and reads
 --     current_setting, jsonb_build_array and pg_current_xact_id for the operator's delete marker.
---   guard_person_replacement_generations (0044) compares `<`, the one rule that keeps the applied
---     generation of an address from moving back, which 0044's own comment says "lets a late revoke
+--   guard_person_replacement_generations (0045) compares `<`, the one rule that keeps the applied
+--     generation of an address from moving back, which 0045's own comment says "lets a late revoke
 --     apply again".
---   refuse_recorded_account_change (0045) raises alone, and still resolves its own call.
+--   refuse_recorded_account_change (0046) raises alone, and still resolves its own call.
 --
 -- With a session operator `<` on bigint that answers false, the generation the broker applied at
 -- an address was lowered, and a revoke Dispatch recorded before the last replacement applied

@@ -8,7 +8,7 @@ import (
 )
 
 // TestOnlyWriteReplacedSubjects runs statement with args against replaced_person_subjects with the
-// trigger that holds its rows to the revoke's writes (migration 0044,
+// trigger that holds its rows to the revoke's writes (migration 0045,
 // replaced_person_subjects_guarded) turned off for that one transaction: it stands in for a
 // replacement recorded long ago, which no statement of the broker can write while the trigger
 // runs, since replaced_at never moves. Only a test may, and the name and the testing.TB it takes

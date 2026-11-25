@@ -259,7 +259,7 @@ type PersonSubjectRevokedResponse struct {
 	// the broker applied at the address carried (SupersededBy), so a later replacement at the
 	// address has been applied since, and this one changed nothing; Dispatch leaves it owed and
 	// reports it, since its own generations for the address are then below the broker's. The
-	// broker's migration 0044 says how such a revoke can arrive.
+	// broker's migration 0045 says how such a revoke can arrive.
 	State string `json:"state"`
 	// The greatest session generation a revoke the broker applied at the address carried, which is
 	// above this revoke's; given with state "superseded" alone.

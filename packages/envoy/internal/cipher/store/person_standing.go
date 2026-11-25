@@ -9,11 +9,11 @@ import (
 )
 
 // The broker keeps the last answer Dispatch gave it for each person, whether Dispatch holds them,
-// in 0047's person_standing, so that while Dispatch cannot be asked the hold gate
+// in 0048's person_standing, so that while Dispatch cannot be asked the hold gate
 // (internal/cipher/hold) answers from it: a person last answered held stays held, and a restart or
 // a second broker process answers as this one does. Every process writes the answers its own asks
 // fetched, so the row keeps the latest by Dispatch's own clock, the answer's as_of, and never by
-// the order the writes arrive in. 0048 keeps beside it the deadline an IAP deployment's Dispatch
+// the order the writes arrive in. 0049 keeps beside it the deadline an IAP deployment's Dispatch
 // puts on a not-held answer (not_held_until), written with the answer it came with.
 
 // PersonStanding is the last answer kept for person: whether Dispatch held them, the time its

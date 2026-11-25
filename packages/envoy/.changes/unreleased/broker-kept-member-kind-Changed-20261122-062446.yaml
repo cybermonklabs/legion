@@ -2,7 +2,7 @@ kind: Changed
 body: |-
   A Dispatch outage no longer stops every person's secrets. Where `BROKER_PROJECT_ACCESS_URL` is
   set, the broker keeps the member kind of each person answer Dispatch gives it in
-  `person_member_kind` (migration `0049_person_member_kind`), whichever check asked and whether or
+  `person_member_kind` (migration `0050_person_member_kind`), whichever check asked and whether or
   not the answer says if the person is held, and while Dispatch does not answer it serves a person
   Dispatch last answered a full member as one: at every enrollment under their machine login or pod
   login, every secret request, release and airlock call of their sessions, and every approver
@@ -14,7 +14,7 @@ body: |-
   out, a broker process of the release before it keeps a person's hold answer and no kind; a kind
   older than that answer is not served, so that person is refused during an outage until a process
   of this release keeps their next answer. The broker also keeps each answer of whether a person may
-  see a project, by person and project, in `project_standing` (migration `0050_project_standing`),
+  see a project, by person and project, in `project_standing` (migration `0051_project_standing`),
   so while Dispatch does not answer, a request whose projects Dispatch last answered visible to the
   reader is listed and decided as before, and so is one whose projects it last answered public,
   until the broker keeps an answer for anyone that the project is private; a key Dispatch last
