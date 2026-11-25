@@ -269,11 +269,11 @@ tests every package of packages/daemon but the five concurrent ones, and the rac
 step, which tests those five — so the filter covers the whole module's closure,
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
-for internal/daemon/outbox_scratch_dispatch_test.go:454, and what their tests read
+for internal/daemon/outbox_scratch_dispatch_test.go:453, and what their tests read
 outside the daemon: contracts' fixtures
-(internal/api/state_golden_test.go:42,1511, internal/intake/intake_test.go:984,990,1088), the
+(internal/api/state_golden_test.go:42,1511, internal/intake/intake_test.go:987,993,1091), the
 agents internal/prompts/roles_test.go:268 stats, the tools skill its :755-756 holds
-roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:412
+roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:424
 holds the reviewer's prompt to, the controller's wakes page, whose sentence on a stalled
 turn internal/daemon/worker_stalled_prompts_test.go:61 reads, the GitHub App helper
 internal/api/real_github_test.go:117 sources, and the examples and
