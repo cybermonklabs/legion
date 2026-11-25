@@ -380,12 +380,9 @@ export function IssueMarginPanel({
   // leaves out (`listedEdges`).
   const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
   const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
-  // The command bar runs the reader asked that changed the issue, from the tree read with no
-  // view: this reads that read only while the list is drawn, open in an open References of an open
-  // Details, so the page's load sends none for runs, and the list's first opening sends it once
-  // where the page does not hold it (`useRunRows`). The list draws them after its own rows, and
-  // the control counts them with those.
-  const runs = useRunRows(issue, referencesOpen && readingReferences);
+  const referencesDrawn = referencesOpen && readingReferences;
+  // The reader's command bar runs, read only while the list is drawn (`useRunRows`).
+  const runs = useRunRows(issue, referencesDrawn);
   const waitingRead = referenceTargetsQuery(
     waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))
   );
@@ -894,12 +891,8 @@ export function IssueMarginPanel({
           />
         </Row>
         <Row valueRef={referencesValue} wide>
-          {/* Details' own control of the list, with the name, the role and the states of the
-              application's `ReferencedByToggle`, in the page's ink rather than its link blue. It
-              is a control at every count: a command bar run the reader asked is in no reader's
-              `referenced_by_count`, so a count of zero is no reason to shut the list. It reads
-              the rows the list shows once both its reads have answered, the list's own and the
-              runs' (`referencedByControlName`). */}
+          {/* Details' own control of the list (`referencedByControlName`): a button at every
+              count, since a run is in no reader's `referenced_by_count`. */}
           <button
             aria-controls={referencesPanelId}
             aria-expanded={referencesOpen}
@@ -920,7 +913,7 @@ export function IssueMarginPanel({
               whatever source they cite from (`pages`), the reader's runs after the list's own. A
               tree read that stands failed leaves the list's own rows drawn, with its line under
               them, whose Retry reads the tree again. */}
-          {referencesOpen && readingReferences ? (
+          {referencesDrawn ? (
             <>
               <ReferencedBy
                 className="w-full"

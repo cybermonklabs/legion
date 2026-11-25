@@ -1883,9 +1883,10 @@ test("the address of an agent's note opens no Details, and that of the daemon's 
     replies: [],
   };
   client.setQueryData(["issue-messages", KEY], [AGENTS_THREAD, note]);
-  // The tree reads hold the note as the server answers a message thread the history does not
-  // hold, a node under the issue beside the issue's comment (`holdComments`), so the outline
-  // lands on the note's row and reads nothing more for it.
+  // The stub models a tree read that returns the note, a node under the issue beside the issue's
+  // comment (`holdComments`), held by both tree reads, so the outline lands on the note's row and
+  // reads nothing more for it. INFRA-1253's tree read returns no such note (decision 453), and
+  // part M rewrites this case under that decision.
   const tree = treeAnswer(
     [
       treeNode(KEY, "issue", null),

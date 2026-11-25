@@ -29,7 +29,7 @@ import type { ApiRequests } from "./traffic";
  * - **The list** it opens, a `section` named by the same words (`refs/ReferencedBy.tsx`): the
  *   rows of its own read of the issue's references are the `li`s of its `ul` that is not
  *   `[data-extra-references]`, and the rows of the reader's command bar runs, read from the
- *   outline's tree read, the `li`s of `[data-extra-references]` after them
+ *   tree read with no view, the `li`s of `[data-extra-references]` after them
  *   (`run-references/run-references.ts`). A tree read that failed is a line under the list,
  *   `[role="alert"]` beside its Retry (`details-error.tsx`).
  * - **The run's own page** at `buildRunPath(<id>)`, whose root is `[data-issue-page]`
@@ -295,19 +295,4 @@ export function noViewTreeReads(traffic: ApiRequests): number {
     const query = new URL(path, baseUrl).searchParams;
     return !NOT_THE_TREE_READ.some((name) => query.has(name));
   }).length;
-}
-
-/** How long nothing may be in flight before a row counts what the page sent: the recorded
- *  baseline's window, which `traffic.ts` reads a load's cost at. */
-const QUIET_MS = 1_500;
-
-/** Fails unless the page goes quiet (`quietFor`) after `what`, the moment a row counts what that
- *  load or press sent. */
-export async function quietAfter(traffic: ApiRequests, what: string): Promise<void> {
-  await expect
-    .poll(() => traffic.quietFor(QUIET_MS), {
-      message: `the page never went quiet after ${what}`,
-      timeout: 30_000,
-    })
-    .toBe(true);
 }

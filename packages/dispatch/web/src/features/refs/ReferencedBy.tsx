@@ -627,7 +627,9 @@ export function ReferencedBy({
                     )}
                   </div>
                   {row.excerpt === undefined ? null : (
-                    <p className={`mt-1 whitespace-pre-wrap text-sm ${tokens.excerpt}`}>
+                    <p
+                      className={`mt-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`}
+                    >
                       {row.excerpt}
                     </p>
                   )}

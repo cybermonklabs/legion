@@ -23,7 +23,6 @@ import {
   mainContent,
   notFoundText,
   noViewTreeReads,
-  quietAfter,
   RUN_COMMENT,
   RUN_QUESTION,
   RUN_WORD,
@@ -36,7 +35,7 @@ import {
   treeReadFailure,
 } from "./issue-page-z";
 import { expect, test } from "./test";
-import { watchApiRequests } from "./traffic";
+import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { asUser } from "./users";
 
 /**
@@ -73,7 +72,7 @@ test("a command bar run that changed the issue is a reference for the person who
     const traffic = watchApiRequests(page);
     const conversation = buildIssuePath({ key: seeded.key, kind: "conversation" });
     await gotoIssue(page, conversation);
-    await quietAfter(traffic, "Conversation's load");
+    await expectLoadSettled(traffic);
     expect(noViewTreeReads(traffic), "Conversation's load sends no tree read with no view").toBe(0);
     await openDetails(page);
     const control = referencesControl(page);
@@ -86,7 +85,7 @@ test("a command bar run that changed the issue is a reference for the person who
     await expect(runRow.getByRole("link"), `the run's row reads ${RUN_WORD}`).toHaveText([
       RUN_WORD,
     ]);
-    await quietAfter(traffic, "the list's first opening");
+    await expectLoadSettled(traffic);
     expect(
       noViewTreeReads(traffic),
       "the list's first opening did not read the tree with no view once"
@@ -151,7 +150,7 @@ test("a command bar run that changed the issue is a reference for the person who
       runRow.getByRole("link"),
       `the list's second opening draws no run's row reading ${RUN_WORD}`
     ).toHaveText([RUN_WORD]);
-    await quietAfter(traffic, "the list's second opening");
+    await expectLoadSettled(traffic);
     expect(
       noViewTreeReads(traffic),
       "the list's second opening read the tree with no view again"
@@ -161,7 +160,7 @@ test("a command bar run that changed the issue is a reference for the person who
     // reads it no more: its run rows are Graph's read.
     traffic.reset();
     await gotoIssue(page, buildIssuePath({ key: seeded.key, kind: "graph" }));
-    await quietAfter(traffic, "Graph's load");
+    await expectLoadSettled(traffic);
     const graphs = noViewTreeReads(traffic);
     expect(graphs, "Graph's load did not read the tree with no view").toBeGreaterThanOrEqual(1);
     await openDetails(page);
@@ -170,7 +169,7 @@ test("a command bar run that changed the issue is a reference for the person who
       runRow.getByRole("link"),
       `the list on Graph draws no run's row reading ${RUN_WORD}`
     ).toHaveText([RUN_WORD]);
-    await quietAfter(traffic, "the list's opening on Graph");
+    await expectLoadSettled(traffic);
     expect(
       noViewTreeReads(traffic),
       "the list's opening on Graph read the tree beyond Graph's own read"

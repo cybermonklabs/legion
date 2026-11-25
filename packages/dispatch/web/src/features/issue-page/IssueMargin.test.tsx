@@ -3095,8 +3095,8 @@ test("Referenced by counts the reader's runs once both reads answer, and is a co
     ).toBeTruthy();
     view.unmount();
 
-    // The outline's tree read stands failed: the list keeps its own row, with the failure's line
-    // after it, and the control counts that row alone.
+    // The tree read with no view stands failed: the list keeps its own row, with the failure's
+    // line after it, and the control counts that row alone.
     view = renderDetails(undefined, OPEN_DRAWER);
     const failing = view.queryClient;
     await act(async () => {

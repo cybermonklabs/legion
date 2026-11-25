@@ -119,15 +119,20 @@ export interface RunRowsRead {
  * The rows of the runs that changed `issue` or a node of it, from the issue's tree read with no
  * view, through two observers of that read. The first is never enabled: it draws the rows, says
  * whether they are known and whether the read stands failed, and its `retry` reads the tree
- * again. The second reads the tree: it is subscribed only while the list is `open`, so the page's
- * load sends no read for runs, and the list's first opening sends the tree read once where the
- * page does not hold it, and none where it does. It is an observer of its own, mounted afresh at
- * each opening as a view's is (`view-read.tsx`), rather than the first enabled at it, since
- * TanStack reads a query that holds no answer whenever an observer's `enabled` turns on, so a read
- * Dispatch refused would be sent again at each opening; a new observer reads it only as
- * `TREE_FRESH` says, not while a write of the issue holds it, and a refused read only where
- * something asked for it again since its refusal. Only the asker's tree read holds a run, so
- * another reader's rows are none.
+ * again. The second reads the tree: one observer kept for the life of the panel that calls this,
+ * subscribed at each opening of the list (`open`) and unsubscribed at each close, as a view's
+ * observer is (`ViewRead`, `view-read.tsx`). So the page's load sends no read for runs, and each
+ * opening reads the tree as a new observer of it does (`TREE_FRESH`): the first sends the read
+ * once where the page holds no answer, and none where it holds one that nothing marked stale, and
+ * an opening sends a refused read only where something asked for it again since its refusal.
+ * The second is an observer of its own rather than the first with its `enabled` turned on at
+ * each opening, since TanStack reads a query that holds no answer whenever an observer's
+ * `enabled` turns on, so a read Dispatch refused would be sent again at each opening. A write of
+ * the issue that is out holds back a read that holds an answer, but not one that holds neither
+ * an answer nor a refusal (`mayReadNow`): a first opening while a write is out sends the read,
+ * and the tree's freshness asks for it again once the last write settles
+ * (`subscribeTreeFreshness`). Only the asker's tree read holds a run, so another reader's rows
+ * are none.
  */
 export function useRunRows(issue: IssueDetails, open: boolean): RunRowsRead {
   const tree = issueTreeQuery(issue.key);

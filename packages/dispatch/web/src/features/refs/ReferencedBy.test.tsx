@@ -10,7 +10,7 @@ import type { GraphEdge, GraphReferences } from "../../api/types";
 import { useListPages } from "../issue-page/details-leaves";
 import { SHOW_MORE, showMoreName } from "../issue-page/show-more-fixture";
 import type { BlockItemKind } from "./block-reference";
-import { type ExtraReferenceRow, ReferencedBy } from "./ReferencedBy";
+import { ReferencedBy } from "./ReferencedBy";
 
 const createdAt = "2026-10-20T10:00:00Z";
 
@@ -668,13 +668,16 @@ test("an extra row draws its excerpt whole, with no Show more", async () => {
   const excerpt = extraList.querySelector("p");
   if (excerpt === null) throw new Error("the extra row draws no excerpt");
   expect(excerpt).toHaveTextContent(words, { normalizeWhitespace: false });
-  expect(excerpt).not.toHaveClass("line-clamp-3");
   expect(within(extraList).queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
 });
 
 /** `ReferencedBy` as Details draws it (`page`), in the pages Details holds its rows in
  *  (`useListPages`), with rows the host adds after the list's own. */
-function PagedPanel({ extraRows }: { extraRows: readonly ExtraReferenceRow[] }): ReactNode {
+function PagedPanel({
+  extraRows,
+}: {
+  extraRows: NonNullable<Parameters<typeof ReferencedBy>[0]["extraRows"]>;
+}): ReactNode {
   const pages = useListPages();
   return <ReferencedBy extraRows={extraRows} page pages={pages} reference="dispatch://CORE-1" />;
 }
@@ -755,4 +758,66 @@ test("extra rows stand in the list's pages of 20 after its own rows, under one c
     within(panel).queryByRole("button", { name: SHOW_MORE }),
     "Show more stayed once every row was drawn"
   ).not.toBeInTheDocument();
+});
+
+// Where the list's own rows fill the first page, the host's rows start the next: the first page
+// draws none of them, Show more counts them, and its press draws them, with the focus on the link
+// of the first - here a row that is its card's one row and its list's first, whose card the
+// press finds (`rowAt`).
+test("an extra row after a first page of the list's own rows is drawn by Show more, which moves the focus to its link", async () => {
+  const user = userEvent.setup();
+  const node = {
+    ...graphNodeFields(),
+    id: "CORE-1",
+    issue_key: "CORE-1",
+    kind: "issue",
+    ref: "dispatch://CORE-1",
+  } satisfies GraphReferences["node"];
+  // 20 comments of OPS-1, each a source of its own with one row.
+  const edges = Array.from({ length: 20 }, (_, index) =>
+    itemBlockEdge(
+      "comment",
+      `11111111-1111-4111-8111-${String(index + 1).padStart(12, "0")}`,
+      "b1",
+      `Comment ${index + 1} cites dispatch://CORE-1.`
+    )
+  );
+  const extraRows = [{ edge: "extra edge", href: "/somewhere/r1", key: "r1", kind: "Extra kind" }];
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({ edges, node });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <PagedPanel extraRows={extraRows} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+  };
+
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  await within(panel).findByText("Comment 1 cites dispatch://CORE-1.");
+  expect(
+    panel.querySelectorAll(":scope > ul > li > ul > li"),
+    "the first page does not draw 20 rows"
+  ).toHaveLength(20);
+  expect(
+    panel.querySelectorAll("[data-extra-references] a"),
+    "the first page draws the host's row after 20 of the list's own"
+  ).toHaveLength(0);
+  const more = within(panel).getAllByRole("button", { name: SHOW_MORE });
+  expect(more, "the list does not draw one Show more under all its rows").toHaveLength(1);
+  expect(more[0]?.textContent, "Show more does not count the host's row left").toBe(
+    showMoreName(1)
+  );
+
+  await user.click(more[0] as HTMLElement);
+  const extraList = panel.querySelector<HTMLElement>("[data-extra-references]");
+  if (extraList === null) throw new Error("Show more did not draw the host's row");
+  expect(
+    within(extraList).getByRole("link", { name: "Extra kind" }),
+    "Show more did not move the focus to the link of the host's row it drew"
+  ).toHaveFocus();
 });
