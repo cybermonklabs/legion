@@ -233,7 +233,8 @@ func TestTheBaseOfAStartedTaskIsTheBaseItsStartFixed(t *testing.T) {
 // which fails every part's row). The base of a part none of whose steps implements, f3 and f4, is
 // read from the plan's PartOf, never from where StartsFrom lists its task's branch (its control:
 // StartsFrom that lists that branch last, under which only the StartsFrom rows fail; a base read
-// from the first branch StartsFrom lists makes f3's and f4's base main there).
+// from the first branch StartsFrom lists makes f4's base main there, while f3, which starts from
+// its task's branch alone, keeps it).
 func TestTheBaseOfATaskThatIsAPart(t *testing.T) {
 	issue := Issue{Key: planIssue, DefaultBranch: "main"}
 	stored := basePlan(

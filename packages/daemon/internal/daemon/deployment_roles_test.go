@@ -779,7 +779,7 @@ func (r *sliceFourRig) resume(role claim.Role, kept sliceFourSession) {
 	c := &stepClaimant{r: r.stepRecordsRig, token: token, issue: r.key, tree: r.key, role: role, session: kept.id, model: stepRecordsModel,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: kept.id, OmpSessionFile: kept.file, AgentID: kept.id, PluginContract: api.DaemonAPIVersion,
+		BootToken: launch.BootToken, SessionID: kept.id, OmpSessionFile: kept.file, AgentID: kept.id, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s in its session %s = %d %s, want 200", token, kept.id, status, body)

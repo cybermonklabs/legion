@@ -728,8 +728,8 @@ func TestTheRecordFieldsContractIsNotAboveTheDaemonsOwn(t *testing.T) {
 // without a line that says so (its control: the state without the narrowing's row).
 func TestACallerBelowTheContractIsServedNoTasks(t *testing.T) {
 	const dropped = "the issues' tasks"
-	if tasksContract > DaemonAPIVersion {
-		t.Fatalf("tasksContract = %d, above DaemonAPIVersion %d: no caller could be served the tasks", tasksContract, DaemonAPIVersion)
+	if tasksContract > DaemonAPIVersion() {
+		t.Fatalf("tasksContract = %d, above DaemonAPIVersion %d: no caller could be served the tasks", tasksContract, DaemonAPIVersion())
 	}
 	state := populatedState(t)
 	issues := maps.Clone(state.Issues)

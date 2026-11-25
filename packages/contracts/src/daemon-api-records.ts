@@ -131,6 +131,7 @@ export interface EnumeratedFieldRow {
   readonly answer: string;
   readonly keyPath: string;
   readonly values: readonly { readonly value: string; readonly since: number }[];
+  readonly until?: number;
 }
 
 /** Everything of one contract an entry fixture changes: the record of each answer and of each
@@ -496,7 +497,7 @@ function withEnumeratedRows(
       ...(before?.values ?? []),
       ...added.values.map((value) => ({ value, since: entry.number })),
     ].sort((a, b) => byString(a.value, b.value));
-    const row = { answer: added.answer, keyPath: added.keyPath, values };
+    const row = { ...before, answer: added.answer, keyPath: added.keyPath, values };
     if (before === undefined) after.push(row);
     else after[at] = row;
   }

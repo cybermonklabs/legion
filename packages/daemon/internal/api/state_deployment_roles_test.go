@@ -88,7 +88,7 @@ func stateServedWithLog(t *testing.T, state State, contract int) (servedRoles, [
 
 // deploymentRolesDropped is the `dropped` of deploymentRolesContract's row.
 func deploymentRolesDropped() string {
-	for _, row := range stateNarrowings {
+	for _, row := range stateNarrowings() {
 		if row.contract == deploymentRolesContract {
 			return row.dropped
 		}
@@ -106,7 +106,7 @@ func deploymentRolesDropped() string {
 // for its pod, both name the checker, and the checker's stranded claim is served.
 func TestAnOlderCallerSeesAStepIssueAsAtWork(t *testing.T) {
 	var contracts []int
-	for _, row := range stateNarrowings {
+	for _, row := range stateNarrowings() {
 		if below := row.contract - 1; below >= supervise.PodUpdateContract-1 && !slices.Contains(contracts, below) {
 			contracts = append(contracts, below)
 		}
@@ -256,8 +256,8 @@ func TestTheDeploymentRolesContractIsTheContractThatAddedTheRoles(t *testing.T) 
 		t.Fatalf("deploymentRolesContract = %d, want %d, the contract whose entry in version.go added the phase step and stepRole",
 			deploymentRolesContract, addedDeploymentRoles)
 	}
-	if deploymentRolesContract > DaemonAPIVersion {
-		t.Fatalf("deploymentRolesContract = %d, above DaemonAPIVersion %d: no caller could be served the phase step", deploymentRolesContract, DaemonAPIVersion)
+	if deploymentRolesContract > DaemonAPIVersion() {
+		t.Fatalf("deploymentRolesContract = %d, above DaemonAPIVersion %d: no caller could be served the phase step", deploymentRolesContract, DaemonAPIVersion())
 	}
 }
 

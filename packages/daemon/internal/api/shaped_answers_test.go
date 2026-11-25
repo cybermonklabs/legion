@@ -1147,7 +1147,7 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if registered.Plan.Tasks[0].Needs == nil {
 					t.Error("the shaping wrote the task of the body the route built: the tasks are copied before one is written")
 				}
-				for _, contract := range []int{tasksContract, DaemonAPIVersion} {
+				for _, contract := range []int{tasksContract, DaemonAPIVersion()} {
 					body, _ := shapeAnswer(AnswerPlanRegister, registered, contract, contract)
 					if kept, ok := body.(PlanRegisterResponse); !ok || kept.Plan.Tasks[0].Needs == nil || !slices.Equal(*kept.Plan.Tasks[0].Needs, needs) {
 						t.Errorf("register_plan's answer served at %d = %+v, want each task's `needs` kept", contract, body)

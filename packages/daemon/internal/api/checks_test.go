@@ -81,7 +81,7 @@ func checksOf(t *testing.T, issue map[string]json.RawMessage) (check int, checks
 func TestACallerBelowTheChecksContractGetsTheNewestCheckAlone(t *testing.T) {
 	const remote = "192.0.2.1:41000"
 	state := twoChecksState(t)
-	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
+	handler := stateServer(t, state, podClaims(DaemonAPIVersion()))
 	for _, tc := range []struct {
 		name     string
 		contract int

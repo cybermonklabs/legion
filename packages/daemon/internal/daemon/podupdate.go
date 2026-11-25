@@ -1369,7 +1369,7 @@ const (
 // (notWaitedFor): read masked, a claim that answered while its machine was deciding would drop the
 // read past the bound with a reason that says a claim had not answered. through is the claim the
 // pod is replaced through, whose process runs in the round's pod: the read goes through that
-// claim's role, since only a process in the pod can read the disk that the replacement takes from
+// claim's token, since only a process in the pod can read the disk that the replacement takes from
 // the pod (runtime.WorkspaceWorkReader). The replacement deletes that disk unless it is a kept
 // volume that the issue's next pod mounts (roundKeptVolume).
 //

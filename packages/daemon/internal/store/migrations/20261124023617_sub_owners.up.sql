@@ -16,9 +16,10 @@
 --
 -- It writes no outbox check. The join of a task's parts has no outbox kind yet: the change that
 -- builds the join adds its kind, with its payload, its decoder and its executor. So this migration
--- has the place of any new one: its version stands above every migration of the release before it
--- and of main. The running kind's check it writes needs only to stand above 20261117034837, the
--- last migration to write that check.
+-- depends on no migration but the ones that made plan_tasks and its running kind's check, and none
+-- that sorts above it touches plan_tasks or that check: a database that applies it after main's
+-- later migrations ends as one that applies it before them. The running kind's check it writes
+-- needs only to stand above 20261117034837, the last migration to write that check.
 --
 -- The release before this one boots without the statements below: its plan_tasks reads and writes
 -- name each column they touch, and none names parts_conflicts. It takes no plan whose task names

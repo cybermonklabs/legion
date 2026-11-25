@@ -243,7 +243,7 @@ func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 					Issue: key, Role: released.role, TreeEpoch: 1, Generation: 2, ServingGeneration: released.serving,
 					State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
 					Session: "ses-" + string(released.role), SessionFile: "/tmp/" + string(released.role) + ".jsonl",
-					PluginContract: api.DaemonAPIVersion}); err != nil {
+					PluginContract: api.DaemonAPIVersion()}); err != nil {
 					t.Fatalf("seed the released %s: %v", released.role, err)
 				}
 			}
