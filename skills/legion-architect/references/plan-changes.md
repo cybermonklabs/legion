@@ -31,13 +31,13 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
   For a fix: a fix of the task runs; wait for its end, which decides what runs next.
   For CI: a `ci_check` check has not passed at the task's head, and nothing is asked of you.
   A failure there starts a fix where the task takes one; else a `ci-failed` notice comes.
-  To act before CI passes, send it back with `request_backward_move`, or stop its task with `stop_task`.
+  To act before CI passes, send it back with `request_backward_move`, or stop its task with `stop_task`, which an issue whose experiment's group runs the default steps refuses (`PLAN_NOT_TAKEN`).
   `retry_or_escalate` refuses either hold (`409 FIX_RUNNING`, `409 CI_PENDING`), and a `todo` on the root leaves it held.
   The retro starts once nothing holds it.
 
 - **`ci-failed`:** a `ci_check` check fails at the head of a task held before its retro, and no fix takes it.
   It comes once for that check at that head.
-  Decide with the person, then send the task back with `request_backward_move`, or stop it with `stop_task`.
+  Decide with the person, then send the task back with `request_backward_move`, or stop it with `stop_task`, unless its experiment's group runs the default steps (`PLAN_NOT_TAKEN`).
 
 - **`worker-died` that names a fix:** the implementer's claim failed while it ran the fix.
   The fix ended, nothing is held, and no second fix starts for that check at that head.
