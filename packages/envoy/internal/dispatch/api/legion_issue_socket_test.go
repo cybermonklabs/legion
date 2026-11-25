@@ -3,7 +3,6 @@ package api
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestAnIssuesLegionLiveViewAloneRefusesAnIssueThatIsNotAString holds, where the socket decodes a
@@ -38,7 +37,7 @@ func TestAnIssuesLegionLiveViewAloneRefusesAnIssueThatIsNotAString(t *testing.T)
 			eventsStart(t, subscribe(t, "e", `{"kind":"events"`+issue.member+`}`), "e")
 		})
 		t.Run("a pipeline view with "+issue.what+" is answered its snapshot", func(t *testing.T) {
-			subscribe(t, "p", `{"kind":"pipeline"`+issue.member+`}`).snapshot(t, 10*time.Second, "p")
+			subscribe(t, "p", `{"kind":"pipeline"`+issue.member+`}`).snapshot(t, "p")
 		})
 	}
 	for _, issue := range []struct{ what, member string }{
@@ -46,7 +45,7 @@ func TestAnIssuesLegionLiveViewAloneRefusesAnIssueThatIsNotAString(t *testing.T)
 		{"an issue that is an object", `{"key":"INFRA-7"}`},
 	} {
 		t.Run("a legion_issue view of "+issue.what+" is refused in its own words", func(t *testing.T) {
-			refusal := subscribe(t, "i", `{"kind":"legion_issue","issue":`+issue.member+`}`).refusal(t, 5*time.Second, "i", "INVALID_FRAME")
+			refusal := subscribe(t, "i", `{"kind":"legion_issue","issue":`+issue.member+`}`).refusal(t, "i", "INVALID_FRAME")
 			if !strings.HasPrefix(refusal.Message, "a legion_issue view") {
 				t.Errorf("the refusal says %q, want the legion_issue kind's own words, not the decode's", refusal.Message)
 			}

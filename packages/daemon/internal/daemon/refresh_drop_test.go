@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // staleIdleClaims is n idle claims of n issues, each recording a plugin contract this daemon does
@@ -139,5 +141,110 @@ func TestAStopAfterTheRefreshPassDeliveredItsPostsGivesBackEveryCreditTheyCarry(
 	if granted := grantedAfter(gate, rate); granted != rate {
 		t.Fatalf("the gate granted %d admissions after a stop dropped the pass's %d delivered posts, want %d: each dropped post's credit goes back to the gate",
 			granted, rate, rate)
+	}
+}
+
+// A refresh pass reads each claim it would post as the claim's machine holds it now, not as the
+// sweep's snapshot read it, so it spends no credit on a claim that has left the lane since. The
+// sweep reads its snapshot before its orphan reconciliation, which under Kubernetes lists every
+// Sandbox, and a claim can be suspended or start a turn in between. A credit posted to such a
+// claim comes back only as its machine decides the post, and until then the gate counts it out,
+// so the pass refuses every claim after it and the lane admits nothing on that credit until a
+// later sweep. A machine that is busy with another decision holds the post, and the credit, for
+// as long as that decision runs: under Kubernetes a relaunch waits minutes for its pod.
+//
+// Each case restores two stale claims, the first as its machine holds it now and the second idle,
+// and hands the pass a snapshot that reads both idle. The first claim's feed holds each refresh
+// post it takes until the pass has returned, as a machine busy with another decision does. The
+// gate grants one credit, which must go to the second claim; the claim in a turn is posted with
+// no credit, as every claim in a turn is (refreshStalePlugins, holdStaleRelaunch).
+//
+// The negative control is the pass reading the snapshot's claim for the lane's terms, as main
+// did before this change: it posts the first claim the credit and refuses the second.
+func TestARefreshPassSpendsNoCreditOnAClaimThatLeftTheLaneSinceItsSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// now is the first claim as its machine holds it when the pass runs.
+		now func(supervise.Claim) supervise.Claim
+		// posted is whether the first claim is posted at all, with no credit.
+		posted bool
+	}{
+		{name: "suspended since the snapshot", now: func(c supervise.Claim) supervise.Claim {
+			// A suspension lets the process go (supervise's letGo), so the claim records none.
+			c.State, c.SuspendedBy, c.Locator = supervise.StateSuspended, supervise.SuspendedByOperator, nil
+			return c
+		}},
+		{name: "in a turn since the snapshot", now: func(c supervise.Claim) supervise.Claim {
+			c.State = supervise.StateWorking
+			return c
+		}, posted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sup, _ := newPluginSupervisor(t, 24, true)
+			snapshot := staleIdleClaims(t, 2)
+			first, second := snapshot[0].Token, snapshot[1].Token
+			hold := make(chan struct{})
+			var letGoOnce sync.Once
+			letGo := func() { letGoOnce.Do(func() { close(hold) }) }
+			t.Cleanup(letGo)
+			var (
+				mu   sync.Mutex
+				took []supervise.StalePlugin
+			)
+			sup.beforeDecision = func(token claim.Token, ev supervise.Event) {
+				stale, ok := ev.(supervise.StalePlugin)
+				if !ok || token != first {
+					return
+				}
+				mu.Lock()
+				took = append(took, stale)
+				mu.Unlock()
+				<-hold
+			}
+			restored := slices.Clone(snapshot)
+			restored[0] = tc.now(restored[0])
+			if _, err := sup.restore(t.Context(), restored); err != nil {
+				t.Fatalf("restore: %v", err)
+			}
+			var admitted []claim.Token
+			s := &supervision{log: quietLogger(), supervisor: sup, claims: snapshot, plan: plan{pluginRelaunchable: true},
+				refreshGate: supervise.NewRefreshGate(1),
+				afterRefreshAdmit: func(token claim.Token, _ *supervise.RefreshCredit) {
+					admitted = append(admitted, token)
+				}}
+
+			s.refreshStalePlugins(snapshot, "sweep")
+
+			if !slices.Equal(admitted, []claim.Token{second}) {
+				t.Fatalf("the pass admitted %v, want only %s: %s is %s now, so the gate's one credit goes to the idle claim after it",
+					admitted, second, first, restored[0].State)
+			}
+			// The post, if any, waits at the first claim's feed, which took it before the pass
+			// returned or takes it now; nothing else posts to that claim here.
+			if tc.posted {
+				testwait.Eventually(t, "the first claim's feed to take the pass's post", func() bool {
+					mu.Lock()
+					defer mu.Unlock()
+					return len(took) > 0
+				})
+			}
+			letGo()
+			sup.halt()
+			sup.feeding.Wait()
+			mu.Lock()
+			defer mu.Unlock()
+			want := 0
+			if tc.posted {
+				want = 1
+			}
+			if len(took) != want {
+				t.Fatalf("the first claim's feed took %d refresh posts, want %d", len(took), want)
+			}
+			if len(took) == 1 && took[0].Credit != nil {
+				t.Fatalf("the claim in a turn was posted a credit, want none: its relaunch waits for the turn's end, which asks the gate itself")
+			}
+		})
 	}
 }
