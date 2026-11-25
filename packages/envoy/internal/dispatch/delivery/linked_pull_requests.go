@@ -221,11 +221,11 @@ type changedLinkRow struct {
 // Two kinds of row the stored facts cannot judge whole, and each is given attribution_rule 0, a
 // rule older than every rule that judges a row now, so the reconcile judges it on its own pass:
 // the merged arm takes a merged row of an older rule (ListStalePullRequestHeads), and an open row
-// is read again once it is PullRequestHeadStaleAfter old, within the bound that function gives,
-// whatever its rule. One is a row with stored inputs whose commit messages no writer read (they
-// are read only when no earlier source names an issue) and no other source of which holds it now:
-// it is nobody's until that read, since the link that gave it is gone. The other is a row written
-// before the inputs were stored: a link of
+// is due again once its last read is PullRequestHeadStaleAfter old, whatever its rule, and is
+// tried within the bound that function gives. One is a row with stored inputs whose commit
+// messages no writer read (they are read only when no earlier source names an issue) and no other
+// source of which holds it now: it is nobody's until that read, since the link that gave it is
+// gone. The other is a row written before the inputs were stored: a link of
 // its own URL removed, or a GitHub-issue link removed where it was the issue's by a citation,
 // takes it from the issue, and a link added leaves it as it is. Rule 4 has the reconcile store
 // the inputs of every such row once (AttributionRuleVersion).

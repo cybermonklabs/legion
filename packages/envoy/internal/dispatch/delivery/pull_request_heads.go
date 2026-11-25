@@ -825,8 +825,9 @@ func baseBranchMergedForQuery(renames refs.Renames) string {
 		limit 1`
 }
 
-// PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
-// reconcile reads it again.
+// PullRequestHeadStaleAfter is how old an open pull request's row's last read (checked_at) must be
+// for the row to be due again: from then on ListStalePullRequestHeads offers it to the reconcile,
+// whose pass reads it only through a try whose stamp succeeds (reconcilePullRequestHeads).
 //
 // The bound is duty.LeasePeriod(ReconcileInterval), ReconcileInterval less a tenth of it: the
 // shortest wait the reconcile leaves after a pass, whose waits are drawn in
@@ -839,13 +840,23 @@ func baseBranchMergedForQuery(renames refs.Renames) string {
 // gives. With several processes serving one database the next pass can be another process's,
 // starting less than this bound after the read, and it leaves the row as fresh. The first pass
 // that starts more than this bound after the read takes it, and the deployment's passes come at
-// most ReconcileInterval apart, so with no more than a batch due, no pass a rate limit stops and
-// a read that succeeds, two reads of an open row are at most about this bound plus
-// ReconcileInterval apart, nine and a half minutes, plus the passes' own run time. A bound of the
-// whole ReconcileInterval would leave such a row not yet due at one process's next pass whenever
-// that pass's wait, with the time the pass before ran on after the read, came to five minutes or
-// less, which a quick pass almost always does, and the row would wait for the pass after: about
-// ten minutes between two reads of it rather than five.
+// most ReconcileInterval apart, so with no more than a batch due and no pass a rate limit stops,
+// a pass takes an open row at most about this bound plus ReconcileInterval after its last read,
+// nine and a half minutes, plus the passes' own run time.
+//
+// That bounds when the row is due and when a pass takes it, not when GitHub is read again. The
+// pass that takes the row reads GitHub only once its stamp of the try succeeds (stampTry), and
+// that read must then succeed too; a stamp whose call fails gives the row up unread. So where one
+// open row is due, GitHub answers every read made and no rate limit comes, but the stamps of
+// several passes in a row fail, each of those passes takes the row and none reads it, and while
+// such stamps recur nothing bounds the time between two of its reads. Only where the pass that
+// takes the row stamps it and reads it, each successfully, are two reads of the row at most the
+// time above apart.
+//
+// A bound of the whole ReconcileInterval would leave such a row not yet due at one process's next
+// pass whenever that pass's wait, with the time the pass before ran on after the read, came to
+// five minutes or less, which a quick pass almost always does, and the row would wait for the
+// pass after: about ten minutes between two passes that take it rather than five.
 var PullRequestHeadStaleAfter = duty.LeasePeriod(ReconcileInterval)
 
 // PullRequestHeadBatch is how many rows the reconcile reads again in one pass.
@@ -1237,9 +1248,10 @@ func (a *Attributor) attributePayload(ctx context.Context, pool *store.Pool, cli
 // way, before any GitHub call, and comes back as that error, so the reconcile warns of the row on
 // the pass that stamps it and not on every pass; a rate limit comes back as the
 // *githubapp.RateLimitError, which stops the batch. The row is stamped even when the commit
-// messages could not be read: this pass is itself the retry, so the next one reads it again in
-// PullRequestHeadStaleAfter rather than holding the front of every batch, and that write, being
-// incomplete, leaves any attribution the row already carries standing.
+// messages could not be read: this pass is itself the retry, so the row is due again only once
+// PullRequestHeadStaleAfter has passed, as a row read whole is, rather than holding the front of
+// every batch (which pass then reads it is PullRequestHeadStaleAfter's to say), and that write,
+// being incomplete, leaves any attribution the row already carries standing.
 //
 // repoFull is the key ListStalePullRequestHeads read off the row, which may be a name the
 // repository has been renamed away from, and every step here but the stamp works on the
