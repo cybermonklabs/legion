@@ -7285,7 +7285,7 @@ if ! accord_unrun "$stalled_case"; then
     dir="$(accord_plant accord-stalled)" || exit 1
     out="$(FIXTURE_OMP_STUB="$(accord_stub stalled)" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
     one_failure_result "$stalled_case" replay-command '^1 of 18 assertions failed: replay-command$' \
-        "^FAIL replay-command: i-skills-run ran '.*accord-skills-run\\.sh\" --max-cost 2\\.15 .*' and its output does not meet \\{\"one_of\":\\[\"locked\"\\]\\}: not locked" "$out"
+        "^FAIL replay-command: i-skills-run ran '.*accord-skills-run\\.sh\" --max-cost 11 .*' and its output does not meet \\{\"one_of\":\\[\"locked\"\\]\\}: not locked" "$out"
 fi
 
 # 227. A model gateway that does not answer is a source that did not, never a verdict on the
@@ -7313,7 +7313,7 @@ for gateway in 429 503 401; do
     out="$(FIXTURE_OMP_STUB="$(accord_stub "$gateway")" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
     ending_read "$out"
     if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] && ! grep -q '^FAIL' "$out/text" &&
-        printf '%s\n' "$RUN_LINE" | grep -qxF -- "check.sh cannot run --replay now: $refused, so the row's failure is no verdict on the deliverable: 'omp -p --mode json --max-cost 2.15' exited 3 and printed 'result: model not reached ($said)'" &&
+        printf '%s\n' "$RUN_LINE" | grep -qxF -- "check.sh cannot run --replay now: $refused, so the row's failure is no verdict on the deliverable: 'omp -p --mode json --max-cost 11' exited 3 and printed 'result: model not reached ($said)'" &&
         [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = source ]; then
         case_passed "$gateway_case"
     else
