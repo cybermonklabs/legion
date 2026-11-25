@@ -5,7 +5,12 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -421,6 +426,12 @@ type scratchDispatchOptions struct {
 	// (ENVOY_URL) or a GitHub App and the GitHub it calls. Nothing else of the caller's
 	// environment named DISPATCH_, ENVOY_ or NATS_ reaches the server.
 	env []string
+	// github, when set, is the GitHub API the server's App calls (DISPATCH_GITHUB_API_BASE), a
+	// stand-in of the test's own. The server then holds an App of the run's own, as
+	// packages/dispatch/e2e/run-server.sh gives its server one: a client ID and a private key made
+	// for the run (scratchAppKey). The three settings go before env's, which may replace them.
+	// Empty runs the server with no App, so it reads no GitHub.
+	github string
 }
 
 // scratchDispatch is a real Dispatch server a test builds and runs: its binary, its own database,
@@ -443,6 +454,9 @@ type scratchDispatch struct {
 	command  *exec.Cmd
 	exited   chan error
 	output   *syncBuffer
+	// github is the GitHub the server's App calls, empty for a server with no App
+	// (scratchDispatchOptions.github).
+	github string
 }
 
 // startScratchDispatchOn gives the server a scratch database of its own on the test DSN's
@@ -463,7 +477,14 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 		t: t, binary: testbuild.EnvoyBinary(t, "./cmd/dispatch"), dir: filepath.Join(root, "packages", "envoy"),
 		webDist: filepath.Join(root, "packages", "dispatch", "web", "dist"), database: database,
 		natsURL: options.natsURL, token: scratchAgentToken, home: filepath.Join(t.TempDir(), "home"),
-		log: options.log, env: options.env,
+		log: options.log, env: options.env, github: options.github,
+	}
+	if d.github != "" {
+		d.env = append([]string{
+			"DISPATCH_GITHUB_API_BASE=" + d.github,
+			"DISPATCH_APP_CLIENT_ID=Iv1.scratch",
+			"DISPATCH_APP_PEM_B64=" + scratchAppKey(t),
+		}, options.env...)
 	}
 	if err := os.MkdirAll(d.home, 0o700); err != nil {
 		t.Fatalf("create scratch Dispatch home: %v", err)
@@ -561,6 +582,19 @@ func (d *scratchDispatch) start() {
 	}) {
 		t.Fatalf("scratch Dispatch did not become ready:\n%s", output.String())
 	}
+}
+
+// scratchAppKey is the private key of a scratch server's App, made for the run, as the base64 of
+// its PEM (DISPATCH_APP_PEM_B64). The server signs every App call with it, and a GitHub stand-in
+// checks no signature.
+func scratchAppKey(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("make the scratch Dispatch App's key: %v", err)
+	}
+	block := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	return base64.StdEncoding.EncodeToString(block)
 }
 
 // holdPortAgain takes the socket of the port the server served on before its stop (takeSocket), as
