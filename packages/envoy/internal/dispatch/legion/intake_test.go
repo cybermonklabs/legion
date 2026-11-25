@@ -130,6 +130,12 @@ func (c *intakeClock) deferrals() (deferred, made int) {
 	return c.deferred, c.made
 }
 
+// deferredCalls is how many calls the clock has deferred: the first count deferrals answers.
+func (c *intakeClock) deferredCalls() int {
+	deferred, _ := c.deferrals()
+	return deferred
+}
+
 // peek is the clock's reading without the jump (jumps).
 func (c *intakeClock) peek() time.Time {
 	c.mu.Lock()
@@ -597,7 +603,8 @@ func (r *intakeRig) awaitStartingRead(project string) {
 }
 
 // requireWholeReadLines fails unless the whole reads logged are, in order, one per reason given,
-// each at INFO naming its project, its reason, its stateSeq, its bytes and its duration.
+// each at INFO naming its project, its reason, its stateSeq, its bytes, its duration and its start
+// as a time (started).
 func (r *intakeRig) requireWholeReadLines(project string, reasons ...string) []map[string]any {
 	r.t.Helper()
 	lines := r.awaitLogRecords(wholeReadLine, len(reasons))
@@ -608,10 +615,14 @@ func (r *intakeRig) requireWholeReadLines(project string, reasons ...string) []m
 		if line["level"] != "INFO" || line["project"] != project || line["reason"] != reasons[index] {
 			r.t.Fatalf("whole read line %d = %v, want INFO for project %s and reason %s", index, line, project, reasons[index])
 		}
-		for _, attribute := range []string{"stateSeq", "bytes", "duration"} {
+		for _, attribute := range []string{"stateSeq", "bytes", "duration", "started"} {
 			if _, present := line[attribute]; !present {
 				r.t.Fatalf("whole read line %d = %v, want it to name %s", index, line, attribute)
 			}
+		}
+		started, _ := line["started"].(string)
+		if _, err := time.Parse(time.RFC3339Nano, started); err != nil {
+			r.t.Fatalf("whole read line %d = %v, want its started a time: %v", index, line, err)
 		}
 	}
 	return lines

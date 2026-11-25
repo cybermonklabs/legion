@@ -543,12 +543,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// writes: supervision's restore, the boot probes' reconcile pass and every later issue,
 		// slot, claim and admission write queue theirs after it, and openWorkflow above wrote none,
 		// since nothing was on while it ran. A row an earlier run left unpublished holds a lower
-		// sequence still, so the project's state lane publishes it first and the boot event
-		// follows it with no gap. Both switches carry this run's id and wake the project's state
-		// lane once a write that queued a row commits (publishRecordStates, publishClaimStates).
-		// Only a daemon with a workflow runs the outbox that sends and deletes the rows, so a daemon
-		// with none writes no boot row and turns nothing on. The event carries the schema version
-		// the store records now that this boot's migrations ran (stateevent.Boot).
+		// sequence still, so the project's state lane publishes it first and the boot event follows
+		// it with no gap. Both switches carry this run's id and wake the project's state lane once
+		// a write that queued a row commits (publishRecordStates, publishClaimStates). Only a
+		// daemon with a workflow runs the outbox that sends and deletes the rows, so a daemon with
+		// none writes no boot row and turns nothing on. The event carries the schema version the
+		// store records now that this boot's migrations ran (stateevent.Boot).
 		schemaVersion, err := st.SchemaVersion(boot)
 		if err != nil {
 			workflow.stop()
@@ -3357,12 +3357,10 @@ type source struct {
 // ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps, DropStatusWrites, and
 // ClearGeneration and ClearTreeGeneration, which queue the publication of the gates they empty —
 // refuses a key of another project, and EnqueueID refuses it with claim.ErrKeyOfAnotherProject.
-// The state rows a record store write queues inside itself are not among them: the changes of the
-// issue and slot writes record.Postgres.PublishState lists (record.Postgres.EnqueueStateChange) and
-// the admission block's row (record.Postgres.QueueAdmissionBlock), each keyed by the bare Dispatch
-// project key of what that write names. The claim writes of internal/store queue theirs through the
-// same EnqueueStateChange, outside this wrapper (publishClaimStates). The boot row goes in through
-// Enqueue (workflowRuntime.queueStateBoot), and its key is the project's own.
+// The state rows that internal/record and internal/store queue inside their own writes (package
+// stateevent's comment names them) are not among them: each is keyed by the bare Dispatch project
+// key of what its write names. The boot row goes in through Enqueue
+// (workflowRuntime.queueStateBoot), and its key is the project's own.
 // The rest act on a row by its id under a lease this daemon holds of a row its own scope gave it
 // (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule
 // here.

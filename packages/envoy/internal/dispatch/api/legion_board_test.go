@@ -463,18 +463,24 @@ func (d *fakeLegionDaemon) serves(body string) {
 	d.mu.Unlock()
 }
 
-// read serves body and reads it whole for the project the daemon is named for, through the setting
-// the settings API stored for that project (legion.GetSettings), which records what it observes, or
-// the read's failure, as the intake's whole read records it.
+// read serves body and reads it whole for the project the daemon is named for (readLegionWhole).
 func (d *fakeLegionDaemon) read(t *testing.T, database *store.Store, body string) {
 	t.Helper()
 	d.serves(body)
-	setting, err := legion.GetSettings(t.Context(), database.Pool, d.project)
+	readLegionWhole(t, database, d.project)
+}
+
+// readLegionWhole reads project's daemon whole through the setting the settings API stored for
+// project (legion.GetSettings), with the Legion intake's own whole read (legion.ReadWhole), which
+// records what it observes, or the read's failure, as the intake records it.
+func readLegionWhole(t *testing.T, database *store.Store, project string) {
+	t.Helper()
+	setting, err := legion.GetSettings(t.Context(), database.Pool, project)
 	if err != nil {
-		t.Fatalf("read the Legion setting of %s: %v", d.project, err)
+		t.Fatalf("read the Legion setting of %s: %v", project, err)
 	}
 	if err := legion.ReadWhole(t.Context(), database.Pool, setting, legion.ReadReasonStart); err != nil {
-		t.Fatalf("read the daemon of %s whole: %v", d.project, err)
+		t.Fatalf("read the daemon of %s whole: %v", project, err)
 	}
 }
 

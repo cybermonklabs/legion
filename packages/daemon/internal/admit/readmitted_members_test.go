@@ -550,37 +550,16 @@ type slotChange struct {
 }
 
 // slotChanges is every change of a slot the outbox's state events name, in the order they were
-// queued, each decoded as the outbox decodes it, so a row this package could not send fails here.
+// queued (outboxEvents).
 func slotChanges(t *testing.T, pool *pgxpool.Pool) []slotChange {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox where kind = $1 order by id`, string(record.OutboxKindStateChange))
-	if err != nil {
-		t.Fatalf("list the state changes: %v", err)
-	}
-	defer rows.Close()
 	var changes []slotChange
-	for rows.Next() {
-		var row record.OutboxRow
-		if err := rows.Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload); err != nil {
-			t.Fatalf("read a state change: %v", err)
-		}
-		payload, err := record.DecodeOutboxPayload(row)
-		if err != nil {
-			t.Fatalf("decode state change %d: %v", row.ID, err)
-		}
-		change := payload.(record.StateChange)
-		if row.Issue != testProject || change.Project != testProject || change.Run != blockRun {
-			t.Fatalf("state change %d is queued under %q for project %q and run %q, want %q, %q and %q",
-				row.ID, row.Issue, change.Project, change.Run, testProject, testProject, blockRun)
-		}
+	for _, change := range outboxEvents(t, pool, "state change", func(change record.StateChange) (string, string) { return change.Project, change.Run }) {
 		for _, field := range change.Changes {
 			if field.Field == record.StateFieldSlot {
 				changes = append(changes, slotChange{issue: change.Issue, from: string(field.Old), to: string(field.New)})
 			}
 		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("list the state changes: %v", err)
 	}
 	return changes
 }
@@ -648,12 +627,11 @@ func TestReadmittedMembersOfARootMovedOutAndBackDuringAPauseComeBackAfterTheResu
 				t.Fatalf("the tree holds no slot as its root comes back (%#v), want the slot of the generation before: the case's premise", slots(t, pool))
 			}
 			// The re-admission's fact writes through a record store whose state events are on, as
-			// a daemon with a workflow runs it (publishingAdmission). The facts around it write with
+			// a daemon with a workflow runs it (publishingStore). The facts around it write with
 			// the events off, since a state event cannot name the fixture's LEGION-ACTIVE, which is
 			// no issue key.
-			unpublished, records := admission.store, record.NewStore()
-			records.PublishState(blockRun, nil)
-			admission.store = records
+			unpublished := admission.store
+			admission.store = publishingStore()
 			apply(t, pool, admission, "root-todo", intake.DispatchIssue{Key: rmRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
 				Status: "todo", Title: "root", Rank: "B", HandedOver: handed}, admission.engine)
 			admission.store = unpublished

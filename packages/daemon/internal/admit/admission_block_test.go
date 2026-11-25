@@ -21,45 +21,61 @@ import (
 const blockRun = "7d3e9a41-0c6b-4f28-b5e1-93a2c4d8f067"
 
 // publishingAdmission is an admission of this cap (newAdmissionForProject) over a record store with
-// the state events on (record.Postgres.PublishState), which is what makes the pass write the
-// admission block, and which logs nowhere.
+// the state events on (publishingStore), which is what makes the pass write the admission block,
+// and which logs nowhere.
 func publishingAdmission(t *testing.T, cap int) *Admission {
 	t.Helper()
 	admission := newAdmissionForProject(t, testProject, cap, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	records := record.NewStore()
-	records.PublishState(blockRun, nil)
-	admission.store = records
+	admission.store = publishingStore()
 	return admission
 }
 
-// admissionEvents is every state_admission row the outbox holds, in the order they were queued,
-// each decoded as the outbox decodes it, so a row this package could not send fails here.
+// publishingStore is a record store with the state events on for blockRun
+// (record.Postgres.PublishState), which wakes no lane.
+func publishingStore() *record.Postgres {
+	records := record.NewStore()
+	records.PublishState(blockRun, nil)
+	return records
+}
+
+// admissionEvents is every state_admission row the outbox holds, in the order they were queued
+// (outboxEvents).
 func admissionEvents(t *testing.T, pool *pgxpool.Pool) []record.StateAdmission {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox where kind = $1 order by id`, string(record.OutboxKindStateAdmission))
+	return outboxEvents(t, pool, "admission event", func(event record.StateAdmission) (string, string) { return event.Project, event.Run })
+}
+
+// outboxEvents is every row of E's kind the outbox holds, in the order they were queued, each
+// decoded as the outbox decodes it, so a row this package could not send fails here. It fails
+// unless each row is queued under testProject, and unless owner reads testProject and blockRun as
+// the project and the run of the row's event. what names one row in the failure text.
+func outboxEvents[E record.OutboxPayload](t *testing.T, pool *pgxpool.Pool, what string, owner func(E) (project, run string)) []E {
+	t.Helper()
+	var kind E
+	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox where kind = $1 order by id`, string(kind.OutboxKind()))
 	if err != nil {
-		t.Fatalf("list the admission events: %v", err)
+		t.Fatalf("list the %ss: %v", what, err)
 	}
 	defer rows.Close()
-	var events []record.StateAdmission
+	var events []E
 	for rows.Next() {
 		var row record.OutboxRow
 		if err := rows.Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload); err != nil {
-			t.Fatalf("read an admission event: %v", err)
+			t.Fatalf("read one of the %ss: %v", what, err)
 		}
 		payload, err := record.DecodeOutboxPayload(row)
 		if err != nil {
-			t.Fatalf("decode admission event %d: %v", row.ID, err)
+			t.Fatalf("decode %s %d: %v", what, row.ID, err)
 		}
-		event := payload.(record.StateAdmission)
-		if row.Issue != testProject || event.Project != testProject || event.Run != blockRun {
-			t.Fatalf("admission event %d is queued under %q for project %q and run %q, want %q, %q and %q",
-				row.ID, row.Issue, event.Project, event.Run, testProject, testProject, blockRun)
+		event := payload.(E)
+		if project, run := owner(event); row.Issue != testProject || project != testProject || run != blockRun {
+			t.Fatalf("%s %d is queued under %q for project %q and run %q, want %q, %q and %q",
+				what, row.ID, row.Issue, project, run, testProject, testProject, blockRun)
 		}
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("list the admission events: %v", err)
+		t.Fatalf("list the %ss: %v", what, err)
 	}
 	return events
 }

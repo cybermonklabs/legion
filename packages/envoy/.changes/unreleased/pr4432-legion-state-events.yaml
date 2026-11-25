@@ -6,10 +6,11 @@ body: |-
   state every minute, and no recurring timer reads it. It reads a daemon's
   `GET /legion/v1/state?view=observed` whole only where the events cannot carry the state, for the
   reasons legion's `ReadReason` constants name, and the whole reads of one project start at least
-  a minute apart. The Dispatch README holds the whole rule (`cmd/dispatch/README.md`, "The Legion
+  a minute apart. The Dispatch README describes the rule (`cmd/dispatch/README.md`, "The Legion
   state intake"): when a read is owed, which message holds it and for how long, how many messages
   of the consumer's window one project can hold, what a `PUT` or a `DELETE` of a project's Legion
-  setting does to the project's cursor, and the intake's log lines. A daemon of an earlier build
+  setting does to the project's cursor, and the intake's log lines; legion's `cursor.readFor`,
+  `resetCursor` and `cursor.reset` hold it in full. A daemon of an earlier build
   ignores the `view` query and serves its whole state, which Dispatch reads the same way. A whole
   read reads at most 64 MiB of the answer, not 32 MiB, and an answer over that is a failed read.
   When Dispatch has NATS, a `PUT` of a project's Legion setting, of the same URL too, calls for a

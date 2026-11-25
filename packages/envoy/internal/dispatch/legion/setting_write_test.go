@@ -651,17 +651,10 @@ func TestAWriteOfTheSameURLWhileAReadOfItIsInFlightTakesThatReadAsItsStartingPoi
 		c.readOwed || c.readHolder != nil || c.readHolds != 0 {
 		t.Errorf("INFRA's cursor after the gap read is %s, want it following %s in the store %s at the read's 12, with nothing owed and no holder", c, daemon.URL, rigStateID)
 	}
-	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool {
-		deferred, _ := rig.clock.deferrals()
-		return daemon.served() > 2 || deferred > 0
-	}) {
-		deferred, _ := rig.clock.deferrals()
-		t.Errorf("after the gap read INFRA's daemon served %d reads and the intake deferred %d calls, want 2 and none: the write's wake read the daemon or deferred a call", daemon.served(), deferred)
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > 2 || rig.clock.deferredCalls() > 0 }) {
+		t.Errorf("after the gap read INFRA's daemon served %d reads and the intake deferred %d calls, want 2 and none: the write's wake read the daemon or deferred a call", daemon.served(), rig.clock.deferredCalls())
 	}
 	rig.clock.advance(ReadRetryAfter + time.Second)
-	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > 2 }) {
-		t.Errorf("INFRA's daemon served %d reads a minute after the gap read, want 2: a call the write's wake deferred read it", daemon.served())
-	}
 	if deferred, made := rig.clock.deferrals(); deferred != 0 || made != 0 {
 		t.Errorf("the intake deferred %d calls and made %d of them, want none", deferred, made)
 	}

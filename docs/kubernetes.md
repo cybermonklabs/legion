@@ -2610,17 +2610,8 @@ Roll out the three parts in this order:
 
 After the roll, the intake reads a project's daemon whole only where the events cannot carry the state, for the reasons the `ReadReason` constants name (`packages/envoy/internal/dispatch/legion/whole_read.go`), and no recurring timer reads a daemon.
 A project's whole reads start at least a minute apart.
-The Dispatch README holds the whole rule, in [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake): when a read is owed, which message holds it and for how long, how many messages of the durable's window one project can hold meanwhile, and what a `PUT` or a `DELETE` of the project's Legion setting does to the project's cursor.
-
-The intake logs these lines of the rule, each with the `project`:
-
-- `legion intake: whole read`, at INFO, for each whole read the intake records, with the first reason it was owed for as `reason`, every reason it was made for as `reasons` (for example `reasons=gap,boot`), `ok` and, for a failed read, its `error`.
-
-- `legion intake: a state message goes back to the stream until its project's owed whole read is due`, at INFO, each time the message that holds the owed read goes back to the stream unacknowledged, with the read the message calls for as `reason`, its `delivery` count, its `handBack` count and its `delay`.
-
-- `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed`, at WARN, when a message that went back 10 times is acknowledged with the read still owed.
-
-- `legion intake: the database refuses a state message for good, so it is finished and the project is read whole`, at WARN, with the `sqlstate`, for a message the database refuses for good: a Postgres error of SQLSTATE class 22 or 23, which no retry can write.
+The Dispatch README describes the rule, in [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake): when a read is owed, which message holds it and for how long, how many messages of the durable's window one project can hold meanwhile, what a `PUT` or a `DELETE` of the project's Legion setting does to the project's cursor, and the intake's log lines of the rule, each with the `project`.
+`cursor.readFor`, `resetCursor` and `cursor.reset` (`packages/envoy/internal/dispatch/legion/cursor.go`) hold it in full.
 
 The readings of production on 2026-11-18 were these.
 Production Dispatch (commit `4055c4a5`) had no Legion setting, so step 2 covered no project there, and the take-over of step 3 reads no daemon.
@@ -2655,7 +2646,7 @@ The boot event of that roll forward follows the cursor and carries the same sche
 Only the daemon's own writes queue one.
 After an operator changes an issue's phase, tree or wait, a slot or a claim by SQL, `PUT` the project's Legion setting with its same URL: the `PUT` calls for a whole read of the daemon, which [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake) says when Dispatch makes.
 A whole read of the project that was in flight as the `PUT` landed stands for the `PUT`'s read, and its snapshot can predate the edit.
-Where the project's first `legion intake: whole read` line after the `PUT` is of a read that began before the `PUT`, as the line's time less its `duration` shows, `PUT` the setting once more.
+Where the project's first `legion intake: whole read` line after the `PUT` is of a read that began before the `PUT`, as its `started` earlier than the `updated_at` the `PUT` answers shows, `PUT` the setting once more.
 
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 

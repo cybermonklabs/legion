@@ -290,7 +290,7 @@ func finishWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 	}
 	attributes := []any{"project", project, "reason", owed.reason, "reasons", strings.Join(owed.joined, ","),
 		"stateSeq", logValue(read.stateSeq), "stateId", logValue(read.stateID), "stateRun", logValue(read.stateRun),
-		"bytes", read.bytes, "duration", read.took, "ok", read.failure == nil, "rows", written}
+		"bytes", read.bytes, "duration", read.took, "started", read.started, "ok", read.failure == nil, "rows", written}
 	if read.failure != nil {
 		attributes = append(attributes, "error", read.failure.Error())
 	}

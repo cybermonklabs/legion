@@ -242,10 +242,10 @@ func startingReadHeld(t *testing.T, left time.Duration) (rig *intakeRig, daemon 
 	if c := cursorOf(t, rig.database, "INFRA"); c.lastSeq != nil || c.stateID != nil || c.readOwed || c.readHolder != nil {
 		t.Fatalf("INFRA's cursor after a write of its own URL that found no holder is %s, want it reset: no sequence, no store, nothing owed and no holder", c)
 	}
-	rig.waitFor(5*time.Second, func() bool { deferred, _ := rig.clock.deferrals(); return deferred >= 1 }, func() string {
+	rig.waitFor(5*time.Second, func() bool { return rig.clock.deferredCalls() >= 1 }, func() string {
 		return "the wake of the write of INFRA's own URL deferred no call: it found the starting read due, or held"
 	})
-	if deferred, _ := rig.clock.deferrals(); deferred != 1 {
+	if deferred := rig.clock.deferredCalls(); deferred != 1 {
 		t.Fatalf("the intake deferred %d calls by the write of INFRA's own URL, want the one call of its wake: the take-over found the starting read due", deferred)
 	}
 
@@ -347,9 +347,8 @@ func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutEleve
 				rig.wake <- struct{}{}
 				// A second for the wake to run before the clock moves on, so it finds the starting
 				// read not due.
-				if testwait.Holds(time.Second, 25*time.Millisecond, func() bool { deferred, _ := rig.clock.deferrals(); return deferred > 1 }) {
-					deferred, _ := rig.clock.deferrals()
-					t.Errorf("the intake deferred %d calls by the write before the starting read was due, want the one of startingReadHeld's write: the write's wake deferred a call while the message held the starting read", deferred)
+				if testwait.Holds(time.Second, 25*time.Millisecond, func() bool { return rig.clock.deferredCalls() > 1 }) {
+					t.Errorf("the intake deferred %d calls by the write before the starting read was due, want the one of startingReadHeld's write: the write's wake deferred a call while the message held the starting read", rig.clock.deferredCalls())
 				}
 			}
 			rig.clock.advance(due.Add(time.Second).Sub(rig.clock.now()))
@@ -373,7 +372,7 @@ func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutEleve
 				t.Errorf("INFRA's daemon served %d reads, want the good starting read and the message's %d: a wake read while the message held the starting read",
 					served, stateMaxHolds)
 			}
-			if deferred, _ := rig.clock.deferrals(); deferred != 1 {
+			if deferred := rig.clock.deferredCalls(); deferred != 1 {
 				t.Errorf("the intake deferred %d calls, want the one of startingReadHeld's write: a write while the message held the starting read deferred a call", deferred)
 			}
 		})
@@ -481,7 +480,7 @@ func TestATakeOverWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinut
 		t.Errorf("INFRA's daemon served %d reads, want the good starting read and the message's %d: the take-over's starting point read while the message held the starting read",
 			served, stateMaxHolds-1)
 	}
-	if deferred, _ := rig.clock.deferrals(); deferred != 1 {
+	if deferred := rig.clock.deferredCalls(); deferred != 1 {
 		t.Errorf("the intake deferred %d calls, want the one of startingReadHeld's write: the take-over's starting point deferred a call while the message held the starting read", deferred)
 	}
 }
@@ -510,9 +509,8 @@ func TestATakeOverWhileAMessageHoldsTheStartingReadBeforeItIsDueDefersNoCall(t *
 	if held["streamSeq"] != float64(holder) || held["reason"] != ReadReasonStart || held["handBack"] != float64(2) {
 		t.Fatalf("the take-over's redelivery went back as %v, want the message at stream sequence %d holding the starting read for its second hand-back", held, holder)
 	}
-	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { deferred, _ := rig.clock.deferrals(); return deferred > 1 }) {
-		deferred, _ := rig.clock.deferrals()
-		t.Errorf("the intake deferred %d calls, want the one of startingReadHeld's write: the take-over's starting point deferred a call while the message held the starting read", deferred)
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return rig.clock.deferredCalls() > 1 }) {
+		t.Errorf("the intake deferred %d calls, want the one of startingReadHeld's write: the take-over's starting point deferred a call while the message held the starting read", rig.clock.deferredCalls())
 	}
 	requireStartingReadHeld(t, rig, holder, 2, "the take-over")
 }

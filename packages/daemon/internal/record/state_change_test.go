@@ -253,6 +253,16 @@ func assertMoved(t *testing.T, key string, got moved, want ...record.StateField)
 	return from, to
 }
 
+// slotMoved holds one transaction's state changes of key to one change naming the slot alone
+// (assertMoved), from the index from to the index to, each as its JSON: null for no slot.
+func slotMoved(t *testing.T, key string, got moved, from, to string) {
+	t.Helper()
+	gotOld, gotNew := assertMoved(t, key, got, record.StateFieldSlot)
+	if gotOld[record.StateFieldSlot] != from || gotNew[record.StateFieldSlot] != to {
+		t.Fatalf("the slot change of %s goes from %s to %s, want %s to %s", key, gotOld[record.StateFieldSlot], gotNew[record.StateFieldSlot], from, to)
+	}
+}
+
 // changeIssue is a recorded root of the project in phase p.
 func changeIssue(key string, p phase.Phase) record.Issue {
 	return record.Issue{Key: key, Tree: key, Project: changeProject, Title: key, Phase: p, Generation: 1, Status: "in_progress",
@@ -464,13 +474,6 @@ func TestASlotWriteQueuesOneStateEventNamingTheSlotItMoved(t *testing.T) {
 			}
 		}
 	}
-	slotMoved := func(t *testing.T, key string, got moved, from, to string) {
-		t.Helper()
-		gotOld, gotNew := assertMoved(t, key, got, record.StateFieldSlot)
-		if gotOld[record.StateFieldSlot] != from || gotNew[record.StateFieldSlot] != to {
-			t.Fatalf("the slot change of %s goes from %s to %s, want %s to %s", key, gotOld[record.StateFieldSlot], gotNew[record.StateFieldSlot], from, to)
-		}
-	}
 
 	t.Run("grant", func(t *testing.T) {
 		const key = "LEGION-101"
@@ -607,9 +610,7 @@ func TestATreeReleaseQueuesOneStateEventForEachSlotItFrees(t *testing.T) {
 		before := len(queued(t))
 		got := r.runOver(t, []string{root, member, idle, other}, release(t, r.records, root, member, root), true)
 		for key, index := range map[string]string{member: "1", root: "2"} {
-			if from, to := assertMoved(t, key, got[key], record.StateFieldSlot); from[record.StateFieldSlot] != index || to[record.StateFieldSlot] != "null" {
-				t.Fatalf("the slot change of %s goes from %s to %s, want %s to null", key, from[record.StateFieldSlot], to[record.StateFieldSlot], index)
-			}
+			slotMoved(t, key, got[key], index, "null")
 		}
 		assertMoved(t, idle, got[idle])
 		assertMoved(t, other, got[other])

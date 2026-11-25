@@ -59,18 +59,19 @@ const stateSubject = contracts.LegionNoticeTopicPrefix + "*" + contracts.LegionS
 
 // The durable's flow control. A message is applied in one short transaction, and a message whose
 // apply waits on the database says so every applyLastRetry at the most (InProgress), so
-// stateAckWait only redelivers a message the runner never reached in two minutes. stateMaxAckPending
-// is how many messages may wait for an acknowledgement at once. One project's messages run one at a
-// time, and INFRA's measured rate is about 53,000 messages a day, so 256 messages are about seven
-// minutes of INFRA's traffic. A database that refuses a project's writes holds its messages that
-// long and fills the window, and NATS then delivers no message of any project until those writes go
-// through again. The messages wait in the stream meanwhile: none is lost. A whole read holds its
-// project's runner for one read at the most, since a message that calls for a read inside
-// ReadRetryAfter of the last one makes none (cursor.readFor). Meanwhile the project keeps at most
-// stateMaxWaiting messages waiting on its runner, and judges each message past that beside the
-// runner (judgeCrowded). So a burst of messages, forged or from a bug, or a read the daemon does
-// not answer, holds the part of the window that stateMaxWaiting states, and a message that holds
-// its project's owed read holds one message of the window for as long as stateMaxHolds states.
+// stateAckWait only redelivers a message the runner never reached in two minutes.
+// stateMaxAckPending is how many messages may wait for an acknowledgement at once. One project's
+// messages run one at a time, and INFRA's measured rate is about 53,000 messages a day, so 256
+// messages are about seven minutes of INFRA's traffic. A database that refuses a project's writes
+// holds its messages that long and fills the window, and NATS then delivers no message of any
+// project until those writes go through again. The messages wait in the stream meanwhile: none is
+// lost. A whole read holds its project's runner for one read at the most, since a message that
+// calls for a read inside ReadRetryAfter of the last one makes none (cursor.readFor). Meanwhile the
+// project keeps at most stateMaxWaiting messages waiting on its runner, and judges each message
+// past that beside the runner (judgeCrowded). So a burst of messages, forged or from a bug, or a
+// read the daemon does not answer, holds the part of the window that stateMaxWaiting states, and a
+// message that holds its project's owed read holds one message of the window for as long as
+// stateMaxHolds states.
 const (
 	stateAckWait       = 2 * time.Minute
 	stateMaxAckPending = 256
@@ -84,8 +85,7 @@ const (
 //
 // Three settings hold the rule of an owed read (cursor.readFor), by which the message that holds
 // the read goes back to the stream unacknowledged (delivery.HeldMessage.HandBackAfter) until the
-// read is due, its redelivery makes the read, and the intake lets the message go itself after
-// stateMaxHolds hand-backs.
+// read is due, and its redelivery makes the read.
 //   - MaxDeliver is unset, which the server takes as -1, no limit: a redelivery never counts toward
 //     a drop, so the server never drops the message that holds the read, which would leave the
 //     cursor naming a holder that never comes back. The intake lets the message go itself, after

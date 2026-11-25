@@ -231,15 +231,14 @@ type readAnswer struct {
 	// owe is the reason the call adds to the owed read, and "" where it adds none: no read is owed,
 	// the read is made now, or the cursor owes it for that reason already.
 	owe string
-	// back is how long the message that called goes back to the stream for, unacknowledged, where it
-	// holds the owed read: the time left until the read is due, holdAtLeast at the least and
+	// back is how long the message that called goes back to the stream for, unacknowledged, where
+	// it holds the owed read: the time left until the read is due, holdAtLeast at the least and
 	// ReadRetryAfter at the most. It is 0 where the message is acknowledged. hold is whether the
 	// cursor records the message as the read's holder, which it does where it names none yet, and
-	// where the message takes the hold over from the holder of a read in flight (readFor, row
-	// 8.1). release is whether the cursor stops naming the message as the holder, which it does
-	// once the message has gone back stateMaxHolds times. holds is the hand-backs the cursor counts
-	// once back is recorded, which this one makes, and the hand-backs it counted where release is
-	// set.
+	// where the message takes the hold over from the holder of a read in flight (readFor, row 8.1).
+	// release is whether the cursor stops naming the message as the holder, which it does once the
+	// message has gone back stateMaxHolds times. holds is the hand-backs the cursor counts once
+	// back is recorded, which this one makes, and the hand-backs it counted where release is set.
 	back    time.Duration
 	hold    bool
 	release bool
@@ -294,12 +293,11 @@ func (a readAnswer) of(setting Settings) owedRead {
 //     called for it, then for reason where it is not among them. It is recorded under the first.
 //     Its record clears the reasons the cursor owes now (readAnswer.clears). A reason that a
 //     message adds while the read is in flight stays owed where the read fails. A good read clears
-//     it too, but for the two cases of owedRead.clears, which owe gap or store with it
-//     (cursor.afterRead). A delivery makes one read at the most: where it made one already, the
-//     read is held as one that is not due. The minute counts from the read's start, so a read that
-//     the daemon answers only after the minute, or never answers within RequestTimeout, is due
-//     again as soon as it fails, and its message goes back to the stream rather than reading at
-//     once.
+//     it too, but where cursor.afterRead owes gap or store with it. A delivery makes one read at
+//     the most: where it made one already, the read is held as one that is not due. The minute
+//     counts from the read's start, so a read that the daemon answers only after the minute, or
+//     never answers within RequestTimeout, is due again as soon as it fails, and its message goes
+//     back to the stream rather than reading at once.
 //   - Otherwise the read is owed, and reason joins it once: where it is not among the reasons the
 //     cursor owes it for. The message that holds the owed read goes back to the stream for the
 //     time left until the read is due, holdAtLeast at the least, so that its redelivery makes the

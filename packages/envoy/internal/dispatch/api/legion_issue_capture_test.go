@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
 // a-c-real-state: GET /api/v1/issues/{key}/legion against a real daemon's state. The test reads a
@@ -233,13 +231,7 @@ func TestTheLegionReadMatchesACapturedDaemonState(t *testing.T) {
 	}))
 	t.Cleanup(daemon.Close)
 	nameLegionDaemon(t, handler, project, daemon.URL)
-	setting, err := legion.GetSettings(t.Context(), database.Pool, project)
-	if err != nil {
-		t.Fatalf("read the Legion setting of %s: %v", project, err)
-	}
-	if err := legion.ReadWhole(t.Context(), database.Pool, setting, legion.ReadReasonStart); err != nil {
-		t.Fatalf("read the capture's daemon whole: %v", err)
-	}
+	readLegionWhole(t, database, project)
 	var ok bool
 	var failure *string
 	if err := database.Pool.QueryRow(t.Context(), `

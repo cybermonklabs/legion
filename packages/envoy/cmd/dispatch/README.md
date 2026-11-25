@@ -1878,8 +1878,7 @@ The sever reaches the connection without the bus client's own lock, which a call
 Dispatch shutdown closes that client, which resets each socket that still carries an unconfirmed hand-back, then waits for the finalizer to release the hold through the still-open pool.
 Each intake's client writes with a 5 s deadline (`delivery.IntakeWriteDeadline`, nats.go's `FlusherTimeout`), where nats.go's default is a minute: a write to a frozen link holds nats.go's connection lock, and `Client.Close` and nats.go's ping timer wait for that lock.
 A reconnect attempt through a frozen link holds the lock too, through its dial and its handshake, each bounded by the bus's 5 s connect timeout.
-`Client.Close` waits for that lock behind the write that holds it, then behind each write queued on the lock ahead of the close, then for its own flush of what was queued behind them, and each of those writes lasts up to 5 s while the link takes no byte, the PING that nats.go's ping timer writes every second on Dispatch's clients among them (`delivery.IntakeWriteDeadline`).
-So no fixed time bounds the close: the number of writes queued ahead of it decides it, until a write that sent part of its bytes, or the ping timer finding the connection stale, has nats.go close the socket, after which each write fails at once.
+`Client.Close` waits behind each write queued on that lock, each up to 5 s while the link takes no byte, so no fixed time bounds the close (`delivery.IntakeWriteDeadline` says why).
 The close and the release normally finish inside the shutdown reserve, and after the close the finalizer can spend up to 5 s releasing the hold.
 A process killed before that ends the renewal with its connection, and the standby takes over at the lapse, up to the hold's TTL after its last renewal:
 a hand-back that reached the server after a standby had recreated the durable would move that message's pending entry on the standby's consumer.
@@ -1940,7 +1939,7 @@ It reads a daemon's `GET /legion/v1/state?view=observed` whole, on the same proj
 a boot event that does not follow the cursor, or whose `schemaVersion` is not the one the cursor holds;
 a message past a gap the stream no longer holds, or a message that does not continue the parts held for it;
 a message of another store, so a daemon whose store was replaced is found again;
-a message the database refuses for good (a Postgres error of SQLSTATE class 22 or 23), which the intake logs at WARN on the delivery that acknowledges it, and does not try again in place;
+a message the database refuses for good (a Postgres error of SQLSTATE class 22 or 23), which the intake does not try again in place and logs as `legion intake: the database refuses a state message for good, so it is finished and the project is read whole` at WARN, with the `sqlstate`, on the delivery that acknowledges it;
 and a read owed since one failed.
 The observed view carries only the members the intake decodes, and a daemon of an earlier build ignores the query and serves its whole state, which the intake reads the same way.
 A whole read waits up to 60 s (`legion.RequestTimeout`) and reads at most 64 MiB of the answer (`legion.ResponseLimit`).
@@ -1953,12 +1952,12 @@ The first message that owes the read goes back to the stream unacknowledged, wit
 every later message that joins the owed read is acknowledged.
 The holder's redelivery makes the read whatever store the holder is of, a store the cursor drops included, and a holder whose read is not due yet goes back to the stream again.
 The cursor stops naming a message as the holder after a good read that leaves no read owed (`cursor.afterRead`), after its tenth hand-back (below), when the first message past the cap since a read in flight began takes the hold of the read after it (above), at a write of the setting that names another URL or a delete of the setting (above), and when a process of an earlier build keeps the intake from the starting point the holder calls for (below).
-A delivery that goes back to the stream logs `legion intake: a state message goes back to the stream until its project's owed whole read is due` at INFO as its last line, and logs neither the refusal of a message nor any line of a message acknowledged unapplied.
+A delivery that goes back to the stream logs `legion intake: a state message goes back to the stream until its project's owed whole read is due` at INFO as its last line, with the read the message calls for as `reason`, its `delivery` count, its `handBack` count and its `delay`, and logs neither the refusal of a message nor any line of a message acknowledged unapplied.
 A read that delivery made before it went back logs its own line first (`legion intake: whole read`, below).
 A read that fails sends the holder back until a minute after that read began, 1 s at the least, at most 10 times in all (`stateMaxHolds`).
 The cursor counts these hand-backs (`legion_event_cursors.read_holds`), so a take-over, which creates the durable again and starts the message's own delivery count again, does not start the count again, and neither does a write of the setting's own URL (below).
 The holder's delivery after its tenth hand-back is acknowledged, whatever its read comes to: it makes the read first where the read is due, as each of its deliveries does.
-Where the read was not due, or the read leaves a read owed while the cursor still names that message as the holder, the cursor names no holder from then on, and the intake logs `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed` at WARN (`cursor.readFor`).
+Where the read was not due, or the read leaves a read owed while the cursor still names that message as the holder, the cursor names no holder from then on, and the intake logs `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed` at WARN, with its `handBacks` count (`cursor.readFor`).
 A good read that leaves no read owed clears the holder as every such read does, and that delivery logs no such line.
 A failed read that no message holds waits for the project's next message, boot, settings change or take-over, which makes it once the minute is over: a failed starting read that no message made is one, and so is a read whose message went back 10 times.
 A settings change or a take-over makes no read of a project whose owed read a message holds, the starting read included: it joins that read, which the holder's redelivery makes, and queues nothing.
@@ -1985,7 +1984,7 @@ Meanwhile a message of a project with no starting point applies nothing.
 Where the starting read is due, the message is finished, and where the cursor names it as the holder, the cursor names no holder from then on; where that read is not due yet, the message holds it as any owed read, and its redelivery is judged again (`Intake.applyMessage`, `Intake.startBlocked`).
 The next message, settings write or take-over after that process has left takes the starting point.
 No recurring timer reads a daemon.
-Each whole read the intake records logs `legion intake: whole read` at INFO, with the first reason it was owed for as its `reason`, every reason it joined as its `reasons`, whether it was good as `ok` and, for a failed read, its `error` (`finishWhole`).
+Each whole read the intake records logs `legion intake: whole read` at INFO, with the first reason it was owed for as its `reason`, every reason it joined as its `reasons`, whether it was good as `ok`, the read's start on Dispatch's clock as `started`, the time `last_read_started_at` keeps, and, for a failed read, its `error` (`finishWhole`).
 A read whose setting no longer names the daemon it read when it lands records nothing but its start, and logs `legion intake: the Legion setting changed during a whole read; it is not recorded` at INFO instead; a read that the intake's stop cuts short records only its start too, and logs neither line.
 It stops with the two delivery intakes, under the same 15 s from the signal, before the shutdown closes the database pool.
 
