@@ -11,7 +11,6 @@ import (
 	"go/ast"
 	"go/types"
 	"maps"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -214,19 +213,41 @@ func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
 }
 
 // keyedRouteHandlers is every route declaration whose method register keys (a POST or a PATCH),
-// test hooks included, by "<method> <pattern>", with the handler bodies it names. It is read from
-// the route files' source rather than from a server's own table so that each route's handler
-// comes with it: a handler read at run time is a function value, and what the guards that read
-// it ask is what that function's source runs. Each declaration is a routeDecl literal of package
-// api whose Method, Pattern and Handler fields name an http.Method constant, a pattern and a
-// method expression of the server; a declaration this cannot read fails the test rather than
-// leaving its route out.
+// test hooks included, by "<method> <pattern>", with the handler bodies it names
+// (routeDeclHandlers), held to the routes the package registers: a declaration the source read
+// misses, or a handler it cannot follow, fails the test rather than leaving its route out.
 func keyedRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
+	t.Helper()
+	routes, declarations := routeDeclHandlers(t, graph, keyedMethod)
+	if declarations != len(routeRegistry) {
+		t.Fatalf("the guard read %d route declarations off the source, and the package registers %d", declarations, len(routeRegistry))
+	}
+	for _, name := range slices.Sorted(maps.Keys(routes)) {
+		if len(routes[name]) == 0 {
+			t.Errorf("the guard cannot follow the handler of %s", name)
+		}
+	}
+	if len(routes) == 0 {
+		t.Fatal("the guard reads no POST or PATCH route off the route declarations")
+	}
+	return routes
+}
+
+// routeDeclHandlers is every route declaration of graph's package api whose method keep keeps, by
+// "<method> <pattern>", with the handler bodies it names: none for a handler the graph does not
+// resolve, which its caller judges. It also answers how many declarations it read, of any method,
+// so a caller can hold that to the routes the package registers. It is read from the source
+// rather than from a server's own table so that each route's handler comes with it: a handler
+// read at run time is a function value, and what a guard asks is what that function's source
+// runs. A declaration is a routeDecl literal in a file of package api whose Method, Pattern and
+// Handler fields name an http.Method constant, a pattern and a method expression of the server;
+// one whose method or pattern this cannot read fails the test rather than leaving its route out.
+func routeDeclHandlers(t *testing.T, graph *lockGraph, keep func(verb string) bool) (map[string][]*lockFunction, int) {
 	t.Helper()
 	routes := map[string][]*lockFunction{}
 	declarations := 0
 	for _, source := range graph.sources {
-		if !strings.HasSuffix(filepath.ToSlash(filepath.Dir(source.path)), "internal/dispatch/api") {
+		if source.file.Name.Name != "api" {
 			continue
 		}
 		ast.Inspect(source.file, func(node ast.Node) bool {
@@ -252,7 +273,7 @@ func keyedRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFuncti
 				return false
 			}
 			verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-			if !keyedMethod(verb) {
+			if !keep(verb) {
 				return false
 			}
 			pattern, ok := literalText(fields["Pattern"], "api", graph.constants)
@@ -260,21 +281,11 @@ func keyedRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFuncti
 				t.Errorf("%s: the guard cannot read the pattern of a %s route declaration", source.path, verb)
 				return false
 			}
-			handlers := graph.functionValue(fields["Handler"])
-			if len(handlers) == 0 {
-				t.Errorf("%s: the guard cannot follow the handler of %s %s", source.path, verb, pattern)
-			}
-			routes[verb+" "+pattern] = handlers
+			routes[verb+" "+pattern] = graph.functionValue(fields["Handler"])
 			return false
 		})
 	}
-	if declarations != len(routeRegistry) {
-		t.Fatalf("the guard read %d route declarations off the source, and the package registers %d", declarations, len(routeRegistry))
-	}
-	if len(routes) == 0 {
-		t.Fatal("the guard reads no POST or PATCH route off the route declarations")
-	}
-	return routes
+	return routes, declarations
 }
 
 // decisionBlockChecked reports whether running one of handlers runs the shared check: a call of

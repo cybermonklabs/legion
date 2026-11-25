@@ -272,7 +272,7 @@ func childrenUnder(t *testing.T, declared config.Experiment) []drawnIssue {
 	r.admit(root.Key)
 	issues := []drawnIssue{{key: root.Key}}
 	for _, title := range experimentTitles {
-		child := r.create(asSession, title, map[string]any{"labels": []string{"legion"}, "parent": root.Key})
+		child := r.create(asPerson, title, map[string]any{"labels": []string{"legion"}, "parent": root.Key})
 		r.setStatus(child.Key, "todo")
 		settled(t, r.d, "record the child "+child.Key, func(s api.State) bool {
 			recorded, ok := s.Issues[child.Key]

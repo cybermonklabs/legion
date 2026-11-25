@@ -26,12 +26,14 @@ GATE = gate("envoy_go", "envoy-go", runs=[
         (ENVOY, DATABASE_SKIPS_TEST_PKGS,
          "packages/envoy/scripts/database-skips.test.sh's runs of the counter on each package", {}),
     ]),
-    # The module but the race lane's packages, internal/integration, which the integration
-    # step tests, the text checks, which the text-check job runs, and the architecture-note
-    # and spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck),
-    # which envoy-go-build runs, in one go test -json through database-skips.sh, which counts
-    # the skips of the broker's tree and command (DATABASE_SKIPS_PKGS less DEFAULT_EXCEPT, both
-    # kept by the pattern: hold_counted_in_unit_run()).
+    # The module but the race lane's packages other than those under the broker's tree whose
+    # skips the step counts (the auth service's natscallout runs here), internal/integration,
+    # which the integration step tests, the text checks, which the text-check job runs, and the
+    # architecture-note and spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and
+    # internal/wirecheck), which envoy-go-build runs, in one go test -json through
+    # database-skips.sh, which counts the skips of the broker's tree, its command and the writer
+    # hold's client (DATABASE_SKIPS_PKGS less DEFAULT_EXCEPT, all kept by the pattern:
+    # hold_counted_in_unit_run()).
     # The Run names the packages the step's own --module-except keeps (packages_kept over
     # UNIT_TEST_PATTERN), so it is read from the pattern the step runs rather than claimed
     # beside it. A Run saying more would credit this job with tests other jobs run: the race
@@ -56,11 +58,11 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
     # test of internal/bus that needs a real server image, the auth service's check that the
     # deployed server lets an empty allow list through, which its guard refuses, and the edge
-    # listener's grant and start under its rendered user. The rest
-    # of internal/testnats runs in the unit step; the rest of internal/bus and
-    # internal/cipher/natscallout runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the
-    # race lane's packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry
-    # per step, checks the testnats half alone.
+    # listener's grant and start under its rendered user. The rest of internal/testnats runs in
+    # the unit step; the rest of internal/bus runs in envoy-go-race, and the rest of
+    # internal/cipher/natscallout there and in the unit step above, since UNIT_TEST_PATTERN
+    # leaves the race lane's packages out of the unit step but those whose skips it counts,
+    # and the envoy_go entry of TAG_RUNS, one entry per step, checks the testnats half alone.
     pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
         (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
         (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
