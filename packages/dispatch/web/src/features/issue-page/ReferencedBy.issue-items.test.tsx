@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { GraphEdge, GraphReferences } from "../../api/types";
-import { ReferencedBy } from "./ReferencedBy";
+import { ReferencedBy } from "../refs/ReferencedBy";
 
 // The new page's list of what references a node leaves out what the issue's own asks, comments
 // and messages cite of it, since that page's outline is the issue's conversation (`page`). A

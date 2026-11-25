@@ -1,3 +1,7 @@
+/** it records today's issue page as the server draws it for an issue it seeds through Dispatch,
+ *  open and then closed through the API, so the fixture the new page's inventory row reads is
+ *  the real stack's */
+
 import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";

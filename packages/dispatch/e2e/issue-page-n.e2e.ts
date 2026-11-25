@@ -1,3 +1,7 @@
+/** the rows upload documents and files, name their versions and read the references the server
+ *  indexes, then read back what the server stored; the history's live feed and an opened
+ *  document's live socket carry the server's own frames */
+
 /*
  * Part N of dispatch://INFRA-1196 (dispatch://INFRA-3940): the rows that only the whole new issue
  * page can pass, read with the new page turned on (`withIssuePage`, through `phase` or each row's

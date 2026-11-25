@@ -16,12 +16,12 @@ import {
 import { ApiError, api } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
 import { ArtifactHeader } from "../artifacts/ArtifactHeader";
-import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
-import { NoTooltips } from "../issue-page/NoTooltips";
-import { VersionControl } from "../issue-page/VersionControl";
+import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
+import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
-import { type DocumentToolbar, ProofDocument } from "./ProofDocument";
-import { DocumentRuntime } from "./runtime";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
+import { NoTooltips } from "./NoTooltips";
+import { VersionControl } from "./VersionControl";
 
 /**
  * The name dialog while a version's name is saved (`NameVersionDialog.tsx`), one case per row of

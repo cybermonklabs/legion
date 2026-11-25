@@ -536,14 +536,8 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
   conversation: "This issue holds nothing yet.",
   decisions: "This issue has no decisions yet.",
-  /** What a document's own address says where the issue holds no document or file at that
-   *  address (part N's R2): never the slug the address wrote, and never the old tab's word. */
-  document_missing: "This issue holds no document at this address.",
   /** What the node menu says where its filter leaves none of the issue's files (R3). */
   files_filtered: "No file or document matches this filter.",
-  /** What the opened document's list of its versions says where none of them is named, until
-   *  the reader shows them all (part N's R2): today's version list's words. */
-  no_named_versions: "No named versions yet.",
   /** What a view says where the filter by words (`?q=`) leaves nothing of what it draws: the
    *  issue holds such nodes, and none of them holds those words. */
   no_match: "Nothing here holds these words.",
@@ -700,12 +694,6 @@ export const ANSWER_LINES = joinWords("ANSWER_LINES", {
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
-  /** What the opened document's comparison of two versions says while it reads their text,
-   *  which the reader asked for, when it could not, and of two files that hold the same bytes
-   *  (part N's R2): today's comparison's words. */
-  versions_loading: "Loading versions to compare…",
-  versions_unreadable: "Could not load versions to compare.",
-  versions_same: "The two versions are the same.",
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",
@@ -721,9 +709,6 @@ export const ANSWER_LINES = joinWords("ANSWER_LINES", {
   saving_labels: "Saving labels…",
   saving_release: "Releasing…",
   saving_reopen: "Reopening…",
-  /** What the node menu's Remove says while its removal is out, which today's control draws
-   *  (`DocumentWayBack.tsx`) and the menu marks as the page's own words (part N's R9). */
-  saving_remove: "Removing…",
 } as const);
 
 /**
@@ -1040,9 +1025,6 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   no_repository: "No repository",
   /** What the claim says of a holder the agent registry no longer lists (R11, row four). */
   not_running: "not running",
-  /** What the list of keys says of `t e`, which opens `/steps`, Details at the issue's steps
-   *  where today's page has its Steps tab (part N's R6, `useIssueKeymap.ts`). */
-  open_steps: "Open the issue's steps in Details",
   /** The node menu beside the presets, holding every document and artifact of the issue and
    *  the upload (R3). */
   other_nodes: "Files and documents",
@@ -1129,21 +1111,6 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
    *  them again (the old conversation's handoff card, R19). */
   show_fields: "Show fields",
   hide_fields: "Hide fields",
-  /** The opened document's versions under its editor or picture (part N's R2), today's version
-   *  list's controls: the press that lists every version where the list shows the named ones,
-   *  and back; the comparison of any two versions, the name its region takes before the
-   *  document's own name ("Compare versions for notes.md"), the press that opens it and closes
-   *  it, and its two pickers, "From" and "To", each named after the document as well
-   *  ("Compare notes.md from"). */
-  show_all_versions: "Show all versions",
-  show_named_versions: "Show named versions",
-  compare_versions: "Compare versions",
-  compare_versions_for: "Compare versions for",
-  show_comparison: "Show comparison",
-  hide_comparison: "Hide comparison",
-  compare: "Compare",
-  compare_from: "From",
-  compare_to: "To",
   /** What the claim says of the moment another agent may take an unresponsive holder's issue,
    *  which is its last heartbeat plus the grace the server refuses a take until (R11, row
    *  four). The moment itself follows this word, drawn as a date and a time and never as an
@@ -1341,14 +1308,6 @@ export const FILE_WORDS = joinWords("FILE_WORDS", {
   file: "file",
   image: "image",
   primary: "Primary",
-  /** What the head of a document or file opened in place of the outline says of the version it
-   *  shows, before that version's number, its author and its day: "version 3 · alice · 5 Nov"
-   *  (part N's R2). */
-  version: "version",
-  /** The opened document's list of its versions (part N's R2): its heading, and the name its
-   *  region takes before the document's own name, "Versions for notes.md". */
-  versions: "Versions",
-  versions_for: "Versions for",
 } as const);
 
 /**

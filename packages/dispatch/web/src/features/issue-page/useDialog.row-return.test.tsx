@@ -3,8 +3,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 
-import { KeymapProvider } from "./KeymapProvider";
-import { DIALOG_RETURN_ATTRIBUTE, useDialog } from "./useDialog";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { DIALOG_RETURN_ATTRIBUTE, useDialog } from "../shell/useDialog";
 
 /** The search palette's stand-in: a dialog drawn beside the page, outside every row. */
 function Palette({ onClose }: { onClose: () => void }) {

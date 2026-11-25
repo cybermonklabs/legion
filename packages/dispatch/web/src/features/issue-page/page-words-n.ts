@@ -14,7 +14,57 @@
 import type { PartWords } from "./page-words-parts";
 
 export default {
-  add: {},
+  add: {
+    EMPTY_STATE_LINES: {
+      /** What a document's own address says where the issue holds no document or file at that
+       *  address (part N's R2): never the slug the address wrote, and never the old tab's word. */
+      document_missing: "This issue holds no document at this address.",
+      /** What the opened document's list of its versions says where none of them is named, until
+       *  the reader shows them all (part N's R2): today's version list's words. */
+      no_named_versions: "No named versions yet.",
+    },
+    ANSWER_LINES: {
+      /** What the opened document's comparison of two versions says while it reads their text,
+       *  which the reader asked for, when it could not, and of two files that hold the same bytes
+       *  (part N's R2): today's comparison's words. */
+      versions_loading: "Loading versions to compare…",
+      versions_unreadable: "Could not load versions to compare.",
+      versions_same: "The two versions are the same.",
+      /** What the node menu's Remove says while its removal is out, which today's control draws
+       *  (`DocumentWayBack.tsx`) and the menu marks as the page's own words (part N's R9). */
+      saving_remove: "Removing…",
+    },
+    CONTROL_LABELS: {
+      /** What the list of keys says of `t e`, which opens `/steps`, Details at the issue's steps
+       *  where today's page has its Steps tab (part N's R6, `useIssueKeymap.ts`). */
+      open_steps: "Open the issue's steps in Details",
+      /** The opened document's versions under its editor or picture (part N's R2), today's version
+       *  list's controls: the press that lists every version where the list shows the named ones,
+       *  and back; the comparison of any two versions, the name its region takes before the
+       *  document's own name ("Compare versions for notes.md"), the press that opens it and closes
+       *  it, and its two pickers, "From" and "To", each named after the document as well
+       *  ("Compare notes.md from"). */
+      show_all_versions: "Show all versions",
+      show_named_versions: "Show named versions",
+      compare_versions: "Compare versions",
+      compare_versions_for: "Compare versions for",
+      show_comparison: "Show comparison",
+      hide_comparison: "Hide comparison",
+      compare: "Compare",
+      compare_from: "From",
+      compare_to: "To",
+    },
+    FILE_WORDS: {
+      /** What the head of a document or file opened in place of the outline says of the version it
+       *  shows, before that version's number, its author and its day: "version 3 · alice · 5 Nov"
+       *  (part N's R2). */
+      version: "version",
+      /** The opened document's list of its versions (part N's R2): its heading, and the name its
+       *  region takes before the document's own name, "Versions for notes.md". */
+      versions: "Versions",
+      versions_for: "Versions for",
+    },
+  },
   unasked: [],
   answers: [],
 } as const satisfies PartWords;
