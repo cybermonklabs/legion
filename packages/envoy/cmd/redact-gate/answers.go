@@ -436,15 +436,7 @@ func (a *answerReader) recordOf(recorder *ast.CallExpr, parents []ast.Node) type
 		return nil
 	}
 	local := a.info.Uses[id]
-	var body ast.Node
-	for i := len(parents) - 1; i >= 0 && body == nil; i-- {
-		switch p := parents[i].(type) {
-		case *ast.FuncDecl:
-			body = p
-		case *ast.FuncLit:
-			body = p
-		}
-	}
+	body := enclosingBody(parents)
 	if local == nil || body == nil {
 		return nil
 	}
