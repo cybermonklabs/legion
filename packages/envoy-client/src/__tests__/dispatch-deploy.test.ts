@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -37,7 +37,7 @@ async function cli(argv: readonly string[]) {
   return { code, output, requests, ledger: join(root, "sessions", "deploy-cli", "results.jsonl") };
 }
 
-test("dispatch deploy dry-run checks the same arguments and makes no request or ledger entry", async () => {
+test("a valid deploy dry-run writes nothing and an invalid one journals its refusal", async () => {
   const result = await cli([...record, "--dry-run"]);
   expect(result.code, result.output).toBe(0);
   expect(JSON.parse(result.output)).toEqual({ repo: deploy.repo, program: deploy.program, commit });
@@ -47,7 +47,9 @@ test("dispatch deploy dry-run checks the same arguments and makes no request or 
     const refused = await cli([...argv, "--dry-run"]);
     expect(refused.code, refused.output).toBe(2);
     expect(refused.requests).toEqual([]);
-    expect(existsSync(refused.ledger)).toBe(false);
+    const entries = readFileSync(refused.ledger, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ tool: "dispatch_deploy", error: refused.output.trimEnd() });
   }
 });
 
