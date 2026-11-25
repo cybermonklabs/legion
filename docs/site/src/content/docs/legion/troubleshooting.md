@@ -212,6 +212,17 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   - `Succeeded without checking the capability list (its legion CLI predates the check)`: the image's
     `legion` is older than this daemon's capability check. Build the image from this daemon's
     commit.
+  - `… does not take --session-id (omp-session-id=absent …)`, `… could not read whether its Oh My
+    Pi … takes --session-id …` or `… its legion CLI predates the omp-session-id mark …`:
+    `runtime.kubernetes.agent_secrets.exchange_audience` is set, so the daemon starts each new Oh My
+    Pi role with `--session-id <id>`, and the image's Oh My Pi does not take that flag, or nothing
+    shows that it does. The third message comes from an image whose `legion` speaks this daemon's
+    contract but prints no `omp-session-id` mark. An image whose `legion` is older than this release
+    is refused for its daemon contract instead (the first cause above). Use a worker image with an
+    Oh My Pi from the cybermonklabs/oh-my-pi release `v18.18.6-sami.20261117-074351` or a later
+    one, and a `legion` from this daemon's release or a later one, or unset `exchange_audience`.
+    The Oh My Pi that this release's `.omp-pin` names is that release or a later one, so an image
+    built on that pin passes.
   - `… refused role <role>'s Oh My Pi overlays: <file> cannot be read: …` (or `Oh My Pi refuses
     <file>: error: …`, quoting Oh My Pi's own error): a file `role_config_files` names for that
     role is not in the mount you gave it, or Oh My Pi cannot parse it. Add the key to the ConfigMap
@@ -641,7 +652,7 @@ failure under the cause word `provider_error`, with the same sentence as its `de
 **A turn that was not the take's** — a phase reminder the plugin starts itself, an Envoy message, a
 background job's result — names no task in the plugin's turn-outcome report, so the daemon judges
 it from that report alone, by the HTTP status in its provider error (a plugin from before daemon
-API contract 274 says the same with `unprompted` and `httpStatus`). The same rule holds: a status
+API contract 291 says the same with `unprompted` and `httpStatus`). The same rule holds: a status
 that cannot clear fails the claim at once, with `why` reading
 `a provider error that cannot clear ended a turn of this claim's agent that ran none of the daemon's tasks: <cause>`,
 holds the issue under the cause word `provider_error`, and so ends the plugin's reminders. Any
@@ -1702,7 +1713,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   delivery of the daemon's own tells its agent what the relaunch ended`): a numbered task of
   origin `notice`, whose delivery id starts `relaunch:`, which the worker takes and which the
   report naming its number finishes as any task, or the end of its turn for a worker whose plugin
-  is below contract 274 and names no task in its reports. A newer task replaces
+  is below contract 291 and names no task in its reports. A newer task replaces
   it while no take of it is accepted, and carries the sentence in front of itself instead. The
   same task is given when the claim's held task is dropped rather than taken: the issue left the
   task's phase, the task is an ask an older daemon queued for an update round, or a root

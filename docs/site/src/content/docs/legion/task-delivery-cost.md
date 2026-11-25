@@ -262,7 +262,7 @@ So each figure that names a task names its claim too.
   - `report` is a worker's report of the task's turn, which named the task.
 
   - `end-frame` is the end of the task's turn, when no report named the task in time.
-    Only a worker whose plugin takes no task, a contract below 274 (`supervise.TaskTakeContract`), has its task finished this way: such a worker names no task in its report.
+    Only a worker whose plugin takes no task, a contract below 291 (`supervise.TaskTakeContract`), has its task finished this way: such a worker names no task in its report.
     A current worker's task finishes only by the report that names it.
 
 - `charges by wait` is the number of charges against the workers' prompt budget, by wait.

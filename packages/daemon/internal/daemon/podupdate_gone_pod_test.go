@@ -257,7 +257,7 @@ func TestARoundOverAGonePodThatLostWorkWritesOnce(t *testing.T) {
 // daemon's first sweep ends the round on it.
 func TestARoundOverAGonePodIsEndedAgainAfterARestart(t *testing.T) {
 	t.Parallel()
-	const overAPodInItsPlace = "supervise: the pod this issue's update round was opened over is gone; the round is over"
+	const overAPodInItsPlace = podWentOverLine
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig, ends := newPodUpdateRigCountingEnds(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -393,12 +393,14 @@ func newPodUpdateRigCountingEnds(t *testing.T, roles ...podUpdateRole) (*podUpda
 
 // podUpdateEndLines is the line the sweep logs as it ends a round, for each way a round ends: its
 // own replacement, its pod gone with another pod recorded in its place, its pod read gone with
-// every member answered, and its pod gone with a member that had not answered.
+// every member answered, its pod gone with a member that had not answered and ran a worker in it,
+// and its pod gone where each member that had not answered ran no worker in it.
 var podUpdateEndLines = []string{
 	podUpdateReplacedLine,
-	"supervise: the pod this issue's update round was opened over is gone; the round is over",
-	"supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over",
-	"supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
+	podWentOverLine,
+	podNotThereOverLine,
+	podWentLostLine,
+	podWentNoWorkerLine,
 }
 
 // endsLogged is how many times the sweep logged the end of round on the rig's issue, by any of

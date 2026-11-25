@@ -596,17 +596,17 @@ func valueStripCases() map[string]valueStripCase {
 			// A row of the held list whose word no row of the table declares.
 			undeclaredState: State{Admission: Admission{Held: []HeldIssue{{Issue: "SHAPES-4", Reason: record.HeldReason(undeclaredValue)}}}},
 		},
-		// A pod recording 178 and 274 is served LEGION-214's `never_reconnected` as
+		// A pod recording 178 and 291 is served LEGION-214's `never_reconnected` as
 		// `never_registered`, in its architect's `failure.cause` and its implementer's
 		// `pendingCause`: the word arrived at supervise.TaskTakeContract, and the pod's 178
 		// process parses both with an enum of the seven causes before it. The failure record
 		// stays, with the sentence and the moment every contract from 75 reads.
 		//
-		// The pod's 274 claim is in no pod's reckoning (podContracts counts none from
+		// The pod's 291 claim is in no pod's reckoning (podContracts counts none from
 		// shapedAnswersContract up, since every such build states its contract in the header), so
-		// the mixed pod reads as one at 178 and a pod at 274 alone is served this daemon's own
+		// the mixed pod reads as one at 178 and a pod at 291 alone is served this daemon's own
 		// body. That is also why the case names no value that arrived with the field: the field
-		// arrived at recordFieldsContract, and a pod recording a contract below it beside 274
+		// arrived at recordFieldsContract, and a pod recording a contract below it beside 291
 		// reads as a pod below it alone, which the band of that contract serves no cause at all.
 		droppedFailureCause: {
 			state: narrowingState, low: pauseContract, high: supervise.TaskTakeContract,

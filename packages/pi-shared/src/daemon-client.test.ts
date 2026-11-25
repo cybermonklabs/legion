@@ -2247,7 +2247,7 @@ test("a field of an answer schema the declared read set does not name is optiona
 
   // The fields that stay required whether or not the read set names them are the
   // discriminators, exempted above by what the union itself declares: a pause actor's `kind`, a
-  // locator's `runtime` and a take answer's `outcome` (contract 274). Were that reading to stop
+  // locator's `runtime` and a take answer's `outcome` (contract 291). Were that reading to stop
   // working the list would empty, and the case would hold nothing.
   const discriminators = fields
     .filter((field) => field.discriminator)

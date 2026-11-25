@@ -247,7 +247,7 @@ function refusedWith(errorStatus?: number): AgentEndEvent {
 // the report's provider error, and never read out of the words: a refusal whose message names a
 // status but whose message carries no `errorStatus` goes with none, as does a number that is no
 // HTTP status. The status rides in `providerError` alone: this plugin sends no `httpStatus`, the
-// field of a plugin from before the task's number, below daemon API contract 274
+// field of a plugin from before the task's number, below daemon API contract 291
 // (dispatch://INFRA-4508).
 test("a refused turn's provider error carries the status the host recorded, and only that", async () => {
   const { report, posted } = rig();

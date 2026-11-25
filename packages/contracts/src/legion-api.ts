@@ -211,7 +211,7 @@ const legionPacedWake = {
  * enum below is strict: a cause this list does not name refuses the whole state body at every
  * plugin that reads it.
  *
- * `never_reconnected` is the eighth word, which contract 274 added: the shim of a live process
+ * `never_reconnected` is the eighth word, which contract 291 added: the shim of a live process
  * never said hello again within the reconnect deadline, after a daemon start restored its claim
  * or after its connection closed over a pending task, and the relaunches that followed ran out.
  * The `held` and `worker-died` notices carry it raw, as the claim holds it, whatever plugin reads
@@ -231,9 +231,9 @@ export const LEGION_FAILURE_CAUSES = [
 
 /** The one word the site that failed a claim chose (`supervise.FailureCause`). A claim view
  * carries it twice over: in `failure.cause`, why the claim failed, and in `pendingCause`, what
- * failed the process whose relaunch is in flight. A caller below contract 274, the contract its
+ * failed the process whose relaunch is in flight. A caller below contract 291, the contract its
  * plugin states, else the lowest its pod's claims record, is served `never_registered` in both
- * where the daemon holds `never_reconnected`, the word contract 274 added (the daemon's value
+ * where the daemon holds `never_reconnected`, the word contract 291 added (the daemon's value
  * strip `withoutNeverReconnected` in `internal/api/shaping.go`), since its enum names no such word
  * and would refuse the whole body for it. */
 const legionFailureCause = z.enum(LEGION_FAILURE_CAUSES);
@@ -1155,6 +1155,22 @@ const legionAgentSecretsLoginView = z.object({
   state: z.string().optional(),
 });
 
+/** `api.DispatchCredentialView` — the daemon's Dispatch credential under `dispatch_token_broker`
+ * (contract 275): `session`, the session its own Dispatch calls run under
+ * (`legion-daemon:<PROJECT>`); `transitionLaunches`, the launches since the daemon's boot that
+ * carried the transition token of `dispatch_token_transition_file`, and `lastTransitionLaunchAt`,
+ * when the latest of them was sent, null before the first; and `liveLaunchesWithDispatchToken`,
+ * the live launches whose start carried a Dispatch token, whichever daemon started them. A
+ * deployment removes `dispatch_token_transition_file` once the last is 0. Never a token. No plugin
+ * code reads a field of it (`LEGION_ANSWER_READS` names none), so each is optional, and a value
+ * that is present is still held to its type. */
+const legionDispatchCredentialView = z.object({
+  session: nonEmptyString.optional(),
+  transitionLaunches: z.number().int().nonnegative().optional(),
+  lastTransitionLaunchAt: timestamp.nullable().optional(),
+  liveLaunchesWithDispatchToken: z.number().int().nonnegative().optional(),
+});
+
 /** `api.CapabilityState` — one row of the deployment's capability report
  * (`capabilities.Deployment.Report`), in the table's order: `present`, `unchecked` (no probe has
  * checked an image row, or no session has reported a live row), `withheld` (the issue that withholds it, cited in
@@ -1454,7 +1470,7 @@ const legionPaused = z.object({
  * is served the count. The two strips compose on one body: a caller below 53 is below 73 too
  * and is served neither key. `unseenTaskValues` is every claim whose task value nobody reported
  * seeing for a whole first bound, in claim order, never null, empty while every owed value was
- * seen (contract 274, `supervise.TaskTakeContract`); it is optional for the same reason as the two
+ * seen (contract 291, `supervise.TaskTakeContract`); it is optional for the same reason as the two
  * above, since the route strips it for a caller below that contract, read the same way
  * (`api.stateFor`, `withoutUnseenTaskValues`). `contract` is the mark of the narrowing, the two
  * contract numbers the daemon's own log line names (contract 75), optional for the same reason
@@ -1475,7 +1491,11 @@ const legionPaused = z.object({
  * listed (contract 228). The daemon writes it on every body, its two lists empty while nothing is
  * open, and it is optional for the reason `wakesWaiting` is: the route strips it for a caller
  * below 228, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
- * 228 refuses the key whether its lists are empty or not. */
+ * 228 refuses the key whether its lists are empty or not.
+ * `dispatchCredential` is the daemon's Dispatch credential and the two counts of the Dispatch
+ * tokens its launches hand out, written only under `dispatch_token_broker` (contract 275); the
+ * route strips it for a caller below 275, read the same way (`api.stateFor`,
+ * `withoutDispatchCredential`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
@@ -1491,6 +1511,7 @@ export const LegionStateResponse = z.object({
   lastPause: legionEndedPause.optional(),
   controllerLocator: legionControllerLocator.optional(),
   agentSecretsLogin: legionAgentSecretsLoginView.optional(),
+  dispatchCredential: legionDispatchCredentialView.optional(),
   capabilities: z.array(legionCapabilityState).optional(),
   repositories: legionRepositories.optional(),
   settings: legionSettings.optional(),
@@ -1549,7 +1570,7 @@ export type LegionHealth = z.output<typeof LegionHealthResponse>;
  * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
  * `task` and `finished` are what `POST /legion/v1/claims/task` answers (`LegionTaskResponse`),
  * read once the registration is recorded, so the worker holds its claim's value before its ready
- * (contract 274). A caller below 274 is served the answer without either key
+ * (contract 291). A caller below 291 is served the answer without either key
  * (`withoutTaskReading` in `internal/api/shaping.go`). */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
@@ -1613,14 +1634,14 @@ const legionProviderError = z.strictObject({
  * provider said about a refusal, and a clean turn carries none. `task` is the number of the take
  * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
  * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
- * the wait before its value is written again (contract 274). `held` is the number of the accepted
+ * the wait before its value is written again (contract 291). `held` is the number of the accepted
  * take whose text had not run when this turn ended — the producer was answered that take during
  * the turn, or began the turn with its text and the agent never took it — absent for none: this
  * turn was not that take's, which puts the take back to await its own turn even where the daemon
  * has lost its count of the process's turns (a daemon restarted under the process). It is
  * optional: a report without it is read as before, and none is refused for lacking it.
  *
- * `httpStatus` and `unprompted` are how a plugin from before the task's number (below contract 274)
+ * `httpStatus` and `unprompted` are how a plugin from before the task's number (below contract 291)
  * says what a current plugin says with `providerError` and with naming no `task`.
  * `httpStatus` is the HTTP status the provider refused the turn with, where the producer's
  * provider library gives one (Oh My Pi's `errorStatus` on the refused assistant message, Claude
@@ -1718,20 +1739,20 @@ function eitherCaller<Fields extends z.ZodRawShape>(fields: Fields) {
 const taskValueFields = { generation: z.number().int().positive(), ...legionTaskValue.shape };
 
 /** `claim.TaskRequest`, the body of `POST /legion/v1/claims/task`: a worker reading its claim's
- * value, at a new epoch of its relay or when it gains its role again (contract 274). */
+ * value, at a new epoch of its relay or when it gains its role again (contract 291). */
 export const LegionTaskRequest = eitherCaller({ generation: z.number().int().positive() });
 
 export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 274). */
+ * finished, 0 for none (contract 291). */
 export const LegionTaskResponse = z.object(taskReadingFields);
 
 export type LegionTask = z.output<typeof LegionTaskResponse>;
 
 /** `claim.TaskSeenRequest`, the body of `POST /legion/v1/claims/task-seen`, answered 204: the
- * worker reporting the value it was handed, whether or not its host is idle (contract 274). */
+ * worker reporting the value it was handed, whether or not its host is idle (contract 291). */
 export const LegionTaskSeenRequest = eitherCaller(taskValueFields);
 
 export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
@@ -1741,7 +1762,7 @@ export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
  * failure that carries no HTTP status, no answer in 5 minutes included, and a 502, 503 or 504
  * that names no `code` — is sent again unchanged (`@legion/pi-shared/daemon-client`), and a
  * take of a number already accepted and not finished is answered the same text again, before its
- * turn starts or after (contract 274). */
+ * turn starts or after (contract 291). */
 export const LegionTakeRequest = eitherCaller(taskValueFields);
 
 export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
@@ -1753,7 +1774,7 @@ export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
  * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
  * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `session-not-held`,
  * `adoption`, `project-paused`), since a worker acts on none of them by name and a hold a later
- * daemon adds must not refuse the answer (contract 274). */
+ * daemon adds must not refuse the answer (contract 291). */
 export const LegionTakeResponse = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
   z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),
@@ -2732,7 +2753,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "secret",
     "promptAgents",
     // The take holds the claim's value and its finished number from the registration
-    // (contract 274), as it holds what a read of `claims/task` answers.
+    // (contract 291), as it holds what a read of `claims/task` answers.
     "task",
     "task.number",
     "task.epoch",
@@ -2741,7 +2762,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   ],
   // `task-take.ts` holds the value a read answers and the number of the task the claim last
   // finished, and runs the text of an accepted take or logs the hold a refused one met
-  // (contract 274).
+  // (contract 291).
   LegionTaskResponse: ["task", "task.number", "task.epoch", "task.revision", "finished"],
   LegionTakeResponse: ["|0.text", "|1.hold"],
   // `controller-session.ts` checks the controller's claim token, mints every controller grant

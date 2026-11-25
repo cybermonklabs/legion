@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,11 +154,13 @@ type sessionRelay interface {
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
 	consumers *bus.SessionConsumers
-	// stream is the client whose read of the deployed stream's subjects decides both which
-	// topics /v1/interests/subscribe stores (splitUncapturedTopics) and which stored topics a
-	// consumer's filter carries (sessionConsumerFilter), so a topic a registration stores is one
-	// its consumer filters on. main gives it the listener's own client. nil judges the subjects
-	// this build compiles (bus.Client.DeployedStreamCaptures), which only a test's listener does.
+	// stream is the client whose verdict decides which topics /v1/interests/subscribe adds to a
+	// session's row (splitUncapturedTopics, bus.Client.ReachesNoSession): every topic but one
+	// neither the deployed stream, as the client last read its subjects, nor this build captures.
+	// A consumer's filter does not read it: the filter carries every topic of the row whatever the
+	// deployed stream captures (sessionConsumerFilter), so a narrowing of the stream takes no
+	// topic out of it. main gives it the listener's own client. nil judges the subjects this build
+	// compiles, which only a test's listener does.
 	stream *bus.Client
 	logger *logging.Logger
 	// relay hears each registration that records consumer delivery, and at the edge each role claim
@@ -318,17 +322,48 @@ func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
 // slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a
 // start they lowered to a resume record or clamped from past the stream's end to its first
 // sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
-// whose read of the deployed stream's subjects both a registration's stored topics and every
-// consumer filter are judged on (sessionDelivery.stream). options are the connection's own beside
-// its name: in edge mode, the listener's inbox prefix (edgeGrant.connectOptions).
+// whose verdict decides which requested topics a registration adds to the session's row
+// (sessionDelivery.stream); no consumer filter is judged on it (sessionConsumerFilter). options
+// are the connection's own beside its name: in edge mode, the listener's inbox prefix
+// (edgeGrant.connectOptions), and, from main's start, the start's credential wait
+// (startSessionDelivery, natsStart.option).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
-// the whole start's: main ends the process with it, as it does for the live topics lane.
+// the whole start's: main ends the process with it, as it does for the live topics lane. main
+// opens it through startSessionDelivery, as a connect of the start, so a refusal of the
+// credential, as a hub that has yet to reload a new nkey on every server makes, is waited out
+// under the start's bound before it fails; any other failure ends the start as before.
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, options ...bus.ConnectOption) (*sessionDelivery, error) {
 	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), options...)
 	if err != nil {
 		return nil, err
 	}
+	// A change of a consumer's filter that drops a subject the new filter does not contain, while
+	// the stream holds messages on it from the consumer's position on, passes them over
+	// (bus.SessionConsumers.SetNarrowed): a topic of the row the filter now leaves out, which an
+	// earlier build's filter carried or a later registration turned into the fifth kind. Those
+	// messages were counted for the session at their publish, so the loss is named here, at every
+	// change that makes it (leftOutByNarrowing), a restart's once its delete landed and before its
+	// create: the dropped subjects (topics), the messages on each (pending_by_topic), and their sum
+	// (pending_passed_over). Each count is read on its subject just before the change, an
+	// observation that a message stored on the subject or delivered from it between the read and
+	// the change makes differ from the real loss by one. A restart whose delete went unanswered
+	// and whose read back of the consumer failed too reports the loss with delete_confirmed false:
+	// the delete may or may not have made it. A create where no consumer stands counts nothing,
+	// since nothing records the filter of the one it replaces (SetNarrowed states the bound).
+	consumers.SetNarrowed(func(sessionID string, passedOver map[string]uint64, confirmed bool) {
+		topics := slices.Sorted(maps.Keys(passedOver))
+		var sum uint64
+		for _, pending := range passedOver {
+			sum += pending
+		}
+		attrs := []slog.Attr{slog.String("session_id", sessionID), slog.Any("topics", topics),
+			slog.String("from", leftOutByNarrowing), slog.Any("pending_by_topic", passedOver), slog.Uint64("pending_passed_over", sum)}
+		if !confirmed {
+			attrs = append(attrs, slog.Bool("delete_confirmed", false))
+		}
+		logger.Warn(filterLeftOutLine, attrs...)
+	})
 	// Logged here rather than where it was derived: this is where the first consumer that
 	// carries it becomes possible, so a listener that reaches this line has consumers to carry
 	// it and one whose connection failed logs no threshold at all.
@@ -803,7 +838,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.Sub
 		startSeq = *resume.Seq + 1
 	}
 	unlock := m.locks.lock(body.SessionID)
-	start, err := m.consumers.Ensure(ctx, body.SessionID, m.sessionConsumerFilter(body.SessionID, topics), startSeq)
+	start, err := m.consumers.Ensure(ctx, body.SessionID, sessionConsumerFilter(body.SessionID, topics), startSeq)
 	if err != nil {
 		// A call the server answered - the grant it may not make, the stream's consumer cap, a
 		// consumer it refused - set no filter, and the registration settles nothing for it: a
@@ -1117,86 +1152,413 @@ func (l *sessionLocks) releaser(sessionID string, held *sessionLock) func() {
 	}
 }
 
-// sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject and
-// every one of topics the deployed stream stores, as m.stream last read its subjects
-// (bus.Client.DeployedStreamCaptures), a team topic among them. Those are the subjects
-// /v1/interests/subscribe judges a registration's topics on (m.splitUncapturedTopics), so a
-// topic only a newer build's subjects capture, which this build stores on the session's row
-// while the two builds run, is in the filter too, and a message stored on it is delivered. A
-// Legion controller's notice lane (notifications.legion.<project>.controller) is one of those
-// topics while the session holds that project's controller role, and this filter is the whole of
-// how it now reaches the controller: the lane's live core subscription, which handed the session
-// only what was published while it was subscribed, went with the rest of the core receive path
-// (INFRA-771), so a notice published while the controller was away is delivered from the stream
-// when it returns. A topic the stream does not store reaches the session on no path of its own: a
-// role lane reaches its holder as a forward on the holder's agent subject, and a topic an earlier
-// build's row still names, which /v1/interests/subscribe drops from a registration with a
-// warning now, reaches nothing.
-// SessionConsumers reduces the list to filters that do not overlap.
+// sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject in the
+// old form (contracts.LegacyAgentSubject), and every one of topics, the topics of the session's
+// interest row, whatever the deployed stream captures. It reads no subjects of the deployed
+// stream, so every build of the filter - a registration's (consumerFor), each rebuild from the
+// stored row (storedRowFilter: storedFilterStep, sessionRelays.storedFilter, registeredTarget)
+// and both passes of a fenced write - builds the same filter from the same row, and a narrowing of
+// the stream, a hub move's quiesce or an operator's edit, takes no topic out of it. nats-server
+// takes a filter subject the stream does not capture, on a create and on an update, and delivers
+// on it once the stream captures it again, so a message stored on a topic of the row after a
+// narrowing ends reaches the session (internal/bus's
+// TestASessionConsumerKeepsANarrowedFilterSubjectOnAThreeCopyStream). A topic only a newer
+// build's subjects capture, which this build stores on the session's row while the two builds
+// run, is in the filter too, and a topic an earlier build's row left that no subject captures
+// enters it and matches nothing stored. A Legion controller's notice lane
+// (notifications.legion.<project>.controller) is one of the row's topics while the session holds
+// that project's controller role, and this filter is the whole of how it reaches the controller,
+// so a notice published while the controller was away is delivered from the stream when it
+// returns. SessionConsumers reduces the list to filters that do not overlap.
 //
-// A topic the server would refuse as a filter subject (bus.CheckFilterSubject: an empty token, as
-// in a GitHub topic that spells a repository name with a dot, or a `>` before the last token) is
-// left out, though the row stores it: with it in the list the server refuses the whole call and
-// the session gets no consumer at all, and no message can reach such a subject anyway.
-func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []string) []string {
-	filter := make([]string, 0, len(topics)+1)
-	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
-	for _, topic := range topics {
-		if filterTakes(m.stream, topic) {
-			filter = append(filter, topic)
-		}
-	}
+// These kinds of topic are left out, though the row may store them:
+//
+//   - a topic the server would refuse as a filter subject (bus.CheckFilterSubject: an empty token,
+//     as in a GitHub topic that spells a repository name with a dot, or a `>` before the last
+//     token): with it in the list the server refuses the whole call and the session gets no
+//     consumer at all, and no message can reach such a subject anyway;
+//   - a role lane or the exception lane of one (bus.RoleLane): the stream never stores either, and
+//     a role message reaches its holder as a forward on the holder's agent subject;
+//   - a topic with a `*` or `>` token that reaches a private stream subject other than the
+//     session's own (wildcardReachesAnotherSession), such as notifications.> or
+//     notifications.agent.*.<another session>, which would hand the session another's messages. A
+//     registration never stores one (store.MergedTopics), but an earlier build's row can still
+//     hold one until a write of the row drops it. A literal topic is never of this kind, so a
+//     controller notice lane the session holds stays;
+//   - a topic that does not begin with the literal bus.NotificationTopicPrefix: a literal one
+//     matches nothing the stream stores, and one with a wildcard first token, such as
+//     *.team.foo, which matches notifications.team.foo too, would merge with a notification topic
+//     it overlaps (notifications.team.*) into a filter over every subject;
+//   - every wildcard topic that fed a filter of the reduction of the rest
+//     (bus.SessionConsumerReduction) that reaches another session's private subjects
+//     (leaveOutLeakingMerges): the reduction replaces two overlapping filters neither contains with
+//     their common prefix and `>`, so two wildcards that each pass the private rule alone, such as
+//     notifications.envoy.exceptions.foo.* and notifications.envoy.exceptions.*.bar, which an
+//     earlier build's row may hold, would reduce to notifications.envoy.exceptions.>.
+//
+// The last two kinds are no topic the session can follow as its row spells it, so none of them
+// leaves silently: sessionFilter returns each with what made it go (filterLeftOut), a
+// registration keeps it out of the row it stores and names it in its answer and a WARN line
+// (planWithoutLeftOut, subscribeHandler), a rebuild from a stored row an earlier build wrote
+// logs the same line (storedRowFilter), a publish counts no session as a recipient through such a
+// topic of a row or a known-session record an earlier build stored (recipientCounts), and the
+// durable path skips such a session for a message it matches only through one, with the same line
+// once per session and topic in fanoutLeftOutLogWindow (skipLeftOutInterest).
+func sessionConsumerFilter(sessionID string, topics []string) []string {
+	filter, _ := sessionFilter(sessionID, topics)
 	return filter
 }
 
-// filterTakes reports whether a session consumer's filter can hold topic: the deployed stream
-// stores it, as stream last read its subjects (bus.Client.DeployedStreamCaptures, which a nil
-// stream answers from the subjects this build compiles), and the server takes it as a filter
-// subject (bus.CheckFilterSubject). sessionConsumerFilter says why each half is there.
-func filterTakes(stream *bus.Client, topic string) bool {
-	return stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil
+// sessionFilter is sessionConsumerFilter of topics, and the topics of topics it leaves out by its
+// fourth and fifth kinds, each with what made it go: those outside bus.NotificationTopicPrefix in
+// the order of topics, then those leaveOutLeakingMerges leaves out, in the order it finds them.
+func sessionFilter(sessionID string, topics []string) ([]string, []filterLeftOut) {
+	filter := make([]string, 0, len(topics)+1)
+	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
+	var leftOut []filterLeftOut
+	for _, topic := range topics {
+		if bus.CheckFilterSubject(topic) != nil || bus.RoleLane(topic) || wildcardReachesAnotherSession(sessionID, topic) {
+			continue
+		}
+		if !strings.HasPrefix(topic, bus.NotificationTopicPrefix) {
+			leftOut = append(leftOut, filterLeftOut{topic: topic})
+			continue
+		}
+		filter = append(filter, topic)
+	}
+	filter, merges := leaveOutLeakingMerges(sessionID, filter)
+	return filter, append(leftOut, merges...)
+}
+
+// wildcardReachesAnotherSession reports whether topic, a topic of sessionID's interest row, has a
+// `*` or `>` token and reaches a private stream subject that is not the session's own
+// (bus.ReachesPrivateStreamSubject, read with no roles). The session's own agent subject in the
+// new form under a wildcard project (notifications.agent.*.<session>) is its own and does not. A
+// literal topic never does here: the rule read with no roles counts a controller notice lane as
+// private whatever the session holds, and the row keeps such a lane only while its claim names the
+// session (store.MergedTopics), which is the rule's own reading with the session's roles.
+func wildcardReachesAnotherSession(sessionID, topic string) bool {
+	return hasWildcardToken(topic) && bus.ReachesPrivateStreamSubject(sessionID, topic, nil)
+}
+
+// hasWildcardToken reports whether topic has a `*` or `>` token.
+func hasWildcardToken(topic string) bool {
+	tokens := strings.Split(topic, ".")
+	return slices.Contains(tokens, "*") || slices.Contains(tokens, ">")
+}
+
+// leaveOutLeakingMerges is filter without the wildcard topics that fed a filter of its reduction
+// (bus.SessionConsumerReduction, the filter set the consumer carries, forms of each topic
+// included) that has a wildcard token and reaches a private stream subject other than
+// sessionID's own, and those topics with what made each go. The reduction tracks, for each filter
+// it makes, the topics whose forms went into it (bus.ReducedSessionFilter.Fed): a filter that is
+// one topic's form as it came is that topic's own, and one the reduction merged was fed by every
+// topic a form of which went into that merge or a merge before it. So a merge that reaches
+// another session takes out exactly the wildcard topics that fed it, through a chain of merges and
+// through a topic's other form (contracts.TopicForms) alike, and a topic the merged filter only
+// contains, such as notifications.envoy.exceptions.notifications.github.> beside the pair
+// notifications.envoy.exceptions.foo.* and notifications.envoy.exceptions.*.bar, fed nothing and
+// stays.
+//
+// A literal topic is never left out: it overlaps another topic only when that one contains it,
+// so it merges with nothing as it is spelled, and the only wildcard forms a literal has, the old
+// form of an agent subject or of its exception lane read under every project
+// (notifications.agent.*.<session>), name only the subjects that literal names. Such a form that
+// reaches another session, the form of another session's agent subject an earlier build's row
+// left, is that literal's own filter and leaves nothing out. Every merge has a wildcard topic
+// among what fed it, since two literals' forms never overlap without one containing the other.
+//
+// Each pass reduces the filter, leaves out every topic so found, and reduces again, until a pass
+// finds none: each pass that finds one leaves out at least one wildcard topic, so the loop ends,
+// and a row with no such filter is reduced once and left as it is.
+func leaveOutLeakingMerges(sessionID string, filter []string) ([]string, []filterLeftOut) {
+	var leftOut []filterLeftOut
+	for {
+		var found []filterLeftOut
+		isFound := func(topic string) bool {
+			return slices.ContainsFunc(found, func(left filterLeftOut) bool { return left.topic == topic })
+		}
+		for _, reduced := range bus.SessionConsumerReduction(filter) {
+			if !hasWildcardToken(reduced.Subject) || !bus.ReachesPrivateStreamSubject(sessionID, reduced.Subject, nil) {
+				continue
+			}
+			for _, topic := range reduced.Fed {
+				if !hasWildcardToken(topic) || isFound(topic) {
+					continue
+				}
+				mates := slices.DeleteFunc(slices.Clone(reduced.Fed), func(other string) bool { return other == topic })
+				found = append(found, filterLeftOut{topic: topic, merged: reduced.Subject, mates: mates})
+			}
+		}
+		if len(found) == 0 {
+			return filter, leftOut
+		}
+		leftOut = append(leftOut, found...)
+		filter = slices.DeleteFunc(slices.Clone(filter), isFound)
+	}
+}
+
+// filterLeftOut is a topic of a session's interest row that its consumer filter leaves out by the
+// fourth or fifth kind sessionConsumerFilter names, with what made it go. merged is "" for a topic
+// that does not begin with the literal bus.NotificationTopicPrefix (the fourth kind); for a
+// wildcard topic of the fifth kind it is the filter of the reduction that topic fed, which reaches
+// another session's private subjects, and mates the other topics that fed it, in the order of the
+// filter.
+type filterLeftOut struct {
+	topic  string
+	merged string
+	mates  []string
+}
+
+// filterLeftOutLine is the WARN line the listener writes for each topic a session's consumer
+// filter leaves out by the fourth or fifth kind (logFilterLeftOut).
+const filterLeftOutLine = "listener left a topic out of the session's consumer filter"
+
+// The values of the from attribute of filterLeftOutLine: the path that left the topic out.
+const (
+	leftOutByRegistration = "registration"
+	leftOutOfStoredRow    = "stored_row"
+	leftOutByFanout       = "fanout"
+	// leftOutByNarrowing is the line of a change of a consumer's filter, an update or a restart at
+	// the ack floor, that passed over messages on subjects it dropped: it names them as topics,
+	// with the messages read on each (pending_by_topic) and their sum (connectSessionDelivery).
+	leftOutByNarrowing = "narrowing"
+)
+
+// kind is the kind attribute of filterLeftOutLine: no_notifications_prefix for the fourth kind,
+// merges_into_private for the fifth.
+func (l filterLeftOut) kind() string {
+	if l.merged == "" {
+		return "no_notifications_prefix"
+	}
+	return "merges_into_private"
+}
+
+// warning is the sentence a registration's answer names l's topic in (subscribeHandler): that it
+// was not registered for sessionID, and why.
+func (l filterLeftOut) warning(sessionID string) string {
+	switch {
+	case l.merged == "":
+		return fmt.Sprintf("%s was not registered: the consumer filter of %s carries only topics that begin with the literal %s, since the stream stores nothing outside it and a topic with a wildcard first token could widen the filter through its reduction; follow a topic that begins with %s instead",
+			l.topic, sessionID, bus.NotificationTopicPrefix, bus.NotificationTopicPrefix)
+	case len(l.mates) == 0:
+		return fmt.Sprintf("%s was not registered: the consumer filter of %s would carry it as %s, which reaches another session's private stream subjects",
+			l.topic, sessionID, l.merged)
+	default:
+		return fmt.Sprintf("%s was not registered: the consumer filter of %s would merge it with %s into %s, which reaches another session's private stream subjects, so each wildcard topic of that merge is left out; follow topics that do not overlap instead",
+			l.topic, sessionID, strings.Join(l.mates, ", "), l.merged)
+	}
+}
+
+// logFilterLeftOut writes filterLeftOutLine at WARN for each of leftOut, naming sessionID, the
+// topic, its kind, the merged filter of the fifth kind, and from, the path that left it out.
+func logFilterLeftOut(logger *logging.Logger, sessionID string, leftOut []filterLeftOut, from string) {
+	if logger == nil {
+		return
+	}
+	for _, left := range leftOut {
+		logger.Warn(filterLeftOutLine, leftOutAttrs(sessionID, left, from)...)
+	}
+}
+
+// leftOutAttrs is the attributes of filterLeftOutLine for left, a topic of sessionID's row, left
+// out by the path from.
+func leftOutAttrs(sessionID string, left filterLeftOut, from string) []slog.Attr {
+	attrs := []slog.Attr{slog.String("session_id", sessionID), slog.String("topic", left.topic), slog.String("kind", left.kind()), slog.String("from", from)}
+	if left.merged != "" {
+		attrs = append(attrs, slog.String("merged", left.merged))
+	}
+	return attrs
+}
+
+// fanoutLeftOutLogWindow is how often the durable path logs filterLeftOutLine for one session and
+// one left-out topic of its row (skipLeftOutInterest): once per ten minutes. A live session's row
+// holds such a topic only as an earlier build stored it, and the session's next registration, at
+// its next heartbeat (90 s by default), takes the topic out, so each such row is named once.
+//
+// A stopped session's row stays until the interest reaper deletes it (store.Registry.Reap, a pass
+// every 5 minutes), which it does once the row is older than store.InterestReapAllowance, 15
+// minutes after its last write, and the session reads not live (sessionMayBeLive). That gives two
+// cases. Where the session bucket keeps its default maximum age (session.BucketMaxAge, 5 minutes),
+// the session's record lapses 5 minutes after its last registration, it then reads not live, and
+// the row goes 15 to 20 minutes after its last write: one listener names it at most twice. Where
+// the deployment sets a maximum age past the gone horizon (WithSessionMaxAge), the record stands
+// and notGone holds the session live until session.GoneHorizon, an hour after its last
+// registration: the row goes 60 to 65 minutes after it, and one listener names it at most seven
+// times. In either case a busy topic costs at most six lines an hour for one session and topic,
+// where a line per message would flood the log, and every such row is named at least once.
+const fanoutLeftOutLogWindow = 10 * time.Minute
+
+// registrationLeftOutLogWindow is how often a registration logs filterLeftOutLine for one session
+// and one topic it leaves out (subscribeHandler): once an hour. A plugin sends every topic it
+// follows again on each heartbeat (SESSION_HEARTBEAT_MS, 90 s), so a followed topic of the fourth
+// or fifth kind would log a line every 90 s for as long as the session runs; and no heartbeat
+// path reads the answer's warnings (pi-envoy's subscribe tool alone shows them, when a caller
+// names a topic by hand), so the line tells the operator and the answer tells nobody more by
+// being repeated. The answer itself names the topic on every registration.
+const registrationLeftOutLogWindow = time.Hour
+
+// leftOutLogPruneAt is the size at which a limiter drops the entries older than its window, which
+// allow no longer reads, so its memory follows the pairs logged in the last window and not every
+// pair logged since the listener started.
+const leftOutLogPruneAt = 1024
+
+// leftOutLogLimiter remembers when a path last logged each session and left-out topic, and lets
+// it log one again once window has passed.
+type leftOutLogLimiter struct {
+	window time.Duration
+	mu     sync.Mutex
+	last   map[[2]string]time.Time
+	// now is the limiter's clock, time.Now when nil; a test sets it, with a fresh last, through
+	// isolate, under mu, since the handlers that log read both as they run.
+	now func() time.Time
+}
+
+// allow reports whether sessionID's topic may be logged now, and records now when it may: it may
+// when that session and topic were not logged within the limiter's window.
+func (l *leftOutLogLimiter) allow(sessionID, topic string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if l.now != nil {
+		now = l.now()
+	}
+	key := [2]string{sessionID, topic}
+	if at, logged := l.last[key]; logged && now.Sub(at) < l.window {
+		return false
+	}
+	if l.last == nil {
+		l.last = make(map[[2]string]time.Time)
+	}
+	if len(l.last) >= leftOutLogPruneAt {
+		for pair, at := range l.last {
+			if now.Sub(at) >= l.window {
+				delete(l.last, pair)
+			}
+		}
+	}
+	l.last[key] = now
+	return true
+}
+
+// isolate gives the limiter the clock now and a memory of its own, with nothing logged yet, and
+// returns the func that puts back the clock and the memory it had. A test isolates the limiter it
+// reads, so a run sees none of the entries an earlier run or another test stored, whose times its
+// moved clock would otherwise read as inside the window.
+func (l *leftOutLogLimiter) isolate(now func() time.Time) (restore func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	previousNow, previousLast := l.now, l.last
+	l.now, l.last = now, nil
+	return func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.now, l.last = previousNow, previousLast
+	}
+}
+
+// fanoutLeftOutLogs is the one limiter of this process's durable path, and registrationLeftOutLogs
+// the one of its registrations: every handler built from any configuration shares them, as they
+// share the stream and the buckets they read.
+var (
+	fanoutLeftOutLogs       = leftOutLogLimiter{window: fanoutLeftOutLogWindow}
+	registrationLeftOutLogs = leftOutLogLimiter{window: registrationLeftOutLogWindow}
+)
+
+// logFilterLeftOutLimited is logFilterLeftOut for the topics limiter lets through
+// (leftOutLogLimiter.allow).
+func logFilterLeftOutLimited(logger *logging.Logger, limiter *leftOutLogLimiter, sessionID string, leftOut []filterLeftOut, from string) {
+	if logger == nil {
+		return
+	}
+	for _, left := range leftOut {
+		if limiter.allow(sessionID, left.topic) {
+			logger.Warn(filterLeftOutLine, leftOutAttrs(sessionID, left, from)...)
+		}
+	}
+}
+
+// skipLeftOutInterest reports whether the stored message on subject is one interest's session is
+// no recipient of: interest's row matches subject only through topics the session's consumer
+// filter leaves out by its fourth or fifth kind (carriedFor), which a row an earlier build stored
+// can hold until the session's next registration takes them out. Its consumer does not carry the
+// message, so the durable path must not take it for a session whose consumer relays it; it skips
+// the session, and says so: for each such topic of the row that matches subject, it logs
+// filterLeftOutLine from fanout with the subject, at most once per session and topic within
+// fanoutLeftOutLogWindow (fanoutLeftOutLogs). Both places the durable path judges an interest
+// call it: durableNeedsDelivery, which acknowledges a message every matching session's consumer
+// holds before decoding it, and fanoutDelivery. The row's left-out topics come from the cache the
+// publish count shares (filterLeftOuts), so a busy topic reduces each such row once.
+func skipLeftOutInterest(logger *logging.Logger, interest store.Interest, subject string) bool {
+	if carriedFor(interest.SessionID, interest.Topics, subject) {
+		return false
+	}
+	leftOut := filterLeftOuts.of(interest.SessionID, interest.Topics)
+	for _, left := range leftOut {
+		if !slices.ContainsFunc(contracts.TopicForms(left.topic), func(form string) bool { return bus.SubjectContains(form, subject) }) {
+			continue
+		}
+		if logger != nil && fanoutLeftOutLogs.allow(interest.SessionID, left.topic) {
+			logger.Warn(filterLeftOutLine, append(leftOutAttrs(interest.SessionID, left, leftOutByFanout), slog.String("subject", subject))...)
+		}
+	}
+	return true
+}
+
+// filterTakes reports whether sessionFilter keeps topic on its own: a filter subject the server
+// takes (bus.CheckFilterSubject), no role lane or exception lane of one (bus.RoleLane), and a topic
+// that begins with the literal bus.NotificationTopicPrefix. What the deployed stream captures
+// plays no part: the filter holds a stored topic whatever the stream captures now
+// (sessionConsumerFilter). It leaves out the two kinds that turn on more than the topic: a wildcard
+// reaching a private stream subject, which the row's rule leaves out with the controller roles the
+// session holds (store.LaneHolders.Keeps), and a wildcard that fed a merge reaching another
+// session's subjects, which only the whole row tells (sessionFilter, carriedFor).
+func filterTakes(topic string) bool {
+	return bus.CheckFilterSubject(topic) == nil && !bus.RoleLane(topic) && strings.HasPrefix(topic, bus.NotificationTopicPrefix)
 }
 
 // storedTopicFiltered reports whether the consumer filter built from a stored row of sessionID
-// holds topic, a topic of that row or of the session's known-session record: the row's rule keeps
-// it, with the controller roles the session holds read from their claim records
-// (store.LaneHolders.Keeps), and the filter takes it (filterTakes). It is the one judgment of a
-// stored topic: storedRowFilter builds every filter of a stored row with it, and a publish counts
-// a session only through a topic it holds (recipientCounts), so the count and the filter cannot
-// judge a stored topic apart. holders is the claims of the lanes the caller's answer turns on
+// can hold topic, a topic of that row or of the session's known-session record: the row's rule
+// keeps it, with the controller roles the session holds read from their claim records
+// (store.LaneHolders.Keeps), and the filter takes it (filterTakes). It is the per-topic half of the
+// one judgment of a stored topic: storedRowFilter builds every filter of a stored row by it, and a
+// publish counts a session only through a topic it holds that the row's leaking merges leave in
+// (recipientJudgment.keeps, carriedFor), so the count and the filter cannot judge a stored topic
+// apart. holders is the claims of the lanes the caller's answer turns on
 // (store.Registry.ReadLaneHolders); a lane whose role it weighed no claim of is held by nobody.
-func storedTopicFiltered(stream *bus.Client, holders store.LaneHolders, sessionID, topic string) bool {
-	return holders.Keeps(sessionID, topic) && filterTakes(stream, topic)
+func storedTopicFiltered(holders store.LaneHolders, sessionID, topic string) bool {
+	return holders.Keeps(sessionID, topic) && filterTakes(topic)
 }
 
 // storedRowFilter is the filter of sessionID's consumer built from topics, its interest row as
-// read from registry: its agent subject and each topic storedTopicFiltered holds, which leaves out
-// each topic reaching a private stream subject that is not the session's own (another session's
-// inbox, a failed-delivery lane, a controller notice lane whose role the session does not hold, a
-// wildcard reaching one) as well as each topic the filter cannot take. None of those is logged. It
-// counts each topic of the filter that is in the old form of its name
-// (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of the old
-// form for as long as the row holds one. Every read of a stored row into a filter comes through
-// here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's own plan
-// does not, since the subscribe route judged its topics and counted their old forms as it took
-// them (store.MergedTopics). A row is a record any writer of the bucket can store, so the rule a
-// registration applies is applied to what is read here again: a row under the session's own key
-// that names another session's inbox would otherwise put that session's messages in this
+// read from registry: sessionConsumerFilter of the topics the row's rule keeps
+// (store.LaneHolders.Keeps), so it leaves out each topic reaching a private stream subject that is
+// not the session's own (another session's inbox, a failed-delivery lane, a controller notice lane
+// whose role the session does not hold, a wildcard reaching one) as well as each kind
+// sessionConsumerFilter leaves out. It counts each topic of the filter that is in the old form of
+// its name (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader
+// of the old form for as long as the row holds one. Every read of a stored row into a filter comes
+// through here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's
+// own plan does not, since the subscribe route judged its topics and counted their old forms as it
+// took them (store.MergedTopics). A row is a record any writer of the bucket can store, so the
+// rule a registration applies is applied to what is read here again: a row under the session's own
+// key that names another session's inbox would otherwise put that session's messages in this
 // session's consumer at its next restart. The claims of the controller roles whose lanes the row
-// names are read from the role bucket stream's leader within ctx
-// (store.Registry.ReadLaneHolders), and an error is returned for a read that did not answer or
-// failed: the caller builds no filter then.
+// names are read from the role bucket stream's leader within ctx (store.Registry.ReadLaneHolders),
+// and an error is returned for a read that did not answer or failed: the caller builds no filter
+// then. A topic the filter leaves out by its fourth or fifth kind is one a registration of this
+// build keeps out of the row (planWithoutLeftOut), so the row that holds one is an earlier build's
+// or another writer's, and each is logged (filterLeftOutLine, from stored_row) until the session's
+// next registration takes it out of the row and names it.
 func (m *sessionDelivery) storedRowFilter(ctx context.Context, registry *store.Registry, sessionID string, topics []string) ([]string, error) {
 	holders, err := registry.ReadLaneHolders(ctx, topics)
 	if err != nil {
 		return nil, fmt.Errorf("decide whether %s holds a controller notice lane: %w", sessionID, err)
 	}
-	filter := make([]string, 0, len(topics)+1)
-	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
-	for _, topic := range topics {
-		if storedTopicFiltered(m.stream, holders, sessionID, topic) {
-			filter = append(filter, topic)
-		}
+	kept := slices.DeleteFunc(slices.Clone(topics), func(topic string) bool { return !holders.Keeps(sessionID, topic) })
+	filter, leftOut := sessionFilter(sessionID, kept)
+	if m != nil {
+		logFilterLeftOut(m.logger, sessionID, leftOut, leftOutOfStoredRow)
 	}
 	registry.CountStoredLegacyTopics(sessionID, filter)
 	return filter, nil

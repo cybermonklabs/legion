@@ -192,7 +192,7 @@ func newRelaySocketReplica(t *testing.T, url string, config relaySocketRigConfig
 	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   listenerBrokerAccount("listener-account-token"),
-		Origin:    listenerBrokerOrigin,
+		Origins:   []string{listenerBrokerOrigin},
 		Replay:    &spentProofsInMemory{},
 		Address:   listenerSourceAddress,
 		Now:       clock.now,

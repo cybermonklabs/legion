@@ -202,12 +202,13 @@
 -- block brought back are dropped again by this file's last statements. The missing row does not
 -- move the number the state read reports while the older image runs (Store.SchemaVersionTx, the
 -- highest row recorded): every database this release migrated records
--- 20261124143026_issue_release_teardown, that older daemon's own newest migration, above this
--- version, so the number reads 20261124143026 before the delete and after it, which is the truth
--- about the image that is running. A rollback to a release before #5372 reads 20261124143026 there
--- too: neither that migration nor #5349's 20261124073512 nor #5365's 20261124060500 carries a way
--- back, so their rows stand, and the way back in the header of 20261123224717_members_owed, which
--- a rollback to a release before #5303 runs first, deletes that version's row alone.
+-- 20261124182040_issue_pod_disks, that older daemon's own newest migration, above this version,
+-- so the number reads 20261124182040 before the delete and after it, which is the truth about the
+-- image that is running. A rollback to a release before #4392 reads 20261124182040 there too:
+-- neither that migration nor #5372's 20261124143026 nor #5349's 20261124073512 nor #5365's
+-- 20261124060500 carries a way back, so their rows stand, and the way back in the header of
+-- 20261123224717_members_owed, which a rollback to a release before #5303 runs first, deletes that
+-- version's row alone.
 --
 -- What that costs is the numbering, as the phase entry's second fill costs its own: the second
 -- fill reads what the older daemon left exactly as this fill reads what the release before this
@@ -222,7 +223,7 @@
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
 -- after this one builds on the fourteen columns it drops whose way back has not already run, and
--- at this release thirty of the thirty-one recorded after it touch none of them:
+-- at this release thirty-one of the thirty-two recorded after it touch none of them:
 -- 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
@@ -275,10 +276,11 @@
 -- row it finds, and rewrites no kind list, 20261124073512_claim_cause_times
 -- (cybermonklabs/legion#5349) adds claims.last_death_at, claims.last_start_failure_at,
 -- claims.last_death_digest and claims.last_start_failure_digest, null on every row it finds, and
--- rewrites no kind list, and 20261124143026_issue_release_teardown (cybermonklabs/legion#5372)
+-- rewrites no kind list, 20261124143026_issue_release_teardown (cybermonklabs/legion#5372)
 -- adds issue_releases.teardown at its default, 'reached', and pod_releases.issue_release_id, null
 -- on every row it finds, with a unique index of the rows that name a mark, and rewrites no kind
--- list.
+-- list, and 20261124182040_issue_pod_disks (cybermonklabs/legion#4392) adds the table
+-- issue_pod_disks and rewrites no kind list.
 -- 20261119203047_design_news reads no column this block drops or puts back: its functions read
 -- pending_task_deliveries.confirmed_at, which both releases keep, and its four columns stand
 -- through the block, so this block reverses nothing of it, and the two hold in either order.
@@ -299,22 +301,28 @@
 -- 20261123224717_members_owed, above all four, carries a way back of its own, the last paragraph
 -- of its header, which drops issues.members_owed and deletes its version row, with every daemon of
 -- the database stopped; it reads nothing 20261122160000's way back or this block drops or writes
--- back. 20261124060500_issue_priority, 20261124073512_claim_cause_times and
--- 20261124143026_issue_release_teardown, above all five, need nothing: none carries a way back,
--- since an earlier release names none of the columns they add (each migration's header), and
--- none reads what 20261122160000's way back or this block drops or writes back. The release before
--- this one carries the other thirty: it is contract 256, the one whose internal/api/version.go
--- carries the entry for the claims' cause times, cybermonklabs/legion#5349's lastDeathAt and
--- lastStartFailureAt on each claim view of GET /legion/v1/state, as main releases it after
--- #5372, its newest migration #5372's 20261124143026_issue_release_teardown, so the rollback to it
--- runs 20261122160000's way back and this block and leaves the thirty standing. A rollback to
--- contract 246, or to any release before it, crosses contract 256 and #5365's contract 250, which
--- take no step of their own beyond pinning the worker image with the daemon, since they add no
--- legion.yaml key and their migrations, 20261124073512_claim_cause_times and
--- 20261124060500_issue_priority, need nothing, and neither does #5372's
--- 20261124143026_issue_release_teardown; crossing 20261124073512 costs the claims' two cause
--- times, which the roll-forward serves only beside a cause whose text it dated (that migration's
--- header). A rollback to contract 232, or to any release
+-- back. 20261124060500_issue_priority, 20261124073512_claim_cause_times,
+-- 20261124143026_issue_release_teardown and 20261124182040_issue_pod_disks, above all five, need
+-- nothing: none carries a way back, since an earlier release names none of the columns and tables
+-- they add (each migration's header), and none reads what 20261122160000's way back or this block
+-- drops or writes back. The release before this one carries the other thirty-one: it is contract
+-- 275, the one whose internal/api/version.go carries the entry for dispatch://INFRA-4425,
+-- cybermonklabs/legion#4392's daemon that writes to Dispatch as itself under
+-- dispatch_token_broker, as main releases it after #4392, its newest migration #4392's
+-- 20261124182040_issue_pod_disks, so the rollback to it runs 20261122160000's way back and this
+-- block and leaves the thirty-one standing. A rollback to contract 256, or to any release before
+-- it, crosses contract 275, which takes no step of its own beyond pinning the worker image with the
+-- daemon, since its migration, 20261124182040_issue_pod_disks, needs nothing, except where
+-- legion.yaml sets either of its two keys, dispatch_token_broker and
+-- dispatch_token_transition_file: an earlier release refuses both as keys it does not know and
+-- requires dispatch_token_file beside dispatch_url, so take both out and name dispatch_token_file
+-- again before the earlier image is pinned. A rollback to contract 246, or to any release before
+-- it, also crosses contract 256 and #5365's contract 250, which take no step of their own beyond
+-- pinning the worker image with the daemon, since they add no legion.yaml key and their
+-- migrations, 20261124073512_claim_cause_times and 20261124060500_issue_priority, need nothing,
+-- and neither does #5372's 20261124143026_issue_release_teardown; crossing 20261124073512 costs the
+-- claims' two cause times, which the roll-forward serves only beside a cause whose text it dated
+-- (that migration's header). A rollback to contract 232, or to any release
 -- before it, crosses contract 246, which takes no step of its own beyond pinning the worker image
 -- with the daemon, since it adds no migration and no legion.yaml key, and it, like any rollback to
 -- a release before #4869, crosses 20261123050533_idle_release_keeps_no_workspace, and so runs that
@@ -371,9 +379,12 @@
 -- so every database records them before it, and neither touches the fourteen columns. A rollback
 -- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
 -- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
--- them: #5372's 20261124143026_issue_release_teardown, #5349's 20261124073512_claim_cause_times
--- and #5365's 20261124060500_issue_priority first, which need nothing, since none carries a way
--- back and no earlier release names the columns they add; the way back in the header of
+-- them: #4392's 20261124182040_issue_pod_disks, #5372's 20261124143026_issue_release_teardown,
+-- #5349's 20261124073512_claim_cause_times and #5365's 20261124060500_issue_priority first, which
+-- need nothing, since none carries a way back and no earlier release names the columns and the
+-- table they add, with #4392's two legion.yaml keys, dispatch_token_broker and
+-- dispatch_token_transition_file, taken out and dispatch_token_file named again where the file
+-- sets them; the way back in the header of
 -- 20261123050533_idle_release_keeps_no_workspace,
 -- #4869's, which makes workspace_bundles again, empty, drops idle_release_declines and
 -- issue_releases.turn_start and deletes its version row, with every daemon of the database
@@ -431,7 +442,7 @@
 -- pull_requests.statuses, and which clears for the roll-forward a list no earlier release keeps
 -- current; the reviewed commit's block, which takes the key roundNamed off each start row
 -- contract 87 decodes strictly; the role-holders publication's outbox delete, which leaves no row
--- of its kind behind; contract 146's block, which reverses the four of those thirty that are
+-- of its kind behind; contract 146's block, which reverses the four of those thirty-one that are
 -- the root architect's entry (all but the six kind lists, the five other migrations of contract
 -- 152, contract 160's 20261116144907_claim_sessions, contract 178's 20261115194357_project_pause,
 -- contract 188's 20261120055717_dispatch_issue_value_sequences, contract 189's
@@ -443,8 +454,9 @@
 -- 20261117034837_issue_plans, whose own way back has run, #5278's
 -- 20261123212127_claim_start_failure_after_ready, which carries none, #5303's
 -- 20261123224717_members_owed, whose own way back has run, #5365's
--- 20261124060500_issue_priority, #5349's 20261124073512_claim_cause_times and #5372's
--- 20261124143026_issue_release_teardown, which carry none, and #3995's
+-- 20261124060500_issue_priority, #5349's 20261124073512_claim_cause_times, #5372's
+-- 20261124143026_issue_release_teardown and #4392's 20261124182040_issue_pod_disks, which carry
+-- none, and #3995's
 -- 20261119203047_design_news, whose own four statements are its way back);
 -- the merge-queue removal's outbox delete; the
 -- five statements of the release whose update round ends at its bound, whose
@@ -466,11 +478,12 @@
 -- 20261123212127_claim_start_failure_after_ready, whose emptied start failures an earlier release
 -- reads as none recorded, nor #5365's 20261124060500_issue_priority, #5349's
 -- 20261124073512_claim_cause_times or #5372's 20261124143026_issue_release_teardown, whose columns
--- no earlier release names, nor
+-- no earlier release names, nor #4392's 20261124182040_issue_pod_disks, nor
 -- contract 160's 20261111091500_claim_pod_end, whose claims.pod_end an earlier release leaves
 -- unread and unwritten; the tables pod_volume_notices its 20261111090000_volume_trim_notices adds,
--- claim_sessions its 20261116144907_claim_sessions adds and the three contract 228's
--- 20261120144241_intake_failures adds stand too, read by no earlier release.
+-- claim_sessions its 20261116144907_claim_sessions adds, the three contract 228's
+-- 20261120144241_intake_failures adds and issue_pod_disks, which #4392's
+-- 20261124182040_issue_pod_disks adds, stand too, read by no earlier release.
 -- The release before the phase entry reads the three
 -- marks as the release before this one does, and neither
 -- contract 146's block, the step records', the commit statuses', the reviewed commit's nor the

@@ -2473,6 +2473,10 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // value it was never handed. Cleared, the value charges nobody and is written again once per
 // first bound until the new process reports a revision seen (takeBoundOver). The registration
 // is logged (agentRegisteredLine), as the agent of a new process.
+//
+// The registering process's pod is one an agent of the claim registered a session in, so it goes
+// in the claim's set (Claim.RegisteredPods) and stays there, whatever the claim does next. A
+// process in no pod (a tmux pane) adds nothing.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
@@ -2482,6 +2486,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 		return err
 	}
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
+	m.registeredPods.add(locatorPod(m.claim.Locator))
 	m.claim.AgentResumeGeneration = 0
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract

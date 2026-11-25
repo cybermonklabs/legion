@@ -159,7 +159,7 @@ const schemas: Record<string, z.ZodType> = {
   // refused turns the claim now ends with (`LegionTurnOutcomeResponse` says what `failed` holds).
   "turn-outcome.json": LegionTurnOutcomeResponse,
   // `claim.TaskResponse`: what `claims/task` answers a claim whose bucket holds no value (`task`
-  // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 274).
+  // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 291).
   "task.json": LegionTaskResponse,
   "take-accepted.json": LegionTakeResponse,
   "take-refused.json": LegionTakeResponse,
@@ -2064,7 +2064,7 @@ test("every request the plugin sends parses and names its required fields", () =
         since: "2026-11-01T12:00:00Z",
       },
     ],
-    // The task routes (contract 274), each under the agent's secret form and the bridge's boot
+    // The task routes (contract 291), each under the agent's secret form and the bridge's boot
     // token form, and the turn outcome that names the task and the provider error it ended in.
     [
       "task read",
@@ -2600,7 +2600,7 @@ test("the register golden names the task agents the role's prompts dispatch", ()
   expect(LegionRegisterResponse.safeParse(mutated).success).toBeFalse();
 });
 
-// A worker holds its claim's value from its registration and from `claims/task` (contract 274):
+// A worker holds its claim's value from its registration and from `claims/task` (contract 291):
 // the value, or null where the bucket holds none, beside the number of the last task the claim
 // finished. Both keys are always written, so neither may be left out, and a value always names a
 // task and a revision.
@@ -2634,7 +2634,7 @@ test("the register golden and the task read carry the claim's value and its fini
   expect(LegionTaskResponse.safeParse(noTask).success).toBeFalse();
 });
 
-// A take is answered one of three ways (contract 274), each written by the Go side: accepted with
+// A take is answered one of three ways (contract 291), each written by the Go side: accepted with
 // the text the worker runs, refused naming the hold, or dropped. An accepted answer without its
 // text and a refused one without its hold are refused; a hold a later daemon names is read.
 test("the take goldens are its three answers", () => {
@@ -2970,17 +2970,18 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
   // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
-  // Seven bands stand above 199: the repositories block's at 202; contract 220's, which takes
+  // Eight bands stand above 199: the repositories block's at 202; contract 220's, which takes
   // `plan` off each assignment; the intake's give-ups' at 228, so the narrowing leaves
   // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
-  // claim view; and the unseen task values', at 274 (`withoutUnseenTaskValues`), which a caller
-  // below 274 is never served; so the golden's issues, rows and claim views are compared without
-  // them, and the narrowing drops `intakeGiveUps` and `unseenTaskValues`. One value strip stands
-  // above 199 as well: `caches`, the source of the repository-cache-room row, arrived at contract
-  // 213, so that row is served here without its `source`, every other field of it and every other
-  // row as the state golden holds them.
+  // claim view; contract 275's, which takes `dispatchCredential` off the state; and the unseen
+  // task values', at 291 (`withoutUnseenTaskValues`), which a caller below 291 is never served;
+  // so the golden's issues, rows and claim views are compared without them, and the narrowing
+  // drops `intakeGiveUps` and `unseenTaskValues`. One value strip stands above 199 as well:
+  // `caches`, the source of the repository-cache-room row, arrived at contract 213, so that row is
+  // served here without its `source`, every other field of it and every other row as the state
+  // golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -3003,6 +3004,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     contract: _mark,
     lowestPluginContract: _lowest,
     unseenTaskValues: _unseen,
+    dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
@@ -3334,6 +3336,46 @@ test("the state golden names the claims whose task value is unseen, and the key 
   ]) {
     expect(
       LegionStateResponse.safeParse({ ...state, unseenTaskValues: [refused] }).success
+    ).toBeFalse();
+  }
+});
+
+// The daemon's Dispatch credential under `dispatch_token_broker` (contract 275): the golden names
+// the daemon's session and the two counts a deployment reads before it removes
+// `dispatch_token_transition_file`, and the time of the last transition launch is null before the
+// first. The key is not required: a daemon without the setting writes none, and a daemon at this
+// contract leaves it off the state it serves a caller older than 275, whether the caller states
+// its contract or is read from its pod (`api.stateFor`, `withoutDispatchCredential`). No plugin
+// reads a field of it, so each field is optional; what is refused is a count that is not a whole
+// number of launches, or an empty session.
+test("the state golden names the daemon's Dispatch credential, and the key may be absent", () => {
+  const state = fixture("state.json") as Record<string, unknown>;
+  expect(LegionStateResponse.parse(state).dispatchCredential).toEqual({
+    session: "legion-daemon:LEGION",
+    transitionLaunches: 2,
+    lastTransitionLaunchAt: "2026-09-22T09:17:03Z",
+    liveLaunchesWithDispatchToken: 3,
+  });
+  const credential = state.dispatchCredential as Record<string, unknown>;
+  expect(
+    LegionStateResponse.parse({
+      ...state,
+      dispatchCredential: { ...credential, transitionLaunches: 0, lastTransitionLaunchAt: null },
+    }).dispatchCredential?.lastTransitionLaunchAt
+  ).toBeNull();
+
+  const { dispatchCredential: _withoutTheCredential, ...stripped } = state;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.dispatchCredential).toBeUndefined();
+
+  for (const refused of [
+    { ...credential, liveLaunchesWithDispatchToken: -1 },
+    { ...credential, transitionLaunches: 1.5 },
+    { ...credential, session: "" },
+  ]) {
+    expect(
+      LegionStateResponse.safeParse({ ...state, dispatchCredential: refused }).success
     ).toBeFalse();
   }
 });

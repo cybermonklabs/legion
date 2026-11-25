@@ -40,12 +40,17 @@
 -- 20261121170714_dispatch_issue_applied_seq runs between the two as well, before that one): it
 -- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
 -- (that migration set none), and deletes this migration's version row, so the roll forward runs
--- this file again. The release before this one, contract 256 (the one whose
--- internal/api/version.go carries the entry for the claims' cause times, cybermonklabs/legion#5349's
--- lastDeathAt and lastStartFailureAt on each claim view of GET /legion/v1/state) as main releases
--- it after #5372, whose newest migration is #5372's 20261124143026_issue_release_teardown, carries
+-- this file again. The release before this one, contract 275 (the one whose
+-- internal/api/version.go carries the entry for dispatch://INFRA-4425, cybermonklabs/legion#4392's
+-- daemon that writes to Dispatch as itself under dispatch_token_broker) as main releases it after
+-- #4392, whose newest migration is #4392's 20261124182040_issue_pod_disks, carries
 -- 20261119203047 and not the task numbers, and then reads the function it wrote; a rollback to
--- contract 246 or before crosses 256 and #5365's 250, which take no step of their own beyond
+-- contract 256 or before crosses 275, which takes no step of its own beyond pinning the worker
+-- image with the daemon, since its migration, 20261124182040_issue_pod_disks, carries no way back
+-- and this block reads nothing of it, except where legion.yaml sets dispatch_token_broker or
+-- dispatch_token_transition_file, which an earlier release refuses as keys it does not know: take
+-- both out and name dispatch_token_file again before the earlier image is pinned; a rollback to
+-- contract 246 or before also crosses 256 and #5365's 250, which take no step of their own beyond
 -- pinning the worker image with the daemon, since they add no legion.yaml key and their
 -- migrations, 20261124073512_claim_cause_times and 20261124060500_issue_priority, carry no way
 -- back, as #5372's 20261124143026_issue_release_teardown carries none: an earlier release names

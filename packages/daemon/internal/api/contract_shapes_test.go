@@ -370,7 +370,9 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
 // that file alone, and stay so because the state golden is written from them, and the second
-// body's are a tmux file's.
+// body's are a tmux file's. They carry `dispatch_token_broker` too, turned on in the loaded
+// configuration, since the file names `dispatch_token_file`, which the loader refuses beside the
+// setting.
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)
@@ -493,6 +495,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})
 	}
+	settings := loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)
+	settings.DispatchTokenBroker = true
 	both := AppInstallationsView{Implement: true, Review: true}
 	live := make([]LiveRepositoryView, 0, len(cacheWords))
 	for _, state := range cacheWords {
@@ -524,7 +528,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		WakesWaiting:     wakes,
 		UnseenTaskValues: unseen,
 		Repositories:     RepositoriesView{Live: live},
-		Settings:         SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
+		Settings:         SettingsOf(settings),
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
 		Paused:        pausedViewOf(goldenPause(false), stops, nil),
@@ -577,7 +581,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerIssueRecord: {roots: typesOf(Issue{}), bodies: issues},
 		AnswerHealth:      {roots: typesOf(Health{}), bodies: []any{Health{Status: "ok", Project: "legion"}}},
 		// The register golden's own value (TestRegisterResponseGolden): a claim whose bucket holds
-		// a value, which writes every key of `task` (contract 274).
+		// a value, which writes every key of `task` (contract 291).
 		AnswerRegister: {roots: typesOf(claim.RegisterResponse{}), bodies: []any{claim.RegisterResponse{
 			ClaimToken:   "legion-legion-legion-208-architect",
 			Tree:         "LEGION-208",
@@ -727,13 +731,13 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
 		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
 		// Richer than the golden, which reads a bucket that holds no value: the record describes
-		// every key of the value a read answers (contract 274).
+		// every key of the value a read answers (contract 291).
 		AnswerTask: {roots: typesOf(claim.TaskResponse{}), bodies: []any{claim.TaskResponse{
 			Task:     &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
 			Finished: 3,
 		}}},
 		// The three goldens' own values (TestTakeResponseGolden), one for each outcome of a take,
-		// which between them carry every key of the answer (contract 274).
+		// which between them carry every key of the answer (contract 291).
 		AnswerTake: {roots: typesOf(claim.TakeResponse{}), bodies: []any{
 			claim.TakeResponse{Outcome: string(supervise.TakeOutcomeAccepted),
 				Text: "Implement LEGION-209 on its branch, then complete the phase with legion handoff_complete."},
