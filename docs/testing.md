@@ -519,13 +519,15 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
-## A test in `internal/dispatch/api` or `internal/dispatch/docs` runs beside the others
+## A test in `internal/dispatch/api`, `internal/dispatch/docs` or the daemon's `internal/intake` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api` and
-`packages/envoy/internal/dispatch/docs` calls `t.Parallel()` as its first statement, and each
-package's `TestMain` sets how many run at once: 8 in api, 6 in docs. Each test already has a
-database and a server or document service of its own (`storetest.Open`), so run alone it spends
-most of its time waiting on Postgres while the machine's other cores sit idle.
+Every top-level test of `packages/envoy/internal/dispatch/api`,
+`packages/envoy/internal/dispatch/docs` and `packages/daemon/internal/intake` calls `t.Parallel()`
+as its first statement, and each package's `TestMain` sets how many run at once: 8 in api, 6 in
+docs, 4 in intake. Each test already has a database and a server or document service of its own
+(`storetest.Open`; in intake `testpg.Clone` and a NATS server of `testnats`' pool, one per test that
+holds one), so run alone it spends most of its time waiting on Postgres while the machine's other
+cores sit idle.
 
 A test stays serial when it, or a helper it calls, changes or measures something the whole test
 process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment
@@ -567,6 +569,24 @@ adds far more memory than the others: a few hundred megabytes or more of live he
 collection, about three times that under the race detector. Beside the package's other tests
 such a test would take the binary toward the step's limit.
 
+## A test in `packages/daemon/internal/daemon` runs beside the others
+
+Every top-level test of `packages/daemon/internal/daemon` in the default build calls `t.Parallel()`
+as its first statement, and the package's `TestMain` runs 4 at once (`daemonTestParallelism`).
+The live drivers behind `//go:build e2e`, which no unit run compiles, are not held to this. Each
+test already has a database of its own (a clone of the package's template, `testDSN` and
+`isolatedOutboxPool`), its own ports and state directory, and a NATS server of the package's pool
+(`internal/testnats`). go test starts no parallel test until every serial one has run, so a serial
+test runs alone while the runner's other cores wait.
+
+A test that cannot run beside the others says why in a `// Not parallel:` comment on its first
+line: it calls `t.Setenv` or `t.Chdir`; it writes a package variable (`readinessRetry`, through
+`fastReadiness`, or `record.StatusRowKinds`); it changes the process's signal disposition; it is a
+helper process that exits the test binary (`TestIdleRigRoleProcess`); or it holds a wall-clock
+bound that the parallel tests' load could make it miss, which the comment names (`podStopBound`'s
+one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
+comment runs alone for no reason, as 46 tests did by 2026-11-25.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
@@ -583,18 +603,24 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
 gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
-steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
+steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its nineteen source-guard
 tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
+Every package of `packages/daemon` runs in CI in exactly one leg that `.github/go-legs.yaml` names
+for it (or under `elsewhere`, with the job that runs it). When you add, remove, rename or move a
+daemon package, change its line there in the same change: every daemon-go leg fails, naming the
+package, while `go list ./...` and the file disagree. Put a new package in the leg its measured
+time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` says how the legs are balanced.
+
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
-under the race detector, once per run, in the `daemon-go-race` job's step "Test the concurrent
-packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`), beside the
-`daemon-go` job; `daemon-go`'s plain step ("Test the Go daemon") leaves it out,
-and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+under the race detector, once per run, in the race leg `.github/go-legs.yaml` gives it, whose step
+is "Test the concurrent packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`,
+job `daemon-go-race-legs`), beside the plain legs; the plain step ("Test the Go daemon") leaves it
+out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
 2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
@@ -636,10 +662,11 @@ It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable fro
 The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
-It is a slow suite: a pull request runs it only with the label `full-ci` (or `lane:envoy_go_race_docs`), and the merge queue runs it on the tree the change lands as, which is where its result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
+CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's line of `envoy-go`'s step "Test what the race build cannot run at all or at full size", which runs plain the tests the race build leaves out or shrinks.
+The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
+Both are slow suites: a pull request runs them only with the label `full-ci` or that suite's `lane:` label, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
-That job runs the command with `-v` for a second check Go's detector does not make:
+The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
 A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
@@ -649,7 +676,7 @@ A settlement timer's callback therefore holds the service and the room's state w
 
 `packages/envoy/internal/dispatch/docs` is the only package of this repository that registers a cleanup today, and no repository-wide check holds that true:
 `grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.
-A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes with a detector job of its own, in the same pull request.
+A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package puts `GODEBUG=checkfinalizers=1` on the go test line that already runs that package's tests, in the same pull request, rather than a job that runs them again; `.github/scripts/ci_job_reads.py`'s `CLEANUP_DETECTOR_PACKAGES` names the packages whose lines carry it.
 
 ## A database a Go test creates
 
@@ -690,9 +717,17 @@ to migrate the template its `Clone` copies, so a test binary of `internal/store`
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
 imports no package of the module except `internal/testwait`, which imports none, and so is open to
 every package of it.
+Each of those tests runs beside the others on databases and pools of its own, four at a time unless
+the command line names a `-parallel` (`storeTestParallelism`). A pool writes its refusals, and
+`Transact`'s lines about a commit over that `*Pool` itself, to its own log (`Pool.log`), so a test
+reads its own lines there (`captureLog`) and never swaps the default logger. `Transact`'s lines
+about a commit over any other `TxPool`, a test's wrapper of a `*Pool` included, go to the default
+logger.
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
-in place, and the tests run beside each other on databases of their own.
+in place, and the tests run beside each other on databases of their own. So do `internal/workflow`'s,
+each driving its engine over a clone of its own (`migratedPool`), four at a time unless the command
+line names a `-parallel` (`workflowTestParallelism`).
 
 Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
 need the schema as it stood at some earlier version. Its own tests take

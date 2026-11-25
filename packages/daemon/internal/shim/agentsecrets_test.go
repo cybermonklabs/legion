@@ -248,11 +248,7 @@ func TestKeygenFailureEndsTheShimBeforeAnyDial(t *testing.T) {
 	// The shim ends on its own once keygen fails, from inside connect(), before any dial: wait
 	// for that rather than cancelling, which would race the keygen subprocess and could end the
 	// shim for the wrong reason (its own signalled stop) instead of the keygen failure.
-	select {
-	case <-r.done:
-	case <-time.After(waitLimit):
-		t.Fatalf("the shim never exited; log:\n%s", r.log)
-	}
+	r.awaitExit(t)
 	if r.code != 1 || !strings.Contains(r.err(), "agent-secrets keygen") || !strings.Contains(r.err(), "disk full") {
 		t.Fatalf("exit %d, err %q; want 1 naming keygen and its stderr", r.code, r.err())
 	}

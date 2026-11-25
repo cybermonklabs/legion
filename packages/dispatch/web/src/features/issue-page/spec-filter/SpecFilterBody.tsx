@@ -33,10 +33,11 @@ import {
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { useAgentText } from "../../refs/AgentName";
 import { blockFragment } from "../../refs/block-reference";
+import { PublishedReferenceNames, type PublishedReferences } from "../../refs/reference-names";
 import { standsFailed } from "../../refs/reference-target";
 import {
   buildReferencePath,
-  type DispatchReferenceRoute,
+  type PagedReferenceRoute,
   parseNodeReference,
 } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
@@ -55,6 +56,7 @@ import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useRowOnScreen } from "../NodeRow";
 import { shortDay } from "../node-time";
 import { useIssueNames } from "../one-line";
+import type { OutlineReads } from "../outline-reads";
 import { useTakeOutlineRequest } from "../outline-request";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
@@ -77,7 +79,7 @@ import { useFollowing } from "../slots/following";
 import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { issueAsksQuery, type NamesFailure } from "../useIssueTree";
+import { issueAsksQuery } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
@@ -153,8 +155,9 @@ export function SpecFilterBody({
   emptyLine,
   holdsEscape,
   issue,
-  namesFailure,
+  namesLine,
   onEditing,
+  published,
   reader,
   readsSettled,
   request,
@@ -179,13 +182,19 @@ export function SpecFilterBody({
    *  (`slots/view-spec.tsx`). */
   holdsEscape: boolean;
   issue: IssueDetails;
-  /** The names reads' line while they stand failed (`IssueTreeView.namesFailure`), which the
+  /** The names reads' line while they stand failed (`outline-reads.ts`'s `names`), which the
    *  slot passes from the page's tree: those reads are the tree's own, and the view draws from
    *  them too - the three sentences, and the name of every reference a plain line cites. None
    *  while they do not stand failed. */
-  namesFailure?: NamesFailure;
+  namesLine?: OutlineReads["names"];
   /** Asks the page for the editor of the document a row is being edited in. */
   onEditing: OnEditing;
+  /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
+   *  which the body hands every row it draws in the render that draws it
+   *  (`PublishedReferenceNames`), as the outline does (`IssueTree`'s `published`): a reference
+   *  the page is asking for waits on the page's answer from a row's first render, rather than
+   *  being read again by the row (R8). */
+  published: PublishedReferences;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   reader: string | undefined;
   /** Whether every read the tree's rows come from has answered, with its data or with its
@@ -269,7 +278,7 @@ export function SpecFilterBody({
   // refusals of its reads it has counted while the body lives, each once under its key
   // (`useLineRefusals`), which keys its alert, whether it stands, which draws it, and whether it
   // speaks.
-  // The names reads' line (`namesFailure`) comes after all of these, as the outline draws it
+  // The names reads' line (`namesLine`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
   const lines = [
@@ -639,7 +648,7 @@ export function SpecFilterBody({
       tabStop: tabStop === node.id,
     };
   };
-  return (
+  const drawnBody = (
     <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="">
       {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
           the stage says one (`FailedReadLine`): over the tree and never in it, since an alert
@@ -668,18 +677,18 @@ export function SpecFilterBody({
           speaks={speaks}
         />
       ))}
-      {namesFailure === undefined ? null : (
+      {namesLine?.map((line) => (
         <FailedReadLine
           // The names reads' count of failures (`NamesFailure.failure`), which changes only with
           // a new failure, and their Retry, which asks again each of them that holds no answer.
-          failure={namesFailure.failure}
-          key="names"
-          message={STATE_LINES.names_unreadable}
-          onRetry={namesFailure.retry}
-          retrying={namesFailure.retrying}
-          speaks={namesFailure.speaks}
+          failure={line.failure}
+          key={line.key}
+          message={line.message}
+          onRetry={line.retry}
+          retrying={line.retrying}
+          speaks={line.speaks}
         />
-      )}
+      ))}
       <Legend />
       <div
         className={`sticky top-[var(--issue-identity-height,0px)] z-[6] grid grid-cols-[280px_minmax(0,1fr)] gap-x-5 border-b pt-2 pb-1.5 max-[901px]:hidden ${pageLineBorder} ${pagePaperBg}`}
@@ -851,6 +860,7 @@ export function SpecFilterBody({
       ) : null}
     </div>
   );
+  return <PublishedReferenceNames published={published}>{drawnBody}</PublishedReferenceNames>;
 }
 
 /**
@@ -1066,15 +1076,21 @@ function Quote({ decision }: { decision: SpecDecision }): ReactNode {
   return (
     <>
       <span {...pageChrome}>“</span>
-      <span {...authorText}>{words}</span>
+      <span {...authorText}>
+        {/* spec-decision-line: the quote as one line of words `specDecidedBy` named. */}
+        {words}
+      </span>
       <span {...pageChrome}>”</span>
     </>
   );
 }
 
-/** Where the link to a decision goes: its node's own address, where the model holds one. */
-function routeOf(decision: SpecDecision | undefined): DispatchReferenceRoute | undefined {
-  return decision?.reference === undefined ? undefined : parseNodeReference(decision.reference);
+/** Where the link to a decision goes: its node's own address, where the model holds one and it
+ *  opens a page. A person's opens none (`PagedReferenceRoute`), and is drawn as words. */
+function routeOf(decision: SpecDecision | undefined): PagedReferenceRoute | undefined {
+  const route =
+    decision?.reference === undefined ? undefined : parseNodeReference(decision.reference);
+  return route?.kind === "person" ? undefined : route;
 }
 
 /** One part of a line `dotted` draws. */
@@ -1317,6 +1333,7 @@ function DecisionCell({
                   part:
                     decision.question === undefined ? null : (
                       <span data-spec-question="" {...authorText}>
+                        {/* spec-decision-line: the question as one line of words `specDecidedBy` named. */}
                         {decision.question}
                       </span>
                     ),
@@ -1676,6 +1693,7 @@ function Because({
           {decision.question === undefined ? null : (
             <>
               <span data-spec-question="" {...authorText}>
+                {/* spec-decision-line: the question as one line of words `specDecidedBy` named. */}
                 {decision.question}
               </span>{" "}
             </>

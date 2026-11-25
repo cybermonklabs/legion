@@ -191,7 +191,7 @@ test("under a words filter a message the reader wrote that produced a node is an
 /** Puts the page's focus on node `id`, as the outline does when the reader moves to it. */
 function FocusOn({ id }: { id: string }): null {
   const setFocused = useSetFocusedNode();
-  useEffect(() => setFocused({ id, title: id, type: "ask" }), [id, setFocused]);
+  useEffect(() => setFocused({ id, text: id, type: "ask" }), [id, setFocused]);
   return null;
 }
 
@@ -394,10 +394,10 @@ test("an entry whose row leaves its line no word draws the line under the row's 
 });
 
 // R2 and R3: an entry draws its node's first line by R1's one-line rule, which cuts a node's
-// line from the first block of its words (`lineWords`, which the outline's row and the page's
-// other one-line places read). A thread the reader began with a short line of its own, then a
-// paragraph, draws that line; the whole words join the two with one space into a line its
-// author never wrote.
+// line from the first block of its words (`lineWordsRaw`, as the outline's row and the page's
+// other one-line places read the first block). A thread the reader began with a short line of
+// its own, then a paragraph, draws that line; the whole words join the two with one space into a
+// line its author never wrote.
 test("an entry draws its node's first block as its line, never its first two blocks run together", () => {
   const opened = node("CORE-1", "issue", [
     node("comment-mine", "comment", [], {

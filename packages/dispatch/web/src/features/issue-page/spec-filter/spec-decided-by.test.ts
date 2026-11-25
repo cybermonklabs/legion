@@ -2,12 +2,12 @@ import { expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
 
 import type { CheckBlock, Decision } from "../../../api/types";
-import { wordsOf } from "../../refs/tree-fragment";
 import { issueTree, KEY, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT } from "../node-row-chip";
 import { useReferenceNames } from "../one-line";
 import { presetView } from "../presets";
+import { publishingNames } from "../projection-fixture";
 import { SENTENCE_TABLE } from "../sentence-table";
 import { treeContext } from "../tree-drafts";
 import {
@@ -39,9 +39,8 @@ import {
  */
 
 /** How this issue addresses a node, which is how a tie finds the statement it names. Only the
- *  context's addresses are read here and no chip's name, so the line it names a block by is the
- *  whole reading's words (`wordsOf`), which nothing below reads. */
-const { nodeIdOf } = treeContext({ issue: issueDetails() }, wordsOf);
+ *  context's addresses are read here. */
+const { nodeIdOf } = treeContext({ issue: issueDetails() });
 
 /** A page that names no reference, so `referenceStandIns` names one by its issue's key where it
  *  is an issue, and else by its short form (`shortForm`). */
@@ -206,7 +205,7 @@ test("another person's answer is not drawn as the reader's own words", () => {
 test("an agent's decision is quoted by its own words, with how sure it was and how it stands", () => {
   const text = "One batched read names every address. The page asks the server once for them all.";
   const tree = { content: [{ content: [{ text, type: "text" }], type: "paragraph" }], type: "doc" };
-  const source = { id: "artifact-dec", kind: "artifact" } as const;
+  const source = { id: "artifact-dec", issue: KEY, kind: "artifact" } as const;
   const made = node({
     at: "2026-11-13T07:00:00Z",
     author: { id: "session-planner", kind: "agent" },
@@ -247,7 +246,7 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
 
 // R5: an agent's decision is quoted on the
 // because line by its first line, by R1's one-line rule, and that rule cuts a node's line from
-// its reading's first block (`lineWords`, which the page's every other one-line place reads). A
+// its reading's first block (`lineWordsRaw`, as the page's every other one-line place reads). A
 // decision's reading opens with its own `##` heading, and the whole reading joins that heading
 // and the paragraph under it with one space, so a quote cut from it runs the two together into
 // a line nobody wrote (seen on a running build at 8caa4357: "Keep every address the old page
@@ -497,10 +496,13 @@ test("a person's answer that cites a block carries its whole text for the focus,
     // The tree names the block by a chip of the batched read (`tree-drafts.ts`), which is the
     // name the page gives a reference a plain line cites.
     decisionNode("d1", {
-      chips: [{ answered: true, gone: false, name: "the one-line rule", ref: cited }],
+      chips: [{ answered: true, gone: false, reading: { words: "the one-line rule" }, ref: cited }],
     }),
   ]);
-  const names = renderHook(() => useReferenceNames(tree, nodeIdOf));
+  // The page publishes the chip's name to the names store, which `useReferenceNames` reads.
+  const names = renderHook(() => useReferenceNames(tree, nodeIdOf), {
+    wrapper: publishingNames(new Map([[cited, "the one-line rule"]])),
+  });
   try {
     const made = bodyOf(tree, [], READER, [], names.result.current)[0]?.runs[0]?.decision;
     expect(made?.quote).toBe("Keep it as the one-line rule says.");

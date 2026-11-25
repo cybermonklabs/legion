@@ -1,11 +1,30 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
 import fixtures from "../refs/__fixtures__/display-trees.json";
-import { wordsOf } from "../refs/tree-fragment";
-import { lineWordsRaw } from "./issue-tree";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
+import { projectedNames } from "./projection-fixture";
 import { isPlainText, parsedReading, plainReading, storedReading } from "./stored-reading";
-import { plainWords, plainWordsRaw, withShortAddresses } from "./tree-drafts";
+
+// One row reads a reading through the shared engine, which loads lazily, and the rows run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+/** The words of a stored text's reading on one line (`storedReading`), its white space
+ *  collapsed to single spaces, which is what a chip's name is projected from. */
+function wordsOfText(markdown: string, holder?: object): string {
+  return collapsed(wordsOf(storedReading(markdown, holder)));
+}
+
+/** The words of the first block of `reading` that holds any (`firstWordedBlock`), which is what
+ *  a node's one line is projected from; `""` for a reading none of whose blocks holds a word. */
+function firstBlockWords(reading: DisplayTree): string {
+  const block = firstWordedBlock(reading);
+  return block === undefined ? "" : collapsed(wordsOf(block));
+}
 
 /** A wall-clock budget for one stored text read to words, not one of the machine-sensitive waits
  *  this package's defaults cover (`web/src/__tests__/setup.ts`). The regression it guards, a
@@ -30,15 +49,142 @@ const REDRAW_BUDGET_MS = 300;
 // lists and the rest read as the text they are, as the server reads them.
 test("a stored text of thousands of nested list markers reads to words within the nesting bound", () => {
   const start = performance.now();
-  const words = plainWordsRaw(`${"- ".repeat(3000)}x`);
+  const words = wordsOfText(`${"- ".repeat(3000)}x`);
   expect(performance.now() - start).toBeLessThan(NESTING_BUDGET_MS);
   expect(words).toBe(`${"- ".repeat(2950)}x`);
+});
+
+// The server keeps the number a stored ordered list starts on as the list's `order`
+// (`pmdoc/parse.go`'s `parseList`, `list.Start`), and so does the reading of a stored text the
+// read sent none for, so a name the page projects from it reads `3. Ship it`, never `1.`.
+test("a stored list that starts at 3 reads its first item as 3", () => {
+  const reading = storedReading("3. Ship it\n4. Then the rest");
+  const [list] = (reading.content ?? []) as DisplayTree[];
+  expect(list?.type).toBe("ordered_list");
+  expect(list?.attrs).toEqual({ order: 3 });
+  expect(projectedNames(new Map([["stored", { tree: reading }]])).get("stored")).toBe(
+    "3. Ship it 4. Then the rest"
+  );
+  const [bullets] = (storedReading("- Ship it").content ?? []) as DisplayTree[];
+  expect(bullets?.attrs, "a bullet list holds no number").toBeUndefined();
+});
+
+// An author's own private-use character - an icon font's, a pasted terminal glyph - is a word of
+// the text: a stored text's reading holds it as written outside code, inside a code span and
+// beside an escape, as the server's reading does, and the shared projection reads it to the same
+// plain words, as the names store projects a stored text's reading (`projectedNames`).
+test("a stored text read to plain words keeps the author's private-use characters as written", () => {
+  const star = "\ue02a";
+  const low = "\ue05f";
+  for (const [stored, words] of [
+    [`an icon ${star} and ${low} here`, `an icon ${star} and ${low} here`],
+    [`Run \`a${star}b${low}c\` now`, `Run a${star}b${low}c now`],
+    [`\\*${star} and ${low}\\_`, `*${star} and ${low}_`],
+    [`${star} \\*not emphasis\\* and \`a*b\``, `${star} *not emphasis* and a*b`],
+    ["\ue000\\! and `\ue020!`", "\ue000! and \ue020!"],
+  ] as const) {
+    expect(wordsOfText(stored), stored).toBe(words);
+    const projected = projectedNames(new Map([["stored", { tree: storedReading(stored) }]]));
+    expect(projected.get("stored"), stored).toBe(words);
+  }
+});
+
+/** What a stored text reads to on one line, as the row above reads it: the words of its reading
+ *  (`wordsOfText`), and the name the names store projects from that reading (`projectedNames`),
+ *  `""` where the reading holds no word. */
+function plainLine(stored: string): { name: string; words: string } {
+  const projected = projectedNames(new Map([["stored", { tree: storedReading(stored) }]]));
+  return { name: projected.get("stored") ?? "", words: wordsOfText(stored) };
+}
+
+// A stored text reads to the words the server's reading of it holds: what markdown reads
+// literally stays and its marks go. A bare address, and an autolink's, is the words its author
+// wrote, as written, while the name projected from the reading writes it as its target's short
+// form, as a name reads no other name; an address in a code span stays as written in both.
+test("a stored text read to plain words keeps what markdown reads literally and drops its marks", () => {
+  for (const [stored, words, name = words] of [
+    // A backslash before punctuation is that character, never a mark nor a sentence's end.
+    ["**1\\. Stand the harness up.** Run it.", "1. Stand the harness up. Run it."],
+    ["\\*not emphasis\\*", "*not emphasis*"],
+    ["\\# not a heading", "# not a heading"],
+    ["\\`not code\\`", "`not code`"],
+    // A code span's content is verbatim: no mark and no escape is read inside it.
+    ["Run `a * b \\. c` now", "Run a * b \\. c now"],
+    ["Run `**not bold**` now", "Run **not bold** now"],
+    ["``a `tick` b``", "a `tick` b"],
+    ["an `open run", "an `open run"],
+    // An image holds no words; a link reads as its words, an autolink as its URL.
+    ["see ![diagram](shot.png) here", "see here"],
+    ["![diagram](shot.png)", ""],
+    ["[the plan](https://example.com/plan)", "the plan"],
+    ["<https://example.com/a_b*c*>", "https://example.com/a_b*c*"],
+    // A link by reference links its words to its label's definition, so one whose words are its
+    // own address names it as an autolink does.
+    ["[dispatch://CORE-4][core]\n\n[core]: dispatch://CORE-4", "dispatch://CORE-4", "CORE-4"],
+    // An escaped mark after an address is the character it escapes, so it trails the address as
+    // a sentence's end.
+    [
+      "see dispatch://CORE-2 and <dispatch://CORE-3>",
+      "see dispatch://CORE-2 and dispatch://CORE-3",
+      "see CORE-2 and CORE-3",
+    ],
+    ["see dispatch://CORE-2\\.", "see dispatch://CORE-2.", "see CORE-2."],
+    ["Run `dispatch read dispatch://CORE-2` now", "Run dispatch read dispatch://CORE-2 now"],
+    [
+      "`dispatch://CORE-2` is dispatch://CORE-2",
+      "dispatch://CORE-2 is dispatch://CORE-2",
+      "dispatch://CORE-2 is CORE-2",
+    ],
+    // An underscore inside a word is no mark; marks nest.
+    ["snake_case_name", "snake_case_name"],
+    ["_emphasis_ and __strong__", "emphasis and strong"],
+    ["***x***", "x"],
+    ["**a *b* c** and ~~gone~~", "a b c and gone"],
+    ["2 * 3 * 4", "2 * 3 * 4"],
+    // A heading marker goes at the start of any line, and white space collapses.
+    ["## Keep it\nKeep the model pure.", "Keep it Keep the model pure."],
+    ["   ### Indented", "Indented"],
+    ["  one\n\ntwo   three  ", "one two three"],
+  ] as const) {
+    expect(plainLine(stored), stored).toEqual({ name, words });
+  }
+});
+
+// A blockquote's and a list item's markers are markup, which the server's reading holds as the
+// blocks they open and no word of them, so a stored text reads to words without them at the
+// start of each line, nested ones and a task box included, and without a heading's marker after
+// them; the name projected from the reading writes an ordered item's number as a rendered body
+// draws it, and no other marker. What markdown reads literally keeps them: an escaped `1\.` or
+// `\-` opens no list, and `**bold**` at a line's start is no bullet, so a plan task's label still
+// reads `1.`.
+test("a stored text read to plain words drops the markers of a quote and of a list", () => {
+  for (const [stored, words, name = words] of [
+    ["- Hold the deploy.\n- Then ship.", "Hold the deploy. Then ship."],
+    ["> quoted words\n\nmy reply", "quoted words my reply"],
+    ["> > deeper\n>> deepest\n   > indented", "deeper deepest indented"],
+    ["1. one\n2. two\n10) ten", "one two ten", "1. one 2. two 10. ten"],
+    ["- [x] done\n* [ ] to do\n+ [X] also done", "done to do also done"],
+    [
+      "- one\n  - nested\n    1. deeper\n\t+ tabbed",
+      "one nested deeper tabbed",
+      "one nested 1. deeper tabbed",
+    ],
+    ["> ## Title\n> - item", "Title item"],
+    ["1\\. not a list\n\\- nor this", "1. not a list - nor this"],
+    [
+      "**1\\. Stand the harness up.** Run it.\n**2\\. Then ship.**",
+      "1. Stand the harness up. Run it. 2. Then ship.",
+    ],
+    ["*emphasis* stays a word", "emphasis stays a word"],
+  ] as const) {
+    expect(plainLine(stored), stored).toEqual({ name, words });
+  }
 });
 
 // A quote marker opens one block, so the first 100 of 150 open quotes and the 50 past the bound
 // read as the text they are, as the server keeps them.
 test("a stored text of quote markers past the nesting bound reads them as text", () => {
-  expect(plainWordsRaw(`${">".repeat(150)} x`)).toBe(`${">".repeat(50)} x`);
+  expect(wordsOfText(`${">".repeat(150)} x`)).toBe(`${">".repeat(50)} x`);
 });
 
 // Front matter, a `---` fenced block a text opens with, reads as the server writes it: its lines
@@ -47,20 +193,20 @@ test("a stored text of quote markers past the nesting bound reads them as text",
 // words, before the paragraph.
 test("a stored text's front matter reads as its fenced lines, and an unclosed fence as a rule", () => {
   const text = "---\ntitle: Spec\nowner: me\n---\nBody text.";
-  expect(plainWordsRaw(text)).toBe("--- title: Spec owner: me --- Body text.");
-  expect(lineWordsRaw({ text })).toBe("--- title: Spec owner: me ---");
+  expect(wordsOfText(text)).toBe("--- title: Spec owner: me --- Body text.");
+  expect(firstBlockWords(storedReading(text))).toBe("--- title: Spec owner: me ---");
   const unclosed = "---\n\nKeep the model pure.";
-  expect(plainWordsRaw(unclosed)).toBe("Keep the model pure.");
-  expect(lineWordsRaw({ text: unclosed })).toBe("Keep the model pure.");
+  expect(wordsOfText(unclosed)).toBe("Keep the model pure.");
+  expect(firstBlockWords(storedReading(unclosed))).toBe("Keep the model pure.");
 });
 
-// A page draws its rows again on every read that lands and every event, and a row's line is read
-// from its stored text where the node has no reading, as a result's is from a server that sends
-// none. The readings of the texts a draw read are remembered so that the next draw reads them
-// rather than parses them again: 900 distinct stored texts, each reading held by what asked for
-// it, must draw again within the budget, the second draw in the same order as the first, as a
-// page draws its rows.
-test("the lines of more stored texts than the memo holds are drawn again without parsing them again", () => {
+// A page draws its rows again on every read that lands and every event, and a chip naming an
+// ask, a comment or a message is named from its stored text's reading, as is the reading the
+// Change of a decision with no reading quotes. The readings of the texts a draw read are
+// remembered so that the next draw reads them rather than parses them again: 900 distinct stored
+// texts, each reading held by what asked for it, must draw again within the budget, the second
+// draw in the same order as the first, as a page draws its rows.
+test("the readings of more stored texts than the memo holds are read again without parsing them again", () => {
   const texts = Array.from(
     { length: 900 },
     (_, at) =>
@@ -68,14 +214,15 @@ test("the lines of more stored texts than the memo holds are drawn again without
       `- the first named test of case ${at}: pass\n- the second named test of case ${at}: pass\n` +
       `${"It held at the head, read with the junit report. ".repeat(12)}`
   );
-  for (const text of texts) lineWordsRaw({ text });
+  const holders = texts.map(() => ({}));
+  for (const [at, text] of texts.entries()) storedReading(text, holders[at]);
   const start = performance.now();
-  for (const text of texts) lineWordsRaw({ text });
+  for (const [at, text] of texts.entries()) storedReading(text, holders[at]);
   expect(performance.now() - start).toBeLessThan(REDRAW_BUDGET_MS);
 });
 
 /** `words` on one line, its white space collapsed to single spaces, as every one-line reading of
- *  a stored text writes it (`plainWords`, `lineWords`). */
+ *  a stored text writes it. */
 function collapsed(words: string): string {
   return words.replace(/\s+/gu, " ").trim();
 }
@@ -126,30 +273,25 @@ const PLAIN_TEXTS: readonly string[] = [
 ];
 
 /** Whether the plain path (`plainReading`) reads `text`, a text it takes (`isPlainText`), as the
- *  parse does (`parsedReading`), to the character: to the same words, the same first block a
- *  node's line is cut from, and the same words with each address written short. */
+ *  parse does (`parsedReading`), to the character: to the same words and the same first block a
+ *  node's line is projected from. */
 function readsAsParsed(text: string): boolean {
   const plain = plainReading(text);
   const parsed = parsedReading(text);
-  return (
-    wordsOf(plain) === wordsOf(parsed) &&
-    lineWordsRaw({ text, tree: plain }) === lineWordsRaw({ text, tree: parsed }) &&
-    wordsOf(withShortAddresses(plain)) === wordsOf(withShortAddresses(parsed))
-  );
+  return wordsOf(plain) === wordsOf(parsed) && firstBlockWords(plain) === firstBlockWords(parsed);
 }
 
 // A text that holds no markup is read without the parse (`plainReading`), so its words must be
-// the parse's words to the character: its whole words, the first block a node's line is cut from,
-// and its words with each address written short.
+// the parse's words to the character: its whole words and the first block a node's line is
+// projected from.
 test("a plain text is read without the parse into the words the parse reads", () => {
   for (const text of PLAIN_TEXTS) {
     const label = JSON.stringify(text);
     expect(isPlainText(text), label).toBe(true);
     expect(readsAsParsed(text), label).toBe(true);
     const parsed = parsedReading(text);
-    expect(plainWordsRaw(text), label).toBe(collapsed(wordsOf(parsed)));
-    expect(plainWords(text), label).toBe(collapsed(wordsOf(withShortAddresses(parsed))));
-    expect(lineWordsRaw({ text }), label).toBe(collapsed(lineWordsRaw({ text, tree: parsed })));
+    expect(wordsOfText(text), label).toBe(collapsed(wordsOf(parsed)));
+    expect(firstBlockWords(storedReading(text)), label).toBe(firstBlockWords(parsed));
   }
 });
 
@@ -207,8 +349,8 @@ test("a delimiter row that opens with a colon makes a table, read as the server 
     ["a b\n :--", "a b"],
     ["Total\n:--- more", "Total :--- more"],
   ] as const) {
-    expect(plainWordsRaw(text), text).toBe(words);
-    expect(collapsed(lineWordsRaw({ text })), text).toBe(words);
+    expect(wordsOfText(text), text).toBe(words);
+    expect(firstBlockWords(storedReading(text)), text).toBe(words);
   }
 });
 
@@ -339,16 +481,13 @@ test("a parsed reading is shared by every holder of its text and by a caller nam
 
 // GFM's autolink literals are left out of the parse (`STORED_TEXT_PARSE`): a bare URL, a `www.`
 // address and an email read as the same words linked or not, so the parse reads each as the text
-// it is written as, with no link, and a bare address beside them is still written short.
+// it is written as, with no link, and a bare address beside them as written too.
 test("the parse reads a bare URL, a www address and an email as the words they are written as", () => {
   const text =
     "See https://example.com/a?b=c,\nwww.example.com  and someone@example.com\nbeside dispatch://ACME-12.";
   const reading = parsedReading(text);
   expect(JSON.stringify(reading)).not.toContain('"link"');
   expect(collapsed(wordsOf(reading))).toBe(collapsed(text));
-  expect(collapsed(wordsOf(withShortAddresses(reading)))).toBe(
-    "See https://example.com/a?b=c, www.example.com and someone@example.com beside ACME-12."
-  );
 });
 
 /** One text of the display-tree fixture `pmdoc`'s `TestWebDisplayFixture` writes: its name, the

@@ -40,6 +40,11 @@ import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import {
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
@@ -72,7 +77,7 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
-import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
+import { publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
 import { drawStage } from "../slots/stage-fixtures";
 import { nodeRowSelectorOf } from "../tree-focus";
@@ -117,16 +122,17 @@ function IssueScope(): ReactNode {
   return null;
 }
 
-/** The names the page's one batched read brought, published as the page publishes them
- *  (`useIssueTree.ts`), which a reference in a node's drawn words is named from (`RowText`). */
+/** What the page publishes of its one batched read (`useIssueTree.ts`, `publishedNames`), which a
+ *  reference in a node's drawn words is named from (`RowText`), published to the store as the
+ *  page publishes it. */
 function Named({
   children,
-  names,
+  published,
 }: {
   children: ReactNode;
-  names: ReadonlyMap<string, string> | undefined;
+  published: PublishedReferences;
 }): ReactNode {
-  usePublishReferenceNames(names);
+  usePublishReferenceNames(published);
   return children;
 }
 
@@ -329,6 +335,9 @@ function drawBody(
       for (const spy of Object.values(spies)) spy.mockRestore();
     },
   };
+  // What the page publishes of its names read, which the store holds and the body hands its rows
+  // (`PublishedReferenceNames`): one value, as the page's tree makes one.
+  const published = publishedNames(names ?? new Map());
   const bodyOf = (over: IssueDetails): ReactNode => (
     <SpecFilterBody
       context={context}
@@ -337,6 +346,7 @@ function drawBody(
       holdsEscape={false}
       issue={over}
       onEditing={onEditing}
+      published={published}
       reader={reader}
       // The case holds each read as it says, so an address lands as soon as its row is drawn.
       readsSettled
@@ -351,7 +361,7 @@ function drawBody(
   const page = (drawn: boolean): ReactNode => (
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
-        <Named names={names}>
+        <Named published={published}>
           <MemoryRouter>
             <KeymapProvider>
               <MarginProvider>
@@ -761,7 +771,7 @@ test("an agent's decision draws its words with each reference named, in its cell
       // batched read (`tree-drafts.ts`), which is the name the page gives it
       // (`referenceStandIns`).
       decisionNode("d1", {
-        chips: [{ answered: true, gone: false, name, ref: cited }],
+        chips: [{ answered: true, gone: false, reading: { words: name }, ref: cited }],
         text: words,
         tree,
       }),
@@ -775,7 +785,7 @@ test("an agent's decision draws its words with each reference named, in its cell
         text_tree: tree,
       }),
     ],
-    { names: new Map([[cited, `:::requirement{#r4}\n${name}\n:::`]]) }
+    { names: new Map([[cited, name]]) }
   );
   try {
     await waitFor(() =>
@@ -958,7 +968,7 @@ test("the focus on a decision draws the person's whole answer, character for cha
       // The tree names every block a decision links as a chip on it, as the page's model does
       // (`tree-drafts.ts`).
       decisionNode("d1", {
-        chips: [{ answered: true, gone: false, name: "r1", ref: statementRef("r1") }],
+        chips: [{ answered: true, gone: false, reading: { words: "r1" }, ref: statementRef("r1") }],
       }),
     ]),
     [
@@ -1417,16 +1427,17 @@ test("each statement carries how it stands, by a shape with its own name", () =>
 });
 
 // A statement's own words carry its number where the spec wrote one, and are drawn as its author
-// wrote them, whole.
+// wrote them, whole: the shared renderer draws the stored markdown, so the marks the author typed
+// around the number are drawn as the bold they say and are no characters of the words.
 test("a statement's words are drawn as its author wrote them", () => {
-  const words =
-    "**R1.** Every node's words are on the page without opening it; an agent's long words " +
+  const rest =
+    " Every node's words are on the page without opening it; an agent's long words " +
     "show their first six lines and the rest one key away, and his words are never cut.";
-  const { read, view } = drawBody(issueTree([statement("r1", { text: words })]));
+  const { read, view } = drawBody(issueTree([statement("r1", { text: `**R1.**${rest}` })]));
   try {
     expect(
       view.container.querySelector("[data-spec-statement] [data-node-words]")?.textContent
-    ).toBe(words);
+    ).toBe(`R1.${rest}`);
   } finally {
     view.unmount();
     read.mockRestore();
@@ -2610,25 +2621,28 @@ test("a press after a footnote reference lands in the word pressed", async () =>
   });
 });
 
-// A statement whose read sent no reading of its words is drawn as stored, its inline HTML as the
-// characters it was written as, with no mark of what the editor holds there, so the count of the
-// press runs on by the 6 characters of `<name>`, to the end of "the". The word pressed is found
-// with the words beside it where the editor holds them, and the caret goes as far into it.
+// A statement whose reading draws a token as plain characters, with no mark of what the editor
+// holds there, is an inline kind the count leaves uncounted: the editor holds `[atom]` as an atom
+// the caret cannot enter, so the count of the press runs on by its 6 characters, to the end of
+// "the". The word pressed is found with the words beside it where the editor holds them, and the
+// caret goes as far into it.
 test("an uncounted inline kind still puts the caret in the pressed word", async () => {
   const after = " and then the rest.";
-  const text = `Kept by <name>${after}`;
+  const text = `Kept by [atom]${after}`;
   await pressAfterKind({
     at: 7,
     drawn: (words) => {
-      expect(words.querySelector('[data-type="html"]')).toBeNull();
+      expect(
+        words.querySelector(
+          '[data-row-written], [data-type="html"], [data-type="footnote_reference"], [data-dispatch-picture]'
+        )
+      ).toBeNull();
       expect(words.textContent).toContain(text);
     },
     held: (
       <>
         {"Kept by "}
-        <span contentEditable={false} data-type="html">
-          {"<name>"}
-        </span>
+        <span contentEditable={false}>{"[atom]"}</span>
         {after}
       </>
     ),
@@ -2636,6 +2650,10 @@ test("an uncounted inline kind still puts the caret in the pressed word", async 
     lands: after,
     pressed: text,
     text,
+    tree: {
+      content: [{ content: [{ text, type: "text" }], type: "paragraph" }],
+      type: "doc",
+    },
   });
 });
 
@@ -2650,7 +2668,7 @@ test("a press on a decision's cell or away from it changes what the body draws o
       answeredAsk("ask-1", { text: stored }),
       statement("r1"),
       decisionNode("d1", {
-        chips: [{ answered: true, gone: false, name: "r1", ref: statementRef("r1") }],
+        chips: [{ answered: true, gone: false, reading: { words: "r1" }, ref: statementRef("r1") }],
       }),
     ]),
     [
@@ -3558,7 +3576,7 @@ test("q goes to the next open question in the conversation, where the view draws
 test("w on an address-named row goes to its decision in the conversation where that decision heads no run", async () => {
   const user = userEvent.setup();
   const behind = decisionNode("d1", {
-    chips: [{ answered: true, gone: false, name: "A remark", ref: "comment-1" }],
+    chips: [{ answered: true, gone: false, reading: { words: "A remark" }, ref: "comment-1" }],
   });
   const tree = issueTree([
     statement("r1"),
@@ -3593,7 +3611,7 @@ test("w on an address-named row says nothing of its decision while the asks read
     statement("r1"),
     node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
     decisionNode("d1", {
-      chips: [{ answered: true, gone: false, name: "A remark", ref: "comment-1" }],
+      chips: [{ answered: true, gone: false, reading: { words: "A remark" }, ref: "comment-1" }],
     }),
   ]);
   const made = [
@@ -3769,7 +3787,14 @@ test("an option label that cites a statement is drawn by the statement's name, n
   const named = "Keep R2. Every address as written";
   // The page names the statement by the words of the first chip naming it (`useReferenceNames`).
   const made = decisionNode("d1", {
-    chips: [{ answered: true, gone: false, name: "R2. Every address", ref: statementRef("r2") }],
+    chips: [
+      {
+        answered: true,
+        gone: false,
+        reading: { words: "R2. Every address" },
+        ref: statementRef("r2"),
+      },
+    ],
   });
   const { read, view } = drawBody(
     issueTree([
@@ -3785,7 +3810,9 @@ test("an option label that cites a statement is drawn by the statement's name, n
         kind: "person",
         links: [shaped(statementRef("r1"))],
       }),
-    ]
+    ],
+    // The page publishes the chip's name, which the names store hands the view.
+    { names: new Map([[statementRef("r2"), "R2. Every address"]]) }
   );
   try {
     expect(textsOf(view, "[data-spec-quote]")).toEqual([`“${named}”`]);

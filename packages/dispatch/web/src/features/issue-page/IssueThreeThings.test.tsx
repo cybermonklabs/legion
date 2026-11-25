@@ -18,6 +18,7 @@ import type {
 import { pageStateText } from "../../theme/classes";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -38,6 +39,7 @@ import {
   VERIFICATION_WORDS,
 } from "./page-words";
 import { filterSignals } from "./presets";
+import { Publisher, publishedTree } from "./projection-fixture";
 import { SENTENCE_TABLE } from "./sentence-table";
 import { ContentsSlot } from "./slots/contents";
 import { ProvidersSlot } from "./slots/providers";
@@ -151,9 +153,14 @@ function bullets(
     root = treeNode(KEY, "issue", { children: summary === undefined ? [] : [summary] }),
   }: { held?: boolean; look?: "contents" | "spec"; root?: TreeNode } = {}
 ): { labels: string[]; lines: string[]; unmount: () => void } {
+  // The page publishes its chips' names to the names store, which the sentences name a cited
+  // reference by (`useReferenceNames`).
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <Head held={held} look={look} root={root} summary={summary} />
+      <ReferenceNamesProvider>
+        <Publisher published={publishedTree(root)} />
+        <Head held={held} look={look} root={root} summary={summary} />
+      </ReferenceNamesProvider>
     </MemoryRouter>
   );
   const items = within(screen.getByTestId("issue-three-things")).queryAllByRole("listitem");
@@ -687,7 +694,12 @@ test("a summary sentence that cites a block draws the block's name, not its addr
       treeNode(blockNodeId("spec", "r1"), "requirement"),
       treeNode(blockNodeId("decisions", "d1"), "decision", {
         chips: [
-          { answered: true, gone: false, name: "the whole issue in one reading", ref: cited },
+          {
+            answered: true,
+            gone: false,
+            reading: { words: "the whole issue in one reading" },
+            ref: cited,
+          },
         ],
       }),
     ],
@@ -720,7 +732,14 @@ test("a summary sentence that cites a labelled statement stays one sentence unde
       summary,
       treeNode(blockNodeId("spec", "r1"), "requirement"),
       treeNode(blockNodeId("decisions", "d1"), "decision", {
-        chips: [{ answered: true, gone: false, name: "R1. Every node is whole", ref: cited }],
+        chips: [
+          {
+            answered: true,
+            gone: false,
+            reading: { words: "R1. Every node is whole" },
+            ref: cited,
+          },
+        ],
       }),
     ],
   });
@@ -748,7 +767,14 @@ test("a summary with no sentence end that cites a labelled statement draws it as
       summary,
       treeNode(blockNodeId("spec", "r1"), "requirement"),
       treeNode(blockNodeId("decisions", "d1"), "decision", {
-        chips: [{ answered: true, gone: false, name: "R1. Every node is whole", ref: cited }],
+        chips: [
+          {
+            answered: true,
+            gone: false,
+            reading: { words: "R1. Every node is whole" },
+            ref: cited,
+          },
+        ],
       }),
     ],
   });
@@ -1211,6 +1237,7 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
               holdsEscape={false}
               isClosed={false}
               onEditing={() => {}}
+              published={publishedTree(root)}
               reveal={undefined}
               root={root}
               rootRow

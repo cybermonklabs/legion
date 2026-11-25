@@ -68,9 +68,8 @@ import { statementStandings } from "../verification-filter/statement-state";
  * how sure it was (`Decision.unsure`).
  *
  * Every line and quote here is read with each bare address as its author wrote it
- * (`lineWordsRaw` and `firstBlockWordsRaw`, not `lineWords`, which writes one as its short
- * form), so that `referenceStandIns` names it by the page's name wherever the page knows one,
- * and by its short form only where it does not.
+ * (`lineWordsRaw` and `firstBlockWordsRaw`), so that `referenceStandIns` names it by the page's
+ * name wherever the page knows one, and by its short form only where it does not.
  *
  * Whether a statement's words changed after the tie that names the decision heading its run is
  * read from today's decisions read, as R5 says until the model holds a tie's own word for it:
@@ -343,9 +342,9 @@ export function firstSentenceOf(text: string): string {
 
 /** Every node of the tree by its id, at its first placement, which is where a node drawn under
  *  more than one parent is edited (`TreeNode.transcluded`). It is not
- *  `decisions-filter/decisions-parts.ts`'s `placements`, which cuts each node's parent line as
- *  well, from words that write each bare address as its short form (`lineWords`): the Spec view
- *  reads a parent's line by its own rule (`parentOf`), so this walks the nodes alone. */
+ *  `decisions-filter/decisions-parts.ts`'s `placements`, which reads each node's parent line as
+ *  well (`issue-tree.ts`'s `parentLineOf`): the Spec view reads a parent's line by its own rule
+ *  (`parentOf`), so this walks the nodes alone. */
 function nodesById(root: TreeNode): ReadonlyMap<string, TreeNode> {
   const nodes = new Map<string, TreeNode>();
   const walk = (node: TreeNode): void => {
@@ -579,10 +578,9 @@ function parentOf(
   const line = node.parentLine;
   if (line === undefined) return undefined;
   const parent = nodes.get(line.id);
-  // Read from the node and not from `line.line`, which `presets.ts` cuts by the same rule
-  // (`parentLineOf`) from words that write each bare address as its short form (`lineWords`):
-  // the heading names each reference by the page's name wherever it knows one, and counts it
-  // against the line's limit as the name it draws.
+  // Read from the node and not from `line`, which the row projects as every one line of a node
+  // is drawn (`issue-tree.ts`'s `lineReading`): the heading names each reference by the page's
+  // name wherever it knows one, and counts it against the line's limit as the name it draws.
   const words = parent === undefined ? "" : namedFirstLine(lineWordsRaw(parent), nameOf);
   return {
     ...(parent?.at === undefined ? {} : { at: parent.at }),

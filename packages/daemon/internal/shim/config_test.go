@@ -133,6 +133,42 @@ func TestReadProviderEnvExportsFilesSkipsFilePointersAndRefusesShadows(t *testin
 	}
 }
 
+// Under DISPATCH_TOKEN_BROKER=1 a role's Dispatch credential is the token its client trades its
+// pod's identity for, and its launch carries no DISPATCH_TOKEN_FILE pointer, so a providers-Secret
+// key DISPATCH_TOKEN or DISPATCH_TOKEN_FILE would land in Oh My Pi's environment as a shared
+// credential: the start is refused, naming the key and its file, and leaking neither value.
+// Without DISPATCH_TOKEN_BROKER, DISPATCH_TOKEN is skipped as before where its pointer is set.
+func TestAProvidersDispatchTokenIsRefusedUnderTheBroker(t *testing.T) {
+	for _, key := range []string{"DISPATCH_TOKEN", "DISPATCH_TOKEN_FILE"} {
+		t.Run(key, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, body := range map[string]string{"ANTHROPIC_API_KEY": "sk-provider-not-a-secret", key: "shared-dispatch-bearer"} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			brokered := map[string]string{"DISPATCH_TOKEN_BROKER": "1", "PATH": "/usr/bin"}
+			_, err := shim.ReadProviderEnv(dir, func(name string) (string, bool) { v, ok := brokered[name]; return v, ok })
+			if err == nil || !strings.Contains(err.Error(), "--provider-env-dir key "+key+" ("+filepath.Join(dir, key)+")") {
+				t.Fatalf("ReadProviderEnv under DISPATCH_TOKEN_BROKER=1 = %v; want a refusal naming the key and its file", err)
+			}
+			if strings.Contains(err.Error(), "shared-dispatch-bearer") {
+				t.Fatalf("the refusal leaks the token: %v", err)
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "DISPATCH_TOKEN"), []byte("read-through-its-file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pointed := map[string]string{"DISPATCH_TOKEN_FILE": "/var/run/legion/launcher-private/generations/1/DISPATCH_TOKEN"}
+	env, err := shim.ReadProviderEnv(dir, func(name string) (string, bool) { v, ok := pointed[name]; return v, ok })
+	if err != nil || len(env) != 0 {
+		t.Fatalf("ReadProviderEnv without DISPATCH_TOKEN_BROKER = %q, %v; want DISPATCH_TOKEN skipped for its pointer, as before", env, err)
+	}
+}
+
 func TestReadAgentSecretsFlagsAreAllOrNone(t *testing.T) {
 	dir := t.TempDir()
 	token := filepath.Join(dir, "token")

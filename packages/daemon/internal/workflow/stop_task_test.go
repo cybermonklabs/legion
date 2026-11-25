@@ -42,6 +42,7 @@ const stopsBy = "task a of LEGION-208 was stopped by its owner"
 // stopped. An issue with no plan rows has no task to stop, and a stop of a member of a
 // lingering tree, whose phase and running task the linger keeps, changes nothing.
 func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
+	t.Parallel()
 	t.Run("at testing", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

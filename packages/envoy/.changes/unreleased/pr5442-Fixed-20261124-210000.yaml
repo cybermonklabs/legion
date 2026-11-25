@@ -1,0 +1,27 @@
+kind: Fixed
+body: |-
+    The listener's kept-role sweep no longer reads every takeover record's previous holder every
+    five minutes for three days. A pass read the previous holder's agent subject past the record's
+    `Next`, which the stream answers `404` when it holds nothing new, and a record's passes ran for
+    71 hours: at 862 records each shared listener's pass sent the stream's leader about 900 such
+    reads. Four changes bound it. A takeover record now ends at the first pass that starts more
+    than one hour after its claim (the keep window) and reads to the end, so a pass reads the last
+    hour's takeovers alone, about 13 to 18 at the rate the records grow; a forward that resolved
+    the previous holder before the claim starts inside the 55-minute fence, so that pass has read
+    it. A listener reads a finished record again only when the count of its subject's messages
+    moves, which is at each removal by the stream's age limit, and its finish is terminal: each pass
+    writes naming the sequence it read and writes none over a finished record
+    (`bus.Client.WriteTakeoverRecordAt`), so a pass held since its read cannot write an older state
+    back. A listener whose NATS user holds none of the session consumers' calls, Dispatch's and
+    every host's, reads no record and runs no pass: it asks the server with one read of a consumer
+    no session has, once per ten-minute refusal episode. And each sweep passes at a phase of its
+    own in every interval of the clock, from a hash of the listener's host name, so two listeners
+    started together no longer sweep together.
+    A role-lane forward the stream acknowledges later than its resolution's fence and its own wait
+    is no longer reported delivered: it may be stored after the role moved and after the takeover
+    record ended, where no pass copies it to the next holder. It is reported failed
+    (`roles.ErrForwardStoredTooLate`), which clears its attempt, so the sender's next send resolves
+    the holder again. The kept lane's walk reads the claim before each copy, so it is never late.
+time: 2026-11-24T21:00:00Z
+custom:
+    Issue: pr5442

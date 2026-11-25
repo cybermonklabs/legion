@@ -34,8 +34,12 @@ export function ViewVerificationSlot({
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   // The tree, the line of each read it is built from that stands refused, and whether every one
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
-  // tree reads it by, so they cost no request of their own.
-  const { failed, readsSettled, root } = useOutlineReads(issue);
+  // tree reads it by, so they cost no request of their own; what the page publishes of its
+  // batched names read, which the body hands its rows in the render that draws them
+  // (`published`), so none of them reads a reference the page asks for; and the outline's names
+  // line while those reads stand failed (`names`), which the body draws over its tree, since
+  // every reference its rows draw waits on those names.
+  const { failed, names, published, readsSettled, root } = useOutlineReads(issue);
   const { checks, documentId, reads } = useVerificationReads(issue.key);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it, as the outline resolves
@@ -86,6 +90,8 @@ export function ViewVerificationSlot({
           {...(tells ? { addressed } : {})}
           checks={checks}
           context={view.context}
+          namesLine={names}
+          published={published}
           reads={reads}
           readsSettled={readsSettled}
           {...(revealed === undefined ? {} : { reveal: revealed })}
