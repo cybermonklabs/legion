@@ -5,17 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // ciIssue is the issue of the CI news rows here, and ciHeadX and ciHeadY two heads of its pull
@@ -427,6 +431,96 @@ func TestTenChecksOfOneRunGiveOneWake(t *testing.T) {
 	if _, delivered := r.publisher.snapshot(); len(delivered) != 1 || r.resumes() != 1 || r.left(record.OutboxKindCINews) != 0 {
 		t.Fatalf("the ten checks: %d delivered, %d wakes, %d rows; want one publish, one wake, the row finished", len(delivered), r.resumes(), r.left(record.OutboxKindCINews))
 	}
+}
+
+// readPrompting queues a prompt to read Dispatch inside the fact's transaction, as the workflow's
+// checkState does (through record.Store.EnqueueReadPrompt), and keeps whether it joined a row.
+type readPrompting struct {
+	records record.Store
+	prompt  record.CINews
+	at      time.Time
+	joined  *bool
+}
+
+func (h readPrompting) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (intake.Result, error) {
+	joined, err := h.records.EnqueueReadPrompt(ctx, tx, ciIssue, h.prompt, h.at)
+	*h.joined = joined
+	return intake.Result{}, err
+}
+
+// A prompt to read Dispatch is delivered as soon as the fact that queued it commits, as every
+// other row is. The workflow queues it through record.Store.EnqueueReadPrompt, whose new row the
+// record writes with its own Enqueue, so the workflow's store (projectRecords) wakes the issue's
+// role-message lane there: without that wake the prompt waits for the next sweep, or for another
+// row of the lane to wake it. The lanes run on a held clock, so no sweep fires: the commit wakes
+// the lane, and the reviewer is published the prompt once on that wake alone.
+//
+// The control, a kept subtest: the same prompt queued past the workflow's store wakes no lane and
+// stays queued, published to nobody, until the test fires the sweep, which then delivers it.
+func TestAReadPromptRunsOnItsLaneWithoutASweep(t *testing.T) {
+	t.Parallel()
+	play := func(t *testing.T, workflowStore bool) (*ciRig, *heldClock, []string) {
+		t.Helper()
+		r := newCIRig(t, phase.Reviewing)
+		r.entry(claim.RoleReviewer, 4)
+		clock := microClock()
+		var mu sync.Mutex
+		var woken []string
+		records := r.runner.records
+		if workflowStore {
+			records = projectRecords{Store: r.runner.records, project: "LEGION", log: quietLogger(), wake: func(issue string, kind record.OutboxKind) {
+				mu.Lock()
+				woken = append(woken, issue+":"+string(kind))
+				mu.Unlock()
+				r.runner.wake(issue, kind)
+			}}
+		}
+		runLanes(t, r.runner, clock)
+		prompt := ciPrompt(t, claim.RoleReviewer, 1, ciHeadX, record.CIReader{Phase: phase.Reviewing, Entry: 4})
+		prompt.Checks = nil
+		prompt.States = []record.CIStateSnapshot{{Check: "k-ci", State: "no", Seq: 1}}
+		var joined bool
+		if _, err := intake.ApplyFact(context.Background(), r.pool, "lanes-test", "read-prompt", intake.DaemonBooted{Boot: 1},
+			readPrompting{records: records, prompt: prompt, at: clock.Now(), joined: &joined}); err != nil || joined {
+			t.Fatalf("queue the prompt = joined %t, %v; want a row of its own", joined, err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return r, clock, slices.Clone(woken)
+	}
+	delivered := func(t *testing.T, r *ciRig) {
+		t.Helper()
+		testwait.Eventually(t, "the prompt published to the reviewer and its row finished", func() bool {
+			_, delivered := r.publisher.snapshot()
+			return len(delivered) == 1 && r.left(record.OutboxKindCINews) == 0
+		})
+		if _, delivered := r.publisher.snapshot(); delivered[0].topic != ciTopic(t, claim.RoleReviewer) {
+			t.Fatalf("the prompt was published to %s, want the reviewer's topic %s", delivered[0].topic, ciTopic(t, claim.RoleReviewer))
+		}
+	}
+	t.Run("the commit wakes the lane, which delivers the prompt", func(t *testing.T) {
+		t.Parallel()
+		r, clock, woken := play(t, true)
+		if want := ciIssue + ":" + string(record.OutboxKindCINews); !slices.Equal(woken, []string{want}) {
+			t.Fatalf("the commit of the prompt woke the lanes %v, want %s's: the prompt waits for the sweep", woken, want)
+		}
+		delivered(t, r)
+		if _, sweeps := clock.armed(outboxLease); sweeps != 1 {
+			t.Fatalf("sweep timers armed = %d, want the one Run armed at boot and never fired", sweeps)
+		}
+	})
+	t.Run("control: queued past the workflow's store, the prompt waits for the sweep", func(t *testing.T) {
+		t.Parallel()
+		r, clock, woken := play(t, false)
+		if len(woken) != 0 {
+			t.Fatalf("the bare store woke %v, want nothing", woken)
+		}
+		if attempts, _ := r.publisher.snapshot(); attempts != 0 || r.left(record.OutboxKindCINews) != 1 {
+			t.Fatalf("before the sweep: %d publishes, %d rows; want none and the prompt still queued", attempts, r.left(record.OutboxKindCINews))
+		}
+		fireSweep(t, clock)
+		delivered(t, r)
+	})
 }
 
 // A prompt whose set of checks is replaced by no checks, as the removal of a head's last check

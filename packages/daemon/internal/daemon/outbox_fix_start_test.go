@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -334,4 +336,90 @@ func TestAFixStartGivesItsTaskTheFixItsCopyAndItsMove(t *testing.T) {
 		t.Fatalf("control: the task of a start of no fix carries fix %d from %q on branch %q moving to %q, want none of them",
 			task.Fix, task.FixFrom, task.FixBranch, task.MoveTo)
 	}
+}
+
+// fixStarting writes the start of a fix's task inside the fact's transaction, as the workflow's
+// startFix does (through record.Store.EnqueueFixStart), and keeps the id the row took.
+type fixStarting struct {
+	records record.Store
+	row     record.OutboxRow
+	id      *int64
+}
+
+func (h fixStarting) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (intake.Result, error) {
+	if err := h.records.EnqueueFixStart(ctx, tx, h.row); err != nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, tx.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise'`, h.row.Issue).Scan(h.id)
+}
+
+// A fix's start runs on its lane as soon as the fact that wrote it commits, as every other row
+// does. The workflow writes it through record.Store.EnqueueFixStart, beside the line of starts that
+// wait for a slot, so the workflow's store (projectRecords) wakes the issue's lifecycle lane there
+// as it does at EnqueueStart: without that wake the fix whose failed job was just read waits for
+// the next sweep, up to one outbox lease after the read. The lanes run on a held clock, so no
+// sweep fires: the commit wakes the lane, and the implementer's claim takes the fix's task on that
+// wake alone.
+//
+// The control, a kept subtest: the same start written past the workflow's store wakes no lane and
+// stays queued, with no claim made, until the test fires the sweep, which then runs it.
+func TestAFixStartRunsOnItsLaneWithoutASweep(t *testing.T) {
+	t.Parallel()
+	play := func(t *testing.T, workflowStore bool) (*fixStartRig, *heldClock, record.OutboxRow, []string) {
+		t.Helper()
+		r := newFixStartRig(t, func(*record.Issue) {})
+		clock := microClock()
+		var mu sync.Mutex
+		var woken []string
+		var records record.Store = r.records
+		if workflowStore {
+			records = projectRecords{Store: r.records, project: "LEGION", log: quietLogger(), wake: func(issue string, kind record.OutboxKind) {
+				mu.Lock()
+				woken = append(woken, issue+":"+string(kind))
+				mu.Unlock()
+				r.runner.wake(issue, kind)
+			}}
+		}
+		runLanes(t, r.runner, clock)
+		row := mustOutboxRow(t, fixStartIssue, fixStartOf(), clock.Now())
+		if _, err := intake.ApplyFact(context.Background(), r.pool, "lanes-test", "fix-start", intake.DaemonBooted{Boot: 1},
+			fixStarting{records: records, row: row, id: &row.ID}); err != nil {
+			t.Fatalf("commit the fix's start: %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return r, clock, row, slices.Clone(woken)
+	}
+	took := func(t *testing.T, r *fixStartRig, row record.OutboxRow) {
+		t.Helper()
+		testwait.Eventually(t, "the implementer's claim took the fix's task and the start row finished", func() bool {
+			_, found := r.sup.Machine(r.token)
+			return found && outboxRowsOfKind(t, r.pool, fixStartIssue, record.OutboxKindSupervise) == 0
+		})
+		r.tookTheTask(row)
+	}
+	t.Run("the commit wakes the lane, which runs the start", func(t *testing.T) {
+		t.Parallel()
+		r, clock, row, woken := play(t, true)
+		if want := fixStartIssue + ":" + string(record.OutboxKindSupervise); !slices.Equal(woken, []string{want}) {
+			t.Fatalf("the commit of the fix's start woke the lanes %v, want %s's: the start waits for the sweep", woken, want)
+		}
+		took(t, r, row)
+		if _, sweeps := clock.armed(outboxLease); sweeps != 1 {
+			t.Fatalf("sweep timers armed = %d, want the one Run armed at boot and never fired", sweeps)
+		}
+	})
+	t.Run("control: written past the workflow's store, the start waits for the sweep", func(t *testing.T) {
+		t.Parallel()
+		r, clock, row, woken := play(t, false)
+		if len(woken) != 0 {
+			t.Fatalf("the bare store woke %v, want nothing", woken)
+		}
+		if _, found := r.sup.Machine(r.token); found || outboxRowsOfKind(t, r.pool, fixStartIssue, record.OutboxKindSupervise) != 1 {
+			t.Fatalf("before the sweep: claim made %t, %d start rows; want no claim and the start still queued",
+				found, outboxRowsOfKind(t, r.pool, fixStartIssue, record.OutboxKindSupervise))
+		}
+		fireSweep(t, clock)
+		took(t, r, row)
+	})
 }
