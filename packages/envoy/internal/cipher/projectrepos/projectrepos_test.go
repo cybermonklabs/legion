@@ -16,12 +16,12 @@ import (
 
 // standIn serves PRIV, whose issues resolve to acme/pub and acme/two, and EMPTY, whose issues
 // resolve to none. Each also has a mapped list of its own, which no answer carries and the
-// repository answer must not: a client that read it would answer acme/mapped.
+// repository answer must not: a client that read it would answer acme/member.
 func standIn(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
 	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
-		"PRIV":  {Visibility: "private", Repositories: []string{"acme/mapped"}, Resolved: []string{"acme/pub", "acme/two"}},
-		"EMPTY": {Visibility: "private", Repositories: []string{"acme/mapped"}},
+		"PRIV":  {Visibility: "private", Repositories: []string{"acme/member"}, Resolved: []string{"acme/pub", "acme/two"}},
+		"EMPTY": {Visibility: "private", Repositories: []string{"acme/member"}},
 	}, nil)
 }
 
@@ -188,7 +188,7 @@ func TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne(t *testing.T) {
 	for project, want := range map[string][]string{"PRIV": {"acme/pub", "acme/two"}, "EMPTY": {}} {
 		got, err := clientOf(server).Repositories(t.Context(), project)
 		if err != nil || !reflect.DeepEqual(got, want) {
-			t.Fatalf("Repositories(%s) = %q, %v; want the issues' list %q, not the mapped one", project, got, err, want)
+			t.Fatalf("Repositories(%s) = %q, %v; want the issues' list %q, not the membership answer's own list", project, got, err, want)
 		}
 		answer, err := projectaccess.New(server.URL, server.Account, nil).Access(t.Context(), project, "")
 		if err != nil || answer.Project != project {

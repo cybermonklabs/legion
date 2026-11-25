@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  Dispatch now holds a restricted member's credential grants to the grants of their own sessions
+  itself, rather than leaving it to the secrets broker, which knows a person is a restricted member
+  only where `BROKER_PROJECT_ACCESS_URL` is set. Before, with that setting unset, a restricted
+  member's `GET /api/v1/credential-grants` relayed every grant the broker lists to a full member: the
+  grants the model judge approved in anyone's stead, the automatic grants of every service's pod and
+  the grants a person approved as anyone, of every project; and their
+  `POST /api/v1/credential-grants/{id}/revoke` could end any grant whose approver is anyone. Now
+  their list holds only the grants whose session acts for them (the broker grant list's
+  `enrollment.operator`), whatever their approver, and their revoke reads that list first: a grant
+  of a session that acts for them is revoked as before, and any other id, an id no grant has among
+  them, is `403 RESTRICTED_MEMBER` in one sentence that names nothing of the grant, with no revoke
+  sent to the broker. While Dispatch cannot read their list from the broker, their revoke is
+  answered as that read failed, the broker's own refusal or `503 AGENT_SECRETS_UNAVAILABLE`, and
+  revokes nothing. A full member's list and revoke are unchanged.
+time: 2026-11-22T21:44:25Z
+custom:
+    Issue: restricted-grants

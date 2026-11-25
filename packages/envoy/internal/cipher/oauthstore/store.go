@@ -333,7 +333,7 @@ func sessionOf(request oauth2.Requester) (*oauth2.DefaultSession, error) {
 // refused with it, since no client of the broker writes one in any of those fields. The provider
 // answers it 400 invalid_request REQUEST_INVALID (oauth.Provider.writeError), and nothing is
 // written. Dispatch's replay store refuses the same proofs (its store.ErrUnstorableProof).
-var ErrUnstorableText = errors.New("oauthstore: the request holds a control character, or a DPoP proof's jti and target URI too long, which the store does not keep")
+var ErrUnstorableText = errors.New("oauthstore: the request holds a control character, or a DPoP proof whose jti and target URI are too long together, which the store does not keep")
 
 // holdsControl reports whether s holds a control character (unicode.IsControl: Cc, U+0000 among
 // them).

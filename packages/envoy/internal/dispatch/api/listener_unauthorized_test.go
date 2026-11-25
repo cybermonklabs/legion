@@ -17,6 +17,7 @@ import (
 // its client reads once more and presents again after a 401, as the kubelet may have rotated it
 // (envoy.Client.do): one try, two requests.
 func TestAListenerRefusingTheTokenSettlesTheSendAtOnce(t *testing.T) {
+	t.Parallel()
 	listener := startTakeOverListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.server.URL)
 

@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+  A restricted member's personal token is their agent's, held to one project and settling nothing
+  of theirs: it holds no scope and lists exactly one project they see. Their mint at the browser
+  (`POST /api/v1/me/agent-tokens`) gives a token that shape, taking the one project they see where
+  the body names none, and a mint or an edit (`PATCH /api/v1/me/agent-tokens/{id}`) asking for a
+  scope, naming other than one project, naming none while they see several, or keeping a list of
+  other than one project is `403 RESTRICTED_MEMBER` saying why, writing nothing. Before this a
+  restricted member's mint held `person` and `approve`, as a full member's does, so their agent
+  could mint tokens, change a token's scopes, and revoke their credential grants and sign-ins.
+  A stored token of a restricted owner, minted before this or while its owner was a full member,
+  acts with no scope at every use and is listed holding none, and one listing other than one project
+  acts for nobody, `403 RESTRICTED_MEMBER`, until its owner names its project in Settings. A broker
+  token naming a restricted member that lists other than one project is refused the same way, on a
+  request and at its socket's heartbeat, whatever the broker answered. Settings offers a restricted
+  member no scope box, says what their token may do, and picks one project.
+time: 2026-11-22T23:44:21Z
+custom:
+    Issue: restricted-token-scopes

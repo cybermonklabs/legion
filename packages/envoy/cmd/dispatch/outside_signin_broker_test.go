@@ -56,9 +56,11 @@ const brokerOrigin = "http://dispatch.test"
 // RecordReplacedSubjectTx), that the account no longer holds the address, so it is refused there
 // from then on, and that the holder does, deleting any earlier record of the holder; an approve
 // answers that it minted a machine login, and a deny that it denied one. Each credential holds the
-// access tokens minted under it, and the revoke ends them with it. Every other call - the
-// per-credential lists and revokes an earlier Dispatch made among them - is answered 404, and
-// every call but an introspection is recorded as "METHOD path body".
+// access tokens minted under it, and the revoke ends them with it. GET /v1/settings answers that it
+// takes an approve's approver fields, as the broker of this build does, and is counted in
+// settingsReads alone. Every other call - the per-credential lists and revokes an earlier Dispatch
+// made among them - is answered 404, and every call but an introspection and a settings read is
+// recorded as "METHOD path body".
 type fakeBroker struct {
 	stub   *ciphertokentest.StubBroker
 	server *httptest.Server
@@ -69,6 +71,8 @@ type fakeBroker struct {
 	mu          sync.Mutex
 	credentials []*fakeCredential
 	called      []string
+	// settingsReads is how many GET /v1/settings Dispatch made, which calls leaves out.
+	settingsReads int
 	// replaced is each account, by address and `sub`, a revoke recorded as no longer holding the
 	// address and no later revoke named as its holder: the accounts the broker refuses there.
 	replaced map[[2]string]bool
@@ -147,6 +151,13 @@ func (b *fakeBroker) calls() []string {
 	return slices.Clone(b.called)
 }
 
+// settingsRead is how many times Dispatch read the broker's settings.
+func (b *fakeBroker) settingsRead() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.settingsReads
+}
+
 // refusing makes the subject revoke answer status, or answer again for 0.
 func (b *fakeBroker) refusing(status int) {
 	b.mu.Lock()
@@ -192,6 +203,14 @@ func (b *fakeBroker) refuses(person, subject string) bool {
 func (b *fakeBroker) serve(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == ciphertoken.IntrospectPath {
 		b.stub.Server.Config.Handler.ServeHTTP(w, r)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/settings" {
+		b.mu.Lock()
+		b.settingsReads++
+		b.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"approver_fields":true}`))
 		return
 	}
 	body, _ := io.ReadAll(r.Body)
@@ -295,7 +314,7 @@ func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Han
 	if err != nil {
 		t.Fatalf("build the request identity: %v", err)
 	}
-	appCtx, err := buildAppContext(boot, rule, built, membership)
+	appCtx, err := buildAppContext(boot, rule, withDocumentService(t, boot, built), membership)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}

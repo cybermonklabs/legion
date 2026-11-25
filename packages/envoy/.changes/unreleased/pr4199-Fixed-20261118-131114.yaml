@@ -3,11 +3,13 @@ body: |-
   A machine-login approval that Dispatch checked before another Google account took the
   approver's address is refused at the secrets broker (`403 APPROVER_REPLACED`), whatever account
   it names, where before an approval naming no account could still mint a login the replaced
-  account kept. Dispatch's approve relay now carries the address's session generation its check
-  read (`approver_session_generation`) and its subject revoke the generation the replacement left
+  account kept. Dispatch's approve relay now carries, to a broker whose `GET /v1/settings` answers
+  `approver_fields: true`, the address's session generation its check read
+  (`approver_session_generation`), and its subject revoke the generation the replacement left
   (`session_generation`); the broker refuses an approval below a recorded replacement's
-  generation. An approval with no generation that names no account, from an older Dispatch, is
-  refused for 50 seconds, the relay's own bound, after a replacement at its address, and every approval with no
+  generation. An approval with no generation that names no account, from an older Dispatch or
+  from one that read an older broker pod's settings during a roll, is refused for 50 seconds, the
+  relay's own bound, after a replacement at its address, and every approval with no
   generation counts on `broker_machine_login_approvals_without_generation_total`, so that
   fallback can come out once the counter stays at zero. The broker's record of replaced
   accounts is now held to its writers: a row's account and time are written once, its generation

@@ -269,9 +269,6 @@ const (
 	// holder $1 and this build's rules version $2.
 	createCursorQuery = `insert into public.search_text_versions_fill (id, event_id, holder, rules) values (1, 0, $1, $2)
 	    on conflict (id) do nothing`
-	// holdCursorQuery takes the cursor row as HoldFillBack holds it: `for share`, which a batch's
-	// lockCursorQuery waits behind, as this waits behind a batch's.
-	holdCursorQuery = `select event_id from public.search_text_versions_fill where id = 1 for share`
 	// holdCheckQuery answers whether holder $2 may write a batch under hold $1: duty_holds names
 	// it live, and the cursor row names no holder, this one, or one whose hold is gone.
 	holdCheckQuery = `select exists (select from public.duty_holds h
@@ -475,24 +472,14 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	return result, nil
 }
 
-// issueVectorSQL is the vector of an issue's row r of the keyword table: issue_search_vector over
-// its key, its title and the markdown of the version of its primary document the row names, as
-// the issue's own search column is made (20261105145242), and over no markdown where that version
-// is gone. insertVersionsQuery makes an issue's vector with it and RestateIssueVectors writes it
-// again with it, so the two can never disagree. r's spec_artifact_id is text in the insert and a
-// uuid in the table, and the cast reads either.
-const issueVectorSQL = `issue_search_vector(r.id, r.body,
-	           (select a.markdown from public.artifact_versions a
-	             where a.artifact_id = r.spec_artifact_id::uuid and a.number = r.spec_version))`
-
 // insertVersionsQuery writes the rows of decided versions, given as parallel arrays, in one
 // statement. Each row's body is its version's Body, and its vector is made with the functions the
 // items' own search triggers call, so the vector of a version of an unchanged item equals the
 // item's search column: an issue's from its key, its title and the markdown of the version of its
-// primary document the row names (issueVectorSQL), and a comment's, a message's or an ask's from
-// its body (search_vector over search_text, 0087), an ask's body being the question, a space and
-// ask_search_suffix of the options and the answer that the ask's trigger reads too, as
-// readEventsQuery made it (askBodySQL).
+// primary document the row names (issue_search_vector, 20261105145242), and a comment's, a
+// message's or an ask's from its body (search_vector over search_text, 0087), an ask's body being
+// the question, a space and ask_search_suffix of the options and the answer that the ask's
+// trigger reads too, as readEventsQuery made it (askBodySQL).
 const insertVersionsQuery = `
 	insert into public.search_text_versions
 	       (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
@@ -500,58 +487,15 @@ const insertVersionsQuery = `
 	select r.kind, r.id, r.issue_key, r.project_key, r.event_id, r.event_seq, r.started_at, r.body,
 	       r.body_from, r.spec_artifact_id::uuid, r.spec_version,
 	       case r.kind
-	         when 'issue' then ` + issueVectorSQL + `
+	         when 'issue' then issue_search_vector(r.id, r.body,
+	           (select a.markdown from public.artifact_versions a
+	             where a.artifact_id = r.spec_artifact_id::uuid and a.number = r.spec_version))
 	         else search_vector('', search_text(r.body))
 	       end
 	  from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::integer[],
 	              $7::timestamptz[], $8::text[], $9::text[], $10::text[], $11::integer[])
 	       as r (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
 	             spec_artifact_id, spec_version)`
-
-// restateIssueVectorsQuery writes again the vector of each row of issue $1 whose spec version is
-// one of the numbers $3 of document $2, by issueVectorSQL.
-const restateIssueVectorsQuery = `
-	update public.search_text_versions r
-	   set search = ` + issueVectorSQL + `
-	 where r.kind = 'issue' and r.id = $1 and r.spec_artifact_id = $2::uuid and r.spec_version = any($3::integer[])`
-
-// RestateIssueVectors writes again in tx the vector of each row of issue that names one of the
-// numbers of artifact, its primary document, by the expression the fill makes an issue's vector
-// with (issueVectorSQL), and answers how many rows it wrote. The erase calls it once it has deleted
-// those versions, so each vector reads no markdown for its version and keeps the key and the title
-// its row holds. A row is otherwise never written again: a new version is a new row.
-func RestateIssueVectors(ctx context.Context, tx pgx.Tx, issue, artifact string, numbers []int32) (int64, error) {
-	tag, err := tx.Exec(ctx, restateIssueVectorsQuery, issue, artifact, numbers)
-	if err != nil {
-		return 0, fmt.Errorf("keyword fill: write again the vectors of issue %s at versions %v of %s: %w", issue, numbers, artifact, err)
-	}
-	return tag.RowsAffected(), nil
-}
-
-// HoldFillBack holds the fill back until tx ends: it takes the cursor row `for share` in tx
-// (holdCursorQuery). A batch takes that row `for update` before it reads anything, so a batch in
-// flight commits before HoldFillBack returns, and every batch after it waits at the row until tx
-// ends. The erase calls it before it reads the rows it removes, so it reads every row a batch
-// committed, and no batch that read the erased text before the erase commits writes it back after.
-// Where no row is, it creates one at no event with no holder (createCursorQuery), as a batch would:
-// with no row, a first batch and the erase would lock nothing. A row a reset emptied and wrote
-// again while the lock waited is gone from the lock's snapshot, so it is read again, as lockCursor
-// reads it.
-func HoldFillBack(ctx context.Context, tx pgx.Tx) error {
-	for attempt := 0; ; attempt++ {
-		var cursor int64
-		err := tx.QueryRow(ctx, holdCursorQuery).Scan(&cursor)
-		switch {
-		case err == nil:
-			return nil
-		case !errors.Is(err, pgx.ErrNoRows) || attempt > 0:
-			return fmt.Errorf("keyword fill: hold the fill back at its cursor: %w", err)
-		}
-		if _, err := tx.Exec(ctx, createCursorQuery, nil, rulesVersion); err != nil {
-			return fmt.Errorf("keyword fill: create the cursor to hold the fill back at: %w", err)
-		}
-	}
-}
 
 // insertVersions writes versions as rows of the keyword table in tx, in one statement
 // (insertVersionsQuery), and writes nothing for none. Each row's body is its version's Body. A

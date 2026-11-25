@@ -181,7 +181,7 @@ type twoBuildsOption func(t *testing.T, b *twoBuilds)
 func withSignInIssuer() twoBuildsOption {
 	return func(t *testing.T, b *twoBuilds) {
 		b.issuer = oidctest.New(t)
-		b.issuer.EnableCodeFlow(b.issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+		b.issuer.EnableCodeFlow(b.issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	}
 }
 

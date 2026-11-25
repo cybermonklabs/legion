@@ -32,6 +32,7 @@ import (
 // a real corpus's planner would choose - search_bench_test.go's latency bound is what proves that
 // at scale.
 func TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan(t *testing.T) {
+	t.Parallel()
 	const title, spec = "A title to embed for the index test", "Body text."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -156,6 +157,7 @@ func planTreeOf(
 // test, not what a real corpus's planner would choose. No test measures this statement on a real
 // corpus: search_bench_test.go's TestSearchLatencyOnCorpus times GET /api/v1/search alone.
 func TestTheCrossProjectQuestionStatementReadsTheHNSWIndex(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	embedder.vectors[crossProjectQuestion] = queryVector()
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
@@ -223,6 +225,7 @@ func TestTheCrossProjectQuestionStatementReadsTheHNSWIndex(t *testing.T) {
 // enable_seqscan is off, as every plan test of this package reads its plan; enable_sort is left
 // on, because the exact sort is half of the plan under test.
 func TestTheScopedMeaningStatementReadsTheProjectIndex(t *testing.T) {
+	t.Parallel()
 	const title, spec = "A title to embed for the scoped plan", "Body text."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -324,6 +327,7 @@ func meaningStatementAsSearchPicksIt(t *testing.T, database *store.Store, projec
 // own LIMIT. Against the arm this replaced the walk meets a join instead, and this fails - which
 // is what makes the test a test of the arm's order rather than of its index.
 func TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins(t *testing.T) {
+	t.Parallel()
 	const title, spec = "A title to embed for the comment arm's plan", "Body text."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -448,6 +452,7 @@ const issuesSearchIndex = "issues_search"
 // permits the index scan, which is the claim under test. What a corpus of production's size
 // makes the planner choose is scripts/search-measure's to measure.
 func TestTheIssueKeywordArmMatchesItsVectorThroughIssuesSearch(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createInteractionIssue(t, handler, "SRCH", "Navigation instruments", "The astrolabe measures altitude.\n")
 

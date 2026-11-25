@@ -33,9 +33,8 @@ const reportedDifferences = 20
 //
 // A kind with no projection table takes the set of actors the projected tables name as its rows
 // (people and agents below), which is the side that exists for it; a role takes the roles the
-// event log ever named as well (addressedRoles), and a person and a session the authors and the
-// sessions reached that the events of a comment the erase took still name (commentWriters,
-// recordedSessions).
+// event log ever named as well (addressedRoles), and a session the sessions the event log names
+// as followers and as reached (recordedSessions).
 type projection struct {
 	// name is the kind as the report names it, nodeKind the kind of graph_nodes row it
 	// projects and table the relation its rows come from, for the report.
@@ -95,6 +94,16 @@ type StoreReport struct {
 	Absent bool
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
+	// ReadSeq is the read sequence the census saw: the highest graph_tuples.seq its snapshot
+	// holds, and 0 for a store that holds no tuple or is Absent. It is no commit position: seq is
+	// a bigserial taken when a tuple is inserted, not when it commits, so a write holding a lower
+	// seq may commit after the census's snapshot was taken, and the census saw none of it. R29 of
+	// the parent change's specification has a query, a census and an approval each record the read
+	// sequence it saw, so storeCensus reads it inside the census's own repeatable-read
+	// transaction, in the snapshot every kind is read in. Read on any other snapshot, it could name
+	// a tuple a write committed after the census's snapshot was taken, which none of the census's
+	// counts saw.
+	ReadSeq int64
 }
 
 // ProjectFindings is how many rows and nodes the project census found incomplete over every kind.
@@ -259,10 +268,9 @@ var projections = []projection{{
 }, {
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
-	table:    "comments.author, events.actor",
+	table:    "comments.author",
 	note: "no table projects a person, so the row side is the people the projected tables name as authors," +
-		" and the owner of each session the server proved that wrote one, and the same of every comment the" +
-		" erase took, as the actor of the event that stored it names them",
+		" and the owner of each session the server proved that wrote one",
 	names: `select p.login from (` + commentPeople + `) p`,
 	rows: `
 		select 'person ' || p.login, '` + graphstore.KindPerson + `', p.login, ''
@@ -272,11 +280,10 @@ var projections = []projection{{
 }, {
 	name:     graphstore.KindSession,
 	nodeKind: graphstore.KindSession,
-	table:    "comments.author, comment_deliveries, message_deliveries, comment_fallback_copies, asks.author, ask_followers, events.actor, events.payload",
+	table:    "comments.author, comment_deliveries, message_deliveries, comment_fallback_copies, asks.author, ask_followers, events.payload",
 	note: "no table projects a session, so the row side is the sessions those tables name as authors, as reached," +
-		" as askers and as followers, every session an ask.follower_added event named or a comment.delivery" +
-		" receipt says the listener took an attempt to, and the author of every comment the erase took, as the" +
-		" actor of the event that stored it names it",
+		" as askers and as followers, and every session an ask.follower_added event named or a comment.delivery" +
+		" receipt says the listener took an attempt to",
 	names: `select s.id from (` + recordedSessions + `) s`,
 	rows: `
 		select 'session ' || s.id, '` + graphstore.KindSession + `', s.id, ''
@@ -380,49 +387,24 @@ func actorAuthor(actor string) string {
 // actor that names nobody, whose comment states no authored_by at all.
 var commentAuthor = `array_to_string(` + actorAuthor("c.author") + `, ':')`
 
-// commentWriters are the comments the store holds or held, each as the actor that wrote it, the
-// time it was written and the event that stored it, null for a row: every comments row the store
-// holds (refs.CommentInTheStore), and the comment.created or comment.answered event of every
-// comment the comments table no longer holds. It is who wrote a comment, as commentPeople and
-// recordedSessions read it.
-//
-// The events are there for the erase. It deletes a comment's row and keeps the comment's events,
-// and of an event it rewrites only the payload's values that carry what a person wrote: never an
-// identity value such as an author, an id, a state or a time (grapherase's payloadClassification),
-// and never the actor column (grapherase's redactEvents). That actor is the one the row stored as
-// its author and the one graphstore.QueueAuthored wrote the author's node from: api's
-// createComment and replyComment pass all three the one actor. The erase leaves the author's
-// node - it never takes a session, and takes a person only when asked to - so without the event
-// that node would be a difference no erase can close. No route deletes a comment, and the erase
-// takes only a comment the store holds a node of, whose author's node the write that stored it
-// made with it, so an event whose comment is gone names an author a writer wrote a node for. An
-// event of a comment the table still holds adds nothing: the row names the same author, and only
-// the row says whether the store holds the comment at all (refs.CommentInTheStore). An event
-// whose payload names no comment says nothing of one and is not read; the filler events of a
-// seeded corpus are such events.
-//
-// The comment an event stored is matched by the payload's id, which the redaction never rewrites,
-// compared as text so that an id no row could hold reads as no row rather than failing a cast.
+// commentWriters are the comments the store holds, each as the actor that wrote it and the time it
+// was written: every comments row the store holds (refs.CommentInTheStore). It is who wrote a
+// comment, as commentPeople and recordedSessions read it.
 var commentWriters = `
-	select c.author as actor, c.created_at as at, null::bigint as event
+	select c.author as actor, c.created_at as at
 	from comments c` + refs.CommentStoreJoins + `
-	where ` + refs.CommentInTheStore + `
-	union all
-	select e.actor, e.created_at, e.id
-	from events e
-	where e.type in ('comment.created', 'comment.answered') and coalesce(e.payload->>'id', '') <> ''
-	  and not exists (select 1 from comments c where c.id::text = e.payload->>'id')`
+	where ` + refs.CommentInTheStore
 
-// commentWriterPeople is each person a comment the store holds or held names as its writer
+// commentWriterPeople is each person a comment the store holds names as its writer
 // (commentWriters), one row for each such comment and person, with the time the comment was
-// written and the event that stored it (null for a row). It reads an actor as graphstore.AuthorOf
-// does (actorAuthor): the login an actor of kind user carries, or the owner a personal token's
-// actor carries, each canonicalised the way user_threads_login canonicalises a login (migration
-// 0095, which is model.CanonicalLogin in SQL). Beside them are the owners of the sessions the
-// server proved that wrote a comment: the comment's author is the session, whose act names that
-// same session and whose owner is the person it belongs to, and the write that ties the two with
-// an alias_of tuple makes the owner's node with it (graphstore.AuthorFacts), except for a session
-// past the store's bound, of which nothing is written.
+// written. It reads an actor as graphstore.AuthorOf does (actorAuthor): the login an actor of kind
+// user carries, or the owner a personal token's actor carries, each canonicalised the way
+// user_threads_login canonicalises a login (migration 0095, which is model.CanonicalLogin in SQL).
+// Beside them are the owners of the sessions the server proved that wrote a comment: the
+// comment's author is the session, whose act names that same session and whose owner is the
+// person it belongs to, and the write that ties the two with an alias_of tuple makes the owner's
+// node with it (graphstore.AuthorFacts), except for a session past the store's bound, of which
+// nothing is written.
 //
 // Only the comments the store holds name anybody here (refs.CommentInTheStore): a comment
 // anchored to or owned by a document whose address is past the bound is left whole out of the
@@ -432,10 +414,9 @@ var commentWriters = `
 // It is the one reading of who a comment names, read by two: the census's person row side
 // (commentPeople) and the sizing's people (sizingWritesWith), so the sizing counts the people
 // the census holds to a node. It reads no table of the store, so the sizing can read it on a
-// database the store does not exist in yet. Its proved-session arm (provedSessionOwner) is read by
-// the erase as well (ProvedSessionComments).
+// database the store does not exist in yet.
 var commentWriterPeople = `
-	select user_threads_login(author.login) as login, written.at, written.event
+	select user_threads_login(author.login) as login, written.at
 	from (` + commentWriters + `) written
 	cross join lateral (
 		select authored.node[2] from (select ` + actorAuthor("written.actor") + `) authored (node)
@@ -451,72 +432,43 @@ var commentWriterPeople = `
 // within the store's bound. Its `owner`, where it names one, is then the person the session
 // belongs to, whom the write that stored the actor ties to the session by an alias_of tuple and
 // makes a node of (graphstore.AuthorFacts). It is commentWriterPeople's second arm, spelled once
-// here so that the census and the erase (ProvedSessionComments) read one rule.
+// here so that commentWriterPeople and the sizing's count of a comment's aliases
+// (sizingWritesWith) read one rule.
 func provedSessionOwner(actor string) string {
 	return actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> ''
 		  and ` + actor + `->'act'->>'session' = ` + actor + `->>'id'
 		  and octet_length(` + actor + `->>'id') <= ` + addressBound
 }
 
-// ProvedSessionComments is the select of the id of every comments row that names the person
-// bound at $1 as the owner of the session that wrote it, in id order: a row of a comment the
-// store holds (refs.CommentInTheStore) whose author is a session the server proved
-// (provedSessionOwner) and whose `owner` is that person's login as user_threads_login reads it.
-// Each is a row the census names that person by (commentWriterPeople), though nothing the row
-// projects states a tuple into her: the comment's authored_by names the session, and only the
-// session's alias_of names her. The erase refuses a person while such a row stands (grapherase's
-// readBlockers), since the census would go on naming her from it once her node was gone.
-var ProvedSessionComments = `
-	select c.id::text from comments c` + refs.CommentStoreJoins + `
-	where ` + refs.CommentInTheStore + `
-	  and ` + provedSessionOwner("c.author") + `
-	  and user_threads_login(c.author->>'owner') = $1
-	order by c.id`
-
-// commentPeople are the people who wrote a comment the store holds or held, each once
+// commentPeople are the people who wrote a comment the store holds, each once
 // (commentWriterPeople).
-//
-// A person the erase took is held to no event that came before that erase. The erase takes a
-// person once nothing of the store names them, and the events of their erased comments name them
-// as the author after it, so counting those events would hold the store to the node the operator
-// removed, for good. A person who writes again after it is held by what they wrote then. The erase
-// dates itself by the clock of the host it ran on (graph_erasures.ran_at) and an event is dated by
-// the database's, but every event this leaves out is older than the erase of its comment, which
-// committed before the erase of its author could begin.
 //
 // The backfill gives these people their nodes in its comment pass (writeCommentBatch,
 // graphstore.AuthorFacts) and needs no pass of its own for them: a row names its author to that
-// pass, and an event of a comment the erase took names an author whose node was written when the
-// comment was stored.
+// pass.
 var commentPeople = `
 	select distinct named.login
-	from (` + commentWriterPeople + `) named
-	where named.event is null or not exists (
-		select 1 from graph_erasures erased
-		where erased.node_kind = '` + graphstore.KindPerson + `'
-		  and erased.node_id = named.login and erased.ran_at >= named.at)`
+	from (` + commentWriterPeople + `) named`
 
 // recordedSessions are the sessions a row of the store names or an event of the log has named,
 // each once, with the first event that named it (null for a session only a row names) and the
 // earliest time a row or an event names it. They are every write R14 records a session from: a
-// comment a session wrote (graphstore.AuthorOf), as its row names it or, for a comment the erase
-// took, the event that stored it (commentWriters); every session a delivery reached - a comment
-// mention's and a targeted message's attempt alike, whether the outbox's record states it
-// (outbox.deliveredGraph) or the attempt's own settle does (graphstore.QueueReached), and a
-// fallback copy the outbox published to a session's own topic (outbox.fallbackDelivered); an ask
-// a session opened, every session that follows an ask now, and every session an
-// ask.follower_added event ever named (asks.Follow), so a follower added and removed before the
-// store existed is held to a node as well. A node is history and never goes, so a session that
-// once followed still owes it.
+// comment a session wrote (graphstore.AuthorOf), as its row names it (commentWriters); every
+// session a delivery reached - a comment mention's and a targeted message's attempt alike,
+// whether the outbox's record states it (outbox.deliveredGraph) or the attempt's own settle does
+// (graphstore.QueueReached), and a fallback copy the outbox published to a session's own topic
+// (outbox.fallbackDelivered); an ask a session opened, every session that follows an ask now, and
+// every session an ask.follower_added event ever named (asks.Follow), so a follower added and
+// removed before the store existed is held to a node as well. A node is history and never goes,
+// so a session that once followed still owes it.
 //
 // A comment mention's attempt is read twice for the same reason: as its row, and as the
 // comment.delivery receipt its settle appends in the transaction that records the session
 // (api's completeCommentDelivery), from which the outbox records that session as well
-// (outbox.mentionReached). The erase deletes the attempt's row with its comment, since the row
-// cannot exist without it, and keeps the receipt with its state and its session id, which it never
-// rewrites (grapherase's payloadClassification), so a session only an erased comment's mention
-// reached stays held to that receipt. A fallback copy's row carries no foreign key to its
-// comment, so the erase leaves that row, and it holds its session as it did.
+// (outbox.mentionReached). The attempt's row cannot exist without its comment, and the receipt
+// keeps its state and its session id in the log whatever becomes of either, so a session only a
+// mention reached stays held to that receipt. A fallback copy's row carries no foreign key to its
+// comment, and it holds its session as the attempt's receipt does.
 //
 // R14 is exact about which attempt is a delivery: an attempt the listener took is one, and a
 // pending or failed one is not. So this binds the two states that mean it
@@ -534,7 +486,7 @@ var commentPeople = `
 // census holds to one, as addressedRoles is for roles.
 var recordedSessions = `
 	select id, min(event) as event, min(at) as at from (
-		select written.actor->>'id' as id, written.event, written.at
+		select written.actor->>'id' as id, null::bigint as event, written.at
 		from (` + commentWriters + `) written
 		where written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> ''
 		union all
@@ -678,6 +630,12 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 		return nil, fmt.Errorf("look up the store: %w", err)
 	}
 	if !report.Absent {
+		// The highest seq is one probe of graph_tuples' primary key from its end, and reading it
+		// in this transaction is what makes it the sequence of the snapshot the kinds are read in
+		// (ReadSeq).
+		if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&report.ReadSeq); err != nil {
+			return nil, fmt.Errorf("read the census's read sequence: %w", err)
+		}
 		if report.Kinds, err = censusOfKinds(ctx, tx, afterKind); err != nil {
 			return nil, err
 		}
@@ -867,8 +825,10 @@ func (r *StoreReport) Write(w io.Writer) {
 		fmt.Fprintf(w, "census: project incomplete %s\n", row)
 	}
 	if !r.Absent {
-		fmt.Fprintf(w, "census: store rows_checked=%s differences=%s\n",
-			pgmigrate.Thousands(r.Rows()), pgmigrate.Thousands(r.Differences()))
+		// read_seq is printed whole, without Thousands' separators: it is no count but a position
+		// in graph_tuples, and a reader holds it against graph_tuples.seq as a statement writes it.
+		fmt.Fprintf(w, "census: store rows_checked=%s differences=%s read_seq=%d\n",
+			pgmigrate.Thousands(r.Rows()), pgmigrate.Thousands(r.Differences()), r.ReadSeq)
 	}
 	if r.Sizing != nil {
 		r.Sizing.Write(w)
@@ -884,7 +844,7 @@ func (r *StoreReport) Write(w io.Writer) {
 	case r.ProjectFindings() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one, or node(s) no row stands behind;"+
 			" run envoy-dispatch backfill-graph-store for the missing, gone and unscoped ones but those naming a party the store"+
-			" refuses, run the erase each orphaned line names, and compare each differs row with its node)\n",
+			" refuses, let this build's block-index tick state gone each orphaned one whose line names it, and compare each differs row with its node)\n",
 			pgmigrate.Thousands(r.ProjectFindings()))
 	case len(empty) > 0:
 		fmt.Fprintf(w, "census: store REFUSED (kind(s) %s checked no row, so the census proves nothing of them)\n",

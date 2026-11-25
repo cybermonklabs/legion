@@ -439,8 +439,9 @@ func privateRow(channels []string, listed ...string) projectaccesstest.Row {
 }
 
 // slackBroker is the real request machine behind the proxy: a store of its own, a policy serving
-// the token tagged project-channels=slack and agent tier, a stand-in Dispatch, and one session of
-// slackPerson's naming its projects, granted the token and released it as a command would be.
+// the token tagged project-channels=slack and agent tier through a profile of its own name whose
+// proxy block is slackRules' entry, a stand-in Dispatch, and one session of slackPerson's naming
+// its projects, granted the token and released it as a command would be.
 type slackBroker struct {
 	*rig
 	client   *http.Client
@@ -460,13 +461,14 @@ func (b *slackBroker) post(t *testing.T, p slackPost) slackAnswer {
 func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, projects ...string) *slackBroker {
 	t.Helper()
 	st := storetest.Open(t)
-	rules := slackRules()
+	file := policytest.ProfilesFile(`{"name": "` + slackName + `", "proxy": {"hosts": ["` + boundHost + `"], "headers": ["authorization"]}}`)
+	rules := policytest.Profiles(t, file).ProxyRules()
 	token := policytest.Secret(slackName, policy.OwnerShared, policy.TierAgent, slackValue)
 	token.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
 	local := secrets.NewLocal(token)
 	loader := policytest.Loader(local)
 	loader.ProjectChecks = true
-	loader.AirlockDigest = rules.Digest
+	loader.Profiles = policytest.Profiles(t, file)
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
@@ -491,11 +493,11 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	if err != nil {
 		t.Fatalf("record.Sign: %v", err)
 	}
-	request, err := m.Create(t.Context(), enrollmentID, compact, "", nil)
+	request, err := m.Create(t.Context(), enrollmentID, compact, "")
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(%s) = %+v, %v; want a grant at once, as the token is shared and agent tier", slackName, request, err)
 	}
-	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil, requests.ReleaseCall{})
+	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, requests.ReleaseCall{})
 	if err != nil || release.Airlock == nil {
 		t.Fatalf("Values = %+v, %v; want %s held back behind the airlock", release, err, slackName)
 	}

@@ -260,7 +260,7 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 // cleared before left on it, since the rule is read only where a mark stands (refs.OwedRuleKept).
 var BlockBatchMarkStatement = `
 	update document_block_versions set store_owed_at = now(),
-		store_owed_rule = ` + refs.OwedRuleKept("", "$2::integer", " ") + `
+		store_owed_rule = ` + refs.OwedRuleKept("", "$2::integer") + `
 	where artifact_id = any($1::uuid[])
 `
 

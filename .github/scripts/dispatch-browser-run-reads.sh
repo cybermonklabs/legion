@@ -175,7 +175,7 @@ case "$mode" in
 
     pages=$(mktemp)
     # One stderr file and one exit status per attempt, and a count of the attempts the ladder
-    # made. gh_read runs its three attempts itself and sends every attempt's stderr straight
+    # made. gh_read runs its attempts itself and sends every attempt's stderr straight
     # to this script's, with nothing between them, so one capture file cannot be taken apart
     # again afterwards: this wrapper is what keeps the attempts apart. It counts the attempt,
     # gives gh that attempt's own stderr file, writes that attempt's exit status beside it and

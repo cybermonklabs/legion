@@ -19,9 +19,14 @@
 -- later migration that redefines canonical_login must run
 -- `REINDEX INDEX CONCURRENTLY agent_tokens_canonical_owner` in the same release.
 --
--- This header was edited in place after the migration was pushed, its statement unchanged; the
--- line below names the text before the edit, so a database that applied that text still boots.
+-- This header was edited in place three times after the migration was pushed, its statement
+-- unchanged; the lines below name the texts before each edit, so a database that applied any of
+-- them still boots (the migrator reads them as a set, after the first). They follow the order of
+-- the latest pushed text (a60be5e8c9's, which named the first alone): the first text, that one,
+-- then 0b1a91ae29's, which that edit had left out.
 -- replaces: 20261117000831_canonical_login.up.sql sha256:0a29bb5beeda046999c2058366050535556e100c2419c681172d80f285ede617
+-- replaces: 20261117000831_canonical_login.up.sql sha256:f53f70b610cae2141bf633d77fb3cd8ee863fea01343a34264608f75418ac3c8
+-- replaces: 20261117000831_canonical_login.up.sql sha256:dc8cf936efc08e9c640aa9157067624195262980d46c5059e38750efa4dfe7d1
 create function canonical_login(login text) returns text
   language sql immutable strict parallel safe
   return translate(

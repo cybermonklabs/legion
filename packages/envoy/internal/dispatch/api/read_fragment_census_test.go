@@ -268,6 +268,9 @@ var censusQueries = map[string]func(censusObjects) url.Values{
 	"GET /api/v1/reference-targets": func(o censusObjects) url.Values {
 		return url.Values{"ref": {"dispatch://" + o.issue}}
 	},
+	// Both versions are required (400 INVALID_VERSION without them); the seed names the project
+	// document's second version.
+	"GET /api/v1/artifacts/{id}/changes": func(o censusObjects) url.Values { return url.Values{"from": {"1"}, "to": {"2"}} },
 }
 
 // censusObjects are the objects of one project a walked read is filled with: its documents, an
@@ -437,6 +440,16 @@ func seedFragmentCensus(t *testing.T, census *fragmentCensus) fragmentCensusFixt
 		objects.block = decodeBody[[]struct {
 			ID string `json:"id"`
 		}](t, seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/artifacts/"+objects.document+"/blocks", nil, http.StatusOK))[0].ID
+		// The project document's second version, an edit named as a version, which writes it at
+		// once: the change set of versions 1 and 2 (censusQueries) then reads both.
+		if revised := decodeBody[struct {
+			Version *model.Version `json:"version"`
+		}](t, seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/artifacts/"+objects.document+"/edits", map[string]any{
+			"ops":     []map[string]string{{"op": "insert", "after": "end", "markdown": "The revised runbook steps of " + project + "."}},
+			"summary": "Revise the runbook",
+		}, http.StatusOK)).Version; revised == nil || revised.Number != 2 {
+			t.Fatalf("carol's named edit of %s's runbook wrote %+v, want its version 2", project, revised)
+		}
 		objects.comment = createdID(t, seed.request(t, callerCarol, http.MethodPost, path+"/comments",
 			map[string]any{"body": "The runbook comment of " + project + "."}))
 		objects.ask = createdID(t, seed.request(t, callerCarol, http.MethodPost, path+"/asks",

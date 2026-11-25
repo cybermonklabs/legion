@@ -180,6 +180,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.go_tagged_tests_test: go-tagged-tests.test.sh and what it tests."
         type: string
         required: true
+      ci_router_outputs_test:
+        description: "ci.yaml's needs.changes.outputs.ci_router_outputs_test: ci-router-outputs.test.sh and what it tests."
+        type: string
+        required: true
       ci_ok_test:
         description: "ci.yaml's needs.changes.outputs.ci_ok_test: ci-ok.test.sh and what it tests."
         type: string
@@ -216,10 +220,20 @@ on:
           dispatch-browser-latest-blobs.test.sh and what it tests.
         type: string
         required: true
+      dispatch_browser_reading_rows_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.dispatch_browser_reading_rows_test:
+          dispatch-browser-reading-rows.test.sh and what it tests.
+        type: string
+        required: true
       dispatch_browser_run_reads_test:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_run_reads_test:
           dispatch-browser-run-reads.test.sh and what it tests.
+        type: string
+        required: true
+      gh_read_test:
+        description: "ci.yaml's needs.changes.outputs.gh_read_test: gh-read.test.sh and what it tests."
         type: string
         required: true
       dispatch_browser_samples_test:
@@ -271,12 +285,14 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # No step here carries a -timeout of its own any more: the two go test steps that did, and
     # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
-    # left is the Bun install, the Claude Code plugin build, the thirty-two shell-script harnesses
+    # left is the Bun install, the Claude Code plugin build, the shell-script harnesses
     # and a handful of Bun suites — the 325 s of setup dispatch://INFRA-1052 measured before the
     # plain Go step started, less the tool installs that went with those steps. Thirty minutes is
     # about six times that, which leaves a slow runner room and still fails a hung harness inside
     # the hour.
     timeout-minutes: 30
+    env:
+      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -458,6 +474,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.go_tagged_tests_test == 'true'
         run: .github/scripts/go-tagged-tests.test.sh
 
+      # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
+      # lane labels and a label that names nothing.
+      - name: Test the router outputs' label terms
+        if: inputs.changes-result != 'success' || inputs.ci_router_outputs_test == 'true'
+        run: .github/scripts/ci-router-outputs.test.sh
+
       - name: Test ci-ok's verdict
         if: inputs.changes-result != 'success' || inputs.ci_ok_test == 'true'
         run: .github/scripts/ci-ok.test.sh
@@ -496,6 +518,14 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_latest_blobs_test == 'true'
         run: .github/scripts/dispatch-browser-latest-blobs.test.sh
 
+      # Reading one of dispatch-browser.yaml's merge job, run through that job's own call over
+      # fixture blob directories and a stand-in for its jobs read: what it says of the legs for
+      # each way its download and selection steps can end, a download that never ran among them,
+      # which it once reported as legs that sent no blob (run 44754426131, attempt 1).
+      - name: Test the browser lane's reading of its rows
+        if: inputs.changes-result != 'success' || inputs.dispatch_browser_reading_rows_test == 'true'
+        run: .github/scripts/dispatch-browser-reading-rows.test.sh
+
       # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
       # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
       # refusal messages are checked here rather than on a runner against GitHub. Its negative
@@ -504,6 +534,12 @@ jobs:
       - name: Test the browser lane's run reads
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true'
         run: .github/scripts/dispatch-browser-run-reads.test.sh
+
+      # gh-read.sh's wait for a spent API budget, with the real gh against a local stand-in
+      # GitHub; its last case reads this job's own Runner.Worker, which only a runner has.
+      - name: Test the wait for a spent API budget and the retry ladder (a stand-in GitHub)
+        if: inputs.changes-result != 'success' || inputs.gh_read_test == 'true'
+        run: .github/scripts/gh-read.test.sh
 
       # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
       # sample files: its two readings are pure functions of those files, so the numbers and the
@@ -515,6 +551,19 @@ jobs:
       - name: Test the race memory sampler
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
         run: .github/scripts/race_memory.test.sh
+
+      # The machine watch's test runs as the first process of its own unprivileged user, mount and
+      # PID namespaces, so no sampler it starts outlives it, and its falling-least case watches a
+      # tmpfs it mounts in a further namespace, so that no other writer moves the free space it
+      # reads; both fail rather than skip under GITHUB_ACTIONS. Ubuntu 24.04 restricts unprivileged
+      # user namespaces with an AppArmor sysctl, so the job turns it off on its throwaway runner,
+      # as daemon-go does (`|| true`: a runner image without the key restricts nothing), and the
+      # unshare after it is the verdict that the restriction is gone.
+      - name: Allow unprivileged user namespaces (the machine watch's test)
+        if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare --user --map-root-user --mount --pid --fork --mount-proc true
 
       - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
@@ -586,6 +635,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.

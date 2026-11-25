@@ -7,10 +7,10 @@ import type * as seedModule from "./seed";
 
 // e2e/api.ts, which seed.ts calls, reads its port when it loads: set it as rig.sh's seed_ts does,
 // then load seed.ts. PLAYWRIGHT_BASE_URL would point api.ts somewhere else. Both go back to what
-// the caller held once this file ends: `bun test` runs every file in one process. The names are
-// written, and the module loaded, in the `beforeAll` below: a `bun test -t <pattern>` that selects
-// no row of this file runs neither that hook nor the `afterEach` and `afterAll` the capture
-// registered, so a write at module scope would stay written for every later file.
+// the caller held once this file ends: a plain `bun test` runs every file in one process. The
+// names are written, and the module loaded, in the `beforeAll` below: a `bun test -t <pattern>`
+// that selects no row of this file runs neither that hook nor the `afterEach` and `afterAll` the
+// capture registered, so a write at module scope would stay written for every later file.
 restoreEnvironment(["DISPATCH_E2E_PORT", "PLAYWRIGHT_BASE_URL"]);
 let seed: typeof seedModule;
 

@@ -149,12 +149,15 @@ func TestARestrictedMemberListsAndRevokesThePodLoginsTheBrokerMapsToThem(t *test
 // member's own machine logins are their browser's alone. erin's personal token, and a broker token
 // acting for her, are each refused GET /api/v1/machine-logins and the revoke of her own login, and
 // no call reaches the broker; her browser is answered, so the refusal is the tokens'. Each refusal
-// is the one the token's own scopes give (tokenRefusal): 403 RESTRICTED_MEMBER from a token that
-// holds the row's scopes, 403 OAUTH_SCOPE_REQUIRED from one that does not, whichever scopes a
-// broker token acting for its person is given.
+// is the one the token's own scopes give (tokenRefusal): 403 OAUTH_SCOPE_REQUIRED, since neither
+// token holds a scope (personalTokenActor, brokerTokenActor), and 403 RESTRICTED_MEMBER from a
+// credential of hers that held the row's scopes, which
+// TestTheOwnLoginRefusalHoldsARestrictedCredentialHoldingTheScopes holds.
 //
-// Control: let any credential of a restricted member through (atBrowser answering true), and each
-// token that holds the row's scopes is answered, named.
+// Control: give a restricted member's personal token the caller's scopes at its mint and keep them
+// at its use (tokenScopes answering callerScopes for them, personalTokenActor keeping the row's
+// scopes) and let any credential of a restricted member through (restrictedOwnLoginAtBrowser
+// answering allowed true), and her personal token is answered, named.
 func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	stub := ciphertokentest.NewStubBroker(t)
@@ -174,7 +177,7 @@ func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const erinsBrokerToken = "erins-person-scoped-broker-token"
 	answer := liveNamedToken(caller.jkt)
-	answer.Person, answer.ProjectScope, answer.Projects = accessErin, ciphertoken.ProjectScopePerson, nil
+	answer.Person, answer.ProjectScope, answer.Projects = accessErin, ciphertoken.ProjectScopePerson, []string{"ACC"}
 	stub.Says(erinsBrokerToken, answer)
 	brokerWhoami := httptest.NewRecorder()
 	served.ServeHTTP(brokerWhoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", erinsBrokerToken, nil))

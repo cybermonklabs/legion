@@ -3,8 +3,8 @@
 # The restricted sweep's two sockets (restricted-sweep.sh sources this file, beside it), read as
 # the member: the document socket's room of the project's document, and the live socket's event
 # feed over the live window. It defines functions alone; they read the entry script's fills,
-# `mode`, `live_seconds`, `member_session`, `write_issue` and the run's files, and set
-# `window_line`, which a runner's verdict names.
+# `mode`, `live_seconds`, `member_session`, `member_issue`, `write_issue` and the run's files, and
+# set `window_line`, which a runner's verdict names.
 
 # doc_socket: the member is not admitted to the room of the project's document, while the same
 # probe admits the member to a document of a project the member sees (`own`, read with the
@@ -74,17 +74,17 @@ live_writes() {
     live_result="the full member's comment on $write_issue answered $status: $(head_of "$work/body")"
     return
   fi
-  post_message "$full_browser" "$dm_session"
+  post_message full "$dm_session"
   written_message=$posted
   [ -n "$written_message" ] ||
     live_result="the full member's direct message to $dm_session answered $status: $(head_of "$work/body")"
 }
 
 # live_socket: the member's event feed, open for the whole of SWEEP_LIVE_SECONDS, is sent no event
-# of the project while the project is written to, and is sent the member's own direct message to
-# SWEEP_MEMBER_SESSION, written in the window: the member's feed's own control, without which its
-# silence proves nothing. One run writes the project's comment and direct message itself, with the
-# full member's feed open over the same window, which must be sent both (its control). A runner
+# of the project while the project is written to, and is sent the member's own writes of the
+# window (member_writes): the member's feed's own control, without which its silence proves
+# nothing. One run writes the project's comment and direct message itself, with the full member's
+# feed open over the same window, which must be sent both (its control). A runner
 # holds no full member's credential: it reads the member's feed alone and prints the window it
 # read (`live window <W0> <W1>`, UTC, whole seconds), and its silence is proven only by a
 # writer's write delivered strictly inside that window, begun after W0 and ended before W1. W0 is
@@ -95,7 +95,7 @@ live_writes() {
 # the writer's writes (runner_live_floor). A refused upgrade is named by its status alone.
 live_socket() {
   local watcher_restricted watcher_full='' ready_started observation_started window_start elapsed
-  local restricted_exit full_exit feed pid refused_upgrade marker first_line frames own_message=''
+  local restricted_exit full_exit feed pid refused_upgrade marker first_line frames own_message='' own_comment=''
   live_result='' written='' written_message='' window_line=''
   bun "$socket_probe" watch "$origin" "$work/restricted.h" "$work/ready-restricted" "$work/written" \
     "$live_seconds" >"$work/live-restricted" 2>&1 &
@@ -130,14 +130,9 @@ live_socket() {
   window_start=$(date -u +%s)
   if [ -z "$live_result" ]; then
     : >"$work/written" || unknown 'could not signal the socket observation window'
-    # The member's own direct message, inside the window, to a feed that subscribed; a refused
-    # upgrade has no feed to send it to.
-    if [ -e "$work/ready-restricted" ]; then
-      post_message restricted "$member_session"
-      own_message=$posted
-      [ -n "$own_message" ] ||
-        live_result="the member's direct message to their own session $member_session answered $status"
-    fi
+    # The member's own writes, inside the window, to a feed that subscribed; a refused upgrade has
+    # no feed to send them to.
+    [ ! -e "$work/ready-restricted" ] || member_writes
   fi
   if [ -z "$live_result" ]; then
     while alive "$watcher_restricted" || alive "$watcher_full"; do
@@ -212,17 +207,17 @@ live_socket() {
           length > 0 and .[0].type == "events_start"
           and all(.[]; type == "object" and (.type | type == "string"))' "$work/live-restricted" >/dev/null 2>&1; then
           unproven "/ws/live: the member's feed did not cover the observation window: $(frames_of "$work/live-restricted")"
-        elif ! grep -F -q -e "$own_message" "$work/live-restricted"; then
-          unproven "/ws/live: the control did not hold: the member was not sent their own direct message to $member_session"
+        elif [ -n "$(own_unsent)" ]; then
+          unproven "/ws/live: the control did not hold: the member was not sent $(own_unsent)"
         else
           frames=$(jq -s '[.[] | select(.type == "event")] | length' "$work/live-restricted")
           if [ "$mode" = one ]; then
-            printf 'ok      /ws/live: the member is sent %s events in %s s, none of %s; the full member is sent the comment and the direct message, and the member their own direct message (controls)\n' \
-              "$frames" "$live_seconds" "$project"
+            printf 'ok      /ws/live: the member is sent %s events in %s s, none of %s; the full member is sent the comment and the direct message, and the member %s (controls)\n' \
+              "$frames" "$live_seconds" "$project" "$(own_writes)"
           else
             window_line="$(utc_of "$window_start") $(utc_of "$((window_start + live_seconds - delivery_seconds))")"
-            printf 'ok      /ws/live: the member is sent %s events in %s s, none of %s, and their own direct message; its control is a writer'"'"'s write delivered inside the live window\n' \
-              "$frames" "$live_seconds" "$project"
+            printf 'ok      /ws/live: the member is sent %s events in %s s, none of %s, and %s; its control is a writer'"'"'s write delivered inside the live window\n' \
+              "$frames" "$live_seconds" "$project" "$(own_writes)"
             printf 'live window %s\n' "$window_line"
           fi
         fi
@@ -233,15 +228,83 @@ live_socket() {
   [ -z "$written_message" ] || window_message_reads "$written_message"
 }
 
-# own_message_read ID: the member's own direct message, read by GET /api/v1/messages/{id} as the
-# member: the control of the rows that read the direct message of the project's session, which
-# must answer that one as missing.
+# member_writes: the member's own writes of the live window, to a feed that subscribed: a direct
+# message to SWEEP_MEMBER_SESSION, or, in its place, a comment and then a message on
+# SWEEP_MEMBER_ISSUE, each a body alone, which a person who holds no session writes. It sets
+# live_socket's own_message, and own_comment, to the ids they were answered; a write that answers
+# none sets live_result, naming its status alone, and is the last.
+member_writes() {
+  if [ -z "$member_issue" ]; then
+    post_message restricted "$member_session"
+    own_message=$posted
+    [ -n "$own_message" ] ||
+      live_result="the member's direct message to their own session $member_session answered $status"
+    return
+  fi
+  member_issue_write comments comment
+  own_comment=$posted
+  if [ -z "$own_comment" ]; then
+    live_result="the member's comment on their own issue $member_issue answered $status"
+    return
+  fi
+  member_issue_write messages message
+  own_message=$posted
+  [ -n "$own_message" ] ||
+    live_result="the member's message on their own issue $member_issue answered $status"
+}
+
+# member_issue_write ROUTE WHAT: the member's WHAT (comment, message) on SWEEP_MEMBER_ISSUE, a body
+# alone that says it is the sweep's probe and when it was written, POSTed to the issue's ROUTE
+# (comments, messages), as post_as answers it.
+member_issue_write() {
+  jq -cn --arg b "restricted-sweep: a probe of whether the member is sent their own $2 live, written $(date -u +%Y-%m-%dT%H:%M:%SZ)." \
+    '{body: $b}' >"$work/member-$2.json" || unknown "could not write the member's $2 request"
+  post_as restricted "/api/v1/issues/$member_issue/$1" "$work/member-$2.json"
+}
+
+# own_writes: the member's own writes of the live window, as a line names them.
+own_writes() {
+  if [ -z "$member_issue" ]; then
+    printf 'their own direct message'
+  else
+    printf 'their own comment and message on %s' "$member_issue"
+  fi
+}
+
+# own_unsent: what of the member's own writes their feed was not sent, as a line names it, or
+# nothing when it was sent every one; a write answered no id was sent nothing.
+own_unsent() {
+  local comment=unsent message=unsent
+  [ -z "$own_message" ] || ! grep -F -q -e "$own_message" "$work/live-restricted" || message=''
+  if [ -z "$member_issue" ]; then
+    [ -z "$message" ] || printf 'their own direct message to %s' "$member_session"
+    return 0
+  fi
+  [ -z "$own_comment" ] || ! grep -F -q -e "$own_comment" "$work/live-restricted" || comment=''
+  if [ -n "$comment" ] && [ -n "$message" ]; then
+    own_writes
+  elif [ -n "$comment" ]; then
+    printf 'their own comment on %s' "$member_issue"
+  elif [ -n "$message" ]; then
+    printf 'their own message on %s' "$member_issue"
+  fi
+}
+
+# own_message_read ID: the member's own message, read by GET /api/v1/messages/{id} as the member:
+# the control that the route answers the member a message they may read, beside the rows that must
+# answer the project's session's direct message as missing. Those rows are held to a direct
+# conversation's rule, its parties (access.PartyClause), which reads the member's own direct
+# message to SWEEP_MEMBER_SESSION too; a message on SWEEP_MEMBER_ISSUE is read by its issue's
+# project rule (access.MessageClause) instead, so in that mode the read shows that the route
+# answers the member, and not that the party rule does.
 own_message_read() {
+  local what='own direct message'
+  [ -z "$member_issue" ] || what="own message on $member_issue"
   call restricted "/api/v1/messages/$(uri "$1")" "$work/body"
   if [ "$status" = 200 ] && grep -F -q -e "$1" "$work/body"; then
-    printf 'ok      GET /api/v1/messages/{id} (the member'"'"'s own direct message): 200 (control)\n'
+    printf 'ok      GET /api/v1/messages/{id} (the member'"'"'s %s): 200 (control)\n' "$what"
   else
-    unproven "GET /api/v1/messages/{id} (the member's own direct message): the control did not hold: the member is answered $status for their own direct message"
+    unproven "GET /api/v1/messages/{id} (the member's $what): the control did not hold: the member is answered $status for their $what"
   fi
 }
 

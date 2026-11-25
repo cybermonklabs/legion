@@ -178,6 +178,7 @@ func claimEvents(t *testing.T, handler http.Handler, key string) []claimEventRow
 }
 
 func TestClaimRefusesALiveHolderAndPassesOnWhenThatSessionEnds(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one", "session-two")
 	handler, _, _ := claimHandler(t, live)
@@ -257,6 +258,7 @@ func TestClaimRefusesALiveHolderAndPassesOnWhenThatSessionEnds(t *testing.T) {
 // has no session to message, so it names the person; and only POST /claim takes {force: true},
 // so a release refusal never points at a force that route does not have.
 func TestClaimRefusalNamesTheHolderAndOnlyWhatTheRouteOffers(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one")
 	lookups := make(chan int, 8)
@@ -310,6 +312,7 @@ func TestClaimRefusalNamesTheHolderAndOnlyWhatTheRouteOffers(t *testing.T) {
 }
 
 func TestClaimRecordsTheRequestsOwnActor(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one")
 	handler, _, _ := claimHandler(t, live)
@@ -355,6 +358,7 @@ func TestClaimRecordsTheRequestsOwnActor(t *testing.T) {
 // The claim and the status are separate records: one names the session implementing the issue,
 // the other is how humans track where work has got to.
 func TestClaimAndStatusMoveIndependently(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one")
 	handler, _, _ := claimHandler(t, live)
@@ -423,6 +427,7 @@ func labelledIssueKey(t *testing.T, handler http.Handler, project, title string,
 // runs only its daemon writes the status, so both routes have to say so — on the issue's own
 // label whatever case it was typed in, and on a child that carries no label of its own.
 func TestClaimAnswersWhoOwnsTheIssuesStatus(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one")
 	handler, _, _ := claimHandler(t, live)
@@ -621,6 +626,7 @@ func releasedHolder(t *testing.T, handler http.Handler, key string) string {
 }
 
 func TestClaimReleaseBelongsToItsHolderAHumanOrAnEndedSession(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one", "session-two")
 	handler, _, _ := claimHandler(t, live)
@@ -676,6 +682,7 @@ func TestClaimReleaseBelongsToItsHolderAHumanOrAnEndedSession(t *testing.T) {
 }
 
 func TestClosingAnIssueReleasesItsClaimAndAClosedIssueTakesNone(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one")
 	handler, _, _ := claimHandler(t, live)
@@ -731,6 +738,7 @@ func TestClosingAnIssueReleasesItsClaimAndAClosedIssueTakesNone(t *testing.T) {
 }
 
 func TestClaimIsOnEveryIssueRead(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one")
 	handler, _, _ := claimHandler(t, live)
@@ -766,6 +774,7 @@ func TestClaimIsOnEveryIssueRead(t *testing.T) {
 // must notice under the lock and redo the cycle rather than apply a verdict about a session
 // that no longer holds the issue.
 func TestClaimRedoesTheCycleWhenTheHolderChangesBeforeTheLock(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one", "session-two", "session-three")
 	release := make(chan struct{})
@@ -837,6 +846,7 @@ func TestClaimRedoesTheCycleWhenTheHolderChangesBeforeTheLock(t *testing.T) {
 // another live session in between, the locked decision must not read that session's absence
 // from the stale list as "ended" and take a live agent's work without force.
 func TestClaimNeverTakesALiveHoldersClaimFoundAfterTheSnapshot(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one", "session-two")
 	release := make(chan struct{})
@@ -905,6 +915,7 @@ func currentHolder(t *testing.T, handler http.Handler, key string) string {
 // CLAIM_CONTENDED and never ISSUE_CLAIMED, the wording claims nothing about liveness (nothing
 // was checked), and the claim the row shows rides along.
 func TestContendedClaimAnswerNamesNoLiveness(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	listener := claimListener(t, live, nil)
 	handler, _, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
@@ -949,6 +960,7 @@ func TestContendedClaimAnswerNamesNoLiveness(t *testing.T) {
 // lookup of their own (a human release and a claim of a free issue are both decided without
 // one).
 func TestContendedClaimEndsTheCycleAtTheBound(t *testing.T) {
+	t.Parallel()
 	// One holder change per attempt the bound allows, each made while that attempt's lookup is
 	// held open. A later lookup is never held: a cycle that judged a third time would answer
 	// from it rather than hang.
@@ -1019,6 +1031,7 @@ func TestContendedClaimEndsTheCycleAtTheBound(t *testing.T) {
 // session the row now shows: the write must redo its cycle rather than read the snapshot it
 // never took as "nobody is live" and take a running session's claim.
 func TestClaimJudgedAgainstNobodyNeverTakesALiveHoldersClaim(t *testing.T) {
+	t.Parallel()
 	t.Run("a stale self-release", func(t *testing.T) {
 		live := &liveRegistry{}
 		live.set("session-one", "session-two")
@@ -1106,6 +1119,7 @@ func whileTheRowIsHeld(
 // a time after their start. Neither moves updated_at back below that stamp, and each answers the
 // value the row holds, which a read after it returns too.
 func TestAClaimWriteThatWaitedNeverMovesUpdatedAtBackward(t *testing.T) {
+	t.Parallel()
 	for _, write := range []struct {
 		name   string
 		method string
@@ -1182,6 +1196,7 @@ func TestAClaimWriteThatWaitedNeverMovesUpdatedAtBackward(t *testing.T) {
 // statement's clock keeps it through a PATCH, a claim and a release, as it does through an event
 // (TestEventDoesNotMoveIssueUpdatedAtBackward).
 func TestAnIssueWriteKeepsAnUpdatedAtAheadOfItsClock(t *testing.T) {
+	t.Parallel()
 	live := &liveRegistry{}
 	live.set("session-one")
 	handler, database, _ := claimHandler(t, live)

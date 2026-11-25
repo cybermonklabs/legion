@@ -145,6 +145,10 @@ type acceptedDelivery struct {
 // names no owner, and a message on an issue is refused 409 ACCEPT_NOT_DIRECT before any write, so
 // no append of this route takes an owner's lock either.
 //
+// The attempt in the path is a positive number that fits message_deliveries.attempt, an integer
+// column (fitsIntegerColumn): any other is an attempt no message has, so it is the 404
+// MESSAGE_NOT_FOUND a missing attempt is, answered before any query is made with it.
+//
 // The actor is a bearer's own claim of its session, as on every session write, so a bearer
 // naming another session can spend that session's one acceptance of a fresh attempt: the real
 // session is then refused and shows a card, and nothing is injected.
@@ -163,7 +167,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	number, err := strconv.Atoi(r.PathValue("attempt"))
-	if err != nil || number < 1 {
+	if err != nil || number < 1 || !fitsIntegerColumn(number) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}
@@ -1128,11 +1132,16 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// role, asks the listener whether that session holds the role now with nothing held
 	// (lookUpRoleHolderReply). The target is read as the writer reads it
 	// (messageReplyRoleHolderOf): one it does not see asks nothing, as no target asks nothing. A
-	// read that fails is the route's 500.
-	roleReply, err := s.messageReplyRoleHolderOf(r.Context(), actor, who, r.PathValue("id"), input.Attempt)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// read that fails is the route's 500. An attempt past message_deliveries.attempt's range names
+	// no delivery, so no read is made with it: the bound below (fitsIntegerColumn) answers it,
+	// where it always has.
+	var roleReply roleHolderReply
+	if fitsIntegerColumn(input.Attempt) {
+		roleReply, err = s.messageReplyRoleHolderOf(r.Context(), actor, who, r.PathValue("id"), input.Attempt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// The role lookup above may have waited on the listener past what the refresh made with who
 	// covers, and the transaction below reads the message by the session content rule.
@@ -1189,6 +1198,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message.Target == nil {
+		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
+		return
+	}
+	// The attempt is a number message_deliveries keeps in an integer column, so one past that
+	// column (fitsIntegerColumn) is a delivery no message has, answered as the read below answers
+	// one, before any query is made with it.
+	if !fitsIntegerColumn(input.Attempt) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}

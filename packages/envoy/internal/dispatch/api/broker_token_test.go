@@ -278,6 +278,7 @@ type refusalAnswer struct {
 // whoami reports the session the token proved, the person it acts for and the project it may
 // write.
 func TestALiveBrokerTokenWithASoundProofIsAccepted(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-the-broker-issued"
@@ -342,6 +343,7 @@ func TestAnEntryTokenMintsAndApprovesNothing(t *testing.T) {
 // TestAPersonScopedBrokerTokenCarriesNoProject: a dev box session's token names no single
 // project, so the caller carries none at all rather than an empty one.
 func TestAPersonScopedBrokerTokenCarriesNoProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-session-token"
@@ -368,6 +370,7 @@ func TestAPersonScopedBrokerTokenCarriesNoProject(t *testing.T) {
 // names no project. The project the writes go into is made by a person: a token scoped to one
 // project may not create another (project_scope.go).
 func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-that-writes"
@@ -449,6 +452,7 @@ func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 // person in mixed case with white space around it, the session comments under the token with no
 // actor in the body, and the comment's stored author names the canonical login as its owner.
 func TestABrokerPersonIsStoredCanonicalOnASessionsRow(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-whose-person-the-broker-spells-as-configured"
@@ -515,6 +519,7 @@ func TestABrokerPersonIsStoredCanonicalOnASessionsRow(t *testing.T) {
 // comment's author, either version's author or either event's actor: a server that copied the
 // body's actor, or its mark, into what it records fails every one of those assertions.
 func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
 	caller := newBrokerCaller(t)
@@ -664,6 +669,7 @@ func requireSessionProven(t *testing.T, what string, actor model.Actor, want boo
 // projects, and Dispatch writes its project limit only for one; such an answer is refused before
 // any write rather than read as a caller no project limits.
 func TestANamedBrokerTokenNamingTwoProjectsWritesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-named-token-naming-two-projects"
@@ -688,6 +694,7 @@ func TestANamedBrokerTokenNamingTwoProjectsWritesNothing(t *testing.T) {
 // stores that claim at all, is TestANamedTokenStoresItsProjectUnderTheOlderClaimToo
 // (internal/cipher/oauth).
 func TestAnOlderBrokersNamedAnswerWritesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-named-token-an-older-replica-answers-for"
@@ -705,6 +712,7 @@ func TestAnOlderBrokersNamedAnswerWritesNothing(t *testing.T) {
 // TestANamedBrokerTokenLimitsWritesToItsProject: a token an operator's entry mapped to one
 // project writes that project and no other, as it always has.
 func TestANamedBrokerTokenLimitsWritesToItsProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-named-token"
@@ -731,6 +739,7 @@ func TestANamedBrokerTokenLimitsWritesToItsProject(t *testing.T) {
 // none, and the token writes another project its person may write, exactly as a token naming no
 // project does. What later reads the list is Dispatch's own project access rule.
 func TestAPersonTokenWithProjectsLimitsNoWriteYet(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-person-token-naming-a-project"
@@ -762,6 +771,7 @@ func withPerson(request *http.Request, login string) *http.Request {
 // name a writer that is not the credential's, and the refusal names the session the token carries
 // so the caller can see what it should have sent.
 func TestABrokerTokenRefusesABodyActorNamingAnotherSession(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-whose-body-lies"
@@ -790,6 +800,7 @@ func TestABrokerTokenRefusesABodyActorNamingAnotherSession(t *testing.T) {
 // TestABrokerTokenProvedByAnotherKeyIsRefused: a sound proof signed by a key the token is not
 // bound to is what a stolen token looks like, and it gets its own code.
 func TestABrokerTokenProvedByAnotherKeyIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	owner, thief := newBrokerCaller(t), newBrokerCaller(t)
 	const token = "a-token-bound-to-its-owners-key"
@@ -808,6 +819,7 @@ func TestABrokerTokenProvedByAnotherKeyIsRefused(t *testing.T) {
 // already spent, and a broker that answers nothing are three different things to a caller, and
 // only the last is a 503 — a caller told its token was refused would discard a live one.
 func TestBrokerTokenRefusalsEachHaveTheirOwnCode(t *testing.T) {
+	t.Parallel()
 	t.Run("not live", func(t *testing.T) {
 		rig := newBrokerTokenRig(t)
 		caller := newBrokerCaller(t)
@@ -862,6 +874,7 @@ func TestBrokerTokenRefusalsEachHaveTheirOwnCode(t *testing.T) {
 // records every write under the session its credential proved, so such a token is refused by
 // name: whoami will not say who it is, and a write will not take the session its body names.
 func TestAMachineLoginsOwnTokenIsRefusedAndNeverFilledInFromTheBody(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-machine-logins-own-access-token"
@@ -900,6 +913,7 @@ func TestAMachineLoginsOwnTokenIsRefusedAndNeverFilledInFromTheBody(t *testing.T
 // — such a presentation is the unknown personal token it has always been, and the broker is never
 // asked about it.
 func TestABrokerTokenUnderTheBearerSchemeIsRefusedAsItAlwaysWas(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-presented-the-wrong-way"
@@ -919,6 +933,7 @@ func TestABrokerTokenUnderTheBearerSchemeIsRefusedAsItAlwaysWas(t *testing.T) {
 // has no such credential kind, and the answer is what any Authorization header that is not a
 // bearer has always been here.
 func TestADPoPPresentationWithoutABrokerIsRefusedAsItAlwaysWas(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	caller := newBrokerCaller(t)
 	presented := caller.presenting(t, http.MethodGet, "/api/v1/whoami", "a-token-nobody-here-decides", nil)
@@ -935,6 +950,7 @@ func TestADPoPPresentationWithoutABrokerIsRefusedAsItAlwaysWas(t *testing.T) {
 // caller resolve exactly as they did, on a server that decides broker tokens too — the personal
 // token's write still has to name its own session, since that credential proves none.
 func TestTheOtherCredentialsAreUnaffectedByTheBrokerBranch(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 
 	person := rig.serve(withPerson(brokerRequest(t, http.MethodGet, "/api/v1/whoami", nil, "", ""), brokerTestPerson))
@@ -981,6 +997,7 @@ func TestTheOtherCredentialsAreUnaffectedByTheBrokerBranch(t *testing.T) {
 // the connection it authenticated asks only whether the token is still live — which is what
 // whileCallerResolves calls on every heartbeat (callerStillResolves), driven here directly.
 func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-holding-a-socket-open"
@@ -1020,6 +1037,7 @@ func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 // so a client reads the wait without parsing a sentence. The bucket here holds one request, so
 // the second presentation of a token the broker has not been asked about meets it.
 func TestTheRateRefusalCarriesTheWaitInItsHeader(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t, func(o *ciphertoken.Options) {
 		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
 	})
@@ -1048,6 +1066,7 @@ func TestTheRateRefusalCarriesTheWaitInItsHeader(t *testing.T) {
 // session's credential like any other — whoami names the session and the service, and a read
 // answers — and only its writes are refused (the test below).
 func TestAServiceOnlyBrokerTokenReadsAndIsNamedByWhoami(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-naming-no-person"
@@ -1084,6 +1103,7 @@ func TestAServiceOnlyBrokerTokenReadsAndIsNamedByWhoami(t *testing.T) {
 // the rows below are one of each. Each refusal names the command that makes the write possible,
 // and nothing lands.
 func TestAServiceOnlyBrokerTokenIsRefusedEveryWrite(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-that-may-not-write"
@@ -1147,6 +1167,7 @@ func TestAServiceOnlyBrokerTokenIsRefusedEveryWrite(t *testing.T) {
 // was — the broker holds it live and the proof check is what turns it down — so no write
 // refusal is ever reached, there being no caller to refuse, and a write under it lands nothing.
 func TestAServiceOnlyBrokerTokenWithNoProofIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-sent-without-its-proof"
@@ -1199,8 +1220,14 @@ func newOutsideBrokerRig(t *testing.T) outsideBrokerRig {
 // personToken is the broker's answer for a dev box session's token acting for person: live,
 // bound to the rig's caller's key and scoped to that person rather than to one project.
 func (r outsideBrokerRig) personToken(person string) ciphertoken.Introspection {
+	return r.personTokenListing(person)
+}
+
+// personTokenListing is personToken listing projects: the one project a restricted member's token
+// lists, which a token of theirs listing none or several may not (restrictedBrokerTokenList).
+func (r outsideBrokerRig) personTokenListing(person string, projects ...string) ciphertoken.Introspection {
 	answer := liveNamedToken(r.caller.jkt)
-	answer.Person, answer.ProjectScope, answer.Projects = person, ciphertoken.ProjectScopePerson, nil
+	answer.Person, answer.ProjectScope, answer.Projects = person, ciphertoken.ProjectScopePerson, projects
 	return answer
 }
 
@@ -1231,7 +1258,7 @@ func wantAPIError(t *testing.T, err error, status int, code, what string) {
 func TestARestrictedOwnersBrokerTokenActsOnlyWhileTheDeploymentAdmitsThem(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const token = "erins-broker-token"
-	rig.broker.Says(token, rig.personToken(accessErin))
+	rig.broker.Says(token, rig.personTokenListing(accessErin, "ACC"))
 	withOutside := rig.offDeps
 	withOutside.RestrictedAdmission = testOutsideRule(rig.database.Pool)
 	on, off := directServer(withOutside), directServer(rig.offDeps)
@@ -1320,7 +1347,7 @@ func TestARestrictedOwnersBrokerTokenActsOnlyWhileTheDeploymentAdmitsThem(t *tes
 func TestABrokerTokensConnectionClosesOnceItsPersonsMemberKindChanges(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const token = "erins-broker-token-holding-a-socket"
-	rig.broker.Says(token, rig.personToken(accessErin))
+	rig.broker.Says(token, rig.personTokenListing(accessErin, "ACC"))
 	if _, err := rig.database.Pool.Exec(context.Background(), `update people set member_kind = 'full' where email = $1`, accessErin); err != nil {
 		t.Fatal(err)
 	}
@@ -1516,8 +1543,10 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 // write, the tie of the session to its person (session_owners, access.TieSession), which a server
 // makes once per pair it has not recorded. One that names no person reads and writes nothing. The
 // instrument is shown seeing a list read in the same run: a restricted owner's token, which must
-// read one, resolves in two reads and the tie, and holds no scope (brokerTokenActor gives a
-// restricted member's broker token none, whatever scope the broker answered).
+// read one, lists the one project such a token may (restrictedBrokerTokenList), so it resolves in
+// three reads, the third the record of the private projects its list names (access.RecordListedReach,
+// which writes none here), and the tie, and holds no scope (brokerTokenActor gives a restricted
+// member's broker token none, whatever scope the broker answered).
 func TestAFullMembersBrokerTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const nobody = "nobody@example.com"
@@ -1544,8 +1573,8 @@ func TestAFullMembersBrokerTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted
 			`{"kind":"agent","owner":null,"project":null,"scopes":[],"service":"` + brokerTestService + `","session":"` + brokerTestSession + `"}`,
 			serviceOnlyToken(rig.caller.jkt), false, 0, 0, false},
 		{"erin, a restricted member, with restricted members admitted", "erins-broker-token",
-			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":[],"service":null,"session":"` + brokerTestSession + `"}`,
-			rig.personToken(accessErin), true, 2, 1, true},
+			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","projects":["ACC"],"project":"ACC","scopes":[],"service":null,"session":"` + brokerTestSession + `"}`,
+			rig.personTokenListing(accessErin, "ACC"), true, 3, 1, true},
 	} {
 		rig.broker.Says(test.token, test.answer)
 		handler := rig.off

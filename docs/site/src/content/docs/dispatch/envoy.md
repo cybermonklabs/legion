@@ -75,9 +75,9 @@ start-up log.
 A Slack app sends its events to the listener's public route `/webhook/slack`, which the listener
 mounts when `ENVOY_WEBHOOKS` lists `slack`. Set the app's Event Subscriptions request URL to it, for
 example `https://envoy.internal.example/webhook/slack`, and subscribe it to the `app_mention` bot
-event (its `app_mentions:read` scope). The listener answers Slack's `url_verification` challenge,
-and checks every other delivery's signature against `ENVOY_SLACK_SIGNING_SECRET`, the app's
-signing secret, answering `401` to one that does not match. The repository's
+event (its `app_mentions:read` scope). The listener checks every delivery's signature against
+`ENVOY_SLACK_SIGNING_SECRET`, the app's signing secret, before it reads the delivery as JSON,
+Slack's `url_verification` challenge included, and answers `401` to one that does not match. The repository's
 `deploy/slack/legion-app-manifest.yaml` creates such an app: the `app_mentions:read`,
 `chat:write`, `channels:history` and `groups:history` bot scopes and the `app_mention` bot event.
 
@@ -443,11 +443,14 @@ after the claim was written, before any registration that states no process has 
 any process of the session, not only the one that took the role; after such a renewal no
 registration takes it. A release
 that loses its conditional delete to a record written since is not reported as a release: the
-claim is read again, a record still naming that same session and that same process is its own
-holder's renewal, and the delete goes out again at the revision that renewal left, three
-deletes in all. A claim renewed under every one of them is left standing and fails the request
-naming the role, so a client that is handing a role back sends the hand-back again rather than
-leaving the role held while its own registrations renew the claim.
+claim is read again, a record still naming that same session and that same process, and carrying
+the same `grant_id`, is its own holder's renewal, and the delete goes out again at the revision
+that renewal left, three deletes in all. A claim renewed under every one of them is left standing
+and fails the request naming the role, so a client that is handing a role back sends the hand-back
+again rather than leaving the role held while its own registrations renew the claim. A claim
+granted again since the release read the claim, to any process, the one the release states
+included, and in any millisecond, is no claim the release read: it is left standing, as the
+hand-back's mark leaves it.
 
 Dispatch judges a role route's holder by the same two windows, and both processes carry the same
 values: give every listener of a deployment and Dispatch's server the same
@@ -552,6 +555,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_REVIEWER_APP_ID` | Required with `github`: the id of the GitHub App that posts reviews. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
+| `ENVOY_WEBHOOK_BODY_BUDGET` | The bytes of webhook body the listener holds at once across every webhook route; default 64 MiB. A delivery that finds no room within its route's short wait is answered `503` with `Retry-After: 1`. |
 
 A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN`, the OIDC pair or
 the Google pair, unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says that something else fences its
@@ -658,16 +662,26 @@ puts it back. Lowering the cap
 (`nats stream edit ENVOY_NOTIFICATIONS --max-consumers=<n>`, which also needs nats-server v2.12.5
 or later) needs every program's binary carrying the lower cap first, for the same reason.
 
-On a clustered NATS (nats-server v2.10.29 among them), the server keeps the id of a message the
-full stream refused on the stream's leader for 72 hours, a purge notwithstanding, and
-acknowledges every retry under that id as a duplicate it does not hold. Envoy then publishes the
-same message once more without its id, so the retry is stored as soon as the stream has room,
-with no operator step. While the stream is still full, that publish is refused too, and the
-retry fails with `stream ENVOY_NOTIFICATIONS acknowledged a duplicate of a message it does not
-hold, and its publish without its id failed: stream ENVOY_NOTIFICATIONS is full: nats: maximum
-bytes exceeded`, which is retried as a full stream is. The stream drops no repeat of a message
-stored without its id, so a later publish under the same id stores another copy, which the
-stream's consumers see.
+nats-server v2.15.1 keeps no id of a message the full stream refused, so a retry under that id is
+refused the same way while the stream is full and stored once it has room, with no operator step.
+
+A send, a topic publish or a role send that the stream answers as a duplicate of another
+request's copy, a repeat under the same idempotency key, is answered `200` with `duplicate: true`
+and an answer read from that stored copy. When the listener cannot read that copy back, the
+answer is `503` with `Retry-After: 1` and the body `envoy: the stream already knows this message's
+id, and no stored copy of it was read: …`, and the same request again gets the copy once it can
+be read. The stored copy is answered whole, its `event_id` included, to its own request and to
+its own sender: the same `source` and the `source_session` the copy names and, where the request
+presents a secrets-broker token, the session the token proves. A copy that names no session is
+whole only to its own request, since no caller can prove it owns it. Anyone else repeating the key
+gets nothing the other sender wrote. A request that sends the header `Envoy-Reads: key-taken`
+learns only that the key is taken: the copy's `event_id`, its times, its topic, its dedupe key and
+the reply it asks for. Any other request gets the envelope the listener built for it, with
+`duplicate: true`, as every repeat got before this answer existed, so a client of an earlier
+release still reads it. The TypeScript clients (`envoy-client`, and the `pi-envoy` and
+`claude-envoy` tools through it) send the header on a send or a publish that names its session,
+and report the shorter answer as not delivered, naming the copy's `event_id`. Dispatch sends it
+and records the answer as a duplicate. The Legion daemon reads only the status.
 
 ### The sender limit
 
@@ -763,7 +777,7 @@ install it, what each component deploys and which settings it sets.
 | `200` `starting` | The listener is still binding its durable consumer. |
 | `200` `healthy` | Everything answers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
 | `200` `degraded` | A passing key-value failure the listener is retrying, or a role claim view that answers no read: its watcher's first scan has not delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has. Both repair themselves, so the answer stays `200`. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Before the first full read completes the view answers no read, so the answer is then `role claim view unavailable`. Also `KV watch rebuild unavailable` when the listener has not rebuilt its key-value watches for a minute after a NATS reconnect: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out the one listener still serving those caches and replace it with one that rebuilds into the same failure with empty caches. |
-| `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. |
+| `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. While that lasts, the listener's self-health check logs `self-health probe failed` every 30 seconds, and logs `self-health recovered` once the lane is back; it never restarts the listener for it. An alert should match the line's `msg`: its `error` reads `role lane subscription inactive` alone only while nothing else fails. When the NATS server refused the lane's subscription on a connection that stays up, as a configuration reload that takes the grant away does, each check sends the subscription again, in the shared queue group and then in the machine's, as the lane's start does. So a reload that gives the grant back brings the lane back with no restart, and one that takes away only the shared group's grant leaves the lane in the machine's group. While the grant stays missing, each check costs one subscription, one refusal from the server and one `envoy nats async error` line in each of the two groups, every 30 seconds. |
 
 `role_claim_repair` says how fresh the listener's copy of the role claims is. The listener reads
 every role claim from NATS again one minute after each full read completes, and each such read
@@ -789,6 +803,16 @@ watch the timestamp's age. No setting changes the minute or the 2-minute bound.
 cache ping and no read of the durable consumer. A liveness or startup probe reads it, so a bus
 outage or a warming cache restarts no listener. Readiness stays on `/healthz`, whose status tells
 a starting listener from a serving one.
+
+`GET /readyz` needs no credential either. It answers whether /v1 can serve, and a load balancer's
+health check reads it: `503 {"status":"starting"}` until the /v1 gate opens; after that
+`503 {"status":"unavailable","error":"nats unavailable"}` while the bus does not answer, the check
+that turns `/healthz` `503`, and `200 {"status":"serving"}` otherwise, again as soon as the bus
+answers. It reads no store. It is the path for a balancer that sends requests to `/v1`, such as
+the edge listener's, since `/healthz` answers `200` `starting` from the listener's first answer,
+while `/v1` still answers `503`. It also takes a listener whose bus is cut out of the balancer's
+backends, which the pod's readiness does not: GKE's standalone network endpoint groups keep an
+endpoint whose readiness fails.
 
 After a NATS reconnect the listener rebuilds the key-value watches its caches read through. A
 rebuild that fails is tried again within seconds, so one that fails and then succeeds inside that

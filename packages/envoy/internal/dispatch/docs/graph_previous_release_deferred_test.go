@@ -161,7 +161,7 @@ func TestADeferredVersionThePreviousReleaseIndexesReachesTheStore(t *testing.T) 
 		}
 	}
 	if census.Refused() {
-		t.Fatalf("the census refused with %d difference(s) after this build drained a version the previous release indexed first, want zero",
-			census.Differences())
+		t.Fatalf("the census refused with %d difference(s) after this build drained a version the previous release indexed first, want zero:\n%s",
+			census.Differences(), censusFindings(census))
 	}
 }

@@ -90,14 +90,3 @@ create index graph_tuples_values on graph_tuples (from_kind, from_id, kind, seq 
 create index graph_tuples_as_of_out on graph_tuples (from_kind, from_id, kind, at desc, seq desc);
 create index graph_tuples_as_of_in on graph_tuples (to_kind, to_id, kind, at desc, seq desc)
   where to_kind <> 'value';
-
--- What `envoy-dispatch erase` removed. An operator's audit row: nobody addresses it, and no read
--- of the graph answers it. It holds no erased text.
-create table graph_erasures (
-  id bigserial primary key,
-  node_kind text not null,
-  node_id text not null,
-  removed jsonb not null,
-  ran_by jsonb not null,
-  ran_at timestamptz not null
-);

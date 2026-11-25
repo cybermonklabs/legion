@@ -61,7 +61,7 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 
 // WriteArmsUncaused is WriteArms for a writer whose cause is appended after these arms run: the
 // nodes it makes state no base attribute here and are made at the sentinel, marked as made
-// (nodeMark), and the write it answers holds them for that event, which QueueCaused moves them
+// (nodeMarks), and the write it answers holds them for that event, which QueueCaused moves them
 // onto and appends their base attributes under, read off that mark. No tuple may be updated to
 // learn its cause, and the node row moves onto the event, so a node made at the sentinel whose
 // base attributes were stated here would be a row naming one event and base tuples naming
@@ -163,8 +163,16 @@ const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 // That is the rule QueueWrite follows too, and the arm needs no second half of it: this upsert
 // moves no stored state, so there is never a state of a node already there for it to state.
 //
+// For the same reason the arm neither fills nor checks a node's project (Node.Project): a node
+// already there keeps the project it holds, whatever the node passed here names, and a node the
+// arm makes takes the one passed. That holds because no caller of the arms passes a node of a
+// project: they write people, sessions, roles, the sessions an ask's followers are, and the
+// messages a delivery reached, each carrying parties or nothing (WriteArms' callers in asks,
+// graphcensus, outbox and this package). A caller that passed a node of a project would need the
+// project check QueueWrite makes before it wrote.
+//
 // states is false for a writer whose cause is appended after these arms (WriteArmsUncaused): the
-// nodes it makes carry the mark bound after the node arrays instead of a cause (nodeMark), as
+// nodes it makes carry the mark bound after the node arrays instead of a cause (nodeMarks), as
 // made, so the append that cause comes with states those same attributes for that event.
 func nodeArm(first int, states bool) string {
 	source := causeOf("source_event")
@@ -457,30 +465,10 @@ func nodeParams(nodes []Node) ([]any, error) {
 	return []any{kinds, ids, supertags, visibilities, states, attributes, madeAts, madeBys, sourceEvents, projects, parties}, nil
 }
 
-// tupleParams are the ten arrays a tuple append binds, in tupleWriteColumns' order.
+// tupleParams are the ten arrays a tuple append binds, in tupleWriteColumns' order: the segmented
+// append's binding (tupleParamsOf) over tuples.
 func tupleParams(tuples []Tuple) ([]any, error) {
-	fromKinds := make([]string, len(tuples))
-	fromIDs := make([]string, len(tuples))
-	kinds := make([]string, len(tuples))
-	toKinds := make([]string, len(tuples))
-	toIDs := make([]string, len(tuples))
-	ats := make([]time.Time, len(tuples))
-	whos := make([][]byte, len(tuples))
-	sourceEvents := make([]int64, len(tuples))
-	legacySeqs := make([]*int64, len(tuples))
-	asserted := make([]bool, len(tuples))
-	var writers writerEncoder
-	for index, tuple := range tuples {
-		who, err := writers.encode(tuple.Who)
-		if err != nil {
-			return nil, fmt.Errorf("encode writer of %s %s: %w", tuple.Kind, tuple.FromID, err)
-		}
-		fromKinds[index], fromIDs[index], kinds[index] = tuple.FromKind, tuple.FromID, tuple.Kind
-		toKinds[index], toIDs[index], ats[index] = tuple.ToKind, tuple.ToID, tuple.At
-		whos[index], sourceEvents[index] = who, tuple.SourceEvent
-		legacySeqs[index], asserted[index] = tuple.LegacySourceSeq, tuple.Asserted
-	}
-	return []any{fromKinds, fromIDs, kinds, toKinds, toIDs, ats, whos, sourceEvents, legacySeqs, asserted}, nil
+	return tupleParamsOf(len(tuples), func(index int) Tuple { return tuples[index] })
 }
 
 // claimParams are the eight arrays a claim arm binds, in the order claimArrays casts them.

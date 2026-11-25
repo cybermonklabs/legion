@@ -56,7 +56,7 @@ func newIAPHoldRig(t *testing.T) *iapHoldRig {
 	if err != nil {
 		t.Fatalf("build the IAP identity: %v", err)
 	}
-	app, err := buildAppContext(boot, rule, built, r.membership)
+	app, err := buildAppContext(boot, rule, withDocumentService(t, boot, built), r.membership)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}

@@ -105,6 +105,7 @@ func relatedTreesFixture(t *testing.T, asking, other string) (http.Handler, stri
 // The same request without the header answers the same two items with no tree on either, which
 // is what every client but the dashboard reads.
 func TestTheRelatedRouteCarriesTheTreeOfEveryAnswerItOffersOnBothLegs(t *testing.T) {
+	t.Parallel()
 	handler, own, offered := relatedTreesFixture(t, "XTRE", "XTRO")
 
 	response := relatedTreesRequest(t, handler, "XTRE", true)

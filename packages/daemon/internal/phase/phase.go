@@ -65,9 +65,9 @@ func MovesBack(from, to Phase) bool {
 }
 
 // BackwardPairs is every move back the daemon counts, each written "<from>-<to>". It is the whole
-// vocabulary the two readers named on Order share: the engine counts a round for a pair in this
-// list, and the config loader refuses a hook naming a pair that is not in it. The answer is a
-// fresh slice, so a caller that sorts or trims it leaves the next caller's answer whole.
+// vocabulary the two readers named on Order share: the engine counts each move under its pair in
+// this list, and the config loader refuses a hook naming a pair that is not in it. The answer is
+// a fresh slice, so a caller that sorts or trims it leaves the next caller's answer whole.
 func BackwardPairs() []string {
 	return slices.Clone(backwardPairs)
 }

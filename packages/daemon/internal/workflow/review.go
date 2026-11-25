@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
@@ -135,7 +136,7 @@ func (e *Engine) logUnappliedSettlement(ctx context.Context, fact intake.PullReq
 func (e *Engine) logDroppedSettlement(ctx context.Context, fact intake.PullRequestChecks, msg string, args ...any) {
 	identity := fact.Identity()
 	args = append(identity.Attributes(), args...)
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		if e.droppedSettlements.Add(identity) {
 			e.log.Info(msg, args...)
 		}
@@ -176,12 +177,13 @@ const conflictConfirmWait = time.Minute
 //
 // The decision is R0's (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge), read on the
 // base's rules for its required checks, which the confirming read carries
-// (intake.PullRequestMergeability.Rules). A reason to act asks the implementer to merge the base
-// forward, and the issue keeps its phase (mergeForward, R1); no reason leaves the conflict
-// recorded and logged with the checks the base requires and those green on the head, and the
-// tester and the reviewer go on at that head. A CONFLICTING read of a head the record already
-// holds conflicting decides again in the same way, since the phase the issue has reached since can
-// need what the phase before did not, and mergeForward asks nothing twice for one head.
+// (intake.PullRequestMergeability.Rules). A reason to act asks the implementer, or in merging the
+// merger, to merge the base forward, and the issue keeps its phase (mergeForward, R1); no reason
+// leaves the conflict recorded and logged with the checks the base requires and those green on
+// the head, and the tester and the reviewer go on at that head. A CONFLICTING read of a head the
+// record already holds conflicting decides again in the same way, since the phase the issue has
+// reached since can need what the phase before did not, and mergeForward asks nothing twice for
+// one head.
 //
 // GitHub's own merge state for the head rides along on the same fact: it is what says whether
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
@@ -307,9 +309,15 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 				return intake.Result{}, err
 			}
 		} else {
+			// Rules is nil for a read that carried none, which accepting and retro decide on too: the
+			// conflict waits there whatever the rules (classify.ConflictNeedsMerge).
+			var required []string
+			if fact.Rules != nil {
+				required = fact.Rules.Required
+			}
 			e.logOnCommit(ctx, "workflow: a confirmed conflict needs no merge yet",
 				"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", base, "phase", issue.Phase,
-				"required", fact.Rules.Required, "green", green)
+				"required", required, "green", green)
 		}
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
@@ -507,8 +515,11 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
 // phase, the implementer, whose code the checks ran on, and the architect that owns the issue
 // (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
-// a role holder with a message. A role named twice, the implementer holding the phase, is told
-// once, and a phase no worker holds names none (addressRoles). told is what the settlement
+// a role holder with a message. In merging the implementer is not told: the merge and what breaks
+// it are the merger's to decide, and the merger asks the implementer when it needs it
+// (cybermonklabs/legion#4979). A held issue keeps the worker of Hold.From (record.StandsAt).
+// A role named twice, the implementer holding the phase, is told once, and a phase no worker holds
+// names none (addressRoles). told is what the settlement
 // standing for the head said before this one, so a second settlement of the same head that leaves
 // the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
 // holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
@@ -548,7 +559,11 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
-	for _, role := range []claim.Role{RoleFor(issue.Phase), claim.RoleImplementer} {
+	roles := []claim.Role{RoleFor(record.StandsAt(*issue))}
+	if !record.StandsIn(*issue, phase.Merging) {
+		roles = append(roles, claim.RoleImplementer)
+	}
+	for _, role := range roles {
 		if role == claim.RoleArchitect || role == woken {
 			continue
 		}
@@ -1084,10 +1099,10 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // never reads its state again (askMergeStateFor), so nothing it could wait on would ever come.
 // An approval of a head the record holds in a confirmed conflict with its base
 // (classify.ConflictRound) ends the round too, whatever GitHub's merge state for it
-// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the
-// implementer merges the base forward, and the merge is what the issue needs next once its review
-// is over, so the move into accepting asks for it (transition, mergeForwardOnEntry,
-// record.ConflictMergeNext). While the first conflicting read of the head waits for its second
+// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the base is
+// merged forward, and that merge is the merger's once the issue reaches merging, so the move into
+// merging asks the merger for it (transition, mergeForwardOnEntry, record.ConflictMergeNext,
+// cybermonklabs/legion#4979). While the first conflicting read of the head waits for its second
 // (record.PullRequest.ConflictRead), the approval waits where it stands and is never reported
 // stuck: GitHub's `dirty` is not yet a conflict the daemon holds, and the second read decides it.
 // An approval that stands on the head of a pull request closed without merging keeps the round
@@ -1410,7 +1425,7 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 		return nil
 	}
 	key := issue.Key
-	intake.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
+	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
 	return nil
 }
 

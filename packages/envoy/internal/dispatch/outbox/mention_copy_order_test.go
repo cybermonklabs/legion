@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -332,21 +333,48 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	}
 }
 
-// The read load of fallback copies held behind an earlier event is bounded by mentionPendingDelay:
-// a waiting row is released for that long after each pass that decides it, and a pass claims only
-// the rows that are due, so the rule is read at most once per row per delay, whatever wakes the
-// holder meanwhile. Measured with the outbox running for eight seconds over 50 rows held behind
-// one event whose topic send the stream keeps refusing, the holder woken every 100 ms beside its
-// own timers: the rule's reads are counted on a traced pool, and so is every statement.
+// The read load of fallback copies held behind an earlier event is bounded by the cost
+// requirement: M waiting rows read the order rule at most M times each 2 s (readEvery, written
+// here rather than read from mentionPendingDelay, so that a change to the outbox's wait fails this
+// test rather than moving its bound with it). Three things make it so, and the test reads each off
+// the passes themselves, in the database's own clock, never off a wall clock it waits on: a pass
+// reads the rule at most once for each row it claims; it claims a row only once the row is due;
+// and it writes a row that waits due again 2 s or more after that write. A trigger records, beside
+// each value of next_attempt_at written, the now() of the statement that wrote it: a row's claim
+// and its record. The test reads every statement the server ran or refused on a pass's
+// connections, off the bytes they write and the server's answers (SentStatements), so a statement
+// shows however it was sent - on its own, in a batch, prepared and run by name, bound in one round
+// trip and run in a later one - and each must be, byte for byte, one of the statements a pass
+// sends (passStatements), and run: any other, and any the server refused, fails the test, whatever
+// it reads. Each read of the rule is bound to one row's event and destination, and no row
+// may be read for more than once in a pass, nor read for at all unless the pass claims it. Fifty
+// rows wait behind an earlier event no record has written. The first pass claims all fifty,
+// reading the rule at least once to hold them. Half the rows are then written due an hour on, on
+// the database's clock, and a second pass runs: it must claim none of those, however long after
+// the first it starts, and claims whichever of the others are due by then. The control is a third
+// pass once the rows are made due, which claims all fifty again. In each, no row is claimed before
+// it is due, no row due at the pass's start is left, and each row claimed is written due again at
+// least 2 s on.
+//
+// The test sees what the test store's own connections send, and a connection the outbox opened
+// from a copy of their configuration; a read on a connection the code opens itself from a
+// connection string is outside it. The pass reads the rule through copyrule.Holder on the store's
+// pool (copyHolder passes deps.Store.Pool), which is the recorded pool here;
+// TestOnlyHolderReadsTheCopyRule keeps the rule's SQL and names in Holder and each road calling it,
+// and does not check which pool a call is given. A pass whose only reads of the rule moved to
+// another connection fails the floor of one read when it holds rows.
 func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	const rows = 50
-	const window = 8 * time.Second
-	ctx := context.Background()
+	const readEvery = 2 * time.Second
+	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	earlier, _, _ := earlierEventAndComment(t, database, broker)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	s1 := contracts.LegacyAgentSubject("s1")
+	// rowOf is each held row, "<comment id> <destination>" as the trigger below writes it, by the
+	// id of its comment's event, which a read of the rule for the row is bound to.
+	rowOf := map[int64]string{}
 	for index := range rows {
 		body := fmt.Sprintf("@s1 comment %d", index)
 		commentID := seedComment(t, database, "T-1", alice, body, nil)
@@ -363,53 +391,193 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 		`, commentID, s1, comment.ID); err != nil {
 			t.Fatalf("hold copy %d: %v", index, err)
 		}
+		rowOf[comment.ID] = fmt.Sprintf("%s %s", commentID, s1)
 	}
-	recorder := &storetest.StatementRecorder{}
-	traced := storetest.TracedStore(t, database, recorder)
-	publisher := &failingPublisher{topic: "notifications.dispatch.issue.T-1.message.created", answer: fmt.Errorf("no responders")}
-	started := time.Now()
-	stop := runDeps(t, withHeldRoles(Deps{Store: traced, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}), 5*time.Second)
-	// A wake every 100 ms - what an event committed beside the outbox gives it - so each wake
-	// runs a pass, and only the rows' own delay keeps the reads down.
-	waking, stopWaking := context.WithCancel(ctx)
-	woken := make(chan struct{})
-	go func() {
-		defer close(woken)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-waking.Done():
-				return
-			case <-ticker.C:
-				broker.Publish(model.Event{ID: earlier.ID, IssueKey: new("T-1"), Type: "message.created"})
+	for _, statement := range []string{
+		`create table fallback_due_writes (
+			id bigserial primary key, row_key text not null, written_at timestamptz not null, next_attempt_at timestamptz
+		)`,
+		`create function record_fallback_due_write() returns trigger language plpgsql as $$
+		begin
+			insert into fallback_due_writes (row_key, written_at, next_attempt_at)
+			values (new.comment_id::text || ' ' || new.destination, now(), new.next_attempt_at);
+			return null;
+		end
+		$$`,
+		`create trigger record_fallback_due_write after update of next_attempt_at on comment_fallback_copies
+			for each row execute function record_fallback_due_write()`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("record each write of a fallback row's next_attempt_at: %v", err)
+		}
+	}
+	sent := &storetest.SentStatements{}
+	publisher := &recordingPublisher{}
+	deps := withHeldRoles(Deps{Store: storetest.SentStore(t, database, sent), Publisher: publisher, Broker: broker})
+	holder := holding(t, deps).instance
+	// passStatements is every statement a fallback pass sends, byte for byte: its claim, its read
+	// of the rows' own events, its two reads of each row's mentions, the rule's own statement and
+	// its record, and the pool's check of a connection that sat idle (PoolPing).
+	passStatements := map[string]bool{
+		fallbackClaimQuery: true, fallbackEventsQuery: true, mentionDeliveryQuery: true,
+		mentionFallbackHoldsQuery: true, model.MentionCopyRuleSQL: true, fallbackRecordQuery: true,
+		storetest.PoolPing: true,
+	}
+	// due is each row's next_attempt_at as last written, nil for due at once, as a fresh row is.
+	due := map[string]*time.Time{}
+	keys, err := database.Pool.Query(ctx, `select comment_id::text || ' ' || destination from comment_fallback_copies`)
+	if err != nil {
+		t.Fatalf("read the rows: %v", err)
+	}
+	for keys.Next() {
+		var row string
+		if err := keys.Scan(&row); err != nil {
+			t.Fatalf("read a row: %v", err)
+		}
+		due[row] = nil
+	}
+	keys.Close()
+	if len(due) != rows {
+		t.Fatalf("%d rows held, want %d", len(due), rows)
+	}
+	var written int64
+	var problems []string
+	// pass runs one fallback pass and reads what it did: how many rows it claimed, and how many
+	// times it read the rule. Each claimed row is written twice, by the claim and by the record,
+	// and each read of the rule is bound to one row's event and destination.
+	pass := func(name string) (claimed, reads int) {
+		t.Helper()
+		var started time.Time
+		if err := database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&started); err != nil {
+			t.Fatalf("read the database's clock: %v", err)
+		}
+		before := len(sent.Statements())
+		publishFallbackCopies(ctx, deps, unfenced{}, holder)
+		readsOf := map[string]int{}
+		for _, statement := range sent.Statements()[before:] {
+			switch {
+			case statement.Failed:
+				problems = append(problems, fmt.Sprintf("%s: a statement the server answered with error %s, which may have read the rule in part: %q",
+					name, statement.Code, statementText(statement.SQL, 160)))
+			case statement.SQL == model.MentionCopyRuleSQL:
+				reads++
+				event, readEvent := statement.Int8(0)
+				destination, readDestination := statement.Text(1)
+				row, held := rowOf[event]
+				if !readEvent || !readDestination || !held || destination != fmt.Sprint(s1) {
+					problems = append(problems, fmt.Sprintf("%s: a read of the rule for no held row (event %d, destination %q)", name, event, destination))
+					continue
+				}
+				readsOf[row]++
+			case !passStatements[statement.SQL]:
+				problems = append(problems, fmt.Sprintf("%s: a statement that is none of a pass's own: %q", name, statementText(statement.SQL, 160)))
 			}
 		}
-	}()
-	time.Sleep(window)
-	stopWaking()
-	<-woken
-	stop()
-	elapsed := time.Since(started)
-	if at := publishedAt(t, database, earlier.ID); at != nil {
-		t.Fatalf("the earlier event was published at %v, want its topic send refused throughout", at)
-	}
-	statements := recorder.Statements()
-	reads := 0
-	for _, statement := range statements {
-		if strings.Contains(statement, "k.owed_keys &&") {
-			reads++
+		var writes []fallbackDueWrite
+		writes, written = fallbackDueWritesSince(t, database, written)
+		byRow := map[string][]fallbackDueWrite{}
+		for _, write := range writes {
+			byRow[write.row] = append(byRow[write.row], write)
 		}
+		waits := map[time.Duration]int{}
+		for row, rowWrites := range byRow {
+			if len(rowWrites) != 2 {
+				problems = append(problems, fmt.Sprintf("%s: %s written %d times, want its claim and its record", name, row, len(rowWrites)))
+				continue
+			}
+			claimed++
+			claim, record := rowWrites[0], rowWrites[1]
+			if was := due[row]; was != nil && was.After(claim.at) {
+				problems = append(problems, fmt.Sprintf("%s: %s claimed at %v, due only at %v", name, row, claim.at, *was))
+			}
+			if record.due == nil {
+				problems = append(problems, fmt.Sprintf("%s: %s written due at once", name, row))
+			} else if wait := record.due.Sub(record.at); wait < readEvery {
+				problems = append(problems, fmt.Sprintf("%s: %s due %v after its record, want at least %v", name, row, wait, readEvery))
+			} else {
+				waits[wait]++
+			}
+			due[row] = record.due
+		}
+		dueAtStart := 0
+		for row, at := range due {
+			if _, read := byRow[row]; read {
+				continue
+			}
+			if at == nil || !at.After(started) {
+				dueAtStart++
+				problems = append(problems, fmt.Sprintf("%s: %s was due by the database's clock when the pass started and was not claimed", name, row))
+			}
+		}
+		for row, rowReads := range readsOf {
+			if _, claimedRow := byRow[row]; !claimedRow {
+				problems = append(problems, fmt.Sprintf("%s: %s read the rule %d times, and the pass did not claim it", name, row, rowReads))
+			} else if rowReads > 1 {
+				problems = append(problems, fmt.Sprintf("%s: %s read the rule %d times, want at most once a row", name, row, rowReads))
+			}
+		}
+		if claimed > 0 && reads == 0 {
+			problems = append(problems, fmt.Sprintf("%s: %d rows claimed and held with no read of the rule", name, claimed))
+		}
+		most := 0
+		for _, rowReads := range readsOf {
+			most = max(most, rowReads)
+		}
+		t.Logf("%s: %d rows claimed, %d reads of the rule over %d rows, at most %d for one row, the claimed rows due again after %v; %d rows due at its start left unclaimed",
+			name, claimed, reads, len(readsOf), most, waits, dueAtStart)
+		return claimed, reads
 	}
-	bound := rows * (int(elapsed/mentionPendingDelay) + 1)
-	t.Logf("%d rows held for %v: %d reads of the rule (%.1f a second, %.2f a row a second), %d statements in all (%.1f a second); bound %d reads",
-		rows, elapsed.Round(time.Millisecond), reads, float64(reads)/elapsed.Seconds(), float64(reads)/elapsed.Seconds()/rows,
-		len(statements), float64(len(statements))/elapsed.Seconds(), bound)
-	if reads == 0 {
-		t.Fatal("the rule was never read: the rows were not decided, so this measures nothing")
+
+	if claimed, _ := pass("the first pass"); claimed != rows {
+		t.Fatalf("the first pass claimed %d of the %d fresh rows, want all: a row it did not decide shows no wait", claimed, rows)
 	}
-	if reads > bound {
-		t.Fatalf("%d reads of the rule for %d rows over %v, want at most %d: one a row each %v", reads, rows, elapsed, bound, mentionPendingDelay)
+	// Half the rows due an hour on, on the database's clock, written before the second pass: it
+	// must leave them, however long after the first pass it starts.
+	if _, err := database.Pool.Exec(ctx, `
+		update comment_fallback_copies set next_attempt_at = now() + interval '1 hour'
+		where (comment_id, destination) in (
+			select comment_id, destination from comment_fallback_copies order by comment_id limit $1
+		)
+	`, rows/2); err != nil {
+		t.Fatalf("write half the rows due an hour on: %v", err)
+	}
+	var later []fallbackDueWrite
+	later, written = fallbackDueWritesSince(t, database, written)
+	if len(later) != rows/2 {
+		t.Fatalf("%d rows written due an hour on, want %d", len(later), rows/2)
+	}
+	for _, write := range later {
+		due[write.row] = write.due
+	}
+	pass("a second pass, half the rows due an hour on")
+	if _, err := database.Pool.Exec(ctx, `
+		update comment_fallback_copies set next_attempt_at = now() - interval '1 second' where settled_at is null
+	`); err != nil {
+		t.Fatalf("make the rows due: %v", err)
+	}
+	var madeDue []fallbackDueWrite
+	madeDue, written = fallbackDueWritesSince(t, database, written)
+	for _, write := range madeDue {
+		due[write.row] = write.due
+	}
+	if claimed, _ := pass("control: a third pass once the rows are due"); claimed != rows {
+		t.Errorf("control: once the rows were made due a pass claimed %d of them, want all %d", claimed, rows)
+	}
+	for _, what := range sent.Blind() {
+		problems = append(problems, "the recorder could not read a statement the pass's connections sent: "+what)
+	}
+	slices.Sort(problems)
+	for _, problem := range problems[:min(10, len(problems))] {
+		t.Error(problem)
+	}
+	if len(problems) > 10 {
+		t.Errorf("and %d more", len(problems)-10)
+	}
+	if at := publishedAt(t, database, earlier.ID); at != nil {
+		t.Fatalf("the earlier event was published at %v, want it unpublished throughout", at)
+	}
+	if published := publisher.all(); len(published) != 0 {
+		t.Fatalf("the passes published %d messages while every row waited behind the earlier event, want none", len(published))
 	}
 	var settled int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from comment_fallback_copies where settled_at is not null`).Scan(&settled); err != nil {
@@ -418,4 +586,48 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	if settled != 0 {
 		t.Fatalf("%d rows settled while the earlier event was unpublished, want none", settled)
 	}
+}
+
+// statementText is statement's first n characters, its runs of white space each one space.
+func statementText(statement string, n int) string {
+	text := strings.Join(strings.Fields(statement), " ")
+	if len(text) > n {
+		return text[:n] + "..."
+	}
+	return text
+}
+
+// fallbackDueWrite is one write of a fallback row's next_attempt_at, as the trigger
+// TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay installs records it: the row, the
+// now() of the statement that wrote it, and the value written.
+type fallbackDueWrite struct {
+	row string
+	at  time.Time
+	due *time.Time
+}
+
+// fallbackDueWritesSince is the writes the trigger recorded after id since, in order, and the id
+// of the last of them, since itself for none.
+func fallbackDueWritesSince(t *testing.T, database *store.Store, since int64) ([]fallbackDueWrite, int64) {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select id, row_key, written_at, next_attempt_at from fallback_due_writes where id > $1 order by id
+	`, since)
+	if err != nil {
+		t.Fatalf("read the writes of next_attempt_at: %v", err)
+	}
+	defer rows.Close()
+	last := since
+	var writes []fallbackDueWrite
+	for rows.Next() {
+		var write fallbackDueWrite
+		if err := rows.Scan(&last, &write.row, &write.at, &write.due); err != nil {
+			t.Fatalf("read a write of next_attempt_at: %v", err)
+		}
+		writes = append(writes, write)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the writes of next_attempt_at: %v", err)
+	}
+	return writes, last
 }

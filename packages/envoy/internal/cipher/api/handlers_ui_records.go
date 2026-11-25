@@ -74,7 +74,9 @@ func buildRecordResponse(detail requests.RecordDetail) recordResponse {
 // records on the credential it mints and is refused by once that account no longer holds the
 // address; approver_session_generation is where Dispatch's check of that person stood, by which an
 // approval checked before a replacement is refused. A Dispatch from before them sends none of the
-// three, and its approvals record no account.
+// three, and its approvals record no account; a current one sends them only while this broker's
+// GET /v1/settings says it takes them (settingsResponse.ApproverFields), and relays no approve when
+// it cannot read those settings.
 type decideBody struct {
 	// The login of the person deciding, which the record's rule must admit: its approver, or
 	// anyone signed in for the denial of a service's machine login.

@@ -715,9 +715,10 @@ DISPATCH_URL="http://127.0.0.1:${DISPATCH_PORT}"
 # --- The local issuer. It writes every token file before it logs its URL, so once that line is
 # there the files are there to be read. Every sign-in it serves, through the code flow or the
 # device grant, signs the approver in: nothing here queues another person at its
-# POST /_dev/sign-in-as control route. The two client secrets are written under umask 077, so
-# neither is readable by anyone else even for a moment, and neither process takes one on its
-# command line. ---
+# POST /_dev/sign-in-as control route. The code flow's one callback is the broker's approval page
+# on loopback, which the issuer takes at the port the broker binds below. The two client secrets
+# are written under umask 077, so neither is readable by anyone else even for a moment, and
+# neither process takes one on its command line. ---
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$SIGNIN_SECRET_FILE")
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$DEVICE_SECRET_FILE")
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$MACHINE_SECRET_FILE")
@@ -733,7 +734,7 @@ env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_issuer_args[@]}" \
   --token "$BROKER_AUDIENCE=$PRIV_ACCOUNT=$PRIV_POD_TOKEN_FILE" \
   --token "$DISPATCH_AUDIENCE=$BROKER_ACCESS_ACCOUNT=$BROKER_ACCESS_TOKEN_FILE" \
   --token "$LISTENER_AUDIENCE=$API_ACCOUNT=$DISPATCH_LISTENER_TOKEN_FILE" \
-  --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
+  --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE=http://127.0.0.1/signin/callback" \
   --device-flow "$DEVICE_CLIENT_ID=$DEVICE_SECRET_FILE" \
   --device-flow "$MACHINE_CLIENT_ID=$MACHINE_SECRET_FILE" \
   --sign-in-as "$APPROVER_LOGIN" \

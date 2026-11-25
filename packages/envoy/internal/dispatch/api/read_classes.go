@@ -58,7 +58,7 @@ var probeObjects = []probeObject{
 	probePriority, probeDeliveryRun, probeBroadcast, probeGoingRun, probeRepositoryOwner,
 	probeRepositoryName, probeLivePause, probeNearCopyCheck,
 	probeResult, probeThread, probeAttempt, probeEmail, probeGroup, probeAgentToken, probeSessionGroup,
-	probeCredentialRequest, probeCredentialGrant, probeMachineLogin, probeSignin, probeMappedRepository, probeStep,
+	probeCredentialRequest, probeCredentialGrant, probeMachineLogin, probeSignin, probeStep,
 }
 
 // reads is one entry of readClasses.
@@ -99,7 +99,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/whoami":                 reads("who the caller's own credential names", nil, readclass.Caller),
 	"GET /api/v1/me/agent-tokens":        reads("the caller's own personal tokens", nil, readclass.Caller),
 	"GET /api/v1/signins":                reads("the caller's own sign-ins", nil, readclass.Caller),
-	"GET /api/v1/credential-grants":      reads("the credential grants the caller may revoke: those they approve, and those of their own sessions, which they end as the operator (a restricted member is no approver, so lists only these)", nil, readclass.Caller),
+	"GET /api/v1/credential-grants":      reads("the credential grants the caller may revoke: those they approve, and those of their own sessions, which they end as the operator (a restricted member is no approver: Dispatch answers them the grants of their own sessions alone, whatever the secrets broker lists)", nil, readclass.Caller),
 	"GET /api/v1/me/answers":             reads("the caller's own answers and replies, each on an ask of a project", nil, readclass.Caller, readclass.Project),
 	"GET /api/v1/me/replies":             reads("the caller's own Inbox threads, each on an issue or document of a project or a conversation", nil, readclass.Caller, readclass.Project),
 	"GET /api/v1/me/state":               reads("the caller's read state, kept per issue of a project", nil, readclass.Caller, readclass.Project),
@@ -147,7 +147,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/issues/{key}":                         reads("one issue with its asks, documents and children, rows of its project, and its progress read through refs", byIssue, readclass.Project, readclass.Graph),
 	"GET /api/v1/issues/{key}/summary":                 reads("what a reference to one issue shows", byIssue, readclass.Project),
 	"GET /api/v1/issues/{key}/events":                  reads("one issue's event log", byIssue, readclass.Project),
-	"GET /api/v1/issues/{key}/references":              reads("the closure of documents one issue's content references, through refs", byIssue, readclass.Graph),
+	"GET /api/v1/issues/{key}/references":              reads("the documents one issue's content references, one hop, through refs", byIssue, readclass.Graph),
 	"GET /api/v1/issues/{key}/collaborators":           reads("everyone who worked one issue: its people and its agent sessions", byIssue, readclass.Project, readclass.People, readclass.Agents),
 	"GET /api/v1/issues/{key}/subscribers":             reads("the sessions subscribed to one issue's topics", byIssue, readclass.Project, readclass.Agents),
 	"GET /api/v1/issues/{key}/role-holders":            reads("the sessions that hold one issue's Legion roles", byIssue, readclass.Project, readclass.Agents),
@@ -179,6 +179,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/artifacts/{id}/blocks/{block_id}": reads("where one block stands in one document", readProbe{"id": probeDocument, "block_id": probeBlock}, readclass.Project),
 	"GET /api/v1/artifacts/{id}/text":              reads("one document's markdown", byDocument, readclass.Project),
 	"GET /api/v1/artifacts/{id}/versions/{number}": reads("a version of one document", readProbe{"id": probeDocument, "number": probeDocumentVersion}, readclass.Project),
+	"GET /api/v1/artifacts/{id}/changes":           reads("what changed between two versions of one document", byDocument, readclass.Project),
 	"GET /api/v1/artifacts/{id}/references":        reads("the cross-references to and from one document, through refs", byDocument, readclass.Graph),
 	"GET /api/v1/artifacts/{id}/subscribers":       reads("the sessions subscribed to one document's topics", byDocument, readclass.Project, readclass.Agents),
 
@@ -213,7 +214,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/priorities/{id}/history": reads("one priority's history, which belongs to no project, with the issues of projects it names", readProbe{"id": probePriority}, readclass.Deployment, readclass.Project),
 	"GET /api/v1/delivery/timeline":       reads("the delivery timeline of the pull requests whose issue the caller sees, with the runs and counts of them", nil, readclass.Project),
 	"GET /api/v1/delivery/measures":       reads("the delivery measures of the pull requests whose issue the caller sees, with the issues of projects they count", nil, readclass.Project),
-	"GET /api/v1/ci-reconcile/passes":     reads("the deployment's CI reconcile passes, each over repositories of many projects and naming no issue", nil, readclass.Deployment),
+	"GET /api/v1/ci-reconcile/passes":     reads("the deployment's CI reconcile passes, each over repositories of many projects and naming no issue, its cursor's repository held to the GitHub proxy's rule", nil, readclass.Deployment, readclass.Project),
 	"GET /api/v1/broadcasts":              reads("the deployment's broadcasts, each to sessions, with their replies", nil, readclass.Deployment, readclass.Agents, readclass.Project),
 	"GET /api/v1/broadcasts/{id}":         reads("one broadcast, to sessions, with its replies", readProbe{"id": probeBroadcast}, readclass.Deployment, readclass.Agents, readclass.Project),
 	"GET /api/v1/delivery/pipeline":       reads("the deployment's Pipeline page, read from its deploy repository's runs and the pull requests the timeline's rule shows the caller", nil, readclass.Deployment, readclass.Project),

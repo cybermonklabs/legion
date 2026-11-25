@@ -44,6 +44,7 @@ import (
 )
 
 func TestOutboxDropsSupersededStatusWrite(t *testing.T) {
+	t.Parallel()
 	row, err := record.NewOutboxRow("LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())
 	if err != nil {
 		t.Fatalf("new outbox row: %v", err)
@@ -69,6 +70,7 @@ func TestOutboxDropsSupersededStatusWrite(t *testing.T) {
 // (record.HandOverStatusRow) is not held to the label:
 // TestAHandOverWritesTheStatusAndTheLabelTogether's unlabelled cases PATCH it on.
 func TestOutboxWritesAPersonsHandoverOnlyWhileItsLabelAndStatusStand(t *testing.T) {
+	t.Parallel()
 	const dropped = "outbox: a person's handover is not written; the label is gone"
 	for _, tc := range []struct {
 		name     string
@@ -104,6 +106,7 @@ func TestOutboxWritesAPersonsHandoverOnlyWhileItsLabelAndStatusStand(t *testing.
 }
 
 func TestOutboxFinishesMessageAlreadyPostedBeforeCrash(t *testing.T) {
+	t.Parallel()
 	row, err := record.NewOutboxRow("LEGION-208", record.MessagePost{Body: "Pull request checks are blocked."}, time.Now())
 	if err != nil {
 		t.Fatalf("new outbox row: %v", err)
@@ -191,6 +194,12 @@ func (d *outboxDispatch) Handoff(context.Context, string) (dispatch.Handoff, err
 	return dispatch.Handoff{}, nil
 }
 func (d *outboxDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *outboxDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *outboxDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps []string) error {
 	d.gatedStepsOf = append(d.gatedStepsOf, project)
 	d.gatedSteps = append(d.gatedSteps, append(make([]string, 0, len(steps)), steps...))
@@ -223,6 +232,7 @@ func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string,
 func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
 
 func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
+	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())
 	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "todo"}}
 
@@ -246,6 +256,7 @@ func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
 // person set todo again before it runs, re-admitted at its next generation, keeps its child, and so
 // does a child no longer that tree's — neither is written.
 func TestAHandOverWritesTheStatusAndTheLabelTogether(t *testing.T) {
+	t.Parallel()
 	const root, child = "LEGION-207", "LEGION-208"
 	until := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	parent := root
@@ -276,7 +287,7 @@ func TestAHandOverWritesTheStatusAndTheLabelTogether(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				if err := records.PutIssue(context.Background(), tx, tc.root); err != nil {
 					return err
 				}
@@ -303,12 +314,13 @@ func TestAHandOverWritesTheStatusAndTheLabelTogether(t *testing.T) {
 // the persistent hand-over, so the child stays in the reopened root's tree rather than restarting
 // there or becoming an orphan.
 func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
+	t.Parallel()
 	const root, child = "LEGION-207", "LEGION-208"
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	until := time.Now().Add(time.Hour)
 	parent := root
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 			records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1}),
@@ -341,7 +353,7 @@ func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
 		t.Fatalf("consume the late hand-over: %v", err)
 	}
 	var got *record.Issue
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		got, err = records.Issue(context.Background(), tx, child)
 		return err
@@ -357,12 +369,13 @@ func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
 // consumes the durable fence through an intake.Handover fact instead; the child still becomes its
 // own carried-state root and the row finishes.
 func TestAnAlreadyTodoAndLabelledChildConsumesItsHandover(t *testing.T) {
+	t.Parallel()
 	const root, child = "LEGION-207", "LEGION-208"
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	until := time.Now().Add(time.Hour)
 	parent := root
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 			records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B"}),
@@ -384,7 +397,7 @@ func TestAnAlreadyTodoAndLabelledChildConsumesItsHandover(t *testing.T) {
 		t.Fatalf("consume already-todo hand-over: %v", err)
 	}
 	var got *record.Issue
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		got, err = records.Issue(context.Background(), tx, child)
 		return err
@@ -404,6 +417,7 @@ func TestAnAlreadyTodoAndLabelledChildConsumesItsHandover(t *testing.T) {
 // already labelled, each on the issue's sequence. The fact is idempotent, so the event, when it does
 // come, changes nothing more.
 func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                string
 		shown               dispatch.Issue
@@ -418,7 +432,7 @@ func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
 			records := record.NewStore()
 			until := time.Now().Add(time.Hour)
 			parent := root
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				for _, put := range []error{
 					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B"}),
@@ -445,7 +459,7 @@ func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
 			read := func() *record.Issue {
 				t.Helper()
 				var got *record.Issue
-				if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+				if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 					var err error
 					got, err = records.Issue(context.Background(), tx, child)
 					return err
@@ -475,6 +489,7 @@ func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
 // status write for a child a person already labelled. The outbox keeps the row for that transient
 // conflict, then observes the person's status and drops the hand-over fence without overwriting it.
 func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		labels []string
@@ -489,7 +504,7 @@ func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
 			now := time.Now()
 			until := now.Add(time.Hour)
 			parent := root
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				for _, put := range []error{
 					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "B"}),
@@ -530,7 +545,7 @@ func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
 			if len(client.handOvers) != 1 || len(client.statuses) != 0 {
 				t.Fatalf("hand-over writes %v and unconditional status writes %v, want the one conditional attempt alone", client.handOvers, client.statuses)
 			}
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				handover, err := records.Handover(context.Background(), tx, child)
 				if err != nil || handover != nil {
 					t.Fatalf("hand-over fence after the person move = %#v, %v, want none", handover, err)
@@ -548,6 +563,7 @@ func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
 // the same child. Whether Dispatch shows a person's move, or the newer fence is itself cancelled
 // (its own row's to clear), the stale row finishes without deleting the newer fence.
 func TestAStaleHandOverRowLeavesANewerLingersFence(t *testing.T) {
+	t.Parallel()
 	const root, child = "LEGION-207", "LEGION-208"
 	for _, tc := range []struct {
 		name      string
@@ -562,7 +578,7 @@ func TestAStaleHandOverRowLeavesANewerLingersFence(t *testing.T) {
 			records := record.NewStore()
 			until := time.Now().Add(time.Hour)
 			parent := root
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				for _, put := range []error{
 					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 2, Status: "done", LingerUntil: &until}),
 					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B"}),
@@ -590,7 +606,7 @@ func TestAStaleHandOverRowLeavesANewerLingersFence(t *testing.T) {
 			if len(client.handOvers) != 0 || len(client.statuses) != 0 {
 				t.Fatalf("stale row wrote hand-overs %v and statuses %v, want none", client.handOvers, client.statuses)
 			}
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				fence, err := records.Handover(context.Background(), tx, child)
 				if err != nil || fence == nil || fence.Generation != 2 || fence.Cancelled != tc.cancelled {
 					t.Fatalf("newer linger's fence after the stale row = %#v, %v; want it left at generation 2 (cancelled %t)", fence, err, tc.cancelled)
@@ -608,6 +624,7 @@ func TestAStaleHandOverRowLeavesANewerLingersFence(t *testing.T) {
 // and its fence goes with it in the same transaction: left behind, the fence would name the child's
 // own tree as its Sandbox's home for good, and the orphan sweep would keep that Sandbox forever.
 func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
+	t.Parallel()
 	const root, child = "LEGION-207", "LEGION-208"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -619,7 +636,7 @@ func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
 	t.Cleanup(st.Close)
 	until := time.Now().Add(time.Hour)
 	parent := root
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 3, Status: "done", LingerUntil: &until}),
 			records.PutIssue(ctx, tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B"}),
@@ -647,7 +664,7 @@ func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
 	if len(client.handOvers) != 1 || outboxRows(t, pool) != 0 {
 		t.Fatalf("hand-over writes %v, %d rows left; want the one refused write and its row finished", client.handOvers, outboxRows(t, pool))
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		fence, err := records.Handover(ctx, tx, child)
 		if err != nil || fence != nil {
 			t.Fatalf("the fence after its refused hand-over = %#v, %v; want none", fence, err)
@@ -666,6 +683,7 @@ func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
 // The message is the row's own, under its marker, so a retry after a failed status write finds it
 // and posts none.
 func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
+	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("done", "in_progress", "Closed by its architect before its first phase: no change"), time.Now())
 	row.ID = 56
 	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "in_progress"}, postErr: errors.New("Dispatch refused the message")}
@@ -700,6 +718,7 @@ func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
 // its reason on an ordinary row (workflow's moveReason): the runner posts it on the issue, under
 // the row's marker, before it moves the issue, as it does a done write's.
 func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
+	t.Parallel()
 	reason := "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "testing", reason), time.Now())
 	row.ID = 57
@@ -726,6 +745,7 @@ func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
 }
 
 func TestOutboxMessagePostsItsMarkerAndReturnsReadFailure(t *testing.T) {
+	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "Dispatch message."}, time.Now())
 	row.ID = 55
 	client := &outboxDispatch{}
@@ -783,6 +803,7 @@ func rescueListRow(t *testing.T) (record.OutboxRow, record.MessageArtifact) {
 // that name: a row whose post failed after its upload runs again and posts, with no second
 // version of the document, and a row whose document is already there uploads nothing.
 func TestAMessagePutsItsDocumentOnTheIssueOnceBeforeItPosts(t *testing.T) {
+	t.Parallel()
 	row, document := rescueListRow(t)
 	posted := "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a\n\n<!-- legion-outbox:61 -->"
 
@@ -819,6 +840,7 @@ func TestAMessagePutsItsDocumentOnTheIssueOnceBeforeItPosts(t *testing.T) {
 // and code, and the refusal is logged. The message may be the issue's one word on what its
 // document lists, so it always posts (dispatch://INFRA-2704).
 func TestAMessageWhoseDocumentDispatchRefusesStillPostsAndSaysSo(t *testing.T) {
+	t.Parallel()
 	const line = "outbox Dispatch message's document refused by Dispatch; the message is posted and says so"
 	row, _ := rescueListRow(t)
 	for _, tc := range []struct {
@@ -854,6 +876,7 @@ func TestAMessageWhoseDocumentDispatchRefusesStillPostsAndSaysSo(t *testing.T) {
 // slug than the link names, fail the run: nothing is posted, and the row runs again rather than
 // being finished refused.
 func TestAMessageWhoseDocumentIsNotOnTheIssueIsLeftToRunAgain(t *testing.T) {
+	t.Parallel()
 	row, document := rescueListRow(t)
 	for _, tc := range []struct {
 		name   string
@@ -889,6 +912,7 @@ func TestAMessageWhoseDocumentIsNotOnTheIssueIsLeftToRunAgain(t *testing.T) {
 // status write is, rather than retried on a backoff for ever with nobody told. An outage is no
 // refusal and still retries.
 func TestAMessagePostDispatchRefusesIsFinishedAndItsArchitectTold(t *testing.T) {
+	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"}, time.Now())
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED",
 		Message: "body block 2 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)"}
@@ -913,6 +937,7 @@ func TestAMessagePostDispatchRefusesIsFinishedAndItsArchitectTold(t *testing.T) 
 // done. The architect is told what Dispatch refused, that the status stands, and how the reason
 // began, since the reason is on no issue and nothing else would say so.
 func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArchitect(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -960,6 +985,7 @@ func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArch
 // the daemon's record reads the one the row wrote, and the architect is told that the two
 // disagree from here on.
 func TestAStatusWriteDispatchRefusesTellsTheArchitectTheStatusDidNotLand(t *testing.T) {
+	t.Parallel()
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_STATUS", Message: "no such status"}
 	notice := statusWriteRefused("LEGION-208", record.OrdinaryStatusWrite("done", "", ""),
 		fmt.Errorf("set Dispatch issue LEGION-208 to done: %w", refusal), statusWrites{})
@@ -979,6 +1005,7 @@ func TestAStatusWriteDispatchRefusesTellsTheArchitectTheStatusDidNotLand(t *test
 // issue keeps its old status while the daemon's record reads the new one, a disagreement no
 // retry of the daemon's will settle.
 func TestAStatusRefusedAfterItsReasonPostedTellsTheArchitectTheReasonStands(t *testing.T) {
+	t.Parallel()
 	const reason = "Closed by its architect before its first phase: the human decided no change."
 	refusal := &dispatch.Error{Status: http.StatusNotFound, Code: "ISSUE_NOT_FOUND", Message: "no such issue"}
 	notice := statusWriteRefused("LEGION-208", record.OrdinaryStatusWrite("done", "", reason),
@@ -1000,6 +1027,7 @@ func TestAStatusRefusedAfterItsReasonPostedTellsTheArchitectTheReasonStands(t *t
 // inside the finish, a 5xx at that moment would leave the issue at the status it had while the
 // daemon's record read done, with nobody told.
 func TestAStatusWriteRetriesUntilTheStatusLandsAfterItsReasonIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -1065,6 +1093,7 @@ func TestAStatusWriteRetriesUntilTheStatusLandsAfterItsReasonIsRefused(t *testin
 // that returned at the status it found would finish the row as a write that went through, with
 // the close reason on no issue and its architect never told.
 func TestAStatusWriteWhoseAnswerWasLostStillTellsTheArchitectItsRefusedReason(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -1124,6 +1153,7 @@ func TestAStatusWriteWhoseAnswerWasLostStillTellsTheArchitectItsRefusedReason(t 
 // A controller notice row goes to the controller topic of the daemon's own project, the one its
 // controller subscribes to, and to no issue topic, under the row's own key, as the Notice it is.
 func TestOutboxControllerNoticeGoesToTheControllerTopicAlone(t *testing.T) {
+	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-2", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
 	row.ID = 57
 	publisher := &outboxPublisher{}
@@ -1143,6 +1173,7 @@ func TestOutboxControllerNoticeGoesToTheControllerTopicAlone(t *testing.T) {
 }
 
 func TestOutboxNoticeReturnsPublisherFailure(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-2", Title: "Root", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
@@ -1161,6 +1192,7 @@ func TestOutboxNoticeReturnsPublisherFailure(t *testing.T) {
 // from a listener answering as the real one does, since what the message's fate turns on is how
 // that body is read.
 func TestOutboxRoleMessageKeptForAnUnresponsiveHolder(t *testing.T) {
+	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-2", record.RoleMessage{Role: "implementer", Body: "CI settled at head"}, time.Now())
 	row.ID = 61
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1187,6 +1219,7 @@ func TestOutboxRoleMessageKeptForAnUnresponsiveHolder(t *testing.T) {
 // the row is done either way, since the message reports a moment that has passed by then. A holder
 // that did not confirm the message in time (504 receipt_timeout or delivery_failed) is retried.
 func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
+	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-2", record.RoleMessage{Role: "implementer", Body: "CI settled at head"}, time.Now())
 	row.ID = 59
 	publisher := &outboxPublisher{err: fmt.Errorf(`publish notice to notifications.role.implementer: listener returned 403 Forbidden: {"reason":"capability","holder":"ses_impl"}: %w`,
@@ -1220,6 +1253,7 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 // nobody holds, which raises the role's wake, and the pod would come back for a message the row
 // had already dropped.
 func TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, sup, pool := hookRunner(t, publisher)
@@ -1264,6 +1298,7 @@ func startedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Mac
 // A role whose claim this daemon supervises and has not released is published to as before: the
 // claim read stops only the message to a released pod.
 func TestOutboxRoleMessageToAClaimNotReleasedIsPublished(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, sup, pool := hookRunner(t, publisher)
@@ -1286,6 +1321,7 @@ func TestOutboxRoleMessageToAClaimNotReleasedIsPublished(t *testing.T) {
 }
 
 func TestOutboxGateSeedAppliesApprovedFactAndReturnsApprovalFailure(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	handler := &outboxFactHandler{}
@@ -1316,6 +1352,7 @@ func TestOutboxGateSeedAppliesApprovedFactAndReturnsApprovalFailure(t *testing.T
 // changes request on it closes the gate with its reason. A review carries its reviewer, and a bare
 // version names nobody, since no person's review moved it.
 func TestOutboxGateSeedRaisesTheGateToTheVersionDispatchHolds(t *testing.T) {
+	t.Parallel()
 	two, one, reason := 2, 1, "name the rollback path"
 	bob := dispatch.Actor{Kind: "user", ID: "bob"}
 	for _, tc := range []struct {
@@ -1351,6 +1388,7 @@ func TestOutboxGateSeedRaisesTheGateToTheVersionDispatchHolds(t *testing.T) {
 // second seed of one version that reads a newer review is a fact of its own, and a seed that reads
 // the same review again is not.
 func TestOutboxGateSeedAppliesAChangesRequestWithItsMark(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
 	reason := "name the rollback path"
@@ -1384,6 +1422,7 @@ func TestOutboxGateSeedAppliesAChangesRequestWithItsMark(t *testing.T) {
 // requested, it stays closed there with the request told. Left above, every review of the real
 // latest version would be dropped as a review of an older one.
 func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
+	t.Parallel()
 	reason := "name the rollback path"
 	for _, tc := range []struct {
 		name     string
@@ -1400,7 +1439,7 @@ func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 			ctx := context.Background()
 			putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1,
 				Status: "in_progress", Rank: "U", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 7})
 			}); err != nil {
 				t.Fatalf("seed the gate above Dispatch's version: %v", err)
@@ -1412,7 +1451,7 @@ func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 				t.Fatalf("execute gate seed: %v", err)
 			}
 			var gate *record.DesignGate
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				gates, err := records.GatesOf(ctx, tx, "LEGION-208")
 				gate = record.SpecGate(gates)
 				return err
@@ -1432,6 +1471,7 @@ func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 }
 
 func TestOutboxLingerAppliesExpirationAndReturnsHandlerFailure(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
 	row := mustOutboxRow(t, "LEGION-208", record.LingerClose{Generation: 7}, time.Now())
@@ -1452,6 +1492,7 @@ func TestOutboxLingerAppliesExpirationAndReturnsHandlerFailure(t *testing.T) {
 }
 
 func TestOutboxWorkspaceRemovalUsesDeterministicLocationAndReturnsFailure(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	// A workspace removal is the expiry of the tree's linger, so the tree lingers when it runs.
@@ -1497,6 +1538,7 @@ func TestOutboxWorkspaceRemovalUsesDeterministicLocationAndReturnsFailure(t *tes
 }
 
 func TestOutboxSuperviseStartsResumesSuspendsStopsAndDeduplicatesDelivery(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress"}
@@ -1566,6 +1608,7 @@ func TestOutboxSuperviseStartsResumesSuspendsStopsAndDeduplicatesDelivery(t *tes
 // records no start, so the close's suspend still applies if it runs later. Once re-admission ends
 // the linger, the same start resumes the worker.
 func TestAStartOnALingeringTreeResumesNothing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1610,6 +1653,7 @@ func TestAStartOnALingeringTreeResumesNothing(t *testing.T) {
 // relaunches it; before, it went straight to the delivery, which a failed claim refuses, and the row
 // retried forever while the issue sat in its phase with no worker.
 func TestOutboxStartRelaunchesAFailedClaim(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
@@ -1647,6 +1691,7 @@ func TestOutboxStartRelaunchesAFailedClaim(t *testing.T) {
 // ready. The promotion's start carries the phase's resume task, which is not delivered as well,
 // whichever of the start and the close's queued suspend runs first: one prompt, not two.
 func TestAResumeStartGivesAClaimHoldingThePhasesTaskThatTaskOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		hold func(t *testing.T, machine *supervise.Machine, token claim.Token, rt *fake.Runtime)
@@ -1725,6 +1770,7 @@ func failTheClaim(t *testing.T, machine *supervise.Machine, token claim.Token, r
 // launch whose outcome was uncertain is over (its relaunch retires it). In each of those the start
 // tries to deliver its own task, and its row is retried until the claim can take it.
 func TestAResumeStartDeliversItsTaskUnlessTheClaimHoldsTheOneItResumes(t *testing.T) {
+	t.Parallel()
 	confirmed := time.Now().Add(-time.Minute)
 	for _, tc := range []struct {
 		name  string
@@ -1770,6 +1816,7 @@ func TestAResumeStartDeliversItsTaskUnlessTheClaimHoldsTheOneItResumes(t *testin
 // re-admitted tree's promotion then starts the claim, its resume task is the same work, so the
 // start delivers nothing more: the claim, relaunched, holds the interrupted task alone.
 func TestAResumeStartMeetingATaskADeathTookBackDeliversNothingMore(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		state supervise.ClaimState
@@ -1817,6 +1864,7 @@ func TestAResumeStartMeetingATaskADeathTookBackDeliversNothingMore(t *testing.T)
 // A resume start holds back its task for a confirmed task of its generation and phase while the
 // claim is working that task's turn: the claim is doing the work the resume task asks for.
 func TestAResumeStartHoldsBackItsTaskForTheTurnTheClaimIsWorking(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1851,6 +1899,7 @@ func TestAResumeStartHoldsBackItsTaskForTheTurnTheClaimIsWorking(t *testing.T) {
 // it neither retires the claim the tree's new run relaunched, with the task it holds, nor removes
 // the workspace that run works in.
 func TestALingerExpiryRowAfterReadmissionActsOnNothing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1893,6 +1942,7 @@ func TestALingerExpiryRowAfterReadmissionActsOnNothing(t *testing.T) {
 // linger's expiry wrote, still backing off, acts on nothing in the second linger: it neither
 // retires the relaunched worker nor removes its workspace. The second linger's own rows do.
 func TestAnEarlierLingersRowsActOnNothingInALaterLinger(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1945,6 +1995,7 @@ func TestAnEarlierLingersRowsActOnNothingInALaterLinger(t *testing.T) {
 // even when its new tree lingers at the same root generation: the adopted work goes on in its
 // workspace. A removal its new tree's linger queued removes it.
 func TestAWorkspaceRemovalOfATreeTheIssueLeftActsOnNothing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1981,6 +2032,7 @@ func TestAWorkspaceRemovalOfATreeTheIssueLeftActsOnNothing(t *testing.T) {
 // worker and confirms the cleanup, after which the tree's next run relaunches the retired worker
 // and provisions its workspace again.
 func TestAWorkspaceIsRemovedOnlyOnceTheCloseRetiredEveryClaim(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -2045,12 +2097,13 @@ func TestAWorkspaceIsRemovedOnlyOnceTheCloseRetiredEveryClaim(t *testing.T) {
 // implementer nor hands it that phase, which would have it push to the pull request its tester is
 // testing.
 func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress"}
 	putOutboxIssue(t, pool, records, issue)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: issue.Key, Repo: "acme/widgets", Number: 114, Branch: "legion/LEGION-208", HeadSHA: "f8f30933", Failing: []string{}, State: record.PullRequestOpen})
 	}); err != nil {
 		t.Fatalf("put the pull request: %v", err)
@@ -2172,6 +2225,7 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 // rather than the finished phase's — for the next round, or for retro once the architect accepts
 // the approved head, never "Phase: implementing" again — without relaunching it.
 func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		review intake.PullRequestReview
@@ -2197,7 +2251,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			// decides a round only when its Legion footer names the pull request's head
 			// (workflow's refusesRound).
 			const head = "16973163c4b8a90d2e5f1736a8b0c4d9e2f51637"
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				// The settlement is the head's own, which the approval reads nothing of; GitHub's
 				// merge state for it is clean, which an approval of it advances on.
 				return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: issue.Key, Repo: "acme/widgets", Number: 118, Branch: "legion/LEGION-208", HeadSHA: head, CheckedHead: head, Failing: []string{}, State: record.PullRequestOpen,
@@ -2345,6 +2399,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 }
 
 func TestOutboxSuperviseReturnsProvisioningFailure(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress"}
@@ -2365,6 +2420,7 @@ func TestOutboxSuperviseReturnsProvisioningFailure(t *testing.T) {
 }
 
 func TestTerminalReplayAfterPersistedFailureHoldsOnceAndEmitsOneWorkerDiedNotice(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Planner failure", Phase: phase.Planning, Generation: 1, Status: "in_progress"}
@@ -2400,7 +2456,7 @@ func TestTerminalReplayAfterPersistedFailureHoldsOnceAndEmitsOneWorkerDiedNotice
 	}
 
 	var held string
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := records.Issue(context.Background(), tx, issue.Key)
 		if err != nil {
 			return err
@@ -2441,6 +2497,7 @@ func TestTerminalReplayAfterPersistedFailureHoldsOnceAndEmitsOneWorkerDiedNotice
 // A production check has no later wake after the role that works it exhausts a failed launch. The
 // architect receives the launch failure immediately instead of waiting for the look's bound.
 func TestAProductionCheckLaunchFailureNotifiesTheArchitect(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := checkRoot()
@@ -2469,6 +2526,7 @@ func TestAProductionCheckLaunchFailureNotifiesTheArchitect(t *testing.T) {
 }
 
 func TestTerminalReplayAppliesPersistedReadyFactOnce(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
 	restarted := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger()}
@@ -2492,6 +2550,7 @@ func TestTerminalReplayAppliesPersistedReadyFactOnce(t *testing.T) {
 // for an issue record no controller has and stop the daemon on the error. Its relaunch is the
 // controller keeper's (controllerKeeper).
 func TestTheControllersTerminalStatesNeverReachTheWorkflow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1)}
@@ -2517,6 +2576,7 @@ func TestTheControllersTerminalStatesNeverReachTheWorkflow(t *testing.T) {
 // and run the task was queued for. The role is not what is compared — one role runs several
 // phases — and a task of no phase never reaches this answer at all, which is supervise's own rule.
 func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{
@@ -2572,7 +2632,7 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 
 func putOutboxIssue(t *testing.T, pool *store.Pool, records record.Store, issue record.Issue) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(context.Background(), tx, issue)
 	}); err != nil {
 		t.Fatalf("put workflow issue: %v", err)
@@ -2588,7 +2648,7 @@ func putOutboxIssue(t *testing.T, pool *store.Pool, records record.Store, issue 
 func holdSlot(t *testing.T, pool *store.Pool, issues ...string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		slots, err := records.Slots(ctx, tx)
 		if err != nil {
@@ -2613,7 +2673,7 @@ func holdSlot(t *testing.T, pool *store.Pool, issues ...string) {
 // the claim token of it, as every claim and runtime key is.
 func openTree(t *testing.T, pool *store.Pool, project, tree string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return openTreeTx(context.Background(), tx, project, tree)
 	}); err != nil {
 		t.Fatalf("open the tree lifecycle of %s: %v", tree, err)
@@ -2879,6 +2939,7 @@ func newOutboxSupervisor(t *testing.T, project, stateDir string) (*supervisor, *
 // again and relaunch the kept session. Before, the start met a retired claim and finished having
 // done nothing: the tree held a slot, in_progress, with no architect.
 func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -2958,6 +3019,7 @@ func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
 // generation has closed and lingers in turn before the old removal retries (its backoff can reach
 // 64 seconds): the tree lingers again, but the removal serves the earlier generation.
 func TestAnEarlierGenerationsWorkspaceRemovalLeavesTheReadmittedTreesWorkspace(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -2999,7 +3061,7 @@ func TestAnEarlierGenerationsWorkspaceRemovalLeavesTheReadmittedTreesWorkspace(t
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true}, engine, admission); err != nil {
 		t.Fatalf("apply the todo: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		readmitted, err := records.Issue(ctx, tx, root.Key)
 		if err != nil || readmitted == nil {
 			return err
@@ -3026,6 +3088,7 @@ func TestAnEarlierGenerationsWorkspaceRemovalLeavesTheReadmittedTreesWorkspace(t
 // none and removes none: a start spawns the claim with no workspace on the host, a retired claim's
 // relaunch provisions nothing, and a tree's removal row finishes without acting.
 func TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -3093,6 +3156,7 @@ func workspaceRemovals(t *testing.T, pool *store.Pool) int {
 // it, as a ready would, for the launch that runs. A start that launches the claim tells nothing:
 // its ready will.
 func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -3179,6 +3243,7 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 // (stoppedWithTree), and each notice is finished undelivered with its own line rather than
 // published. So a closed issue costs the outbox one attempt per row and leaves it empty.
 func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -3389,6 +3454,7 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 // same run waits (waitsForTheRoute): it stays for its retry, logged as a wait and never as a
 // failure, since a Dispatch older than the record lane serves no route of it yet.
 func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		kind    record.OutboxKind

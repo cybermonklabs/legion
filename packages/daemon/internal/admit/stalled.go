@@ -11,9 +11,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -326,7 +326,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 		if err := a.store.MarkTreeStalledTold(ctx, tx, root.Key, measure.MovedAt); err != nil {
 			return err
 		}
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			a.log.Warn("admission: told the controller a tree has stopped", "issue", root.Key,
 				"quiet", measure.Quiet, "movedAt", measure.MovedAt)
 		})
@@ -487,8 +487,8 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // The words that do not silence are each a tree's own work or a person's: a tree closed or
 // parked waits for a re-admission (tree_closed, tree_parked), a root whose label is off waits
 // for a person to hand it over (label_off), a root a live tree has not released waits for its
-// architect (ancestry), an issue under an accepted ancestor waits for that ancestor to close
-// (accepted_ancestor), and an issue past its review is at work on no slot, whose stillness is
+// architect (ancestry), an issue under an accepted ancestor waits while that ancestor stands
+// in retro or merging (accepted_ancestor), and an issue past its review is at work on no slot, whose stillness is
 // the stall itself (at_work). None of them is the daemon holding work it means to start, which
 // is what a wait by design is.
 //
@@ -857,6 +857,6 @@ func stalledTreeReason(root string, measure record.TreeQuiet, members []record.I
 		}
 	}
 	reason.WriteString("\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-		" You can move an issue back a phase. You can park the tree.")
+		" You can park the tree.")
 	return reason.String()
 }

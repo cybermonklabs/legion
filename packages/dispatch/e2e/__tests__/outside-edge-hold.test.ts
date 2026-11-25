@@ -39,7 +39,7 @@
  *  a renewal's 5 s attempt, the 30 s for a socket to open again, and the rows on short tokens and
  *  a short lapse, each some seconds - skip under
  *  DISPATCH_UNIT_REPEAT, which `bun run test:repeat` (`e2e/tools/unit-repeat.ts`) sets: its
- *  harness lane runs this directory 20 times under a 30-minute step, and these rows would spend
+ *  harness lane runs this directory 20 times under one deadline, and these rows would spend
  *  minutes of it each run waiting, finding no fault a single run does not. Each `hold` is a
  *  process of its own on the real clock, so no fake timer can drive these waits. */
 

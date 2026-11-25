@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  The secrets broker's `GET /v1/settings` answers `approver_fields: true`: it takes
+  `approver_issuer`, `approver_subject` and `approver_session_generation` in a machine login's
+  approve. Dispatch reads that answer after its check of the approver and keeps a definite answer
+  for five seconds. A broker that answers it is sent the three fields. A broker whose settings
+  answer 200 without it, such as an older one, which refuses an approve carrying any of them
+  `400 INVALID_DECISION`, is sent the approver and the code alone, and then neither refuses an
+  approval by a replaced account nor records the approving account on the login it mints. When the
+  settings cannot be read (no answer, another status, an answer that is not a settings object, or
+  none in time), the approve is sent to no broker and answered `503 AGENT_SECRETS_SETTINGS_UNREAD`
+  for the person to approve again; a failed read is not kept, so the next approve reads again. The
+  settings read and the relay share one deadline, five seconds from that check. Dispatch's broker
+  token checks still need a broker holding the account binding: an older broker's introspection
+  names no account and no creation time, so until it moves Dispatch refuses
+  `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT` every person-scope broker token of an address whose account
+  it records after this deploy, while members recorded before it, operator entries' tokens and
+  browser sessions are unaffected.
+time: 2026-11-22T19:18:20.370210764Z
+custom:
+    Issue: pr4674

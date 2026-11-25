@@ -24,14 +24,15 @@ var clauseRepositories = []string{
 // acme/privparent; PRIV-4 names none and resolves to PRIV's default repository, acme/privdefault;
 // PUB-2 and PRIV-5 both name acme/both; and PRIV-6 names acme/oldname, which a mapping of PRIV
 // records as renamed to acme/newname, a rename the clause does not read. No issue names acme/none
-// or acme/newname. The default and the rename are stored as this build stores them, in
-// repo_projects, in the one statement below.
+// or acme/newname. The default is stored as this build stores it, in the project's own
+// default_repo column, and the rename in repo_projects, in the one statement below.
 func seedRepositoryIssues(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into projects (key, name, default_assignee, visibility) values
-			('PUB', 'Public', 'alice', 'public'), ('PRIV', 'Private', 'alice', 'private'), ('PRIV2', 'Private two', 'alice', 'private');
+		insert into projects (key, name, default_assignee, visibility, default_repo) values
+			('PUB', 'Public', 'alice', 'public', null), ('PRIV', 'Private', 'alice', 'private', 'acme/privdefault'),
+			('PRIV2', 'Private two', 'alice', 'private', null);
 		insert into issues (key, project_key, number, title, created_by, rank, parent_key, repo, status) values
 			('PUB-1', 'PUB', 1, 'Names acme/pub', '{"kind":"user","id":"alice"}', 'a', null, 'acme/pub', 'triage'),
 			('PUB-2', 'PUB', 2, 'Names acme/both', '{"kind":"user","id":"alice"}', 'b', null, 'acme/both', 'triage'),
@@ -43,7 +44,6 @@ func seedRepositoryIssues(t *testing.T) *store.Store {
 			('PRIV-5', 'PRIV', 5, 'Names acme/both', '{"kind":"user","id":"alice"}', 'e', null, 'acme/both', 'triage'),
 			('PRIV-6', 'PRIV', 6, 'Names acme/oldname', '{"kind":"user","id":"alice"}', 'f', null, 'acme/oldname', 'triage');
 		insert into repo_projects (repo, project, is_default, renamed_to, created_by) values
-			('acme/privdefault', 'PRIV', true, null, '{"kind":"user","id":"alice"}'),
 			('acme/oldname', 'PRIV', false, 'acme/newname', '{"kind":"user","id":"alice"}');
 	`); err != nil {
 		t.Fatalf("seed the repositories' issues: %v", err)

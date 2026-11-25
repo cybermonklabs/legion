@@ -906,10 +906,11 @@ type issueDetail struct {
 	OpenAsks  []issueOpenAsk      `json:"open_asks"`
 	Children  []model.IssueChild  `json:"children"`
 	// DesignGates is the document each of this issue's Legion design-gate steps records
-	// (design_gates, PUT /api/v1/issues/{key}/design-gates), in the order a gate runs the
-	// steps. An issue whose gates record nothing carries [], as the route's own answer does:
-	// the record Dispatch holds is part of the issue, and a missing list would say the read
-	// never asked rather than that no gate names a document here.
+	// (design_gates, PUT /api/v1/issues/{key}/design-gates), with whether the deployment's gate
+	// holds the issue's tree on that step (null where the daemon that published it said nothing
+	// of it), in the order a gate runs the steps. An issue whose gates record nothing carries [],
+	// as the route's own answer does: the record Dispatch holds is part of the issue, and a
+	// missing list would say the read never asked rather than that no gate names a document here.
 	DesignGates []issueDesignGate `json:"design_gates"`
 	// ReferencedByCount is what the header's `Referenced by (N)` control names. The page
 	// pays for it here, with the detail it already reads, instead of a graph request of
@@ -1355,14 +1356,14 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 	return children, rows.Err()
 }
 
-// issueDesignGatesStatement reads the documents an issue's design-gate steps record, $1 the
-// issue's key, $2 the steps in the order a gate runs them, which is the order the read answers
-// them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
-// (issue_design_gates.go), and $3 the reader's viewer. The order is a parameter rather than a case
-// expression built into the text, so model.GatedStepsKnown stays the one place that order is
-// written. A key no issue carries, and an issue of a project the viewer does not see, return no
-// row, which is what the issue read's first batch requires of every statement beside the issue
-// row's.
+// issueDesignGatesStatement reads the documents an issue's design-gate steps record and whether
+// each holds the issue's tree, $1 the issue's key, $2 the steps in the order a gate runs them,
+// which is the order the read answers them in and the order PUT /api/v1/issues/{key}/design-gates
+// answers its own write in (issue_design_gates.go), and $3 the reader's viewer. The order is a
+// parameter rather than a case expression built into the text, so model.GatedStepsKnown stays the
+// one place that order is written. A key no issue carries, and an issue of a project the viewer
+// does not see, return no row, which is what the issue read's first batch requires of every
+// statement beside the issue row's.
 //
 // A gate is the issue's own row, but the document it names can be another project's (the write
 // stores the id and reads nothing of it): a reader that does not see every object
@@ -1373,7 +1374,7 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 // does not see. A reader that sees every object is answered every gate as stored, an id no
 // document holds included, as before a project could be private (R9).
 var issueDesignGatesStatement = `
-		select g.step, g.artifact_id from design_gates g where g.issue = $1 and ` + access.IssueProjectClause("$1", "$3") + `
+		select g.step, g.artifact_id, g.holds from design_gates g where g.issue = $1 and ` + access.IssueProjectClause("$1", "$3") + `
 			and (` + access.ViewerFlag("$3", "all") + ` or (` + access.ViewerFlag("$3", "open") + ` and not ` + access.ViewerFlag("$3", "private") + `)
 				or exists (select 1 from artifacts gate_document where gate_document.id = ` + store.CastableUUID("g.artifact_id") + `
 					and ` + access.DocumentClause("gate_document", "$3") + ` offset 0))
@@ -1386,7 +1387,7 @@ func scanIssueDesignGates(rows pgx.Rows) ([]issueDesignGate, error) {
 	gates := []issueDesignGate{}
 	for rows.Next() {
 		var gate issueDesignGate
-		if err := rows.Scan(&gate.Step, &gate.ArtifactID); err != nil {
+		if err := rows.Scan(&gate.Step, &gate.ArtifactID, &gate.Holds); err != nil {
 			return nil, err
 		}
 		gates = append(gates, gate)

@@ -16,9 +16,10 @@ import (
 // boundedWritesFixtureSQL is the database the bounded-write census tests judge their rows against.
 // tuples is graph_tuples as 20261109013400 creates it, with the unique index on md5(to_id) that an
 // attribute's insert names as its conflict target, a unique tag that tuple_tags references, and a
-// trigger, which the report names beside an admission. nodes holds a two-column primary key, as
-// graph_nodes does, and ruled a rule. Each holds rows, so each is above the one-byte limit the
-// tests run the census under (censusOf).
+// trigger, tuples_noop, which is not on reviewedTriggers: the census refuses tuples for it unless
+// a test reviews it (reviewTuplesTrigger). nodes holds a two-column primary key, as graph_nodes
+// does, and ruled a rule. Each holds rows, so each is above the one-byte limit the tests run the
+// census under (censusOf).
 const boundedWritesFixtureSQL = `
 create table schema_migrations (version bigint primary key);
 insert into schema_migrations (version) values (1);
@@ -92,6 +93,15 @@ func tableNamed(entry MigrationCensus, name string) (TableCensus, bool) {
 	return TableCensus{}, false
 }
 
+// reviewTuplesTrigger puts the fixture's trigger on tuples on reviewedTriggers until the test ends,
+// so the census admits tuples beside it: tuples_noop returns null and reads nothing.
+func reviewTuplesTrigger(t *testing.T) {
+	t.Helper()
+	reviewed := reviewedTriggers
+	reviewedTriggers = append(slices.Clone(reviewed), reviewedTrigger{table: "tuples", trigger: "tuples_noop", bounded: "it returns null and reads no table"})
+	t.Cleanup(func() { reviewedTriggers = reviewed })
+}
+
 // A table above the limit is admitted for bounded writes, of each shape a seed of a large table
 // takes: an insert of literal rows, a constant, a negative one, NULL, a cast of a constant to
 // jsonb, now() and current_timestamp among its values; an insert with ON CONFLICT DO NOTHING and
@@ -99,12 +109,14 @@ func tableNamed(entry MigrationCensus, name string) (TableCensus, bool) {
 // one-column primary key in (…), by a two-column one (a, b) in ((…), …), by a = … and b = …, and
 // by a key cast to the key's own type; and several bounded writes in one migration beside a SET
 // LOCAL lock_timeout. Each table is above the one-byte limit, the census admits it with no
-// refusal, counts the statements that touch it, names its enabled trigger, and the report prints
-// the admission. Each migration then runs on the fixture, in a transaction the test rolls back,
-// so no shape admitted here is one Postgres refuses.
+// refusal, counts the statements that touch it, names its enabled trigger, which the test reviews
+// for its run (reviewTuplesTrigger), and the report prints the admission. Each migration then runs
+// on the fixture, in a transaction the test rolls back, so no shape admitted here is one Postgres
+// refuses.
 func TestCensusAdmitsATableAboveTheLimitForEachBoundedWriteShape(t *testing.T) {
 	ctx := context.Background()
 	conn := boundedWritesDatabase(t, ctx)
+	reviewTuplesTrigger(t)
 	for _, row := range []struct {
 		name, sql, table string
 		statements       int
@@ -171,9 +183,10 @@ func TestCensusAdmitsATableAboveTheLimitForEachBoundedWriteShape(t *testing.T) {
 // column of the primary key or one a foreign key references, an insert of a value that is no
 // literal, an upsert, an update by a key compared with a constant that would cast the key, an
 // update of a table with a rule, a bounded insert beside a DO block or after the migration's own
-// SET of search_path, and a bounded insert after an earlier pending migration that changes the
-// table. The census reads each table above the one-byte limit; a refusal says the size, the rule
-// and why the migration's writes are not bounded, and the table is not admitted.
+// SET of search_path, a bounded insert after an earlier pending migration that changes the table,
+// and a bounded insert into a table whose enabled trigger is not on reviewedTriggers. The census
+// reads each table above the one-byte limit; a refusal says the size, the rule and why the
+// migration's writes are not bounded, and the table is not admitted.
 func TestCensusRefusesATableAboveTheLimitForEveryWriteThatIsNotBounded(t *testing.T) {
 	ctx := context.Background()
 	conn := boundedWritesDatabase(t, ctx)
@@ -206,6 +219,8 @@ func TestCensusRefusesATableAboveTheLimitForEveryWriteThatIsNotBounded(t *testin
 			"tuples", "and a statement of the migration can change what its names resolve to"},
 		{"a bounded insert after an earlier pending migration that alters the table", []string{"alter table tuples add column extra text", boundedInsert},
 			"tuples", "and the earlier pending migration 0002_row.up.sql touches tuples with more than bounded writes"},
+		{"a bounded insert into a table whose enabled trigger is not on the reviewed list", []string{boundedInsert},
+			"tuples", "and tuples has the enabled trigger tuples_noop, which is not on the census's reviewed list (reviewedTriggers)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			pending := censusOf(t, ctx, conn, row.migrations)

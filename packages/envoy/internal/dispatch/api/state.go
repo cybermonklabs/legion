@@ -112,8 +112,11 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
 		return
 	}
-	if input.LastReadSeq != nil && *input.LastReadSeq < 0 {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "last_read_seq must be non-negative")
+	// last_read_seq is a position in the issue's event sequence, which user_issue_state keeps in
+	// an integer column, so one past that column (fitsIntegerColumn) is refused before any query
+	// is made with it.
+	if input.LastReadSeq != nil && (*input.LastReadSeq < 0 || !fitsIntegerColumn(*input.LastReadSeq)) {
+		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_STATE", "last_read_seq must be from 0 to %d", maxIntegerColumn))
 		return
 	}
 	who, ok := s.readerOf(w, r)

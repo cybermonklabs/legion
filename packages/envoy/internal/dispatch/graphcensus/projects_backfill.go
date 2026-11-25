@@ -67,8 +67,8 @@ const scopedNode = `(n.project_key is not null or n.parties is not null)`
 // the row a's address that is that row's own - any such node, for a row no removal takes, and for
 // one a removal can take, one whose live statement was made for it (ownLiveStatement). A node
 // whose live statement is not the row's is a document a build before this one removed and then
-// made again at the address before the node was erased, and that row is owed its own live
-// statement as much as a row with none (classGone).
+// made again at the address before this build's block-index tick stated the node gone, and that
+// row is owed its own live statement as much as a row with none (classGone).
 func unmarkedDocument(a string) string {
 	return `not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindArtifact + `' and n.id = ` + a + `.ref_key` +
 		` and n.state <> '` + graphstore.StateGone + `' and ` + scopedNode + ` and (not ` + removableDocument(a) + ` or ` +
@@ -139,10 +139,10 @@ var objectKinds = []objectKind{
 }
 
 // ObjectRowStands answers whether a row of kind stands at id, for a kind the backfill writes a
-// node for from its rows (objectKinds), and false for any other kind. The erase reads it to refuse
-// a node of these kinds while its row holds its text (grapherase's Erasure.read). An ask's and a
-// message's row is keyed by a uuid, so an id that is no uuid names no row of them; it answers false
-// for it rather than let the cast in objectKind.rows abort the erase's transaction.
+// node for from its rows (objectKinds), and false for any other kind. The block-index tick's sweep
+// reads it under its lock of a node to leave a node whose row stands (StateOrphanedGone). An ask's
+// and a message's row is keyed by a uuid, so an id that is no uuid names no row of them; it answers
+// false for it rather than let the cast in objectKind.rows abort the caller's transaction.
 func ObjectRowStands(ctx context.Context, q graphstore.Queryer, kind, id string) (bool, error) {
 	for _, known := range objectKinds {
 		if known.kind != kind {
@@ -542,8 +542,8 @@ func derefText(value *string) string {
 // which the report's remaining count names. A removal waiting for this batch removes a row whose
 // node is live, and this build's removal then states that node gone. The owner locks come first
 // and the nodes after them, the order every writer of these nodes takes (a document's create, its
-// removal, the erase). A kind no writer deletes a row of takes no lock and is read again the same
-// way.
+// removal, the block-index tick's sweep). A kind no writer deletes a row of takes no lock and is
+// read again the same way.
 //
 // Under those locks it reads the nodes the store holds of the batch (heldNodes). One that is not
 // gone, its row's own (ownLiveStatement, for a document a removal can take; any such one for the
@@ -716,7 +716,7 @@ func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind objectKind, ids []str
 	owners := events.OwnerRows{}
 	var issue, document, id string
 	if _, err := pgx.ForEachRow(rows, []any{&issue, &document, &id}, func() error {
-		owners.Add(issue, document, kind.kind+" "+id)
+		owners.Add(issue, document)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)

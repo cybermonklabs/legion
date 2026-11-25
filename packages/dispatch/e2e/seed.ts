@@ -15,7 +15,6 @@ import { sql } from "./psql";
 // boot, and GET /api/v1/dashboard/builds reads the builds the live ones serve from it.
 const tables = [
   "agent_tokens",
-  "repo_projects",
   "architecture_sources",
   "legion_current",
   "legion_observations",
@@ -103,10 +102,9 @@ const tables = [
 // other way - `comments`, `document_blocks` and `block_refs` carry it into `graph_nodes` - so
 // naming them empties the rows and leaves the nodes those rows project. A reseeded database then
 // holds nodes whose rows are gone, which `envoy-dispatch census --store` reads as "a live node no
-// row projects". `graph_tuples` carries no foreign key at all, and `graph_erasures` is the record
-// of an erase, which a scenario of its own writes. So the three are emptied here instead, by a
-// delete of their own, and locked beside the closure's tables so the reset still holds every
-// table it empties.
+// row projects". `graph_tuples` carries no foreign key at all. So the two are emptied here
+// instead, by a delete of their own, and locked beside the closure's tables so the reset still
+// holds every table it empties.
 //
 // The schema's own nodes stay: migration 20261109051232 seeds one `supertag` node per block type
 // and one `attribute` node per attribute, with their base-attribute and `attribute_of` tuples,
@@ -115,7 +113,6 @@ const tables = [
 // so a reset that took them would leave the instance with no block type at all. `source_event`
 // tells them apart for nothing: the kind does, and that is what these predicates keep.
 const storeDeletes: ReadonlyArray<{ table: string; keep?: string }> = [
-  { table: "graph_erasures" },
   { table: "graph_tuples", keep: "from_kind IN ('supertag', 'attribute')" },
   { table: "graph_nodes", keep: "kind IN ('supertag', 'attribute')" },
 ];

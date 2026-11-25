@@ -134,6 +134,64 @@ func TestAReadyWorkerHoldingOnlyARelaunchDeliveryIsGivenItsPhaseTask(t *testing.
 	}
 }
 
+// A start queued for news of the approved design alone (record.SuperviseRequest.News) names the
+// worker's phase, so that it finishes once the issue has left that phase, but it carries no task
+// of the phase: its executor hands the worker only the news, and nothing at all where the record
+// owes it nothing when it runs. So a tester whose claim becomes ready with only such a start
+// queued for it, and nothing pending, is queued its phase's resume task beside that start, as a
+// claim with nothing queued is.
+func TestAReadyWorkerWithOnlyANewsOnlyStartQueuedIsGivenItsPhaseTask(t *testing.T) {
+	pool := migratedPool(t)
+	issue := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true}
+	seedIssue(t, pool, issue)
+	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
+	seedPhaseWorker(t, pool, "LEGION-209", claim.RoleTester, "")
+	seedOutboxRow(t, pool, "LEGION-209", record.SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleTester,
+		Generation: 1, Phase: phase.Testing, News: true})
+
+	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
+		intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("apply the ready: %v", err)
+	}
+
+	starts := superviseRowsOf(t, pool, "LEGION-209", "start")
+	if len(starts) != 2 || !starts[0].News || starts[1].News || !starts[1].ResumeTask || starts[1].Task != ResumePhaseTask(issue) {
+		t.Fatalf("the starts after the ready = %+v, want the news-only start and, beside it, the phase's resume task: a start of news alone carries no task of the phase", starts)
+	}
+}
+
+// A tester whose claim becomes ready holding only a task of news of the approved design alone —
+// the news-only start's delivery, which the record marks in its own column
+// (pending_task_deliveries.news_only) — holds no work of its phase: the task names the phase and
+// the run so that it is dropped once the issue leaves the phase, and asks the worker only to read
+// what changed. So it is queued its phase's resume task, as a claim holding nothing is, rather than
+// left with the news alone.
+func TestAReadyWorkerHoldingOnlyANewsTaskIsGivenItsPhaseTask(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
+	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
+	token := seedPhaseWorker(t, pool, "LEGION-209", claim.RoleTester, "")
+	if _, err := pool.Exec(t.Context(), `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation,
+		queued_at, design_news, news_only) values ($1, 'outbox:7', 'The approved design changed.', 'testing', 1, now(),
+		'{"task":"","items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":4}]}', true)`,
+		string(token)); err != nil {
+		t.Fatalf("seed the tester's news task: %v", err)
+	}
+
+	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
+		intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("apply the ready: %v", err)
+	}
+
+	if got, want := superviseRequests(t, pool, "start"), map[string]int{"LEGION-209/tester": 1}; !sameCounts(got, want) {
+		t.Fatalf("the ready queued starts %v, want %v: a task of news alone is no task of the phase", got, want)
+	}
+}
+
 // A role that does not hold the issue's phase is given nothing: its phase is over, and the phase
 // that is running belongs to another claim.
 func TestAReadyWorkerThatDoesNotHoldTheIssuesPhaseIsGivenNothing(t *testing.T) {

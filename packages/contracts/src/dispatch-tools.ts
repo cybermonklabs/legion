@@ -150,11 +150,13 @@ export const ARTIFACT_NAME_EXISTS_RULE =
  * What `dispatch artifact` says of inline text the store would change. The command renders the
  * text as Dispatch renders a document it stores and compares the two, so a text stored under
  * another spelling (a `*` list stored with `-`, an ordered list renumbered, a CR LF stored as a
- * line feed) is refused before the upload rather than stored changed. The rule holds for both
- * kinds of name: `--path` keeps the bytes of a name that is not Markdown, and a Markdown name is
- * parsed and rendered whichever flag sends it, so its one way out is to send the stored text.
+ * line feed) is refused before the upload rather than stored changed. A typed block's attributes
+ * in another order are the one spelling it stores rather than refuses, since an attribute's
+ * position carries no meaning. The rule holds for both kinds of name: `--path` keeps the bytes of
+ * a name that is not Markdown, and a Markdown name is parsed and rendered whichever flag sends
+ * it, so its one way out is to send the stored text.
  */
-export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
+export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. A typed block whose attributes differ from Dispatch's only in their order is not refused: the command uploads it with them in Dispatch's order and names each such block. A refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
 
 /** A name's extension, or undefined for a name with none: what follows its last dot when that
  *  holds no blank. Digits count, so "rows.jsonl.1" has one, and so does a title such as
@@ -259,18 +261,59 @@ function preconditionKept(value: unknown): boolean {
   return (typeof precondition.document === "string") !== Array.isArray(precondition.blocks);
 }
 
+/** The keys a replace operation takes. Every other key an operation may carry is another
+ *  operation's, so a replace that carries one sends text that replace never writes. */
+const REPLACE_OP_KEYS: Readonly<Record<string, true>> = {
+  op: true,
+  find: true,
+  with: true,
+  occurrence: true,
+};
+
+const REPLACE_OP_RULE =
+  'A replace names with and takes find, with and occurrence alone: with "" deletes the match on purpose, and a replace without with, or with its new text under another key such as markdown, would delete the match too.';
+
+/** The refusal of each replace operation of `value` that names no with or carries a key replace
+ *  does not take, each by its index in ops, or undefined when every replace keeps the rule. */
+function replaceOpsProblem(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || !("ops" in value)) return undefined;
+  const ops = value.ops;
+  if (!Array.isArray(ops)) return undefined;
+  const problems: string[] = [];
+  ops.forEach((op: unknown, index) => {
+    if (typeof op !== "object" || op === null || !("op" in op) || op.op !== "replace") return;
+    const foreign = Object.entries(op)
+      .filter(([key, held]) => REPLACE_OP_KEYS[key] !== true && held !== undefined)
+      .map(([key]) => key);
+    if (foreign.length > 0) {
+      problems.push(
+        `ops[${index}] is a replace carrying ${foreign.join(" and ")}, which replace does not take: it takes find, with and occurrence, and its new text goes in with.`
+      );
+    }
+    if (!("with" in op) || op.with === undefined) {
+      problems.push(
+        `ops[${index}] is a replace with no with, which would delete the text find matches: write the new text in with, or with "" to delete it on purpose.`
+      );
+    }
+  });
+  return problems.length === 0 ? undefined : problems.join(" ");
+}
+
 function documentEditProblem(value: unknown): string | undefined {
+  const replaceProblem = replaceOpsProblem(value);
   return brokenParts([
     [documentEditOwner.check(value), documentEditOwner.message],
     [preconditionKept(value), PRECONDITION_RULE],
+    [replaceProblem === undefined, replaceProblem ?? REPLACE_OP_RULE],
   ]);
 }
 
 const documentEditValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => documentEditProblem(value) === undefined,
-  message: `${documentEditOwner.message} ${PRECONDITION_RULE}`,
+  message: `${documentEditOwner.message} ${PRECONDITION_RULE} ${REPLACE_OP_RULE}`,
   refusal: (value) =>
-    documentEditProblem(value) ?? `${documentEditOwner.message} ${PRECONDITION_RULE}`,
+    documentEditProblem(value) ??
+    `${documentEditOwner.message} ${PRECONDITION_RULE} ${REPLACE_OP_RULE}`,
 };
 
 /** dispatch_comment: the document-owner rule, `turn` only alongside `reply_to_ask`, and the
@@ -829,14 +872,18 @@ export const dispatchToolSpecs = [
     example: { project: "DSP", title: "Native workspace" },
     description:
       "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them, or, when the refusal cannot be recorded, creates the issue and names the near copy to read in the result. " +
-      "When passing a spec, before calling, have a fresh read-only reader check it against the code and the human's words, then resolve every finding; a Legion architect uses `plan-gap-analyst`. " +
+      "Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. " +
       "A spec holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK. " +
       `${CI_CHECK_RULE} ` +
       "Create a project only when a person asks for one; work that spans projects goes in the project that owns most of it. " +
       `${RELATED_CHECK_RESULT} With --force, the result also names each issue whose title you forced past. ` +
       `Do not use it when an existing issue already covers the work; read or update that issue instead. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
-      project: z.string().describe("Project key for the new issue."),
+      project: z
+        .string({ min: 1 })
+        .describe(
+          "Project key for the new issue. Every create needs one, also a create that names external."
+        ),
       title: z
         .string({ max: ISSUE_TITLE_MAX })
         .describe("Concise issue title, at most 1,000 characters."),
@@ -1503,7 +1550,7 @@ export const dispatchToolSpecs = [
       "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again. " +
       "Each decision block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Decision block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
       "A block id written as {#id} longer than 256 bytes is stored, but its block is no graph node, so no reference reaches it. " +
-      `The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
+      `The spec holds requirements, design, and decisions - never progress, status, or timestamps. Work still to do is a task in the issue's plan, an issue, or an ask, never a separate document that lists it. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),
@@ -1531,7 +1578,7 @@ export const dispatchToolSpecs = [
               with: z
                 .string()
                 .describe(
-                  "Replacement text for replace: inside a code block, the code's literal text as sent (line breaks at its end do not survive a read); elsewhere parsed as markdown, as insert's markdown is. Text that parses to one paragraph is written inside the matched block, where a backslash escape keeps prose that merely looks like a marker, a leading '[x] ' or '[ ] ' over a task item's text matched from its start sets the item's checkbox, and any non-empty value that renders to no text is refused - only an empty value deletes the match. Text that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, fitted as the editor fits them, and is refused, with the document unchanged, where the block holding the match cannot hold them: a heading, any cell of a table, and a typed block whose content rule they break. A leading marker of the same kind as the matched block's own is refused either way, since the block renders it already, unless it is a heading rename (where a level named by find is what lets with change it) or an item find's own marker selected. A CR LF or a lone carriage return in it is written as a line feed."
+                  "Replacement text for replace, which every replace names: an empty value deletes the match on purpose. A replace takes op, find, with and occurrence alone, and one without with, or carrying any other key whatever it holds, is refused before it is sent, and by the server with 400 REPLACE_FIELDS, the document unchanged. Inside a code block, with is the code's literal text as sent (line breaks at its end do not survive a read); elsewhere parsed as markdown, as insert's markdown is. Text that parses to one paragraph is written inside the matched block, where a backslash escape keeps prose that merely looks like a marker, a leading '[x] ' or '[ ] ' over a task item's text matched from its start sets the item's checkbox, and any non-empty value that renders to no text is refused - only an empty value deletes the match. Text that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, fitted as the editor fits them, and is refused, with the document unchanged, where the block holding the match cannot hold them: a heading, any cell of a table, and a typed block whose content rule they break. A leading marker of the same kind as the matched block's own is refused either way, since the block renders it already, unless it is a heading rename (where a level named by find is what lets with change it) or an item find's own marker selected. A CR LF or a lone carriage return in it is written as a line feed."
                 )
                 .optional(),
               occurrence: z
@@ -1626,7 +1673,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_request_approval",
     example: { issue: "DSP-1", summary: "A live sync replaces the nightly export." },
     description:
-      "Ask a human to approve a document at its current version. Before calling, have a fresh read-only reader check the spec against the code and the human's words, then resolve every finding; a Legion architect runs `plan-gap-analyst` and `plan-reviewer`. Opens an approval ask (Approve / " +
+      "Ask a human to approve a document at its current version. Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. Opens an approval ask (Approve / " +
       "Request changes) in the human's Inbox whose question names the document and version, " +
       "followed by the summary; the answer pins a review to that version and arrives as " +
       "artifact.approved or artifact.changes_requested. " +
@@ -1679,7 +1726,7 @@ export const dispatchToolSpecs = [
       summary: z
         .string({ min: 1 })
         .describe(
-          `What the human is approving, in one to three sentences, and nothing else: no commentary on itself or the conversation, and no question; after an earlier approval, one sentence naming what changed since it, since the card shows that approval and a diff. A Legion architect adds one last sentence with its two spec reviews' results. Request approval only once ${HUMAN_AGREED_TO_DOCUMENT}.`
+          `What the human is approving, in one to three sentences, and nothing else: no commentary on itself or the conversation, and no question; after an earlier approval, one sentence naming what changed since it, since the card shows that approval and a diff. Request approval only once ${HUMAN_AGREED_TO_DOCUMENT}.`
         ),
       include_verification: z
         .boolean()
@@ -1810,7 +1857,7 @@ export const dispatchToolSpecs = [
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
-      "every other record with 409 ISSUE_CLOSED, as it refuses every other write. " +
+      "every other record with 409 ISSUE_CLOSED. " +
       "A check a document version rewords while the result is being written is 409 " +
       "CHECK_CONTENDED, with nothing recorded: run the same command again. " +
       RESULT_RETRACT_RULE +
@@ -1919,6 +1966,9 @@ export const dispatchToolSpecs = [
       "(before_merge): CI run <name> has no result (<case>)`. That is a run that has not " +
       "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
       "issue with no pull request head, or GitHub not read, with what GitHub answered. " +
+      "A pull-request line writes `CI run <name>` only when it keeps every word of the name, " +
+      "and `the CI run the check names` in its place where it drops one: a word the line drops, " +
+      "such as an issue key or a word holding `_`. " +
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
       "no write of anyone's: record the check again at the new head. A check CI proves is read " +
       "again at the new head by itself. " +
@@ -1963,7 +2013,7 @@ export const dispatchToolSpecs = [
       content: z
         .string()
         .describe(
-          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. The refusal prints the text Dispatch stores, which is the text to send."
+          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. Nor is a typed block whose attributes differ only in their order: the upload puts them in Dispatch's order. The refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. It prints the text Dispatch stores, which is the text to send."
         )
         .optional(),
       force: z

@@ -158,9 +158,9 @@ type holdRig struct {
 	requireDeadline bool
 }
 
-// newHoldRig writes the four secrets the two people own and the airlock's rules for the two behind
-// it, starts the Dispatch stand-in, which answers both people as full members and neither as held
-// yet, and the service behind the airlock. It boots nothing.
+// newHoldRig writes the four secrets the two people own and the profiles that serve the two behind
+// the airlock, starts the Dispatch stand-in, which answers both people as full members and neither
+// as held yet, and the service behind the airlock. It boots nothing.
 func newHoldRig(t *testing.T) *holdRig {
 	t.Helper()
 	r := &holdRig{f: newApprovalFixture(t), databaseURL: storetest.URL(t), public: newFront(t)}
@@ -185,17 +185,18 @@ func newHoldRig(t *testing.T) *holdRig {
 		_, _ = io.WriteString(w, holdUpstreamBody)
 	}))
 	t.Cleanup(r.upstream.Close)
-	// The two secrets behind the airlock, each bound to a host of its own that no request of this
-	// test names: a grant of either opens connections to the proxy, and the request the probe makes
-	// goes to the service on loopback, which no name of the grant is bound to, so the proxy carries
-	// it as it comes, after the hold. The proxy dials no loopback address but the one
-	// BROKER_AIRLOCK_TEST_DIAL_ALLOW names, the service's.
-	rules := airlockRulesFile(t, `{"secrets": [
-		{"name": "ADA_AIRLOCK", "hosts": ["ada.hold.airlock.test"], "headers": ["authorization"]},
-		{"name": "BOB_AIRLOCK", "hosts": ["bob.hold.airlock.test"], "headers": ["authorization"]}
+	// The two secrets behind the airlock, each served by a profile of its own name whose proxy
+	// block binds it to a host of its own that no request of this test names: a grant of either
+	// opens connections to the proxy, and the request the probe makes goes to the service on
+	// loopback, which no name of the grant is bound to, so the proxy carries it as it comes, after
+	// the hold. The proxy dials no loopback address but the one BROKER_AIRLOCK_TEST_DIAL_ALLOW
+	// names, the service's.
+	profiles := profilesFile(t, `{"profiles": [
+		{"name": "ADA_AIRLOCK", "proxy": {"hosts": ["ada.hold.airlock.test"], "headers": ["authorization"]}},
+		{"name": "BOB_AIRLOCK", "proxy": {"hosts": ["bob.hold.airlock.test"], "headers": ["authorization"]}}
 	]}`)
 	r.airlock = append(airlockEnv(t),
-		"BROKER_AIRLOCK_RULES_FILE="+rules,
+		"BROKER_PROFILES_FILE="+profiles,
 		"BROKER_AIRLOCK_TEST_DIAL_ALLOW="+strings.TrimPrefix(r.upstream.URL, "http://"))
 
 	r.client = ciphertest.NewClient(t, r.public.URL, r.frontAddr)
@@ -237,7 +238,7 @@ func (r *holdRig) boot(t *testing.T, holdOn bool) {
 	t.Helper()
 	if r.broker != nil {
 		r.broker.Terminate(t)
-		if err := r.broker.AwaitExit(t, stopTimeout); err != nil {
+		if err := r.broker.AwaitExit(t); err != nil {
 			t.Fatalf("the broker at %s exited %v when stopped:\n%s", r.broker.Addr, err, r.broker.Log())
 		}
 	}

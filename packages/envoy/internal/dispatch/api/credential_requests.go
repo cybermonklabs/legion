@@ -15,7 +15,9 @@
 // A restricted member decides one kind of record here, at a browser alone: a pending machine login
 // of their own, which is how an outside person approves the device login of their own agents
 // (ownMachineLogin). Every other decision of theirs is refused before the broker is asked to make
-// it.
+// it. What such a member lists and ends Dispatch decides too, not the broker: their machine logins
+// (memberMachineLogins) and their grants (memberGrants), the grants of the sessions that act for
+// them alone.
 //
 // These decisions write no Dispatch event - the broker records the decision itself - so the agent
 // that made one for its person is recorded on Dispatch's own access-log line instead
@@ -31,6 +33,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
@@ -46,11 +49,12 @@ import (
 // shows and that login's approve and deny, and the list of their machine logins and the revoke of
 // one. Each handler then holds the member to a machine login of their own (ownMachineLogin for a
 // pending one, memberMachineLogins, their own machines' and their pods', for an issued one).
-// Through a token a restricted member is refused
-// every one of them: 403 OAUTH_SCOPE_REQUIRED where the token lacks the row's scopes
-// (gateRouteScopes, which runs first), as their agent's named token holds none, and 403
-// RESTRICTED_MEMBER otherwise (restrictedOwnLoginRefusal), so no agent of theirs decides, lists or
-// ends any credential, their own machine's included.
+// Through a token a restricted member is refused every one of them: no token of theirs holds a
+// scope - their agent's named broker token, a broker token acting as them, and their personal
+// token (personalTokenActor) - so gateRouteScopes, which runs first, answers 403
+// OAUTH_SCOPE_REQUIRED, and restrictedOwnLoginRefusal's 403 RESTRICTED_MEMBER stands behind it for
+// any credential of theirs that held a row's scopes; so no agent of theirs decides, lists or ends
+// any credential, their own machine's included.
 var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/credential-requests/machine-lookup": true,
 	"POST /api/v1/credential-requests/{id}/approve":   true,
@@ -293,6 +297,18 @@ func (s *server) listCredentialPending(w http.ResponseWriter, r *http.Request) {
 // whatever account it names: a sign-in that commits between this check and the relay records its
 // revocation at a greater generation. A deny mints nothing and names no account.
 //
+// The account and the generation go only to a broker whose settings say it takes them
+// (cipher.Client.TakesApproverFields): a broker that answers its settings without approver_fields,
+// one from before them, refuses an approve carrying any of them 400 INVALID_DECISION, so it is
+// sent the approver and the code alone. Settings that cannot be read leave that unknown, and the
+// approve is relayed to no broker (writeApproverFieldsUnread): sent without the fields to a broker
+// that takes them, it would leave that broker's account and generation checks to its 50-second
+// fallback. The read comes after the re-read, so a refused caller asks the broker nothing, and it
+// and the relay share one deadline, the client's window (cipher.New's five seconds) from the end of
+// the re-read (relayDeadline): so the approve reaches the broker within that window of its check or
+// not at all, the bound the broker's in-flight window counts (machine.ApprovalInFlightWindow),
+// however long the read takes.
+//
 // A restricted member's approve is relayed holding their approval lock (relayMachineLoginApproval).
 func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
@@ -320,19 +336,55 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	if account.subject != "" && s.deps.SignInIssuer != "" {
-		decision.ApproverIssuer, decision.ApproverSubject = s.deps.SignInIssuer, account.subject
-		if account.issuer != "" {
-			decision.ApproverIssuer = account.issuer
-		}
-	}
-	decision.ApproverSessionGeneration = &generation
-	if restricted {
-		s.relayMachineLoginApproval(w, r, client, model.CanonicalLogin(actor.ID), decision)
+	relay, cancel := relayDeadline(r.Context(), client)
+	defer cancel()
+	fields, err := client.TakesApproverFields(relay)
+	if err != nil {
+		writeApproverFieldsUnread(w, err)
 		return
 	}
-	body, err := client.Approve(r.Context(), r.PathValue("id"), decision)
+	if fields {
+		if account.subject != "" && s.deps.SignInIssuer != "" {
+			decision.ApproverIssuer, decision.ApproverSubject = s.deps.SignInIssuer, account.subject
+			if account.issuer != "" {
+				decision.ApproverIssuer = account.issuer
+			}
+		}
+		decision.ApproverSessionGeneration = &generation
+	}
+	if restricted {
+		s.relayMachineLoginApproval(relay, w, r, client, model.CanonicalLogin(actor.ID), decision)
+		return
+	}
+	body, err := client.Approve(relay, r.PathValue("id"), decision)
 	relayBrokerResponse(w, body, err)
+}
+
+// relayDeadline is ctx bounded to the broker client's window from now, the moment an approve's
+// re-read of its caller ended, for the settings read and the relay that follow it, so the two
+// together reach the broker within that window of the check. A client with no window (0) adds no
+// deadline, as it bounds no call.
+func relayDeadline(ctx context.Context, client *cipher.Client) (context.Context, context.CancelFunc) {
+	if window := client.HTTP.Timeout; window > 0 {
+		return context.WithDeadline(ctx, time.Now().Add(window))
+	}
+	return context.WithCancel(ctx)
+}
+
+// writeApproverFieldsUnread answers an approve whose broker settings could not be read
+// (cipher.Client.TakesApproverFields failed), which relays nothing: 500
+// AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch could not read its own ServiceAccount token,
+// as relayBrokerResponse answers it, and otherwise 503 AGENT_SECRETS_SETTINGS_UNREAD, logged at
+// WARN with the read's error, for the person to approve again.
+func writeApproverFieldsUnread(w http.ResponseWriter, err error) {
+	var tokenErr *cipher.AccountTokenError
+	if errors.As(err, &tokenErr) {
+		relayBrokerResponse(w, nil, err)
+		return
+	}
+	slog.Warn("dispatch: the secrets broker's settings could not be read, so whether it takes a machine-login approve's approver fields is unknown and the approve was not relayed", "error", err)
+	writeError(w, "AGENT_SECRETS_SETTINGS_UNREAD", http.StatusServiceUnavailable,
+		"the secrets broker's settings could not be read, so the approval was not sent to it; approve again in a moment")
 }
 
 // relayMachineLoginApproval relays a restricted member's approve of their own machine login while
@@ -344,8 +396,9 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // database connection across a broker call. While a revocation is owed it relays nothing either:
 // 409 MACHINE_LOGIN_REVOCATION_OWED, for the person to approve again once a pass has revoked their
 // earlier logins and settled it, about a minute after a removal commits (machineLoginSettleAfter).
-// A read that fails is 503.
-func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Request, client *cipher.Client, person string, decision cipher.Decision) {
+// A read that fails is 503. The relay runs on relay, which bounds it from the caller's check
+// (relayDeadline); the transaction runs on the request's own context.
+func (s *server) relayMachineLoginApproval(relay context.Context, w http.ResponseWriter, r *http.Request, client *cipher.Client, person string, decision cipher.Decision) {
 	ctx := r.Context()
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -368,7 +421,7 @@ func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Reques
 			"this person's machine logins are being revoked after a removal from an access list; approve again once that is done, in about a minute")
 		return
 	}
-	body, err := client.Approve(ctx, r.PathValue("id"), decision)
+	body, err := client.Approve(relay, r.PathValue("id"), decision)
 	relayBrokerResponse(w, body, err)
 }
 
@@ -637,6 +690,14 @@ func (s *server) dismissCredentialRecord(w http.ResponseWriter, r *http.Request)
 
 // --- GET /api/v1/credential-grants, POST .../{id}/revoke ---
 
+// listCredentialGrants answers the live grants of the caller's Live grants page, which the broker
+// lists for the caller's login: those the caller approved, those of the sessions that act for the
+// caller, those the model judge approved in anyone's stead and those a pod that acts for no person
+// took without asking. A restricted member is answered the grants of the sessions that act for them
+// alone (memberGrants): Dispatch decides it, and drops every other row the broker lists whatever
+// its approver, so the list holds no grant of a project the member is not on whether or not the
+// broker itself knows what kind of member they are. Every other caller is answered the broker's
+// list verbatim.
 func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -650,15 +711,33 @@ func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.Grants(r.Context(), login)
-	relayBrokerResponse(w, body, err)
+	restricted, ok := s.restrictedCaller(w, r)
+	if !ok {
+		return
+	}
+	if !restricted {
+		body, err := client.Grants(r.Context(), login)
+		relayBrokerResponse(w, body, err)
+		return
+	}
+	own, err := memberGrants(r.Context(), client, login)
+	if err != nil {
+		relayBrokerResponse(w, nil, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, wire.ApproverGrantsResponse{Grants: own})
 }
 
-// revokeCredentialGrant ends a grant as the caller: the broker allows it only when the caller's
-// login is the grant's approver or the person its enrollment acts for (an unmapped person's pod
-// acts for no one), or, for a grant the model judge approved in anyone's stead, anyone who may see
-// it; and, as an approver, only for a person Dispatch does not call a restricted member. The
-// browser's body carries nothing Dispatch reads.
+// revokeCredentialGrant ends a grant as the caller. For every caller but a restricted member the
+// broker decides: it allows the revoke only when the caller's login is the grant's approver or the
+// person its enrollment acts for (an unmapped person's pod acts for no one), or, for a grant the
+// model judge approved in anyone's stead, anyone who may see it. Dispatch decides for a restricted
+// member: it relays their revoke only of a grant of memberGrants, one whose session acts for them,
+// and answers any other id, an id the broker lists no grant for among them, 403 RESTRICTED_MEMBER
+// with the one sentence that names nothing of the grant, sending the broker no revoke. While the
+// broker's list cannot be read, a restricted member's revoke fails closed: it is answered as that
+// read failed (relayBrokerResponse: the broker's own refusal, or 503 AGENT_SECRETS_UNAVAILABLE),
+// whatever the id, and revokes nothing. The browser's body carries nothing Dispatch reads.
 func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -669,8 +748,52 @@ func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.RevokeByApprover(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	restricted, ok := s.restrictedCaller(w, r)
+	if !ok {
+		return
+	}
+	login, id := model.CanonicalLogin(actor.ID), r.PathValue("id")
+	if restricted {
+		own, err := memberGrants(r.Context(), client, login)
+		if err != nil {
+			relayBrokerResponse(w, nil, err)
+			return
+		}
+		if !slices.ContainsFunc(own, func(grant wire.ApproverGrantResp) bool { return grant.GrantID == id }) {
+			writeError(w, codeRestrictedMember, http.StatusForbidden,
+				"a restricted member revokes only a grant of a session that acts for them")
+			return
+		}
+	}
+	body, err := client.RevokeByApprover(r.Context(), id, login)
 	relayBrokerResponse(w, body, err)
+}
+
+// memberGrants is the grants the broker lists for person (GET /v1/grants) whose session acts for
+// person: those whose enrollment's operator is person. On a grant list the broker writes that
+// field as the person the enrollment acts for at the read (wire.RecordEnrollmentResp's Operator,
+// requests' operatorOf), and it is the field the broker's own rule for a restricted member reads
+// (GrantsForApprover's notOwn), so the two agree on which grants are the member's. A grant person
+// approved on another person's session, one the model judge or a person approved in anyone's
+// stead on another session, a group's, and an automatic grant of a pod that acts for no person are
+// none of them, whatever their approver. An empty person has no grant, so a row whose session acts
+// for no person is never anyone's here.
+func memberGrants(ctx context.Context, client *cipher.Client, person string) ([]wire.ApproverGrantResp, error) {
+	listed, err := client.Grants(ctx, person)
+	if err != nil {
+		return nil, err
+	}
+	var grants wire.ApproverGrantsResponse
+	if err := json.Unmarshal(listed, &grants); err != nil {
+		return nil, fmt.Errorf("read %s's grants from the secrets broker: %w", person, err)
+	}
+	own := []wire.ApproverGrantResp{}
+	for _, grant := range grants.Grants {
+		if person != "" && model.CanonicalLogin(grant.Enrollment.Operator) == person {
+			own = append(own, grant)
+		}
+	}
+	return own, nil
 }
 
 // --- GET /api/v1/machine-logins, POST .../{id}/revoke ---

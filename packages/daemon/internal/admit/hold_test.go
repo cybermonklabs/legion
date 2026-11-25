@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -431,6 +432,47 @@ func TestANewerEventThatCreatesNoRecordRefreshesTheHeldSummary(t *testing.T) {
 		t.Fatalf("released LEGION-G = %#v, want it left unrecorded: the newer unlabeling event, not the stale labeled listing, is what release must apply", got)
 	}
 	assertSlots(t, pool, nil)
+}
+
+// A todo event newer than a held, unrecorded key's summary that records nothing because its
+// repository is unread (a person's edit of the issue's repository, applied before GitHub has
+// answered for the new one) is newer information all the same: release finds the held summary
+// older than that event in the copy of Dispatch's issues, which the event wrote first, and records
+// nothing from it. The issue waits for its new repository's recovery. Before, release admitted the
+// issue on the repository the held summary named, and the edit reached no record. The release says
+// so at Info, naming the issue, so a change that ever leaves such an issue with no trace shows.
+func TestAHeldSummaryOlderThanAnAppliedEventRecordsNothingAtItsRelease(t *testing.T) {
+	pool := migratedPool(t)
+	var logs bytes.Buffer
+	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	mirror := blockers.NewMirror(record.NewStore(), testProject)
+
+	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
+		{Key: "LEGION-EDIT", ResolvedRepo: "acme/widgets", Title: "edit", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
+	}, 10, 0, false)
+	if !admission.Held() {
+		t.Fatal("Held() = false after a labelled todo summary behind the stream, want it held")
+	}
+	edit := intake.DispatchIssue{Key: "LEGION-EDIT", ResolvedRepo: "acme/unread", Seq: 3, Type: "issue.updated", Status: "todo", Title: "edit", Rank: "A", HandedOver: true}
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "repository-edited", edit, mirror, admission.engine, admission); err != nil {
+		t.Fatalf("ApplyFact repository-edited: %v", err)
+	}
+	if got := maybeIssue(t, pool, "LEGION-EDIT"); got != nil {
+		t.Fatalf("LEGION-EDIT recorded by an event on a repository GitHub has not been read for = %#v, want none", got)
+	}
+
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10},
+		mirror, admission.engine, admission); err != nil {
+		t.Fatalf("ApplyFact position-reached: %v", err)
+	}
+	if got := maybeIssue(t, pool, "LEGION-EDIT"); got != nil {
+		t.Fatalf("released LEGION-EDIT = %#v, want it unrecorded: the held summary at sequence 2 is older than the edit at sequence 3 the daemon applied", got)
+	}
+	assertSlots(t, pool, nil)
+	const said = "level=INFO msg=\"admission: a held summary is older than an issue fact of the issue the daemon applied after it was held"
+	if line := logs.String(); !strings.Contains(line, said) || !strings.Contains(line, "issue=LEGION-EDIT") {
+		t.Fatalf("the release logged\n%s\nwant an Info line naming LEGION-EDIT whose held summary it found older than an applied fact", line)
+	}
 }
 
 // A root held back from a boot's admission pass keeps the place the line's own order gives it —

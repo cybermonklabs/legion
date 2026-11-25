@@ -552,7 +552,6 @@
     "ProjectGatedStepsInput": "type",
     "PublishedDispatchEvent": "type",
     "PutArchitectureSourceInput": "type",
-    "PutRepoProjectInput": "type",
     "RECEIPT_TIMEOUT_CAUSE": "constant",
     "ROLE_TOPIC_PREFIX": "constant",
     "RebuildArtifactInput": "type",

@@ -37,7 +37,7 @@ func newOriginRig(t *testing.T, rule identity.SignInRule, outside string) *signI
 	t.Helper()
 	rig := newSignInRigFor(t, canonicalOrigin, rule, rigDomain)
 	rig.options.OutsideOrigin = outside
-	ctx, err := BuildAppContext(rig.options)
+	ctx, err := BuildAppContext(withDocuments(t, rig.options))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -129,12 +129,12 @@ func whoamiAt(t *testing.T, outside string) (int, string) {
 		t.Fatalf("seed alice: %v", err)
 	}
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey, People: people, Store: database, Lifetime: t.Context(),
 		Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		ServerURL:     canonicalOrigin,
 		OutsideOrigin: outside,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

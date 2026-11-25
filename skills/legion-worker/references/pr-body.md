@@ -49,7 +49,7 @@ GitHub refuses a body over 65,536 characters: past about 48,000, link evidence r
 
 ## The brief for the human
 
-The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true after every push. At each round the reviewer writes `Look at first`, and `Not proven / risk`, copying word for word every claim recorded as unproven (the tester's `failures`, its own review, a proof-check comment). A requirement there is unmet, unless only the deploy can show it and the plan names its observation. A stale `Outcome` is a finding against the implementer; the merger rewrites nothing.
+The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true after every push. At each round the reviewer writes `Look at first`, and `Not proven / risk`, copying word for word every claim recorded as unproven (the tester's `failures`, its own review). A requirement there is unmet, unless only the deploy can show it and the plan names its observation. A stale `Outcome` is a finding against the implementer; the merger rewrites nothing.
 
 ## What a result is
 

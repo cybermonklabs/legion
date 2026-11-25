@@ -227,6 +227,7 @@ var nearCopyMarkedDuplicates = []string{
 }
 
 func TestNearCopyRefusalReplay(t *testing.T) {
+	t.Parallel()
 	path := os.Getenv("DISPATCH_NEARCOPY_CORPUS")
 	if path == "" {
 		t.Skip("DISPATCH_NEARCOPY_CORPUS must name a file scripts/near-copy-replay.sh wrote")

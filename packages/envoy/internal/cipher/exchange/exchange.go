@@ -1299,7 +1299,7 @@ func LaunchedBy(accountPrincipal, launcher string) string {
 // sessionRule is the one sentence that says what a session name may be, so an entry refused at
 // build time and a request refused at exchange time are refused in the same words, and the cap it
 // quotes is the cap ValidSession applies.
-var sessionRule = fmt.Sprintf("a session name is printable, carries no whitespace, and is at most %d bytes", MaxSessionBytes)
+var sessionRule = fmt.Sprintf("a session name is printable, carries no whitespace, '*' or '>', and is at most %d bytes", MaxSessionBytes)
 
 // resolveSession answers the session claim for an entry whose fixed session is fixed and a request
 // that named named, where identity names who is asking. An entry that fixes a session answers it
@@ -1326,12 +1326,16 @@ func resolveSession(fixed, named, identity string) (string, error) {
 }
 
 // ValidSession reports whether name is usable as a session claim: UTF-8, printable, with no
-// whitespace and at most MaxSessionBytes. A pod-session registration of a name it refuses is
-// refused before it is written (Registration), so no registration names one, and a release of
-// registrations (oauthstore.Store.ReleasePodSessions) drops such a name as one that matches
-// nothing rather than refusing it.
+// whitespace, no '*' or '>', and at most MaxSessionBytes. A '*' or a '>' would make the session's
+// relay subject (bus.DeliverSubject) a NATS wildcard over every session's, which a relay socket of
+// that session would subscribe. A '.' is taken: a person's sign-in trades under a name that holds
+// the person's address (cipherclient.SessionFor), and the NATS grant and the relay socket hold a
+// session to one subject token themselves (natsgrant.SessionToken). A pod-session registration of
+// a name it refuses is refused before it is written (Registration), and a release of registrations
+// (oauthstore.Store.ReleasePodSessions) drops such a name as one that matches nothing rather than
+// refusing it.
 func ValidSession(name string) bool {
-	if name == "" || len(name) > MaxSessionBytes || !utf8.ValidString(name) {
+	if name == "" || len(name) > MaxSessionBytes || !utf8.ValidString(name) || strings.ContainsAny(name, "*>") {
 		return false
 	}
 	for _, r := range name {

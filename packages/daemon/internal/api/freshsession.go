@@ -440,9 +440,11 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// owes a task keeps it — the resume sends that one — and an architect is never started
 	// through a phase at all. The daemon's own delivery of a relaunch's record is no task it
 	// owes (supervise.HoldsTask), so a claim holding that alone is read as owing nothing, and
-	// the phase's task takes its place (supervise's queue).
+	// the phase's task takes its place (supervise's queue). Nor is a task of news of the approved
+	// design alone (supervise.HoldsWork): the phase's task is restarted beside it, and waits behind
+	// it until a turn has taken it.
 	status = http.StatusOK
-	if !supervise.HoldsTask(m.Claim().Pending) {
+	if !supervise.HoldsWork(m.Claim().Pending) {
 		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {
 			status = phaseStatus
 			if refusal != "" {

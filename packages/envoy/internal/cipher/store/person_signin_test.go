@@ -239,7 +239,7 @@ func TestRevokingASignInEndsTheTokensMintedUnderIt(t *testing.T) {
 	}
 }
 
-// A sign-in row from before migration 0041 records no account, and might be any account's. A trade
+// A sign-in row from before migration 0042 records no account, and might be any account's. A trade
 // under its key never gives it one: it ends the row, deleting it, ends every live token already
 // traded on that person's key, and inserts a row of its own recording the trade's account, all in
 // its transaction, and says so (the answer the caller ends the row's credential by). The person's
@@ -254,7 +254,7 @@ func TestATradeUnderARowRecordingNoAccountEndsItAndRecordsItsOwn(t *testing.T) {
 	var before string
 	if err := st.Pool.QueryRow(ctx, `insert into person_signins (person, thumbprint, machine_account) values ($1, $2, $3) returning id::text`,
 		signInPerson, signInBoxOne, signInMachine).Scan(&before); err != nil {
-		t.Fatalf("a sign-in from before migration 0041: %v", err)
+		t.Fatalf("a sign-in from before migration 0042: %v", err)
 	}
 	if err := record(t, st, signInPerson, signInBoxTwo, signInMachine); err != nil {
 		t.Fatalf("record(%s, %s): %v", signInPerson, signInBoxTwo, err)

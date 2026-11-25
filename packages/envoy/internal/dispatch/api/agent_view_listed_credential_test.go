@@ -117,38 +117,43 @@ func (rig *listedCredentialRig) watched(t *testing.T, state, who string, header 
 // TestARestrictedMembersNoListTokenWatchesNoSessionThatReadAProjectMadePrivate: the content rule
 // passes a restricted member's own session with no listener list only to a credential that sees
 // every project its person sees (access.SessionContentClause), since nothing else bounds what the
-// session read. A restricted member's credential is held to its list for every project, and one
-// that lists none sees only the public projects the person is named on. bob, a restricted member,
-// is named on PUB and P2, both public; his session comments on PUB's issue under a broker token
-// listing PUB, and reads P2's issue under one listing P2, which records nothing, and bob uploads a
-// file to its conversation. bob's personal token that lists no project watches the session while
-// P2 is public. carol makes P2 private, with bob still on its list, so no pair is recorded: bob at
-// his browser still watches the session and reads its file, and the token that lists no project,
-// which reads P2's issue as missing, gets the no-responder verdict and reads the file as one nobody
-// holds.
+// session read. A restricted member's credential is held to its list for every project, and holds
+// exactly one project (R16): no mint makes one that lists none, and one that a mint before that rule
+// made acts for nobody (personalTokenActor). bob, a restricted member, is named on PUB and P2, both
+// public; his session comments on PUB's issue under a broker token listing PUB, and reads P2's issue
+// under one listing P2, which records nothing, and bob uploads a file to its conversation. bob's
+// personal token that lists no project, written as such a mint wrote it, reads neither the
+// session's file nor P2's issue while P2 is public, 403 RESTRICTED_MEMBER. carol makes P2 private,
+// with bob still on its list, so no pair is recorded: bob at his browser still watches the session
+// and reads its file, and the token that lists no project is refused as before.
 //
-// Control: the guard as it was (a credential that lists no project passes, `not ($2 ? 'lists')` in
-// migration 20261121151307's function), and the token is relayed the session's replay.
+// Control: let a restricted owner's token act whatever it lists (personalTokenActor not refusing a
+// list of other than one project), and its first read answers 200 and the row fails.
 func TestARestrictedMembersNoListTokenWatchesNoSessionThatReadAProjectMadePrivate(t *testing.T) {
 	rig := newListedCredentialRig(t)
-	// bob is named on PUB and P2 alone, so a credential of his that lists nothing sees what he sees
-	// while P2 is public.
+	// bob is named on PUB and P2 alone, so a credential of his that lists nothing would see what he
+	// sees while P2 is public.
 	rig.seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/people/"+seedBob, nil, http.StatusOK)
 	rig.seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/access/people/"+seedBob, nil, http.StatusOK)
 	rig.seed.asSessionOf(t, seedBob, listedCredentialSession, seedPublic, http.MethodPost, "/api/v1/issues/"+rig.seed.issue[seedPublic]+"/comments",
 		map[string]any{"body": "Done on PUB."}, http.StatusCreated)
 	rig.seed.asSessionOf(t, seedBob, listedCredentialSession, listedCredentialProject, http.MethodGet, "/api/v1/issues/"+rig.issue, nil, http.StatusOK)
 	rig.upload(t)
-	unlisted := withBearer(rig.mint(t, "bob's token that lists no project", []string{}))
-	rig.watched(t, "P2 public", "bob's token that lists no project", unlisted, agentViewResponding)
+	unlisted := withBearer(personalTokenListing(t, rig.seed.database, seedBob, nil, model.ScopePerson))
+	refused := func(state string) {
+		t.Helper()
+		for _, path := range []string{rig.target, "/api/v1/issues/" + rig.issue} {
+			if got := rig.read(t, unlisted, path); got != http.StatusForbidden {
+				t.Errorf("%s, bob's token that lists no project reads %s as %d, want 403: a restricted member's token lists exactly one project", state, path, got)
+			}
+		}
+	}
+	refused("P2 public")
 
 	rig.seed.setVisibility(t, listedCredentialProject, model.ProjectPrivate)
 	const state = "P2 made private, bob on its list"
-	if got := rig.read(t, unlisted, "/api/v1/issues/"+rig.issue); got != http.StatusNotFound {
-		t.Fatalf("%s, bob's token that lists no project reads P2's issue as %d, want 404: the row proves nothing", state, got)
-	}
 	rig.watched(t, state, "bob at his browser", asUser(seedBob), agentViewResponding)
-	rig.watched(t, state, "bob's token that lists no project", unlisted, agentViewHidden)
+	refused(state)
 }
 
 // TestARestrictedMembersTokenThatListsFewerProjectsWatchesNoUnlistedSessionOfHis: bob, a restricted
@@ -156,12 +161,14 @@ func TestARestrictedMembersNoListTokenWatchesNoSessionThatReadAProjectMadePrivat
 // a broker token listing PRIV and reads P2's issue under one listing P2; its listener sent no list.
 // The read of a public project records nothing. bob at his browser watches the session and reads
 // its file; his personal token that lists PRIV alone, which sees every private project bob sees but
-// not P2, gets the no-responder verdict and reads the file as one nobody holds: a restricted
-// member's credential is held to its list for public projects too, so a session with no list
-// passes only a credential that sees every project its person sees.
+// not P2, reads the file as one nobody holds: a restricted member's credential is held to its list
+// for public projects too, so a session with no list passes only a credential that sees every
+// project its person sees. The token watches no agent at all: it holds no scope (a restricted
+// member's token, R16), and the view needs the person scope, so its subscribe is refused 403
+// OAUTH_SCOPE_REQUIRED.
 //
 // Control: the credential tested on private projects alone (every private project the viewer's
-// person sees is one it sees), and the PRIV token is relayed the session's replay.
+// person sees is one it sees), and the PRIV token reads the session's file.
 func TestARestrictedMembersTokenThatListsFewerProjectsWatchesNoUnlistedSessionOfHis(t *testing.T) {
 	rig := newListedCredentialRig(t)
 	rig.seed.asSessionOf(t, seedBob, listedCredentialSession, seedPrivate, http.MethodPost, "/api/v1/issues/"+rig.seed.issue[seedPrivate]+"/comments",
@@ -170,5 +177,13 @@ func TestARestrictedMembersTokenThatListsFewerProjectsWatchesNoUnlistedSessionOf
 	rig.upload(t)
 	const state = "PRIV private, P2 public"
 	rig.watched(t, state, "bob at his browser", asUser(seedBob), agentViewResponding)
-	rig.watched(t, state, "bob's token that lists PRIV alone", withBearer(rig.mint(t, "bob's token that lists PRIV", []string{seedPrivate})), agentViewHidden)
+	token := withBearer(rig.mint(t, "bob's token that lists PRIV", []string{seedPrivate}))
+	if got, nobody := rig.read(t, token, rig.target), rig.read(t, token, rig.absent); got != http.StatusNotFound || got != nobody {
+		t.Errorf("%s, bob's token that lists PRIV alone reads bob's session's file as %d, want what one nobody holds answers, %d", state, got, nobody)
+	}
+	client := rig.seed.dialLive(t, rig.url, token)
+	client.send(t, liveSubscribe("v", agentView(listedCredentialSession), ""))
+	if refusal, ok := client.next(t, eventFeedWait, "bob's token's agent view").(LiveError); !ok || refusal.Code != codeScopeRequired {
+		t.Errorf("%s, bob's token that lists PRIV alone subscribes to bob's session's view as %+v, want %s", state, refusal, codeScopeRequired)
+	}
 }

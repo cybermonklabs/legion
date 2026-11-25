@@ -205,16 +205,21 @@ const ErrorWireSchema = z.object({
  * `.extend` drops anything not declared here, so a field the listener sends and this schema does
  * not know never reaches a caller.
  *
- * `recipient`, `recipient_state`, `state`, `last_seen` and `duplicate` are a send's
+ * `recipient`, `recipient_state`, `state` and `last_seen` are a send's
  * (`listenerwire.SendResponse`). `recipient_state` is the target's registry state and
  * stays the strict three-value enum every deployed plugin parses. `state` is what the listener's
  * connection check found: `connected`, or `stopped` when no plugin of the target holds its relay
  * subject, so the message waits on the session's topic. It is read as a string rather than a
  * closed pair, as this file reads a delivery answer's `reason`, so a word a later listener adds
  * still parses: only `stopped` is stopped, and anything else is the connected reading every
- * release gave before the state existed. `duplicate` says the listener already stored a send
- * under this target and idempotency key, so this one stored nothing new; absent reads as false,
- * as an older listener's answer does.
+ * release gave before the state existed. `duplicate` says the listener already stored another
+ * request's copy of a send under this target and idempotency key, or of a publish under this
+ * idempotency key (a topic publish, or a role send's forward to its holder), so this one stored
+ * nothing new; a current listener then answers the stored copy's envelope where it is this
+ * caller's own, and otherwise the key-taken answer (`KeyTakenWireSchema`) to a request that names
+ * it or the envelope it built for the repeat to one that does not, and an older listener the
+ * envelope it built for the repeat. Absent reads as false, and an older listener's publish answer
+ * never carries it.
  *
  * `holder` and `holder_state` are a role publish's, under the two names every role answer uses
  * (`listenerwire.PublishResponse`). A publish to a topic the stream captures stores one copy that
@@ -266,6 +271,69 @@ const PublishResponseSchema = EnvelopeResponseSchema.extend({
    *  release, which keeps the copy for a time it does not name. */
   kept_until: z.number().int().optional(),
 });
+
+/**
+ * The request header in which a send or a publish names the answers this client reads beyond the
+ * whole envelope, and the token that names the key-taken answer (`listenerwire.ReadsHeader` and
+ * `listenerwire.ReadsKeyTaken`). The listener gives the key-taken answer only to a request that
+ * names it, and a request that does not gets the envelope the listener built for it, with
+ * `duplicate`, which every client release parses. This client names it on a send or a publish
+ * that names its source session (`RequestOptions.readsKeyTaken`). One that names none is not
+ * named: the listener cannot tell its own earlier attempt from another sessionless sender's, so
+ * its own retry after a lost answer would read as a key taken by someone else, while its own
+ * envelope with `duplicate` reads as the delivered repeat it most likely is. An older listener
+ * ignores the header.
+ */
+const READS_HEADER = "Envoy-Reads";
+const READS_KEY_TAKEN = "key-taken";
+
+/**
+ * A send's or a publish's answer when its idempotency key is already taken by another sender's
+ * message, to a request that names it (`READS_HEADER`): `200` (or `202` kept) with
+ * `duplicate: true`, the stored message's `event_id`, `issued_at`, `topic` and `dedupe_key`, and
+ * none of what that sender wrote or who it is, whose string fields the listener sends empty
+ * (`requestSender.answer` in `cmd/listener/stored_copy.go`). It is told from a whole answer by its
+ * `payload_summary`, which a whole envelope never sends empty, so the two schemas never both read
+ * one answer.
+ */
+const KeyTakenWireSchema = z.object({
+  event_id: z.string().min(1),
+  topic: z.string(),
+  dedupe_key: z.string(),
+  issued_at: z.number().int(),
+  duplicate: z.literal(true),
+  payload_summary: z.literal("").optional(),
+});
+
+/**
+ * The result of a send or a publish whose idempotency key another sender's message already holds:
+ * Envoy stored nothing for this caller, so its message was not delivered, and says only that the
+ * key is taken: that message's event id, topic and when it was stored. Sending the message again
+ * under a new idempotency key delivers it. `keyTaken` tells it from a delivered result, which
+ * never carries it.
+ */
+export type KeyTakenResult = {
+  readonly keyTaken: {
+    readonly eventId: string;
+    readonly topic: string;
+    readonly issuedAt: number;
+  };
+  readonly delivered: false;
+};
+
+/** The key-taken result raw reads as, or undefined when raw is not that answer. */
+function keyTakenOf(raw: unknown): KeyTakenResult | undefined {
+  const taken = KeyTakenWireSchema.safeParse(raw);
+  if (!taken.success) return undefined;
+  return {
+    keyTaken: {
+      eventId: taken.data.event_id,
+      topic: taken.data.topic,
+      issuedAt: taken.data.issued_at,
+    },
+    delivered: false,
+  };
+}
 
 export type EnvoyFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -670,6 +738,8 @@ export type SendResult = {
   readonly lastSeen?: number;
   /** The listener already held a send under this target and idempotency key: delivered once. */
   readonly duplicate: boolean;
+  /** Never set on a delivered send: see {@link KeyTakenResult}. */
+  readonly keyTaken?: undefined;
 };
 
 export type PublishResult = {
@@ -709,6 +779,8 @@ export type PublishResult = {
    * drops it. Absent from a listener of an earlier release, which names no time and sends no
    * such message. */
   readonly keptUntil?: number;
+  /** Never set on a delivered publish: see {@link KeyTakenResult}. */
+  readonly keyTaken?: undefined;
 };
 
 /**
@@ -872,8 +944,11 @@ export type EnvoyClient = {
   readonly subscribe: (input: SubscribeInput) => Promise<SubscribeResult>;
   readonly unsubscribe: (input: UnsubscribeInput) => Promise<void>;
   readonly getInterest: (sessionID: string) => Promise<Interest>;
-  readonly send: (input: SendInput) => Promise<SendResult>;
-  readonly publish: (input: PublishInput) => Promise<PublishResult>;
+  /** The send's result, or {@link KeyTakenResult} when another sender's message already holds its
+   *  idempotency key, so nothing was delivered for this caller. */
+  readonly send: (input: SendInput) => Promise<SendResult | KeyTakenResult>;
+  /** The publish's result, or {@link KeyTakenResult} as for a send. */
+  readonly publish: (input: PublishInput) => Promise<PublishResult | KeyTakenResult>;
   /**
    * Deletes the session's registry entry. With `clientInstanceID` the listener deletes the entry
    * only when it carries the same instance id or none, so a departing client instance never
@@ -929,6 +1004,9 @@ type RequestOptions = {
    * never acted as would trade for a name the broker refuses.
    */
   readonly actingSession?: string;
+  /** Whether the call names the key-taken answer as one it reads (`READS_HEADER`): a send or a
+   *  publish that names its source session. */
+  readonly readsKeyTaken?: boolean;
 };
 
 /** One attempt's outcome: the listener's status and body; no answer, and why; or nothing that
@@ -1062,12 +1140,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     }
     if (unminted !== undefined && response.status === 401) {
       // The listener wanted the credential this machine could not mint: a listener that requires
-      // one answers a request without it 401 and nothing else, at its auth gate before any route
-      // runs (`apiauth.go`). That is no answer about the call itself, and nothing the call asked
-      // was done, so it retries as an unanswered attempt does — the broker may have come back —
-      // but is never one the listener may have acted on, and the error names both halves. A 403
-      // is the listener's own refusal of what the call asked (a send's capability, a denied
-      // publish), and stands as its answer.
+      // one answers a request without it 401 at its auth gate, before any route runs
+      // (`apiauth.go`), once its /v1 has opened; while it starts, its starting gate answers every
+      // request 503 ahead of that auth gate (`starting_gate.go`), which this client reads as any
+      // 503. The 401 is no answer about the call itself, and nothing the call asked was done, so it
+      // retries as an unanswered attempt does — the broker may have come back — but is never one
+      // the listener may have acted on, and the error names both halves. A 403 is the listener's
+      // own refusal of what the call asked (a send's capability, a denied publish), and stands as
+      // its answer.
       return {
         notSent: new Error(
           `${init.method ?? "GET"} ${shown(url)} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
@@ -1155,7 +1235,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       path,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(options?.readsKeyTaken === true ? { [READS_HEADER]: READS_KEY_TAKEN } : {}),
+        },
         body: JSON.stringify(body),
       },
       options
@@ -1238,7 +1321,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // attempt got: a first attempt can store the message and lose its answer, and the retry
       // then find the target gone. A last attempt that reached no route of the listener (its
       // auth gate's 401 to a request sent without the credential that could not be minted)
-      // stored nothing, so where no earlier attempt may have, the send was refused.
+      // stored nothing, so where no earlier attempt may have, the send was refused. A listener
+      // still starting answers such a request 503 from its starting gate instead, which reads as
+      // an attempt it may have acted on, so that send ends unconfirmed.
       let unanswered = false;
       let notSent = false;
       // The attempts this send made, which the unconfirmed error names: fewer than the client's
@@ -1268,11 +1353,16 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             },
             ...(input.sourceSessionID === undefined || input.sourceSessionID === ""
               ? {}
-              : { actingSession: input.sourceSessionID }),
+              : { actingSession: input.sourceSessionID, readsKeyTaken: true }),
           }
         );
-        // A 2xx whose body does not parse is the listener's word that cannot be read.
-        response = EnvelopeResponseSchema.parse(answerJson(answer, "POST", "/v1/messages/send"));
+        // A 2xx whose body does not parse is the listener's word that cannot be read. An answer
+        // that says only that another sender's message holds the key is read before the whole
+        // envelope, which it never is (KeyTakenWireSchema).
+        const raw = answerJson(answer, "POST", "/v1/messages/send");
+        const taken = keyTakenOf(raw);
+        if (taken !== undefined) return taken;
+        response = EnvelopeResponseSchema.parse(raw);
       } catch (error) {
         const refused = notSent || (error instanceof EnvoyApiError && error.details.status < 500);
         if (refused && !unanswered) throw error;
@@ -1292,29 +1382,30 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     },
     publish: async (input) => {
       const idempotencyKey = input.idempotencyKey ?? crypto.randomUUID();
-      const response = PublishResponseSchema.parse(
-        answerJson(
-          await post(
-            "/v1/messages/publish",
-            {
-              source: input.source ?? "agent",
-              ...sourceSession(input.sourceSessionID),
-              topic: input.topic,
-              message: input.message,
-              ...(input.payload === undefined ? {} : { payload: input.payload }),
-              idempotency_key: idempotencyKey,
-              ...messageMetadata(input),
-              // Omitted unless the caller set it, so an older listener sees an unchanged request.
-              ...(input.keep === undefined ? {} : { keep: input.keep }),
-            },
-            input.sourceSessionID === undefined || input.sourceSessionID === ""
-              ? {}
-              : { actingSession: input.sourceSessionID }
-          ),
-          "POST",
-          "/v1/messages/publish"
-        )
+      const raw = answerJson(
+        await post(
+          "/v1/messages/publish",
+          {
+            source: input.source ?? "agent",
+            ...sourceSession(input.sourceSessionID),
+            topic: input.topic,
+            message: input.message,
+            ...(input.payload === undefined ? {} : { payload: input.payload }),
+            idempotency_key: idempotencyKey,
+            ...messageMetadata(input),
+            // Omitted unless the caller set it, so an older listener sees an unchanged request.
+            ...(input.keep === undefined ? {} : { keep: input.keep }),
+          },
+          input.sourceSessionID === undefined || input.sourceSessionID === ""
+            ? {}
+            : { actingSession: input.sourceSessionID, readsKeyTaken: true }
+        ),
+        "POST",
+        "/v1/messages/publish"
       );
+      const taken = keyTakenOf(raw);
+      if (taken !== undefined) return taken;
+      const response = PublishResponseSchema.parse(raw);
       return {
         envelope: response,
         ...(response.holder === undefined ? {} : { holder: response.holder }),

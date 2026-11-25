@@ -964,3 +964,70 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 		t.Fatalf("New refused the same options with the address function supplied: %v", err)
 	}
 }
+
+// TestLiveUntilAnswersWhenTheTokenStopsBeingLive: a connection that outlives its request tells a
+// token whose life ended from one the broker ended early by the instant the broker said it would
+// end, since both answer ErrNotActive once they are over. So LiveUntil hands that instant back beside
+// the caller: the answer's 'exp', to the second the broker writes it, and the zero time for an answer
+// that names none. A token the broker does not hold live answers ErrNotActive and no instant, as
+// Live does.
+func TestLiveUntilAnswersWhenTheTokenStopsBeingLive(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	const (
+		dated   = "a-token-the-broker-dated"
+		undated = "a-token-the-broker-named-no-expiry-for"
+		unknown = "a-token-the-broker-never-issued"
+	)
+	answer := liveToken(caller.jkt, time.Hour)
+	rig.broker.Says(dated, answer)
+	decided, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, dated))
+	if err != nil {
+		t.Fatalf("LiveUntil of a live token: %v", err)
+	}
+	if want := time.Unix(answer.ExpiresAt, 0); !until.Equal(want) {
+		t.Fatalf("LiveUntil answered the expiry %v, want the answer's exp %v", until, want)
+	}
+	if decided.Session != answer.Session || decided.Person != answer.Person {
+		t.Fatalf("LiveUntil = %+v, want the caller Live answers for the same token", decided)
+	}
+
+	noExpiry := liveToken(caller.jkt, time.Hour)
+	noExpiry.ExpiresAt = 0
+	rig.broker.Says(undated, noExpiry)
+	if _, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, undated)); err != nil || !until.IsZero() {
+		t.Fatalf("LiveUntil of a token with no exp = %v, %v; want the zero time and no error", until, err)
+	}
+
+	if decided, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, unknown)); !errors.Is(err, ciphertoken.ErrNotActive) || !until.IsZero() || !reflect.DeepEqual(decided, ciphertoken.Caller{}) {
+		t.Fatalf("LiveUntil of a token the broker does not hold = %+v, %v, %v; want no caller, the zero time and ErrNotActive", decided, until, err)
+	}
+}
+
+// TestLiveUntilSpendsNoAddressBucket: LiveUntil is the recheck of a connection whose opening
+// request Verify already admitted with its proof (the listener's relay socket), so it introspects
+// with the source address's bucket spent, where Live and Verify are refused ErrRateLimited: a
+// stranger who empties the bucket of an address, which every client behind one load balancer
+// shares, cannot close the sockets opened from it. Control: Live, with the same bucket spent, is
+// refused ErrRateLimited and reaches no broker.
+func TestLiveUntilSpendsNoAddressBucket(t *testing.T) {
+	rig := newRig(t, func(o *ciphertoken.Options) {
+		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
+	})
+	caller := newSigner(t)
+	rig.broker.Says("the-token-that-spends-the-bucket", liveToken(caller.jkt, time.Hour))
+	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-token-that-spends-the-bucket")); err != nil {
+		t.Fatalf("the request that spends the bucket: %v", err)
+	}
+	rig.broker.Says("a-socket-token", liveToken(caller.jkt, time.Hour))
+	if _, _, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, "a-socket-token")); err != nil {
+		t.Fatalf("LiveUntil with the address's bucket spent = %v, want the broker's answer", err)
+	}
+	if rig.broker.Count() != 2 {
+		t.Fatalf("LiveUntil cost %d introspections in all, want 2", rig.broker.Count())
+	}
+	rig.broker.Says("a-websocket-token", liveToken(caller.jkt, time.Hour))
+	if _, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, "a-websocket-token")); !errors.Is(err, ciphertoken.ErrRateLimited) {
+		t.Fatalf("Live with the address's bucket spent = %v, want ErrRateLimited", err)
+	}
+}

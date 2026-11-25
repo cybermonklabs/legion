@@ -61,7 +61,7 @@ func runEntry(t *testing.T, entry, device string, stubs map[string]string) diskR
 		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(stub), 0o700))
 	}
 	require.Equal(t, 1, strings.Count(entry, dataDevice), "the entry names the device once")
-	cmd := shellCommand(t, "-c", strings.ReplaceAll(entry, dataDevice, device))
+	cmd := gcp.ShellCommand(t, "-c", strings.ReplaceAll(entry, dataDevice, device))
 	cmd.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + systemPath(), "RECORD=" + record}
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -115,7 +115,7 @@ func image(t *testing.T, size int64) string {
 func ext4(t *testing.T) string {
 	t.Helper()
 	path := image(t, 16<<20)
-	out, err := exec.Command(tool(t, "mkfs.ext4"), "-q", "-F", "-b", "4096", path).CombinedOutput()
+	out, err := exec.CommandContext(gcp.ScriptContext(t), tool(t, "mkfs.ext4"), "-q", "-F", "-b", "4096", path).CombinedOutput()
 	require.NoError(t, err, string(out))
 	return path
 }
@@ -144,7 +144,7 @@ func zeroedFirstMiB(t *testing.T) string {
 // none.
 func blkidExit(t *testing.T, disk string) int {
 	t.Helper()
-	err := exec.Command(tool(t, "blkid"), "-p", disk).Run()
+	err := exec.CommandContext(gcp.ScriptContext(t), tool(t, "blkid"), "-p", disk).Run()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		return exit.ExitCode()

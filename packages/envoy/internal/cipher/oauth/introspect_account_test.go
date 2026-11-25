@@ -187,7 +187,7 @@ func TestATokenRecordsWhenItsCredentialWasMade(t *testing.T) {
 	}
 }
 
-// writeWithoutTheAccountGuard runs statement with migration 0042's trigger on oauth_access_tokens
+// writeWithoutTheAccountGuard runs statement with migration 0043's trigger on oauth_access_tokens
 // turned off for its own transaction alone: it stands in for a token row written before the
 // broker recorded the account on its tokens, whose shape the trigger, which refuses only a later
 // change of a recorded account, never lets any statement make now.

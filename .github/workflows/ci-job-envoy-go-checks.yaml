@@ -56,6 +56,8 @@ jobs:
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
     timeout-minutes: 30
+    env:
+      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -115,6 +117,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -174,6 +178,19 @@ jobs:
       - name: Check the web app's display-tree fixture is up to date
         run: go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
         working-directory: packages/envoy
+      # pmdoc's readers on tables in a build made without inlining, the mode of every debugger
+      # build: the table tests read through the block reader, and the display fixture test reads
+      # the display corpus, whose tables go through the display reader. goldmark builds both
+      # readers while pmdoc's package variables are initialized, and it calls into pmdoc there
+      # through the goldmark.Extender interface (lazyAwareTable.Extend,
+      # internal/dispatch/pmdoc/table.go), which Go's initialization order does not look through.
+      # So a reader that copied a variable of pmdoc there could be handed nil in a build without
+      # inlining, where inlining set the same variable at link time in every other build: each
+      # table then failed to read in the first build and read in the second. No other step builds
+      # pmdoc without inlining.
+      - name: Test pmdoc's tables in a build without inlining
+        run: go test -count=1 -gcflags=all=-l -run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./internal/dispatch/pmdoc/
+        working-directory: packages/envoy
       - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
         run: bash scripts/dev-broker.test.sh
         working-directory: packages/envoy
@@ -209,6 +226,9 @@ jobs:
         working-directory: packages/envoy
       - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
         run: bash scripts/legacy-subjects-gate.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
+        run: bash scripts/legacy-subjects-purge.test.sh
         working-directory: packages/envoy
       - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
         run: bash loadtest/run-step.test.sh
@@ -276,7 +296,19 @@ jobs:
       # reads off the module's own build constraints, so a file under a tag that lands later, or
       # under a negated one, is vetted too rather than passed over in silence. One
       # darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
+      # Its objects go to a build cache of their own, the GOCACHE in the step's env, which the
+      # go-envoy-darwin-vet family holds (.github/workflows/ci-caches.yaml fills it again on every
+      # push to main): restored from nothing, the vet compiled the standard library and every
+      # dependency for darwin on every run, 137.9 s of job 137308591036 and 172 s at the median of
+      # 550 pull request runs. Kept out of go-envoy, whose entry every envoy job downloads.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-build-darwin
+          key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-darwin-vet-{0}-{1}-', runner.os, runner.arch) }}
       - name: Vet envoy for darwin, its tagged tests included
+        env:
+          GOCACHE: ${{ runner.temp }}/go-build-darwin
         run: |
           flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
           while IFS= read -r flag; do

@@ -14,6 +14,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 )
 
 // TokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
@@ -97,8 +99,11 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 
 // discoverCodeFlow reads issuer's discovery document. An issuer whose document names no
 // authorization_endpoint or token_endpoint offers no sign-in, and fails discovery. One that names
-// no revocation_endpoint is accepted, and Revoke fails against it. The config every grant starts
-// from, the code exchanges', Refresh's and CheckClient's, authenticates as tokenAuthStyle says.
+// no revocation_endpoint is accepted, and Revoke fails against it. One whose revocation_endpoint
+// is not a string, a null included (endpointString), or whose
+// token_endpoint_auth_methods_supported is not an array of strings (authMethods), fails discovery.
+// The config every grant starts from, the code exchanges', Refresh's and CheckClient's,
+// authenticates as tokenAuthStyle says.
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
@@ -109,8 +114,8 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", issuer)
 	}
 	var metadata struct {
-		RevocationEndpoint string   `json:"revocation_endpoint"`
-		TokenAuthMethods   []string `json:"token_endpoint_auth_methods_supported"`
+		RevocationEndpoint endpointString `json:"revocation_endpoint"`
+		TokenAuthMethods   authMethods    `json:"token_endpoint_auth_methods_supported"`
 	}
 	if err := provider.Claims(&metadata); err != nil {
 		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint and token_endpoint_auth_methods_supported: %w", issuer, err)
@@ -124,15 +129,73 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 			Endpoint:     endpoint,
 			Scopes:       signInScopes,
 		},
-		revocationURL: metadata.RevocationEndpoint,
+		revocationURL: string(metadata.RevocationEndpoint),
 	}, nil
+}
+
+// endpointString is a discovery document's revocation_endpoint, read only as RFC 8414 section 2
+// writes it, a JSON string. Decoding into a string alone is not that check: encoding/json reads a
+// null into a string as the empty one, which would read as a document naming no revocation
+// endpoint. A document with no such member leaves it empty.
+type endpointString string
+
+// UnmarshalJSON reads data as a JSON string, and fails on anything else, a null included.
+func (s *endpointString) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return errors.New("revocation_endpoint is null, not a string")
+	}
+	var endpoint string
+	if err := json.Unmarshal(data, &endpoint); err != nil {
+		return fmt.Errorf("revocation_endpoint is not a string: %w", err)
+	}
+	*s = endpointString(endpoint)
+	return nil
+}
+
+// authMethods is a discovery document's token_endpoint_auth_methods_supported, read only as RFC
+// 8414 section 2 writes it, a JSON array of strings. Decoding into a []string alone is not that
+// check: encoding/json reads a null as no array and a null element as the empty string. A
+// document with no such member leaves it nil.
+type authMethods []string
+
+// UnmarshalJSON reads data as a JSON array whose every element is a string, and fails on anything
+// else, a null or an array holding a null included.
+func (m *authMethods) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return errors.New("token_endpoint_auth_methods_supported is null, not an array of strings")
+	}
+	var elements []*string
+	if err := json.Unmarshal(data, &elements); err != nil {
+		return fmt.Errorf("token_endpoint_auth_methods_supported is not an array of strings: %w", err)
+	}
+	methods := make(authMethods, len(elements))
+	for n, element := range elements {
+		if element == nil {
+			return fmt.Errorf("token_endpoint_auth_methods_supported[%d] is null, not a string", n)
+		}
+		methods[n] = *element
+	}
+	*m = methods
+	return nil
 }
 
 // tokenAuthStyle is how the client sends its secret to the token endpoint, from the issuer's
 // token_endpoint_auth_methods_supported (RFC 8414 section 2): HTTP Basic when the list names
-// client_secret_basic, whatever else it names (Basic is RFC 8414's default and the method RFC 6749
-// section 2.3.1 requires of every issuer); else the form when it names client_secret_post. Either
+// client_secret_basic, whatever else it names (Basic is RFC 8414's default, and RFC 6749 section
+// 2.3.1 has every issuer support it); else the form when it names client_secret_post. Either
 // makes every grant one request.
+//
+// The list says what the issuer supports, not what it lets each client use. An issuer whose list
+// names client_secret_basic, and that registers each client for one token_endpoint_auth_method
+// (RFC 7591 section 2) and holds it to that method, refuses a client registered for
+// client_secret_post alone at every grant, with invalid_client and no second request in the form:
+// its exchanges fail, its refreshes read as the issuer unavailable, and CheckClient reports the
+// client rejected. Under a list naming client_secret_post and not client_secret_basic, that client
+// authenticates in one request in the form, and under no list AutoDetect asks again in the form.
+// Cognito documents that its token endpoint takes either style from an app client with a secret.
+// Google's list names both, which says only what its endpoint supports; a probe on 2026-11-21 of
+// the Google Cloud SDK's installed-app client found both accepted, and that every Google client,
+// a web client among them, takes both is an inference no probe has checked.
 //
 // With no list, or a list naming neither, the style stays x/oauth2's AuthStyleAutoDetect: the
 // issuer behind such a document may take the form alone. AutoDetect asks by HTTP Basic and, on
@@ -184,11 +247,19 @@ func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string
 	return issuer.config.AuthCodeURL(state, asks...), nil
 }
 
+// MaxCallbackCode is the longest authorization code, in bytes, a sign-in callback sends a token
+// endpoint through Exchange or OnlineExchange. The code is the callback's query, which whoever
+// holds the browser writes, so each callback refuses a longer one before it calls either:
+// Dispatch's (internal/dispatch/auth, ParseCallback) and the broker's approval page
+// (internal/cipher/approval, ServeCallback).
+const MaxCallbackCode = 2048
+
 // Exchange trades the code the issuer redirected to redirectURL for the signed-in person's ID
 // token and refresh token. The ID token must carry nonce, the value the sign-in that sent the
 // browser to AuthURL bound it to; one carrying another, and a caller naming no nonce, fail with
 // ErrNonce. An issuer that returns no refresh token is refused, since this mode renews the
-// sign-in with one. It fails with ErrIssuerUnavailable while the issuer is not discovered.
+// sign-in with one. It fails with ErrIssuerUnavailable while the issuer is not discovered, and
+// when its token endpoint cannot answer the exchange (exchange).
 func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string) (Session, error) {
 	session, err := f.exchange(ctx, redirectURL, code, nonce)
 	if err != nil {
@@ -203,15 +274,40 @@ func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string
 // exchange is the steps both exchanges share: discover the issuer, trade code for its tokens
 // there with options (the online exchange's PKCE verifier, and none for the other), verify the
 // ID token, and refuse one whose nonce is not the sign-in's with ErrNonce. An empty nonce is
-// refused as well, since it binds the token to no sign-in.
+// refused as well, since it binds the token to no sign-in. The token endpoint's answer decides by
+// its status alone (oauthrefusal.Outage), once it arrived whole: a 5xx, a 408 or a 429, whatever
+// error its body names, an answer whose body was cut off before it read whole (the connection
+// closed or reset, or the token request's own timeout ended the read), and no answer at all are an
+// issuer that could not answer, and match ErrIssuerUnavailable, as Refresh reads them, as the
+// client check reads a cut-off answer and as the broker's minters do (a body read that failed is
+// upstream there). Every other answer is the endpoint answering and fails the exchange
+// as that answer, never as the issuer unavailable: a refusal, a 4xx with or without an OAuth error
+// (whose code, when it names one, is the caller's reason), and a 2xx or 3xx that names an error or
+// holds no token. An exchange that got no whole answer because its own ctx ended (the browser left
+// the callback) fails with ctx's error, since the issuer was not shown unable to answer: the
+// failure's cause is that ctx's end, errors.Is the error ctx.Err names. A cause read from the
+// error alone would not do, since the token request's own timeout fails with an error that also
+// matches context.DeadlineExceeded (net/http's timeoutError) while the caller is still there.
 func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string, options ...oauth2.AuthCodeOption) (Session, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
 		return Session{}, err
 	}
-	token, err := issuer.config.Exchange(f.tokenContext(ctx), code, append(redirectTo(redirectURL), options...)...)
+	answered := &oauthrefusal.Recorder{}
+	token, err := issuer.config.Exchange(oauthrefusal.Record(f.tokenContext(ctx), answered), code, append(redirectTo(redirectURL), options...)...)
 	if err != nil {
-		return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
+		// The recorder reads the status of the answer an error came from, an answer x/oauth2
+		// reports in no *oauth2.RetrieveError among them (a 2xx with no token), and whether its
+		// body read whole, which x/oauth2's error for a cut-off body does not wrap.
+		readErr := answered.ReadErr()
+		whole := answered.Status != 0 && readErr == nil
+		switch {
+		case whole && !oauthrefusal.Outage(answered.Status):
+			return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
+		case !whole && callerGone(ctx, errors.Join(err, readErr)):
+			return Session{}, fmt.Errorf("oidc: exchange code: %w: %w", ctx.Err(), err)
+		}
+		return Session{}, fmt.Errorf("oidc: exchange code: %w: %w", ErrIssuerUnavailable, err)
 	}
 	session, err := f.session(ctx, issuer, token)
 	if err != nil {
@@ -221,6 +317,13 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 		return Session{}, ErrNonce
 	}
 	return session, nil
+}
+
+// callerGone reports whether err, a request's failure with no whole answer, came of ctx ending:
+// ctx has ended, and err matches the error that names how.
+func callerGone(ctx context.Context, err error) bool {
+	cause := ctx.Err()
+	return cause != nil && errors.Is(err, cause)
 }
 
 // OnlineSignIn is one sign-in in online mode, the values the caller generated for it and keeps
@@ -282,7 +385,7 @@ func redirectTo(redirectURL string) []oauth2.AuthCodeOption {
 // the flow has a hosted domain). The ID token must carry signIn's nonce, and fails with ErrNonce
 // when it carries another. A refresh token the issuer returns anyway is dropped, never returned:
 // an online sign-in keeps none. It fails with ErrIssuerUnavailable while the issuer is not
-// discovered.
+// discovered, and when its token endpoint cannot answer the exchange (exchange).
 func (f *CodeFlow) OnlineExchange(ctx context.Context, redirectURL, code string, signIn OnlineSignIn) (Claims, error) {
 	if signIn.Nonce == "" || signIn.Verifier == "" {
 		return Claims{}, errors.New("oidc: an online sign-in needs its nonce and PKCE verifier")
@@ -296,11 +399,11 @@ func (f *CodeFlow) OnlineExchange(ctx context.Context, redirectURL, code string,
 
 // Refresh renews a sign-in with its refresh token, returning the person's claims as the issuer
 // holds them now. Its error matches ErrGrantRefused when the token endpoint answered 400 or 401
-// with the OAuth error invalid_grant (RFC 6749 section 5.2): the refresh token has expired, been
+// with the OAuth error invalid_grant (oauthrefusal.EndsGrant): the refresh token has expired, been
 // revoked, or is not this client's, so the sign-in is over. Every other failure matches
 // ErrIssuerUnavailable and says nothing about the sign-in: the issuer not discovered, no answer or
-// a timeout, a 5xx or a 429, any other OAuth error (invalid_client among them: the client's own
-// configuration, not the person), or an answer without an ID token that verifies.
+// a timeout, a 5xx or a 429, any other status or OAuth error (invalid_client among them: the
+// client's own configuration, not the person), or an answer without an ID token that verifies.
 func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
@@ -308,7 +411,7 @@ func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, e
 	}
 	token, err := issuer.config.TokenSource(f.tokenContext(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token()
 	if err != nil {
-		if grantRefused(err) {
+		if oauthrefusal.EndsGrant(err) {
 			return Session{}, fmt.Errorf("oidc: refresh: %w: %w", ErrGrantRefused, err)
 		}
 		return Session{}, fmt.Errorf("oidc: refresh: %w: %w", ErrIssuerUnavailable, err)
@@ -318,15 +421,6 @@ func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, e
 		return Session{}, fmt.Errorf("oidc: refresh: %w: %w", ErrIssuerUnavailable, err)
 	}
 	return session, nil
-}
-
-// grantRefused reports whether err is the token endpoint's 400 or 401 naming invalid_grant.
-func grantRefused(err error) bool {
-	var retrieve *oauth2.RetrieveError
-	if !errors.As(err, &retrieve) || retrieve.ErrorCode != "invalid_grant" || retrieve.Response == nil {
-		return false
-	}
-	return retrieve.Response.StatusCode == http.StatusBadRequest || retrieve.Response.StatusCode == http.StatusUnauthorized
 }
 
 // Revoke revokes refreshToken at the revocation endpoint the issuer's discovery document names

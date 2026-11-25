@@ -54,7 +54,11 @@ type commentRow struct {
 // what the write states, as graphcensus's readCommentRows reads it for the backfill's own pass: the
 // tick has it in hand, so it reads no event of the log to find it. A row that names its node
 // already is left alone, as the backfill leaves it, and so is a comment one of whose relations is
-// past the store's address bound (CommentInTheStore), which no writer gives a node. The caller
+// past the store's address bound (CommentInTheStore), which no writer gives a node. So is a
+// comment on a conversation document whose session id holds white space: its parties are ones
+// graphstore.PartiesValue refuses (ErrBadParty), so no writer can give it a node, and the
+// backfill skips its row (graphcensus's partiesRefused); a write that stated it would fail the
+// tick's transaction on the same page every time, and the cursor would never move. The caller
 // reads it under the owner locks of those comments (LockCommentOwners), which it takes before, so
 // what it reads is what it writes.
 func CommentsNamingNoNode(ctx context.Context, q graphstore.Queryer, ids []string, causes []int64) (CommentWrite, error) {
@@ -127,6 +131,9 @@ func scanCommentRows(rows pgx.Rows) ([]commentRow, error) {
 			return nil, fmt.Errorf("read the author of comment %s: %w", row.id, err)
 		}
 		row.project, row.parties = graphstore.SessionScope(row.project, session)
+		if _, err := graphstore.PartiesValue(row.parties); err != nil {
+			continue
+		}
 		batch = append(batch, row)
 	}
 	return batch, rows.Err()

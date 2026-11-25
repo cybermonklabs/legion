@@ -1002,13 +1002,7 @@ func placeList(places []string) string {
 // narrows to the blocks the batch dropped itself. A person's own editor is held to neither:
 // settlement retracts the ask of a block that leaves the document there.
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node) error {
-	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), artifactID, target)
-}
-
-// refuseDroppedAskBlocksIn is refuseDroppedAskBlocks reading the document's open asks through q,
-// for a caller that holds a transaction and no Service: the erase's (ReadErasedLiveText).
-func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string, target *pmdoc.Node) error {
-	open, err := openAskBlocksIn(ctx, q, artifactID)
+	open, err := s.openAskBlocks(ctx, artifactID)
 	if err != nil {
 		return err
 	}
@@ -1025,7 +1019,7 @@ func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string,
 // so refusing on it would name the caller a block they never wrote, with advice they cannot act
 // on.
 func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID string, dropped map[string]struct{}) error {
-	open, err := openAskBlocksIn(ctx, s.queryFrom(ctx), artifactID)
+	open, err := s.openAskBlocks(ctx, artifactID)
 	if err != nil {
 		return err
 	}
@@ -1037,9 +1031,9 @@ func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID st
 	return refuseLostAskBlocks(open)
 }
 
-// openAskBlocksIn is the block id of each open ask of the document, read through q.
-func openAskBlocksIn(ctx context.Context, q Queryer, artifactID string) (map[string]struct{}, error) {
-	rows, err := q.Query(ctx, `
+// openAskBlocks is the block id of each open ask of the document.
+func (s *Service) openAskBlocks(ctx context.Context, artifactID string) (map[string]struct{}, error) {
+	rows, err := s.queryFrom(ctx).Query(ctx, `
 		select block_id from asks
 		where block_artifact_id = $1 and state = 'open' and block_id is not null
 	`, artifactID)

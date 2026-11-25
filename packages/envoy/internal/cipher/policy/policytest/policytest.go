@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -77,9 +78,13 @@ func TypeSecret(name, owner, tier, secretType, value string) secrets.LocalSecret
 // holding it: the policy reads and decodes each type secret's value (policy.Current), and refuses
 // one it cannot decode (policy.ReasonValueMalformed). A github-app value names App 123456 and a
 // private key made once for the test binary (fixtureAppKey), built at run time rather than written
-// here. No field holds a credential. It panics for a type ParseValue reads no value of, which is a
-// test bug.
+// here. A github-installations value holds a token of each account FixtureGitHubOwners names
+// (GitHubInstallationsValue). No field holds a credential. It panics for a type ParseValue reads no
+// value of, which is a test bug.
 func TypeValue(secretType string) string {
+	if secretType == policy.TypeGitHubInstallations {
+		return GitHubInstallationsValue()
+	}
 	fields := map[string]string{}
 	switch secretType {
 	case policy.TypeGitHubApp:
@@ -98,6 +103,28 @@ func TypeValue(secretType string) string {
 		panic(fmt.Sprintf("policytest.TypeValue: no value of type %q", secretType))
 	}
 	value, err := json.Marshal(fields)
+	if err != nil {
+		panic(err)
+	}
+	return string(value)
+}
+
+// GitHubInstallationsValue is a github-installations value as a minter outside the broker writes
+// one, at shapeVersion 1: for each account FixtureGitHubOwners names, acme and ada, its
+// installation (41, 42), a token that is no credential ("fixture-token-<account>"), which lapses
+// fifty minutes from now (the least a minter that runs every ten minutes leaves on a token GitHub
+// gives an hour, well past secrets.MintedTokenMargin), contents and metadata at read, and every
+// repository of the installation.
+func GitHubInstallationsValue() string {
+	installations := map[string]any{}
+	for i, account := range strings.Fields(FixtureGitHubOwners) {
+		installations[account] = map[string]any{
+			"installation_id": 41 + i, "token": "fixture-token-" + account,
+			"expires_at":  time.Now().Add(50 * time.Minute).UTC().Format(time.RFC3339),
+			"permissions": map[string]string{"contents": "read", "metadata": "read"}, "repository_selection": "all",
+		}
+	}
+	value, err := json.Marshal(map[string]any{"shapeVersion": 1, "installations": installations})
 	if err != nil {
 		panic(err)
 	}
@@ -219,13 +246,61 @@ func Current(t testing.TB, store *secrets.Local, services ...string) *policy.Cur
 	return current(t, Loader(store, services...))
 }
 
+// Profiles is file, a profiles file's text, as the broker's boot reads it: parsed by
+// policy.ParseProfiles and its requesters read against services (Profiles.CheckRequesters). A file
+// either refuses is a test bug.
+func Profiles(t testing.TB, file string, services ...string) policy.Profiles {
+	t.Helper()
+	profiles, err := policy.ParseProfiles([]byte(file))
+	if err != nil {
+		t.Fatalf("policy.ParseProfiles: %v", err)
+	}
+	if err := profiles.CheckRequesters(services); err != nil {
+		t.Fatalf("Profiles.CheckRequesters: %v", err)
+	}
+	return profiles
+}
+
+// ProfiledCurrent is Current with file as the deployment's profiles file (Profiles), so the
+// policy it loads serves those profiles and refuses each that fails against its source.
+func ProfiledCurrent(t testing.TB, store *secrets.Local, file string, services ...string) *policy.Current {
+	t.Helper()
+	loader := Loader(store, services...)
+	loader.Profiles = Profiles(t, file, services...)
+	return current(t, loader)
+}
+
+// AppProfile is the profile that serves the github-app secret name by its own name, as the
+// broker serves every App it releases (policy.ReasonGitHubAppNoProfile refuses one no profile
+// names): a github block on the accounts TypeSecret's github-owners tag names
+// (FixtureGitHubOwners), with the metadata read GitHub gives every App, and no proxy block.
+func AppProfile(name string) string {
+	return `{"name": "` + name + `", "github": {"accounts": ["acme", "ada"], "permissions": {"metadata": "read"}}}`
+}
+
+// ProfilesFile is the profiles file holding profiles, each one entry's JSON, in order.
+func ProfilesFile(profiles ...string) string {
+	return `{"profiles": [` + strings.Join(profiles, ", ") + `]}`
+}
+
 // MeteredCurrent is Current with the policy's two metrics on registry, as cmd/cipherd/main.go
 // registers them: broker_policy_store_reads_total counted from the first load on
 // (policy.NewStoreReads), and broker_unservable_secrets once that load answered
 // (policy.NewUnservableSecrets).
 func MeteredCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, services ...string) *policy.Current {
 	t.Helper()
-	return Metered(t, Loader(store, services...), registry)
+	return MeteredProfiledCurrent(t, store, registry, "", services...)
+}
+
+// MeteredProfiledCurrent is MeteredCurrent with file as the deployment's profiles file (Profiles),
+// or none for "", as BROKER_PROFILES_FILE is set or not.
+func MeteredProfiledCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, file string, services ...string) *policy.Current {
+	t.Helper()
+	loader := Loader(store, services...)
+	if file != "" {
+		loader.Profiles = Profiles(t, file, services...)
+	}
+	return Metered(t, loader, registry)
 }
 
 // Metered is loader's policy with the policy's two metrics on registry, as MeteredCurrent says,

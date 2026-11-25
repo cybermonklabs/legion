@@ -42,6 +42,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test
       - id: go-cache
@@ -83,8 +85,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 660 + 120 + 120 + 565 = 1,465 s, 24 min 25 s, rounded up to the 25 minutes below.
-    timeout-minutes: 25
+    # 1,080 + 120 + 120 + 565 = 1,885 s, 31 min 25 s, rounded up to the 32 minutes below.
+    timeout-minutes: 32
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
@@ -143,17 +145,21 @@ jobs:
           mkdir -p "$RUNNER_TEMP/weed"
           nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 \
             -volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024 \
+            -master.raftHashicorp -master.raftBootstrap \
             > "$RUNNER_TEMP/weed.log" 2>&1 &
       - name: Wait for the S3-compatible server
         # why: .github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object
         run: .github/scripts/dispatch-browser-wait-for-store.sh
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # 531 x 1.15 = 611 s -> 11 min. 531 s is the maximum of main's 672 full-lane legs from
-        # 2026-11-18 to 2026-11-21 (the census in the notes, at main 75bd096e02). The suite grew
-        # about 10% in rows in those days (1,453 to 1,600) and the step with it, so 11 min is
-        # about 24% over 531 s: read the maximum again when the suite has grown that much more.
-        timeout-minutes: 11
+        # A hang guard, not a verdict: 534 s x 1.75 x 1.11 = 1,037 s -> 18 min. 534 s is the p90
+        # of 347 legs of 2026-11-21/22 each rescaled to the balanced leg the time split gives
+        # (1,698 s of row time; step = 24.0 s + 0.2549 x row time over 68 legs of main); 1.75 is
+        # the slowest runner seen (run 44985914477 ran its rows 1.75 times slower, per-row median,
+        # than a runner of the same minute); 1.11 is the worst share of the mean the heaviest leg
+        # took under a row-time table up to 7 days old. A p90 leg on that runner under such a table
+        # ends under it, so no row's verdict rests on it; it cuts a leg that has stopped running rows.
+        timeout-minutes: 18
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
             "${{ needs.binaries.outputs.connections }}"
@@ -293,6 +299,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-restores-go-envoy-test
       - id: go-cache
@@ -389,6 +397,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy, restored only, as the multiprocess job restores it and for the same reason:
       # run-server.sh builds the Dispatch server, which the family's saving jobs do not.
@@ -457,6 +467,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-restores-go-envoy-test
       - id: go-cache
@@ -537,6 +549,8 @@ jobs:
     # why: .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget
     # 180 + 37 = 217 s, which is 3 min 37 s, so 4 min.
     timeout-minutes: 4
+    env:
+      JOB_TIMEOUT_MINUTES: 4 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -556,6 +570,7 @@ jobs:
         run: .github/scripts/dispatch-browser-run-reads.sh blobs-refused
       # why: .github/ci-notes/dispatch-browser.md#why-only-the-newest-attempt-of-each-leg-is-merged
       - name: Take the newest attempt of each leg's blob report
+        id: select-blobs
         run: .github/scripts/dispatch-browser-latest-blobs.sh "$RUNNER_TEMP/blobs" "$RUNNER_TEMP/selected-blobs"
       - name: Merge the legs' blob reports into one report
         # why: .github/ci-notes/dispatch-browser.md#what-the-merged-reports-three-outputs-are-for
@@ -578,7 +593,8 @@ jobs:
         timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
-        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}"
+          STEP_TIMEOUT_MINUTES: 3 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ steps.select-blobs.conclusion }}"
       # Reading two. Read from the merged JSON report with jq, and nowhere else: a flake is a row
       # that failed and passed on its retry, which only the report of the whole run holds.
       - name: Reading two, the flake rate

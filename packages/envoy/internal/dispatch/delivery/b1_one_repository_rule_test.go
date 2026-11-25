@@ -30,13 +30,15 @@ var oneRuleOwners = map[string][]string{
 	"PC": {"acme/c"},
 }
 
-// seedOneRule writes the one-rule seed: projects PA, PB and PC, their issues, PA's and PC's defaults
-// and PB's mapping, and an issue-less pull request in each repository.
+// seedOneRule writes the one-rule seed: projects PA, PB and PC, PA's and PC's defaults on the
+// projects themselves (projects.default_repo, where #4457 keeps a default), their issues, PB's
+// mapping, and an issue-less pull request in each repository.
 func seedOneRule(t *testing.T) *store.Pool {
 	t.Helper()
 	pool, ctx := deliveryTestPool(t)
 	for _, statement := range []string{
-		`insert into projects (key, name, default_assignee) values ('PA', 'PA', 'olga'), ('PB', 'PB', 'olga'), ('PC', 'PC', 'olga')`,
+		`insert into projects (key, name, default_assignee, default_repo) values
+			('PA', 'PA', 'olga', 'acme/adefault'), ('PB', 'PB', 'olga', null), ('PC', 'PC', 'olga', 'acme/cdefault')`,
 		`insert into issues (key, project_key, number, title, created_by, rank, parent_key, repo, status) values
 			('PA-1', 'PA', 1, 'a', '{"kind":"user","id":"olga"}', 'a', null, 'acme/a', 'triage'),
 			('PA-2', 'PA', 2, 'a', '{"kind":"user","id":"olga"}', 'b', 'PA-1', null, 'triage'),
@@ -50,8 +52,7 @@ func seedOneRule(t *testing.T) *store.Pool {
 			('PC-3', 'PC', 3, 'c', '{"kind":"user","id":"olga"}', 'c', 'PC-2', null, 'triage')`,
 		`update issues set parent_key = 'PC-3' where key = 'PC-2'`,
 		`insert into repo_projects (repo, project, is_default, created_by) values
-			('acme/adefault', 'PA', true, '{"kind":"user","id":"olga"}'), ('acme/bmapped', 'PB', false, '{"kind":"user","id":"olga"}'),
-			('acme/cdefault', 'PC', true, '{"kind":"user","id":"olga"}')`,
+			('acme/bmapped', 'PB', false, '{"kind":"user","id":"olga"}')`,
 	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Fatalf("seed the one rule: %v\n%s", err, statement)

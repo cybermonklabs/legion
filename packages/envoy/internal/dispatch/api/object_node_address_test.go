@@ -332,7 +332,7 @@ func earlierBuildRemoval(ctx context.Context, database *store.Store, artifactID 
 		if artifact.IssueKey != nil {
 			issue = *artifact.IssueKey
 		}
-		owners.Add(issue, artifact.ID, "document "+artifact.ID)
+		owners.Add(issue, artifact.ID)
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 			return err
 		}

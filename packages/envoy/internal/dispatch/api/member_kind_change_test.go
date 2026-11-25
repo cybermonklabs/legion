@@ -63,10 +63,10 @@ func newRestrictableRig(t *testing.T, heartbeat time.Duration) *restrictableRig 
 	t.Helper()
 	ctx := context.Background()
 	rig := &restrictableRig{pool: oidctest.New(t), database: storetest.Open(t)}
-	rig.pool.EnableCodeFlow(rig.pool.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
+	const redirect = "https://dispatch.example/auth/callback"
+	rig.pool.EnableCodeFlow(rig.pool.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret", redirect)
 	// A domain-mode flow, as main builds it for DISPATCH_SIGNIN_DOMAIN, reads email and hd.
 	flow := oidc.NewCodeFlow(rig.pool.URL(), "dispatch-client", "dispatch-secret", "example.com")
-	const redirect = "https://dispatch.example/auth/callback"
 	rig.pool.SignInAs(map[string]any{"sub": "member-subject", "email": kindChangeEmail, "email_verified": true, "hd": "example.com"})
 	authURL, err := flow.AuthURL(ctx, redirect, "state", "nonce")
 	if err != nil {

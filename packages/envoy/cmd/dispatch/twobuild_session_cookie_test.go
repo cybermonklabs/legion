@@ -35,7 +35,7 @@ import (
 // at this tree fails at the previous build.
 func TestASessionEitherBuildIssuesIsReadByBothWhereTheCookieIsSecure(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	// The sign-in of issuer's code flow under the group rule, as the multiprocess sign-in rows run
 	// it, with no DISPATCH_INSECURE_COOKIE: the cookie is Secure.
 	env := map[string]string{

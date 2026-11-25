@@ -34,7 +34,9 @@
 # the pull request: its number, and the base and head sha the run checks, which is the head the
 # event names rather than whatever head the pull request has by the time a route is read, since a
 # push can land while the job runs and gets a run of its own. A payload without one is refused.
-# The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY). The title, body and branch name come
+# The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY), each call through gh-read.sh's
+# gh_wait_reset, which waits out a spent API budget within the JOB_TIMEOUT_MINUTES both jobs that
+# run this script set, and fails by name past it. The title, body and branch name come
 # from the pull request route as the pull request has them now, not from the payload: ci.yaml's
 # `pr-title` job checks at a push and can finish long after a later edit's pr-title.yaml run, and
 # both carry pr-title on the head, so a check of the push's own text would report a pass over
@@ -67,6 +69,8 @@ set -euo pipefail
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the pull request event payload}
 repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
 script_dir=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=.github/scripts/gh-read.sh
+source "$script_dir/gh-read.sh"
 text=$(mktemp -d)
 work=$(mktemp -d)
 trap 'rm -rf "$text" "$work"' EXIT
@@ -80,7 +84,7 @@ number=$(jq -er '.number' "$pull")
 base=$(jq -er '.base.sha' "$pull")
 head=$(jq -er '.head.sha' "$pull")
 live="$work/live.json"
-gh api "repos/$repository/pulls/$number" > "$live"
+gh_wait_reset gh api "repos/$repository/pulls/$number" > "$live"
 if ! jq -e '(.title | type == "string") and (.head.ref | type == "string")' "$live" > /dev/null 2>&1; then
   echo "::error::the pull request route answered no title and head branch for #$number" >&2
   exit 1
@@ -98,7 +102,8 @@ fi
 # that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every page
 # it creates, printing one JSON object per page, each repeating total_commits.
 compare_json="$work/compare.json"
-gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate > "$compare_json"
+gh_wait_reset gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate \
+  > "$compare_json"
 total_commits=$(jq -s '.[0].total_commits // empty' "$compare_json")
 if ! [[ $total_commits =~ ^[0-9]+$ ]]; then
   echo "::error::the compare route's answer for $base...$head names no whole-number" \
@@ -132,7 +137,7 @@ read_list() {
   local kind=$1 route=$2 page=1 id trust association body
   mkdir "$text/$kind"
   while :; do
-    gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
+    gh_wait_reset gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
     if ! jq -e 'type == "array"' "$work/answer" > /dev/null 2>&1; then
       echo "::error::page $page of the $route route is not a list, so its ${kind}s cannot be" \
         "checked" >&2
@@ -222,8 +227,8 @@ fi
 key_status=0
 cutoff_file=.github/issue-key-cutoff
 base_ref=$(jq -r '.base.ref // "main"' "$live")
-gh api "repos/$repository/commits?path=$cutoff_file&sha=$base_ref&per_page=100" --paginate \
-  > "$work/cutoff-commits"
+gh_wait_reset gh api "repos/$repository/commits?path=$cutoff_file&sha=$base_ref&per_page=100" \
+  --paginate > "$work/cutoff-commits"
 skill_commit=$(jq -s -r '[.[][]] | last | .sha // empty' "$work/cutoff-commits")
 cutoff=''
 if [ -z "$skill_commit" ]; then
@@ -270,7 +275,8 @@ else
     first_tag='' first_published=''
     while IFS= read -r tag; do
       # A tag can exist before its release does, and a draft is no release: either is skipped.
-      if ! gh api "repos/$repository/releases/tags/$tag" > "$work/release" 2> "$work/gh-error"; then
+      if ! gh_wait_reset --stderr "$work/gh-error" \
+        gh api "repos/$repository/releases/tags/$tag" > "$work/release"; then
         if grep -q -F '(HTTP 404)' "$work/gh-error"; then continue; fi
         unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
         break
@@ -598,7 +604,8 @@ AWK
     fi
     stage="$work/stage-$short"
     mkdir "$stage"
-    gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
+    gh_wait_reset gh api "repos/$repository/commits/$sha?per_page=100" --paginate \
+      > "$work/commit-$short"
     files=$(jq -s '[.[].files[]] | length' "$work/commit-$short")
     listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
     total=$(jq -s '.[0].stats.total // -1' "$work/commit-$short")
@@ -630,7 +637,8 @@ AWK
   if [ "$merges" -gt 0 ]; then
     stage="$work/stage-net"
     mkdir "$stage"
-    gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate > "$work/pr-files-pages"
+    gh_wait_reset gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate \
+      > "$work/pr-files-pages"
     jq -s '{files: [.[][]]}' "$work/pr-files-pages" > "$work/pr-files"
     files=$(jq '.files | length' "$work/pr-files")
     listed=$(jq '[.files[] | .changes] | add // 0' "$work/pr-files")

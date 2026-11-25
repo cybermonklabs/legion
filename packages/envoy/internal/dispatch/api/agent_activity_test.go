@@ -86,6 +86,7 @@ func agentActivityRows(t *testing.T, database *store.Store, statement string, ar
 // session the events table has never heard of. It is read for the server's own viewer, which
 // sees every event.
 func TestTheAgentsLastActivityAnswersWhatMainsStatementDid(t *testing.T) {
+	t.Parallel()
 	database := newAgentActivityFixture(t)
 	want := agentActivityRows(t, database, mainAgentLastActivityQuery)
 	if len(want) != 2 {
@@ -104,6 +105,7 @@ func TestTheAgentsLastActivityAnswersWhatMainsStatementDid(t *testing.T) {
 // row a session, and the plan says so in the loops and the rows of the one node that reads
 // events.
 func TestTheAgentsLastActivityReadsEventsThroughTheSessionActorIndex(t *testing.T) {
+	t.Parallel()
 	database := newAgentActivityFixture(t)
 	plan := planWithoutSeqScans(t, database, agentLastActivityQuery, agentActivitySessions, refs.VisibilityArg(everyReader))
 	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {

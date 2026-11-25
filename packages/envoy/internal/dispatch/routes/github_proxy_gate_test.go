@@ -29,14 +29,14 @@ func TestTheGitHubProxyOfARouterWithNoDatabaseHidesEveryRepository(t *testing.T)
 	fake := &gateGitHub{installed: []string{"acme/web"}}
 	_, pem := githubapptest.Key(t)
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:    testSigningKey,
 		People:        people,
 		Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		App:           &auth.AppConfig{ClientID: "Iv1.gate", PEM: pem},
 		GitHubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.serve}),
 		Lifetime:      t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -182,14 +182,14 @@ func seedProxyGate(t *testing.T) *store.Store {
 }
 
 // seedRepositoryRecords records PRIV's default repository, acme/privdefault, and a rename of
-// acme/oldname to acme/newname, as this build stores both: rows of repo_projects, the default
-// marked is_default and the rename a PRIV row with renamed_to. A build that stores either
-// elsewhere changes this function alone.
+// acme/oldname to acme/newname, as this build stores both: the default on the project
+// (projects.default_repo, since #4457) and the rename a PRIV row of repo_projects with renamed_to.
+// A build that stores either elsewhere changes this function alone.
 func seedRepositoryRecords(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
+		update projects set default_repo = 'acme/privdefault' where key = 'PRIV';
 		insert into repo_projects (repo, project, is_default, renamed_to, created_by) values
-			('acme/privdefault', 'PRIV', true, null, '{"kind":"user","id":"olga@example.com"}'),
 			('acme/oldname', 'PRIV', false, 'acme/newname', '{"kind":"user","id":"olga@example.com"}');
 	`); err != nil {
 		t.Fatalf("record PRIV's default repository and the rename: %v", err)
@@ -202,7 +202,7 @@ func gateRouter(t *testing.T, database *store.Store, fake *gateGitHub) http.Hand
 	t.Helper()
 	_, pem := githubapptest.Key(t)
 	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:    testSigningKey,
 		People:        people,
 		Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
@@ -210,7 +210,7 @@ func gateRouter(t *testing.T, database *store.Store, fake *gateGitHub) http.Hand
 		App:           &auth.AppConfig{ClientID: "Iv1.gate", PEM: pem},
 		GitHubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.serve}),
 		Lifetime:      t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

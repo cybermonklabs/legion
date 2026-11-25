@@ -6,7 +6,7 @@ body: |-
   `holder_subject` holds now, and in that one transaction ends every sign-in on a machine that
   account's person token made and every login of the address's own machines it approved, whenever
   issued, with their tokens and sessions; it answers how many of each it ended, and zeros for a
-  repeat. A row that records no account, from a broker before migration `0041_person_subjects`, is
+  repeat. A row that records no account, from a broker before migration `0042_person_subjects`, is
   ended too; the holder's credentials and a service's machine login are untouched, and a revoke
   naming an account as the holder stops refusing it, as when an address comes back. From then on
   a sign-in trade of that account's Google identity token, on any box key, is refused

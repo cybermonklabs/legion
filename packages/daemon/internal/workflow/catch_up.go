@@ -170,7 +170,9 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // start of the phase that will still act, which carries the phase's task itself, or a stop that
 // will still act, which is about to end the claim this ready came from. Both are StartFor's rule
 // about queued rows (actingStop, queuedStartActs), read without its question about the claim's own
-// liveness: this claim is live, which is precisely why it is being given its task.
+// liveness: this claim is live, which is precisely why it is being given its task. A start queued
+// for news alone carries no task of the phase (startsWork), so it covers nothing, and the worker is
+// given its task beside it.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
 	stop := actingStop(run, root)
 	return stop != 0 || queuedStartActs(run, stop, current)
@@ -199,7 +201,12 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // delivery's place while no prompt of it waits on a result, or waits for its turn to end
 // (supervise's queue), and carries the sentence in front of itself while the record is untold.
 // A worker that came back holding only that delivery — its ready found it holding one from an
-// earlier launch its agent never read — would otherwise be given no phase task at all.
+// earlier launch its agent never read — would otherwise be given no phase task at all. A task of
+// news of the approved design alone is no work of the phase either (supervise.HoldsWork): it tells
+// the worker what changed and nothing of what to do, so a claim that holds only that is given its
+// phase's task too. An owed entry's task takes the news task's place while no turn has taken it,
+// and carries that news itself (supervise's Machine.supersedes); the phase's resume task carries
+// no entry, so it waits behind the news task until a turn has taken it.
 //
 // What such a claim is sent is decided by the entry its role's phases row names
 // (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
@@ -257,8 +264,9 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
-	// A claim holding only the daemon's own delivery of a relaunch's record holds no task (above).
-	if held := run.Claim; held == nil || supervise.HoldsTask(held.Pending) {
+	// A claim holding only the daemon's own delivery of a relaunch's record, or only a task of news
+	// alone, holds no work (above).
+	if held := run.Claim; held == nil || supervise.HoldsWork(held.Pending) {
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {
@@ -288,10 +296,12 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // treeCatchUp is what issue's architect owns as the record holds it. A tree root's architect owns
 // its whole tree: the catch-up says whether a hand-over created the root at this generation, and
 // whether its old root's gate came with it, each design-gate step the root must hold open and how
-// it stands, and every issue of the tree in key order. A child's architect owns the child and
-// every issue whose recorded parent chain reaches it (record.Beneath), listed in key order at the
-// child's own generation: a child registers no gate and no hand-over creates one, so its catch-up
-// states no step and is neither handed over nor carried.
+// it stands, and every issue of the tree in key order. The steps are the ones the tree is gated on
+// (classify.TreeSteps), so a criteria row the architect registered beside a deployment that gates
+// spec and not criteria is listed after the spec, gated as the spec is. A child's architect owns
+// the child and every issue whose recorded parent chain reaches it (record.Beneath), listed in key
+// order at the child's own generation: a child registers no gate and no hand-over creates one, so
+// its catch-up states no step and is neither handed over nor carried.
 //
 // With it come the keys, in key order, of the listed issues waiting for this architect's
 // acceptance (awaitingAcceptance). No worker runs in accepting, and the one phase-finished notice
@@ -315,10 +325,11 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		if err != nil {
 			return record.CatchUp{}, nil, err
 		}
-		required := classify.RequiredSteps(steps)
+		gated := classify.TreeSteps(steps, gates)
+		required := classify.RequiredSteps(gated)
 		catchUp.Gates = make([]record.CatchUpGate, 0, len(required))
 		for _, step := range required {
-			stated := record.CatchUpGate{Step: step, Gated: slices.Contains(steps, step)}
+			stated := record.CatchUpGate{Step: step, Gated: slices.Contains(gated, step)}
 			if recorded, ok := gates[step]; ok {
 				stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, classify.DesignGateOpen(recorded)
 				if recorded.ApprovedVersion != nil {

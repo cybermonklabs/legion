@@ -14,12 +14,14 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -47,6 +49,10 @@ type specs struct {
 	// gates them, which a tree's root architect is told after its addressing
 	// (DesignGateFragment); empty for a deployment that gates no step.
 	designSteps []record.DesignStep
+	// productionCheck is the project's `production_check` (config.Project.ProductionCheck): every
+	// architect is told it after its addressing (ProductionCheckFragment). The empty role, a
+	// test's zero value, reads `off`.
+	productionCheck claim.Role
 	// slackChannels is the project's slack_channels, which the controller is told after the
 	// design gate steps (SlackChannelsFragment); its LEGION_SLACK_CHANNELS is the runtime's to set.
 	slackChannels []string
@@ -225,6 +231,9 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
+	if c.Role == claim.RoleArchitect {
+		addressing += " " + ProductionCheckFragment(s.productionCheck)
+	}
 	spec.Prompt = runtime.PromptParts{
 		RolePromptPaths:            promptPaths,
 		Addressing:                 addressing,
@@ -289,7 +298,7 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 	if err != nil {
 		return "", err
 	}
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := w.records.Issue(ctx, tx, c.Issue)
 		if err != nil || issue == nil {
 			return err
@@ -595,6 +604,11 @@ func RepositoriesSentence(owners []string) string {
 // nothing would read as a line the daemon failed to fill. What each step asks of the architect,
 // and which document each records, is in its role parts (prompts/roles/architect-root.md and
 // prompts/go/architect-root.md).
+//
+// The steps the line names are the ones every root must register. A deployment that gates spec
+// and not criteria holds a root on criteria too once its architect registers the Verification
+// document as that step (record.TreeSteps), so its line says that as a sentence of its own: a
+// step no root must register, and that holds the root that registers it.
 func DesignGateFragment(steps []record.DesignStep) string {
 	if len(steps) == 0 {
 		return "Design gate steps: none."
@@ -603,7 +617,26 @@ func DesignGateFragment(steps []record.DesignStep) string {
 	for i, step := range steps {
 		quoted[i] = "`" + string(step) + "`"
 	}
-	return fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
+	line := fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
+	if record.JoinsByRegistration(steps, record.DesignStepCriteria) {
+		line += " A root that registers its Verification document as `criteria` is held on that step too."
+	}
+	return line
+}
+
+// ProductionCheckFragment is the sentence every architect, the root's and a sub-architect's alike,
+// is told last in its addressing: the project's `production_check` (check) as the file writes it
+// (config.Project.ProductionCheckWord), the role that works the production check a merge closing
+// one of the project's issues opens, or `off` for the empty role. It is the "Production check" line
+// the architect prompts read (prompts/roles/architect-root.md, prompts/roles/architect.md and
+// prompts/go/architect-common.md): where it names a role, the architect writes one `after_merge`
+// check for that check in each Verification document it writes, while the issue is open, since a
+// closed issue takes no new document; where it reads `off`, it writes none (dispatch://INFRA-175
+// R7). A root architect is told it after the design gate steps, and a sub-architect, which is
+// told no steps, after its addressing. The controller writes no Verification document and is
+// told nothing of it.
+func ProductionCheckFragment(check claim.Role) string {
+	return "Production check: " + config.Project{ProductionCheck: check}.ProductionCheckWord() + "."
 }
 
 // SlackChannelsFragment names the project's Slack channels, the list the controller answers

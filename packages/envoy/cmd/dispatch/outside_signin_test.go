@@ -204,6 +204,10 @@ func requirePlainNoIdentity(t *testing.T, what string, recorder *httptest.Respon
 func TestTheOutsideOriginServesNoGoogleSignInWithPasskeysNeverSet(t *testing.T) {
 	const canonical, outside = "https://dispatch.example.com", "https://dispatch-outside.example.com"
 	s := newOutsideSignIn(t, nil)
+	// The pool registers the harness's callback alone (signInPool), and an authorization naming
+	// another is refused; this row's deployment answers at canonical, so its client registers
+	// canonical's callback too.
+	s.pool.EnableCodeFlow(s.pool.PublishKey(t, "canonical-signing-key"), "dispatch-client", "client-secret", "http://dispatch.test/auth/callback", canonical+"/auth/callback")
 	// The harness's deployment, answering at a second origin too: the origin's own settings are
 	// judged in TestOutsideSignInSettingsRefusals, and BuildAppContext needs the canonical one.
 	boot := s.boot

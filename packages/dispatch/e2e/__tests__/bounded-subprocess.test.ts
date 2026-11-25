@@ -646,15 +646,16 @@ test("a kill with its own signal and pause sends SIGKILL through process.kill an
 // the slow-read row below holds that such a read holds no timer. This row stands in for
 // `Bun.file` and counts the files under `/proc` it is asked for while one bounded `true` runs and
 // its kill reads the table. A kill that read the table synchronously, as `stopTree` does, asks for
-// none. The row skips where `/proc` is missing.
-const procProcesses = present("/proc/self/stat")
-  ? readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).length
-  : 0;
-test.skipIf(procProcesses === 0)(
+// none. The row skips where `/proc` is missing. It counts the processes just before the child
+// starts, and not when the file loads: the rows run in random order, and a count taken minutes
+// before the kill's read, on a machine whose processes come and go by the thousand, could hold
+// many more processes than that read finds.
+test.skipIf(!present("/proc/self/stat"))(
   "a bounded child's kill hands this process's event loop back while it reads the process table",
   async () => {
     const realFile = Bun.file;
     let asked = 0;
+    let procProcesses = 0;
     try {
       Object.assign(Bun, {
         file: (...args: unknown[]) => {
@@ -663,13 +664,15 @@ test.skipIf(procProcesses === 0)(
         },
       });
       expect(Bun.file, "Bun.file is not the stand-in").not.toBe(realFile);
+      procProcesses = readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).length;
       await runBounded({ argv: ["true"], bound: "short", from: import.meta.url });
     } finally {
       Object.assign(Bun, { file: realFile });
     }
     // At least one file, its stat, for every two of the processes this row counted, so a kill
     // that read half the table synchronously fails too, while the table may have lost processes
-    // between this row's count and the kill's read.
+    // between this row's count and the kill's read. A count of none would hold nothing.
+    expect(procProcesses, "processes this row counted under /proc").toBeGreaterThan(0);
     expect(
       asked,
       `files the kill read through Bun.file, of ${procProcesses} processes under /proc`
@@ -738,8 +741,9 @@ test("an unknown process stays unknown in this process's cgroup alone, and not w
 
 // The kill `runBounded` runs reads the table through `processTableYielding`, whose `entryReads`
 // hands the cgroup of each unknown process to `ownUnknown`. The row above holds `ownUnknown`
-// alone, and the row below holds the whole on a real machine, but skips in CI's runners and in a
-// pod, where every process stands in one cgroup. This row lays out a `/proc` of its own in a
+// alone, and the systemd-run row below holds the real table's entry for a process of another
+// cgroup, where this machine can start one there: CI's runners can, and a pod cannot, so it skips
+// in a pod. This row lays out a `/proc` of its own in a
 // scratch directory, a `self` in one cgroup and one process whose environment reads empty and
 // which started at the child's start, and drives the yielding kill over it with `runBounded`'s
 // read, handed that directory. With the process in another cgroup than `self`'s, it is listed as
@@ -807,23 +811,19 @@ test("a kill reads a /proc whose process of another cgroup reads empty, and does
 });
 
 /** Whether this machine runs a user service manager that starts a command in a scope, a cgroup, of
- *  its own (`systemd-run --user --scope`), as a dev box many sessions share does. The row below
- *  needs one to start a process outside this process's cgroup, and skips where there is none, as
- *  in CI's runners and in a pod, where every process of a run stands in one cgroup, and the two
- *  rows above hold the rule: `ownUnknown` alone, and the kill over a `/proc` laid out with a
- *  process in another cgroup. */
+ *  its own (`systemd-run --user --scope`), as a dev box many sessions share does, and as CI's
+ *  runners do (job 137301512515 ran the row below on `ubuntu-24.04-arm`). The row below needs one
+ *  to start a process outside this process's cgroup, and skips where there is none, as in a pod,
+ *  where the two rows above hold the rule: `ownUnknown` alone, and the kill over a `/proc` laid
+ *  out with a process in another cgroup. */
 const userScopes =
   present("/proc/self/cgroup") &&
   Bun.which("systemd-run") !== null &&
   present(join(process.env.XDG_RUNTIME_DIR ?? "/nonexistent", "systemd", "private"));
 
 test.skipIf(!userScopes)(
-  "a kill does not wait on a process of another cgroup whose environment reads empty",
+  "the table a kill reads lists a process of another cgroup whose environment reads empty as not unknown",
   async () => {
-    // The kill's child, which ended, started before the process this row starts: field 22 of this
-    // process's stat now, in clock ticks since boot, as `runBounded` reads a child's.
-    const stat = readFileSync("/proc/self/stat", "utf8");
-    const start = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
     // Another session's program, as on a shared dev box: a `sleep` with an empty environment, in
     // a scope of its own, carrying no token. A number of seconds no other process sleeps for, so
     // the row finds it by its command line. It is this row's to stop, and outlives every wait of
@@ -841,28 +841,17 @@ test.skipIf(!userScopes)(
       expect(readFileSync(`/proc/${pid}/cgroup`, "utf8"), "its cgroup").not.toBe(
         readFileSync("/proc/self/cgroup", "utf8")
       );
-      // The kill reads the real table. A pause comes only before a read for unknown processes
-      // alone; one of this process's own, caught in its exec, can ask for one or two, and the
-      // sleep, were the kill to wait on it, for one after every read until `maxReads`.
-      let pauses = 0;
-      await stopTreeYielding(
-        {
-          child: { ...exitedByCode, kill: () => undefined, pid: 2 ** 30 + 1 },
-          start,
-          token: crypto.randomUUID(),
-        },
-        {
-          pause: () => {
-            pauses += 1;
-            if (pauses === 5) {
-              throw new Error(
-                `the kill waited ${pauses} times, on the other cgroup's sleep ${pid}`
-              );
-            }
-          },
-        }
-      );
-      expect(pauses).toBeLessThan(5);
+      // The kill waits only on a process its table lists as unknown (`killSteps`), which the row
+      // above holds over a laid-out `/proc`. This row reads the real table the kill reads and
+      // decides on the sleep's own entry, so another process of this process's cgroup whose
+      // environment reads empty changes nothing here: under `bun test --parallel` every worker
+      // stands in one cgroup, and the shapes row of `outside-agent-acceptance.test.ts` starts an
+      // `env -i sleep` there, which reads unknown for as long as it runs.
+      const table = await processTableYielding();
+      expect(
+        table?.find((one) => one.pid === pid),
+        "the sleep, as the kill's table lists it"
+      ).toMatchObject({ pid, unknown: false });
     } finally {
       kill(-stranger.pid, "SIGKILL");
     }

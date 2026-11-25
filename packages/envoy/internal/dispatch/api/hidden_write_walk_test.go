@@ -479,10 +479,10 @@ func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptes
 // seedHiddenWrites stands up verification v16's seed and writes, as carol, PRIV's object of every
 // kind a write row names, through the routes. The seed's store is traced and its listener records
 // its calls, so a pair of calls can be held to the same work (callPair). PRIV's issue is claimed by
-// s1 and links privateHeldURL; PRIV maps acme/p_x, and PUB maps acme/w_pub, whose issue 9
-// privateHeldURL is. PUB holds a project document and an ask of its own too, the objects a session
-// hidden from a caller that sees PUB is named beside (compareSessionBeside): privateSession acts in
-// PRIV and follows PUB's ask, and s-pub follows PRIV's.
+// s1 and links privateHeldURL; PUB maps acme/w_pub, whose issue 9 privateHeldURL is. PUB holds a
+// project document and an ask of its own too, the objects a session hidden from a caller that sees
+// PUB is named beside (compareSessionBeside): privateSession acts in PRIV and follows PUB's ask,
+// and s-pub follows PRIV's.
 func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	t.Helper()
 	topics := []string{}
@@ -537,10 +537,9 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	asCarol(http.MethodPut, "/api/v1/access-groups/"+group, map[string]any{"members": []string{seedCarol}})
 	asCarol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/groups/"+group, nil)
 	priority := createdID(t, asCarol(http.MethodPost, "/api/v1/priorities", map[string]any{"title": "A priority PRIV's people steer"}))
-	// A repository PRIV maps, which an issue's external reference names; and one PUB maps, an
-	// issue of which PRIV's issue links (privateHeldURL).
-	asCarol(http.MethodPut, "/api/v1/settings/repo-projects/acme/p_x", map[string]any{"project": seedPrivate})
-	asCarol(http.MethodPut, "/api/v1/settings/repo-projects/acme/w_pub", map[string]any{"project": seedPublic})
+	// A repository PUB maps, an issue of which PRIV's issue links (privateHeldURL). No route
+	// writes a mapping now, so it is stored as the last release left it.
+	storeRepoMapping(t, seed.database, "acme/w_pub", seedPublic, false)
 	asCarol(http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"external_links": []map[string]string{{"url": privateHeldURL}}})
 	// s1, live at the walk's listener, holds PRIV's issue.
 	seed.mustRequest(t, callerCarolPrivToken, http.MethodPost, "/api/v1/issues/"+issue+"/claim",
@@ -627,8 +626,6 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 		probeSignin:            nobody(uuid.NewString()),
 		// A run no record holds: the step write reads its issue first, which the key decides.
 		probeStep: same(uuid.NewString()),
-		// No mapping holds acme/p.x.
-		probeMappedRepository: {hidden: "p_x", missing: "p.x"},
 	}}
 	rows, err := seed.database.Pool.Query(context.Background(), `
 		select format('%I.%I', schemaname, tablename) from pg_tables

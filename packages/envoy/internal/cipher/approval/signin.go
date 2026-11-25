@@ -88,10 +88,11 @@ func readPending(r *http.Request) (pendingSignIn, bool) {
 // sign-in in progress is used once: its cookie is cleared whatever happens next. The callback
 // refuses, creating no session, a browser with no sign-in in progress, a state that is not the
 // one the sign-in sent (compared in constant time), a sign-in returning anywhere but a record's
-// page, a code the provider will not exchange with the sign-in's PKCE verifier, an ID token that
-// does not verify (issuer, audience, signature, expiry, nonce), a person outside the Workspace
-// domain or with an unverified email (oidc.WorkspaceLogin), and a Google account that no longer
-// holds the person's address, which Dispatch named replaced when another account took it
+// page, a code longer than oidc.MaxCallbackCode, which it sends the provider no request for, a
+// code the provider will not exchange with the sign-in's PKCE verifier, an ID token that does not
+// verify (issuer, audience, signature, expiry, nonce), a person outside the Workspace domain or
+// with an unverified email (oidc.WorkspaceLogin), and a Google account that no longer holds the
+// person's address, which Dispatch named replaced when another account took it
 // (store.ErrBrowserSessionSubjectReplaced). Otherwise it mints a fresh random session secret into
 // the session cookie, stores only its SHA-256 with the session's expiry and the account that
 // signed in (the ID token's issuer, as oidc.CanonicalIssuer spells it, and its `sub`), ends the
@@ -104,10 +105,10 @@ func readPending(r *http.Request) (pendingSignIn, bool) {
 // From the exchange onward it also writes the sign-in's outcome into the broker's sign-in
 // status, which GET /signin/status answers: the time of a sign-in that completed, or the time
 // and coded reason of one that failed (status.go). The refusals above it write nothing - a
-// browser with no sign-in in progress, a state that is not the sign-in's and a next outside the
-// page is a request that was never this broker's sign-in to fail - and neither does the refusal
-// of a replaced account, which is the broker's own record refusing a sign-in the provider
-// completed, and none of the status's codes.
+// browser with no sign-in in progress, a state that is not the sign-in's, a next outside the page
+// and a code longer than any the broker sends is a request that was never this broker's sign-in
+// to fail - and neither does the refusal of a replaced account, which is the broker's own record
+// refusing a sign-in the provider completed, and none of the status's codes.
 func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) {
 	pending, ok := readPending(r)
 	clearCookie(w, signInCookie)
@@ -136,7 +137,14 @@ func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) 
 			"The sign-in provider did not sign you in. Open the request again to try once more."))
 		return
 	}
-	claims, err := p.signIn.OnlineExchange(r.Context(), p.redirectURL, query.Get("code"), oidc.OnlineSignIn{
+	code := query.Get("code")
+	if len(code) > oidc.MaxCallbackCode {
+		slog.Warn("approval sign-in refused: the code is longer than the broker sends a provider", "bytes", len(code))
+		writeMessage(w, http.StatusBadRequest, codeSignInCodeInvalid, say("Sign-in refused",
+			"This sign-in's code is not one the sign-in provider issues, so it was refused. Open the request again to sign in."))
+		return
+	}
+	claims, err := p.signIn.OnlineExchange(r.Context(), p.redirectURL, code, oidc.OnlineSignIn{
 		State: pending.State, Nonce: pending.Nonce, Verifier: pending.Verifier,
 	})
 	if err != nil {

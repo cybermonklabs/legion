@@ -46,23 +46,22 @@ var eventRateQuery = fmt.Sprintf(`select type, count(*) / %d.0 as per_day
 	from events where created_at > %s group by type order by 2 desc`, sizingWindowDays, sizingWindow)
 
 // branchTables are the tables the migrations of this branch touch, each with whether the
-// migration alters a relation that already held rows. graph_nodes, graph_tuples and
-// graph_erasures are created by 20261109013400 and written by 20261109051232, and
-// block_index_event_cursors and graph_backfill_horizon are created by 20261118115645 and altered
-// by 20261120122600 in the same release, before any build writes a row of them, so no existing
-// row is rewritten for them; document_blocks, block_refs and comments are altered by
-// 20261109022248, server_build_announcements by 20261115051200 and document_block_versions by
-// 20261116221539 and 20261120122600. A pending migration that writes rows of any of them once it
-// is above the limit may write them only with bounded writes, the one write of such a table the
-// migration census admits (pgmigrate.BoundedWriteRows); the sizing names that rule beside such a
-// table and refuses nothing for it (writeBoundedWrites).
+// migration alters a relation that already held rows. graph_nodes and graph_tuples are created
+// by 20261109013400 and written by 20261109051232, and block_index_event_cursors and
+// graph_backfill_horizon are created by 20261118115645 and altered by 20261120122600 in the same
+// release, before any build writes a row of them, so no existing row is rewritten for them;
+// document_blocks, block_refs and comments are altered by 20261109022248,
+// server_build_announcements by 20261115051200 and document_block_versions by 20261116221539 and
+// 20261120122600. A pending migration that writes rows of any of them once it is above the limit
+// may write them only with bounded writes, the one write of such a table the migration census
+// admits (pgmigrate.BoundedWriteRows); the sizing names that rule beside such a table and refuses
+// nothing for it (writeBoundedWrites).
 var branchTables = []struct {
 	name    string
 	altered bool
 }{
 	{"graph_nodes", false},
 	{"graph_tuples", false},
-	{"graph_erasures", false},
 	{"block_index_event_cursors", false},
 	{"graph_backfill_horizon", false},
 	{"block_refs", true},

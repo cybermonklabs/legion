@@ -28,9 +28,9 @@ type sessionRow struct {
 // It walks only the sessions that carry no node, and a node another write made meanwhile is
 // written `do nothing` (graphstore.WriteArms), so a second run, and a run beside a live server,
 // writes nothing for a session the store already holds. The writer is the run (backfillActor);
-// the cause is the first event that named the session - an ask.follower_added, a comment.delivery
-// receipt, or the event that stored a comment the erase took - or the sentinel for a session only
-// a row names, and the time is that event's, or the earliest row's that names it.
+// the cause is the first event that named the session - an ask.follower_added or a
+// comment.delivery receipt - or the sentinel for a session only a row names, and the time is that
+// event's, or the earliest row's that names it.
 //
 // No arm of graph_edges answers a session, so its Complete switches nothing off: it reads whether
 // every session the census names holds its node.

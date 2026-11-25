@@ -139,8 +139,8 @@ func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T
 		}
 	}
 	if census.Refused() {
-		t.Fatalf("the census refused with %d difference(s) after this build drained the backfill's mark over a link the previous release added and a block it dropped, want zero",
-			census.Differences())
+		t.Fatalf("the census refused with %d difference(s) after this build drained the backfill's mark over a link the previous release added and a block it dropped, want zero:\n%s",
+			census.Differences(), censusFindings(census))
 	}
 }
 

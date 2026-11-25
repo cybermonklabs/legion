@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
@@ -170,30 +171,64 @@ func inImage(t *testing.T, contract, omp string) image {
 // says model fallback is off.
 const capabilityMarks = " capabilities=checked model-fallback=off daemon-api-version="
 
-// probeImage runs `legion probe-image` with args, every TLS client and positive control passing.
+// probeImage runs `legion probe-image` with args, every TLS client and positive control passing,
+// its vendored chains asked and no public site reached: the probe's own server still starts and
+// serves, so a run proves the command starts and stops it, and the public sites are reported
+// UNKNOWN with each client held to them.
 func probeImage(args ...string) (int, string, string) {
 	return probeImageWith(passingImageTLSClients, passingTLSPositiveControls, args...)
 }
 
 // probeImageWith runs `legion probe-image` with args, clients in place of the image's TLS clients
-// and controls in place of its positive controls.
-func probeImageWith(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string) error, args ...string) (int, string, string) {
-	previousClients, previousControls := newImageTLSClients, newTLSPositiveControls
+// and controls in place of its positive controls, its vendored chains asked and no public site
+// reached.
+func probeImageWith(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string, string, []tlsSite) error, args ...string) (int, string, string) {
+	return probeImageAt(clients, controls, unaskedPublicTLSSites, args...)
+}
+
+// probeImageAt is probeImageWith with public in place of the public sites' positive controls.
+func probeImageAt(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string, string, []tlsSite) error, public func(context.Context, []string, string) []tlsSite, args ...string) (int, string, string) {
+	return probeImageWithSites(clients, controls, askedVendoredTLSSites, public, args...)
+}
+
+// probeImageWithSites is probeImageAt with vendored in place of the served copies' positive
+// controls.
+func probeImageWithSites(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string, string, []tlsSite) error, vendored func(context.Context, []string, string, []tlsSite) ([]tlsSite, error), public func(context.Context, []string, string) []tlsSite, args ...string) (int, string, string) {
+	previousClients, previousControls, previousVendored, previousPublic := newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites
 	newImageTLSClients, newTLSPositiveControls = clients, controls
+	newVendoredTLSSites, newPublicTLSSites = vendored, public
 	defer func() {
-		newImageTLSClients, newTLSPositiveControls = previousClients, previousControls
+		newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites = previousClients, previousControls, previousVendored, previousPublic
 	}()
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), append([]string{"legion", "probe-image"}, args...), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
-// passingTLSPositiveControls stands in for positive controls that each accepted their pinned root.
-func passingTLSPositiveControls(context.Context, []string) error { return nil }
+// passingTLSPositiveControls stands in for positive controls that each accepted their root.
+func passingTLSPositiveControls(context.Context, []string, string, []tlsSite) error { return nil }
 
-// theseTLSClients stands in for the image's TLS clients with clients.
+// theseTLSClients stands in for the image's TLS clients with clients, each counted as having reached
+// the probe's server at every site it serves (reachingTLSClient), as a client that reached it is.
 func theseTLSClients(clients ...tlsClient) func(string, []string, string) []tlsClient {
-	return func(string, []string, string) []tlsClient { return clients }
+	return func(string, []string, string) []tlsClient {
+		reaching := make([]tlsClient, len(clients))
+		for index, client := range clients {
+			reaching[index] = reachingTLSClient{client}
+		}
+		return reaching
+	}
+}
+
+// reachingTLSClient is a stand-in client counted as having reached the probe's server at a site it
+// serves (tlsSite.seen) before its run, so the probe reads the stand-in's answer as the site's.
+type reachingTLSClient struct{ tlsClient }
+
+func (c reachingTLSClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
+	if site.seen != nil {
+		site.seen.Add(1)
+	}
+	return c.tlsClient.probe(ctx, site, terms)
 }
 
 // With --role-namespaces the probe runs a role generation's namespaces first
@@ -265,8 +300,23 @@ func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.
 	if !strings.HasPrefix(stdout, strings.Join(table, "\n")+"\n") || !strings.HasSuffix(stdout, okLine) {
 		t.Fatalf("stdout = %q, want the table, TLS decisions, then the OK line %q", stdout, okLine)
 	}
-	if got, want := strings.Count(stdout, "probe-image: TLS client "), len(tlsSites)*len(workerTLSClients); got != want {
-		t.Fatalf("stdout carries %d TLS decisions, want one for each client and site (%d):\n%s", got, want, stdout)
+	// Every client at the fixture chains and the control, each client that verifies a chain during
+	// the handshake at the two vendored chains, and each of the others at the two public sites.
+	afterHandshake := len(tlsChainAfterHandshakeClients())
+	want := len(servedTLSSiteNames)*len(workerTLSClients) + 2*(len(workerTLSClients)-afterHandshake) + 2*afterHandshake
+	if got := strings.Count(stdout, "probe-image: TLS client "); got != want {
+		t.Fatalf("stdout carries %d TLS decisions, want %d:\n%s", got, want, stdout)
+	}
+	for _, site := range unaskedPublicTLSSites(context.Background(), nil, "") {
+		if line := tlsSiteLine(site); !strings.Contains(stdout, line+"\n") {
+			t.Errorf("stdout = %q, want the line %q", stdout, line)
+		}
+		for _, client := range tlsChainAfterHandshakeClients() {
+			line := "probe-image: UNKNOWN: " + client + " against " + tlsSiteURL(site).Hostname() + ": not asked: " + site.unasked
+			if !strings.Contains(stdout, line+"\n") {
+				t.Errorf("stdout = %q, want the line %q", stdout, line)
+			}
+		}
 	}
 }
 
@@ -359,6 +409,115 @@ func TestProbeImageProbesTheOmpItIsGiven(t *testing.T) {
 	if code != 0 || !strings.HasSuffix(stdout, "\nprobe-image: OK ("+omp+") session-storage=probed extensions=discovered agent-models=resolved"+capabilityMarks+thisBinarysContract+"\n") {
 		t.Fatalf("probe-image --omp = %d %q %q, want the OK line naming %s", code, stdout, stderr, omp)
 	}
+}
+
+// --omp and LEGION_OMP_PATH name the OMP executable, a path, as LEGION_OMP_PATH does for the
+// daemon: one whose directory's name holds a space, a quote or a glob character is probed as the
+// one file it names, every probe running it as one shell word, and the OK line names it as given.
+// Each glob name has a sibling its pattern also matches, holding an omp that fails, so a probe
+// that let the shell expand the path would run the other file or hand it the first as an argument.
+func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
+	for _, testCase := range []struct{ name, sibling string }{
+		{"x y", ""}, {"sq'x", ""}, {"q?x", "qax"}, {"glob[x]", "globx"},
+	} {
+		for _, how := range []string{"LEGION_OMP_PATH", "--omp"} {
+			t.Run(testCase.name+" by "+how, func(t *testing.T) {
+				dir := t.TempDir()
+				omp := filepath.Join(dir, testCase.name, "omp")
+				if err := os.MkdirAll(filepath.Dir(omp), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(imageOmp(t), omp); err != nil {
+					t.Fatal(err)
+				}
+				if testCase.sibling != "" {
+					other := filepath.Join(dir, testCase.sibling, "omp")
+					if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(other, []byte("#!/bin/sh\necho 'the omp a glob matched ran' >&2\nexit 97\n"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var args []string
+				if how == "--omp" {
+					args = inImage(t, thisBinarysContract, "/nonexistent/omp").flags("--omp", omp)
+				} else {
+					args = inImage(t, thisBinarysContract, omp).flags()
+				}
+
+				code, stdout, stderr := probeImage(args...)
+
+				if code != 0 || !strings.HasSuffix(stdout, "\nprobe-image: OK ("+omp+") session-storage=probed extensions=discovered agent-models=resolved"+capabilityMarks+thisBinarysContract+"\n") {
+					t.Fatalf("probe-image with the omp at %s named by %s = %d %q %q, want the OK line naming it", omp, how, code, stdout, stderr)
+				}
+				if strings.Contains(stderr, "the omp a glob matched ran") {
+					t.Errorf("probe-image ran the omp the glob %s also matches: %q", testCase.name, stderr)
+				}
+			})
+		}
+	}
+
+	// The two other boundaries that run the OMP path: the image's TLS "omp" client, built as the
+	// probe builds it (tlsClientSpec.build, here among stand-ins for the other clients), and the
+	// role overlay read (--role-config-files, capabilities.CheckOverlays). Under a directory whose
+	// name holds a space, a quote and a '?', the omp answers the TLS client's `--eval` as a client
+	// refusing the compromised chains and reaching the control (with the line the fetch program
+	// prints, tlsFetchAnswer), marking that it ran, and hands every other call to the stand-in omp;
+	// the role's overlay sits in the same directory. The stand-in makes no handshake, so it is
+	// counted as having reached the probe's server (reachingTLSClient), as the other stand-ins are.
+	t.Run("the TLS omp client and the role overlays under x y'q?x", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "x y'q?x")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		omp, ran, overlay := filepath.Join(dir, "omp"), filepath.Join(dir, "tls-omp-ran"), filepath.Join(dir, "implementer.yml")
+		script := "#!/bin/sh\n" +
+			"if [ \"$1\" = --eval ]; then\n" +
+			"  : >" + shellprefix.Literal(ran) + "\n" +
+			"  if [ \"$LEGION_TLS_URL\" = " + shellprefix.Literal(controlTLSSite.url) + " ]; then echo 'legion-tls-probe: answered 200' >&2; exit 0; fi\n" +
+			"  echo 'certificate verify failed' >&2\n  exit 1\nfi\n" +
+			"exec " + shellprefix.Literal(imageOmp(t)) + " \"$@\"\n"
+		if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(overlay, []byte("retry:\n  modelFallback: true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		seen := filepath.Join(t.TempDir(), "seen")
+		t.Setenv("LEGION_TEST_SEEN", seen)
+		// No PI_CONFIG_FILES of the operator's: the caller's own (a dev box's omp config) would be
+		// the role's list's head, and Oh My Pi would read the role's file alone only once.
+		t.Setenv("PI_CONFIG_FILES", "")
+		realOmpClient := func(invocation string, env []string, stateDir string) []tlsClient {
+			clients := passingImageTLSClients(invocation, env, stateDir)
+			for index, spec := range workerTLSClients {
+				if spec.name == "omp" {
+					clients[index] = reachingTLSClient{spec.build(invocation, env, stateDir)}
+				}
+			}
+			return clients
+		}
+
+		code, stdout, stderr := probeImageWith(realOmpClient, passingTLSPositiveControls,
+			inImage(t, thisBinarysContract, "/nonexistent/omp").flags("--omp", omp, "--pod-safety", "--role-config-files", "implementer="+overlay)...)
+
+		if code != 0 || !strings.Contains(stdout, "\nprobe-image: OK ("+omp+") ") {
+			t.Fatalf("probe-image with the omp at %s, its TLS client and its overlay = %d %q %q, want the OK line naming it", omp, code, stdout, stderr)
+		}
+		if _, err := os.Stat(ran); err != nil {
+			t.Errorf("the TLS omp client never ran the omp at %s: %v", omp, err)
+		}
+		raw, err := os.ReadFile(seen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// With no PI_CONFIG_FILES of the operator's (emptied above), the role's whole list is its
+		// one file, so Oh My Pi reads it twice: alone, and as the whole list.
+		if got := len(regexp.MustCompile(`(?m)^`+regexp.QuoteMeta(overlay)+` written file$`).FindAllString(string(raw), -1)); got != 2 {
+			t.Errorf("Oh My Pi ran %d times on the implementer's overlay %s, want twice (alone and as the whole list): %q", got, overlay, raw)
+		}
+	})
 }
 
 // The image build's probe, which has none of the operator's model configuration, skips the agents'
@@ -501,7 +660,9 @@ func TestProbeImageNamesTheUserOfTheSeedItsPointerNames(t *testing.T) {
 
 	code, stdout, stderr := probeImage(img.flags()...)
 
-	want := ")\nprobe-image: nats-nkey-user=" + public + "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
+	// The TLS probe's last line before it is the UNKNOWN line of the last client held to a public
+	// site the stand-ins do not reach (probeImage).
+	want := ": not asked: the test asks no public site\nprobe-image: nats-nkey-user=" + public + "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
 	if code != 0 || !strings.HasSuffix(stdout, want) || strings.Contains(stdout+stderr, seed) {
 		t.Fatalf("probe-image with a user seed = %d %q %q, want the table, then %q, and no seed", code, stdout, stderr, want)
 	}
@@ -618,12 +779,15 @@ func TestProbeImageWithPodSafetyProbesOnThePodsBaseline(t *testing.T) {
 			}
 			sessions := map[string]int{}
 			for _, run := range runs {
-				fields := strings.Fields(run)
-				if len(fields) != 3 || !tc.overlays.MatchString(fields[0]+" "+fields[1]) {
+				// The record is PI_CONFIG_FILES, whether its first overlay exists, and
+				// OMP_SESSION_STORAGE, a space apart: the overlays are paths, which hold a space
+				// wherever the test's temporary directory does, so the record is read from its end.
+				last := strings.LastIndexByte(run, ' ')
+				if last < 0 || strings.LastIndexByte(run[:last], ' ') < 0 || !tc.overlays.MatchString(run[:last]) {
 					t.Errorf("a probe ran Oh My Pi with %q, want %s", run, tc.overlays)
 					continue
 				}
-				sessions[fields[2]]++
+				sessions[run[last+1:]]++
 			}
 			if want := map[string]int{tc.sessions: len(runs) - 1, "legion-launch-probe": 1}; !maps.Equal(sessions, want) {
 				t.Errorf("the probes ran Oh My Pi with OMP_SESSION_STORAGE %v, want %v: the session-storage probe's own value once, %q otherwise", sessions, want, tc.sessions)

@@ -266,7 +266,13 @@ plugins="$work/home/.omp/plugins/node_modules/@sjawhar"
 mkdir -p "$plugins/pi-legion" "$plugins/pi-envoy"
 jq '{name, version, legion}' "$root/packages/pi-legion/package.json" >"$plugins/pi-legion/package.json"
 jq '{name, version}' "$root/packages/pi-envoy/package.json" >"$plugins/pi-envoy/package.json"
-pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home")
+# PATH is handed over by value, as the other e2e scripts hand theirs to the services they start
+# through held-port.py: start_kept runs `python3` by name (lib/rig.sh), and the first python3 can
+# be a version manager's shim that starts the interpreter with a PATH of its own. mise 2026.10.11's
+# python3 shim, in a mise-activated environment, put that environment's PATH in front of the
+# entries put first, so the daemon held-port.py starts would find that environment's tmux before
+# the real one put first above.
+pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home" PATH="$PATH")
 
 # Beyond what boot needs, the file plants what the state's `settings` must show and must not
 # (LEGION-791): a review_round_cap the default would not answer, a github_apps block whose
@@ -440,17 +446,23 @@ jq -e --arg p "$project" \
 # withheld row carries `source` at all. The twenty-first row is `claude-code` (INFRA-220): the
 # worker image carries Claude Code's pin and the Legion plugin unconditionally — the binary itself
 # a pod installs at launch — so every deployment's image is probed for the pin and the plugin,
-# this one included.
-jq -e '(.capabilities | length) == 21
+# this one included. The twenty-second is `repository-cache-room` (INFRA-4036): present, since
+# the tmux runtime runs no repository cache, and carrying `source` "caches" (contract 213), the
+# repository caches' health reads being where that row is measured from whatever the runtime;
+# `legion state` is read from no pod, so nothing narrows the word away here.
+jq -e '(.capabilities | length) == 22
   and (.capabilities | map(select(.name == "resource-limits" and .status == "open"
     and .configLine == "capabilities.decided.resource-limits: \"<reason>\""
     and .source == "configuration")) | length) == 1
   and (.capabilities | map(select(.name == "pool-capacity" and .status == "present"
     and .source == "configuration")) | length) == 1
+  and (.capabilities | map(select(.name == "repository-cache-room" and .status == "present"
+    and .source == "caches")) | length) == 1
   and (.capabilities | map(select((.name != "resource-limits" and .name != "pool-capacity"
-    and .name != "secrets" and .name != "model-fallback") and has("source"))) | length) == 0' \
+    and .name != "secrets" and .name != "model-fallback" and .name != "repository-cache-room")
+    and has("source"))) | length) == 0' \
   "$work/state1.json" || {
-  echo "the state does not carry the 21-row capability report with resource-limits and pool-capacity's source under tmux"
+  echo "the state does not carry the 22-row capability report with resource-limits, pool-capacity and repository-cache-room's sources under tmux"
   exit 1
 }
 # The daemon's resolved settings ride the same document (LEGION-791, contract 35): the value the

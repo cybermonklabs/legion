@@ -150,6 +150,7 @@ func issueChildrenRows(t *testing.T, database *store.Store, statement string, co
 // statement adds are the three columns past main's seven, the needs array and the claim's two,
 // which the issue read's own test checks.
 func TestTheIssueChildrenAnswerWhatMainsStatementDid(t *testing.T) {
+	t.Parallel()
 	fixture := newIssueChildrenFixture(t)
 	const mainColumns = 7
 	want := issueChildrenRows(t, fixture.database, mainIssueChildrenQuery, mainColumns, fixture.root)
@@ -169,6 +170,7 @@ func TestTheIssueChildrenAnswerWhatMainsStatementDid(t *testing.T) {
 // key, and on a fixture this small it keys them and the whole-table read hides. Naming the
 // index holds the statement to one read of each issue either way.
 func TestTheIssueChildrenReadEveryIssueThroughTheParentIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newIssueChildrenFixture(t)
 	plan := planWithoutSeqScans(t, fixture.database, issueChildrenStatement, fixture.root, refs.VisibilityArg(everyReader))
 	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
@@ -199,6 +201,7 @@ func TestTheIssueChildrenReadEveryIssueThroughTheParentIndex(t *testing.T) {
 // elements of its `blocked_by` and its `claim` — so the page reads a child as it reads an issue.
 // A child with nothing to say for either leaves the field out rather than sending it empty.
 func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
+	t.Parallel()
 	fixture := newIssueChildrenFixture(t)
 	children := map[string]model.IssueChild{}
 	for _, child := range readIssueChildren(t, fixture.handler, fixture.root) {

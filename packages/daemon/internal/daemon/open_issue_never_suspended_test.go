@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -33,6 +34,7 @@ import (
 // by its own kind and op: an `issue_release` row and `supervise` rows whose op is `release`,
 // against the `issue_suspend` row and the `suspend` op of a stop that ends a claim's phase.
 func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
+	t.Parallel()
 	const (
 		root     = "LEGION-800"
 		forward  = "LEGION-801"
@@ -61,7 +63,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	for _, issue := range issues {
 		putOutboxIssue(t, pool, records, issue)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
@@ -183,7 +185,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	apply("hand-back", intake.DispatchAskReply{Key: root, Ask: "ask-person", WaitingOn: "human", Actor: dispatch.Actor{Kind: "session", ID: "ses-architect"}, Mark: record.EventMark{Seq: 11}})
 	apply("awaiting-tick", intake.ControllerTick{})
 	var rootAfterWait *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rootAfterWait, err = records.Issue(ctx, tx, root)
 		return err
@@ -265,6 +267,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 // TestAnOpenIssueThatIsWorkingHasNoClaimStopped that an open issue whose pod is working takes
 // none of these.
 func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
+	t.Parallel()
 
 	t.Run("tree move", func(t *testing.T) {
 		carriedChildStops(t, "LEGION-811", "LEGION-812", func(apply func(string, intake.Fact)) {
@@ -282,7 +285,7 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 			child := record.Issue{Key: "LEGION-821", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B"}
 			putOutboxIssue(t, pool, records, root)
 			putOutboxIssue(t, pool, records, child)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
 			}); err != nil {
 				t.Fatal(err)

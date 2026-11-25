@@ -173,11 +173,12 @@ if [ -z "$prebuilt_bin" ]; then
 fi
 
 if [ "$mode" = issuer ]; then
-  # One client, the broker's, whose secret the issuer reads from the file once at its start. An
-  # authorization with nobody queued signs alice in, so every sign-in that reaches the issuer ends
-  # with a person; her hd claim is signin_domain, the domain the broker requires.
+  # One client, the broker's, whose secret the issuer reads from the file once at its start, and
+  # whose one callback is the approval page's on loopback, taken at whatever port the broker row
+  # binds. An authorization with nobody queued signs alice in, so every sign-in that reaches the
+  # issuer ends with a person; her hd claim is signin_domain, the domain the broker requires.
   exec "$work/dev-oidc-issuer" \
-    --code-flow "$signin_client=$signin_secret_file" \
+    --code-flow "$signin_client=$signin_secret_file=http://127.0.0.1/signin/callback" \
     --sign-in-as "alice@$signin_domain"
 fi
 

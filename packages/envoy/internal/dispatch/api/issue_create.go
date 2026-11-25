@@ -49,12 +49,11 @@ type issueDuplicateError struct {
 
 // createIssueInput is the body of POST /api/v1/issues.
 type createIssueInput struct {
-	// Project and Title are not required of a caller: a create that names an external
-	// owner/repo#n takes the project from that repository's mapping (s.repoProject, or
-	// DefaultProject when the repository is mapped nowhere) and, when the body names no title,
-	// takes the ref itself for one; only a create that names neither is refused
-	// (projectKeyPattern, "title is required").
-	Project   string   `json:"project"`
+	// Project is required of every create, an import of an external owner/repo#n included:
+	// Dispatch finds no project from a repository. Title is not required of a caller: an import
+	// takes the external ref as its title when the body names none, and only a create that names
+	// neither a title nor an external ref is refused ("title is required").
+	Project   string   `json:"project" required:"true"`
 	Title     string   `json:"title"`
 	Parent    *string  `json:"parent"`
 	BlockedBy []string `json:"blocked_by"`
@@ -114,52 +113,29 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var externalRepo, externalNumber string
-	usingDefaultProject := false
 	if input.External != "" {
+		// An import names its project in the body, as every other create does: Dispatch finds
+		// no project from a repository. The refusal comes before the scope check and before the
+		// ref is resolved, so a create that names no project reads nothing and writes nothing.
+		if input.Project == "" {
+			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "project is required when external is set")
+			return
+		}
 		var err error
 		externalRepo, externalNumber, err = externalRef(input.External)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		project, err := s.repoProject(r.Context(), who, externalRepo)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if project == "" {
-			project = s.deps.DefaultProject
-			if project == "" {
-				writeError(w, "PROJECT_UNMAPPED", http.StatusBadRequest,
-					"repository is not mapped in repository settings and DISPATCH_DEFAULT_PROJECT is not configured")
-				return
-			}
-			usingDefaultProject = true
-		}
-		if input.Project != "" && input.Project != project {
-			writeError(
-				w,
-				"EXTERNAL_PROJECT_MISMATCH",
-				http.StatusBadRequest,
-				fmt.Sprintf(
-					"external issue project %s must match repository settings project %s",
-					input.Project,
-					project,
-				),
-			)
-			return
-		}
-		input.Project = project
 	}
 	// The one write whose project its address does not name, so withinProjectScope leaves it
-	// here by its class (scopeProjectInBody). It runs the moment that project is settled —
-	// read from the body above, or from the repository the external ref names — and so before
-	// the ref is resolved to an issue already imported: a caller whose credential's list does not
-	// cover that project (access.CredentialCovers), or a broker token scoped to another project,
-	// naming one imported into it is refused rather than answered that project's issue, which
-	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing is
-	// written before this point. A credential that lists none is refused nothing here; a project
-	// it does not see is the project read's missing row below.
+	// here by its class (scopeProjectInBody). It runs once the body's project is read, and so
+	// before the external ref is resolved to an issue already imported: a caller whose
+	// credential's list does not cover that project (access.CredentialCovers), or a broker token
+	// scoped to another project, naming one imported into it is refused rather than answered that
+	// project's issue, which respondWithExistingExternalIssue would also record a related-check
+	// outcome on. Nothing is written before this point. A credential that lists none is refused
+	// nothing here; a project it does not see is the project read's missing row below.
 	if s.refuseOutsideCallerProjects(w, r, input.Project) {
 		return
 	}
@@ -179,7 +155,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 					"EXTERNAL_PROJECT_MISMATCH",
 					http.StatusBadRequest,
 					fmt.Sprintf(
-						"external issue project %s must match repository settings project %s",
+						"%s is already linked to %s of project %s, so it cannot be imported into project %s",
+						input.External,
+						existingKey,
 						existingProject,
 						input.Project,
 					),
@@ -210,9 +188,6 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		capExceeded(w, "title", length, contracts.IssueTitleMax)
 		return
 	}
-	if usingDefaultProject {
-		input.Labels = append(input.Labels, repoLabelPrefix+externalRepo)
-	}
 	labels, err := normalizeIssueLabels(input.Labels)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -236,11 +211,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	repo, _, err := parseIssueRepo(input.Repo)
+	repo, _, err := parseIssueRepo(input.Repo, "INVALID_ISSUE")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	repo = s.renamedRepo(repo)
 	// The near-copy gate, run once for every create it covers whatever `force` says: a forced
 	// create's record of what it went past must be the refusal an unforced create would have met,
 	// and two reads would drift. The gate bounds and logs its own read (duplicateGate), and a read
@@ -359,9 +335,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The project's owner lock comes before its row's update: every writer of a projects row
-	// takes it first (an event append, a mapping write, the default assignee's PUT, the gated
-	// steps' publish), so none of them holds the row while it waits on the lock this create
-	// holds.
+	// takes it first (an event append, the default assignee's and the default repository's PUTs,
+	// the gated steps' publish), so none of them holds the row while it waits on the lock this
+	// create holds.
 	//
 	// The create's read phase (INFRA-636): the spec's parse, render and encoding (SeedText), its
 	// task count, its reference index and the advice all run here, before the update of the
@@ -551,9 +527,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.External != "" {
+		// The link is stored under the repository's new name where a rename pair renames it
+		// away, as every write of a stored URL is (refs.Renames.CanonicalURL).
 		if _, err := tx.Exec(r.Context(), `
 			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github_issue')
-		`, key, externalURL(externalRepo, externalNumber)); err != nil {
+		`, key, s.deps.Renames.CanonicalURL(externalURL(externalRepo, externalNumber))); err != nil {
 			if !isUniqueViolation(err) {
 				s.writeHandlerError(w, err)
 				return

@@ -259,7 +259,7 @@ func TestReconcileWritesTheDeployedEvent(t *testing.T) {
 		mustEncode(t, w, shippedRunJobs())
 	})
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	requireDeployedEvent(t, ctx, pool, deployedIssue, "acme/widgets", 501, 900, "2024-01-01T02:10:00Z")
 	if at := deployedEventAt(t, ctx, pool, "acme/widgets", 501); at == nil {
@@ -287,7 +287,7 @@ func TestIntakeWritesTheDeployedEvent(t *testing.T) {
 	fake.handle("GET /repos/acme/widgets/actions/runs/900/jobs", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, shippedRunJobs())
 	})
-	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil)
+	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, unrenamed())
 
 	envelope, err := json.Marshal(map[string]string{
 		"kind": "workflow", "action": "completed", "repo": "acme/widgets",

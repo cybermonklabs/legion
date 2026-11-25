@@ -1002,7 +1002,7 @@ var oweDocumentIndexStatement = `
 	select id, now(), $2::integer from artifacts where id = $1::uuid
 	on conflict (artifact_id) do update set version = null,
 		store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at),
-		store_owed_rule = ` + refs.OwedRuleKept("document_block_versions", "excluded.store_owed_rule", "\n\t\t\t") + `
+		store_owed_rule = ` + refs.OwedRuleKept("document_block_versions", "excluded.store_owed_rule") + `
 `
 
 // drainOwedDocument drains one `artifact` row of the re-index queue by owing its document a block

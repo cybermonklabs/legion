@@ -37,9 +37,6 @@ declare -A missing=(
   [group]=no-such-group
   [agent-token]=00000000-0000-4000-8000-000000000009
   [near-copy-check]=00000000-0000-4000-8000-00000000000a
-  # A repository no issue of any project names, for a row whose body names an external reference
-  # (write_probes.go's probeMappedRepository). PRIV's is acme/priv-repo, PRIV-1's own.
-  [mapped-repository]=no-such-repo
   # A step record's id no run holds (write_probes.go's probeStep); the issue the path names decides
   # what is hidden, so PRIV's side names the same id.
   [step]=00000000-0000-4000-8000-00000000000b
@@ -102,7 +99,6 @@ priv_object() {
     person) printf '%s' "$bob" ;;
     repository-owner) printf acme ;;
     repository-name) printf priv-repo ;;
-    mapped-repository) printf priv-repo ;;
     step) printf 00000000-0000-4000-8000-00000000000b ;;
     delivery-run) printf '%s' "$priv_run" ;;
     priority) printf access-work ;;
@@ -133,7 +129,7 @@ pub_object() {
     handoff-phase) printf plan ;;
     session) printf ses-pub-session ;;
     repository-owner) printf acme ;;
-    repository-name | mapped-repository) printf pub-repo ;;
+    repository-name) printf pub-repo ;;
     group | email | agent-token | person | priority) priv_object "$1" "$2" ;;
   esac
 }

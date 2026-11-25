@@ -80,7 +80,18 @@ cat > "$work/bin/gh" <<GH
 # stand-in \`timeout\` answers itself calls no gh, so each such attempt before this one moves
 # the attempt a \`kill-wrapper.<n>\` reaches one further on: the same drift the stand-in
 # \`timeout\`'s own head describes for \`stderr.<n>\`. No case in this file writes both.
+#
+# \`gh api rate_limit\`, which gh-read.sh's wait reads a spent budget's reset from, is answered
+# apart: it prints \`reset\` (what gh's \`--jq\` would print, the reset of a budget at 0, or 0) and
+# is recorded under \`rate-calls\`, not \`calls\`, so it neither counts as an attempt nor moves the
+# per-call files above.
 set -euo pipefail
+if [ "\${1:-}" = api ] && [ "\${2:-}" = rate_limit ]; then
+  n=\$(find "$work/rate-calls" -maxdepth 1 -type f | wc -l)
+  printf '%s\n' "\$*" > "$work/rate-calls/call.\$n"
+  cat "$work/reset"
+  exit 0
+fi
 calls=\$(find "$work/calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/calls/call.\$calls"
 if [ -f "$work/kill-wrapper.\$calls" ]; then
@@ -298,6 +309,10 @@ printf '%s\n' "\$*" > "$work/sleep-calls/call.\$calls"
 SLEEP
 chmod +x "$work/bin/sleep"
 
+# The stand-in for the runner's per-job process, which gh-read.sh reads the job's start off: bash
+# under the name Runner.Worker (drive_limited runs the script under it).
+ln -s "$(type -P bash)" "$work/bin/Runner.Worker"
+
 # page <id>|<name>|<conclusion>...: the page the stand-in answers with. `--slurp` collects the
 # pages into one array, so the answer is an array of page objects and each holds a `jobs` array.
 # `run_attempt` is in each job because the jobs API puts it there; nothing in the script reads
@@ -334,11 +349,12 @@ happy_page() {
 # do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log, and the
 # stand-in gh's per-call `kill-wrapper.<n>` files, and the stand-in `sleep`'s call log.
 fixture() {
-  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls"
+  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
   rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.*
-  mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls"
+  mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
+  printf '0\n' > "$work/reset"
   retry_seconds=0
   happy_page
 }
@@ -352,6 +368,28 @@ drive() {
   status=$?
   set -e
 }
+
+# drive_limited [NAME=value...] -- <argument>...: drive, under a stand-in for the runner's
+# per-job process (bash under the name Runner.Worker, which gh-read.sh reads the job's start
+# off), with the NAME=value pairs set and JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES unset
+# unless a pair sets them, so a case decides the limit gh-read.sh's wait is held to.
+drive_limited() {
+  local -a assignments=()
+  while [ "$1" != -- ]; do
+    assignments+=("$1")
+    shift
+  done
+  shift
+  set +e
+  out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES PATH="$work/bin:$PATH" GH_TOKEN=t \
+    GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GITHUB_RUN_ATTEMPT=$run_attempt \
+    GH_RETRY_SECONDS=$retry_seconds "${assignments[@]}" \
+    "$work/bin/Runner.Worker" -c '"$@"; exit $?' worker "$read_script" "$@" 2>&1)
+  status=$?
+  set -e
+}
+rate_calls() { find "$work/rate-calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
+utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 
 calls() { find "$work/calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
 args() { cat "$work/calls/call.0"; }
@@ -793,6 +831,53 @@ no|4     fcntl(0, F_SETFD, FD_CLOEXEC)     = 0
 no|4     <... futex resumed>) = -1 ETIMEDOUT (Connection timed out)
 no|3662081 <... clock_nanosleep resumed>0x7fff1f4bea20) = 0
 TRACE
+
+# RATE_LIMITED: the jobs read refused for the repository's spent API budget, as run 44995550797's
+# merge job was at 07:10:31Z on 2026-11-22 (`gh: API rate limit exceeded for installation (HTTP
+# 403)`), where main's ladder made its three attempts in seconds and decided the read failed. The
+# read goes through gh_read and so through gh-read.sh's gh_wait_reset, which reads the reset from
+# `gh api rate_limit` and waits for it when it falls at least 30 s before the job's limit. The
+# stand-in `sleep` records the wait and returns at once, so no case waits it out.
+rate_limited="gh: API rate limit exceeded for installation (HTTP 403)"
+
+echo "case: RATE_LIMITED, the reset before the job's limit: the read waits for it and answers"
+fixture 1 "$rate_limited"
+reset=$(($(date +%s) + 20))
+echo "$reset" > "$work/reset"
+drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json"
+wait_asked=$(sleeps)
+check "exits 0" "$(is "$status" 0)"
+check "reads the reset from the rate_limit route once" "$(is "$(rate_calls)" 1)"
+check "calls the jobs route twice: refused, then answered" "$(is "$(calls)" 2)"
+check "writes the attempt that answered" "$(is "$(entries)" 7)"
+check "logs the wait, naming the reset and the job's limit" \
+  "$(contains "$out" "^::warning::the API budget is spent until $(utc "$reset"); waiting [0-9]* s for it, within this job's limit at ")"
+check "asks sleep once, for the seconds to a second past the reset" \
+  "$([[ $wait_asked =~ ^[0-9]+$ ]] && [ "$wait_asked" -ge 15 ] && [ "$wait_asked" -le 21 ] && echo true || echo false)"
+check "prints no ::error:: line" "$(is "$(errors)" 0)"
+
+echo "case: RATE_LIMITED, the reset past the job's limit: the read fails by name at once"
+fixture 3 "$rate_limited"
+echo "$(($(date +%s) + 3600))" > "$work/reset"
+drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "calls the jobs route once: no ladder after a wait past the limit" "$(is "$(calls)" 1)"
+check "asks sleep for nothing" "$(is "$(sleeps)" '')"
+check "names the reset and the job's limit it falls past" \
+  "$(contains "$out" "^::error::the API budget is spent until .*, past this job's limit at ")"
+check "and the read's own line names the attempt that decided it" \
+  "$(contains "$out" "attempt 1, which decided the failure, answered HTTP 403")"
+check "writes no out-file" "$(is "$(wrote_out_file)" no)"
+
+echo "case: RATE_LIMITED, no limit set: no wait, and the ladder still makes its three attempts"
+fixture 3 "$rate_limited"
+echo "$(($(date +%s) + 3600))" > "$work/reset"
+drive_limited -- jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "after the ladder's three attempts" "$(is "$(calls)" 3)"
+check "each naming the limit it lacks" \
+  "$(is "$(grep -c 'names no time limit to wait within' <<<"$out")" 3)"
+check "asks sleep only for the ladder's two waits" "$(is "$(sleeps)" '0|0')"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.

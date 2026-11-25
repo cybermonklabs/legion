@@ -116,28 +116,36 @@ func keptVolumeSince(s *sandbox) time.Time {
 }
 
 // launcherHelloAck is the acknowledgement an accepted launcher on a pod of kind is answered with,
-// the one place each of its members is decided. An issue pod's launcher is handed the memory
-// guard's settings (Options.MemoryGuard), none when the deployment turned the guard off, and what
-// its cache trimmer runs by (Options.VolumeTrim), none when the deployment configured none. The
-// controller's pod is handed neither here: its guard's settings are a block of their own that
-// this runtime does not carry, and the volume it works on is its Sandbox's own and no issue's
-// cache. In its single-role form its launcher returns before the background block that runs the
-// guard, the trimmer and the git lock sweep. Where the session database names a writer audience,
-// its launcher runs the roles-dir form and reaches that block, and this answer keeps the guard and
-// the trimmer from acting there: the guard runs at its defaults only until this answer turns it
-// off, and the trimmer waits for settings that never come. The sweep there finds no clone, since
-// the pod's working directory is no jj workspace and no start of the controller names one. An
-// absent member is what a launcher reads as "run none". Every issue pod's launcher is also told
-// that this daemon knows the pod's kernel's kill (KernelKills), whatever the guard's settings,
-// since a microVM pod's launcher sends those reports only where it is told so and its roles are
-// owed the note however the guard is set. The controller's pod is never a microVM's, and its
-// launcher carries the reports of no watch, since this answer carries no guard settings.
+// the one place each of its members is decided. Each pod kind's launcher is handed the memory
+// guard's settings of its own kind and never the other's: an issue pod's launcher those of
+// runtime.kubernetes.memory_guard.issue_pods (Options.MemoryGuard), the controller pod's launcher
+// those of runtime.kubernetes.memory_guard.controller_pod (Options.ControllerMemoryGuard), in
+// either of its forms. A kind whose block turned the guard off is handed none. An issue pod's
+// launcher is also handed what its cache trimmer runs by (Options.VolumeTrim), none when the
+// deployment configured none; the controller's pod is handed none of it, the volume it works on
+// being its Sandbox's own and no issue's cache. Its launcher runs no trimmer in its single-role
+// form. Where the session database names a writer audience, its launcher runs the roles-dir form
+// and builds a trimmer, which waits for settings that never come; the git lock sweep there finds
+// no clone, since the pod's working directory is no jj workspace and no start of the controller
+// names one. An absent member is what a launcher reads as "run none". Every launcher of either
+// kind is also told that this daemon knows the pod's kernel's kill (KernelKills), whatever the
+// guard's settings, since a microVM pod's launcher sends those reports only where it is told so
+// and its roles are owed the note however the guard is set. The controller's launcher is answered
+// both, its guard's settings and KernelKills, whatever the project's sandbox is now, since its pod
+// may be one an earlier configuration built, and the launcher, not this answer, knows which
+// sandbox it runs in: a gVisor controller pod's launcher reads the guard's settings and ignores
+// KernelKills, and a microVM controller pod's launcher ignores the guard's settings and sends its
+// reports where KernelKills came, as a microVM issue pod's does (the launcher's runsGuest). So a
+// gVisor controller pod re-adopted after a change of runtime.kubernetes.sandbox.type, which runs
+// on until its next launch replaces it, keeps its guard.
 func (r *Runtime) launcherHelloAck(kind podKind) shimwire.LauncherHelloAck {
-	var ack shimwire.LauncherHelloAck
-	if _, issue := kind.(issuePod); issue {
+	ack := shimwire.LauncherHelloAck{KernelKills: true}
+	switch kind.(type) {
+	case issuePod:
 		ack.MemoryGuard = r.memoryGuard
 		ack.VolumeTrim = r.volumeTrim
-		ack.KernelKills = true
+	case controllerPod:
+		ack.MemoryGuard = r.controllerMemoryGuard
 	}
 	return ack
 }

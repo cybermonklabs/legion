@@ -347,7 +347,7 @@ func TestTheAccountBindingStartsOnlyOnceNoBuildWithoutItIsInTheFleet(t *testing.
 	database := builds.database
 	ctx := context.Background()
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, bindingServerURL+"/auth/callback")
 
 	// 1. This tree alone.
 	options := builds.options(bindingSignIn(t, issuer), nil)

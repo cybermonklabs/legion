@@ -619,24 +619,9 @@ var indexPasses = map[string]string{
 	// under, and the sentinel where there is none, as this build's removal does. It reads no
 	// projected table, and the store only to state the store's own next fact, so it is no repair.
 	"graphcensus/orphans.go#StateOrphanedGone": "each document node not gone at an issue's address that no artifacts row stands behind, the store's row of that node, and the artifact.removed event naming the address as its cause",
-	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
-	// the operator named and what the store itself holds about it, which is neither side of a
-	// projection read to mend the other: it deletes both sides together, the store's through
-	// graphstore.EraseNode, rather than bringing one into line with the other, so it is no repair.
-	"grapherase/erase.go#apply": "the node the operator named",
-	// The same erase's rewrite of the rows it may take no row out of, which is the other half
-	// of that one input: the text of the node the operator named, read before any delete
-	// (readTexts). It writes back the block text and the excerpt cut from it as one read
-	// computed both (readAncestors), so it never reads either to decide what the other should
-	// say.
-	"grapherase/redaction.go#redactBlocks": "the text of the node the operator named",
-	"graphstore/arms.go#nodeArm":           "the nodes its caller states",
-	"graphstore/arms.go#claimArms":         "the claims its caller states",
-	"graphstore/arms.go#tupleInsert":       "the tuples its caller states",
-	// EraseNode is the erase's delete of a node and the tuples its caller listed: it reads the
-	// tuples left of the node to refuse a run whose set moved, and deletes the node its one
-	// caller names.
-	"graphstore/erase.go#EraseNode": "the node its caller names",
+	"graphstore/arms.go#nodeArm":               "the nodes its caller states",
+	"graphstore/arms.go#claimArms":             "the claims its caller states",
+	"graphstore/arms.go#tupleInsert":           "the tuples its caller states",
 	// A node write (queueNodes): the insert of the nodes the store lacks, which locks the ones it
 	// holds, and the move of the ones it holds. The move reads each row it moves, in the snapshot
 	// taken once the insert holds them all, to say which base attributes the write moved: it reads

@@ -122,6 +122,13 @@ func newTestServer(t *testing.T) *testServer {
 // that needs one dependency wired otherwise, such as a tighter rate limit.
 func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	t.Helper()
+	return newProfiledTestServer(t, "", adjust)
+}
+
+// newProfiledTestServer is newTestServerWith whose deployment's profiles file is file, or that has
+// none for "", as the broker's BROKER_PROFILES_FILE is set or not.
+func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *testServer {
+	t.Helper()
 	st := storetest.Open(t)
 
 	local := secrets.NewLocal(
@@ -129,7 +136,12 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "worker-v1"),
 		policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"),
 	)
-	cur := policytest.Current(t, local)
+	var cur *policy.Current
+	if file == "" {
+		cur = policytest.Current(t, local)
+	} else {
+		cur = policytest.ProfiledCurrent(t, local, file)
+	}
 
 	mux := http.NewServeMux()
 	// Behind the answer recorder (answer.Middleware), which cmd/cipherd wraps the mux in, inside
@@ -1022,6 +1034,48 @@ func TestCreateRequestWithUnknownSecretNameIs400UnknownSecret(t *testing.T) {
 	werr := decode[wireError](t, body)
 	if werr.Code != "UNKNOWN_SECRET" {
 		t.Fatalf("code = %q, want UNKNOWN_SECRET", werr.Code)
+	}
+}
+
+// TestCreateRequestForASourceOrARefusedProfileIs403 pins, over real HTTP, the two refusals the
+// profiles file gives a name the policy does not serve, each 403 and neither UNKNOWN_SECRET: a
+// source asked for by its own name while a profile of another name uses it is
+// SERVED_ONLY_AS_PROFILES, naming that profile; and a profile that fails against its source, or a
+// github-app secret no profile names, is PROFILE_REFUSED, giving the reason and its detail.
+func TestCreateRequestForASourceOrARefusedProfileIs403(t *testing.T) {
+	ts := newProfiledTestServer(t, policytest.ProfilesFile(
+		`{"name": "GITHUB_READ", "source": "APP_KEY", "github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}}`,
+		`{"name": "GHOST_READ", "source": "NO_SUCH_APP", "github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}}`,
+	), func(*api.Deps) {})
+	ts.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+	ts.Secrets.Put(policytest.TypeSecret("OTHER_APP", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+	for _, name := range []string{"APP_KEY", "OTHER_APP"} {
+		if status, body := ts.sessionReread(t, name); status != http.StatusOK {
+			t.Fatalf("reread %s = %d %s", name, status, body)
+		}
+	}
+	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
+	for _, row := range []struct {
+		name, code string
+		says       []string
+	}{
+		{"APP_KEY", "SERVED_ONLY_AS_PROFILES", []string{"APP_KEY", "GITHUB_READ"}},
+		{"GHOST_READ", "PROFILE_REFUSED", []string{"GHOST_READ", policy.ReasonProfileSourceMissing, "NO_SUCH_APP"}},
+		{"OTHER_APP", "PROFILE_REFUSED", []string{"OTHER_APP", policy.ReasonGitHubAppNoProfile, "no profile"}},
+	} {
+		compact := signAgentSecretRequest(t, sessionKey, ts.URL, "need it", row.name)
+		status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
+			map[string]any{"request": compact, "session_id": nil})
+		werr := decode[wireError](t, body)
+		if status != http.StatusForbidden || werr.Code != row.code {
+			t.Errorf("POST /v1/requests (%s) = %d %s; want 403 %s", row.name, status, body, row.code)
+			continue
+		}
+		for _, said := range row.says {
+			if !strings.Contains(werr.Error, said) {
+				t.Errorf("POST /v1/requests (%s)'s message %q does not name %q", row.name, werr.Error, said)
+			}
+		}
 	}
 }
 

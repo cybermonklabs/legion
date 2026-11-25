@@ -155,6 +155,7 @@ func sqlStatementsOf(text string) []string {
 var rowWritingStatement = regexp.MustCompile(`(?i)\b(insert|update|delete|truncate|copy)\b`)
 
 func TestAskAskedOf(t *testing.T) {
+	t.Parallel()
 	// Handing a question to a person is one person asking another, so the route is the person's
 	// alone: the deployment's shared bearer holds no person to hand one from.
 	t.Run("the shared agent bearer and an anonymous caller are refused", func(t *testing.T) {

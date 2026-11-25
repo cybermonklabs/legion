@@ -21,7 +21,7 @@ Every Legion agent process under `runtime: kubernetes` — architect, planner, i
 It carries:
 
 - the pinned OMP fork build the daemon's default `omp_invocation` names
-  — resolved at build time with the same `mise x github:cybermonklabs/oh-my-pi@<version>` mechanism a tmux host uses, from the single pin source `.omp-pin`;
+  — the linux-x64 archive of the release the single pin source `.omp-pin` names, fetched at build time from that release's download address and checked against the Dockerfile's `ARG OMP_SHA256` (a bump of `.omp-pin` moves that digest in the same commit), and laid out as a tmux host's `mise x github:cybermonklabs/oh-my-pi@<version>` lays it out;
   installed at `/opt/omp/bin/omp` (`LEGION_OMP_PATH`);
 
 - `legion` (`packages/daemon`), compiled from the same commit at `go.work`'s Go version, static, at `/opt/legion/bin/legion` — the `legion` on `PATH` and the image's `ENTRYPOINT` — with the `agent-secrets` client beside it at `/opt/legion/bin/agent-secrets`.
@@ -75,9 +75,10 @@ It carries:
   A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with the push's own `--no-verify` taken out:
   git itself computes the update lines and hands them to that hook, which runs `legion leak-check pre-push`, and `jj git push` makes its push by shelling out to the `git` its `PATH` names, so this one wrapper catches a role's own push and jj's.
   git takes the last `-c` of a name, so that placement outranks a caller's own `-c core.hooksPath` and the runtime's `core.hooksPath=/dev/null` pin alike, and the pin still holds for every other command.
-  The jj wrapper adds one check, and only before a `jj git push`:
-  that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not.
+  The jj wrapper gives jj that wrapper as `git.executable-path` on every command line, and once more as the line's last layer after a push, which outranks every configuration file and a `[[--scope]]` for one command alike.
+  It reads a command as jj does, aliases and `ui.default-command` expanded, runs the expansion it read, and before a `jj git push` or a `jj gerrit upload` checks that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not, or where it cannot read the command.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
+  The rules read a push's added paths and diff as git writes them and scan each one as it arrives, and a refusal names at most 1000 lines and counts the rest, so the pass holds one line, the record in hand, and one commit's author, committer and message, whatever the number and size of the push's files; what grows with the push is the list of its commit ids, and with one long line that line's size, held whole a few times over (a 73 MB line took 416 MiB), since a split line could hide a match that crosses the split.
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
@@ -139,8 +140,8 @@ It carries:
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
-- `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
-  two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve that pin with `mise where` and `mise x`.
+- `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` (the build itself resolves no pin with it):
+  two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve the Oh My Pi pin with `mise where` and `mise x`.
   The image seeds no mise store, so the rig's first run in a fresh pod downloads the pin from GitHub into the role's own `MISE_DATA_DIR`, and mise reads `MISE_GITHUB_TOKEN` when it is set;
 
 - `socat` from Debian trixie's archive, at `/usr/bin/socat`:
@@ -191,7 +192,7 @@ It carries:
 - what the capability check (`packages/daemon/internal/capabilities`, which `legion probe-image` runs
   — [the probe subsection](#the-image-is-probed-before-it-publishes)) requires of the image, each outside `HOME` for the same reason:
   the language servers Oh My Pi's LSP tools start when a working directory carries their root markers
-  — `gopls` (built static in the Dockerfile's `go` stage, at `/usr/local/bin/gopls`), `typescript-language-server` and `pyright-langserver`, the latter two installed under `/opt/language-servers/node_modules` by `npm ci --ignore-scripts` from `packages/daemon/docker/language-servers`'s own `package.json` and `package-lock.json` (the pins live in that `package.json`), with their launchers (and TypeScript's `tsc` and `tsserver`, and the `pyright` CLI) linked at `/usr/local/bin`.
+  — `gopls` (built static in the Dockerfile's `gopls` stage, at `/usr/local/bin/gopls`), `typescript-language-server` and `pyright-langserver`, the latter two installed under `/opt/language-servers/node_modules` by `npm ci --ignore-scripts` from `packages/daemon/docker/language-servers`'s own `package.json` and `package-lock.json` (the pins live in that `package.json`), with their launchers (and TypeScript's `tsc` and `tsserver`, and the `pyright` CLI) linked at `/usr/local/bin`.
   TypeScript stays on this repository's own major, since `typescript-language-server` runs `tsserver`, which TypeScript 7 no longer ships;
   the server resolves the TypeScript installed beside it unless the repository's own `node_modules` holds one, which it prefers.
   From Debian trixie's archive, at `/usr/bin`:
@@ -258,7 +259,7 @@ With `gcc` present both work: the switched toolchain's builds succeed, linked dy
 A deployment still pinning an older image digest has no `gcc` and needs zig as `CC` (`docs/solutions/testing/the-race-detector-runs-in-a-worker-pod-with-zig-as-the-c-compiler-and-a-library-callback-from-an-earlier-test-writes-your-log-sink-INFRA-182.md`).
 
 The image also carries the Go module cache of the two modules `go.work` binds, so a role's first Go build in this repository reads no package registry.
-The build fills it in the Dockerfile's `go` stage, in the layer that copies `go.work`, `go.work.sum` and each module's `go.mod` and `go.sum` and runs `go mod download`, above every source `COPY`, so a commit never rebuilds it.
+The build fills it in the Dockerfile's `go-modules` stage, which copies `go.work`, `go.work.sum` and each module's `go.mod` and `go.sum`, runs `go mod download` and copies no source, so a commit never rebuilds it.
 The runtime stage copies the download cache alone
 — the module zips, `.mod` and `.info` files and their hashes, 380 MiB over 419 module zips
 — to `/home/legion/go/pkg/mod/cache/download`, as the runtime user, its files 0644 in 0755 directories, so a role can add a module the cache does not hold.
@@ -267,11 +268,13 @@ The extracted module trees are left out:
 — those trees and this download cache together — is 2.2 GiB, which buys nothing in every pull.
 A pod tells every role `GOMODCACHE=/legion/go/mod` on the issue's volume (`roleEnvironment`, `manifest.go`), which is empty on a new volume and goes with that volume ([The disk dies with its pod](#the-disk-dies-with-its-pod), [A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), so the image's copy reaches a role as a proxy rather than as its `GOMODCACHE`:
 the build rewrites `/opt/go/go.env`'s `GOPROXY` line to `file:///home/legion/go/pkg/mod/cache/download|https://proxy.golang.org|direct`, and the `|` makes a go command fall through to the public proxy after any error, so a module the cache does not hold still resolves.
-The `go` stage deletes every `@v/list` and `@latest` file from the cache before the runtime stage copies it, and the final stage's toolchain step fails the build if one is there.
+The `go-modules` stage deletes every `@v/list` and `@latest` file from the cache before the runtime stage copies it, and the final stage's toolchain step fails the build if one is there.
 Such a file would name the versions of this image and no other, and a file proxy answers a list request from it with no error, so `go get X@latest`, `go get -u`, `go list -m -u all` and `go list -m -versions` would stop at this image's pins in every repository a role opens.
 Without those files the file proxy answers a version query with a 404, and the query falls through to `proxy.golang.org`, while the `.info`, `.mod` and `.zip` of a pinned version still come from the cache.
 `go.env` is the place for it rather than the final stage's `ENV`, for the reason the cgo paragraph above gives in reverse:
 a variable the image's `ENV` sets is one `runtime.kubernetes.pod.env` may not set, while a `go.env` default leaves `GOPROXY` to an operator, a role, or one command, each of which outranks it through the process environment.
+The `go-modules` stage also deletes the cache's `sumdb` directory, the checksum-database tiles and lookups `go mod download` fetches for the `go.mod` sums `go.work.sum` lacks: they differ with the hour they are read, so with them each build's copy of the cache was new bytes and a new layer.
+A pod's go reads the cache only through the file proxy, which has never served the checksum database (a go asks for it at `<proxy>/sumdb/<name>/supported`); a go whose own `GOMODCACHE` is the image's fetches from `sum.golang.org` the checksums it lacks, as it does for any module the cache does not hold.
 
 The image's `python3` carries Debian's PyYAML, `python3-yaml`, because six of this repository's own gates read a workflow or `.github/ci-images.yaml` with `import yaml`:
 `.github/scripts/check-action-pins.sh`, `check-bun-version.sh`, `check-ci-images.sh`, `check-image-trigger-paths.sh`, `check-release-credentials.sh`, and `check-ci-filters.sh` through `ci_filter_coverage.py`.
@@ -469,7 +472,7 @@ Then:
   This release refuses one operator mount the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at `/var/run/legion/testpg.log` (or `/run/legion/testpg.log`, the same path through the image's link), where role-init now binds the server's log.
   The loader refuses it in every deployment, whether or not it sets `runtime.kubernetes.test_postgres`:
   `runtime.kubernetes.pod.volume_mounts[<i>].mount_path /var/run/legion/testpg.log overlaps /var/run/legion/testpg.log, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's` (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
-  A daemon of this release does not start on a file it refuses, so run this release's `legion start --check-config` on the file before the rollout, and move such a mount elsewhere.
+  A daemon of this release does not start on a file it refuses, so run this release's `legion config check` on the file before the rollout (`legion start --check-config` on a release from before that command), and move such a mount elsewhere.
   A pod on a worker image of an earlier release reads no log and tells no role `LEGION_TEST_PG_LOG`, whatever release the daemon runs: the launcher, role-init and the file the log is bound over all come from the image.
 
 ### Image size and pull time
@@ -508,27 +511,47 @@ each attempt's budget is `slow_command_timeout_seconds` (300 s by default), or, 
 From Sandbox creation through the probe container starting, the daemon allows a separate 300 s startup phase: the documented 213 s cold start fits that bound.
 Once it observes the probe container running, it starts the command phase for the attempt budget and gives `probe-image` a relative command budget 60 s shorter, leaving the command's deadline to report before the daemon collects its exit and log.
 Pod scheduling and image pull consume the startup phase, so the worst-case boot wait is the 300 s startup bound plus the attempt budget.
-The image probe pod reserves 500m CPU so the probe keeps at least 60 s of its 240 s command budget at the defaults: the slowest of five runs at 1 CPU (2026-11-18) predicts 184 s at 250m and 112 s at 500m (`probeReservation`, `packages/daemon/internal/daemon/kubernetes.go`).
+The image probe pod reserves 500m CPU so the probe keeps at least 60 s of its 240 s command budget at the defaults where the public test hosts answer or refuse at once: with the probe serving its own TLS chains, the slowest of eleven runs at 500m took 147 s, 93 s inside the budget, and the slowest of sixteen at 1 CPU 104 s (2026-11-20, each in a CPU-quota scope on a development host, where `main`'s probe ran slower than in the 2026-11-18 runs under gVisor; `probeReservation`, `packages/daemon/internal/daemon/kubernetes.go`).
+A public test host that hangs, as a blackhole does, costs at most one run at each of the two public sites, a client's, or the site's positive control's where it hangs from the start, since no client asks a site that gave no verdict.
+While the served copies of the public chains are asked, only `node`, CodeGraph's `node`, `wget` and `git` ask the public sites, each with a 20 s bound, so such a run stops at 20 s, up to 2 s more for the stop, and the two sites add at most 44 s, which would end that slowest run at about 191 s, 49 s inside the budget, short of the 60 s but inside it, so it takes no exit 75.
+Once a served copy is unasked, as every one is once its leaf has expired (2027-05-03 for the leaves vendored on 2026-11-20), every client asks that public site, so a host that starts to hang at `bq`'s turn costs 60 s and at Chromium's 90 s, each up to 2 s more for the stop: hung at Chromium's turn at both sites, the two add up to 184 s, which would end that slowest run at about 331 s, past the budget, so that probe's deadline cuts it and it exits 75, and hung at `bq`'s turn at both, 124 s, about 271 s, past it too.
+Measured on 2026-11-21 at 500m on the same host, under a one-minute load of 660 to 1,079 on 288 CPUs, a run whose public hosts moved to a blackhole once their positive controls passed took 264.6 s and a run beside it with the hosts left alone 245.5 s: the blackhole cost 19 s there, because `node`, the first client asked, gave up at each host after its own 10 s connect timeout (`UND_ERR_CONNECT_TIMEOUT`); at that load neither run, which had no probe budget, kept inside 240 s, so the pair measures the hung host's cost and not the margin.
 Each TLS client has a bound of its own: 20 s for most, 60 s for `bq`, whose refusal of a chain tries its request three times, sleeping 2 and 4 s between the tries, and whose every call starts three Python interpreters, and 90 s for Chromium's cold start (`packages/daemon/cmd/legion/tls_probe.go`).
-A run its bound ends, with neither a certificate refusal nor an answer in its output, at a site an earlier run of the same probe reached, has no verdict:
+The probe serves the chains it holds the clients to itself, from a server of its own on `127.0.0.1` with two listeners, each at a port the kernel chooses (`tls_probe_server.go`; the public sites' chains, the program that fetched them and the two CA-published roots those chains reach are in `packages/daemon/cmd/legion/tls-fixtures`).
+The probe embeds those two roots and writes them into its state directory, where its positive controls read them, so no image can lack them: a control that could not read its root would otherwise leave no client held to a real chain.
+One listener serves an emSign chain and an AAA chain, each built at the probe's run in the image of the public test site's, under roots named as the distrusted roots but with keys the probe makes and never writes, and a control chain.
+The other serves the two public test sites' own chains, certificates only, with a key of the probe's own: a client refuses such a chain for what it finds in it, as at the public site, or gets past it and fails the server's signature, which the probe reads as an acceptance.
+Each client reaches that server as its HTTPS proxy, or, for `redis-cli` and `socat`, by its address and the site's name, so no client resolves a name or leaves the pod for those chains, and they decide the probe: each client must refuse the emSign and AAA chains for a certificate error, and accept the control's chain, whose root the probe gives each client for the control alone, and each client that checks a chain during the handshake must refuse the public sites' own chains before the server's signature.
+`node`, CodeGraph's `node`, `wget` and `git` check a chain only after the handshake, so they fail the server's signature before they read a chain it cannot sign for, and the probe holds those four to the two public test sites instead.
+A public site fails the probe only where a client accepts its chain: one that cannot be reached, or gives no verdict, fails nothing, no later client asks it, and the probe prints `probe-image: UNKNOWN: <client> against <host>: <why>` for each client it could not hold to it, and `probe-image: UNKNOWN: the <site> chain at <host>: <why>` for a site no client asks.
+A refusal there counts only where it is a refusal of the site's own chain: `node`, CodeGraph's `node`, `bun`, `omp` and `uv` refuse the public chains as revoked or distrusted, by a list keyed to those chains' certificates, so a refusal of theirs there in other words, as of a chain another server serves under the site's name, reads as `UNKNOWN`; every other client refuses any chain whose root it lacks in the words it refuses the site's, so its refusal there cannot be told from a refusal of such a chain, and the probe records it as a refusal.
+A client that got past the chain and then an error status from the site, a 401, a 429 or a 503 as from an outage or a rate limit, accepted it: each HTTP client's wording for that status reads as an acceptance, and the public site's positive control, which gets the same status, still asks the clients.
+A served copy of a public chain whose positive control refuses it as expired, as each does once its leaf has expired, is reported the same way, and every client is held to that public site in its place.
+Every other positive control run of a served copy that does not pass fails the probe, as a built chain's positive control does: one that exited for any other reason, as a curl that cannot read its root or an isolation run that did not refuse the control, and one its bound or a signal ended; one the probe's deadline ended has no verdict.
+The one exception is a first control run whose output already shows the server's signature failing: it got past the chain, whatever ended it after that, the probe's deadline aside, so the control's isolation run still decides the copy.
+From 30 days before a served leaf's end, the probe prints `probe-image: WARNING: the served <site> chain's leaf, <subject>, is valid until <time>, …` with the command that vendors the chains again (`cd packages/daemon/cmd/legion/tls-fixtures && go run vendor.go`), and the same line as a GitHub Actions `::warning::`; inside the image build BuildKit prefixes that line, so it stays a log line there, and the worker image workflow's step "Warn before a served TLS leaf expires" makes the annotation on the run, from the checked-in leaves, as a warning and never a failure.
+A run its bound ends, with neither a certificate refusal nor an answer in its output, at a site the probe's server serves, once the positive controls reached it, has no verdict:
 on a node where the image is new, GKE image streaming loads a client's files at their first read, and the first run of a large client can outlast its bound.
-An earlier run reached a site when a positive control accepted its pinned root there, a client refused a compromised chain there for a certificate error, or a client reached the control site.
+The positive controls reach the server's emSign, AAA and control sites when they pass, and a served copy of a public chain when its own positive control passes.
 After every client's first run at every site, the probe runs each run with no verdict once more, with two times its bound, and that run decides it, so one TLS run takes at most three times its bound, and up to 2 s more for each of its two stops (`procgroup`).
-A run its bound ends at a site no earlier run reached fails as before, since the network may not reach that site, and the positive controls get no second run, so a pod with no egress still fails at once.
-A run a signal ends before its bound fails whatever it printed, and a run whose output already shows a refusal or an answer is judged by that output.
+A run its bound ends at a public site is unknown there and reads as `UNKNOWN`, and the positive controls get no second run, so a pod whose own loopback fails still fails at once.
+A run whose output already shows an answer is an acceptance whatever ended it but the probe's deadline, a signal included, so at a public site, as at a compromised chain, it fails the probe.
+So that an accepted 200 shows in the output, `node`, CodeGraph's `node`, `bun` and `omp` write the status of every answer to stderr first (`legion-tls-probe: answered 200`), and `wget`'s `URL:<url> […] -> "/dev/null"` line, which it prints once it has saved the page, reads as an answer; a client that only exits 0 on a 200 (`curl`, `python3` and the others) shows nothing of it, so a signal in the moment between the answer and that exit leaves its run unavailable.
+Chromium's answer is also the page it dumps (`--dump-dom`, on its stdout), which it prints only once the page has loaded and not at all for a failed navigation, so a Chromium run that dumped the page and was then ended by a signal or its bound accepted the chain.
+A run a signal ends before its bound is otherwise unavailable whatever it printed, and a run its bound ends whose output already shows a refusal is judged by that output.
 The probe holds `gcloud`, `bq`, `az`, `mise` and `socat` to the compromised chains only where each is on `PATH`.
 Where one is not, the probe reports it `absent` and fails nothing for it, because those five are outside the floor every deployment's image is held to.
 Of the probe pod's variables, each TLS client keeps only those the image declares and the trust and verification settings the image's clients read, such as `SSL_CERT_FILE`, `NODE_TLS_REJECT_UNAUTHORIZED` and `GIT_SSL_CAINFO` (`tlsKeptVariables` and `tlsTrustVariables`, `packages/daemon/cmd/legion/tls_probe.go`).
 So a `runtime.kubernetes.pod.env` that sets one of those variables to make the roles accept a compromised chain fails the probe, and no credential variable of the pod's reaches a test site.
 The probe does not test a trust override that reaches the roles any other way: through a file that a dropped variable names (a `CURL_HOME` curlrc with `insecure`, `UV_CONFIG_FILE`'s `allow-insecure-host`), through the `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`/`KEY`/`VALUE` variables (`http.sslVerify=false`), through a `NODE_OPTIONS` preload or a `PYTHONPATH` `sitecustomize`, through a dotfile of the pod's home, through the image's mise system file (`/etc/mise/config.toml`), which the probe's `mise` does not read, or through a configuration file of the directory a role works in.
-It does not test a proxy either: no proxy variable of the pod's reaches a client, because a proxy URL can carry a login, so the probe tests each client's direct path to each site.
-Where a pod reaches the sites only through a proxy, the probe fails at its positive controls (below), which cannot reach the sites; where a pod has a proxy as well as direct egress, the probe tests the direct path while the roles' traffic takes the proxy.
+No proxy variable of the pod's reaches a client, because a proxy URL can carry a login: at the probe's own server each client's proxy is that server, and at the public sites the probe tests each client's direct path.
+Where a pod reaches the public sites only through a proxy, their positive controls cannot reach them, so no client asks them and both are reported `UNKNOWN`; where a pod has a proxy as well as direct egress, the probe tests the direct path while the roles' traffic takes the proxy.
 Each client runs with a home of its own in the probe's state directory and with that directory as its working directory, which the probe makes holding three files, the dummy access token `gcloud` and `bq` sign in with, the `go.mod` `go` reads and the workspace `pyproject.toml` `uv` reads, and where the clients keep their homes and state.
 Five clients that read configuration from elsewhere each take the flag, the variable or the file that stops it: `curl` takes `-q` first (the curlrc of its user's passwd home); `mise` takes `--no-config` (the parents of its working directory); `uv` reads the state directory's workspace `pyproject.toml`, which makes that directory its workspace root, so it reads no `pyproject.toml` or `uv.toml` above it and still reads the image's system `uv.toml`, asking any index that file names before the test site, whose answer the probe may then read as the site's; `git` takes `GIT_CEILING_DIRECTORIES` (a repository above it); and `go` finds the state directory's own `go.mod` before any `go.mod` above it.
 `bun` and `omp` also read configuration from elsewhere, the `package.json` and `tsconfig.json` of the state directory's parents, and take nothing that stops it, since neither file holds a TLS setting of Bun's.
 So no credential file of the pod's reaches a test site either.
-The positive controls, which check before any client is probed that each compromised site's chain verifies against its pinned root alone, run the same way (`tlsPositiveControlSpec`).
-A command stopped by the probe's aggregate deadline (`--probe-budget`) has no verdict, and so has every check that deadline cut: the launch probes (`daemon.ProbeImage`, recorded as `launch probes: …`), a capability row checked after it (`unanswered`), a positive control, and a role's overlay read that returned after it.
+The positive controls, which check before any client is probed that each of the probe's compromised chains verifies against its fixture root alone and that the control's chain is refused with that root, that each served public chain gets past its CA-published root to the server's signature, and whether each public site still serves a chain that verifies against its CA-published root (an error status after it verified counts), run the same way (`tlsPositiveControlSpec`).
+A command stopped by the probe's aggregate deadline (`--probe-budget`) has no verdict, at a public site as at every other, and so has every check that deadline cut: the launch probes (`daemon.ProbeImage`, recorded as `launch probes: …`), a capability row checked after it (`unanswered`), a positive control, and a role's overlay read that returned after it.
 A failure seen before the deadline still fails, and a failure decides over a run with no verdict.
 Where nothing failed and something has no verdict, `legion probe-image` prints `legion probe-image: worker probe has no verdict: <client> <site>: <detail>; …` and exits 75, `EX_TEMPFAIL` (`bootprobe.NoVerdictExit`); every failure still exits 1.
 Each TLS line of a run that its bound, the deadline or a signal ended names which one ended it and after how long (`its 20s limit ended it after 20.0s: …`, `the probe's deadline ended it after …`, `signal: killed ended it after 0.3s, before its 20s limit: …`).
@@ -639,7 +662,7 @@ the mark reads `unread` when the probe could not read `retry.modelFallback` unde
 An image row the image carries prints `present` with its evidence (`codegraph`'s:
 the CLI on PATH and the plugin enabled in the profile's lock, which a pod's launch loads with extension discovery on).
 A live row prints `reported` (``a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: <summary>``:
-the probe proves nothing of it; [The deployment's capability report](#the-deployments-capability-report) says what each session measures), a deployment row `reported` too (the daemon reports it from the deployment's configuration), a withheld row `withheld` with its decision, and an image row the image lacks `missing` with why.
+the probe proves nothing of it; [The deployment's capability report](#the-deployments-capability-report) says what each session measures), a deployment row `reported` too, naming what the daemon measures that row from (`the daemon reports it from <source>: <summary>`, where `<source>` is the row's own, such as `the deployment's configuration` for `resource-limits` and `each repository cache's last health read` for `repository-cache-room`), a withheld row `withheld` with its decision, and an image row the image lacks `missing` with why.
 A build whose image lacks a capability fails, the probe naming every missing one.
 The daemon's Agent Sandbox runtime runs the same command in a probe Sandbox, `legion-probe-<project>-<digest12>`, with its own contract, under the operator's pod, at every boot, and requires `agent-models=resolved`:
 each agent's model resolves, with a working key, as the task tool resolves a subagent's (`packages/daemon/internal/runtime/sandbox/probe.go`).
@@ -758,9 +781,9 @@ A WebKit check runs in a build stage of its own, `webkit-check`, as `legion`, on
 It downloads the WebKit build of the Playwright `packages/dispatch` locks, about 90 MB from Playwright's CDN, into a scratch directory it removes, and launches it once, headless, through Playwright's own host validation (`packages/daemon/docker/webkit-launch.mjs`).
 So a pull request that moves `packages/dispatch` to a Playwright whose WebKit needs a library the image lacks fails the `worker-image` job.
 Playwright checks that download against no hash, so nothing it writes may reach the image:
-only the launch's one line, `webkit: Playwright <version> launched WebKit <version>`, crosses, as a marker file the runtime stage binds, prints and checks right after it copies Bun in.
+only the launch's one line, `webkit: Playwright <version> launched WebKit <version>`, crosses, as a marker file the runtime stage binds, prints and checks right after the toolchain step and the Claude Code pin.
 That bind is what makes BuildKit build the stage at all.
-The stage reads Node from the toolchain stage's `/opt/node` and `playwright-core` from the plugin stage by bind mount, and BuildKit reads a bind mount's source by content, so it reruns only when the base or its packages, the Node pin, the locked Playwright or `webkit-launch.mjs` changes, never for a change to the plugins, the skills, the toolchain step or `legion`.
+The stage reads Node from the toolchain stage's `/opt/node` and `playwright-core` from the plugin-deps stage by bind mount, and BuildKit reads a bind mount's source by content, so it reruns only when the base or its packages, the Node pin, the locked Playwright or `webkit-launch.mjs` changes, never for a change to the plugins, the skills, the toolchain step or `legion`.
 To check a published image's toolchain end to end, a project Python install included:
 
 ```sh
@@ -967,6 +990,7 @@ The dialect follows the URL scheme; Legion delivers Postgres.
 On the first start with `sql`, Oh My Pi's own `SqlSessionStorage` runs `CREATE TABLE IF NOT EXISTS
 omp_session_files` (columns `path TEXT PRIMARY KEY`, `content TEXT NOT NULL`, `mtime_ms BIGINT NOT NULL`, `title TEXT`, `title_source TEXT`, `title_updated_at TEXT`) and warms its index from every row.
 From the pinned build on, it also makes `omp_session_leases` (one row per session a live process holds: `session_id`, `holder`, `host`, `pid`, `acquired_at`, `heartbeat_at`) and its index `omp_session_leases_holder` where they are missing, as whichever login starts it; a login that owns no table needs `SELECT`, `INSERT`, `UPDATE` and `DELETE` on that table, and its owner makes it first so that no agent login owns it (`docs/session.md` of the pinned tag gives the statements).
+It also makes the blob table `omp_session_files_blobs` (one row per image a session names and cannot draw again: `sha256`, `content`, `byte_len`, `mime_type`, `created_ms`) and the reference table `omp_session_files_refs` (`path`, `sha256`) with its index `omp_session_files_rhash` on `sha256` the same way, and it refuses to start unless the reference table has an index on `sha256` and its login holds `INSERT`, `UPDATE` and `DELETE` on both tables.
 Legion manages no schema and no migration: the tables are Oh My Pi's.
 One row is one session; `path` is the same string the session would have had as a file, `content` is the JSONL transcript.
 
@@ -1225,7 +1249,7 @@ With the store settled, every generation a launcher starts gets two variables in
 `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE=/var/run/legion/providers/OMP_SESSION_SQL_DSN`.
 The pod baseline (`internal/podsafety`) keeps them, where it would otherwise set `OMP_SESSION_STORAGE=file`, and the worker shim, seeing the pointer in its environment, never exports the URL file into Oh My Pi's environment.
 Neither variable may be the operator's (`pod.env`) or a provider key's, and neither may `OMP_SESSION_SQL_DSN`, the name the URL file is mounted under (`CheckPod`).
-Oh My Pi creates and migrates its own tables, `omp_session_files` and `omp_session_files_parts`, and from the pinned build on `omp_session_leases` with its index, in the `public` schema when it starts; Legion manages no schema.
+Oh My Pi creates and migrates its own tables, `omp_session_files` and `omp_session_files_parts`, and from the pinned build on `omp_session_leases`, `omp_session_files_blobs` and `omp_session_files_refs` with their indexes, in the `public` schema when it starts; Legion manages no schema.
 So the deployment's login needs to create tables there:
 since Postgres 15, `CREATE` on the database is not enough, and the create is refused with `permission denied for schema public`.
 Grant `USAGE, CREATE ON SCHEMA public` to the login (measured on Postgres 16.15:
@@ -1509,7 +1533,7 @@ The pods' cloud identity is the identity of the ServiceAccount that `runtime.kub
 Without `impersonate_service_account`, the connector signs in as that identity.
 With it, the connector signs in as the service account, and the operator also supplies that fourth value and the four things [Selecting the store](#selecting-the-store) lists.
 With `writer_audience`, the operator also supplies that fifth value and the four things that [Selecting the store](#selecting-the-store) lists for it.
-The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files`, `omp_session_files_parts` and, from the pinned build on, `omp_session_leases` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
+The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files`, `omp_session_files_parts` and, from the pinned build on, `omp_session_leases`, `omp_session_files_blobs` and `omp_session_files_refs` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
 `legion sessions import` is unchanged and keeps `--dsn-file`: it is the operator's own command, run with no launcher and no proxy, so the operator supplies a connection URL the machine it runs on can reach.
 A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
 
@@ -1680,7 +1704,7 @@ The daemon never probes a host Oh My Pi for this: pods run the image's build, no
 ## Kubernetes runtime: the Go daemon on Agent Sandbox
 
 Under the Go coordinator, `runtime: kubernetes` runs every issue as one Agent Sandbox:
-an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the Legion pool, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Issue pods in microVMs](#issue-pods-in-microvms)).
+an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the Legion pool, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Pods in microVMs](#pods-in-microvms)).
 The pod holds two init containers and one container, `roles`, whose PID 1 is one `legion launcher`, a supervisor with no workflow policy that runs every workflow role
 — `architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`:
 it holds one connection to the daemon's worker stream per role, each authenticated with that role's own token, and starts or stops that role's `legion worker-shim` and Oh My Pi when the daemon tells it to, each role's generation in Linux namespaces of its own.
@@ -2075,7 +2099,7 @@ Take the block out before the earlier image is pinned, and `legion start --check
 A file that never set the block needs nothing.
 
 **A pod of this release's worker image runs with the guard off under an earlier daemon.**
-No launch replaces a running pod for an image change alone ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), so the pods this release made go on running after the earlier daemon starts.
+No launch replaces a running issue pod for an image change alone ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), so the issue pods this release made go on running after the earlier daemon starts.
 Each of their launchers starts its guard at the defaults, and the earlier daemon's answer to each hello carries no `memoryGuard` member, which the guard reads as "off" (`launcher: memory guard: off: the daemon's acknowledgement carries no settings`).
 From that answer on the guard ends nothing, and the launcher sends no `launcher_memory_kill` frame on that connection, since that daemon would close the connection on a frame it does not know: a report waiting then is dropped with a line.
 Such a pod is bounded by the kernel's stop of the whole container alone, as every pod was before this release, until a launch replaces it with a pod of the earlier image.
@@ -2083,6 +2107,43 @@ Such a pod is bounded by the kernel's stop of the whole container alone, as ever
 **Nothing in the database needs a statement.**
 This release adds no store migration.
 The note a kill sends is a `role_message` outbox row (`record.RoleMessage`), a kind the release before it already decodes, so a note still queued at the rollback is delivered as any other role message.
+
+#### Rolling back below the release that guards the controller's pod's memory
+
+The release that added the memory guard in the controller's pod ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-3531`.
+Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+A rollback below it has two steps of its own, and one effect on the controller's pod while that pod still runs.
+A rollback below the release that guards an issue pod's memory also takes the steps of that release's own section above.
+
+**`controller_pod` must come out of `legion.yaml` first.**
+An earlier loader refuses the member by name (`unknown key runtime.kubernetes.memory_guard.controller_pod`), so its daemon does not start while the member stands.
+Take `controller_pod` out before the earlier image is pinned, and `legion config check` on the earlier image reads the file clean.
+A file that never set the member needs nothing.
+
+**Delete the unsent `memory-guard-kill` notices, once.**
+Each kill is a `controller_notice` outbox row whose payload's `kind` is `memory-guard-kill`.
+A sent notice leaves no row, so the rows that stand are the notices this release wrote and had not sent when its daemon stopped.
+An earlier release cannot send them: it refuses a controller notice of a kind it does not know (`record.DecodeOutboxPayload`, `unknown controller notice kind`), and its runner retries such a row on its backoff for ever.
+Stop this release's daemon, and run the block below once before the earlier release starts:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'memory-guard-kill';
+commit;
+SQL
+```
+
+It prints `BEGIN`, `DELETE <n>` for the notices it drops, and `COMMIT`.
+A rerun prints `DELETE 0` and changes nothing.
+The controller is not told of the kills those rows held, and the `ended` line of each kill stays in the `controller` container's log.
+This release adds no store migration, so nothing else in the database needs a statement.
+
+**The controller's pod of this release's image runs with the guard off under an earlier daemon.**
+An earlier daemon re-adopts the running controller pod and keeps it at the relaunch that installs its plugins ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), so the pod this release made goes on running after the earlier daemon starts.
+The earlier daemon's answer to its launcher's hello carries no `memoryGuard` member, which the guard reads as "off" (`launcher: memory guard: off: the daemon's acknowledgement carries no settings`).
+From that answer on the guard ends nothing, and the launcher sends no `launcher_memory_kill` frame on that connection: a report waiting then is dropped with a line.
+Such a pod is bounded by the kernel's stop of the whole container alone, until a launch that installs nothing replaces it with a pod of the earlier image.
 
 ### Cutting over to the pod-owned disk
 
@@ -2330,7 +2391,8 @@ The roll-forward appends one pair again to each task a reviewer's row stores, so
 #### Rolling back the release that tells the merger of a merge-queue removal
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
-That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so of this release's migrations it writes the list last on any database.
+That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so the update round's list never runs after it.
+Five migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps both names.
 A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.
@@ -2355,10 +2417,30 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release that asks the merger to merge the base forward
+
+This release asks the merger, not the implementer, to merge the base forward once the issue stands in `merging`, and asks nothing in `accepting` or `retro` (cybermonklabs/legion#4979).
+It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON, and the ask names its role there (`role`).
+An earlier release refuses a `merge_forward` ask whose role is the merger when it decodes the row, and reads an ask that names the merger as the implementer's, already made, so it would ask nobody.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+begin;
+-- The merger's asks still queued, and the asks of the merger that have not landed.
+delete from outbox where kind = 'merge_forward' and payload->>'step' = 'ask' and payload->>'role' = 'merger';
+update pull_requests set merge_forward = null
+  where merge_forward->>'role' = 'merger' and coalesce(merge_forward->>'landed', '') = '';
+commit;
+```
+
+The earlier release decides again on the next read of each such head that finds it conflicting, and asks the implementer.
+An ask of the merger that has landed stays: the earlier release reads it as a landed merge forward, as it reads its own.
+
 #### Rolling back the release that merges a conflicting head forward in its phase
 
 This release stops a conflict from sending an issue back to `implementing`.
 Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
+Only `20261119203047_design_news` writes the list after it, and that list keeps both names and `phase_ended`.
 A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
 A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
 
@@ -2391,7 +2473,8 @@ delete from outbox where kind = 'phase_ended';
 #### Rolling back the release that publishes each issue's role sessions to Dispatch
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
-That migration writes the whole list, and its version stands above `20261114031356`, so it writes the list last on any database.
+That migration writes the whole list, and its version stands above `20261114031356`, so the merge-queue list never runs after it.
+Four migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps the name.
 A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
 The migration changes no column.
@@ -2448,7 +2531,8 @@ The rollback needs no statement.
 #### Rolling back the release that records each step
 
 This release adds one outbox kind, `step_record`, the tables `step_starts` and `step_starts_rollback`, and the function `step_run_witness`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
-That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so it writes the list last on any database.
+That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so the role-holders list never runs after it.
+Three migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps the name.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
@@ -2505,7 +2589,8 @@ Roll back and roll forward every daemon of one database in the same change, and 
 #### Rolling back the release that rates each plan
 
 This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
-That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so it writes the list last on any database.
+That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so the step record's list never runs after it.
+Two migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps the name.
 A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts.
 This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
 That migration changes no column.
@@ -2567,6 +2652,90 @@ It writes the daemon's status as that release writes it, with no read of the eve
 **Each project rolls back on its own.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox is one table for all of them, but each daemon runs only its own project's rows (`DueRows` in `record/store.go`).
 So one project can roll back while another stays on this release, and the statement names the project: a daemon left on this release keeps the check on its own set-backs.
+
+#### Rolling back the release that tells a holder of an approved new version
+
+This release's migration `20261119203047_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.
+No statement of the release before this one names the three tables, the four new columns or the eight functions, and this migration's kind list names every kind of the list the release before set, `step_record` of `20261117000528_outbox_kinds_with_the_step_record`, `plan_record` of `20261117023932_outbox_kinds_with_the_plan_record`, `conflict_confirm` and `merge_forward` of `20261119003157_conflict_reads_and_merge_forward`, and `phase_ended`, which that list keeps, among them, with `design_changes` added, so the schema needs no restore.
+Its version stands above `20261119003157`, so its list is the last word of the kind check.
+A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
+
+**Four statements must run before the earlier image is pinned.**
+The earlier release decodes each outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields` in `record/outbox.go`), and it does not know two members that this release adds to a payload.
+It refuses on every attempt a `supervise` row that carries `news`, which is a news-only start.
+Such a start waits while its claim works a turn, and a merger's start waits while its design gate is closed.
+It also refuses on every attempt a `design_gates_publish` row that carries `holds`, which is every such row this release queued with at least one entry (an emptied set carries none).
+Its `RoleRuns` decodes each queued supervise row of the role and generation it reads, so each admission pass that reads that role's run fails too.
+Its `pending_task_deliveries` upsert names only its own columns, and its `on conflict ... do update` leaves `design_news`, `carried_news`, `carried_ran` and `news_only` as this release wrote them.
+So a delivery that it writes over keeps the news of the task it replaced and the copy of that news a prompt carried (`carried_news`).
+Each item and each opening of that copy names the run it was rendered in, the generation of its issue and the generation of its tree's root (`generation` and `tree_generation`), and counts only while the record still holds both (`design_news_current`).
+After a roll forward, this release would count each one that still does, in `design_news_told_in`, as the credit of whatever delivery the earlier release confirmed in that row.
+This release marks a pending task that it queued for news alone in its own column, `news_only`, and the earlier release reads no such mark.
+So the earlier release reads such a task as its claim's phase task, and a task it writes over such a row keeps the mark, which this release would read after the roll forward as a task of news alone.
+It also reads a root architect's untaken news-only task as a start of that architect's work on its way (`workflow.ArchitectStartPending`), so its sweep would send that architect no entry its row is owed until a turn took the news.
+Stop this release's daemon, run these four statements, and then start the release before it:
+
+```sql
+delete from outbox where kind = 'supervise' and payload ? 'news';
+update outbox set payload = jsonb_set(payload, '{gates}',
+    (select coalesce(jsonb_agg(gate - 'holds' order by position), '[]'::jsonb)
+      from jsonb_array_elements(payload -> 'gates') with ordinality as entry (gate, position)))
+  where kind = 'design_gates_publish' and jsonb_typeof(payload -> 'gates') = 'array';
+delete from pending_task_deliveries where news_only;
+update pending_task_deliveries set design_news = null, carried_news = null
+  where design_news is not null or carried_news is not null;
+```
+
+The first statement deletes each news-only start.
+The news that such a start would tell stays owed in `design_news_told`, so this release sends it again after the roll forward.
+The second statement takes `holds` out of each entry of a design-gates publish, and it leaves the step and the document, which the release before sends too.
+The third statement deletes each pending task that was queued for news alone, so no row holds the `news_only` mark, and each row the earlier release inserts takes the column's default, `false`.
+Such a task has no entry and no kept decisions, and its claim refers to it by no column, so the claim then holds no pending task, as it does once a task it worked is retired.
+The earlier release then gives that claim its phase task where one is owed, and never takes the news task for it.
+A confirmed news-only task's credit is its own row until its turn's result made it final (`carried_ran`), so the third statement ends that credit with the row, and this release tells that news again after the roll forward.
+A credit made final was folded into `design_news_told` and stands.
+An untaken task's news stays owed there, since no credit holds it, so this release sends that news again after the roll forward too.
+The fourth statement takes the news, and the copy of it a prompt carried, off each task delivery that is still pending, which is now a phase task.
+The task's text still holds that news, and a delivery that carries no copy holds no credit, so this release tells that news again after the roll forward.
+A confirmed delivery's copy goes too.
+Where its turn's result had not yet said the turn ran, that copy was the delivery's credit, the only record that the holder took that news, so the fourth statement gives that credit back, and this release tells that news again after the roll forward: told twice, never lost.
+Where the result had come (`carried_ran`), the write that recorded it folded the copy into `design_news_told`, and that stands.
+The earlier release writes neither `carried_news` nor `carried_ran`, so after the fourth statement no row holds a copy for a roll forward to count, and a `carried_ran` it leaves standing on a row with no copy counts for nothing.
+
+The four statements leave the two keys that the project pause adds to a `start` row, `wakeKind` and `pause`, where they stand: a news-only start carries neither, and the release of the project pause decodes both.
+A rollback that also goes past the project pause, to a release before both, runs these four statements first.
+The first two steps of [Rolling back the project pause](#rolling-back-the-project-pause) come before them, while this release still runs, because this release resumes a paused project as that release does.
+Then stop this release's daemon, run these four statements, run that section's three statements, and pin the earlier image.
+The two sets of statements touch no row in common.
+
+**Three costs of a rollback that no statement undoes.**
+The first cost exists only where `gates.design` gates `spec` and not `criteria`: the key is unset, `root-issues`, or a list such as `[spec]`.
+Under such a setting, this release holds a tree on a `criteria` row too, once its root registered its Verification document as `criteria` (`record.JoinsByRegistration`).
+The earlier release reads only the steps the deployment gates: its `TreeGate.Open` reads the rows of `RequiredSteps` alone, and it ignores a row of a step it does not gate.
+So a tree that this release holds on a registered `criteria` row, whose new Verification version waits for a person's approval, opens on `spec` alone after the rollback: its merger starts, and its children are released.
+Under such a setting, run this read before the rollback to find those trees:
+
+```sql
+select issue from design_gates where step = 'criteria' and approved_version is distinct from latest_version;
+```
+
+If the read names a tree, park that tree's root before the rollback.
+A tree that may merge on its approved spec alone needs no park.
+Under a `gates.design` list that names `criteria`, the earlier release holds such a tree on its `criteria` row too.
+Under `off`, neither release holds a tree on a `criteria` row.
+So under either of those two settings, a tree that the read names needs no park.
+The second cost is the told rows of a cleared generation: this release deletes the `design_news_told` rows of an issue when it clears the issue's generation, and the earlier release does not know that table.
+So an issue that re-enters the workflow during the rollback keeps its old generation's rows, and after the roll forward `BaselineTold` leaves an existing row as it is.
+The new generation's holders are then owed news of versions their work never stood on, and each gets one news task for them, which it reads against its work.
+The third cost is work that first starts while the earlier release runs.
+An issue can enter its first working phase, and a tree's gate can open for the first time, during the rollback, and the earlier release writes no told row for either.
+This release writes those rows only where the work starts (`BaselineTold`, from `Engine.enter` in `workflow/effects.go`, the first opening in `workflow/gate.go` and a re-admission in `admit/admit.go`), and the migration's seed does not run again at the roll forward.
+So after the roll forward each such holder's row does not know the version its work started from, and `OwedNews` owes it that version (`owedItems` in `record/design_news.go`).
+The reconcile fills the row from the version a person approved before it (`ApprovedVersionBefore`), and the holder gets one news task about the version its work started from, which it reads against its work.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `outbox` and `pending_task_deliveries` are one table each for all of them, so the statements act on the rows of every project.
+Roll back every daemon of one database in the same change, and run the statements only when all of those daemons are stopped.
 
 #### Rolling back the release whose update round ends at its bound
 
@@ -2739,7 +2908,7 @@ The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim
 
 ### Pinning a release that drops what a running pod still uses
 
-A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:
+A pod is built whole from the image pinned when it was launched, and no launch replaces a live issue pod for an image change alone:
 a release whose daemon stops serving a route, or stops setting a variable, that the previous image's agents call or read leaves every pod still on the earlier image calling this daemon as the older release.
 LEGION-631 is one: it deletes the `/legion/v1/gh-token` and `/legion/v1/git-credential` routes, which a pod's `legion gh` and `legion credential` from the earlier image still call.
 The daemon's boot log, and every orphan sweep after it, names each pod still on another image
@@ -2753,7 +2922,7 @@ A pod runs as the account it was created with for its whole life, so changing `s
 a pod an update round covers — every issue pod — is replaced by that round, which asks the issue's roles to push their work, let their subagents and background jobs finish or stop them and push what they made, and ends the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, and a pod no round covers — the project controller's — by the next launch of any of its roles, which interrupts the roles live in it once: they end with the pod and resume in the new one, as a moved worker stream already makes them (below).
 Its agents hold the old account's identity until then.
 Under the secrets broker, `BROKER_SESSION_ACCOUNT_PAIRS` has to be live on the broker before the change, pairing the old account with the new, or the broker refuses each live role's session name to its pod on the new account (`403 SESSION_HELD`) and the role's grants, pending requests and withheld secrets stay behind (the item on moving the daemon's pods in [Operator configuration](#operator-configuration)).
-For the account, the pod's kind decides, not the one exemption a stale-plugin install has: such a launch keeps a pod a round covers for the account as for every other drift, and replaces a pod no round covers for the account whatever it is installing, since no round will ever come for such a pod.
+For the account, the pod's kind decides, not the exemption a stale-plugin install has for the pod's shape (below): such a launch keeps a pod a round covers for the account as for every other drift, and replaces a pod no round covers for the account whatever it is installing, since no round will ever come for such a pod.
 The daemon-launched controller's pod is in scope for both warnings, and for the account's replacement, which happens only when the controller's process is being started anyway.
 An unset `service_account` is read as the namespace's `default` on both sides, so a pod running as `default` under a deployment that names none has not drifted at all.
 The boot action is the log line alone: refusing to adopt a drifted pod would stop observing a live pod and trigger nothing.
@@ -2780,8 +2949,13 @@ For an operator-launched controller, stop `legion controller start` and run it a
 The daemon-launched controller's pod is in scope for the warning and in no round:
 it has no issue workspace and nothing to push, so `PodDrift` answers nothing for it (`internal/runtime/sandbox/drift.go`).
 Its pod is replaced by a launch: one that finds it not live — its Sandbox suspended, its pod ended, its init container failed, its launcher binding lost, or its pod never started by its node (`neverStarted`, `internal/runtime/sandbox/provisioning.go`: scheduled with `PodReadyToStartContainers=False`, created longer than the boot timeout ago, and scheduled longer than half the boot timeout or a minute ago, whichever is less)
-— and, since no round covers it, one that finds it drifted in any way, its image and pod shape included, unless that launch installs a stale-plugin pair (`roundCovers`, `shapeDrift`).
-So an operator moving the controller onto a new image suspends its claim and resumes it (`legion claims suspend`, then `legion claims resume`).
+— and, since no round covers it, one that finds it drifted in any way, its image and pod shape included (`roundCovers`, `shapeDrift`).
+A launch that installs a stale-plugin pair reads one facet of the pod's shape alone, its image (`podImageDrift`):
+it replaces a controller pod built on another image, and the fresh pod installs nothing, since the configured image carries the release's own launcher, Oh My Pi and plugins.
+It keeps a controller pod whose other facets alone drifted — its reservation, an operator volume or mount, its disk — and installs the pair into it, and the next launch that installs nothing replaces that pod.
+So a release that moves the daemon API contract reaches the controller's running pod at the relaunch that installs its plugins, with no operator step ("Contract discipline" below).
+A daemon of a release before the one whose `version.go` carries the entry for `dispatch://INFRA-3531` keeps the controller's pod at that relaunch, whatever its image.
+Under such a daemon, and at a release that keeps the daemon API contract, whose boot relaunches no claim onto a plugin, an operator moving the controller onto a new image suspends its claim and resumes it (`legion claims suspend`, then `legion claims resume`).
 
 A launch replaces a pod other roles of its issue still run in only when the pod cannot run the launching role as a pod created now would and no worker in it can be asked to push first (`movedInPod`, `internal/runtime/sandbox/addresses.go`):
 it runs the layout before one container, one launcher container per role, or its launchers dial a worker stream other than the one a pod created now is handed and never redial it.
@@ -2806,12 +2980,13 @@ An eviction ends every role of the pod, and the roles are checked one after anot
 A role recorded in that pod and checked after the replacement finds no pod of its uid, and reads the eviction from those two annotations instead, as its pod end and in its detail (`withEndedPod`, `internal/runtime/sandbox/observe.go`), so its claim keeps the eviction as the end it died of, as a role whose check read the pod itself does.
 The record is keyed by the pod's uid, so it says nothing of a role recorded in a later pod, and it lives on the Sandbox, so a restarted daemon reads it too; a Sandbox a migrating launch deletes and creates again does not carry it over.
 
-A route change the plugin calls is a contract bump by `version.go`'s rule, and since LEGION-164 a contract bump is brought in place at the daemon's first boot on it, with no pod replacement and no runbook step:
+A route change the plugin calls is a contract bump by `version.go`'s rule, and since LEGION-164 a contract bump is brought in place at the daemon's first boot on it, with no issue pod replaced and no runbook step:
 the boot pass ("Contract discipline" below) brings every registered claim whose recorded contract differs from the daemon's onto the current plugin, and the relaunched role loads the release's published plugins installed in its pod:
-every such claim is asked nothing and is relaunched through the moved-address relaunch path, logging `supervise: the process speaks another plugin contract; relaunching it onto the current plugin` once per claim, and the relaunch keeps the pod and the disk, so a worker loses only the turn it was in.
+every such claim is asked nothing and is relaunched through the moved-address relaunch path, logging `supervise: the process speaks another plugin contract; relaunching it onto the current plugin` once per claim, and the relaunch keeps an issue pod and its disk, so a worker loses only the turn it was in.
 What the text above keeps is the release that changes what the pod's own `legion` binary speaks (the launcher, the shim, `workspace-init`):
 an install refreshes no binary, so only a new image carries that change, and the pod's own update round is what carries it
 — each issue pod is replaced once every role the round asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound.
+The controller's pod has no round: the relaunch that installs the pair replaces it when it was built on another image, so the new image carries that change to the controller at that relaunch (above).
 
 **Moving from one container per role to one `roles` container (daemon API contract 39).**
 A release at contract 39 builds an issue pod with one container, `roles`, whose launcher runs every role in multi-role mode, which only an image of that release's `legion` has:
@@ -2837,8 +3012,8 @@ keep a copy of the block as it was, which a rollback puts back.
 the volume names `role-homes` and `role-probe`;
 a mount at, under or above `/var/run/legion/roles`, `/var/run/legion/home`, `/var/run/legion/role-probe`, `/dev/mqueue`, `/dev/ptmx`, `/dev/pts` or `/proc`;
 and a mount at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or the image's other spellings of them.
-Run this release's `legion start --check-config` on the file before the rollout.
-The release that adds microVM issue pods takes one more volume name, `workload-identity-token` ("Upgrading" in [Issue pods in microVMs](#issue-pods-in-microvms)).
+Run this release's `legion config check` on the file before the rollout (`legion start --check-config` on a release from before that command).
+The release that adds microVM issue pods takes one more volume name, `workload-identity-token` ("Upgrading" in [Pods in microVMs](#pods-in-microvms)).
 
 To roll this release back to contract 38, every stored locator and every issue Sandbox both go back to what the earlier release reads.
 Re-pinning alone boots neither:
@@ -3091,6 +3266,9 @@ every row it finds takes the default, false, which the sweep derives again.
 The same mark keeps a root that the answer's own admission pass promoted past `admitted` in the sweep's reach until its architect's claim is given that entry, so a start of the resume that reaches no claim is written again.
 
 To roll a release at contract 146 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
+A rollback from a release above contract 146 takes first the steps of each release it crosses above 146: "Rolling back below the release that guards the controller's pod's memory" above gives those of the release whose `version.go` carries the entry for `dispatch://INFRA-3531`, which are to take `controller_pod` out of `legion.yaml` and to delete the unsent `memory-guard-kill` notices.
+cybermonklabs/legion#3995, the release that tells a holder of an approved new version, changes no contract number, so it carries the number of the release before it, and a rollback that crosses it runs its four statements before both blocks ("Rolling back the release that tells a holder of an approved new version" above).
+Those statements and the two blocks touch no row, column or version row in common.
 A rollback below contract 144 also takes the steps of the releases it crosses, which "Each issue's experiment assignments in the state (daemon API contract 141)" below and "Rolling back below the release that guards an issue pod's memory", "Rolling back the release that frees the slot past review", "Rolling back the release whose update round ends at its bound" and "Rolling back the release that tells the merger of a merge-queue removal" above give.
 Contract 144, cybermonklabs/legion#4021, is the release just before this one, and its own section above, "Rolling back below the release that guards an issue pod's memory", gives its way back: take `runtime.kubernetes.memory_guard` out of `legion.yaml` before the earlier image is pinned, since a release before it refuses the key by name, and run no SQL.
 It adds no store migration, so the block below has nothing of it to reverse, and the note its guard sends is a `role_message` outbox row, a kind a release before it already decodes.
@@ -3105,9 +3283,12 @@ Contract 133, cybermonklabs/legion#3937, has no section of its own here either: 
 Neither has cybermonklabs/legion#3983, which landed after it at the same contract: its one migration, `20261113082415_claim_ended_work.up.sql`, adds the nullable column `claims.ended_work`, which a release before it names in no statement, and its header gives no step.
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
-To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
+To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone, after cybermonklabs/legion#3995's four statements where the store carries that release: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
+On a store that cybermonklabs/legion#4115 or cybermonklabs/legion#4464 migrated, run that release's steps after those four statements and before the block, on one that cybermonklabs/legion#4598 migrated, its one statement before every one of them, on one that cybermonklabs/legion#4581 migrated, the way back in the header of its `20261120042902_claim_agent_resume_generation.up.sql` before every one of them too, and on one that cybermonklabs/legion#4573 migrated, the statement of its own section before every one of them too, in the order the rollback to contract 87 below gives.
+Every store that cybermonklabs/legion#3995's release migrated carries all five.
 A rollback of the release that rates each plan to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
 A rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
+cybermonklabs/legion#3995's four statements and those two ways back touch no row in common, so any of the three runs first.
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -3155,7 +3336,7 @@ it refuses a controller notice of a kind it does not know (`record.DecodeOutboxP
 After the roll-forward no wake of the first or the third arm comes again for a root whose run has started, since the upgrade marks both arms for every such root it settles;
 a wake of the second arm comes again on the first pass for a root whose claim is still failed or retired with no start of its run that is the daemon's next move for it: none queued in the last ten minutes, or only one that has already run against the claim and left it failed or retired.
 The `drop table` and the last `delete` go together.
-The earlier release reads no such table, and the delete makes the store report that release's own version again.
+The earlier release reads no such table, and the delete takes that migration's version row, so the store reports the highest row neither block deletes: 20261114031356 on a store #3711's release migrated, 20261116165926 on one that cybermonklabs/legion#4228's release migrated, 20261117200337, dispatch://INFRA-4109's `20261117200337_update_ask_marks_at_delivery`, on one that cybermonklabs/legion#4337's release or a later one before cybermonklabs/legion#4464 migrated, cybermonklabs/legion#4220's among them, 20261119003157 on one that #4464's release or a later one before cybermonklabs/legion#4598 migrated, cybermonklabs/legion#4115's among them, and 20261120055717, dispatch://INFRA-4729's `20261120055717_dispatch_issue_value_sequences`, on one that #4598's release or a later one migrated, cybermonklabs/legion#4581's, cybermonklabs/legion#4573's and cybermonklabs/legion#3995's among them, whose own 20261120042902, 20261120012547 and 20261119203047 stand below it.
 The drop is owed to the roll-forward, which cannot create the table again while it stands.
 `Migrate` makes the table again, empty, and the re-armed upgrade marks it again.
 The SQL was run on 2026-11-15 at 17:51Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own migration step (`store.apply`) took through 20261113181500, leaving 143 versions recorded, and that then held one root at `admitted` whose architect claim stood with no architect `phases` row.
@@ -3169,11 +3350,24 @@ Neither `architect_stalled_notices` nor the wake stood, the claims table held no
 Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 147 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 The counts are those of the 147 migrations the tree of that run carried.
 A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
+cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729) and cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
+That is 20261116165926 on a store #4228's release migrated, 20261117200337 on one that #4337's release or a later one before #4464 migrated, 20261119003157 on one that #4464's release or a later one before #4598 migrated, and 20261120055717 on one that #4598's release or a later one migrated, #4581's, #4573's and #3995's among them: #4220 and #4488 merged onto a main that already carried #4337, so every release that carries 20261116144907 or 20261117023932 carries 20261117200337 too, which stands above both, #4115 merged onto a main that already carried #4464, so every release that carries 20261115194357 carries 20261119003157 too, which stands above it, #4581 and #4573 merged onto a main that already carried #4598, so every release that carries 20261120042902 or 20261120012547 carries 20261120055717 too, which stands above both, and #3995 is built on a main that carries #4464, #4598, #4581 and #4573, so every release that carries 20261119203047 carries 20261119003157 too, which it stands above, and 20261120012547, 20261120042902 and 20261120055717, which stand above it.
+`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them, which on this tree is 20261121170714.
+The test runs no way back but the two blocks.
+A rollback of a store that #4903's release migrated runs the way back in the header of `20261121170714_dispatch_issue_applied_seq.up.sql` first, which deletes that version's row, so that store reports 20261120055717 after the two blocks, as one that #4598's release migrated does.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
-On a store that a release at contract 146 migrated, run the contract 146 block above first.
-The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for the columns of later migrations that the list after the block leaves standing, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`), since neither block deletes a version row but its own:
-20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and the highest row neither block deletes on a store a release at contract 146 migrated, which is 20261114031356 where no migration recorded above it is left standing.
+On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
+On a store that cybermonklabs/legion#4598 migrated, run that release's one statement ([Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues)) before every one of these, on one that cybermonklabs/legion#4581 migrated, the way back in the header of its `20261120042902_claim_agent_resume_generation.up.sql` before every one of these too, and on one that cybermonklabs/legion#4573 migrated, the statement of [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand) before every one of these too, each with the daemon stopped and before the earlier image is pinned.
+Those three touch no row in common, so any of them runs first.
+Every store that cybermonklabs/legion#3995's release migrated is such a store on all three counts, since that release carries #4598, #4581 and #4573.
+The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for what the later migrations that the list after the block leaves standing added, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`), since neither block deletes a version row but its own:
+20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552;
+20261114031356, the highest row neither block deletes, on a store #3711's release at contract 146 migrated;
+20261116165926, cybermonklabs/legion#4228's role-holders publication, on a store that release migrated;
+20261117200337, dispatch://INFRA-4109's update ask mark (cybermonklabs/legion#4337), on a store that release or a later one before cybermonklabs/legion#4464 migrated, cybermonklabs/legion#4328's, cybermonklabs/legion#4299's, cybermonklabs/legion#4400's, cybermonklabs/legion#4220's and cybermonklabs/legion#4488's among them: no way back deletes its row, the ways back of #4328's 20261116234034, #4299's 20261117112334 and #4400's 20261117064152 each delete only that migration's own, #4220's 20261116144907 has no way back, and #4488's way back deletes outbox rows alone;
+20261119003157, cybermonklabs/legion#4464's conflict reads and merge forward, on a store that release or a later one before cybermonklabs/legion#4598 migrated, cybermonklabs/legion#4115's among them: #4464's way back deletes outbox rows and clears two columns and deletes no version row, and #4115's three statements delete and rewrite outbox rows alone;
+and 20261120055717, cybermonklabs/legion#4598's sequence of each value of the copy of Dispatch's issues (dispatch://INFRA-4729), on a store that release or a later one migrated, cybermonklabs/legion#4581's, cybermonklabs/legion#4573's and cybermonklabs/legion#3995's among them, whose 20261120042902, 20261120012547 and design news, 20261119203047, stand below it: #4598's way back writes `dispatch_issue_refills` alone, #4581's deletes outbox rows, drops one column and deletes no version row but its own, 20261120042902, which stands below this one, #4573's statement rewrites outbox rows alone, and #3995's four statements delete no version row either.
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -3238,9 +3432,11 @@ The migrations recorded above this one are these.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
+20261119203047_design_news, of cybermonklabs/legion#3995, adds three tables, four columns of `pending_task_deliveries` and eight functions, and writes the outbox's kind check again with `design_changes` added to the list of 20261119003157, and touches none of the six, so the block holds over it and leaves all of them standing; its own four statements, which run before the contract 146 block, are its way back ("Rolling back the release that tells a holder of an approved new version" above).
 20261120012547_set_back_observed_seq, of dispatch://INFRA-3178, changes no table, runs no statement and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
+20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -3303,7 +3499,7 @@ a registered claim whose recorded contract differs from the daemon's own, or is 
 — runs on this daemon's plugin before it does anything else, and it gets there by being relaunched onto it, asked nothing first.
 
 The lane asks its worker nothing and opens no round (`refreshPlugin` in `packages/daemon/internal/supervise/plugin.go`).
-A stale claim costs one paced wake, the relaunch itself, which keeps the pod and the disk, so what a worker loses is the turn in flight and no workspace with it.
+A stale claim costs one paced wake, the relaunch itself, which keeps a worker's issue pod and its disk, so what a worker loses is the turn in flight and no workspace with it.
 Until this release the daemon asked first — a claim whose plugin had `ready_for_update` was given an update round of its own, `plugin:<daemon contract>`, and kept running until its worker had pushed and answered — and that ask cost a second paced wake and a model turn for every live session, which took INFRA's wake queue 6 h 23 min to drain at the boot of 2026-11-10 (dispatch://INFRA-2712).
 Nothing opens such a round now, and a boot takes every claim an earlier daemon left in one out of it (`endPluginRounds` in `packages/daemon/internal/daemon/daemon.go`), which releases the task that round was holding back.
 The pod update round is untouched by all this: it replaces a pod and its disk, so it still asks each role it waits for, before the pod goes, to push its work, let its subagents and background jobs finish or stop them and push what they made, and it ends at its bound whatever the roles answer ("Pinning a release that drops what a running pod still uses" above).
@@ -3331,17 +3527,20 @@ Each relaunch logs one line, exactly `supervise: the process speaks another plug
 a relaunch the tree lifecycle or the store refuses leaves the claim live and stale, so the orphan sweep
 — the one periodic pass that already reads every claim — posts it again until one attempt starts).
 
-Under Kubernetes that relaunch keeps the pod
-— even one built from another image — rather than replacing it:
+Under Kubernetes that relaunch keeps an issue pod
+— even one built from another image — rather than replacing it, and it keeps the controller's pod unless that pod was built on another image or runs as another ServiceAccount (below):
 the role's shim runs the start wrapper, `/bin/sh -c '<start script>' legion-start <n> <setup command…> <omp argv…>` (`startArgv`, `internal/runtime/sandbox/plugins.go`;
 `<n>` is the setup command's word count, 0 with none), whose install step runs `bun add --backend=copyfile --exact @sjawhar/pi-legion@<version> @sjawhar/pi-envoy@<version>` (a tarball path or URL source is handed to `bun add` as written;
 `--backend=copyfile` because the issue's bun install cache and the generation directory now share the issue's volume, where bun would otherwise hardlink the installed files out of that cache and an in-place edit of either would corrupt the other for the life of the volume) into a fresh generation directory, `$XDG_STATE_HOME/legion-plugins/g<generation>/` (`/legion/scratch/state/<role>/legion-plugins/g<N>/`), checks with a `node -e` snippet that the installed `pi-legion`'s `legion.daemonApiVersion` equals the daemon's own (exiting 1 before `exec`, printing `legion plugins: @sjawhar/pi-legion@<v> declares daemon API contract <got>; this daemon requires <want>` when it does not), and then `exec "$@"`s into Oh My Pi, which starts with `--extension <gen dir>/node_modules/@sjawhar/pi-envoy --extension <gen dir>/node_modules/@sjawhar/pi-legion` in place of `/opt/legion/pi-envoy` and `/opt/legion/pi-legion`.
-A pod replaced for any other reason in the same relaunch
-— a suspended Sandbox, a lost launcher binding, a failed init container, a moved address, a pod no round covers running as another ServiceAccount
+A pod the same relaunch replaces
+— a suspended Sandbox, a lost launcher binding, a failed init container, a moved address, a pod no round covers running as another ServiceAccount, a controller pod built on another image
 — installs nothing: it comes up on the configured image, whose copies the boot gate already holds to the daemon's contract.
 An issue pod merely running another image is replaced by no relaunch at all, stale-plugin or not:
 it is drift, and the update round replaces it once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound ("Pinning a release that drops what a running pod still uses" above).
-The controller's pod, which no round covers, is replaced by any relaunch that installs nothing.
+Where that round is over and no role process runs in the pod, a relaunch into it makes the round's own replacement, under the round's mark, and installs nothing, as any launch into that pod does (`RoundPodEnds`, `internal/runtime/sandbox/relaunch.go`, [The disk dies with its pod](#the-disk-dies-with-its-pod)).
+The controller's pod, which no round covers, is replaced by any relaunch that installs nothing, for any drift, and by a relaunch that installs the pair only when it was built on another image (`podImageDrift`, `internal/runtime/sandbox/drift.go`) or runs as a ServiceAccount other than the configured one (`accountDrift`, `internal/runtime/sandbox/sandbox.go`): the account is fixed for the pod's life, so `relaunch.go` replaces a pod no round covers for that drift whatever the launch installs.
+The install puts the release's plugins under the agent and nothing more, so a kept pod on another image would go on running another release's `legion launcher` as its PID 1, and another release's Oh My Pi.
+A controller pod whose other facets alone drifted is kept, and the pair is installed into it.
 An install failure ends the child before Oh My Pi starts;
 the launcher reports it gone, the daemon charges it as a launch failure, and the claim is retried until the budget ends it in a `worker-died`.
 
@@ -3438,7 +3637,7 @@ runtime:
       node_selector: {}         # merged over legion.dev/pool=legion, which it may not name
       tolerations: []
       priority_class: legion
-    sandbox:                    # optional: the sandbox of the project's issue pods (Issue pods in microVMs, below)
+    sandbox:                    # optional: the sandbox of the project's issue pods and of its controller's pod (Pods in microVMs, below)
       type: gvisor              # default gvisor; microvm needs a microvm block that names its ComputeClass
     resources:                  # optional; two keys, each a pod's reservation: cpu and memory limits, each requested
                                 # in full unless cpu_request or memory_request sets less (Issue sizing: Guaranteed
@@ -3459,15 +3658,16 @@ runtime:
       resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # the defaults
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
-    memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher; a microVM issue pod runs the guest watch instead (The memory guard in an issue pod, Memory in a microVM pod, below)
+    memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher and in the gVisor controller pod's; a microVM pod's launcher, an issue pod's or the controller's, runs the guest watch instead (The memory guard in an issue pod, The memory guard in the controller's pod, and Memory in a microVM pod, below)
       issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
+      controller_pod: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 1, interval_milliseconds: 100 }   # the defaults; read by the gVisor controller's pod under controller: daemon
     volume_trim: { enabled: true, high_percent: 85, low_percent: 70, min_age_minutes: 15, interval_seconds: 60 }   # optional, the defaults: the cache trimmer in each issue pod's launcher (below)
 bind: <the daemon host's own address, or 0.0.0.0 once advertise_host names one>
 advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<namespace>.svc, every pod dials instead of bind, at worker_stream_port>
 worker_stream_port: <the port advertise_host or bind serves it on>
 daemon_url: http://<the address pods reach the daemon at>:<the daemon's own port>
 capabilities:                   # optional: the deployment capabilities decided by name, with the reason (The deployment's capability report, below); a gap is reported, never refused
-  decided: { secrets: "<reason>", model-fallback: "<reason>", resource-limits: "<reason>", pool-capacity: "<reason>" }
+  decided: { secrets: "<reason>", model-fallback: "<reason>", resource-limits: "<reason>", pool-capacity: "<reason>", repository-cache-room: "<reason>" }
 ```
 
 Every container of every Legion pod carries a cpu and memory limit and a request no greater than it, and an ephemeral-storage limit, its bound on the node's disk, over a smaller ephemeral-storage request.
@@ -3727,10 +3927,10 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
   a `volume` that is not a positive Kubernetes quantity;
   a `refresh_minutes` or `retain_hours` that is not a positive integer; its `resources` take a reservation's six members and nothing else;
 
-- a `memory_guard` that is not a mapping, or names a member but `issue_pods` (`controller_pod` among them, which this release does not read);
-  an `issue_pods` that is not a mapping, or names a member but `enabled`, `act_percent`, `floor_percent`, `wait_seconds` and `interval_milliseconds`;
-  an `enabled` that is not `true` or `false` (`runtime.kubernetes.memory_guard.issue_pods.enabled must be true or false`);
-  a number that is not an integer, or one outside its range, 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds` (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`);
+- a `memory_guard` that is not a mapping, or names a member but `issue_pods` and `controller_pod`;
+  an `issue_pods` or a `controller_pod` that is not a mapping, or names a member but `enabled`, `act_percent`, `floor_percent`, `wait_seconds` and `interval_milliseconds`;
+  an `enabled` that is not `true` or `false` (`runtime.kubernetes.memory_guard.issue_pods.enabled must be true or false`, and `controller_pod`'s alike);
+  a number that is not an integer, or one outside its range, 50 to 90 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds` (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 90`, and `controller_pod`'s alike);
 
 - `gateway`, removed with LEGION-270: a pod's model route is the operator's `pod`;
 
@@ -4071,11 +4271,13 @@ the check before the pane seed is written also has each daemon consume a Dispatc
 `legion-pane` is never granted the daemon's subjects above.
 Reversed, a daemon holding only the `legion-pane` seed connects as `legion-pane`, and each refused subject logs the error line above (a refused consumer or subscription never delivers).
 
-### Issue pods in microVMs
+<a id="issue-pods-in-microvms"></a>
+### Pods in microVMs
 
-A project's issue pods run under gVisor unless `runtime.kubernetes.sandbox` names the other sandbox for them.
+A project's issue pods and its controller's pod run under gVisor unless `runtime.kubernetes.sandbox` names the other sandbox for them.
 The other sandbox is a GKE Sandbox microVM: the pod runs under the `microvm` RuntimeClass, on the nodes of a ComputeClass the operator names.
 The block can put every issue pod of the project in a microVM, or only the pods of a list of its issues, for a canary.
+The controller's pod (`controller: daemon`) follows `type` alone: it runs in a microVM where `type` is `microvm`, and in gVisor otherwise, since `canary_issues` names issues and the controller has none.
 One daemon serves one project, so the block is that project's (`readSandbox`, `packages/daemon/internal/config/kubernetes.go`).
 `deploy/kubernetes/daemon/legion.yaml.example` carries it, commented out:
 
@@ -4094,16 +4296,18 @@ runtime:
           identity_provider: https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster
 ```
 
-- `type` is the sandbox of every issue pod of the project: `gvisor`, the default, or `microvm`.
+- `type` is the sandbox of every issue pod of the project and of its controller's pod: `gvisor`, the default, or `microvm`.
 
 - `canary_issues` lists the issues whose pods run in the sandbox `type` does not name: in a microVM on a gVisor project, and in gVisor on a microVM project.
   Each entry is one exact issue key, named once.
+  It never moves the controller's pod.
 
 - `microvm.compute_class` is the ComputeClass whose nodes run the microVM pods.
   It is required while `type` is `microvm` or `canary_issues` names an issue.
 
-- `microvm.storage_class` is the StorageClass of a microVM pod's workspace volume.
+- `microvm.storage_class` is the StorageClass of a microVM issue pod's workspace volume.
   Left out, it is `runtime.kubernetes.storage_class`.
+  The controller's disk stays on `runtime.kubernetes.storage_class` in either sandbox ("The disk", below).
 
 - `microvm.keep_volume` makes a microVM issue pod's workspace volume a claim that the issue's Sandbox owns, which outlives the pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
   It is `false` by default, and a gVisor pod's volume ends with its pod whatever it says.
@@ -4112,10 +4316,11 @@ runtime:
 
 An issue's sandbox is `type`, or the other one when `canary_issues` names the issue's exact key (`SandboxConfig.Of`, `packages/daemon/internal/runtime/sandbox/types.go`).
 The daemon decides it each time a launch builds the issue's pod, from the issue the launch is for (`prepare`, `packages/daemon/internal/runtime/sandbox/manifest.go`).
+The controller's sandbox is `type` (`SandboxConfig.Controller`, `types.go`), which `prepare` reads each time a launch builds the controller's pod.
 A `microvm` block does nothing while no issue pod runs in a microVM.
 The loader still checks its keys, but it requires no `compute_class` then and refuses none of the `scheduling`, `pod.env` and `agent_secrets` keys below, so a revert that empties `canary_issues` can leave the block in place.
 `legion state --json` shows the block as the loader settled it, under `settings.runtime.kubernetes.sandbox`:
-`canary_issues` is `[]` when the file names none, `microvm` is absent when the file names no such block, and its `storage_class` is the class the microVM pods' disks use.
+`canary_issues` is `[]` when the file names none, `microvm` is absent when the file names no such block, and its `storage_class` is the class the microVM issue pods' disks use.
 The block's `keep_volume` is `false` where the file names none.
 
 The loader refuses each of these, naming the key, and `legion config check` shows each before anything starts:
@@ -4152,10 +4357,10 @@ The loader refuses each of these, naming the key, and `legion config check` show
 
 - a `pod.env` entry `GCE_METADATA_HOST` or `GCE_METADATA_IP` while `metadata` is set and an issue pod runs in a microVM: `runtime.kubernetes.pod.env must not set GCE_METADATA_HOST while runtime.kubernetes.sandbox.microvm.metadata is set and an issue pod runs in a microVM: that pod's launcher sets it to the metadata endpoint it serves`.
 
-- an `agent_secrets.audience` or `agent_secrets.exchange_audience` equal to `workload_pool` while `metadata` is set and an issue pod runs in a microVM: `runtime.kubernetes.agent_secrets.audience must differ from runtime.kubernetes.sandbox.microvm.metadata.workload_pool (both <pool>) while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone`, and likewise `runtime.kubernetes.agent_secrets.exchange_audience`.
+- an `agent_secrets.audience` or `agent_secrets.exchange_audience` equal to `workload_pool` while `metadata` is set and an issue pod runs in a microVM: `runtime.kubernetes.agent_secrets.audience must differ from runtime.kubernetes.sandbox.microvm.metadata.workload_pool (both <pool>) while an issue pod runs in a microVM: the cluster projects one volume per audience, so the two tokens would be one`, and likewise `runtime.kubernetes.agent_secrets.exchange_audience`.
 
 **Where a microVM pod runs.**
-The daemon renders a microVM issue pod's placement from the block (`placement`, `manifest.go`):
+The daemon renders the placement of a microVM pod, an issue pod or the controller's, from the block (`placement`, `manifest.go`):
 
 - `runtimeClassName: microvm`, in place of `gvisor`.
 
@@ -4173,48 +4378,67 @@ The daemon renders a microVM issue pod's placement from the block (`placement`, 
 The daemon never changes the operator's `scheduling` itself: every gVisor pod of the project keeps the selector and tolerations as the file writes them.
 
 **The label.**
-A microVM issue pod carries the label `legion.dev/sandbox: microvm`, and no gVisor pod carries it (`labelSandbox`, `names.go`).
+A microVM pod, an issue pod or the controller's, carries the label `legion.dev/sandbox: microvm`, and no gVisor pod carries it (`labelSandbox`, `names.go`).
 It is the label a NetworkPolicy selects the microVM pods by: `podSelector: {matchLabels: {legion.dev/sandbox: microvm}}`.
-It is on the pod template alone, so on the pod, and never on the Sandbox or its Secrets, which carry the labels a gVisor issue's do.
+It is on the pod template alone, so on the pod, and never on the Sandbox or its Secrets, which carry the labels they carry in gVisor.
 A Sandbox is kept across its pods, and each of them can run in either sandbox, while the daemon builds the template again for each pod.
 
 **The disk.**
-A microVM pod's workspace volume, its generic ephemeral volume, is of `microvm.storage_class`, else of `storage_class`, at `issue_volume` (`claimSpec`, `manifest.go`).
+A microVM issue pod's workspace volume, its generic ephemeral volume, is of `microvm.storage_class`, else of `storage_class`, at `issue_volume` (`claimSpec`, `manifest.go`).
 `claimSpec` is the one place an issue disk's claim takes its class from, for a launch (`diskSpec`) and for the boot census, so a source of the issue disk added later takes its class from the same place.
 The kept volume is such a source: with `microvm.keep_volume: true`, the volume is a claim that the issue's Sandbox owns and that outlives the pod, of the class and size that `claimSpec` gives ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 The controller's disk is always of `storage_class`.
+That disk is the claim template the controller's Sandbox owns, and `spec.volumeClaimTemplates` is immutable in the CRD, so a class that followed the controller's sandbox would need a new Sandbox at each change of `type`, and the delete of the old Sandbox takes the controller's volume with it.
+So a microVM controller pod mounts a disk of `storage_class` on a node of `microvm.compute_class`, and the nodes of that ComputeClass must attach disks of `storage_class` (dispatch://INFRA-3728).
 
 **What stays in gVisor.**
-The controller's pod (`controller: daemon`), each repository cache pod and the image probe's pod run under gVisor whatever the block says, with the operator's `scheduling` as the file writes it (`probe.go`, `repocache.go`).
+Each repository cache pod and the image probe's pod run under gVisor whatever the block says, with the operator's `scheduling` as the file writes it (`probe.go`, `repocache.go`).
 So the boot's image probe runs the image under gVisor, and never in a microVM.
 
 **The stop-eviction annotations.**
-A microVM issue pod carries the annotations a gVisor issue pod carries: `karpenter.sh/do-not-disrupt: "true"`, `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` and `legion.dev/pod-shape`.
+A microVM pod carries the annotations its kind carries in gVisor, an issue pod's and the controller's alike: `karpenter.sh/do-not-disrupt: "true"`, `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` and `legion.dev/pod-shape`.
 On the nodes of a custom ComputeClass the two stop-eviction annotations hold no node upgrade off, as GKE Autopilot's extended duration does ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 The cluster's maintenance window decides when such a node is upgraded, and a pod the upgrade evicts ends as a pod whose node goes does ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 A kept volume stays through that end, and the issue's next pod mounts it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 
 **Drift.**
-A microVM pod's recorded shape (`legion.dev/pod-shape`, [The disk dies with its pod](#the-disk-dies-with-its-pod)) holds a `sandbox` member: its RuntimeClass, its ComputeClass, its disk's StorageClass, `keep_volume` where it is `true`, and its metadata endpoint (`sandboxShape`, `drift.go`).
+A microVM pod's recorded shape (`legion.dev/pod-shape`, [The disk dies with its pod](#the-disk-dies-with-its-pod)) holds a `sandbox` member: its RuntimeClass, its ComputeClass and its metadata endpoint, and an issue pod's disk's StorageClass and `keep_volume` where it is `true` (`sandboxShape`, `drift.go`).
+A microVM controller pod's member holds no StorageClass, since its disk stays on `storage_class` ("The disk", above), and no `keep_volume`, which changes nothing for the controller's pod.
 A gVisor pod's shape holds no `sandbox` member, so it reads byte for byte as a shape recorded before the block existed, and adding the block opens no update round on a gVisor pod.
 The sweep compares each issue pod with the shape of the sandbox the configuration now gives the pod's issue (`storedShapeKey`, `drift.go`).
 So a change of an issue's sandbox, through `canary_issues` or `type`, opens an update round on each pod it moves, and on no other pod.
 The round names the drift `sandbox null, now {…}` for a pod that moves into a microVM, and `sandbox {…}, now null` for one that moves back.
-A change of `microvm.compute_class`, `microvm.storage_class`, `microvm.keep_volume` or `microvm.metadata` opens a round on each microVM pod alone.
+A change of `microvm.compute_class`, `microvm.storage_class`, `microvm.keep_volume` or `microvm.metadata` opens a round on each microVM issue pod alone.
 A shape with `keep_volume` off reads byte for byte as one recorded before the key existed, so the release that adds the key opens no round.
-With `microvm.storage_class` left out, the microVM pods take `storage_class`, so a change of `storage_class` opens a round on each microVM pod, and still on no gVisor pod.
-The controller's pod runs in gVisor in every configuration, so the block never changes its shape.
+With `microvm.storage_class` left out, the microVM issue pods take `storage_class`, so a change of `storage_class` opens a round on each microVM issue pod, and still on no gVisor pod.
+The controller's pod is in no round: its launch compares the pod's recorded shape with the shape that launch would build (`launch.shapeKey`, `drift.go`, and `relaunch`, `relaunch.go`).
+A daemon boot re-adopts a running controller pod and replaces nothing, whatever its shape.
+A launch that installs nothing replaces a live controller pod whose shape differs, so the controller moves into a microVM, or back into gVisor, at its first such launch after a change of `type`: when its process ends, or when the operator suspends and resumes its claim (below).
+A launch that installs a stale-plugin pair replaces it only where its image differs (`podImageDrift`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), and the fresh pod is built in the sandbox `type` names.
+A change of `microvm.compute_class` or `microvm.metadata` moves a microVM controller pod at its next launch that installs nothing, and a change of `microvm.storage_class` or `microvm.keep_volume` alone moves no controller pod.
+Neither `canary_issues` nor a `microvm` block on a gVisor project moves it.
+To move the controller at once, suspend its claim and resume it: `legion claims suspend --operator-token-file <file> --claim legion-<project>-controller`, then `legion claims resume --operator-token-file <file> --claim legion-<project>-controller`.
+`legion claims suspend` ends only the controller's process and never suspends its Sandbox (`Runtime.Suspend`, `sandbox.go`), so the launch at the resume finds the pod live.
+Where that launch installs nothing, the pod's recorded shape differs from the shape the launch would build, so it builds a new pod in the sandbox the configuration gives the controller, and it keeps the controller's Sandbox and its disk.
+Where the launch at the resume installs a stale-plugin pair into a pod already on the configured image, it keeps the pod in its old sandbox, since such a launch replaces the pod only where the image differs (`podImageDrift`).
+The controller then moves at its next launch that installs nothing.
 A role launched into a pod that its round keeps starts as that pod was built:
 the launcher's `--microvm` and metadata flags and the projected token are fixed when the pod is created, and nothing the daemon sends a generation depends on the sandbox.
 So a role of a gVisor pod whose issue joins `canary_issues` starts in gVisor until the round replaces that pod.
 
 **Upgrading.**
-This release refuses one volume name that the release before it took: `workload-identity-token` as a `runtime.kubernetes.pod.volumes[].name`.
+The release that adds the block, daemon API contract 151, refuses one volume name that the release before it took: `workload-identity-token` as a `runtime.kubernetes.pod.volumes[].name`.
 The name is now the daemon's own, for the projected token volume of the metadata endpoint ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 The loader refuses it in every deployment, one that runs only gVisor pods and sets no `sandbox` block included:
 `runtime.kubernetes.pod.volumes[<i>].name workload-identity-token is a volume Legion puts in every pod`, where `<i>` is the volume's place in the list, from 0 (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
-A daemon of this release does not start on a file it refuses, so run this release's `legion config check` on the file before the rollout.
+A daemon of that release does not start on a file it refuses, so run that release's `legion config check` on the file before the rollout (`legion start --check-config` on a release from before that command).
 Where the check refuses the name, give that volume another name, in `volumes` and in each `volume_mounts` entry whose `volume` names it.
+The release that runs the controller's pod in the project's sandbox, the one with the entry for `dispatch://INFRA-4567` ("Rolling back", below), refuses one mount path that the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at or under `/var/run/legion/workload-identity`.
+The path is now the daemon's own, where a microVM controller pod mounts the metadata endpoint's token (`ControllerWorkloadIdentityDir`, `names.go`).
+The loader reserves it in every deployment, one that runs only gVisor pods included (`legionMountPaths`, `manifest.go`), and refuses such a mount at boot:
+`runtime.kubernetes.pod.volume_mounts[<i>].mount_path <path> overlaps /var/run/legion/workload-identity, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's`, where `<i>` is the mount's place in the list, from 0, and `<path>` is its `mount_path` (`CheckPod`, `operatorpod.go`).
+`legion config check` of that release shows the refusal, so run it on the file before the rollout.
+Where the check refuses the path, mount that volume at another path.
 
 **Rolling back.**
 The release that adds the block is daemon API contract 151, whose entry in `packages/daemon/internal/api/version.go` is for `dispatch://INFRA-3729`.
@@ -4225,12 +4449,21 @@ The earlier image is such a drift, so each microVM pod's update round brings its
 Where a microVM pod's launcher connects to such a daemon before that round replaces the pod, the daemon's answer carries no `kernelKills`.
 The launcher then drops each report of a process the pod's kernel stopped, with a line, and tells no role; the `ended` line stays in the container's log ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 A daemon of a release before `microvm.keep_volume` refuses that key at load, and it replaces the Sandbox of each kept volume at the issue's next launch, which deletes the volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+The release that runs the controller's pod in the project's sandbox is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-4567`.
+Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+A daemon below it builds the controller's pod in gVisor whatever `type` says, and one of contract 151 or later reads the same `sandbox` block.
+It re-adopts a running microVM controller pod at its boot, and its answer to that pod's launcher carries no `kernelKills`.
+The launcher then drops each report of a process the pod's kernel stopped, with a line, and the controller is told nothing; the `ended` line stays in the `controller` container's log.
+That daemon compares the controller's pod with its gVisor shape alone, so the controller returns to gVisor at the first launch that replaces its pod.
+That is the daemon's next launch that installs nothing.
+Under a daemon of the release that guards the controller's pod's memory, the launch that installs its plugin pair replaces the pod too where it runs another image, and a rollback that pins the earlier image has such a launch: the relaunch onto that daemon's plugins after its boot ([Contract discipline](#contract-discipline)).
+Suspending and resuming the controller's claim returns it to gVisor at once where the launch at the resume installs nothing ("Drift", above).
 
 #### The pod-local metadata endpoint
 
 Under Workload Identity a pod gets its Google credential from GKE's metadata server on its node.
 Set `microvm.metadata` when a microVM pod does not reach that server.
-Each microVM issue pod's launcher then serves, inside the pod, the paths of that server a Google client reads for the pod's own account (`packages/daemon/internal/launcher/metadata.go`).
+Each microVM pod's launcher then serves, inside the pod, the paths of that server a Google client reads for the pod's own account (`packages/daemon/internal/launcher/metadata.go`): each microVM issue pod's, and the controller's pod's where `type` is `microvm`.
 It gets the access token it hands out the way GKE's server does: it exchanges a projected Kubernetes ServiceAccount token at Google's Security Token Service.
 A gVisor pod, and a microVM pod without the block, get none of it.
 
@@ -4240,16 +4473,20 @@ The block has two keys, and both are required:
 
 - `identity_provider` is the cluster's identity provider, `https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>`.
 
-With the block the daemon adds two things to each microVM issue pod (`workloadIdentityVolumes`, `manifest.go`, and `issuePod.launcherContainer`, `podkind.go`):
+With the block the daemon adds two things to each microVM pod, an issue pod or the controller's (`workloadIdentityVolumes`, `manifest.go`, and the `launcherContainer` of `issuePod` and of `controllerPod`, `podkind.go`):
 
-- a projected ServiceAccount token volume, `workload-identity-token`, for the audience `workload_pool`, with `expirationSeconds: 3600` and mode 0440, mounted read-only at `/var/run/legion/roles/workload-identity` (`WorkloadIdentityDir`, `names.go`), where the token is the file `token`.
-  The directory is under `/var/run/legion/roles`, which every role's namespace covers, so no role's process reads the token.
+- a projected ServiceAccount token volume, `workload-identity-token`, for the audience `workload_pool`, with `expirationSeconds: 3600` and mode 0440, mounted read-only in a directory where the token is the file `token`.
+  An issue pod mounts it at `/var/run/legion/roles/workload-identity` (`WorkloadIdentityDir`, `names.go`).
+  That directory is under `/var/run/legion/roles`, which every role's namespace covers, so no role's process reads the token.
+  The controller's pod mounts it at `/var/run/legion/workload-identity` (`ControllerWorkloadIdentityDir`, `names.go`), and its launcher reads the token at `/var/run/legion/workload-identity/token`.
+  That pod has no role namespaces, so the controller's agent can read the token too.
+  That gives the agent no identity it lacks: the endpoint its launcher serves hands it access tokens of the same Workload Identity principal, the pool's own (below).
   The kubelet writes a fresh token before the old one expires, and the launcher reads the file again at each exchange.
 
 - the launcher flags `--metadata-workload-pool <workload_pool> --metadata-identity-provider <identity_provider>`, beside `--microvm`.
 
-Before it starts any role, the launcher listens at `127.0.0.1:8169`.
-That is the pod's loopback, which every role shares, since a role has no network namespace of its own.
+Before it starts any role's generation, the controller's included, the launcher listens at `127.0.0.1:8169`.
+That is the pod's loopback, which every role of an issue pod shares, since a role has no network namespace of its own.
 Once it listens, it sets `GCE_METADATA_HOST` and `GCE_METADATA_IP` to that address in its own environment, so its own Google clients read the endpoint, the session database's proxy under `cloudsql-iam` among them ([Selecting the store](#selecting-the-store)).
 It also sets both on every role generation it starts, over any value the generation's start command carried, so a role is told only the address its own launcher serves.
 Go's `cloud.google.com/go/compute/metadata` and Python's `google-auth` read `GCE_METADATA_HOST`, and Node's `gcp-metadata` reads `GCE_METADATA_IP` before it.
@@ -4306,7 +4543,7 @@ So a pod whose ServiceAccount is bound to a Google service account gets the pool
 The endpoint serves no other path.
 Among those are `project/numeric-project-id`, `instance/zone`, `instance/hostname`, `instance/id`, every `attributes/` path, and `instance/service-accounts/<account>/identity`, which GKE's server answers 404 for an account bound to no Google service account.
 It answers each of them 404 `Not Found`, as GKE's server answers a path it does not know, and answers `?recursive=true` on any directory but an account's the same way.
-The first time it answers a path so, it logs `launcher: metadata: not served path=<path>` in the `roles` container's log, with no role prefix, so the log names each path a tool asked for and did not get.
+The first time it answers a path so, it logs `launcher: metadata: not served path=<path>` in the `roles` container's log, or in the `controller` container's log in the controller's pod, with no role prefix, so the log names each path a tool asked for and did not get.
 It remembers at most 256 such paths, and logs no path past them.
 
 Every path under `/computeMetadata/v1/` refuses a request without `Metadata-Flavor: Google` with 403 `Missing required header "Metadata-Flavor": "Google"`, as GKE's server does.
@@ -4343,7 +4580,7 @@ Each library read the project `example-project` and the fake service's token, th
 #### Memory in a microVM pod
 
 A microVM's kernel is the pod's own, and its out-of-memory killer stops one process of the container rather than the whole pod.
-So a microVM issue pod's launcher runs no memory guard ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and writes one line that says so:
+So the launcher of a microVM pod, an issue pod or the controller's, runs no memory guard ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod), [The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)), and writes one line that says so:
 
 ```text
 launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process
@@ -4354,8 +4591,16 @@ The guest watch ends no process itself.
 It steers the pod's kernel to stop a command before an agent, names each process the kernel stopped, tells that process's role, and logs the pod's memory each hour.
 As the guard does, it runs only where the launcher is the container's first process: a launcher started any other way writes the guard's `off reason=the launcher is pid <n>, …` line and runs neither.
 The launcher knows that its pod runs in a microVM from its own `--microvm` flag, which is fixed when the pod is built, and never from the daemon's answer.
-`runtime.kubernetes.memory_guard` configures the gVisor guard alone:
+`runtime.kubernetes.memory_guard` configures the gVisor guard alone, `issue_pods` the gVisor issue pods' and `controller_pod` the gVisor controller pod's:
 the guest watch runs whatever that block says, `enabled: false` included, and a microVM pod's launcher applies no `memoryGuard` settings from any answer.
+
+**In the controller's pod.**
+Where `type` is `microvm`, the controller's launcher runs the guest watch by the rules of this section over the controller pod's classifier (`controllerClassifier`, "What it spares, and what it may end" in [The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
+The processes that classifier protects are the ones that section's guard spares, and the session processes it marks are the shim and every direct child of the shim.
+Every process of the container is the controller's, so each process the watch names is reported to the controller, and its `ended` line names `role=controller`.
+That pod has no `role-init`: once the shim has exited, the launcher, PID 1, drains the exited generation itself, sending SIGTERM over the container's processes, waiting up to its stop grace for them to go, and sending SIGKILL to each one left (`cleanExitedGeneration`, `packages/daemon/internal/launcher/process.go`).
+That drain's SIGKILL takes the place of `role-init`'s in "The kills" and "What the sign does not show" below, so the watch's `SessionDrain` there is the stop grace and a second more, where an issue pod's is 3 s (`controllerSessionDrain`, `packages/daemon/internal/launcher/memoryguard.go`).
+The watch's lines are in the `controller` container's log, with no role prefix, and the daemon tells the controller of each kill as "Whom it tells" in [The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod) says.
 
 **The score.**
 The watch lists the container's processes every 100 ms, the guard's default interval, which `interval_milliseconds` does not change.
@@ -4392,6 +4637,7 @@ That holds unless the file sets `cpu_request` or `memory_request` below its limi
 A request that the file leaves out takes the file's limit where the file sets one.
 Else it takes the default's request, which equals the default's limit ([Configuration](#configuration)).
 Keep each request equal to its limit where issue pods run in microVMs, so that the score protects Oh My Pi.
+The controller's pod is `Guaranteed` by the same rule over `runtime.kubernetes.resources.controller`, so keep those requests equal to their limits where the controller runs in a microVM.
 
 The watch can only raise a score.
 The `roles` container drops every capability, and without `CAP_SYS_RESOURCE` no process can set a score below a process's starting value, so no agent can be set below the starting score.
@@ -4536,12 +4782,14 @@ The kernel can also stop a process that the classifier protects ("The score", ab
 Each process it names has the guard's own `ended` line, so a reader finds a process stopped for memory by the same line in either sandbox:
 
 ```text
-launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
+launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> rule=kernel sizes=kernel less_parent=0 new_read=- executable="<name>"
 ```
 
 The guest watch fills it from what it read:
 
 - `pid`, `role` and `executable` are the stopped process's, as the guard's lines give them, and `role=none` names a process of no role.
+
+- `rule` and `sizes` are both `kernel`, `less_parent` is 0 and `new_read` is `-`: the kernel chose the process, by sizes of its own, where the guard's own line names the rule of its order, the sizes it chose by, what it took off a fork's size and what its reads at the mark read.
 
 - `size` is the process's resident size at the last scan whose snapshot came before the pass, at a scan or at a wake, that saw SIGKILL pending in it, so its size before the kernel freed its memory.
   The kernel raises the counter before it sends SIGKILL and frees the memory only after it, and a scan reads the processes before the counter and their `status` after both, so a process that the watch already held and that a scan read while its memory was freed shows SIGKILL pending at that same scan.
@@ -4577,7 +4825,8 @@ For a process of a role, the watch also gives a report to that role's part of th
   The daemon applies the report once, under the event id `memory-guard-kill:<guard>:<sequence>`.
 
 - The launcher sends the report only on a connection whose answer carries `kernelKills: true`.
-  A daemon of daemon API contract 151 or later sets it on its answer to every issue pod's launcher, whatever `memory_guard` says, and never on its answer to the controller pod's.
+  A daemon of daemon API contract 151 or later sets it on its answer to every issue pod's launcher, whatever `memory_guard` says.
+  A daemon of the release that runs the controller's pod in the project's sandbox (the `version.go` entry for `dispatch://INFRA-4567`) sets it on its answer to the controller pod's launcher too, beside that pod's guard settings, and an earlier daemon never does.
   On any other connection the launcher drops each report with this line, since an earlier daemon may close the connection on a frame it does not know, or tell the role of the kernel's stop in the guard's words:
 
   ```text
@@ -4635,12 +4884,14 @@ launcher: guest memory: hour start=<time> end=<time> current=<bytes> current_hig
 
 `off` comes once, where the watch cannot read its starting score (`reason=no readable starting score in /proc/self/oom_score_adj: <error>`) or cannot list the processes (`reason=cannot list the processes in /proc: <error>`).
 From then on the watch raises nothing and names nothing, writes each rise of the counter as `killed unnamed` at once, and still writes its hourly line from the cgroup.
+Such a watch goes on scanning, so a step of it that panics later writes a second `off` line, `off reason=panic: …` (below).
+A step of the watch that panics, its start, a scan or a wake, writes `off reason=panic: <value> at <function> (<file>:<line>)` once and ends the watch: it then raises, names and writes nothing more, its hourly line included, since what the panic left of its state is not known, and the launcher, the pod's first process, runs on, where a panic that left the watch would have ended it and with it every role's turn.
 
 `kills unnamed` comes once, at the start, where the watch reads no kill counter, such as where it finds no memory cgroup or a kill file with no `oom_kill` line.
 The watch then names no kill, and it still raises scores and writes its hourly line, which do not need the counter.
 
 `wake off` comes once where the watch reads a kill counter but does not wake on the file-modified event of `memory.events`.
-Its reason is `cgroup v1's memory.oom_control raises no file-modified event` on cgroup v1, the error where the watch of the event cannot start, or `the watch of <dir>/memory.events ended: <error>` where that watch ends, with the error that ended it: the kernel's drop of the watch (`IN_IGNORED`) once the file goes away, or the error of a read that failed.
+Its reason is `cgroup v1's memory.oom_control raises no file-modified event` on cgroup v1, the error where the watch of the event cannot start, or `the watch of <dir>/memory.events ended: <error>` where that watch ends, with the error that ended it: the kernel's drop of the watch (`IN_IGNORED`) once the file goes away, the error of a read that failed, or a panic of the watch's reader, `panic: <value> at <function> (<file>:<line>)`, which ends the watch rather than the launcher.
 The watch then reads the counter at its 100 ms scan alone, so it names a stopped process only where that process still shows SIGKILL pending at a scan.
 
 `killed unnamed` comes when a wait ends with kills that no process was named for, and at each rise of the counter once the watch is off.
@@ -4676,7 +4927,7 @@ Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: g
 ### The deployment's capability report
 
 `packages/daemon/internal/capabilities` is the one list of what a Legion worker can do (LEGION-578:
-every worker is a full agent), 21 rows, each checked at one site.
+every worker is a full agent), 22 rows, each checked at one site.
 The image rows (`eval-js`, `eval-python`, `browser`, `lsp`, `codegraph`, `skills`, `toolchain`, `claude-code`) are `legion probe-image`'s ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), `present` once the probe passed;
 the live rows (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) are measured by each claimed session while it runs, inside its own Oh My Pi, and reported on a `claims/ready` of its own, and the daemon renders each from what its live sessions reported (LEGION-663, INFRA-927;
 the paragraphs after the deployment rows);
@@ -4684,7 +4935,7 @@ the withheld rows carry the decision that keeps them from every worker (`network
 dispatch://LEGION-5, the pod is the boundary, except a workload a role starts where its deployment's cluster admits it and the Service fronting it ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 `operator-setup`: dispatch://LEGION-200, Legion owns its dependencies;
 `production-identities`: dispatch://LEGION-551 and dispatch://LEGION-205);
-and the four deployment rows are the daemon's to measure from its own configuration and its own boot, since no image or pod can show them:
+and the five deployment rows are the daemon's to measure, from its own configuration, its own boot and its repository caches' health, since neither the image probe nor a session's own check can show them:
 
 - `secrets`: `runtime.kubernetes.agent_secrets` is configured and the daemon's broker token login is `issued`.
   Under tmux it is open unless decided: no process is enrolled with the broker.
@@ -4714,9 +4965,23 @@ and the four deployment rows are the daemon's to measure from its own configurat
   The daemon measures it from the probe's own run (`bootprobe.ImageReport.CapacityWaits`), so `legion config check` never prints it.
   Under tmux it is present: no probe pod runs.
 
+- `repository-cache-room`: no repository cache reports a failure for lack of space on its volume.
+  The daemon measures it from each cache's last `/healthz` answer ([The repository cache](#the-repository-cache)), which the daemon reads every minute, so the row's `source` is `caches` and `legion config check` never prints it.
+  The row is open while the last answer of a cache carries `fetchOutOfSpaceAt` or `repackOutOfSpaceAt`, unless `capabilities.decided.repository-cache-room` names a reason.
+  The open detail names each such cache: its repository, its volume's size, its claim, the bytes available, its clone's bytes, and each step that failed with the time of that failure.
+  Then it gives the remedy, for example `1 of 3 repository caches ran out of room: acme/widgets on a 20.0 GiB volume (claim cache-legion-acme-cache-acme-widgets-1234abcd) with 0.1 GiB available, its clone 19.4 GiB; its repack failed for lack of space at 2026-11-19T02:15:33Z. Room comes from growing the cache's claim in place and raising runtime.kubernetes.repository_cache.volume`.
+  Sizes are in GiB with one decimal, and times are in RFC 3339 UTC.
+  Where the cache could not read its volume, the detail says `on a volume (claim <claim>) whose room it could not read (<error>)` in place of the figures.
+  The present detail counts the caches, for example `no repository cache reports a failure for lack of space (3 caches read, 1 sends no room figures, 1 unread)`.
+  A cache on an older worker image sends no room figures, and a cache that is not Ready or whose read failed is unread.
+  Neither of the two opens the row.
+  A cache of a repository the cache set no longer names counts like any other cache until the daemon deletes it.
+  Under tmux the row is present (`the tmux runtime runs no repository cache`), and so is a Kubernetes deployment that runs no cache (`no repository cache is running`).
+  "Room on the cache's volume" in [The repository cache](#the-repository-cache) gives the remedy and the standard signals.
+
 A deployment row is `present` when the deployment satisfies it, `decided` when `legion.yaml`'s `capabilities.decided.<name>: "<reason>"` records a decision on it (the report shows the reason in the gap's place;
 a decision on a satisfied row is moot and the row reads present), and `open` otherwise, carrying the line that records one.
-A name that is not one of the four is refused at load naming them; a blank reason too.
+A name that is not one of the five is refused at load naming them; a blank reason too.
 
 A live row is measured by each claimed session while it runs.
 The Legion extension measures the six inside Oh My Pi (`packages/pi-legion/src/capability-report.ts`) on the 5 s interval that session already runs, under the rule in `packages/pi-legion/src/capability-schedule.ts`: at a tick at which it is idle and no measurement of its own is running, first at the sixth tick for the architect and one tick later for each following role of `LEGION_ROLES` (the merger's is the eleventh, 55 s), so one pod's six roles start their attempts on different ticks;
@@ -4774,10 +5039,12 @@ capabilities.decided.<name>: "<reason>"` on a deployment row and `capability <na
 `legion state --json`: under `capabilities` every row as `{name, status, detail, decision?,
 configLine?, source?}`, `status` one of `present`, `unchecked`, `withheld`, `decided` or `open` (daemon API contract 16 added the list, contract 21 dropped `live` from it and contract 25 dropped `installed`, which nothing has emitted since LEGION-629;
 the image rows are `present` once the probe passed and `unchecked` before it or under tmux), `source` (`configuration` or `boot`, contract
-25) on a deployment row alone — what legion.yaml alone decides or what boot measured
+25, and `caches`, contract 213) on a deployment row alone — what legion.yaml alone decides, what boot measured, or what the repository caches' last health reads said of their room
 — never on a live row, and under each claim's `capabilities` (`issues.<KEY>.architect` and `issues.<KEY>.workers.<role>.claim`) that claim's latest report
 — `measuredAt`, `incarnation`, `ok` (the names its checks passed) and `open[{name, detail}]` — whatever process sent it;
 compare its `incarnation` with the claim's `locator.incarnation` to tell the running process's report from a predecessor's.
+A plugin from contract 25 to 212 accepts only `configuration` or `boot` as a `source`, and refuses the whole state for any other word.
+So a caller below contract 213 is served each row whose `source` is `caches` without its `source`, with every other field of the row (`withoutUnadmittedCapabilitySources` in `internal/api/shaping.go`), where a value follows the contract the caller states in `Legion-Plugin-Contract`, else the lowest contract its pod's claims record.
 The controller's `tick` notice, whose `openCapabilities` names the open rows, live rows beside the deployment gaps, so the day's report names each (`skills/legion-controller/SKILL.md`).
 And `legion config check`, which prints after its OK line the rows the file alone leaves open.
 Nothing refuses to start over a gap: a daemon that would not run its pods would itself keep workers from working, so a deployment gap is the operator's to close or to decide, by name and with the reason, and a live gap is the session's environment to fix.
@@ -4787,7 +5054,7 @@ The example `legion.yaml` (`deploy/kubernetes/daemon/legion.yaml.example`) leave
 
 Each Sandbox carries `legion.dev/project`, `legion.dev/tree` and `legion.dev/issue` (`names.go`):
 one Sandbox per issue, shared by every role that works it, owning its pod and the role Secrets and no volume, except the kept volume of a microVM pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-A microVM issue pod's template carries one label more, `legion.dev/sandbox: microvm`, which the Sandbox and its Secrets do not carry ([Issue pods in microVMs](#issue-pods-in-microvms)).
+A microVM issue pod's template carries one label more, `legion.dev/sandbox: microvm`, which the Sandbox and its Secrets do not carry ([Pods in microVMs](#pods-in-microvms)).
 The pod template (`manifest.go`) has two init containers and one container, `roles`, which runs every workflow role (`claim.Roles`:
 architect, planner, implementer, tester, reviewer, merger):
 
@@ -4859,7 +5126,7 @@ architect, planner, implementer, tester, reviewer, merger):
    `/opt/legion/bin/legion launcher --connect tcp://<advertise_host, or bind with none
    set>:<worker_stream_port> --sandbox <name> --roles-dir /var/run/legion/roles --role architect
    --role planner --role implementer --role tester --role reviewer --role merger --stop-grace <d>`, the pod's uid from `POD_UID` (the downward API).
-   A microVM issue pod's command adds `--microvm`, and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, `--metadata-workload-pool <pool> --metadata-identity-provider <provider>` after it, all before `--stop-grace` ([Issue pods in microVMs](#issue-pods-in-microvms)).
+   A microVM issue pod's command adds `--microvm`, and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, `--metadata-workload-pool <pool> --metadata-identity-provider <provider>` after it, all before `--stop-grace` ([Pods in microVMs](#pods-in-microvms)).
    It holds one authenticated worker-stream connection per role, each with that role's own launcher token, read from `/var/run/legion/roles/<role>/launcher/LAUNCHER_TOKEN`, and starts and stops each role's `legion worker-shim` (Oh My Pi) child on the daemon's command, never a worker process of its own.
    Its log has one line for each connection the daemon accepted, `launcher: connected to the
    daemon at <address> as launcher <id> (sandbox <name>, role <role>, pod <uid>)`, and one for each connection that ended, `launcher: daemon connection: <why>; reconnecting`, so a connected launcher reads apart from one still dialing.
@@ -4874,7 +5141,7 @@ architect, planner, implementer, tester, reviewer, merger):
    - It reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
      Nor does it reap a process it runs for a step of its own (the test database's start script, the jj and git of a workspace restore, the leak-check install's run of the check, and each cache trimmer sweep's deleter), which its `pidGuard` holds until that step's own wait has read the exit: a step whose exit the reaper took first would fail with `waitid: no child processes`, or under gVisor at times `wait: no child processes` or `waitid: no such process`, which for the leak-check install refuses the role's launch.
 
-   - It runs a gVisor pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+   - It runs a gVisor pod's memory guard, which near the limit ends one process that is neither Legion's own nor an agent's own, by the order of ends of [The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod).
      In a microVM issue pod it runs the guest watch instead, which steers the pod's own kernel to stop a command ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 
    - It sweeps the clone's stale git locks (item 4): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
@@ -4970,7 +5237,7 @@ The one exception is the account that holds the role's own issue repository: tha
 Until then every bundle built for that role succeeds and the refresh keeps writing the role's Secret, that directory holding a token GitHub would no longer mint.
 The first build that mints that owner for real fails, naming the owner; from then every bundle built for that role fails, the refresh writes none of the role's Secret, and the pod keeps its last tokens until they expire.
 The controller's default owner is refused at once instead, because `ControllerCredential` reads the installations before it mints anything.
-A daemon that takes its tokens from the secrets broker through `token_command` is bounded by the broker, which releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing there.
+A daemon that takes its tokens from the secrets broker through `token_command` is bounded by the broker, which releases a token only for the accounts the profile its command names lists, each an account of the secret's `github-owners` tag, so an install by any other account gives nothing there.
 The issue's `-boot` Secret holds the provisioning token, projected into `workspace-fetch` alone.
 
 **Each role in namespaces of its own.**
@@ -4995,6 +5262,8 @@ The isolation rests on ownership and private mounts, not on a read-only root, wh
 An operator mount (`runtime.kubernetes.pod.volume_mounts`) at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or at or above the image's other spellings of them (`/var/run/lock`, `/run/shm`, `/var/run/shm`), is refused:
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p> is at or above <dir>, which every role's namespace in an issue pod covers with its own: mount under it instead`.
 A mount under `/tmp` and the like is allowed, and role-init carries it back.
+role-init carries only the mounts a path under the directory reaches (`mountsUnder`, `roleinit_linux.go`): a mount the container's mount table lists but another mount hides, at its mount point or above it, is not carried, since its path in the container reaches what that other mount holds there, or nothing, and the role starts without it.
+Of a mount inside another carried mount, role-init binds back only the outer one, whose recursive bind brings the inner one with it, so role-init follows no path inside a volume every role may write (`carryOver`).
 A mount at, under or above `/dev/mqueue`, `/dev/ptmx`, `/dev/pts` or `/proc` is refused (`roleReplacedPaths` in `internal/runtime/sandbox/manifest.go`), since role-init mounts a filesystem of the role's own there (a new devpts instance at `/dev/pts`, its `ptmx` bound over `/dev/ptmx`, the role's own IPC namespace's mqueue at `/dev/mqueue`, the role's own `/proc`) and carries nothing back onto it:
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p>
 overlaps /dev/pts, which every role's namespace in an issue pod replaces with a filesystem of its
@@ -5070,8 +5339,10 @@ for a shared agent token it answers `Session <id> runs under the shared token: n
 
 The Kubernetes service-account tokens this runtime projects for a role are the broker's, under `runtime.kubernetes.agent_secrets` (`agentSecretsVolumes`, `manifest.go`): `agent-secrets-token` for its `audience`, and `agent-secrets-exchange` for its `exchange_audience` where that key is set (`exchangeTokenProjection`).
 Each reaches the secrets broker and nothing else.
-A microVM issue pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata` carries another projected token, `workload-identity-token`, for the Workload Identity pool's audience.
-No role's namespace shows it, and the pod's launcher exchanges it at Google's Security Token Service for the token its metadata endpoint hands out ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
+A microVM pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, an issue pod or the controller's, carries another projected token, `workload-identity-token`, for the Workload Identity pool's audience.
+The pod's launcher exchanges it at Google's Security Token Service for the token its metadata endpoint hands out ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
+In an issue pod no role's namespace shows it, nor in the controller's pod where its launcher runs the roles-dir form under a `writer_audience`.
+In the controller's single-role form the controller's agent can read it, which gives the agent no identity that the endpoint does not already serve it.
 A pod whose `session_database` names a `writer_audience` carries another projected token, `session-writer-token`, for that audience.
 No role's namespace shows it, and the launcher's session proxy exchanges it at Google's Security Token Service to impersonate the session database's service account ([What `cloudsql-iam` puts in a pod](#what-cloudsql-iam-puts-in-a-pod)).
 Dispatch can verify a projected token minted for its own audience (`DISPATCH_OIDC_AUDIENCE` in `packages/envoy/cmd/dispatch/settings.go`, checked by `serviceTokenActor` in `packages/envoy/internal/dispatch/api/server.go`), and the runtime projects none.
@@ -5097,10 +5368,16 @@ In a checkout whose one gh-resolved line is `remote.origin.gh-resolved base`, on
 The helper reads such a repository from GitHub once (`GET /repos/<owner>/<name>` through `/usr/bin/curl`, within 10 s), with the token of the directory `GH_CONFIG_DIR` names where that is a directory of the bundle, and answers a fork with the token it would answer for the fork's `parent`, or else for its `source`, where the bundle holds that owner's directory, and every other repository of such an owner with nothing.
 That is how a role pushes a commit to the branch of an outside contributor's pull request from a fork in a personal account: the helper answers the token of the repository the fork was made from, which is usually the base of its pull requests, and GitHub decides which branch of the fork that token may update.
 The shared clone names it as its `credential.helper`: `workspace-init provision` is passed it as `--credential-helper '!legion git-credential'`.
-Every role is also told it outside any clone, as five git configuration entries git reads after every configuration file, the clone's own `.git/config` among them (`gitConfigPairs`, `manifest.go`):
-`GIT_CONFIG_COUNT=5`, `credential.https://github.com.helper` reset to empty and then set to `!legion git-credential`, `credential.https://github.com.useHttpPath=true`, `core.fsmonitor` set to empty and `core.hooksPath=/dev/null`.
-The issue's roles share the clone and each can write its `.git/config` and hooks, so the last two keep a role's `git status` or `git commit` from running an fsmonitor program or a hook another role planted, with the credentials of the role that runs git.
-They pin those two settings and no others, and they do not make the roles of one issue a boundary against each other.
+Every role is also told it outside any clone, among nine git configuration entries git reads after every configuration file, the clone's own `.git/config` among them (`gitConfigPairs`, `manifest.go`):
+`GIT_CONFIG_COUNT=9`, `credential.https://github.com.helper` reset to empty and then set to `!legion git-credential`, `credential.https://github.com.useHttpPath=true`, `core.fsmonitor` set to empty, `core.hooksPath=/dev/null`, and the four pack settings `core.packedGitWindowSize=32m`, `core.packedGitLimit=256m`, `pack.windowMemory=64m` and `core.deltaBaseCacheLimit=64m` (`packWindowConfig`, `internal/workspace/config.go`).
+The pack settings bound the pack data one git maps, 32 MiB at a time and 256 MiB at most; the last two bound the `pack-objects` a push runs, which the first two do not.
+git's defaults map 1 GiB windows up to 32 TiB, and gVisor counts every window a process has touched whole as the pod's memory: with the defaults, a `git log`, `git status`, push or fetch on one pack of 5.94 GB or 12.3 GB reached 5.2 GiB to 8.8 GB, and pods were killed at their 8 GiB limit.
+The same four are in the worker image's `/etc/gitconfig`, for provisioning's git, which reads none of these entries; in the shared clone's own `.git/config`, written at every provisioning, for the shared public leak check's git, which reads no other configuration; and on the command line of the feed's fetch and of the repository cache's own git, whose repack keeps its own larger settings (`repackMemory`).
+Every shared clone takes them in its `.git/config`, a host clone of the tmux runtime too, which the daemon provisions the same way, where they only bound git's pack windows.
+A role's own `-c` still overrides one of them for its command, and the entries win over a deployment image's own `/etc/gitconfig`.
+A role that runs when the release lands keeps its five pairs until its next generation: the entries travel in the role's start command, and a role the daemon adopts again is not relaunched for a change of them.
+The issue's roles share the clone and each can write its `.git/config` and hooks, so `core.fsmonitor` and `core.hooksPath` keep a role's `git status` or `git commit` from running an fsmonitor program or a hook another role planted, with the credentials of the role that runs git.
+Of the settings that run a program, the entries pin those two and no others, and they do not make the roles of one issue a boundary against each other.
 Every role can write the whole issue volume, and the roles share the pod's network namespace, so code one role plants runs in a sibling, with the sibling's credentials, through any of these:
 
 - the checkout, which the roles share by design: a test the tester runs, a script or build step the reviewer runs;
@@ -5259,13 +5536,13 @@ The init containers never call `codegraph`.
 
 Every pod runs:
 
-- with `runtimeClassName: gvisor`, except an issue pod whose sandbox is a microVM, which runs with `runtimeClassName: microvm` ([Issue pods in microVMs](#issue-pods-in-microvms));
+- with `runtimeClassName: gvisor`, except an issue pod whose sandbox is a microVM and the project controller's pod where `runtime.kubernetes.sandbox.type` is `microvm`, each of which runs with `runtimeClassName: microvm` ([Pods in microVMs](#pods-in-microvms));
 
 - with `serviceAccountName` set to the operator's `pod.service_account` (the namespace's default when it names none) and `automountServiceAccountToken: false`;
 
 - under Pod Security "restricted": non-root user 1000 on the pod, and on each container no privilege escalation, ALL capabilities dropped and the RuntimeDefault seccomp profile;
 
-- on the Legion pool, with its node selector and toleration (and, for a microVM issue pod, the `cloud.google.com/compute-class` selector and toleration of its ComputeClass), and nothing else of its placement that Legion itself sets:
+- on the Legion pool, with its node selector and toleration (and, for a microVM pod, an issue pod or the controller's, the `cloud.google.com/compute-class` selector and toleration of its ComputeClass), and nothing else of its placement that Legion itself sets:
   no affinity (GKE Autopilot adds its own to an annotated pod, below);
 
 - `Guaranteed` at the default reservations:
@@ -5290,6 +5567,8 @@ Every pod runs:
 
 The project controller's Sandbox under `controller: daemon`, `legion-<project>-controller`, is the same pod with a one-role list:
 it carries `legion.dev/project` and `legion.dev/role=controller` and no tree or issue label, runs no init container and one launcher container, `controller`, carrying the controller's reservation, and owns a volume of its own the same way, `issue-legion-<project>-controller` ([Daemon-launched controller](#daemon-launched-controller)).
+Where `runtime.kubernetes.sandbox.type` is `microvm` it runs in a microVM, placed and labelled as a microVM issue pod is ([Pods in microVMs](#pods-in-microvms)).
+Its launcher's command then adds `--microvm`, and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, `--metadata-workload-pool <pool> --metadata-identity-provider <provider>` after it, all before `--stop-grace`, and its container mounts the projected token volume `workload-identity-token`, read-only, at `/var/run/legion/workload-identity` ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 
 The image probe runs as a Sandbox of its own, `legion-probe-<project>-<digest12>`, with `shutdownPolicy: Delete`, its one container carrying the probe's own fixed reservation
 — 500m and 1Gi, over a 5Gi disk bound and a 1Gi disk request (`probeReservation`, `internal/daemon/kubernetes.go`), none of an issue pod's, since `legion probe-image` starts one Oh My Pi at a time, runs no lane, and runs its TLS clients one at a time, headless Chromium among them, and a probe sized as an issue pod could keep the daemon from booting on a full pool ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes), [Issue sizing](#issue-sizing-one-reservation-per-pod)).
@@ -5316,6 +5595,9 @@ a tar is served throughout and is taken again if the repack swaps the packs unde
 A repack that fails is logged and tried again a day later, and the partial files it left in `objects/pack` (every `tmp_*` — a pack, its index, reverse index, bitmap, mtimes
 — and `.tmp-*`) are removed at once, each logged, as they are after a fetch that fails;
 a process starting on a volume where a killed one left any removes them before its first fetch.
+A repack that fails for lack of space ("Room on the cache's volume", below) is recorded, and `/healthz` carries the time of that failure as `repackOutOfSpaceAt`.
+The cache also keeps that time in `.legion-repack-out-of-space` on its volume, so a pod that replaces it reports the failure too.
+The next repack that succeeds clears the failure and removes the file.
 A fetch into the clone keeps an issue pod's 30-minute bound, since every tar waits for it;
 git's transfer sets no stall limit, so a stalled fetch holds every tar for up to those 30 minutes.
 Restarted after a fetch was killed, it also removes the git lock files that fetch left before it fetches again.
@@ -5326,8 +5608,12 @@ It serves, on port 8418:
 
 - `GET /healthz`: `503 {"ready":false,…}` until the first clone is whole, then `200 {"ready":true,
   "repo":"<owner>/<repo>","head":"<default branch's commit>","lastFetchAt":"…","bytes":<n>,
-  "streams":<s>}`, `streams` being the `/tar` requests it is sending or holding in its queue at the answer;
+  "streams":<s>,"volumeBytes":<v>,"availableBytes":<a>,"fetchOutOfSpaceAt":"…","repackOutOfSpaceAt":"…"}`, `streams` being the `/tar` requests it is sending or holding in its queue at the answer;
   it waits on no fetch, and answers any request, since it holds nothing secret and nothing of the repository's content.
+  `volumeBytes` is the volume's size and `availableBytes` the bytes available to the cache, from a `statfs` of `/legion/cache` at each answer.
+  Where that `statfs` fails, `volumeError` carries its error, and the two figures are absent.
+  `fetchOutOfSpaceAt` and `repackOutOfSpaceAt` are each the time of that step's last failure for lack of space since the step last succeeded, and each is absent while there is none.
+  The 503 answer carries these room fields too, since the volume is there before the first clone.
 
 - `GET /tar`: the clone's refs and packs as a tar stream
   — `HEAD`, `packed-refs`, `refs/`, `objects/pack/pack-<id>.pack` and the `objects/pack/pack-<id>.idx` git reads each pack through, no loose object or configuration
@@ -5344,6 +5630,9 @@ Each fetch also points the clone's `HEAD` at the branch GitHub names as the defa
 A fetch that fails is logged and tried at the next tick, and the cache stays ready on what it last fetched;
 a restarted cache whose volume holds its clone fetches into it, and serves it as it is when GitHub cannot be reached;
 a first clone that fails ends the process, and the kubelet restarts it.
+A fetch into the clone that fails for lack of space is recorded too, and `/healthz` carries the time of that failure as `fetchOutOfSpaceAt` until the next fetch succeeds.
+The cache keeps a fetch's failure in memory alone, since the next fetch reports it again.
+A first clone that fails is not recorded: that cache never turns Ready, and `legion state` shows it `failing` under `repositories`.
 
 An issue pod's `workspace-fetch` fills a fresh feed from its repository's cache alone ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 It asks the cache's health with no credential, takes nothing from a cache whose answer names another repository, so a cache pod replaced and its address reused by another repository's cache can put nothing into the feed, and presents the cache's token with its request for the tar alone.
@@ -5410,6 +5699,40 @@ A cache that a live record names loses the old annotation at that sweep.
 Each cache that loses the old annotation is logged once, at info, with its repository, the old value and what the sweep did.
 A cache the sweep cannot make or repair — its owner's token cannot be minted, say — is a warning naming it, tried again at the next sweep.
 The boot census refuses a Sandbox labelled `legion.dev/cache` that is not one this runtime builds (no repository annotation, or another container or claim template), by name.
+
+**Room on the cache's volume.**
+A fetch or a repack fails for lack of space when git's error holds `No space left on device` or `Out of diskspace`, matched case-sensitively.
+It also fails for lack of space when the volume has less than 1 GiB available as the step fails, because git reports a ref it could not write for lack of space with neither phrase (`cannot lock ref '<ref>': unable to create directory for <path>`).
+The cache reads the volume for that test before it removes the partial files, because the removal frees space.
+Where that read fails, git's words alone decide.
+A repack needs free space of about its clone's reachable objects: `git repack -a -d` writes them all into one new pack before it deletes the packs that pack replaces.
+On 2026-11-19 one deployment's cache logged `Out of diskspace` for its repack, and then `No space left on device` for every fetch.
+
+The cache keeps a repack's failure in `.legion-repack-out-of-space` at the volume's root (`/legion/cache`), beside `.legion-last-repack`, as one RFC 3339 UTC time and a line feed.
+The file is outside the clone, so `/tar` never streams it.
+The cache writes the file after it removes the failed repack's partial files, so the write has room.
+It logs a write that fails, and keeps the failure in memory all the same.
+A new cache process reads the file before it serves, so its first `/healthz` answer, the 503 one included, carries the failure.
+It logs and ignores a file it cannot read or whose text is not an RFC 3339 time.
+A recorded failure does not change when the cache fetches or repacks.
+
+Kubernetes reports the bytes available on each claim through the kubelet's `kubelet_volume_stats_available_bytes` metric ([Kubernetes metrics reference](https://kubernetes.io/docs/reference/instrumentation/metrics/)).
+The kube-prometheus alert on that metric is `KubePersistentVolumeFillingUp` ([its runbook](https://runbooks.prometheus-operator.dev/runbooks/kubernetes/kubepersistentvolumefillingup/)).
+These standard signals see the cache's claim as they see any other claim.
+Legion's own signal is the `repository-cache-room` row of [The deployment's capability report](#the-deployments-capability-report).
+While the row is open, the controller's `tick` notice names it in `openCapabilities`, and the project's controller names it in the day's report.
+`legion state` shows the room in that row alone: a cache under `repositories` carries no room field.
+
+The remedy is to grow the cache's claim in place ([Expanding Persistent Volumes Claims](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)).
+The claim is `cache-<sandbox>`, which the row's detail names, and its StorageClass must set `allowVolumeExpansion: true`.
+Raise the claim's `spec.resources.requests.storage`, for example `kubectl -n legion patch pvc cache-<sandbox> -p '{"spec":{"resources":{"requests":{"storage":"40Gi"}}}}'`.
+Then raise `runtime.kubernetes.repository_cache.volume` in `legion.yaml`.
+That key sizes only the caches the daemon makes later: a cache that exists keeps its claim.
+The daemon does not grow a claim itself, since it has no PVC verb ([RBAC the Go daemon needs](#rbac-the-go-daemon-needs)).
+
+After the claim grows, the next fetch that succeeds clears the fetch's failure, and a fetch runs every `refresh_minutes`.
+A kept repack failure stays for up to 24 hours after the claim grows, until the next repack runs and succeeds.
+Until then the row stays open, unless `capabilities.decided.repository-cache-room` names a reason.
 
 ### A pod whose address moved
 
@@ -6285,7 +6608,7 @@ the issue pod's whole 10Gi, shared by its six roles.
 An issue pod's six roles share one memory limit, and under gVisor the host kernel sees the pod's sandbox and not the processes in it:
 a container that passes its limit is stopped whole, `OOMKilled`, and every role's turn ends with it ([Liveness rules](#liveness-rules)).
 The memory guard in the pod's launcher, where the deployment runs it (it is on by default), acts before that point.
-When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the largest process that is neither Legion's own nor an agent's own, and the daemon tells that process's role why, on the role's own topic.
+When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL`, of the processes that are neither Legion's own nor an agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the guard's first kill while the reading stays near the limit, else the largest, a fork that still runs its parent's program counted by what it holds over its parent, and, from halfway between that share and the limit, every process that grew over its last few reads and, where one it may end is not new to its stay near the limit, every one that grew since the guard's first kill in that stay, every one that started during that stay and is no fork with memory of its own, and every one new to that stay with memory of its own, each a kill of its own, and the daemon tells the role of each process it ends why, on the role's own topic.
 The rest of the pod goes on: the guard never ends a role's agent, its shim or its `role-init`, so no role's turn ends for the kill, and the command that was ended fails in the turn that ran it.
 The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
 
@@ -6298,8 +6621,8 @@ The earlier runs of those Jobs, recorded in the same issue's `wc-gvisor` results
 Only a launcher that is its container's first process, PID 1, runs the guard: the `legion launcher` of an issue pod's `roles` container ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 Only that process sees every process of the container, and every process that no `role-init` holds is its own; the rules below rest on both.
 A launcher started any other way writes one `off` line and runs no guard.
-The launcher of the controller's pod runs none either, except where `session_database.writer_audience` is set.
-There the controller's launcher runs the roles-dir form as its container's first process, so it starts the guard at the guard's defaults, and the daemon's first answer to it carries no guard settings and turns the guard off (`serveMemoryGuard`).
+The launcher of the controller's pod runs a guard with rules of its own ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
+Where `session_database.writer_audience` is set, the controller's launcher runs the roles-dir form as its container's first process, and the guard it runs there is this one, over the controller's `role-init`, at the settings the daemon hands the controller's pod (`serveMemoryGuard`).
 A microVM issue pod's launcher runs no guard: the pod's own kernel stops one process rather than the whole pod, and the launcher runs the guest watch in the guard's place ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 
 **What it reads.**
@@ -6307,14 +6630,20 @@ Each interval, `interval_milliseconds` (100 ms by default), the guard reads two 
 Each of the two reads took 0.025 to 0.044 ms at the median in the read-cost Job of dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md (`infra-3557-19g-readcost-fbf6z`, 2026-11-14).
 The guard never acts on the cgroup's counter, `memory.usage_in_bytes`, because the counter also counts the pages of the files a process maps, which the kernel can take back:
 in the tester's `wc-gvisor` result at `bebc420b` a file mapped and read raised the counter to 97.2% to 105.4% of the limit, and an LMDB map larger than the limit raised it to 107.4% to 134.9%, while `AnonPages` stayed under 11% and the guard ended neither process.
-One read of the counter took about 18 ms at the median in a running INFRA issue pod of six roles, measured on 2026-11-14, and 0.04 ms in that read-cost Job, so the guard reads it every 5 seconds for its hourly line and once at each kill, and never each interval.
+One read of the counter took about 18 ms at the median in a running INFRA issue pod of six roles, measured on 2026-11-14, and 0.04 ms in that read-cost Job, so the guard reads it every 5 seconds for its hourly line and once at each kill, never between a reading and the kill it sends at that reading, and never each interval.
+In the band below the mark, at or above the mark and after a kill it also lists the container's processes and reads the sizes of those it may end, by which it chooses what to end ("What it ends", below);
+at the first reading at or above the mark, where the band read sizes, it reads before its kill at most the `smaps` of the processes the band found, with the `exe` link and arguments of those the band read running their parent's program, and, where those show no growth or the reading is at or above the urgent share, one listing of the processes and, within half an interval, the files of the newest of those started since the band's last reading, and it reads every size only after its kill.
+At or above the urgent share, where the processes it may end at that reading hold one that is not new to the stay, it reads on after its kills, up to one interval from the reading at the mark, the files and `smaps` of the processes new to the stay that those reads did not reach ("What it ends", below).
+At or above the urgent share after a kill, once the processes it killed have exited or the wait has passed, it reads the `smaps` of the processes it read at the reading before first, and lists the processes and reads the rest only after the kills those reads send ("After a kill: the rise rule", below).
 Where `AnonPages` or the limit cannot be read, where the limit reads as no limit (2^62 bytes or more), where the system has no `pidfd_open`, through which the guard ends a process, or where the guard cannot list the processes of `/proc`, the guard writes one `off` line and does nothing more while the launcher runs.
 
 **What it ends.**
-At or above the mark, `act_percent` of the limit (85 by default), the guard lists every process of the container and finds the ones it may end (below).
+The mark is `act_percent` of the limit (85 by default), and the band is the 10% of the limit below the mark, from 75% to 85% of the limit at the default.
+At each reading in the band or above it, before a kill and after one, the guard lists every process of the container, finds the ones it may end (below) and reads their sizes.
+It reads no size below the band, none while it is off, and none after it has given a rise up until the reading goes below the mark: a pod below its band pays for its readings alone.
 The list leaves out a zombie or a dead process, state `Z` or `X` in its `stat`, whose `status` counts one thread or none:
 it holds no memory, and under gVisor its `exe` link answers `EACCES`, which would otherwise count it unread.
-A process in either state whose other threads still run is one whose main thread alone has exited, and the guard reads it as a live process ("What it does not do", below).
+A process in either state whose other threads still run is one whose main thread alone has exited: the guard keeps it in the list as a live process, and counts it unread, since its `exe` does not read ("What it does not do", below).
 It measures each process it may end from its `/proc/<pid>/smaps`: the sum of its `Anonymous:` lines, plus the resident size (`Rss:`) of each of its shared maps of memory-backed files, which are `/dev/zero (deleted)` (shared anonymous memory), `/memfd:…`, `/dev/shm/…` and `/SYSV…` (`smapsSize`, `proc.go`).
 Shared anonymous memory and a memfd raise `AnonPages` while their pages read 0 in `Anonymous:`, so without the second term a process that grows that way would not be seen.
 It also adds each memfd the process holds open by a file descriptor and has not mapped shared, at its size as `stat` reads it through that descriptor or the pod's `Shmem` reading at the decision, whichever is less (`heldMemfdBytes`, `proc.go`):
@@ -6323,21 +6652,189 @@ ending the process frees that memfd's pages too, and no line of its smaps shows 
 A memfd counts once: one that a process the guard measures maps shared counts through that map's `Rss:` alone, and one that several of them hold by a descriptor counts for the largest of them by its smaps.
 A map of a file on disk adds nothing, which is why a process that maps a database is not ended for its map.
 A region that several processes map counts in each of them, since gVisor gives no `Pss` that would divide it.
+The guard keeps the sizes it reads of each process for 300 ms, by the process's pid and start time, so a process that takes the pid of one that ended has no earlier read.
+It ends the most grown process first.
+A process's growth over the window is its size at this reading less its size at its oldest read in the last 300 ms, and a growth under 1 MiB is none.
+A process with no earlier read in that window, a fresh fork among them, has not grown.
+Of the processes that did not grow over the window, the ones new to this stay in the band that hold memory of their own come next, the largest first.
+A stay in the band is the guard's readings in a row in the band, at the mark and after a kill, since it last read no size (below the band, while it was off or after it gave a rise up), and a process is new to it where the two readings before the one the guard decides at did not both read it: the guard has read it at most once since the band's second-to-last reading.
+Such a process has no earlier read to grow from, or one alone, and can be a runaway that began between two readings or just before the band's last one.
+Where the stay holds fewer than two readings before the one decided at, every process is new to it, which leaves the order by size; at the first reading at or above the mark, a process counts as new only where a read at that reading reached it (below).
+A process new to the stay that ranks at nothing, a fork whose parent's size covers its own (below), is not in this tier: it has told the guard nothing of its own, and the tiers below rank it.
+Of the rest, the ones that grew by 1 MiB or more since the first kill of this stay in the band come next, the most grown first; before the stay's first kill no process has grown since one.
+A process's growth since that kill is its size at this reading less its size at the reading the first kill was sent at.
+For a process the guard first read only after that kill, it is its size less 0 where that first read is not a fork's read (below), and less that first read where it is one, so a fork has not grown at that first read.
+A process the guard read before that kill has its size as of it by the same test, each read with its own flag ("After a kill: the rise rule", below).
+By INFRA-3368's architect's decision of 2026-11-20T08:13Z on INFRA-3531 R1 of spec version 43, such a process holds memory of its own, and this tier is there so that a grower comes before a process that never grew:
+at `28732f65`, in `8g-latepool-r2`, the guard first read five of six growers after the stay's first kill, took those first reads as their sizes as of that kill, saw none grown since, and its third kill ended the probe's 4.8 GB parent by `rule=largest` while four of them lived.
+Whether the guard goes on after a kill (below) still takes such a first read as the process's size as of the kill.
+It is measured from the stay's first kill, not the previous one, because growers that step every 250 ms in step with each other show no step in the 100 ms after the previous kill:
+at `d22d8da3`, in `4g-latepool-kxv5k` and `4g-latepool-zxhnw`, the two kills after a fall went by `rule=largest` to the probe's parent and a sleeping fork while the growers rose from 90.6% to 95.9% of the limit, 7.3 MiB and 40.9 MiB below that wave's kill point (dispatch://INFRA-3531/artifact/t17k-2026-11-18-tar-gz).
+A reading below the mark that is still in the band ends a rise and not the stay, so a rise that follows such a dip measures from the stay's first kill, which a rise before it sent; the stay ends, and with it those sizes, only below the band, while the guard is off or where it gives a rise up.
+It counts across such a dip because at `15bdbd3c`, which let those sizes go at any reading below the mark, in `8g-latepool-r2`, `8g-latepool-r3` and `8g-latefork2-r1` one grower was left, the reading sat about 2 MB below the mark and came back, and the first kill of that second rise, seeing no growth since the dip, ended the probe's 4.8 GB parent by `rule=largest sizes=reread new_read=0:0` (dispatch://INFRA-3531/artifact/tester-evidence-15bdbd3c-2026-11-18-tar-gz).
+At `43213c99`, which keeps them across such a dip, `8g-latepool-spqk2`'s reading dipped 1.9 MiB below the mark and stayed in the band, and the first kill of its second rise ended the grower by `rule=grew sizes=reread`, as three more second rises of that wave ended growers (dispatch://INFRA-3531/artifact/t17p-2026-11-18-tar-gz).
+A reading that cannot read a process the pod still runs, its `smaps` or its `exe` unreadable at that reading, takes none of these from it: the process keeps its sizes as of the kills, its reads in the stay and its reads in the window, and its growth is measured from them when the guard reads it again, though it counts as new to the stay until two readings in a row have read it.
+Only a process that has ended, or whose pid now names another process, loses them, since otherwise a grower whose one read failed would count as not grown, behind a larger process that never grew.
+The processes that fit none of these come last, largest first, so where none grew and none is new to the stay with memory of its own the guard ends the largest.
+Where the tier of the processes new to the stay, or the last tier, ranks by size, a process that runs its parent's executable with its parent's arguments, read whole, where the guard has read that parent in this stay, is a fork that has not run a program of its own:
+it ranks by its size less its parent's size at the guard's latest read of the parent, and by nothing where its parent's size is the larger.
+Under gVisor such a fork reports the pages it shares with its parent as its own, so a sleeping fork ranks near nothing, and a fork that grows ranks by what it holds over its parent.
+A fork that ranks at nothing is not in the tier of the processes new to the stay, however new it is (above).
+A fork whose parent the guard has not read in this stay (a protected parent, or one no reading of this stay could read), and one that runs another executable or the same one with other arguments, rank at their whole size.
+The guard compares the arguments whole: where the first 4 KiB it reads of the two lists are equal and either was cut there, a list of exactly 4 KiB included, it reads both `/proc/<pid>/cmdline` files whole at that decision, once for each parent however many forks it has, and a file it cannot read is no match.
+At the first reading at or above the mark, with each `smaps` it reads again of a process the band found running its parent's program, its parent among the band's processes, the guard reads that process's `exe` link and arguments again before the discount applies, within the same half interval and one interval as those reads (below).
+A process that has run another program since the band read it ranks at its whole size, and one whose `exe` link cannot be read is left out of that decision, as one whose `smaps` cannot be read is; the listing after the kill reads it.
+A process the band found whose `smaps` the reading at the mark does not read again keeps the program the band read, and where one of them grew by the band's sizes below the urgent share (below) the guard reads nothing before the kill: growth puts the first one first there, and the discount orders only processes of equal growth.
+It reads the program again because the band can read a process between its fork and its exec, while it still runs its parent's program and reports its parent's pages:
+at `18c3c5bb`, `4g-latepool-djcvt` ended a grower the band had read so with its whole size taken off (`rule=grew sizes=reread less_parent=31051776`), and `4g-latepool-rjm8m`'s first kill ended the probe's 2.4 GB parent by `rule=largest sizes=reread` 115.1 ms after the reading at the mark, while the growers the band had read so ranked at nothing (dispatch://INFRA-3531/artifact/t17n-2026-11-18-tar-gz).
+The parent itself ranks at its whole size, so where nothing grew and no process new to the stay holds memory of its own, a pool's parent can be ended before its forks by `largest`, and its end frees nothing while the forks hold the pages, as a fork's end did before.
+Growth over the window and since a kill, the floor and the `ended` line's `size` count each process's own size whole: the discount only orders.
+It is there because at `23fdd92f` INFRA-3531's implementer measured the new tier end first one of three sleeping forks of a 2.4 GB parent, started between the band's last two readings or after the last, in 2 of 7 `latepool` runs at 4 GiB (`4g-latepool-v5s8l` and `4g-latepool-6gd5t`, each `rule=new sizes=search`; dispatch://INFRA-3531/artifact/t17i-2026-11-18-tar-gz).
+Processes new to the stay are in the order because at `e3a1923c` INFRA-3531's tester's `latepool` probe at 4 GiB, six processes that started growing together while a parent and three sleeping forks of a shared block held the pod at 84%, had its first kill end a process that shares the block, a sleeping fork or the parent, in 7 of 7 runs, since the growers had no earlier read:
+the closest run's highest reading was 2.4 MiB below the kernel's measured kill point (dispatch://INFRA-3531/comment/3a8abb30-1441-40c0-b80e-6122fe1dcf0d, and the tester's handoff of the test phase, version 3).
+At `778c42de`, whose order took only the processes the reading before had not read, the run `4g-latepool-zrr4d` still ended a sleeping fork first: its growers had started 5 ms before the band's last reading, which read each of them once at a few MiB (dispatch://INFRA-3531/artifact/t17h-2026-11-17-tar-gz).
+Growth since a kill is in the order because a pod short of CPU takes its readings 170 to more than 300 ms apart, so the window can hold one read of each process and show no growth at all:
+at `a55c6e50`, before growth since a kill was in the order, 8 kills after a kill in INFRA-3531's runs ended a sleeping fork or a parent while a grower lived (dispatch://INFRA-3531/comment/13452df7-caa9-462a-9d26-49614851a66b).
+At an `interval_milliseconds` above 300 no earlier read is in the window, so no process grows over it, and the guard ends the largest process new to the stay with memory of its own, else the most grown since the stay's first kill, else the largest.
+Of two processes of the same growth and size as ranked it ends the newer, since of a parent and a child it forked that has run a program of its own, which read the same, the child is the one started for the work.
+Growth comes first because under gVisor a forked child reports the pages it shares with its parent as its own, and no line of its smaps tells them apart, so the largest process can be a sleeping fork whose end frees nothing while another process fills the pod.
+INFRA-3531's tester measured that on 2026-11-17 in gVisor pods of 4 GiB and 8 GiB (dispatch://INFRA-3531/comment/487c6241-44e5-4be8-8fcf-394c3eb67209):
+a Python parent wrote a block of 3/8 of the limit and forked three children that only sleep, and a separate Python process then grew beside them.
+Each sleeper read larger than the grower, so the guard, which then ended the largest first, ended one sleeper at 4 GiB and two at 8 GiB, freed almost nothing and never ended the grower, and both pods ended `OOMKilled`.
+The guard reads the sizes in the band so that it knows what grew when the reading reaches the mark: the fastest rise the tester measured, six growers at once at about 1.5 GiB a second, crosses the band of a 4 GiB limit, about 410 MiB, in about 267 ms, which is two readings or more at the default interval.
+At the first reading at or above the mark it chooses the process by the sizes it read in the band and by the few reads below, and sends the kill before it reads every size:
+at that reading it reads `/proc/meminfo`, puts the processes in its order (below), opens the first through a pidfd, reads that process's start time and kills it, and only then lists the processes and reads their sizes, which give a size as of the kill only to a process the guard had not read before it, though a fork's read among them makes each read of its process at that reading a fork's read ("After a kill: the rise rule", below).
+Where one of the processes the band found grew by the band's sizes and the reading is below the urgent share (below), it reads no `smaps` before the kill.
+Where none of them grew, or where the reading is at or above the urgent share, it first reads again the `smaps` of those that grew by 1 MiB or more between two of the readings in the band since the guard last read no size, or that are new to the stay (the band read them at its last reading and not at the one before) and held memory of their own at that read, and of no other process in this first step:
+it lists no process, asks no rule of "What it protects, and why" and reads no descriptor there, and to each size read again it adds the memfds that process's descriptors held as the band's reading counted them.
+It reads them one at a time: first those that grew in the band, the most grown first, by the band's last size of each less the least size the band read of it; then those new to the stay that held memory of their own at their band read, the newest first, since the newest is the likeliest runaway, one that began just before the band's last reading.
+It reads them for half an interval from the reading at the mark (50 ms at the default interval): it always reads the first, and once half an interval has passed it stops after the read in hand.
+At a reading at or above the urgent share it reads them so also where one of them grew by the band's sizes, and each it reads keeps the larger of its growth by the band's sizes and its growth with the size read at the mark, since a grower whose step came between the band's last reading and the reading at the mark shows that step only in a read at the mark, and there the guard ends every process that grew (below).
+A read again of a process the band read running its parent's program also reads its `exe` link and arguments (above), and those reads count against the same half interval.
+Each process it did not read again keeps the size the band read, and so does each other process the band found, read twice or more there with no growth between.
+A process new to the stay that no read at the mark reached does not count as new there: it ranks by the size the band read, with the other processes the band found.
+The order there is taken at the time of the reading at the mark: a process's growth is its newest size, the band's last or the one read again, less its oldest size kept within 300 ms of the reading at the mark, so a rise older than that is no growth, and the floor below is read on those sizes.
+Where those 300 ms hold two sizes of no process the band found, while the 300 ms that end at the band's last reading hold two of at least one, each process's growth by the band's sizes is measured over those 300 ms that end at the band's last reading instead, since band readings throttled to about 200 ms apart leave one size in the window at the mark.
+It reads the `smaps` again where none grew because the step that takes the reading over the mark comes between the band's last reading and the reading at the mark, so no size the band read shows it:
+at `a55c6e50`, which decided on the band's sizes alone, INFRA-3531's `shared` probe, a process that grew in steps beside three sleeping forks of a shared block, had its first kill end a sleeping fork rather than the grower at 4 GiB and at 8 GiB (dispatch://INFRA-3531/comment/13452df7-caa9-462a-9d26-49614851a66b).
+A process new to the stay may have started between the band's last two readings and be a grower the band has not yet seen grow, and a process the band read twice or more with no growth between is not read again, since its size read again changes no choice.
+The guard measures over the band's own last 300 ms, and reads only those processes again, because at `afb73f19`, which measured over the window at the mark alone and read every process the band found again, two first kills came 201 ms (a pod of 1 CPU) and 101.75 ms (8 GiB) after the reading at the mark, more than one interval:
+throttled band readings had left one size in that window, so no growth showed and the guard read every process again under the throttle (dispatch://INFRA-3531/artifact/t17b-2026-11-17-tar-gz).
+It stops at half an interval because at `9d6d24df`, which read every such process again, the six growers of `4g-latepool-lmnt5` had one band read each, and reading all six again under the throttle put the first kill 100.68 ms after the reading at the mark (dispatch://INFRA-3531/artifact/t17c-2026-11-17-tar-gz).
+Where the sizes read again show no growth either, or where the reading is at or above the urgent share whatever they show, it lists the processes of `/proc` once.
+At or above the urgent share it looks for the processes started since the band's last reading, and reads the processes the band found new to the stay (below), whether or not a process grew, within the same half interval as the reads again and past it as below, since there the guard ends beside the first every process new to the stay that holds memory of its own on the condition below for the three sets of the stay, and a process started since the band's last reading is read nowhere else before the kill.
+Where a process the band found shows growth after the reads again, that process is first whatever the search finds, since a process the search finds has no growth over the window, so the guard sends its kill before the search, on the floor read on the sizes read again, and the search then decides only the kills beside it.
+A kill so sent carries the line of the whole decision, the search's `sizes` and `new_read` included, written once every kill of that reading is sent.
+At `bd8bb44c`, which looked for them there only where no process it held had grown, and counted the band's growth of a process the reads again had dropped, INFRA-3531's tester saw the first kill of `4g-latepool-r5`, at a reading at the mark at 93.96%, end the probe's 2.4 GB parent by `rule=largest sizes=reread new_read=0:0`, with no process searched, while its six growers lived; the guard ended them at the next reading (dispatch://INFRA-3531/artifact/tester-evidence-bd8bb44c-2026-11-18-tar-gz).
+It takes each process the band's last listing held as the band read it, and reads nothing of it: a pid that another process took within one interval is improbable, and the kill reads its target's start time before it signals, so a pid taken since is never signalled, and the guard then lists the processes and reads their sizes at that reading.
+Of each other process, one started since the band's last reading, it reads the `stat`, the `exe` link, `ns/pid` and the arguments, the highest pid first, so the newest first, within the same half interval from the reading at the mark: once it has passed, it stops after the read in hand, and reads on past it only as below.
+It applies the rules of "What it protects, and why" to the new processes it read with the ones the band listed, so a helper of Oh My Pi started since stays protected.
+A new process whose parent is neither one of the band's processes nor a new process it read and placed is left out of this decision, since those rules place a process by its ancestors; the listing after the kill reads it.
+It reads the `smaps` of the new ones it may end, the newest first and no descriptor, within the same half interval, and past it only as below.
+Then, within the same half interval, it reads again the `smaps` of the processes the band found new to the stay that ranked at nothing at their band read, forks whose parent's size covered their own, the newest first, with their programs read again (above), and past it only as below.
+The processes new to the stay that a read at the mark reached and that hold memory of their own, those the band found and read again and those started since, then come second in the order as one set, so the largest of them ends; where the reads reached none such, the tiers below decide, and before the stay's first kill that is the largest process the guard may end, a fork at its rank size.
+Whatever the half interval, the guard reads at the mark at least one process new to the stay that it may end, where one exists, and it reads on until it has read one that holds memory of its own, also at or above the urgent share where a process the band found grew, since a grower is not new to the stay:
+where the half interval has passed and it has read none such, it reads on past it in the same order, the processes the band found new to the stay with memory of their own at their band read that it has not read, then the processes started since, then the forks that ranked at nothing at their band read, each the newest first.
+It reads on, one process at a time, until it has read one it may end that holds memory of its own, or, once it has read any, until one interval from the reading at the mark has passed, and stops after the read in hand; past the half interval the reads that choose the first kill read nothing more, the listing of the processes included, and the reads after the first kill at or above the urgent share are below.
+Where that interval passes with only forks that rank at nothing read, the tiers below the new one decide.
+It reads on for memory of its own because at `d22d8da3`, in `4g-latepool-54nzl` and `4g-latepool-zxhnw`, the reads at the mark reached one sleeping fork of the probe's 2.4 GB parent, which spent the half interval and ranked at nothing, the search read nothing, and the fork ended first by `rule=new sizes=reread` with `less_parent` its whole size, while six growers that started after the band's last reading lived (dispatch://INFRA-3531/artifact/t17k-2026-11-18-tar-gz).
+It reads those forks after the processes started since because at `43213c99`, which read them before the search, `4g-latepool-rnr56`'s reads at the mark read the probe's three sleeping forks first, each with one band read and ranked at nothing at it, read on to one interval, and the search read nothing, so the first kill ended the probe's 2.4 GB parent by `rule=largest sizes=reread new_read=3:0` 120.1 ms after the reading at the mark (dispatch://INFRA-3531/artifact/t17p-2026-11-18-tar-gz).
+It looks for processes started since because the `latepool` probe's six growers at `e3a1923c` started between the band's last reading and the reading at the mark, so the band held no size of them, and `zrr4d`'s just before the band's last reading, which read them once.
+It reads nothing of the band's processes there, and the new ones' files within half an interval, because at `f949e5ad`, which read the start time of every process the band found and the four files of every new one before the kill, two of seven `latepool` runs at 4 GiB put the first kill 196.3 ms and 128.2 ms after the reading at the mark:
+each of those reads can wait out a stall of the pod's throttled CPU (dispatch://INFRA-3531/artifact/t17g-2026-11-17-tar-gz).
+It chooses by the band's sizes because under gVisor, with six processes growing at once, the host throttles the whole pod's CPU, and a band reading that costs about 2 ms of work at times took 80 to 270 ms:
+INFRA-3531's tester measured 194 ms from the reading at the mark to the kill where that reading read every size again, and choosing by the band's sizes put the kill 1.3 to 71.8 ms after the reading in 9 of 9 runs (dispatch://INFRA-3531/comment/76e592d0-e3ea-4d22-96d1-b27738dd8e5a).
+So the first kill comes within one interval of the reading reaching the mark, past it by no more than the read in hand where the guard reads on for a process with memory of its own, and within two where a stall of the throttled pod's CPU delays one of the guard's reads, or where the first kill must search for a process started after the band's last reading.
+INFRA-3531's implementer measured stalls of 100 to 200 ms on 2026-11-17, and no build can rule them out; in 13 first kills at 4 GiB that searched, in the waves of 2026-11-18 at `7356e0f6` to `1c9d541d`, the search took 13.5 to 108.4 ms (dispatch://INFRA-3531/artifact/t17o-2026-11-18-tar-gz), and the kill point is about 317 ms after the mark at the fastest rise measured, so two intervals leave room.
+Where the band holds no size (the reading crossed the whole band within one interval, or at the reading before the guard had just started or was off), where the process its order puts first has exited, its pid now names another process or its kill fails, or where the band's sizes, or the sizes read again, are under the floor or name no process, the guard lists the processes and reads their sizes at the reading at the mark and acts on those, as at any later reading of a rise;
+it never gives a rise up on the band's sizes alone.
 The guard acts only when the processes it may end hold at least `floor_percent` of the limit between them (10 by default): below that, the memory is mostly in processes it may not end, and ending one of the rest frees too little to matter.
-It then holds the largest through a pidfd, reads that process's start time again, and sends `SIGKILL` only when the start time is the one the scan read, so a pid that another process took after the scan is never signalled.
+It then holds the first process in its order through a pidfd, reads that process's start time again, and sends `SIGKILL` only when the start time is the one the scan read, so a pid that another process took after the scan is never signalled.
 Nor is a process that exited by itself after the scan, whether its parent has reaped it yet or not: its pidfd reads it as exited, and the guard writes no `ended` line and sends no report for it, since an exited process that is not reaped keeps its start time, and a kill of it answers no error.
-Of two processes of the same size it ends the newer, since of a parent and the child it forked, the child is the one started for the work.
-A process whose `stat`, `exe`, `ns/pid` or `smaps` the guard cannot read is not ended, is counted apart, and is logged once.
-When such a read fails, the guard reads the process's `stat` again first: a process that has ended meanwhile (gone, its pid taken by another, or now an exited zombie) is left out with no line, since under gVisor a read of a process that has just exited answers `EACCES` rather than `ENOENT`.
-A kill that fails, for a reason other than the end of the process, is logged once, that process counts as unread for as long as it lives, and the next reading ends the next largest.
+A process whose `stat`, `exe`, `ns/pid` or `smaps` the guard cannot read is not ended, is counted apart (unread), and is logged once; a `stopped for this rise` line names it ("The lines", below).
+When such a read fails, the guard reads the process's `stat` again first: a process that has ended meanwhile (gone, its pid taken by another, or now a zombie or dead process with no thread left) is left out with no line, since under gVisor a read of a process that has just exited answers `EACCES` rather than `ENOENT`.
+An `exe` or `ns/pid` that answers `ENOENT` is read the same way, and the process counts unread unless it has ended, since on Linux, by the kernel's source, the `exe` of a process whose main thread alone has exited answers `ENOENT` while its other threads hold its memory.
+A kill that fails, for a reason other than the end of the process, is logged once, that process counts as unread for as long as it lives, and the guard ends the next in the order: at that same reading, by its own sizes, where it chose the process before it listed the processes, and otherwise at the next reading.
+Where the reading at a kill is at or above the urgent share, the mark plus half the distance from the mark to the limit (92.5% of the limit at the default `act_percent`, which sets it, with no setting of its own), the guard ends at that reading, after the first process in its order, every other process it may end that grew over the window by 1 MiB or more, the most grown first, and then every other one of the three sets of the stay below, in its order of ends, each through its own pidfd and start time and each with an `ended` line and a report of its own.
+The three sets of the stay are the processes it may end that grew by 1 MiB or more since the stay's first kill, as the order measures that growth; those that started during the stay, are not forks and hold memory of their own; and those new to the stay that hold memory of their own (INFRA-3531 R1 of spec version 46, by INFRA-3368's architect's decisions of 2026-11-20T13:55Z, 14:00Z, 14:05Z and 14:58Z).
+A stay in the band begins at its first reading in the band or above it, and a process started during it is one that the process table of that first reading did not list by its pid and start time, so a process that started in the interval just before that reading did not start during the stay.
+A fork there is a process that runs its parent's program by the fork test above, and it stays one while it runs the program its fork's read found ("After a kill: the rise rule", below), so a sleeping fork that started during the stay is not in the second set, whether it ranks at nothing, at the little it holds over its parent or, its parent ended, at its whole size, while a fork that has run a program of its own is.
+At the reading of the stay's first kill, and before it, no process has grown since that kill, since the sizes as of it are that reading's own.
+A process that was running at the stay's first reading, grew in the band before the stay's first kill and has been flat since, as a pool's parent, is in none of the three.
+A fork that ranks at nothing, whose parent's size covers its own, is not ended for being new to the stay or for starting during it, a fork the search found beside its found parent included, since the search's read of the parent is a read of it in this stay.
+The processes of the three sets end so only where the processes the guard may end at that decision, once the reads at the mark have left out those they could not read or that have ended, hold one that is not new to the stay:
+where the stay holds fewer than two readings before the one decided at, at the guard's first reading, at a reading that crossed the band within one interval or after a single reading in the band, every process is new to it, so there the kills beside the first are the processes that grew over the window alone, none of the three sets, a process that started during the stay included, and a burst with no readings in the band before it costs one kill a reading beyond those.
+That holds at every reading it kills at, the first reading at or above the mark, a reading after a kill and a reading it decides on by its own sizes, but one: at the urgent reading of the wait where its reads again before the full read end a process, they take it before they read, from a process they are to read again that is not new to the stay and still runs by its `stat`, so a process whose `smaps` then cannot be read still gives it, for their kills and the full read's ("After a kill: the rise rule", below).
+At such a reading after a kill, once the processes killed there have exited or the wait has passed, the guard first ends, as it reads them again, the processes it read at the reading before that grew since that kill, the first with its own rule and each other by `urgent`, and with that first kill each one it reads that grew over the window, and, where one of the processes it is to read again is not new to the stay and still runs, each one of the three sets, by `urgent` too, and only then lists the processes and adds the kills above for the rest ("After a kill: the rise rule", below).
+Where none of these is beside the first, it ends one process, as it does at every kill below the urgent share.
+At the first reading at or above the mark the half interval, and the reads on past it for memory of its own, bound only the reads that choose the first kill, so those reads can reach only some of the processes new to the stay.
+So at or above the urgent share, where the decision holds a process that is not new to the stay, the guard reads on once the first kill and the kills beside it that those reads chose are sent, one process at a time, through the processes new to the stay that no read at the mark has reached, in the order of those reads:
+the processes the band found new to the stay with memory of their own at their band read, then the processes started since, listed there where the search did not list them, then the forks that ranked at nothing at their band read, each the newest first.
+It reads no process once one interval has passed since the reading at the mark, and ends the one whose read is in hand.
+It ends each process it so reads that grew over the window, holds memory of its own or, by that read, grew since the stay's first kill, by `urgent`, and sends that kill as soon as it has read the process, before its next read:
+a fork whose read parent covers it is not ended, a fork whose parent the same step reads after it waits for that read, a process it protects or cannot place is neither read nor ended, and the floor is not read again.
+Below the urgent share, and where every process is new to the stay, it reads nothing after the first kill.
+It reads on because at `4d6665d5`, in INFRA-3531's tester's run `4g-t4latepool-r3`, six growers started after the band's last reading, the first reading at the mark was at or above the urgent share, and its search started after half an interval with each `smaps` read taking 22 ms, so it read one grower before the kill, the guard ended that one alone, and the host ended the pod with the highest reading 25.5 MiB below the kill point (INFRA-3531 R1 of spec version 43).
+The read-on itself is bounded by that interval: in INFRA-3531's tester's replay of that run with each `smaps` read taking 22 ms after the first kill too, it reached one grower more within one interval, and the guard ends the four it did not reach at the next reading at or above the urgent share, as "After a kill: the rise rule" below says (dispatch://INFRA-3531/artifact/tester-evidence-41d4f45b-2026-11-19-tar-gz, INFRA-3531 R1 of spec version 43).
+The floor is read once, on all the processes it may end, before the first kill; one of the others that has ended or whose pid now names another process is skipped with no line, one whose kill fails is logged and counts unread as above while the others still go, and where the first is not killed none of them is, and the guard decides again as above.
+It sends every kill of the reading before it reads the cgroup's counter and `Shmem` and writes the kills' lines and reports, in the order of the kills, since a counter read can take about 18 ms under gVisor and the kills beside the first would otherwise wait behind it.
+It ends them all because near the limit one kill a reading cannot absorb a burst of several growers: at `8023d298`, in INFRA-3531's tester's run `4g-t4latepool-r2`, a reading came 148 ms late on a pod of 1.5 CPU, so six growers' first 64 MiB steps landed before the first reading at the mark, which read 93.88% of the limit, and one kill a reading then left the pod 2.8 MiB from the kill point (dispatch://INFRA-3531/comment/c8c0822e-4ee4-429b-ae24-a017d4a0d962, dispatch://INFRA-3531/artifact/tester-evidence-8023d298-2026-11-18-tar-gz).
+It ends the processes new to the stay too because a grower that started between the band's last reading and the reading at the mark has one read and so no growth over the window: at `a82a9f2c`, in INFRA-3531's implementer's run `4g-latepool-4tpqx`, six growers started so, none showed growth at the first reading at the mark, which read 93.95% of the limit, the guard ended one of them there, and the pod came 26.5 MiB from the kill point (dispatch://INFRA-3531/artifact/t17u-2026-11-18-tar-gz).
+It ends the three sets of the stay because a grower that started during the stay and was read at several readings, not yet stepped, is neither new to the stay nor grown over the window: at `00405eb3`, in INFRA-3531's implementer's run `4g-r15latepool-r206`, four growers that started together inside the band, read three times and not yet stepped, were in no set the urgent rule ended at a reading of 93.95% after a kill, which ended the one grower that had stepped, and the four then stepped together within one 131 ms gap and brought the pod to 2.3 MiB from the kill point (INFRA-3531 R1 of spec version 46).
 
 **After a kill: the rise rule.**
-After a kill the guard takes a reading each interval.
-The reading has fallen when it is below the reading at the kill by any amount, or when it is below the mark.
-When it has fallen and is still at or above the mark, the guard ends the next largest process once the killed one has exited or once the wait has passed, `wait_seconds` (5 by default).
-So a pool of forked workers, which share their parent's pages and each count them whole (`make -j`, `lake build`), is ended one worker at a time while the reading stays at the mark, rather than left for the kernel to stop the whole sandbox.
-When the wait passes and a kill has not lowered the reading at all, or when no process may be ended, the guard gives the rise up with a `stopped for this rise` line, which a stop that repeats writes at most once a minute ("The lines", below), and ends nothing more for that rise:
+After a kill the guard takes a reading each interval, and lists the processes and reads their sizes at each one.
+It waits only while a process it killed at that reading has not exited, and no longer than `wait_seconds` (5 by default) from that reading: until every one of them has exited or the wait has passed it ends nothing, since the reading can still fall as their memory goes.
+A killed process that has not exited is never ended or reported again: the guard leaves it out of its order, of the sum it holds against the floor and of the growth since the kill (below).
+A reading below the mark ends the rise.
+Once every process killed at that reading has exited, or once the wait has passed where one has not, the guard decides at each reading by that reading's sizes, in the order of "What it ends" above.
+The reading has fallen when it is below the reading at the kill by any amount, at that reading or at an earlier one since the kill.
+When it has fallen and is still at or above the mark, the guard ends the next process in its order.
+So a pool of forked workers, which share their parent's pages and each count them whole (`make -j`, `lake build`), is ended one worker at a time while the reading stays at the mark, rather than left for the kernel to stop the whole sandbox; at or above the urgent share the workers that grew over the window or since the kill, or are of the three sets of the stay on the condition "What it ends" above states for them, are ended together.
+When it has not fallen, the guard ends the next process in its order at once, but only while the processes it may end hold at least the floor between them and one of them has grown by 1 MiB or more since the previous kill or, at a reading at or above the urgent share where they hold one that is not new to the stay, one of them is of the three sets of the stay ("What it ends", above).
+Where a process of those sets is the one reason, the guard's first kill goes to the first process in its order that the urgent rule ends at that reading, one that grew over the window or one of those sets, and not to a process that rule does not end, such as a pool's parent flat since before the stay's first kill; that kill's line names `urgent` only where its order put such a process before it, and its own rule otherwise, and the other kills "What it ends" above asks for follow.
+A process's growth since the kill is its size at this reading less its size as of the kill.
+By the decision of INFRA-3368's architect of 2026-11-20 on INFRA-3531 R1 of spec version 43 (dispatch://INFRA-3531/comment/b3d48079-f88b-4b86-838b-dd06ccb53837), a process's size as of a kill is the lowest of its reads of the program it runs now, from its last read that finished before the kill's reading up to the read the decision used: for a kill chosen at the mark, the band's last read of it, its `smaps` read again at the mark or the search's read of it; for a later kill, that reading's read of it, or its read again before the first kill of an urgent reading (below).
+Every read of it at the kill's reading before the kill counts: where the reads again at the mark send no kill and the guard then reads every process at that reading and ends one, the lower of the two reads of its program counts.
+A read is of another program than a later one only where it was a fork's read and the later one is not, by the same architect's decision of 2026-11-20T08:13Z (dispatch://INFRA-3531/comment/edff1f51-8c59-4078-adb2-51bef12c5f47):
+a fork's read is one where the process runs its parent's executable with its parent's arguments, its parent read in this stay (the fork test of "What it ends", above).
+After such a read the process stays a fork until its executable or arguments differ from what that read found, whether its parent still runs or not, by that architect's answer of 2026-11-20T09:24Z:
+a fork whose parent the guard has ended still runs its parent's program and still reports their shared pages under gVisor, so it keeps its size as of the kill.
+An argument rewrite, as `setproctitle` or `process.title` makes, is not a new program:
+a process that was not a fork keeps its size as of a kill whatever its executable or arguments become, and only a fork that rewrites its arguments counts from 0, with its parent's shared pages under gVisor, the risk the decision accepts.
+Each read has its own flag, by INFRA-3368's architect's rule of 2026-11-21T16:43Z (dispatch://INFRA-3531/comment/4c8b69b6-6047-4b2b-9380-55e6536809aa, item 1):
+a read is a fork's read where the program it found is its parent's program, as read anywhere at the same reading or earlier in the stay, and its flag is never taken from a read of another program.
+So a read made before its parent's first read is a fork's read where it found its parent's program and a later pass of the same reading reads the parent, as where a search reads a fork before its parent and stops and the full read after the kill reads the parent, whether or not that full read reads the fork again, and whatever program it finds the fork running.
+Only the parent's read at that same reading counts so: a parent first read at a later reading makes it no fork's read.
+A read is a fork's read too where it found the program of a read at the same reading that is one.
+A fork that runs a program of its own between two reads of the kill's reading takes its size as of the kill from its read of that program, no fork's read:
+at `6b8c4d9b`, which gave each read of the kill's reading the flag of any of them, the deep review's probe of round 6 had such a fork's 150 MiB counted from 0, so the guard saw 150 MiB of growth since the kill where nothing grew and ended the fork by `rule=grew-since-kill`.
+Where every read of it before the kill is of another program, its size as of the kill is 0: the band read it between its fork and its exec, at its parent's size under gVisor, and all that its program holds came after.
+A size as of a kill from a fork's read counts only while the process is still a fork, by the ruling of INFRA-3368's architect of 2026-11-20 (dispatch://INFRA-3531/comment/a81dfa03-66d1-4f14-a0c8-d5ad7af91df9): at a reading that finds it running another program, as where it ran its own program only after the kill's reading, its size as of the kill is 0 there, and all that program holds is growth since the kill once it is 1 MiB or more, as any growth is.
+Only a process the guard never read before the kill takes its first read after it as its size as of the kill, and has not grown at that read, since a fork reports its parent's shared pages as its own; the order's third tier alone counts such a process from 0, and only where that first read is not a fork's read ("What it ends", above).
+So a step that lands after a process's last read before the kill's reading counts as growth since the kill, however late the guard's reads come.
+At `7356e0f6`, which took that size from a read after the kill, `8g-latepool-q56hm`'s growers stepped between the reading at the mark and that read, so the next two readings, not fallen and 28 MiB above the kill's, showed no growth, and the guard went on one reading late (dispatch://INFRA-3531/artifact/t17l-2026-11-18-tar-gz).
+In INFRA-3531's tester's run r31 at `0028eb7d`, the guard's reads at a reading came after that reading and four growers stepped 64 MiB in between, so a guard that took those reads as the sizes as of the kill it sent there ended nothing at the next reading, 155 MiB above the reading at the kill.
+In run r40 at `7512cc38`, the band read a grower between its fork and its exec, and a guard that took the grower's read after the kill, 69.15 MiB, as its size as of the kill saw no growth since it, and after a fall ended the probe's 2.4 GB parent by `rule=largest` while the grower lived (dispatch://INFRA-3531/comment/0aa53120-89cf-498a-aac5-75d0727c9991).
+In the deep review's probe of run r40's shape at `c1c86b9e` (dispatch://INFRA-3531/artifact/review5-probes-c1c86b9e-tar-gz), the search at a later mark read a fork before its parent and stopped before the parent, and a guard that took the search's read by the flag the search's own pass set on it, no fork's, kept the fork's 305 MiB, its parent's shared pages, as a size that counts whatever it runs, so once the fork ran a program of its own that came to hold 140 MiB, the guard saw no growth since the kill and did not go on.
+At `6a1d8e2f`, which took that read for a fork's read only where a later read of the fork at that reading found the same program, the simplify pass's probe had the fork run a program of its own before the full read after the kill, so its 305 MiB again counted whatever it ran and its program's growth since the kill was hidden; its one read before the kill is of another program, so its size as of the kill is 0.
+Growth since the kill decides this, not the 300 ms window, so a process that grows in steps wider than the window counts as grown, and several processes that together grow faster than one kill frees are ended one after another below the urgent share, each once the one before has exited, and at or above it at one reading, where they grew over the window or since the kill, or are of the three sets of the stay on the condition "What it ends" above states for them (below).
+The order ranks by growth since the stay's first kill instead ("What it ends", above), so where the readings come more than 300 ms apart, or a grower's steps fall between the reads after a kill, or the reading dips below the mark in the band and comes back, a process that grew since that first kill still comes before a larger one that never grew; growth since the previous kill decides only whether the guard goes on.
+At a reading at or above the urgent share where the processes it may end hold one that is not new to the stay, the urgent rule ends each process of the three sets of the stay though it has not grown since the kill ("What it ends", above), so the processes new to the stay that the read-on at the mark did not reach end at the next such reading, and so do growers that started during the stay and have not stepped since the kill: at `4d6665d5`, in `4g-t4latepool-r3`, the next reading read 92.55% of the limit with no grower grown since the kill, so the guard waited there and the host ended the pod a reading later (INFRA-3531 R1 of spec versions 43 and 46).
+Where none of these holds, the guard ends nothing at that reading and reads again, and once the wait has passed it gives the rise up with a `stopped for this rise` line, `reason=not fallen`.
+So a rise that is a protected process's own, such as an agent's, in which nothing the guard may end grows, costs at most one kill below the urgent share; at or above it, where the processes the guard may end hold one that is not new to the stay, it can also cost every process of the three sets of the stay, which the urgent rule ends at the reading of that kill or at a later reading of the wait at or above that share ("What it ends", above).
+It gives the rise up with `reason=nothing to end` when the processes it may end hold less than the floor at a reading it would end one at.
+A stop that repeats writes that line at most once a minute ("The lines", below), and once a rise is given up the guard ends nothing more for it:
 it acts again only after the reading has gone below the mark.
+At a reading at or above the urgent share, once every process killed at the reading of the kill has exited or the wait has passed, the guard first reads again, one at a time, the `smaps` of the processes it read at the reading before, in the order that reading put them in, and ends each one that grew by 1 MiB or more since the previous kill as soon as it has read it, before its next read and before it lists the processes (INFRA-3531 R1 of spec version 43, verification version 36).
+The first of those kills names its own rule, and goes only where the processes it read at the reading before hold the floor at their sizes there, with the sizes read again; each other is `urgent`, and one it read before the first, at whose read they did not hold the floor, goes with that first kill.
+With the first of those kills the reads again also end, by `urgent`, each process they read that grew over the window or, where one of the processes they are to read again is not new to the stay and still runs, is of the three sets of the stay ("What it ends", above): at once, before the next read, each they read before that kill, and each they read after it as soon as they have read it.
+They know whether one of those processes is not new to the stay and still runs before their first read, by the readings in a row that read it and by its `stat`, which must still show its start time and no exit, so the kills of the three sets do not wait for the full read wherever the order puts that process, and a process that has ended by that reading counts for nothing, by INFRA-3368's architect's ruling of 2026-11-21T08:54Z (item 1) on the deep review of `c1c86b9e` and its probes (dispatch://INFRA-3531/artifact/review5-probes-c1c86b9e-tar-gz).
+Only then does it list the processes and read the `smaps` of those it did not read again, and that reading's sizes decide the rest: it adds the kills "What it ends" above asks for beside them, of the processes that grew over the window and, where the processes it may end hold one that is not new to the stay, of those of the three sets of the stay.
+The sizes as of these kills are taken as above: a read again before the first of them counts, and that reading's later reads give a size only to a process the guard never read before, though a fork's read among them makes each read of its process at that reading that found the same program a fork's read, and a read of a fork's parent among them makes each earlier read of the fork there that found that parent's program one.
+The reads again are reads that reading makes anyway, so the order adds no `smaps` read; the history adds the `stat` read of a process not new to the stay, or of a few where those ranked before it have ended.
+It reads them first because in INFRA-3531's tester's probe run r17 at `41d4f45b` the two readings after the kill at 89.96% of the limit showed nothing grown since that kill, the growers stepped before the next reading, 95.16%, and the guard read every process there for 205 ms before it ended the four growers left; the reading came 12.3 MiB from the 4 GiB kill point.
+Where none of them grew since the kill, or below the urgent share, the guard decides at that reading as above.
 
 **What it protects, and why.**
 The guard never ends a process whose end would cost a role its turn, or cost every role theirs: ending an agent ends that role's turn, and ending a command the agent ran does not.
@@ -6385,9 +6882,12 @@ runtime:
 
 Those are the defaults, and the guard is on under `runtime: kubernetes` wherever the file says nothing.
 The block configures the guard of gVisor issue pods alone, and does not turn off the guest watch of a microVM issue pod ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
-The ranges are 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds`, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`).
-`issue_pods` is the one member this release reads: the mapping is keyed by the kind of pod so that dispatch://INFRA-3531 can add the controller's pod beside it, and until then the loader refuses `controller_pod` as it refuses any other unknown key.
-The launcher checks the settings against the same ranges on its own side, and settings outside them change nothing and write one `settings refused` line.
+The ranges are 50 to 90 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds`, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 90`).
+`act_percent` stops at 90 so that the urgent share (below), halfway from it to the limit, is at most 95% of the limit: at 95 it would be 97.5%, above the lowest kill point INFRA-3531's tester measured at 4 GiB, 96.88% of the limit, where the guard's kills at one reading could not come before the host ends the pod.
+`act_percent` also sets the urgent share, halfway from the mark to the limit (92.5% of the limit at 85), at or above which a kill ends every process that grew over the window and, where the decision also holds a process it may end that is not new to the stay, every process of the three sets of the stay: grown since the stay's first kill, started during the stay and no fork with memory of its own, or new to the stay with memory of its own ("What it ends", above); the urgent share has no setting of its own, and no line prints it.
+The mapping is keyed by the kind of pod: `controller_pod` beside `issue_pods` is the block of the controller's pod ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)), and the loader refuses any other member as it refuses any other unknown key.
+Each block is settled from its own members and its own defaults, so a value under one never moves the other.
+The launcher checks the settings against the same ranges on its own side but `act_percent`'s, which goes up to 95 there, so it still takes the settings a daemon of an earlier release sends; settings outside them change nothing and write one `settings refused` line.
 
 The daemon hands the settings to the guard on its answer to each role's hello (`memoryGuard` in `launcher_hello_ack`), so a change reaches a running pod at its next connection, which every daemon restart gives it, and replaces no pod.
 The guard takes the settings of the newest answer of any role, and writes one `settings` line when they change.
@@ -6410,8 +6910,8 @@ launcher: memory guard: started act_percent=<n> floor_percent=<n> wait=<d> inter
 launcher: memory guard: settings act_percent=<n> floor_percent=<n> wait=<d> interval=<d>
 launcher: memory guard: off: the daemon's acknowledgement carries no settings
 launcher: memory guard: settings refused: <why>; nothing changes
-launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
-launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n>
+launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> rule=<grew|new|grew-since-kill|largest|urgent> sizes=<band|reread|search|reading> less_parent=<bytes> new_read=<-|reached:own> executable="<name>"
+launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n> unread_processes=<none|pid[:bytes][,pid[:bytes]]…>
 launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<role> largest_size=<bytes> largest_executable="<name>"
 launcher: memory guard: off reason=<why>
 launcher: memory guard: unread pid=<pid> reason=<why>
@@ -6419,21 +6919,49 @@ launcher: memory guard: kill failed pid=<pid> reason=<why>
 ```
 
 `started` comes once, with the first reading, and `settings` once for each change of the settings.
-`ended` comes once for each kill: `counter` is the cgroup's counter at the kill and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
+`ended` comes once for each kill: `size` is the size the guard chose the process by, `counter` is the cgroup's counter just after the kill, read once for all the kills of a reading once every one of them has been sent, and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
+For a first kill chosen at the mark, `size` is the size the band's last reading read, unless the reading at the mark read that process's `smaps` again: then it is that read plus the memfds its descriptors held as the band's reading counted them.
+For a process started since the band's last reading it is the `smaps` the reading at the mark read, with no memfd its descriptors hold.
+`rule` names the rule of the order of ends ("What it ends", above) that put the process first:
+`grew`, it grew the most over the window;
+`new`, none grew so, and it is the largest of the processes new to the stay that hold memory of their own;
+`grew-since-kill`, none grew or is in the new tier, and it grew the most since the first kill of this stay in the band, which a dip below the mark that stays in the band does not end;
+`largest`, none of these applies and it is the largest.
+`urgent`, the reading was at or above the urgent share and it grew over the window, or, at a reading after a kill, it was read at the reading before and grew since that kill, or it is of the three sets of the stay (grown since the stay's first kill, started during the stay and no fork with memory of its own, or new to the stay with memory of its own) on the condition "What it ends" above states for them, though it was not the first: a kill beside the first at that reading, whose line names its own rule, or the first kill of a reading after a kill where those sets were the one reason to act and the order put before it a process the urgent rule does not end, such as a pool's parent flat since before the stay's first kill; where the order put no such process before that first kill, its line names its own rule ("What it ends" and "After a kill: the rise rule", above).
+`sizes` says where the sizes it was chosen by came from:
+`band`, the band's sizes alone, at the first reading at or above the mark;
+`reread`, those and the `smaps` read again at that reading;
+`search`, those and the processes started since the band's last reading that the reading at the mark found;
+`reading`, the sizes of the reading the kill is sent at, as every kill after a kill of the rise has, and every first kill the band's sizes cannot decide.
+`less_parent` is how much of its size the order did not count: for a fork that runs its parent's program, its parent's size at the guard's latest read of the parent, or its own size where that is less ("What it ends", above), and 0 for every other process.
+So `size` less `less_parent` is the size it ranked by where its tier ranks by size, and `size` is always the process's own.
+`new_read` says what the reads at the reading at the mark read of the processes new to the stay that the guard may end, for a first kill decided where no process the band found had grown by the band's sizes, or at a reading at or above the urgent share, where those reads always read the band's growers again and look for the processes started since: `<reached>:<own>`, how many of them they read the `smaps` of (the band's processes new to the stay that they reached, and the processes started since that the search found), and of those how many rank above nothing, with memory of their own after the fork discount and their program read again.
+So `new_read=3:0` reads that the mark read three such processes, each a fork whose parent's size covers its own, and the tiers below the new one decided, and `new_read=0:0` that it read none.
+It is `-` where the kill was decided on no read at the mark: a first kill on the band's sizes alone, one of the processes the band found having grown by them below the urgent share, and every kill on a reading's own sizes (`sizes=reading`), every kill after a kill of the rise among them.
+Each kill beside the first at a reading at or above the urgent share carries the first's `sizes` and `new_read`.
+At or above the urgent share, where the guard reads on after the first kill at the mark ("What it ends", above), the `new_read` of every kill of that reading counts those reads too: in the replay of `4g-t4latepool-r3` each of its six kills says `new_read=6:6`.
+These four come before `executable`, so the name stays last.
 `stopped for this rise` says where the reading's memory is: in the processes the guard may end, in the protected ones and in the ones it could not read, and `unheld` is the reading less those three.
-`endable` counts the processes the guard may end at the sizes it ranks them by, the memfds their descriptors hold included;
+`endable` counts the processes the guard may end at their own sizes, the memfds their descriptors hold included and no fork's parent size taken off;
 `protected` and `unread` count their processes' smaps alone, since the line reads none of their descriptors.
 A positive `unheld` is memory no process holds, such as the pages of a memory filesystem, or that only a descriptor of a protected or unread process holds, such as a memfd it has not mapped, and a negative one is what the sizes counted more than once, such as the pages a parent shares with the child it forked.
+`unheld` also holds the memory of a process the guard counts unread whose `smaps` does not show it ("What it does not do", below).
+`unread_processes` names each process the guard could not read, in pid order and separated by commas: `<pid>:<bytes>` where the process's `stat` reads a state other than `Z` and its `smaps` reads, with the size its `smaps` gives; a bare `<pid>` where its `smaps` or its `stat` does not read, or its `stat` reads `Z`; and `none` where there is none.
+`unread` is the sum of the sizes the field names.
+A process whose `stat` reads `Z` is written as a bare `<pid>` even where its `smaps` reads, since under gVisor the `smaps` of a process whose main thread has exited reads 0 while a live thread holds its memory.
+The field comes after every field the line carried before it, so a reader of those fields reads them as before.
 A stop that repeats
 — the rise given up, the reading below the mark and back above it, the rise given up again —
 writes this line at most once a minute by the guard's clock, and leaves the stops in between out of the log:
 the next line written carries in `left_out` how many stops it left out since the line before it, and `left_out=0` when it left out none.
-The sizes of the protected and unread processes, and after a kill that freed nothing the scan they are counted from, are read only for a line written, so a reading that keeps crossing the mark does not read them at every crossing;
-the process scan and the smaps of the processes the guard may end still run at every crossing, since they decide whether it acts.
+The sizes of the protected and unread processes, and the list of `unread_processes`, are read and built only for a line written, so a reading that keeps crossing the mark does not read them at every crossing;
+the process scan and the smaps of the processes the guard may end still run at each reading in the band, at or above the mark and after a kill, since they decide whether it acts and what it ends.
 `hour` comes once an hour from the guard's start, with the highest and lowest readings and counters of that hour, the time of the highest reading, and the largest process the guard saw, protected processes included.
 The guard measures that largest process again, in a goroutine of its own that delays no reading, each time a new high of the hour is at least 1% of the limit above the high it last measured at.
+It takes the reading into the hour's highest and lowest, reads the counter every 5 seconds and starts that measure only once it has decided on the reading, so none of them comes between a reading at the mark and its kill.
 `off reason=` turns the guard off while the launcher runs, for one of the reasons in "What it reads" above, and a launcher that is not its container's first process writes it as `off reason=the launcher is pid <n>, not the container's first process, …`.
-`unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on.
+A panic on the guard's loop writes `off reason=panic: <value> at <function> (<file>:<line>)`, and one in its measure of the largest process writes `off reason=panic in the scan for the largest process: <value> at …` at the next reading, before the guard decides on it; either turns the guard off for good as an unreadable pod does, so the panic ends the guard rather than the launcher, the pod's first process.
+`unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on, which counts unread from then on; the guard ends no such process, and each is in the `unread_processes` of a `stopped for this rise` line written while it lives.
 Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: memory guard: hour '`.
 
 The launcher writes three lines of its own about the reports below, each behind the role's `<role>: ` prefix:
@@ -6468,7 +6996,7 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   the launcher counts a report as sent once it is written, and does not send it again.
 
 - The daemon dropped the report, with a warning in its own log, and kept the connection open:
-  a report that fails the frame's own checks, one from a launcher of no issue, and a valid report it could not record, because its store write failed or the bounded time it gives each report ran out.
+  a report that fails the frame's own checks, and a valid report it could not record, because its store write failed or the bounded time it gives each report ran out.
   The launcher counted the report as sent once it was written, so it does not send it again.
 
 - The workflow dropped the report, with a line in the daemon's log, because the daemon records no such issue.
@@ -6489,27 +7017,185 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   Where a process holds a written memfd and an unwritten one, or two processes hold different ones, each counts up to the whole `Shmem` reading, so their sizes may together count the same pages more than once.
   The guard can then end a holder whose end frees less than its size said.
 
-- It does not act again while memory it may not end holds the pod above the mark, or after a kill that lowered the reading by nothing within the wait.
-  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing, `reason=not fallen`.
-  Either way it waits for the reading to fall below the mark, a process that grows in that wait is not ended, and the kernel can still stop the sandbox in that wait.
+- It does not act again while memory it may not end holds the pod above the mark, or once the wait after a kill has passed with the reading not fallen, nothing it may end grown since that kill and, at a reading at or above the urgent share where it may end a process that is not new to the stay, no process of the three sets of the stay ("What it ends", above).
+  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing and nothing it may end grew since it or, at such a reading, is of those sets, or what it may end holds less than the floor, `reason=not fallen`.
+  Either way it ends nothing more until the reading has gone below the mark: a process that grows meanwhile is not ended, and the kernel can still stop the sandbox before then.
   A reading that keeps crossing the mark has at most one such line a minute, with the stops left out counted in `left_out`, and a crossing at which the processes it may end hold the floor is still acted on at once.
 
 - It does not stop a fill faster than its margin.
   Between the mark and the point where the kernel stops the sandbox, measured at 95.5% to 99.4% of the limit in the tester's result at `bebc420b` and as low as 95.4% in an earlier run (above), the guard must take a reading at or above the mark and end the process.
-  A process that crosses that margin inside one interval and the scan after it is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
+  A process that crosses that margin before the guard's kill is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
+  Where several processes cross it together, the guard ends one of them a reading below the urgent share, and at or above it every one that grew over the window, or, after a kill, grew since that kill, or is of the three sets of the stay at that reading on the condition "What it ends" above states for them ("After a kill: the rise rule", above), so near the limit a burst of growers costs one reading and not one each.
+  That time is one interval and the band reading's scan before the reading at the mark, with, where none of the processes the band found grew or where the reading is at or above the urgent share, the `smaps` of those it reads again, with the `exe` link and arguments of those the band read running their parent's program, and, where those show no growth or the reading is at or above the urgent share, one listing of the processes, the files of the newest of those started since the band's last reading and the `smaps` of the forks new to the stay that ranked at nothing at their band read, and, where the band held no size, that reading's own scan before its kill.
+  Of those reads at the mark, the `smaps` read again with the programs read again, the new processes' files and their `smaps` stop after the read in hand once half an interval from the reading at the mark has passed; past it the guard reads only the first `smaps` read again and, where it has read none yet that it may end and that holds memory of its own, processes new to the stay, one at a time, in the order of those reads, each group the newest first, up to one interval from the reading at the mark once it has read any ("What it ends", above).
+  The listing of the processes has no bound of its own, and the guard skips it once the half interval has passed with such a process read; a stall of the throttled pod's CPU that delays one of those reads, or a search for processes started since the band's last reading, can still put the first kill past one interval, though within two.
+  At or above the urgent share, where the processes it may end hold one that is not new to the stay, the guard reads on after the first kill through the processes new to the stay that those reads did not reach, up to one interval from the reading at the mark, and ends each with memory of its own or grown since the stay's first kill as it reads it ("What it ends", above): those reads come after the first kill and do not delay it.
+  After a kill, at or above the urgent share, the guard ends each process it read at the reading before that grew since that kill as it reads it again, before it lists the processes, so the time it takes to read the others does not delay those kills ("After a kill: the rise rule", above).
   A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14 (the tester's at `8c24499c`), the longest gap between two readings was 1082 ms, where the longest gap of any growth run was 115.8 ms in the tester's result at `bebc420b` and 228.9 ms in the implementer's result at that head;
   the kill still came at 85.23% of the limit, below every kill point measured in those results (95.4% and above).
 
-- It does not bound the reads of a decision by what a process holds.
-  Each decision walks the descriptors of every process the guard may end, to find the memfds they hold, at about 12.5 µs a descriptor in a gVisor pod (measured on 2026-11-14), so a process holding 20,000 descriptors adds about 250 ms to a decision, the one after a kill included.
+- It does not bound the reads of its sizes by what a process holds.
+  Each reading in the band, at or above the mark and after a kill walks the descriptors of every process the guard may end, to find the memfds they hold, at about 12.5 µs a descriptor in a gVisor pod (measured on 2026-11-14), so a process holding 20,000 descriptors adds about 250 ms to each of those readings.
+  At the first reading at or above the mark that walk comes after the kill where the band's sizes chose the process, since the `smaps` it reads again there add the memfds the band counted, and a process started since the band's last reading is read with no descriptor, but the band reading's walk before it still delays that reading.
   It reads each such process's `smaps` whole as well, and under gVisor `vm.max_map_count` reads 2147483647, so the kernel's mapping limit does not bound that read either.
-  What it does bound is a process's arguments: it reads at most their first 4 KiB, more than the rules of "What it protects, and why" read of them, and prints none of them.
+  What it does bound is a process's arguments: it reads at most their first 4 KiB, more than the rules of "What it protects, and why" read of them, and prints none of them; it reads a list whole only to tell a fork that runs its parent's program, where both lists' first 4 KiB are equal and one was cut there.
 
-- It does not see the memory of a process whose main thread alone has exited.
-  Such a process reads `Z` in its `stat` while its other threads run on and hold all of its memory, and the guard reads it as a live process ("What it ends", above).
-  On Linux, though, its `exe` and its `smaps`, read through the exited main thread, answer nothing, so the guard counts it as ended or as unread and never ends it.
+- It does not end a process it cannot read, and under gVisor three kinds of process read so.
+  A process counts unread where its `stat`, `exe`, `ns/pid` or `smaps` does not read, or where a kill of it failed ("What it ends", above); the guard never ends one, since it cannot tell what the process is or rank it, and a `stopped for this rise` line names it in `unread_processes`.
+  INFRA-3531's implementer measured the three kinds under gVisor on 2026-11-17, in a Job at `8f4ff73f` whose PID 1 ran as uid 1000 with the launcher's two nested role namespaces (dispatch://INFRA-3531/artifact/unread-probe-8f4ff73f-2026-11-17-tar-gz).
+  The first is a process whose main thread has exited while another thread holds its memory.
+  Its `stat` reads `Z` with `Threads: 2` in its `status`, so the guard does not take it for an exited process; its `exe` and `ns/pid` answer `EACCES`, and its `smaps` reads no anonymous memory while it holds 256 MiB.
+  Its live thread's `/proc/<tid>` would read it whole, but nothing the guard can read names that thread: no entry of the main thread's holds the thread's id, `/proc` lists no thread, and the listing of its `task/` answers `ENOENT`, so the guard does not read it.
+  The second is a process that is not dumpable (`PR_SET_DUMPABLE` 0) in the container's own user namespace, outside the role namespaces, such as what a `kubectl exec` shell runs.
+  Its `exe` and `smaps` answer `EACCES`, because the launcher runs unprivileged and holds no `CAP_SYS_PTRACE` there; the same process inside a role's namespaces reads, because the launcher owns them.
+  The third is a process being killed, for a few milliseconds (0.2 to 5.5 ms measured) before its `stat` reads `Z`.
+  The first two hold memory that a `stopped for this rise` line counts in no sum but `unheld`.
+  A survey of the guard's lines in 784 pod logs of the `legion` namespace on 2026-11-17 found 11 `unread` lines in 8 pods, none naming a process the guard had ended, and every stop after them read `unread=0`.
 
-- It does not run in the controller's pod: a guard there is the work of dispatch://INFRA-3531.
+### The memory guard in the controller's pod
+
+The daemon-launched controller runs in a pod of its own, whose one container, `controller`, has one memory limit ([Daemon-launched controller](#daemon-launched-controller)).
+Under gVisor a container that passes its limit is stopped whole, `OOMKilled`, and the controller's turn ends with it.
+In a gVisor pod the launcher of that container runs the same memory guard as an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and the guard acts before that point.
+When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL`, of the processes that are neither Legion's own nor the agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the guard's first kill while the reading stays near the limit, else the largest, a fork that still runs its parent's program counted by what it holds over its parent, and, from halfway between that share and the limit, every process that grew over its last few reads and, where one it may end is not new to its stay near the limit, every one that grew since the guard's first kill in that stay, every one that started during that stay and is no fork with memory of its own, and every one new to that stay with memory of its own, each a kill of its own, and the daemon tells the controller why.
+The rest of the pod goes on: the guard never ends the launcher, the shim or Oh My Pi, so the controller's turn does not end for the kill, and the command that was ended fails in the turn that ran it.
+The launcher runs the guard with the controller pod's rules (`serveMemoryGuard` and `controllerClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
+"What it reads", "What it ends" and "After a kill: the rise rule" of the issue pod's guard above hold here as written, among them the order of ends with the processes new to the stay in the band that hold memory of their own, growth since the stay's first kill and a fork ranked by its size less its parent's in it, the kill at one reading at or above the urgent share of every process that grew over the window or is of the three sets of the stay (those sets on the condition "What it ends" states for them), the band, and the first kill chosen at the mark, with the `smaps` and a fork's program read again and the processes started since the band's last reading looked for where none grew or at the urgent share, and the `rule`, `sizes`, `less_parent` and `new_read` of each `ended` line.
+The controller's pod has its own list of what the guard spares (below) and its own longest wait after a kill, 1 second by default ("The settings", below).
+Where `runtime.kubernetes.sandbox.type` is `microvm` the controller's pod runs in a microVM, whose own kernel stops one process of the container rather than the whole container, and its launcher runs the guest watch in this guard's place ("In the controller's pod" in [Memory in a microVM pod](#memory-in-a-microvm-pod)).
+
+**What gVisor measured.**
+Measured on 2026-11-18 in gVisor pods of 4 GiB and of 8 GiB, each with its memory request equal to its limit and a CPU limit of 1500m (and seven runs at 1 CPU, the controller pod's default), by `TestControllerPodMemoryGuardLiveSandbox` (`packages/daemon/internal/launcher/memoryguard_live_test.go`), whose binary was the container's PID 1 and ran the launcher's single-role form at the controller pod's defaults, with the test binary in the shim's place, run as `worker-shim`, and a copy of it in Oh My Pi's place, run as Oh My Pi is run (49 Jobs at `1c9d541d`, and INFRA-3531's tester's own latepool probe 7 times, dispatch://INFRA-3531/artifact/t17o-2026-11-18-tar-gz).
+A Python process that grew by 64 MiB every quarter of a second was ended alone at 85.17% of the 4 GiB limit and 85.05% of the 8 GiB limit, within 2 ms of the first reading at the mark, and the reading fell within 52 ms and 76 ms of the kill.
+Beside a parent holding a block of 3/8 of the limit and three forks that only slept, each reporting that block as its own, the same grower was the one process ended, although it was smaller than the block.
+Six such growers at once, about 1.5 GiB a second together, were ended one by one, and the pod lived, alone, beside an agent the guard spares holding 60% of the limit (7 of 7 runs at 4 GiB, 7 of 7 at 1 CPU, 3 of 3 at 8 GiB), beside sleeping forks of a shared block (7 of 7 and 3 of 3), and starting late beside sleeping forks that held the pod in the band (7 of 7 and 3 of 3, and the tester's probe 7 of 7), where the first kill ended a grower in every run, no kill ended a parent or a sleeping fork while a grower lived, and the highest reading of a 4 GiB run stayed 135 MiB or more below the point where the pod ends.
+In every run the first kill came 0.2 ms to 109 ms after the first reading at or above the mark, past one interval in three `latepool` runs at 4 GiB, each of which searched for processes started after the band's last reading (101, 102 and 108 ms), and once a killed process had exited, the next kill came at the next reading while a grower still grew; the longest time from a kill to the killed process's exit was 138 ms.
+A file of 1.5 times the act share of the limit, mapped and read for 60 seconds, raised the memory counter to 158% and 156% of the limit, and the guard ended nothing.
+With the reading held in the band for a minute and nothing growing, the guard's reads cost 1.5 ms and 1.4 ms of CPU a reading.
+With no guard, the last `AnonPages` reading before the sandbox was stopped `OOMKilled` was 97.02% of the 4 GiB limit and 98.61% of the 8 GiB limit, so the default act share plus one interval of the fastest single rise measured (43 MiB) stays 449 MiB and 1,072 MiB below the point where the pod ends.
+Across the ten waves of 2026-11-17 and 2026-11-18 at `b895ae8a` to `1c9d541d`, that last reading moved by 34.8 MiB at 4 GiB (96.75% to 97.60%) and 15.5 MiB at 8 GiB (98.42% to 98.61%).
+
+**Where it runs.**
+Only the launcher's single-role form runs this guard, and only as the first process of its container, PID 1: the `legion launcher --role controller` of the controller's pod, under `runtime: kubernetes` and `controller: daemon`, in gVisor.
+Only that process sees every process of the container.
+A launcher started any other way writes one `off` line and runs no guard.
+Where `session_database.writer_audience` is set, the controller's launcher runs the roles-dir form instead, and the guard it runs there is an issue pod's, over the controller's `role-init`, at this pod's settings ("The pod under `writer_audience`" in [Daemon-launched controller](#daemon-launched-controller)).
+The controller's pod runs in the project's sandbox ([Pods in microVMs](#pods-in-microvms)).
+In gVisor its launcher runs this guard, and its kill reports go on a connection whose acknowledgement carried guard settings, as a gVisor issue pod's do.
+In a microVM, where the launcher is given `--microvm`, it runs the guest watch in the guard's place, and its reports go on a connection whose acknowledgement carried `kernelKills` (`runsGuest`, `packages/daemon/internal/launcher/launcher.go`).
+The launcher knows which from its own `--microvm` flag, fixed when the pod is built, and never from the daemon's answer, so a gVisor controller pod that a daemon re-adopts after a change of `type` keeps its guard until a launch replaces the pod.
+No guard runs where the controller runs outside a pod, since no launcher runs there:
+under `runtime: tmux` the daemon-launched controller is a pane in a window of its own, and under `controller: operator` it is the Oh My Pi that a person's `legion controller start` runs ([Operator-launched controller](#operator-launched-controller)).
+
+**What it spares, and what it may end.**
+The guard never ends a process whose end would end the controller's turn: ending Oh My Pi ends the turn, and ending a command it ran does not.
+The launcher knows each spared process by its place in the process tree first, and by its executable and its arguments second, so a program that copies the name or the arguments of a spared one elsewhere in the tree is not spared (`controllerClassifier`).
+The controller's pod has no `role-init`: the launcher starts the shim in the container's own namespaces.
+The guard spares:
+
+- the launcher itself, PID 1;
+
+- each process the launcher runs for a step of its own, which its `pidGuard` holds, with every process under it;
+
+- the shim, the generation the launcher started, while that process is the launcher's own executable run as `worker-shim`:
+  once the launcher has reaped the shim, the kernel may give its pid to another process;
+
+- every direct child of the shim: Oh My Pi, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer and its keygen;
+
+- Oh My Pi's helpers, each reached from Oh My Pi through a chain of helpers, by the rule of an issue pod:
+  a process that runs Oh My Pi's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of the JavaScript eval tool.
+
+Every other process may be ended: a command the controller ran and what that command started, the JavaScript eval kernel wherever it runs and what it starts, a Python kernel, what a helper runs that is no helper, a helper's name under a command, a `worker-shim` that is not the launcher's generation, an orphan that PID 1 adopted, and a shell that `kubectl exec` started with what it runs.
+
+**Whom it tells.**
+Every process of the container is the controller's, spared or not.
+So the guard reports every kill to the controller, and the `ended` line of each kill names `role=controller`:
+a kill of a command the controller ran, of an orphan under PID 1, and of a process that a `kubectl exec` started.
+For each kill the launcher sends one `launcher_memory_kill` frame on the controller's connection, by the rules of "The report and the note" above: only on a connection whose answer carried settings, up to 32 reports that wait, and the same drops with a line.
+The daemon applies each report once, under the event id `memory-guard-kill:<guard>:<sequence>`, as the fact `intake.ControllerMemoryGuardKill`.
+It credits the kill to the claim and the pod that the connection authenticated as, and never to anything the report says.
+For a claim that is not the project's controller, the workflow tells nobody and writes a line in the daemon's log.
+For the controller's claim it writes one controller notice of kind `memory-guard-kill` for each kill, under the project key as a `tick` is (`controllerMemoryGuardKill`, `packages/daemon/internal/workflow/engine.go`).
+The outbox publishes the notice to `notifications.legion.<project>.controller` as `memory-guard-kill on <PROJECT>`.
+Each kill is a notice of its own, also while the notice of an earlier kill is still unsent.
+The notice names the process as the lines do, by its executable's base name or its `comm`, with its pid, its size, the pod's reading and the limit in binary units, and it prints no argument:
+
+```text
+The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `<name>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say.
+```
+
+In a microVM controller pod the guest watch's report carries the kernel's cause, the launcher sends it only on a connection whose answer carried `kernelKills`, and the daemon chooses the note by that cause, as it does for a role (`controllerMemoryGuardKill`).
+For `cause: kernel`, a command of the controller's, the daemon logs `workflow: the controller whose program the pod's kernel stopped is told why`, and the note is:
+
+```text
+The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say.
+```
+
+For `cause: kernel-protected`, one of the processes that run the controller's session, the daemon logs `workflow: the controller is told why the pod's kernel stopped one of the processes that run its session`, and the note is:
+
+```text
+The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every command it was running. The daemon then starts the same session again, as it does after any exit of your session's process. Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say.
+```
+
+A report with no cause, the guard's, gets the guard's note above.
+
+An `eval` cell that answers `Kernel died during execution; completion is uncertain` beside such a notice is that kill: the process stopped was the cell's kernel.
+A notice can be lost in the first three cases of "The report and the note" above, and for a claim that is not the controller's.
+In each case the `ended` line stays in the `controller` container's log.
+
+**The settings.**
+
+```yaml
+runtime:
+  kubernetes:
+    memory_guard:
+      controller_pod:
+        enabled: true
+        act_percent: 85
+        floor_percent: 10
+        wait_seconds: 1
+        interval_milliseconds: 100
+```
+
+Those are the defaults, and the guard is on in a gVisor controller pod wherever the file says nothing.
+The block configures the guard of a gVisor controller pod alone, and does not turn off the guest watch of a microVM controller pod ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
+The block has the five members of `issue_pods`, with the same ranges and the same defaults but the wait, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.controller_pod.act_percent must be between 50 and 90`).
+The wait after a kill is 1 second here, where an issue pod's is 5.
+It is the most the guard waits: it decides at each reading once every process it killed at the reading of the kill has exited, one process below the urgent share and at or above it every process that grew or is of the three sets of the stay on the condition "What it ends" above states for them, so the wait holds it back only while one of them has not exited, and the wait bounds how long it reads on with no fall and no growth since the kill before it gives the rise up.
+In the 4 GiB run of the tester's shared-page probe ("What it ends" above), the pod ended 3.4 seconds after a kill that freed nothing, and a wait of 1 second has the guard decide on the next process before such an end, also where a killed process has not exited.
+Each block is settled from its own members and its own defaults: a value under `issue_pods` never moves the controller's pod, and a value under `controller_pod` never moves an issue pod.
+The daemon hands the controller pod's launcher this block alone, on its answer to each hello (`memoryGuard` in `launcher_hello_ack`, `launcherHelloAck` in `packages/daemon/internal/runtime/sandbox/launcher_auth.go`).
+The same answer carries `kernelKills: true`, which a gVisor controller pod's launcher ignores; a microVM controller pod's launcher applies none of this block's settings and reads `kernelKills` alone.
+So a change applies at the launcher's next connection, which every daemon restart gives it, and replaces no pod.
+Before the first answer the guard runs at these defaults, its wait of 1 second included, so the pod is guarded while the daemon is away.
+Under `enabled: false` the daemon's answer carries no settings, the same answer a daemon built before this guard gives: the guard turns off with one line, and a later answer that carries settings turns it on again.
+The launcher's own check of the ranges, the `settings` line, and the readings and hourly lines of a guard that is off are as "The settings" above says.
+
+**The lines.**
+The guard writes the lines of "The lines" above, and a line that names a role names `controller` (`role=controller`, `largest_role=controller`); its `stopped for this rise` line names the processes it could not read in `unread_processes`, as there.
+In this container the launcher's three lines about the reports carry no `<role>: ` prefix.
+
+**How a running controller pod takes it.**
+The guard is part of the launcher, which is the image's `legion`, so the controller's pod takes the guard only when it runs on an image of the release that adds it.
+The launcher of an earlier image runs no guard in its single-role form, and it ignores the settings the daemon hands it.
+The release that adds the guard also moves the daemon API contract, so a daemon's first boot on that release relaunches the controller onto its plugins at once, where the daemon knows a plugin pair to install ([Contract discipline](#contract-discipline)).
+That relaunch replaces a controller pod built on another image, and the fresh pod comes up on the configured image, with the release's launcher and its guard ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+So the controller's pod takes the guard at the deploy, with no operator step.
+A suspend and resume of the controller's claim (`legion claims suspend`, then `legion claims resume`) is for a controller pod that a daemon of an earlier release keeps: such a daemon keeps the pod at the relaunch that installs its plugins.
+
+**What it does not do.**
+
+- It does not keep its lines apart from the output of the shim and Oh My Pi.
+  The launcher writes its lines to the container's stderr with no prefix, through the same writer as that output, so a line that the shim or Oh My Pi has not finished can be joined to a guard line.
+  Read them with `kubectl -n <namespace> logs legion-<project>-controller -c controller | grep 'launcher: memory guard: '`, a pattern that does not anchor the start of the line.
+
+- It does not tell the controller's own work from another process of the pod.
+  A process that a `kubectl exec` started, and an orphan under PID 1, are the controller's to the guard, so the controller is told of their kill as of its own command's.
+
+- It does not lift any limit of the issue pod's guard ("What it does not do" above).
+  Among them, it never ends memory that Oh My Pi holds in its own process, it never ends a process it cannot read, and it does not stop a fill faster than its margin.
+  The controller's pod has no role namespaces, so a process that is not dumpable reads as the second kind of "It does not end a process it cannot read" above wherever it runs in that pod.
+  When Oh My Pi itself fills the limit, the container still ends `OOMKilled`, and the daemon relaunches the controller and resumes its session ("The claim" in [Daemon-launched controller](#daemon-launched-controller)).
 
 ### The disk dies with its pod
 
@@ -6568,7 +7254,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
 The update round is how a configuration change reaches a running issue pod without taking the disk out from under it (INFRA-484).
 Every launch records the configuration its pod was built from on the pod template, as the `legion.dev/pod-shape` annotation (`podShape` in `internal/runtime/sandbox/drift.go`, written where the template is built):
 the image every container runs, the pod kind's one reservation, the operator's `runtime.kubernetes.pod` volumes and mounts, and the size of the pod's disk.
-A microVM issue pod's record also holds the sandbox it runs in, with `keep_volume` where it is on, and a gVisor pod's holds none ([Issue pods in microVMs](#issue-pods-in-microvms)).
+A microVM pod's record, an issue pod's or the controller's, also holds the sandbox it runs in, with `keep_volume` where an issue pod's is on, and a gVisor pod's holds none ([Pods in microVMs](#pods-in-microvms)).
 The orphan sweep compares that record with what the runtime would build now, and adds the three facets of the live pod whose worker can still be reached
 — the operator's volume and mount holding the role's overlays, the secrets broker's enrollment, and the session store (`PodDrift`).
 Quantities are compared as amounts, so a disk written `1024Mi` and one written `1Gi` are no drift.
@@ -6804,7 +7490,7 @@ runtime:
         keep_volume: true                      # the default is false
 ```
 
-Only an issue pod that runs in a microVM keeps its volume ([Issue pods in microVMs](#issue-pods-in-microvms)).
+Only an issue pod that runs in a microVM keeps its volume ([Pods in microVMs](#pods-in-microvms)).
 That is an issue pod of a `microvm` project that `canary_issues` does not name, and an issue pod of a `gvisor` project that `canary_issues` names.
 A gVisor issue pod keeps its own ephemeral volume, whatever the key says.
 The key changes nothing for the controller's pod, a repository cache pod or the image probe's pod.
@@ -7096,6 +7782,9 @@ The wakes are these:
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
+It also waits while the merger is owed news of an approved new version whose change the daemon has not recorded yet.
+It wakes the merger only once the gate is open and that change is recorded (`mergerWaitsForTheDesignGate` in `internal/daemon/outbox.go` reads `mergerNewsUnrecorded` in `internal/daemon/design_news.go`).
+That wait has a bound: after the reconcile's bounded attempts, the daemon records a change that Dispatch cannot read as unavailable, and a review history that it cannot read as unread.
 The message can also wait for a merger that has no claim yet, because the merger's start is still owed.
 The message wakes no merger that an operator suspended, since a wake acts only on a released claim (`wakeForDelivery`, `internal/daemon/wake.go`).
 It waits for that merger too, and it reaches the merger when the operator resumes the claim.
@@ -7282,6 +7971,8 @@ Four gates hold the project's work:
 The pause never stops the controller, and it holds none of the controller's tasks, notices or ticks: the controller is the session that resumes the project and answers people meanwhile.
 Under `controller: operator` the daemon holds no controller claim, so nothing of this changes there.
 Every outbox row outside the list above runs as before: a stop (a `supervise` row of any other op, `issue_suspend`, `issue_release`), a write to Dispatch (a status, a message, the published gate steps), every other row the list does not name, and each row of another project on the same database.
+The reconcile of a tree's news of its approved design (`design_changes`) is such a row: it reads Dispatch and records what changed, and it tells a role only by a news-only start, a `start` row that waits with the other held rows.
+The entry sweep's backstop for that news queues no reconcile while the project is paused, and its first tick after the resume queues one for each tree still owed news (`queueOwedDesignNews`, `internal/daemon/design_news.go`).
 The workflow still records what happens.
 A handoff, a review, a CI result or a merge moves its issue's phase as it does while the project runs, and the start that the move writes waits with the other held rows.
 `legion claims suspend`, `legion claims stop`, `legion issue status` and the controller's `set_status` still work, because none of them starts a turn.
@@ -7386,7 +8077,7 @@ A stop that the claim decided before the flag was cleared, and that ends after t
 Each held row runs, and the first row to run for a role launches it with a token from the wake pacing (`worker_wakes_per_minute`, 8 by default, and `worker_wake_burst`, 1 by default).
 The role's other held rows find it launching or live and are delivered to it.
 A held role message launches nothing itself: its row publishes the message, and the Envoy listener's report of that publish is the role's wake (`wakeReleased`, `internal/workflow/wake.go`), whose `start` row launches the role through the same pacing.
-The daemon's own role message to a role whose claim is released finishes undelivered and wakes nothing (`outbox.roleMessage`, above), but not a row that a pause held for a role that a pause stopped: one with a stop that ended `stopped` after the issue's newest pod release (`StoppedByAPause`, `internal/store/pause.go`, read by `heldMessageOwed`, `internal/daemon/outbox.go`).
+The daemon's own role message to a role whose claim is released finishes undelivered and wakes nothing (`outbox.roleMessage`, above), but not a row that a pause held for a role that a pause stopped: one with a stop that ended `stopped` after the issue's newest pod release (`StoppedByAPause`, `internal/store/pause_stops.go`, read by `heldMessageOwed`, `internal/daemon/outbox.go`).
 Such a row waits until the role is back and its session holds the role's topic: at its launch's turn where the pacing holds that launch, and through the moment between the woken agent's ready and its plugin's claim of the role, when the listener still answers that the role has no live holder.
 Then it reaches the role's session, once.
 A second pause that begins before the role is back holds the row again, and the row still reaches the role once it is back.
@@ -7411,7 +8102,7 @@ Its took-nothing arm counts nothing while the architect's launch waits in the pa
 The stalled-tree notice and the entry sweep's gate say nothing while the project is paused, because the admission pass promotes nothing then and the gate answers no (`promoteHolds` and `OwesEntryWork`, `internal/admit/admit.go`).
 After a pause a tree is told it has stopped only once `stalled_tree_notice_hours` has passed since the pause ended, and the notice still names how long the tree has been quiet (`tellStalledTrees`, `internal/admit/stalled.go`).
 A wake that a pause held is marked with its pause (`pod_resumes.pause_id`).
-One rule says which pause holds a wake, and every wake but the stop's owed launch reads it (`PauseOfWake`, `internal/store/wake.go`): the project's open pause, else the pause that held the outbox row the wake is taken for, else the pause whose stop of the role is the role's newest stop and newer than both the issue's newest release and the role's last ready (`StoppingPauseTx`, `internal/store/pause.go`).
+One rule says which pause holds a wake, and every wake but the stop's owed launch reads it (`PauseOfWake`, `internal/store/wake.go`): the project's open pause, else the pause that held the outbox row the wake is taken for, else the pause whose stop of the role is the role's newest stop and newer than both the issue's newest release and the role's last ready (`StoppingPauseTx`, `internal/store/pause_stops.go`).
 The launch that a stop owes a role is a wake of the pause that made the stop, which the stop transaction takes with that pause (`pods.WakePause`).
 So a wake taken while the project is paused is the open pause's, the wake of a row that a lane took before the pause and ran while it stood among them.
 The resume marks each row that its pause holds with the pause, whatever the row's due time (`outbox.held_by_pause`, `MarkPauseHeldRows`, `internal/record/store.go`), and the wake that a notice, a hook's prompt, a merge-queue removal or a merge forward's message takes for such a row after the resume reads that mark (`Store.TakePodWake`, `internal/store/wake.go`, read by `wakeForDelivery`, `internal/daemon/wake.go`).
@@ -7484,6 +8175,9 @@ Its migration `20261115194357_project_pause` adds three tables (`project_pauses`
 An earlier release reads none of them, so the database needs no restore and no `alter table`: the tables stay, a trigger fills `clock_at` for an insert that names no value, and a roll forward reads them again.
 Re-pinning the earlier image is still not the whole rollback.
 Three steps come first, in this order.
+A rollback from a release that also tells a holder of an approved new version (cybermonklabs/legion#3995) runs that release's four statements before the three statements of the third step ([Rolling back the release that tells a holder of an approved new version](#rolling-back-the-release-that-tells-a-holder-of-an-approved-new-version)).
+Take the first two steps below while that release still runs, then stop its daemon, run its four statements, and then run the three statements.
+The release of the project pause refuses a `start` row that carries `news`, as every earlier release does, and the first of the four statements deletes each such row.
 
 **Resume the project while this release still runs.**
 Run `legion project resume --operator-token-file <file>`, or have the controller call `resume`.
@@ -7674,8 +8368,8 @@ An installation that refuses the reading lease — GitHub answers 422 to a token
 The failure shows as the launch's `mint the provisioning token for <owner>/<repo>` and the refresher's `sandbox runtime: provisioning token mint failed`, as it does below for a command that releases no token.
 An installation that has not been granted issues, Actions, checks, commit statuses or attestations needs no second call: the mint reads what the installation is granted and asks for that alone, so the permission is left out of the request rather than refused with it (`exchangeGranted`, `internal/appauth/permissions.go`).
 A deployment whose Apps are configured by `token_command` (docs/deployment.md, "The `legion-implementer` and `legion-reviewer` Apps") asks GitHub for no token itself:
-`ReadToken` asks the command for its read-only release (`LEGION_GITHUB_READ_ONLY=1`) and takes what that release holds, be it narrower or wider than the read set it asks for with a key, and no wider token is asked for in its place.
-Such a command must therefore release a read-only token for every owner it serves: an owner it releases none for fails every launch that makes an issue pod on that owner, at the provisioning mint (`mint the provisioning token for <owner>/<repo>`), and the refresher logs `sandbox runtime: provisioning token mint failed` for that repository each minute.
+`ReadToken` asks the command for its read-only release (`LEGION_GITHUB_READ_ONLY=1`, which the command maps onto the role's read profile) and takes what that release holds, be it narrower or wider than the read set it asks for with a key, and no wider token is asked for in its place.
+Such a command must therefore release a read-only token for every owner it serves, so the read profile names every account the write profile names: an owner it releases none for fails every launch that makes an issue pod on that owner, at the provisioning mint (`mint the provisioning token for <owner>/<repo>`), and the refresher logs `sandbox runtime: provisioning token mint failed` for that repository each minute.
 
 The Go coordinator's pods (`packages/daemon`) keep to that rule with two init containers:
 
@@ -7733,7 +8427,7 @@ Every jj command run in a workspace names it with `-R`, so jj never walks up to 
 when any directory of the layout between the root (`/legion` in a pod, the state directory under tmux, which itself may be one) and a workspace or the clone (`repos/<host>/<owner>/<name>`, `workspaces/<owner>/<name>/<issue>`) is a symlink, which the refusal names;
 when it runs in a workspace that has no `.jj`;
 and when the workspace's `.jj/repo` names any other directory, followed through symlinks and `..` as jj itself follows it, is neither a directory nor a regular file, is a symlink to a regular file, or is a file larger than 4,096 bytes (`guardWorkspace`, the same file).
-The worker image's jj is 0.45; on the tmux runtime, which runs the host's jj through the same code, the daemon refuses to start with a jj older than 0.38 (`resolveTools`, naming `LEGION_JJ_PATH`), since before 0.38 `.jj/repo/config.toml` is the repository's live configuration.
+The worker image's jj is 0.46; on the tmux runtime, which runs the host's jj through the same code, the daemon refuses to start with a jj older than 0.38 (`resolveTools`, naming `LEGION_JJ_PATH`), since before 0.38 `.jj/repo/config.toml` is the repository's live configuration.
 
 The boundary above protects the provisioning token alone.
 Since LEGION-631 each role holds its own App's tokens in the gh bundle its `LEGION_GH_OWNERS_DIR` names, which only its own namespaces bind ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
@@ -8588,7 +9282,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The pod's broker clients (`packages/cipher-client`, `packages/envoy/internal/cipherclient`) read those two and trade the token at the broker's `BROKER_EXCHANGE_K8S_AUDIENCE`, which must be this same audience: production's is `legion-broker-exchange` (deployment `shared/broker.ExchangeAudience`).
   The key lives in the block, so a file that sets it and names no broker is refused for the `url` it lacks;
   it may not be empty, and it may not equal `audience`, since the cluster projects one volume per audience and the broker verifies the enrollment's token and the exchange's at different routes.
-  Nor may it equal `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM, since the pool's token is the pod's launcher's alone ([Issue pods in microVMs](#issue-pods-in-microvms) lists this refusal with the loader's others).
+  Nor may it equal `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM: the cluster projects one volume per audience, so the broker's token and the pool's would be one ([Pods in microVMs](#pods-in-microvms) lists this refusal with the loader's others).
   Set, the volume's name, its mount path and the two variables are Legion's: a `runtime.kubernetes.pod.env` that sets either variable, a `runtime.kubernetes.pod.volumes` entry named `agent-secrets-exchange`, or a `volume_mounts` path at, under or above `/var/run/legion/agent-secrets-exchange` is refused at boot and by `legion config check`, naming the entry, and a launch spec that sets either variable is refused as one setting any variable the runtime sets itself.
   Unset, no pod carries the token, no role is told either variable, and the name, the path and both variables stay the operator's (the variables a launch spec's too), so a deployment that never sets it runs exactly as before the key existed.
   The token is a volume of the pod, fixed when the pod is created, so turning the key on, or moving its audience, reads as drift of every enrolled issue pod (`agent-secrets-exchange`), which its update round replaces; until then a role started in such a pod is told no identity, so its sessions keep the credential they had rather than fail every trade on a file that is not there.
@@ -9070,10 +9764,11 @@ a token no launch resolves is refused as an invalid boot token, the operator's c
 in an architect's or phase worker's session it needs the operator's capability like any other takeover, and stops before any daemon call without one.
 
 **The pod.**
-Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the pod an issue's Sandbox runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) with a one-role list, on the Legion pool under gVisor, with the operator's pod (`runtime.kubernetes.pod`) and the providers Secret, so it reaches models by the route every worker does.
+Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the pod an issue's Sandbox runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) with a one-role list, on the Legion pool, under gVisor or, where `runtime.kubernetes.sandbox.type` is `microvm`, in a GKE Sandbox microVM ([Pods in microVMs](#pods-in-microvms)), with the operator's pod (`runtime.kubernetes.pod`) and the providers Secret, so it reaches models by the route every worker does.
 Its one container, `controller`, runs `legion launcher --role controller`:
 it authenticates to the worker stream with its own launcher token and starts and stops the controller's `legion worker-shim` and Oh My Pi, on the pod baseline (`--pod-safety`:
 the two session-placing variables, [Settings order](#operator-configuration), and Oh My Pi's profile directory made under its state home, `/legion/scratch/state/controller`), on the daemon's command, as an issue pod's launcher does each role's, so a relaunch in a healthy pod is a new generation of that child rather than a new pod.
+In a microVM its launcher is also given `--microvm` and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, the metadata endpoint's two flags, and then serves that endpoint from the projected token it mounts at `/var/run/legion/workload-identity` ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 Its role Secret, `legion-<project>-controller-controller-boot`, holds the launcher's token and its gh bundle (each owner's `github-hosts-<owner>` and `github-config-<owner>`, the review App's read-only `hosts.yml` and `config.yml` for every owner that App is installed on and for an owner a configured rename moved a repository away from, each token reaching every repository that owner's installation holds, `github-renames`, the bundle's configured renames, and `github-default`, the first owner), refreshed every minute as every role's are, and is the only Secret its launch writes:
 there is no provisioning `-boot` Secret.
 Its Sandbox owns a volume of its own, where an issue's owns none (`issue-legion-<project>-controller`, from its one `issue` claim template, of `runtime.kubernetes.issue_volume` and `storage_class`), mounted at `/legion`, which is the working root the controller runs in, so what one of its pods leaves there the next one finds;
@@ -9105,6 +9800,8 @@ Its one container, the launcher, carries the controller's reservation
 — `runtime.kubernetes.resources.controller` where the file sets a field, the daemon's default of 1 CPU and 4Gi otherwise
 — as request and limit alike unless the file sets a lower `cpu_request` or `memory_request`, so at the default the pod is `Guaranteed`, never the class the kubelet evicts first under node memory pressure (a lower request makes it `Burstable`, [Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable");
 the image probe pod carries its own, smaller reservation, not the controller's, so a controller reservation the pool cannot place leaves the probe, and the boot, unaffected ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
+Its launcher, as PID 1 of that container, runs in a gVisor pod the memory guard, which near the limit ends, of the processes that are neither Legion's own nor the agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the guard's first kill while the reading stays near the limit, else the largest, a fork that still runs its parent's program counted by what it holds over its parent, and, from halfway between the mark and the limit, every process that grew over its last few reads and, where one it may end is not new to its stay near the limit, every one that grew since the guard's first kill in that stay, every one that started during that stay and is no fork with memory of its own, and every one new to that stay with memory of its own ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
+In a microVM it runs the guest watch in the guard's place ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 
 **The pod under `writer_audience`.**
 Where `runtime.kubernetes.session_database.writer_audience` is set ([Selecting the store](#selecting-the-store)), the `controller` container runs the launcher's roles-dir form for its one role: `legion launcher --roles-dir /var/run/legion/roles --role controller` (`controllerPod.rolesDirContainer`, `podkind.go`).
@@ -9118,9 +9815,9 @@ role-init starts the controller's generation in namespaces of its own and binds 
 So the controller's agent finds each directory where it always has, and it reads neither the writer token nor the launcher token.
 The roles-dir form changes five things for the controller:
 
-- The memory guard is off once the daemon has answered the launcher's first hello: `launcherHelloAck` sends the controller's pod no `MemoryGuard`, and an answer without it turns the guard off.
-  Before that answer the guard runs at its defaults, as in an issue pod.
-  Off, it keeps its readings and its hourly lines and ends nothing.
+- The memory guard knows the controller's processes by the `role-init` above them, as an issue pod's guard knows each role's (`podClassifier`), in place of `controllerClassifier`, and it spares what an issue pod's guard spares in a role.
+  Before the daemon's first answer it runs at an issue pod's defaults, and that answer hands it `runtime.kubernetes.memory_guard.controller_pod`'s settings, as in the single-role form (`launcherHelloAck`).
+  In a microVM the launcher is told `--microvm` and the metadata endpoint's flags, with the endpoint's token at `/var/run/legion/roles/workload-identity`, and runs the guest watch over the same classifier, with role-init's drain (`controllerPod.rolesDirContainer`, `serveMemoryGuard`).
 
 - The git lock sweep finds no clone, because the container's working directory is `/legion`, which is no jj workspace, and no start of the controller names a workspace.
   It writes one line, `launcher: the git lock sweep's working directory "/legion" is no jj workspace it can sweep (…); it takes its workspace from the first role start`, and then sweeps nothing (`newGitLockSweep`, `internal/launcher/gitlocks.go`).

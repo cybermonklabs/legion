@@ -153,6 +153,7 @@ type dismissedScaleShape struct {
 // seeding 110,000 rows three times over and taking 120 timed readings costs minutes, which no
 // ordinary run of this package should pay.
 func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to run the dismissed-scale measurement", dismissedScaleEnv)
 	}

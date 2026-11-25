@@ -61,10 +61,13 @@ var (
 	// carrying no session generation, a login whose approver's address Dispatch has named an
 	// account replaced at within ApprovalInFlightWindow: the broker cannot tell such an approval is
 	// not the replaced account's. Once Dispatch records an address's account, every approve it
-	// relays from a credential that still holds the address names an account, so one naming none
-	// may be an approval whose check passed before a replacement and lands after its revocation,
-	// which would otherwise mint a login recording none that the paid revocation no longer ends (or
-	// one relayed by an older Dispatch, which names no account at all). A current Dispatch's approve
+	// relays from a credential that still holds the address names an account, unless it read this
+	// broker's settings answering without approver_fields, which a broker of this release answers
+	// only through a pod of an older release during a roll, or within five seconds of replacing one
+	// (Dispatch keeps a settings answer that long); so one naming none may be an approval whose check
+	// passed before a replacement and lands after its revocation, which would otherwise mint a login
+	// recording none that the paid revocation no longer ends (or one relayed by an older Dispatch,
+	// which names no account at all). A current Dispatch's approve
 	// carries the generation its check read, and ErrApprovalCheckedBeforeReplacement decides it
 	// exactly instead. It is an ErrApproverReplaced, answered 403 APPROVER_REPLACED; nothing is
 	// minted and the record stays pending.
@@ -86,7 +89,8 @@ var (
 
 // ApprovalInFlightWindow is how long after Dispatch names an account replaced at an address an
 // approval is refused when no session generation places it against that replacement: one that
-// carries no generation (an older or rolled-back Dispatch's approve) and names no account
+// carries no generation (an older or rolled-back Dispatch's approve, or a current one's relayed
+// after it read the settings of a pod of an older release) and names no account
 // (ErrApprovalNamesNoAccount). It applies only to that one: every revoke carries a generation, so
 // an approval carrying one is decided by the two generations alone.
 //
@@ -94,10 +98,12 @@ var (
 // to the broker's decision, so the fallback refuses every approve whose check passed before the
 // replacement:
 //
-//   - Dispatch checks the approver (api.approverStanding) and relays the approve at once, through
-//     a client every broker call of which ends after 5 s
-//     (packages/envoy/internal/dispatch/cipher/client.go:43, defaultTimeout): the approve
-//     reaches the broker within 5 s of the check or not at all;
+//   - Dispatch checks the approver (api.approverStanding), then reads this broker's settings
+//     (whether it takes the approver fields; an answer is kept five seconds, a failed read relays
+//     nothing) and relays the approve, the
+//     two under one deadline 5 s after the check, its client's window
+//     (packages/envoy/internal/dispatch/cipher/client.go:43, defaultTimeout, and
+//     api.relayDeadline): the approve reaches the broker within 5 s of the check or not at all;
 //   - the broker ends every request's context 45 s after it arrives
 //     (packages/envoy/cmd/cipherd/main.go:878, requestDeadline, which withRequestDeadline puts on
 //     the request), so the approval's transaction, whose now() the window is measured to, begins
@@ -124,12 +130,15 @@ const ApprovalInFlightWindow = 50 * time.Second
 // NewApprovalsWithoutGeneration registers broker_machine_login_approvals_without_generation_total
 // on r and answers it, for Service.ApprovalsWithoutGeneration: each machine-login approve that
 // carries no approver_session_generation, which a Dispatch from before the field relays, and which
-// only ApprovalInFlightWindow decides against a replacement. The broker deploys before the Dispatch
-// that sends the field, since a broker without it refuses the field; once the counter stays at zero
-// no relaying Dispatch omits it, and the fallback can come out.
+// only ApprovalInFlightWindow decides against a replacement. A current Dispatch omits the field
+// only for a broker whose GET /v1/settings it read answering without approver_fields, as a broker
+// from before the field answers, since such a broker refuses it; it relays nothing when it cannot
+// read those settings. So against a broker of this release a current Dispatch omits it only while a
+// roll from an older release lasts, and five seconds after; once the counter stays at zero no
+// relaying Dispatch omits it, and the fallback can come out.
 func NewApprovalsWithoutGeneration(r *metrics.Registry) *metrics.Counter {
 	return r.NewCounter("broker_machine_login_approvals_without_generation_total",
-		"Machine-login approves that carried no approver_session_generation, from a Dispatch from before the field; the no-generation fallback (machine.ApprovalInFlightWindow) comes out once it stays at zero.")
+		"Machine-login approves that carried no approver_session_generation, from a Dispatch from before the field or one that read the settings of a broker from before it during a roll; the no-generation fallback (machine.ApprovalInFlightWindow) comes out once it stays at zero.")
 }
 
 type Service struct {
@@ -227,9 +236,10 @@ func (s *Service) verifyLauncherRequest(ctx context.Context, compact string, now
 }
 
 // checkLauncherRequest is verifyLauncherRequest short of its jti: the object's signature and
-// freshness (record.VerifyRequestObject), exactly one launcher_credential detail, a reason naming
-// no more projects than a new request may (record.CheckReasonProjects), then the caller's own
-// check. It reads and writes nothing.
+// freshness (record.VerifyRequestObject), exactly one launcher_credential detail, on a broker that
+// holds a project-access client (the enrollment's Projects) a reason naming no more projects than
+// a new request may (record.CheckReasonProjects), then the caller's own check. It reads and writes
+// nothing. A broker with no project-access client takes any reason, as before that bound (R9).
 func (s *Service) checkLauncherRequest(compact string, now time.Time, check func(record.RequestObject) error) (record.RequestObject, error) {
 	obj, err := record.VerifyRequestObject(compact, s.Audience, s.Skew, now)
 	if err != nil {
@@ -238,8 +248,10 @@ func (s *Service) checkLauncherRequest(compact string, now time.Time, check func
 	if len(obj.Details) != 1 || obj.Details[0].Type != record.KindLauncherCredential {
 		return record.RequestObject{}, fmt.Errorf("%w: exactly one launcher_credential detail is required", record.ErrRequestInvalid)
 	}
-	if err := record.CheckReasonProjects(obj.Reason); err != nil {
-		return record.RequestObject{}, err
+	if s.Enroll.Projects != nil {
+		if err := record.CheckReasonProjects(obj.Reason); err != nil {
+			return record.RequestObject{}, err
+		}
 	}
 	if err := check(obj); err != nil {
 		return record.RequestObject{}, err

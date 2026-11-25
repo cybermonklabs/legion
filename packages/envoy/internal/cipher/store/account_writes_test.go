@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
-// TestTheDatabaseRefusesAnyChangeOfARecordedAccount: migration 0042's triggers refuse every update
+// TestTheDatabaseRefusesAnyChangeOfARecordedAccount: migration 0043's triggers refuse every update
 // that changes the account a credential recorded when it was made, whatever statement sends it,
 // with SQLSTATE 23514. The writes below are the shapes a scan of source text missed or could miss:
 // a plain update, an aliased one, `update only`, one built from two strings, a row-constructor

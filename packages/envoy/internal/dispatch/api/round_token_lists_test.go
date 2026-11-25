@@ -169,18 +169,19 @@ func TestAFullMembersTokenListDecidesOnlyPrivateProjects(t *testing.T) {
 	})
 }
 
-// TestARestrictedMembersTokenStaysHeldToItsList (R3, unchanged): erin, a restricted member
-// every project names, holds a token that lists ALPHA, which reads ALPHA's issue and answers BETA's
-// and GAMMA's as NOPE-404, since a restricted member's list narrows every project; and a token that
-// lists nothing, which reads the public projects she sees, ALPHA and BETA, and answers GAMMA's as
-// missing, since a private project needs a token that lists it. Each holds in a deployment where
-// GAMMA is private, and the first in one where every project is public.
+// TestARestrictedMembersTokenStaysHeldToItsList (R3, R16): erin, a restricted member every project
+// names, holds a token that lists ALPHA, which reads ALPHA's issue and answers BETA's and GAMMA's
+// as NOPE-404, since a restricted member's list narrows every project. A token of hers that lists
+// nothing, which no mint makes any more and one made before the rule did (written here as such a
+// mint wrote it), acts for nobody: a restricted member's token lists exactly one project (R16), so
+// each of its reads is 403 RESTRICTED_MEMBER. Each holds in a deployment where GAMMA is private, and
+// in one where every project is public.
 func TestARestrictedMembersTokenStaysHeldToItsList(t *testing.T) {
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "while every project is public", true: "once GAMMA is private"}[private], func(t *testing.T) {
 			rig := newTokenListsRig(t, private)
 			listed := mintListed(t, rig.handler, accessErin, "erin-alpha", []string{listedAlpha}).Token
-			unlisted := mintListed(t, rig.handler, accessErin, "erin-none", nil).Token
+			unlisted := personalTokenListing(t, rig.database, accessErin, nil, model.ScopePerson)
 			read := func(token, key string) *httptest.ResponseRecorder {
 				return rig.as(t, token, http.MethodGet, "/api/v1/issues/"+key, nil)
 			}
@@ -188,12 +189,9 @@ func TestARestrictedMembersTokenStaysHeldToItsList(t *testing.T) {
 			requireStatus(t, "erin's ALPHA token reads ALPHA's issue", read(listed, rig.alpha.issue), http.StatusOK)
 			requireAnsweredAsMissing(t, "erin's ALPHA token reads BETA's issue", read(listed, rig.beta.issue), read(listed, nobody), rig.beta.issue, nobody)
 			requireAnsweredAsMissing(t, "erin's ALPHA token reads GAMMA's issue", read(listed, rig.gamma.issue), read(listed, nobody), rig.gamma.issue, nobody)
-			if !private {
-				return
+			for _, key := range []string{rig.alpha.issue, rig.beta.issue, rig.gamma.issue} {
+				wantRefusal(t, read(unlisted, key), http.StatusForbidden, codeRestrictedMember, "erin's token that lists nothing", "GET "+key)
 			}
-			requireStatus(t, "erin's token that lists nothing reads ALPHA's issue", read(unlisted, rig.alpha.issue), http.StatusOK)
-			requireStatus(t, "erin's token that lists nothing reads BETA's issue", read(unlisted, rig.beta.issue), http.StatusOK)
-			requireAnsweredAsMissing(t, "erin's token that lists nothing reads GAMMA's issue", read(unlisted, rig.gamma.issue), read(unlisted, nobody), rig.gamma.issue, nobody)
 		})
 	}
 }

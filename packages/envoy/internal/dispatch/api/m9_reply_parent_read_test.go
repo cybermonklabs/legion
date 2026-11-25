@@ -57,20 +57,21 @@ func carolsWordsCarried(t *testing.T, seed privateSeed, carols string) (replies,
 
 // TestAReplyToADirectMessageItsWriterMayNotReadAnswersAsAMissingParent: a reply whose in_reply_to
 // names a direct message its writer may not read (access.MessageClause) - carol's message to a
-// session, named by bob's token that lists PRIV, which is no party of that conversation and is not
-// open, a restricted member's - answers exactly as a reply naming an id no message holds, the id
-// written as carol's, and writes nothing: no reply joins carol's conversation and no event previews
-// her words. The session acts in PRIV too, so bob's token may see it and send to it, and only the
-// conversation's rule keeps carol's message from it.
+// session, named by bob at his browser, who is no party of that conversation and is not open, a
+// restricted member - answers exactly as a reply naming an id no message holds, the id written as
+// carol's, and writes nothing: no reply joins carol's conversation and no event previews her
+// words. The session acts in PRIV too, so bob may see it and send to it, and only the
+// conversation's rule keeps carol's message from him. His token is no writer here: a restricted
+// member's token holds no scope (R16), and the route needs the person scope.
 func TestAReplyToADirectMessageItsWriterMayNotReadAnswersAsAMissingParent(t *testing.T) {
 	seed, carols := replySeed(t)
 	seed.asSession(t, replySession, seedPrivate, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
 		map[string]any{"body": "s-reply works on PRIV too."}, http.StatusCreated)
 	replies, events := carolsWordsCarried(t, seed, carols)
 
-	hidden := directReply(t, seed, callerBobPrivToken, carols)
+	hidden := directReply(t, seed, callerBob, carols)
 	nobodys := uuid.NewString()
-	missing := directReply(t, seed, callerBobPrivToken, nobodys)
+	missing := directReply(t, seed, callerBob, nobodys)
 	if missing.Code != http.StatusBadRequest {
 		t.Fatalf("a reply naming an id no message holds answered %d %s, want the 400 of a missing parent", missing.Code, missing.Body.String())
 	}

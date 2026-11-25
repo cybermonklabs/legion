@@ -86,7 +86,6 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t, ctx, pool)
 	requireTypeNodeValuesAreTheirTuples(t, ctx, pool)
 	requireNoRouteOrCommandWritesAType(t)
-	requireTheEraseRefusesATypeNode(t, ctx, pool)
 	requireTheServedSchemaFollowsTheNodes(t, ctx, pool)
 	requireAPointerReadsItsTargetsTypeAtEachRead(t, ctx, pool)
 	requireAnUnknownKindIsSkipped(t, ctx, pool, file)
@@ -513,59 +512,6 @@ func namesAType(name string) bool {
 		}
 	}
 	return false
-}
-
-// requireTheEraseRefusesATypeNode runs `envoy-dispatch erase --node <kind>:<id> --confirm <digest>`
-// through the command table the binary dispatches on (runSubcommand), for one supertag node and
-// one attribute node, and holds each to a refusal that names the node, with the node's row, the
-// tuples out of it and into it, and the erasures recorded of it all as they were. The digest is
-// one no listing has, since the refusal comes before any listing is read. The erase is the one
-// path in this tree that deletes a node row, and its name holds none of the words namesAType
-// reads, so the route and command list above cannot see it: only running it can.
-func requireTheEraseRefusesATypeNode(t *testing.T, ctx context.Context, pool *store.Pool) {
-	t.Helper()
-	databaseURL := pool.Config().ConnString()
-	for _, node := range []struct{ kind, id string }{
-		{schemanodes.KindSupertag, "callout"},
-		{schemanodes.KindAttribute, "callout/kind"},
-	} {
-		address := node.kind + ":" + node.id
-		before := typeNodeHeld(t, ctx, pool, node.kind, node.id)
-		if before.row == "" || before.out+before.in == 0 {
-			t.Fatalf("the store holds %+v for %s, want its node and its tuples, so that a refusal to erase them proves something", before, address)
-		}
-		var stdout, stderr bytes.Buffer
-		code := runSubcommand(ctx, []string{"erase", "--node", address, "--confirm", strings.Repeat("0", 64)},
-			envGetter(map[string]string{"DATABASE_URL": databaseURL}), &stdout, &stderr)
-		if code == 0 || !strings.Contains(stderr.String(), "refuses "+address) {
-			t.Errorf("envoy-dispatch erase --node %s --confirm exited %d with stderr %q and stdout %q, want a refusal naming the type node: no command deletes one",
-				address, code, stderr.String(), stdout.String())
-		}
-		if after := typeNodeHeld(t, ctx, pool, node.kind, node.id); after != before {
-			t.Errorf("after the erase of %s the store holds %+v, want the node as it was before: %+v", address, after, before)
-		}
-	}
-}
-
-// typeNodeState is what the store holds of one type node: its row as text, empty where there is
-// none, the tuples out of it and into it, and the erasures recorded of it.
-type typeNodeState struct {
-	row               string
-	out, in, erasures int
-}
-
-func typeNodeHeld(t *testing.T, ctx context.Context, pool *store.Pool, kind, id string) typeNodeState {
-	t.Helper()
-	var held typeNodeState
-	if err := pool.QueryRow(ctx, `
-		select coalesce((select n::text from graph_nodes n where n.kind = $1 and n.id = $2), ''),
-		       (select count(*) from graph_tuples where from_kind = $1 and from_id = $2),
-		       (select count(*) from graph_tuples where to_kind = $1 and to_id = $2),
-		       (select count(*) from graph_erasures where node_kind = $1 and node_id = $2)
-	`, kind, id).Scan(&held.row, &held.out, &held.in, &held.erasures); err != nil {
-		t.Fatalf("read the type node %s:%s: %v", kind, id, err)
-	}
-	return held
 }
 
 // requireTheServedSchemaFollowsTheNodes changes a type in the database alone - a field of the

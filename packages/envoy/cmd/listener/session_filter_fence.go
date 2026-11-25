@@ -333,7 +333,13 @@ func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.
 	if m.afterStoredRowRead != nil {
 		m.afterStoredRowRead()
 	}
-	if err := m.consumers.UpdateFilter(ctx, sessionID, m.storedRowFilter(registry, sessionID, topics)); err != nil {
+	filter, err := m.storedRowFilter(ctx, registry, sessionID, topics)
+	if err != nil {
+		m.logger.Warn("session consumer filter left unchanged: the session's interests could not be judged",
+			slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
+		return 0, filterWriteNotMade
+	}
+	if err := m.consumers.UpdateFilter(ctx, sessionID, filter); err != nil {
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
 			return 0, filterWriteSettled
 		}

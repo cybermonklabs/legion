@@ -53,6 +53,10 @@ type updateIssueInput struct {
 	Components       json.RawMessage `json:"components"`
 	Repo             json.RawMessage `json:"repo"`
 	Actor            *model.Actor    `json:"actor"`
+	// RefuseOpenForeignChildren asks, beside a status of retro or done, that the write be refused
+	// while a child of another project is open (refuseOpenForeignChildren). The Legion daemon's
+	// sign_off and close_root send it; a person's status write does not, and is taken as before.
+	RefuseOpenForeignChildren bool `json:"refuse_open_foreign_children"`
 }
 
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +122,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if input.RefuseOpenForeignChildren && status != "retro" && status != "done" {
+		writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "refuse_open_foreign_children goes only with status retro or done")
+		return
+	}
 	if input.Route != nil && *input.Route != "" {
 		if _, err := model.ParseRoute(*input.Route); err != nil {
 			writeError(w, "ROUTE_INVALID", http.StatusBadRequest, "invalid route")
@@ -165,10 +173,20 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	repo, repoProvided, err := parseIssueRepo(input.Repo)
+	repo, repoProvided, err := parseIssueRepo(input.Repo, "INVALID_ISSUE")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	repo = s.renamedRepo(repo)
+	// Each link URL is stored under its repository's new name where a rename pair renames it
+	// away (refs.Renames.CanonicalURL), as every write of a stored URL is. It is rewritten here,
+	// before the closed-issue gate compares the links with the stored ones, so a link resent
+	// under the old name is the link the issue already has.
+	if input.ExternalLinks != nil {
+		for i := range *input.ExternalLinks {
+			(*input.ExternalLinks)[i].URL = s.deps.Renames.CanonicalURL((*input.ExternalLinks)[i].URL)
+		}
 	}
 
 	key := r.PathValue("key")
@@ -195,7 +213,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 
-	dependencyWrite := input.BlockedBy != nil || parentProvided
+	// A write that asks for the open-child check of an acceptance is a dependency write too: the
+	// check and the status it guards run under the deployment dependency lock that every create
+	// with a parent and every reparent takes, so no child is filed between the two.
+	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
 	if dependencyWrite || input.Rank != nil {
 		// The issue's project as the caller reads it: an issue of a project it does not see is
 		// the missing row loadIssue answers below, and takes no lock of that project first.
@@ -289,6 +310,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if input.RefuseOpenForeignChildren {
+		var open openForeignChildrenError
+		if err := refuseOpenForeignChildren(r.Context(), tx, who, key, before.Project); errors.As(err, &open) {
+			WriteJSON(w, http.StatusConflict, open.body())
+			return
+		} else if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// The `advances` revision rule is decided here, beside the other refusals of this handler
 	// and before the first row is written: a refused write leaves the issue exactly as it was.

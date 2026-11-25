@@ -78,11 +78,12 @@ func seedOrphan(t *testing.T, database *store.Store, slug string) (string, int64
 // A document the release before this one removed, after this build wrote its node, leaves the node
 // standing behind no row, which OrphanedDocumentNodes reads and StateOrphanedGone states gone: its
 // state tuple is gone, made by the block-index tick, caused by that release's own artifact.removed
-// event, and the project census then reads the store complete. A second call leaves the gone node
-// as it is.
+// event, and the project census then reads the store complete. Before the sweep the census names
+// the node orphaned with that tick as its cure. A second call leaves the gone node as it is.
 //
 // Its control is the gone state caused at the sentinel rather than by the removal's event: the
-// tuple then names no event.
+// tuple then names no event. The cure's control is the issue's address taken out of the census's
+// read of it (issueDocumentAddress in projectIncomplete): the line then says it has no in-band cure.
 func TestAnOrphanedDocumentNodeIsStatedGoneUnderItsRemoval(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -90,6 +91,10 @@ func TestAnOrphanedDocumentNodeIsStatedGoneUnderItsRemoval(t *testing.T) {
 	orphaned, err := OrphanedDocumentNodes(ctx, database.Pool, 10)
 	if err != nil || len(orphaned) != 1 || orphaned[0] != ref {
 		t.Fatalf("the orphaned document nodes are %q (%v), want %s alone", orphaned, err, ref)
+	}
+	if incomplete, err := ProjectComplete(ctx, database.Pool); err != nil || len(incomplete) != 1 ||
+		incomplete[0] != "artifact "+ref+": orphaned"+sweptCure {
+		t.Errorf("before the sweep ProjectComplete answers %q (%v), want the orphaned node with the tick as its cure", incomplete, err)
 	}
 	if err := StateOrphanedGone(ctx, database, ref); err != nil {
 		t.Fatalf("state the orphaned node of %s gone: %v", ref, err)

@@ -68,7 +68,7 @@ func publishedSender(t *testing.T, state *listenerDeps, source, target string) *
 func sessionRows(t *testing.T, registry *store.Registry, state *listenerDeps) map[string]listenerwire.SessionInfo {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	sessionsHandler(registry, state.sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, state.sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d, body %s; want 200", recorder.Code, recorder.Body.String())
 	}
@@ -192,7 +192,7 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 		path    string
 		handler http.Handler
 	}{
-		{"/v1/sessions", sessionsHandler(registry, sessions)},
+		{"/v1/sessions", sessionsHandler(registry, sessions, nil)},
 		{"/v1/registry/" + sender, sessionEntryHandler(state)},
 	} {
 		recorder := httptest.NewRecorder()
@@ -303,7 +303,7 @@ func TestARoleViewWhoseFirstScanTimedOutIsTheBusNotAnsweringOnTheSessionRoutes(t
 		path    string
 		handler http.Handler
 	}{
-		{"/v1/sessions", sessionsHandler(registry, sessions)},
+		{"/v1/sessions", sessionsHandler(registry, sessions, nil)},
 		{"/v1/registry/" + holder, sessionEntryHandler(state)},
 	} {
 		recorder := httptest.NewRecorder()
@@ -407,7 +407,7 @@ func TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole(t *testing.T
 		entry := sessionEntryRoute(t, state, holder)
 		entryAnswered := requireRolesOrUnanswered(t, "GET /v1/registry/"+holder, entry, want, kept, entryRoles)
 		list := httptest.NewRecorder()
-		sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+		sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 		listAnswered := requireRolesOrUnanswered(t, "GET /v1/sessions", list, want, kept, listedRoles)
 		if entryAnswered && listAnswered {
 			break

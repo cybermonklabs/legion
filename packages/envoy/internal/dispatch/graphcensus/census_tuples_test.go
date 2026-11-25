@@ -14,7 +14,7 @@ import (
 
 // deleteTuples takes out of the log every tuple of one relation out of one node, as a writer
 // that never stated it would have left the log. It is this test's own fixture: no production
-// path deletes a tuple but the erase.
+// path deletes a tuple.
 func deleteTuples(t *testing.T, database *store.Store, fromKind, fromID, kind string) {
 	t.Helper()
 	tag, err := database.Pool.Exec(context.Background(), `

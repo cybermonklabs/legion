@@ -603,10 +603,10 @@ want_line C5 "the window the rate is read over" \
   "^census: sizing window_days=28 year_days=365 limit_bytes=$limit\$"
 want_line C5 "the write rate by kind" '^census: sizing write-rate type=[^ ]+ per_day=[0-9]+\.[0-9]+$'
 
-# C6: every table this branch's migrations touch, each inside the limit: the ten graphcensus's
+# C6: every table this branch's migrations touch, each inside the limit: the nine graphcensus's
 # branchTables names, each of which the command prints a line for, so a table it leaves out fails
 # here by name.
-for table in graph_nodes graph_tuples graph_erasures block_index_event_cursors graph_backfill_horizon \
+for table in graph_nodes graph_tuples block_index_event_cursors graph_backfill_horizon \
   block_refs comments document_block_versions document_blocks server_build_announcements; do
   want_line C6 "the size of $table" \
     "^census: sizing table name=$table altered=(true|false) rows=[0-9,]+ bytes=[0-9]+ limit_bytes=$limit verdict=inside\$"

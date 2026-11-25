@@ -102,12 +102,10 @@ func seedDeliverySettings(t *testing.T, ctx context.Context, pool *store.Pool) D
 }
 
 // deliveryProject is the project this package's issue fixtures write their issues in, and
-// deliveryRepo the repository it owns by default. One project owns it because repo_projects'
-// primary key is the repository (migration 0005_repo_projects), so only one project can map
-// acme/widgets, and the attribution now holds a pull request's issue to the repository the pull
-// request is in (delivery's attributionHeld): an issue of a project that maps nothing resolves
-// to no repository and would attribute nobody. The key is a neutral one, since the head, the
-// attribution and the deployed fixtures all seed into it.
+// deliveryRepo its default repository. The attribution holds a pull request's issue to the
+// repository the pull request is in (delivery's attributionHeld): an issue of a project with no
+// default resolves to no repository and would attribute nobody. The key is a neutral one, since
+// the head, the attribution and the deployed fixtures all seed into it.
 const (
 	deliveryProject = "DLVY"
 	deliveryRepo    = "acme/widgets"
@@ -122,28 +120,21 @@ const (
 	deployedIssueBand    = 2000
 )
 
-// seedProjectRepository writes project key, named name, and maps repo to it as that project's
-// default, which is what makes an issue of the project resolve to repo (refs.IssueRepoTerms).
-// Idempotent: the fixtures that call it run per test, and the tests of this package share one
-// database.
+// seedProjectRepository writes project key, named name, with repo as its default repository,
+// which is what makes an issue of the project resolve to repo (refs.IssueRepoTerms).
+// Idempotent: the fixtures that call it run per test, and one test can call it more than once.
 func seedProjectRepository(t *testing.T, ctx context.Context, pool *store.Pool, key, name, repo string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-		insert into projects (key, name, default_assignee) values ($1, $2, 'alice') on conflict do nothing
-	`, key, name); err != nil {
-		t.Fatalf("seed the project: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		insert into repo_projects (repo, project, created_by, is_default)
-		values ($1, $2, '{"kind":"system","id":"delivery-test"}'::jsonb, true)
-		on conflict do nothing
-	`, repo, key); err != nil {
-		t.Fatalf("map the repository to the project: %v", err)
+		insert into projects (key, name, default_assignee, default_repo) values ($1, $2, 'alice', $3)
+		on conflict (key) do update set default_repo = excluded.default_repo
+	`, key, name, repo); err != nil {
+		t.Fatalf("seed the project with its default repository: %v", err)
 	}
 }
 
-// seedDeliveryProject writes deliveryProject and maps deliveryRepo to it as its default, so
-// every issue the fixtures seed resolves to the repository their pull requests are in.
+// seedDeliveryProject writes deliveryProject with deliveryRepo as its default, so every issue
+// the fixtures seed resolves to the repository their pull requests are in.
 // Idempotent: each fixture calls it, and one test can use several fixtures.
 func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
@@ -341,18 +332,30 @@ func intakeTestClient(t *testing.T) *bus.Client {
 }
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
-// test that means to publish into a bound consumer does not race the bind.
+// test that means to publish into a bound consumer does not race the bind. Its one bound is what
+// the test binary's deadline leaves less boundDurableSpare (testwait.Remaining): a bind that is
+// merely slow on a loaded machine still passes, and one that never comes fails the row with time
+// left for its cleanups.
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
-	var err error
-	waitFor(t, 20*time.Second, func() bool {
-		var info *natsgo.ConsumerInfo
-		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
+	var state string
+	waitFor(t, testwait.Remaining(t, boundDurableSpare), func() bool {
+		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		if err != nil {
+			state = err.Error()
+			return false
+		}
+		state = fmt.Sprintf("push_bound=%t max_ack_pending=%d", info.PushBound, info.Config.MaxAckPending)
+		return info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
 	}, func() string {
-		return fmt.Sprintf("intake never bound its durable: %v", err)
+		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", intakeMaxAckPending, state)
 	})
 }
+
+// boundDurableSpare is what awaitBoundDurable leaves of the test binary's deadline for a failed
+// row's cleanups: stopping its intakes, which wait out their stop's deadline, and dropping its
+// database.
+const boundDurableSpare = time.Minute
 
 // awaitRuns waits for the intake to have stored want delivery_runs rows, and fails with the
 // stream's message count and the consumer's whole state when it does not -- the numbers that say

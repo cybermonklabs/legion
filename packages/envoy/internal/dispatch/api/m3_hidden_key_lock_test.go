@@ -116,6 +116,12 @@ func lockRows(second, step string) []lockRow {
 		{"PUT /api/v1/projects/{key}/default-assignee", callerAlice, http.MethodPut,
 			with(path("/api/v1/projects/{project}/default-assignee"), issueBody(`{"assignee":"alice"}`)),
 			holdProjectOwner, http.StatusOK, notFound},
+		// Main's route (#4457) took the owner lock and wrote the row before it read the project;
+		// this build reads the project as its writer reads it first, so a writer that does not see
+		// PRIV never queues behind PRIV's writer (control: the read before the lock taken out).
+		{"PUT /api/v1/projects/{key}/default-repository", callerAlice, http.MethodPut,
+			with(path("/api/v1/projects/{project}/default-repository"), issueBody(`{"repo":"acme/walked"}`)),
+			holdProjectOwner, http.StatusOK, `404 {"code":"PROJECT_NOT_FOUND","error":"project not found"}`},
 		{"PUT /api/v1/issues/{key}/design-gates", callerAlice, http.MethodPut,
 			with(path("/api/v1/issues/{key}/design-gates"), issueBody(`{`+probeActor+`,"gates":[]}`)),
 			holdIssueOwner, http.StatusOK, `404 {"code":"ISSUE_NOT_FOUND","error":"no issue NOPE-1"}`},

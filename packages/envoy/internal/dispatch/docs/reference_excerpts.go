@@ -156,7 +156,10 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, indexBlocks, stated, err := planBlockIndex(ctx, tx, s.markingRule, artifactID, record, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree))
+	moved, indexBlocks, stated, err := planBlockIndex(ctx, tx, s.markingRule, refs.VersionBlocks{
+		ArtifactID: artifactID, Record: record, Number: version, At: versionAt,
+		Markdown: markdown, Blocks: blocks, Located: located, Pointers: blockPointers(artifactID, markdown, blocks, tree),
+	})
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -239,35 +242,23 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, versi
 	})
 }
 
-// planBlockIndex plans version's block index of artifactID, its block pointers included
-// (refs.PlanBlocks), at the marking rule rule of the build planning it, with record what the
-// version's own row says of it (indexedVersionOf), and returns the targets it moves, the cited
-// blocks it changes included (refs.BlockIndexing.Cited), the step that writes it, and what it
-// states in the node and tuple store, held for the event the caller appends for the version
-// (refs.BlockIndexing.Stated). It plans against what the index holds: as the transaction's own
-// queued indexing of the document leaves it, when there is one, else as read in tx; and it
+// planBlockIndex plans the block index of version, one version of a document with its block
+// pointers (refs.PlanBlocks), at the marking rule rule of the build planning it, and returns the
+// targets it moves, the cited blocks it changes included (refs.BlockIndexing.Cited), the step
+// that writes it, and what it states in the node and tuple store, held for the event the caller
+// appends for the version (refs.BlockIndexing.Stated). version.Record is what the version's own
+// row says of it (indexedVersionOf). It plans against what the index holds: as the transaction's
+// own queued indexing of the document leaves it, when there is one, else as read in tx; and it
 // records what this one leaves for a later indexing of the same document.
-func planBlockIndex(
-	ctx context.Context,
-	tx pgx.Tx,
-	rule int,
-	artifactID string,
-	record refs.IndexedVersion,
-	version int,
-	versionAt time.Time,
-	markdown string,
-	blocks []model.ArtifactBlock,
-	located []text.Located,
-	pointers []refs.Pointer,
-) ([]refs.Target, WriteStep, graphstore.Uncaused, error) {
+func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.VersionBlocks) ([]refs.Target, WriteStep, graphstore.Uncaused, error) {
 	ledger := queueFor(ctx, tx)
 	index, held := refs.BlockIndex{}, false
 	if ledger != nil {
-		index, held = ledger.blockIndexes[artifactID]
+		index, held = ledger.blockIndexes[version.ArtifactID]
 	}
 	if !held {
 		var err error
-		if index, err = refs.ReadBlockIndex(ctx, tx, artifactID); err != nil {
+		if index, err = refs.ReadBlockIndex(ctx, tx, version.ArtifactID); err != nil {
 			return nil, nil, graphstore.Uncaused{}, err
 		}
 	}
@@ -275,10 +266,7 @@ func planBlockIndex(
 	if err != nil {
 		return nil, nil, graphstore.Uncaused{}, err
 	}
-	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, refs.VersionBlocks{
-		ArtifactID: artifactID, Record: record, Number: version, At: versionAt,
-		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
-	})
+	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, version)
 	if err != nil {
 		return nil, nil, graphstore.Uncaused{}, err
 	}
@@ -290,7 +278,7 @@ func planBlockIndex(
 		if ledger.blockIndexes == nil {
 			ledger.blockIndexes = make(map[string]refs.BlockIndex)
 		}
-		ledger.blockIndexes[artifactID] = indexing.Held()
+		ledger.blockIndexes[version.ArtifactID] = indexing.Held()
 	}
 	indexBlocks := func(b *store.WriteBatch) error {
 		indexing.Queue(b)

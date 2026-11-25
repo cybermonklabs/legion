@@ -344,7 +344,20 @@ for caller in bob bob-priv-token; do
   # read is held to PRIV's own only once PRIV is private. Each list must be answered 200
   # and name what the caller sees, carol and the session with history in PRIV (ses-priv-worker), or
   # the name it must not hold could be missing from an error or an empty list.
-  if [ "$priv_private" = 1 ]; then
+  # A restricted member's own token holds no scope (R16), so a route that needs the person scope
+  # refuses it 403 OAUTH_SCOPE_REQUIRED before it reads anything: the people and a session's
+  # messages are bob's to read at his browser alone. The refusal must carry that code, or the
+  # token could be reading the route under some other rule.
+  scopeless=0
+  [ "$caller" = bob-priv-token ] && scopeless=1
+  if [ "$scopeless" = 1 ]; then
+    send main "$caller" GET /api/v1/users
+    problem=''
+    if [ "$status" != 403 ] || [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" != OAUTH_SCOPE_REQUIRED ]; then
+      problem="$caller GET /api/v1/users: HTTP $status, want 403 OAUTH_SCOPE_REQUIRED, a restricted member's token holding no scope: $(head -c 300 "$work/body")"
+    fi
+    judge "$status" "$problem"
+  elif [ "$priv_private" = 1 ]; then
     send main "$caller" GET /api/v1/users
     problem=''
     if [ "$status" != 200 ]; then
@@ -372,13 +385,19 @@ for caller in bob bob-priv-token; do
   # read without carol's direct message to it.
   send main "$caller" GET /api/v1/agents/ses-pub-session/messages
   problem=''
-  case "$status" in
-    200)
+  case "$scopeless:$status" in
+    1:403)
+      if [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" != OAUTH_SCOPE_REQUIRED ]; then
+        problem="$caller GET /api/v1/agents/ses-pub-session/messages: HTTP 403, want its code OAUTH_SCOPE_REQUIRED: $(head -c 300 "$work/body")"
+      fi
+      ;;
+    1:*) problem="$caller GET /api/v1/agents/ses-pub-session/messages: HTTP $status, want 403 OAUTH_SCOPE_REQUIRED, a restricted member's token holding no scope: $(head -c 300 "$work/body")" ;;
+    0:200)
       if grep -q "$(recalled main "PUB direct message")" "$work/body"; then
         problem="$caller GET /api/v1/agents/ses-pub-session/messages: holds carol's direct message to it"
       fi
       ;;
-    404)
+    0:404)
       if [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" != SESSION_NOT_FOUND ]; then
         problem="$caller GET /api/v1/agents/ses-pub-session/messages: HTTP 404, want its code SESSION_NOT_FOUND: $(head -c 300 "$work/body")"
       fi
@@ -572,3 +591,4 @@ $([ "$differed" -eq 0 ] || printf '%s answers differ:\n%s' "$differed" "$(<"$wor
 fi
 no_difference
 pass
+run_end

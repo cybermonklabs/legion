@@ -34,7 +34,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
@@ -65,7 +64,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/reread"
-	"github.com/sjawhar/envoy/internal/cipher/rulehost"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/wake"
@@ -227,23 +225,35 @@ func main() {
 	// run's, so a production start that names any of them is refused here rather than running
 	// a broker that mints against a stand-in or dials an address no production proxy may.
 	fatal(refuseAirlockTestSettingsInProduction(cfg, fakeSecrets))
-	// The airlock's rules, read here beside the port-0 refusal: before the database is migrated,
-	// before the socket is bound and before anything reaches for AWS, so a pod given a file it
-	// cannot read or cannot serve refuses to start instead of running without the rules its
-	// operator believes are in force. The file is read once; a change to it rolls the pods.
-	rules, err := readAirlockRules(cfg.AirlockRulesFile)
+	// The profiles, read here beside the port-0 refusal: before the database is migrated, before
+	// the socket is bound and before anything reaches for AWS, so a pod given a file it cannot
+	// read or cannot serve refuses to start instead of running without the profiles its operator
+	// believes are in force. The file is read once; a change to it rolls the pods. The airlock's
+	// rules are the profiles' proxy blocks, which the proxy port, every release and the judge
+	// read alike.
+	profiles, err := readProfiles(cfg.ProfilesFile, serviceNames(cfg))
 	fatal(err)
+	proxyRules := profiles.ProxyRules()
+	// The airlock runs only for a profile with a proxy block, so its settings are required only
+	// then, and refused the same way: a deployment whose profiles hold none, such as one that
+	// serves GitHub Apps through profiles alone, needs no proxy, no certificate authority and no
+	// cluster ranges, and binds no proxy port.
+	proxied := make([]string, len(proxyRules.Secrets))
+	for i, rule := range proxyRules.Secrets {
+		proxied[i] = rule.Name
+	}
+	fatal(cfg.RequireAirlock(proxied))
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
 	// the key beside the certificate, which the proxy port signs each bound host's certificate
-	// with, and the certificate itself, which every release of a name the rules hold back hands
-	// the command as the one thing it trusts the proxy by. It is the last thing about the
+	// with, and the certificate itself, which every release of a name a proxy block holds back
+	// hands the command as the one thing it trusts the proxy by. It is the last thing about the
 	// airlock that can refuse a boot - a file that is not a certificate, a key that is not that
 	// certificate's, or a certificate that is no authority would leave every bound host's
 	// handshake failing for every command, found out one command at a time - so it is read
 	// before the database is migrated, before the socket is bound and before anything reaches
 	// for AWS. nil for a deployment with no airlock, which binds no proxy port.
 	var airlockCA *proxy.Authority
-	if cfg.AirlockRulesFile != "" {
+	if len(proxied) > 0 {
 		if airlockCA, err = proxy.NewAuthority(cfg.AirlockCACertFile, cfg.AirlockCAKeyFile); err != nil {
 			// Named by the two variables an operator sets, since what the refusal under this
 			// is about is the files they name.
@@ -268,14 +278,14 @@ func main() {
 	// notification — are wired before it is built: the listener's goroutine is already running
 	// when it is stored, so the store and those reads are on different goroutines.
 	var airlockProxy atomic.Pointer[proxy.Server]
-	// dropAirlockName is what one reread of a secret's name does to the proxy: it drops that
-	// name's value from every grant the proxy holds values for, so the next request of such a
-	// grant reads the value again and mints again from it. The reread of the name is the
-	// signal, not the policy version: a new version of a secret's value moves neither the
-	// policy's version nor the set of names it serves, so nothing else this process sees says
-	// that the value the proxy is holding is the old one. Nothing to do when there is no
-	// proxy, which is both a deployment with no airlock and the window between the listener
-	// starting and the proxy being built.
+	// dropAirlockName is what one reread of a secret's name does to the proxy, for each name the
+	// reread moved the value of (policy.Lookup.Moved): it drops that name's value from every
+	// grant the proxy holds values for, so the next request of such a grant reads the value again
+	// and mints again from it. The reread of the name is the signal for a stored value, not the
+	// policy version: a new version of a secret's value moves neither the policy's version nor
+	// the set of names it serves, so nothing else this process sees says that the value the proxy
+	// is holding is the old one. Nothing to do when there is no proxy, which is both a deployment
+	// with no airlock and the window between the listener starting and the proxy being built.
 	dropAirlockName := func(name string) {
 		if proxy := airlockProxy.Load(); proxy != nil {
 			proxy.DropName(name)
@@ -355,24 +365,21 @@ func main() {
 	// listener, and a broker that reads none answers every edge listener 503 REPOSITORIES_UNKNOWN.
 	// Both present the broker's own projected ServiceAccount token for Dispatch's audience through
 	// one reader, read at call time, so a rotation needs no restart and the broker has one Dispatch
-	// address and one account there. config.Load holds the two settings to both or neither. Built
-	// before the loader, which serves a tagged secret only when this broker can ask whether its
-	// project is private (policy.Loader.ProjectChecks). projectClient is the same client as
-	// projectAccess, for the hold gate below, which reads its person answers (hold.Config.Access)
-	// from the cache the token exchange fills. The client keeps the member kind of each person
-	// answer it fetches in person_member_kind, so that while Dispatch cannot be asked a person last
-	// answered a full member is served as one and everyone else is refused 503
-	// MEMBER_KIND_UNCHECKABLE, as before, and each project answer in project_standing for the
-	// request machine's person rule (projectaccess.Client.Keep).
+	// address and one account there (projectAccessClients). config.Load holds the two settings to
+	// both or neither. Built before the loader, which serves a tagged secret, and each profile of
+	// one, only when this broker can ask whether its project is private
+	// (policy.Loader.ProjectChecks). projectAccess is projectClient, for the hold
+	// gate below, which reads its person answers (hold.Config.Access) from the cache the token
+	// exchange fills. The client keeps the member kind of each person answer it fetches in
+	// person_member_kind, so that while Dispatch cannot be asked a person last answered a full member
+	// is served as one and everyone else is refused 503 MEMBER_KIND_UNCHECKABLE, as before, and each
+	// project answer in project_standing for the request machine's person rule
+	// (projectaccess.Client.Keep).
+	projectClient, projectRepositories := projectAccessClients(cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
 	var projectAccess projectaccess.Access
-	var projectRepositories api.ProjectRepositoriesReader
-	var projectClient *projectaccess.Client
-	if cfg.ProjectAccessURL != "" {
-		account := ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile)
-		projectClient = projectaccess.New(cfg.ProjectAccessURL, account, nil)
+	if projectClient != nil {
 		projectClient.Keep(st, slog.Default(), registry)
 		projectAccess = projectClient
-		projectRepositories = projectrepos.New(cfg.ProjectAccessURL, account, nil)
 	}
 	// The broker's one reader of Google group members, which every decision site asks who is a
 	// member of a group: the policy's sets (the loader stamps it on each), the request machine,
@@ -380,7 +387,7 @@ func main() {
 	// each once an hour (Start, below, at the first load) with the reader account's token
 	// (BROKER_DIRECTORY_ACCOUNT), minted with this pod's own credential.
 	groupReader := newGroupReader(cfg, "", &secrets.OwnGoogleCredential{})
-	loader := policyLoader(cfg, secretStore, rules, registry, groupReader)
+	loader := policyLoader(cfg, secretStore, profiles, registry, groupReader)
 	loader.ProjectChecks = projectAccess != nil
 	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
 	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange
@@ -450,9 +457,9 @@ func main() {
 		},
 		Listen: listenTCP(cfg.ListenAddr),
 		// The proxy port, bound by the same boot and only for a deployment that has an
-		// airlock: without a rules file no name is ever held back, so there is nothing for a
-		// proxy to carry and no port to bind.
-		ListenAirlock: airlockListen(cfg),
+		// airlock: without a proxy block among its profiles no name is ever held back, so there
+		// is nothing for a proxy to carry and no port to bind.
+		ListenAirlock: airlockListen(cfg, proxyRules),
 		// The edge, bound by the same boot and only for a deployment that names one
 		// (BROKER_EDGE_LISTEN_ADDR): with none, the broker binds nothing for it.
 		ListenEdge: edgeListen(cfg),
@@ -513,12 +520,12 @@ func main() {
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch, groupReader)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, proxyRules, airlockCACertificate, secrets.NewRetry(registry), dispatch, groupReader)
 	reqMachine.Projects, reqMachine.Exchange = projectAccess, exchangePolicy
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
-	wireJudge(ctx, cfg, rules, reqMachine, dispatch)
+	wireJudge(ctx, cfg, proxyRules, reqMachine, dispatch)
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -735,12 +742,14 @@ func main() {
 		Hold:                   holdGate,
 		Exchange:               exchangePolicy,
 		Draining:               draining.Load,
-		NotifyReread: func(ctx context.Context, name string) {
+		NotifyReread: func(ctx context.Context, name string, moved []string) {
 			// This pod reread the name itself and merged what it read (the reread route's
-			// notifyPeers), so the value behind the name may be a new version: dropped from
-			// the airlock proxy's own cache before the peers are told, since the reread of the
-			// name is the signal (dropAirlockName).
-			dropAirlockName(name)
+			// notifyPeers), so the value behind the name may be a new version: what the reread
+			// moved of it is dropped from the airlock proxy's own cache before the peers are
+			// told.
+			for _, affected := range moved {
+				dropAirlockName(affected)
+			}
 			if err := notify(ctx, name); err != nil {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
 			}
@@ -761,13 +770,13 @@ func main() {
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       2 * time.Minute,
 	}
-	// The airlock's proxy port, for a deployment that has one: the same rules file every
+	// The airlock's proxy port, for a deployment that has one: the same proxy rules every
 	// release reads, the same request machine the API decides with - the proxy's two reads are
 	// its AirlockConnection and AirlockValues - and the authority built at the top of main.
 	var proxyServer *proxy.Server
 	if started.AirlockListener != nil {
 		proxyServer = proxy.New(proxy.Options{
-			Rules:  rules,
+			Rules:  proxyRules,
 			Grants: reqMachine,
 			Hold:   holdGate,
 			CA:     airlockCA,
@@ -795,20 +804,16 @@ func main() {
 	}
 	// The edge's own server, for a deployment that has one, on the socket the boot bound: the
 	// device login's two routes and the health check (api.RegisterEdge), on the same request
-	// deadline and timeouts as the API, since what it serves is the API's own handlers on a
-	// server of its own. Its answers are recorded by answer.EdgeMiddleware: their lines name
-	// port=edge and their samples port="edge", and the mux's own 404 and 405 write no line.
+	// deadline and read and write timeouts as the API, since what it serves is the API's own
+	// handlers on a server of its own, and on an idle timeout above its load balancer's 600-second
+	// keepalive (newEdgeServer). Its answers are recorded by answer.EdgeMiddleware: their refusal
+	// lines name port=edge and their samples port="edge", and the mux's own 404 and 405 write no
+	// refusal line. Every request it answers writes its access-log line (edgeHandler).
 	var edgeServer *http.Server
 	if started.EdgeListener != nil {
 		edgeMux := http.NewServeMux()
 		api.RegisterEdge(edgeMux, deps, api.Edge{URL: cfg.EdgeURL, VerificationURL: cfg.EdgeMachineLoginURL, WorkspaceDomains: cfg.WorkspaceDomains()})
-		edgeServer = &http.Server{
-			Handler:           withRequestDeadline(answer.EdgeMiddleware(edgeMux, answers), requestDeadline),
-			ReadHeaderTimeout: srv.ReadHeaderTimeout,
-			ReadTimeout:       srv.ReadTimeout,
-			WriteTimeout:      srv.WriteTimeout,
-			IdleTimeout:       srv.IdleTimeout,
-		}
+		edgeServer = newEdgeServer(edgeMux, answers, slog.Default(), srv)
 	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
 	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its
@@ -867,12 +872,13 @@ func main() {
 	// The NATS auth service starts once the broker serves, so a connection it admits can trade
 	// and introspect against a broker that answers; it answers in the replicas' queue group until
 	// the drain begins. BROKER_NATS_SERVICES alone starts none (config.Load), and the record says
-	// which, with the edge listeners GET /v1/project-repositories answers either way.
+	// which, with the edge listeners GET /v1/project-repositories answers either way, and the hub
+	// account it places each client in (BROKER_NATS_ACCOUNT).
 	if cfg.NATS.Enabled() {
-		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners))
+		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners), "account", cfg.NATS.Account)
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
-			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services,
+			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services, Account: cfg.NATS.Account,
 		}, natscallout.Deps{
 			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
@@ -1165,99 +1171,54 @@ func airlockTestResolver(hosts map[string]netip.Addr) func(context.Context, stri
 	}
 }
 
-// parseRulesFile reads and parses one airlock rules file: os.ReadFile's own error for a path
-// that cannot be read, which names the path, and proxyrules.Parse's refusal under the file's name
-// for a file that is not an airlock rules file, since that refusal carries the parse position
-// and not the path. It validates nothing, because its two callers validate different files:
-// the boot validates the file it is about to serve (readAirlockRules), and airlock-check
-// validates the new file alone and reads the old one as it is.
-func parseRulesFile(path string) (proxyrules.Rules, error) {
+// readProfilesFile reads one profiles file through parse: policy.ParseProfiles for a file about to
+// be served, and policy.DecodeProfiles for the file in force that `profiles check` compares a
+// change against. A path that cannot be read is os.ReadFile's own error, which names the path,
+// and a file parse refuses is that refusal under the file's name, since the refusal names the
+// profile and the field, or the parse position, and not the path.
+func readProfilesFile(path string, parse func([]byte) (policy.Profiles, error)) (policy.Profiles, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return proxyrules.Rules{}, err
+		return policy.Profiles{}, err
 	}
-	rules, err := proxyrules.Parse(data)
+	profiles, err := parse(data)
 	if err != nil {
-		return proxyrules.Rules{}, fmt.Errorf("%s: %w", path, err)
+		return policy.Profiles{}, fmt.Errorf("%s: %w", path, err)
 	}
-	return rules, nil
+	return profiles, nil
 }
 
-// validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
-// that the boot and airlock-check refuse the same file in the same words: a host rulehost.Refusal
-// refuses, then proxyrules.Validate's answer, which is the Lean model's, then the two refusals that
-// are this program's own and not that model's — an entry whose name is not a name a session can
-// ask for, and guidance longer than the judge is shown (maxGuidanceRunes). The hosts come first
-// because rulehost.Refusal names each host's reason and repeats no text of the file but the form
-// to write, where Validate's refusal of a host proxyrules.HostShapeOK refuses quotes the host as
-// written; and because that grammar serves a host only where HostShapeOK accepts it, Validate then
-// refuses no host. So a file with two faults reports its first bad host, by entry and then by
-// position, ahead of any other fault Validate finds (a repeated name, a judge above 900 seconds,
-// another kind). An entry with no hosts has no host to refuse, and Validate accepts it: it says
-// who decides its key and binds the value nowhere. The host refusals rulehost.Refusal adds to
-// HostShapeOK are this program's own and not the Lean model's.
-//
-// Rules.Lookup compares an entry's name with a released name exactly, and a released name is
-// always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
-// "LEGION-SLACK-BOT-TOKEN" matches no release at all: the broker would hand the command the real
-// value of the very secret the file was reviewed as holding back. The check is here rather than
-// in proxyrules.Validate because that package knows nothing of how a secret is named under the
-// policy's prefix, and config.go refuses BROKER_AZURE_LOGIN_SECRET by the same NameToSlug.
-func validateRulesFile(rules proxyrules.Rules) error {
-	for i, s := range rules.Secrets {
-		for j, h := range s.Hosts {
-			if why := rulehost.Refusal(h); why != "" {
-				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
-			}
-		}
-	}
-	if err := proxyrules.Validate(rules); err != nil {
-		return err
-	}
-	for i, s := range rules.Secrets {
-		if _, err := policy.NameToSlug(s.Name); err != nil {
-			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
-		}
-		if n := utf8.RuneCountInString(s.Guidance); n > maxGuidanceRunes {
-			return fmt.Errorf("secrets[%d] %q: guidance is %d characters, longer than the %d the judge is shown", i, s.Name, n, maxGuidanceRunes)
-		}
-	}
-	return nil
-}
-
-// maxGuidanceRunes is the longest guidance a rules entry may give the judge. The judge shows the
-// whole text to its model beside the request's reason and what Dispatch holds of it, all within
-// one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
-// at the boot and in airlock-check, where its author reads why.
-const maxGuidanceRunes = 2000
-
-// readAirlockRules reads the airlock's rules file, the path BROKER_AIRLOCK_RULES_FILE names. An
-// empty path is a deployment with no airlock, and answers empty rules, whose Digest is "" for
-// every secret. Anything else refuses the boot: a path that cannot be read, a file proxyrules.Parse
-// will not read as JSON (whose refusal names the parse position), and a file validateRulesFile
-// refuses (whose refusal names the entry). Each refusal names the variable beside what that
-// reader said about the file, since the proxyrules package names a rules file no way but by its
-// contents. Extracted from main so a test can drive it without exiting the test process.
-func readAirlockRules(path string) (proxyrules.Rules, error) {
+// readProfiles reads the profiles file, the path BROKER_PROFILES_FILE names, as the boot serves
+// it: policy.ParseProfiles, which holds each profile to the file's shape in the words
+// `profiles check` refuses it in too, and then Profiles.CheckRequesters, which reads each
+// requester service against the deployment's registered services, a setting `profiles check`
+// has no reader of. An empty path is a deployment with no profiles, and answers no profile, no
+// proxy rule and a Digest of "" for every name. Anything else refuses the boot: a path that
+// cannot be read, a file that is not JSON (whose refusal names the parse position), and a profile
+// either reader refuses (whose refusal names the profile and the field). Each refusal names the
+// setting beside what the reader said, since the policy package names a profiles file no way
+// but by its contents.
+func readProfiles(path string, services []string) (policy.Profiles, error) {
 	if path == "" {
-		return proxyrules.Rules{}, nil
+		return policy.Profiles{}, nil
 	}
-	rules, err := parseRulesFile(path)
+	profiles, err := readProfilesFile(path, policy.ParseProfiles)
 	if err != nil {
-		return proxyrules.Rules{}, fmt.Errorf("BROKER_AIRLOCK_RULES_FILE: %w", err)
+		return policy.Profiles{}, fmt.Errorf("BROKER_PROFILES_FILE: %w", err)
 	}
-	if err := validateRulesFile(rules); err != nil {
-		return proxyrules.Rules{}, fmt.Errorf("BROKER_AIRLOCK_RULES_FILE %s: %w", path, err)
+	if err := profiles.CheckRequesters(services); err != nil {
+		return policy.Profiles{}, fmt.Errorf("BROKER_PROFILES_FILE: %s: %w", path, err)
 	}
-	return rules, nil
+	return profiles, nil
 }
 
 // airlockListen is brokerBoot.ListenAirlock in production: the bind on
-// BROKER_AIRLOCK_LISTEN_ADDR, and nil for a deployment that names no rules file. Nil rather
-// than a bind of the default address, because a broker with no airlock holds back no name, so a
-// proxy port there would be a port that authenticates nobody and carries nothing.
-func airlockListen(cfg config.Config) func() (net.Listener, error) {
-	if cfg.AirlockRulesFile == "" {
+// BROKER_AIRLOCK_LISTEN_ADDR, and nil for a deployment whose profiles hold no proxy block, rules
+// being their proxy blocks (policy.Profiles.ProxyRules). Nil rather than a bind of the default
+// address, because a broker with no airlock holds back no name, so a proxy port there would be a
+// port that authenticates nobody and carries nothing.
+func airlockListen(cfg config.Config, rules proxyrules.Rules) func() (net.Listener, error) {
+	if len(rules.Secrets) == 0 {
 		return nil
 	}
 	return listenTCP(cfg.AirlockListenAddr)
@@ -1274,15 +1235,25 @@ func edgeListen(cfg config.Config) func() (net.Listener, error) {
 
 // peerReread is the reread listener's Refresh (reread.Listener): the reread of name another pod
 // told this one to make, current's RefreshOne. A peer served the reread, so this pod's airlock
-// proxy may be holding the old value of that name: dropAirlockName drops it whatever the reread
-// answered, since the reread of the name is the signal. A reread whose context ended during its
-// value read alone (policy.ErrValueUnchecked) has merged the tags it read, which this pod now
-// serves, so it is a reread that ran: it answers nil, and the next load reads the value again.
-// Any other error is a reread that did not run, which the listener logs.
+// proxy may be holding the old value of that name: it drops each name the reread moved
+// (policy.Lookup.Moved), by the rule the reread route's own drop follows. The proxy holds a
+// grant's values by the name the grant was released under, which for a profile of another name
+// is the profile's own, so a reread of a source drops its profiles, and a reread of a profile
+// drops its source and its sibling profiles; dropping the reread name alone left the old value in
+// every request of the others until their grants ended, and a stored value has no expiry. A type
+// secret's held values are tokens minted from its value, which a reread that left that value's
+// version alone gives no reason to mint again, and anyone may ask for a reread. A reread whose
+// context ended during its value read alone (policy.ErrValueUnchecked) has merged the tags it
+// read, which this pod now serves, so it is a reread that ran: it answers nil, and the next load
+// reads the value again. Any other error is a reread that did not run, which the listener logs:
+// it moved no type secret's value version, so it drops none of a type secret's names, and it
+// drops a stored value's as every reread of one does.
 func peerReread(current *policy.Current, dropAirlockName func(string)) func(context.Context, string) error {
 	return func(ctx context.Context, name string) error {
-		_, err := current.RefreshOne(ctx, name)
-		dropAirlockName(name)
+		lk, err := current.RefreshOne(ctx, name)
+		for _, affected := range lk.Moved {
+			dropAirlockName(affected)
+		}
 		if errors.Is(err, policy.ErrValueUnchecked) {
 			return nil
 		}
@@ -1329,8 +1300,9 @@ func airlockCACertificatePEM(ca *proxy.Authority) string {
 // names, for each service account BROKER_POD_OPERATORS maps, the person a pod enrolled under its
 // login acts for, and, for each google-service-account secret, the one account the deployment
 // binds it to and so the only one its release mints a token for. A grant lasts the lifetime its
-// request signed, or until its session ends. rules and caCertificate are the airlock's, read at
-// boot: a name the rules name is released as placeholders, and every such release carries the
+// request signed, or until its session ends. rules are the profiles' proxy blocks
+// (policy.Profiles.ProxyRules) and caCertificate the airlock's authority, both read at boot: a
+// name a proxy block holds is released as placeholders, and every such release carries the
 // proxy's URL and this certificate. retry is the one retry policy and process-wide retry budget
 // of the three minters that call an upstream over HTTP (main's is secrets.NewRetry on the
 // process's registry, which broker_mint_attempts_total is counted on), so a GitHub brownout that
@@ -1376,7 +1348,8 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			}),
 		// A GitHub App token a release minted and hands to nobody - a release that failed after
 		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
-		// endpoint and retry.
+		// endpoint and retry. A github-installations token has no give-back: it is the token the
+		// secret stores, which every other release of it hands over too.
 		GiveBacks:            map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
@@ -1392,6 +1365,34 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		m.Assignees = dispatch
 	}
 	return m
+}
+
+// projectAccessHTTPClient is the HTTP client the broker reads Dispatch's project access with: Go's
+// default transport, but keeping requests.MaySeeAtOnce idle connections to Dispatch rather than
+// the default two, since one row, and one list, asks Dispatch that many questions at once. With
+// two kept, each round of a row's questions would close all but two of the connections the round
+// before it opened, and open as many again.
+func projectAccessHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = requests.MaySeeAtOnce
+	return &http.Client{Transport: transport}
+}
+
+// projectAccessClients is the broker's two clients of the Dispatch at baseURL, both reading the
+// broker's own projected ServiceAccount token at tokenFile, read at call time: its project access,
+// over projectAccessHTTPClient, and the repository answer GET /v1/project-repositories relays. Both
+// are nil when baseURL is empty, so a broker with no BROKER_PROJECT_ACCESS_URL holds none. The
+// project access client is the concrete client, which main keeps answers on (Client.Keep) and
+// builds the hold gate on; main puts it in an Access field only where it is not nil, since a nil
+// *Client in an interface is a non-nil Access. main wires the broker with these, and the test of the
+// client's connections reads its project access through this same call, so a client built here on
+// another transport fails it.
+func projectAccessClients(baseURL, tokenFile string) (*projectaccess.Client, api.ProjectRepositoriesReader) {
+	if baseURL == "" {
+		return nil, nil
+	}
+	account := ciphertoken.NewAccountToken(tokenFile)
+	return projectaccess.New(baseURL, account, projectAccessHTTPClient()), projectrepos.New(baseURL, account, nil)
 }
 
 // The broker's group reader answers every question a decision site asks of group members.
@@ -1412,13 +1413,15 @@ func newGroupReader(cfg config.Config, iamURL string, own oauth2.TokenSource) *g
 }
 
 // policyLoader is the loader of the broker's policy: the namespace secretStore holds under
-// BROKER_SECRETS_PREFIX, the registered services, the service-account bindings, the airlock's
-// entries, the store-read counter on registry, and groupReader, which the loader's Current stamps
-// on every set it makes live and names each full load's groups to.
-func policyLoader(cfg config.Config, secretStore secrets.Store, rules proxyrules.Rules, registry *metrics.Registry, groupReader record.Directory) policy.Loader {
-	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
-	// policy version is the one it has today.
-	return policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest,
+// BROKER_SECRETS_PREFIX, the registered services, the service-account bindings, the profiles file,
+// the store-read counter on registry, and groupReader, which the loader's Current stamps on every
+// set it makes live and names each full load's groups to.
+func policyLoader(cfg config.Config, secretStore secrets.Store, profiles policy.Profiles, registry *metrics.Registry, groupReader record.Directory) policy.Loader {
+	// The policy serves each profile by its name, checked against its source at every publish,
+	// and folds each profile's digest into its version, so an edit of a profile's entry ends that
+	// name's grants. With no profiles file it serves no profile and refuses every github-app
+	// secret, whose tokens a profile alone scopes.
+	return policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, Profiles: profiles,
 		StoreReads: policy.NewStoreReads(registry), Groups: groupReader}
 }
 
@@ -1665,10 +1668,13 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 // no binding at all mints no secret of that type. The google-service-account and
 // anthropic-federation minters are pointers: a method value would otherwise copy the credentials
 // each caches away from the minter every later mint reads. The other two are copied, and each
-// Retry they hold is a pointer, so minters given one Retry still draw from its one budget.
+// Retry they hold is a pointer, so minters given one Retry still draw from its one budget. The
+// github-installations minter takes no setting and calls no endpoint: it reads the tokens the
+// secret stores, so it is built here.
 func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount, anthropicFederation *secrets.AnthropicFederation) map[string]requests.Minter {
 	return map[string]requests.Minter{
 		policy.TypeGitHubApp:            githubApp.Mint,
+		policy.TypeGitHubInstallations:  secrets.GitHubInstallations{}.Mint,
 		policy.TypeGoogleLogin:          googleLogin.Mint,
 		policy.TypeAzureLogin:           azureLogin.Mint,
 		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,
@@ -1764,8 +1770,8 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 }
 
-// endSessionsCommand and versionsCommand are two of the three arguments the broker takes in place
-// of serving; the third is airlockCheckCommand (airlockcheck.go).
+// endSessionsCommand and versionsCommand are two of the three subcommands the broker takes in
+// place of serving; the third is `profiles check` (profilesCommand, profilescheck.go).
 const (
 	endSessionsCommand = "end-sessions"
 	versionsCommand    = "versions"
@@ -1773,8 +1779,9 @@ const (
 
 // runSubcommand runs the subcommand args name and answers its exit code. It is every argument
 // this binary takes: an unknown name, a missing or malformed argument to a name it knows, is
-// refused with 2 and a usage line, never a fall-through to serving. There are three names, so a
-// switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its eleven).
+// refused with 2 and a usage line, never a fall-through to serving. A removed subcommand is
+// refused the same way, naming the one that replaced it. There are four names, so a switch still
+// reads as one thing (cmd/dispatch/subcommands.go keeps a table for its eleven).
 func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case endSessionsCommand:
@@ -1789,11 +1796,19 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return 2
 		}
 		return versions(ctx, stdout, stderr)
-	case airlockCheckCommand:
-		return airlockCheck(args[1:], stdout, stderr)
+	case profilesCommand:
+		if len(args) < 2 || args[1] != profilesCheckCommand {
+			fmt.Fprintln(stderr, profilesCheckUsage)
+			return 2
+		}
+		return runProfilesCheck(args[2:], stdout, stderr)
+	case removedAirlockCheckCommand:
+		fmt.Fprintf(stderr, "broker: %s is removed: the airlock's rules are the proxy blocks of the profiles file now; check that file with broker %s\n",
+			removedAirlockCheckCommand, profilesCheckForm)
+		return 2
 	}
-	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s <file> [--against <old file>], and broker with no argument serves\n",
-		args[0], endSessionsCommand, versionsCommand, airlockCheckCommand)
+	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s, and broker with no argument serves\n",
+		args[0], endSessionsCommand, versionsCommand, profilesCheckForm)
 	return 2
 }
 

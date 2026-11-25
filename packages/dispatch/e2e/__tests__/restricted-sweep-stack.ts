@@ -7,7 +7,9 @@
  *
  *  - `head` serves this checkout's build. It sweeps TGT, whose objects the seed below holds, and
  *    EMPTY, a project with no issue, which the full member finds nothing of; it splits the sweep
- *    of TGT into fills, a writer and a runner; and it reads the server's own route probes (`go run
+ *    of TGT into fills, a writer and a runner; it sweeps TGT again with bob's own comment and
+ *    message on OWN-1 as the control of his feed, in place of his session (SWEEP_MEMBER_ISSUE);
+ *    and it reads the server's own route probes (`go run
  *    ./internal/dispatch/api/cmd/routeprobes`), which the test holds the sweep's kinds to.
  *  - `base` serves a build with no read check (`noReadCheckBase`: the merge base of this checkout
  *    and the branch the read check's pull request targets, or the commit before the one that
@@ -51,6 +53,8 @@ const sharedToken = "e2e-token";
 export const worker = "5e55107a-0c0a-4f00-8b2c-7a26e7000001";
 /** bob's own session, in OWN, which the live check's control message goes to. */
 const ownSession = "ses-own-worker";
+/** bob's own issue, in OWN, which the live check's control writes on in place of his session. */
+const ownIssue = "OWN-1";
 /** How long one sweep may run before it is stopped: a run against the local stack takes about 40 s
  *  with no pacing and a 5 s window. */
 const sweepMs = 600_000;
@@ -74,14 +78,16 @@ export interface SplitRuns {
 }
 
 /** What each child prints, by the build it serves: `head` its sweeps of TGT and EMPTY, its split
- *  of TGT and the server's route probes as `routeprobes` printed them, `base` the commit it built,
- *  its sweep of TGT and its split of TGT, and `keyed` (this checkout's build too) the key its
- *  target project is given and its sweep of that project. */
+ *  of TGT, its sweep of TGT whose member's control is bob's own issue, and the server's route
+ *  probes as `routeprobes` printed them, `base` the commit it built, its sweep of TGT and its
+ *  split of TGT, and `keyed` (this checkout's build too) the key its target project is given and
+ *  its sweep of that project. */
 export interface StackRuns {
   readonly head: {
     readonly target: SweepRun;
     readonly empty: SweepRun;
     readonly split: SplitRuns;
+    readonly issue: SweepRun;
     readonly probes: string;
   };
   readonly base: { readonly base: string; readonly target: SweepRun; readonly split: SplitRuns };
@@ -125,6 +131,8 @@ function isRuns<Which extends keyof StackRuns>(
       isSweepRun(value.empty) &&
       "split" in value &&
       isSplitRuns(value.split) &&
+      "issue" in value &&
+      isSweepRun(value.issue) &&
       "probes" in value &&
       typeof value.probes === "string"
     );
@@ -697,18 +705,24 @@ async function sweepWith(
   }
 }
 
-/** One run of the sweep against `origin` for `project`, in one process, with a 5 s window. */
-function sweep(origin: string, project: string, credentials: Credentials): Promise<SweepRun> {
+/** One run of the sweep against `origin` for `project`, in one process, with a 5 s window, whose
+ *  member's own control is `member`: bob's session unless a run names his issue in its place. */
+function sweep(
+  origin: string,
+  project: string,
+  credentials: Credentials,
+  member: Readonly<Record<string, string>> = { SWEEP_MEMBER_SESSION: ownSession }
+): Promise<SweepRun> {
   return sweepWith({
     SWEEP_ORIGIN: origin,
     SWEEP_PROJECT: project,
     SWEEP_WRITE_ISSUE: `${project}-1`,
     SWEEP_FULL_TOKEN: credentials.token,
     SWEEP_RESTRICTED_COOKIE: credentials.cookie,
-    SWEEP_MEMBER_SESSION: ownSession,
     SWEEP_FULL_COOKIE: credentials.fullCookie,
     SWEEP_LIVE_SECONDS: "5",
     SWEEP_CONVERSATION_FILE: credentials.conversationFile,
+    ...member,
   });
 }
 
@@ -887,6 +901,8 @@ if (import.meta.main) {
           target: await sweep(origin, "TGT", credentials),
           empty: await sweep(origin, "EMPTY", credentials),
           split: await split(origin, "TGT", credentials, scratch),
+          // Last of the sweeps, so bob's writes on his own issue change nothing the others read.
+          issue: await sweep(origin, "TGT", credentials, { SWEEP_MEMBER_ISSUE: ownIssue }),
           probes: run(
             [
               "go",

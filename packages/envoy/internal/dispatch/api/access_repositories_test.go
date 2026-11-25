@@ -137,8 +137,7 @@ func TestADeepChainIsUnresolvedNotShort(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name, default_assignee) values ('DEEP', 'Deep', 'alice');
-		insert into repo_projects (repo, project, is_default, created_by) values ('acme/deepdefault', 'DEEP', true, '{"kind":"user","id":"alice"}');
+		insert into projects (key, name, default_assignee, default_repo) values ('DEEP', 'Deep', 'alice', 'acme/deepdefault');
 		insert into issues (key, project_key, number, title, parent_key, repo, created_by, rank)
 		select 'DEEP-' || n, 'DEEP', n, 'Chain ' || n,
 		       case when n = 1 then null else 'DEEP-' || (n - 1) end,

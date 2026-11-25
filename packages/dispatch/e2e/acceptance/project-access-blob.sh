@@ -12,8 +12,9 @@
 # PRIV, public too, made by carol, each with an issue whose spec is a document with blocks, a
 # comment, an ask, a message, an issue document and a project document; a personal token of each
 # person, which names no project, since the merge base has no list to name one in; the shared
-# agent token; and Delivery configured, with pull requests and runs (seed_delivery). Then, as each
-# of the seven callers in turn, it makes `POST /api/v1/projects`, makes,
+# agent token; and, written straight into each build's database, Delivery configured, with pull
+# requests and runs (seed_delivery), and a repository mapping of each project (map_repository).
+# Then, as each of the seven callers in turn, it makes `POST /api/v1/projects`, makes,
 # renames and deletes a Delivery session group, and reads the fixed list below from both builds,
 # search's meaning leg among them, and compares the status, the headers and the bytes of each pair
 # of answers; and it compares the frames the live socket's event feed sends each caller at both
@@ -32,10 +33,15 @@
 # `GET /api/v1` is left out of the list. The route index gains a row for each route a change
 # adds, and the routes golden (packages/envoy/internal/dispatch/api/testdata/routes.txt, held by
 # TestRouteIndexListsEveryRouteSortedByPathThenMethod) and `go run ./cmd/dispatch openapi --check`
-# hold the index and every route's description instead. So the named list of additions is empty:
-# every field private projects add to an answer is omitempty at its default, and any difference
-# fails. The run reads the whole list before it fails, and names, for each answer that differs,
-# the caller, the route and the first byte that differs, with both answers around it.
+# hold the index and every route's description instead. So the change itself declares no addition
+# to a body: every field private projects add to an answer is omitempty at its default (its one
+# declared addition is a header, declared_header below). The one list of differences a body may
+# hold is main_additions, below: a member main added after the commit the base is pinned to, each
+# entry naming main's commit, the route and the member's path, and each held to that commit being
+# in this build and not in the base, and to admitting at least one answer (access-lib.sh's
+# main_additions_in_force and main_additions_report). Any other difference fails.
+# The run reads the whole list before it fails, and names, for each answer that differs, the
+# caller, the route and the first byte that differs, with both answers around it.
 #
 # Not compared, each with why:
 #   - `GET /api/v1`, above.
@@ -208,8 +214,20 @@ fi
 # answer with jq.
 require_jq() { command -v jq >/dev/null || fail "jq is not on PATH"; }
 
+# Main's changes after the commit the base is pinned to, each a member main added to an answer on
+# the fixed list (access-lib.sh's main_additions, which says how an entry is written and held). The
+# list is empty: the base the checks name holds main's changes up to the main it holds, and every
+# answer then is the same at both builds. An entry is added only for a member main adds after that
+# base, and is removed once the base holds its commit, where it would admit nothing. An entry
+# written as
+#   $'<40-hex commit>\tGET /api/v1/issues/{key}\t.design_gates[].holds\tnull'
+# admits each answer to an issue whose design gates differ from the base's only by a `holds`
+# member, null at this build.
+readonly main_additions=()
+
 begin prerequisites
 two_builds_prerequisites "--base-commit names the merge base" require_jq
+main_additions_in_force "$root" "$base_sha"
 pass
 
 begin build
@@ -364,14 +382,28 @@ decisions_linked() {
   [ "$status" = 200 ] && jq -e 'any(.decisions[]; (.links | length > 0) and (.asks | length > 0))' "$work/body" >/dev/null
 }
 
+# map_repository BUILD REPO PROJECT writes REPO's mapping to PROJECT straight into BUILD's database,
+# as the row that PUT /api/v1/settings/repo-projects/{owner}/{repo} wrote for carol's cookie and a
+# body of {project} alone, before #4457 (85f90626) removed it (api/repo_projects.go,
+# putRepoProject, at 5d01144423): not its project's default, renamed to nothing, created by carol
+# as her cookie's writes record her, and created now. A build that holds #4457 serves no write of
+# the mappings, its PUT answering 404, while GET /api/v1/settings/repo-projects still answers the
+# rows, so the seed writes them the same way at both builds whatever routes each serves. The PUT
+# also appended a settings.repo_project.updated event, which this write does not, at either build.
 map_repository() {
-  send "$1" carol PUT "/api/v1/settings/repo-projects/$2" "$(jq -cn --arg p "$3" '{project: $p}')"
-  created "$1" "carol maps $2 to $3"
+  local url_var=${1}_database_url actor
+  actor=$(jq -cn --arg id "$carol" '{kind: "user", id: $id, proven: true}')
+  psql "${!url_var}" -X -q -v ON_ERROR_STOP=1 -v repo="$2" -v project="$3" -v actor="$actor" \
+    >/dev/null <<'SQL' || fail "$1: could not write the mapping of $2 to $3"
+insert into repo_projects (repo, project, is_default, created_by)
+values (:'repo', :'project', false, :'actor'::jsonb)
+SQL
 }
 
-# seed_lists BUILD writes, through the routes both builds have, a row into every list an answer
-# read below holds, which the seed above leaves empty, so that no field of such a row can differ
-# unseen (the lists check): a priority and the work under it, in flight and parked; each first
+# seed_lists BUILD writes, through the routes both builds have (and the repository mappings
+# straight into its database, map_repository), a row into every list an answer read below holds,
+# which the seed above leaves empty, so that no field of such a row can differ unseen (the lists
+# check): a priority and the work under it, in flight and parked; each first
 # issue's labels, link, blocker, child (with a link of its own), parent, design gate and role
 # holder; each project's gated steps; an ask with options left open and followed, the seed's ask
 # given options, followed and answered with one; replies to both asks, to the seed's comment and
@@ -654,12 +686,12 @@ pass
 # so each build is asked for its own object; the route is named as written here. The repository
 # mappings (GET /api/v1/settings/repo-projects) are on it: the route answers only the rows of
 # projects its reader sees, which with every project public is the answer it gave before, and
-# map_repository writes a row of each project at both builds, so the list is never empty and is
-# never named in unfillable_lists. The third search and the results read write a phrase, so each
-# answer's query.operators holds a row. They name no OR: in a run with `"first paragraph" OR
-# remark`, PRIV-1's comment and its spec were answered in one order at one build and in the other
-# at the other, every caller alike. Each search but the one keywords_only names runs both legs,
-# keyword and meaning.
+# map_repository writes a row of each project into each build's database, so the list is never
+# empty and is never named in unfillable_lists. The third search and the results read write a
+# phrase, so each answer's query.operators holds a row. They name no OR: in a run with
+# `"first paragraph" OR remark`, PRIV-1's comment and its spec were answered in one order at one
+# build and in the other at the other, every caller alike. Each search but the one keywords_only
+# names runs both legs, keyword and meaning.
 #
 # The routes this change rewrote are on it too. Delivery is configured and holds rows at both builds
 # (seed_delivery), so its three reads answer their arrays, not 404 DELIVERY_NOT_CONFIGURED. Its
@@ -771,7 +803,8 @@ for caller in "${callers[@]}"; do
     [ "$status" != 201 ] || remember "$build" "group of $caller" "$(jq -r .id "$work/body")"
     keep_answer "$build" "$build"
   done
-  same_answers "$caller POST /api/v1/delivery/session-groups" base head '' "$declared_header"
+  same_answers "$caller POST /api/v1/delivery/session-groups" base head '' "$declared_header" \
+    "POST /api/v1/delivery/session-groups"
   [ -n "$(recalled base "group of $caller")" ] && [ -n "$(recalled head "group of $caller")" ] || continue
   compare "$caller" PATCH "/api/v1/delivery/session-groups/{group of $caller}" \
     "$(with_actor "$caller" "$(jq -cn --arg c "$caller" '{name: ("Renamed by " + $c)}')")"
@@ -812,11 +845,16 @@ for caller in "${callers[@]}"; do
     done
   done
 done
+# Each main addition in force names the answers it admitted, and one that admitted none fails the
+# run once the differences, if any, are printed. The reads are the last compares an entry can
+# reach: the sockets below are no route's answer.
+main_additions_report
 no_difference
+main_additions_used
 # A run that compared no answer has not passed: the fixed list or the callers held none.
 [ "$compared" -gt 0 ] || fail "no answer was compared: the fixed list or the callers held none"
-note "$compared answers compared, each the same status and the same masked bytes at both builds;" \
-  "by this build's status: $(statuses)"
+note "$compared answers compared, each the same status and the same masked bytes at both builds" \
+  "but the members of any main addition admitted above;" "by this build's status: $(statuses)"
 note "$new_routes new routes skipped, $skipped_requests requests to them read at neither build (each route named on its SKIP line above)"
 pass
 
@@ -932,3 +970,4 @@ done
 no_difference
 note "every caller is sent the same frames at both builds"
 pass
+run_end

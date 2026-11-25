@@ -33,7 +33,7 @@ func renamingRouter(t *testing.T, database *store.Store, fake *gateGitHub) http.
 	}
 	_, pem := githubapptest.Key(t)
 	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:    testSigningKey,
 		People:        people,
 		Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
@@ -41,7 +41,7 @@ func renamingRouter(t *testing.T, database *store.Store, fake *gateGitHub) http.
 		App:           &auth.AppConfig{ClientID: "Iv1.rename", PEM: pem},
 		GitHubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: handle}),
 		Lifetime:      t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

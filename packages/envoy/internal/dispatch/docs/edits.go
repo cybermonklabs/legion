@@ -2213,6 +2213,9 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	if op.Find == "" {
 		return nil, invalidOp("find")
 	}
+	// A replace that names no with, or carries a member replace does not take, is refused by
+	// the edit route before the batch reaches here (api.replaceFieldsRefusal), since only the
+	// request body says which members a replace named.
 	r, byMarker, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
 	if err != nil {
 		return nil, err

@@ -39,10 +39,11 @@
 #                   event of the project while the full member writes a comment on
 #                   SWEEP_WRITE_ISSUE and a direct message that names no issue to the session the
 #                   direct message above is to, which the full member's own feed, open over the
-#                   same window, is sent; and the member's feed is sent the direct message the
-#                   member writes in the window to their own session, SWEEP_MEMBER_SESSION, and
-#                   reads it. A subscription the server ends or refuses on an open socket covers
-#                   no window.
+#                   same window, is sent; and the member's feed is sent the member's own writes of
+#                   the window: the direct message to their own session, SWEEP_MEMBER_SESSION,
+#                   which they read, or in its place a comment and a message on SWEEP_MEMBER_ISSUE,
+#                   an issue of a project that lists them, whose message they read. A subscription
+#                   the server ends or refuses on an open socket covers no window.
 #
 # "A row of the project" is a JSON member name or string value (`row_rule`) that is, whole, the
 # project's key or a marker: an issue key of the project, an id the lookup found, the title of the
@@ -94,7 +95,7 @@
 #                fills; a row the fills hold no line of was never asked of the full member, and is
 #                UNKNOWN unless the member's answer FAILs it. It refuses a full member's
 #                credential. The live check reads the member's feed over a window it prints
-#                (`live window <W0> <W1>`, UTC), and writes the member's own direct message alone:
+#                (`live window <W0> <W1>`, UTC), and makes the member's own writes alone:
 #                it holds only once a writer's delivered write falls strictly inside that window,
 #                begun after W0 and ended before W1, which whoever ran both joins. W1 leaves the
 #                writer's 15 s delivery bound before the feed closes and holds two writes at the
@@ -127,7 +128,9 @@
 # project's repository, a person of it, a file of its conversation), one `can_fail<TAB><row>` a
 # row whose full-member half can fail, and one `full_status<TAB><status> <row>` a row. Fills mode
 # refuses to write one above 40 KiB, one that lacks a fill, or where a row it can tell cannot fail
-# must (a GitHub proxy read, a route held to a missing object's answer). A runner refuses fills
+# must (a GitHub proxy read the full member's credential made, a route held to a missing object's
+# answer); where the proxy refuses the full member's token (a build before it read one) it keeps
+# each proxy read as one that cannot fail, which a runner reads UNKNOWN. A runner refuses fills
 # that are absent, empty, of another version or project, made from another route index than its
 # own, older than 55 minutes (the question's run is kept an hour and read only by its asker),
 # that lack a fill whole fills hold, that name their origin by no SHA-256, or that were made at
@@ -142,25 +145,38 @@
 #                            to 127.0.0.1, localhost or [::1], for a local stack.
 #   SWEEP_PROJECT            [all] the key of the project the member's access list must not name.
 #   SWEEP_FULL_TOKEN         [one run, fills, writer] a bearer token of a full member who sees that
-#                            project; any bearer Dispatch accepts, a broker-traded one included.
+#                            project; any bearer Dispatch accepts, a broker-traded one included. As
+#                            it the run also writes the direct messages, watches the live socket's
+#                            agent view and, where no SWEEP_FULL_COOKIE is given, reads the GitHub
+#                            proxy, each of which needs its person scope: a full member's personal
+#                            token holding `person`, as the box's operator gives it. A token without
+#                            that scope is answered 403 there, and the run is UNKNOWN.
 #   SWEEP_RESTRICTED_COOKIE  [one run, runner] the restricted member's session cookie, as the
 #                            `Cookie` header carries it (`<name>=<value>`).
 #   SWEEP_MEMBER_SESSION     [one run, runner] the member's own session, which the member's direct
 #                            message of the live window is sent to, the control of their feed.
+#   SWEEP_MEMBER_ISSUE       [one run, runner] in place of SWEEP_MEMBER_SESSION, for a member who
+#                            holds no session (a browser's person alone): an issue of a project
+#                            whose access list names the member, never of SWEEP_PROJECT. In the
+#                            live window the member writes a comment and a message on it, each a
+#                            body alone, which their feed must be sent, and reads the message back
+#                            by GET /api/v1/messages/{id}: the control of their feed. A run takes
+#                            one of the two.
 #   SWEEP_MEMBER             [fills] the restricted member's login. The member's own projects are
 #                            the ones whose access lists name it, which a runner checks against
 #                            the projects the member is listed.
-#   SWEEP_FULL_COOKIE        [one run, fills, writer] the full member's session cookie, alike. The
-#                            GitHub proxy and the live socket's agent view read as the browser's
-#                            person and never as a token, and a direct message is a person's
-#                            write, so only with it are the proxy reads and the agent view made as
-#                            the full member too and able to fail, and the direct messages written;
-#                            without it the proxy reads cannot fail, and the run is UNKNOWN, naming
-#                            them, and fills mode writes no file.
+#   SWEEP_FULL_COOKIE        [one run, fills] the full member's session cookie, alike, for the
+#                            GitHub proxy reads alone, which it makes in SWEEP_FULL_TOKEN's place.
+#                            Without it the proxy reads are SWEEP_FULL_TOKEN's, which a build from
+#                            cybermonklabs/legion#5079 on reads; a build before it reads the proxy as
+#                            the browser's person alone and refuses the token (401, or 403
+#                            OAUTH_SCOPE_REQUIRED), and each proxy read is then UNKNOWN, never PASS
+#                            (in fills mode it is kept with no `can_fail` line, which a runner reads
+#                            UNKNOWN), naming the build and this input, while every other row runs.
 #   SWEEP_WRITE_ISSUE        [one run, writer] the issue of SWEEP_PROJECT the full member comments
 #                            on while the feeds are open. A comment, a direct message and the
 #                            question are the full member's writes, and the member's own direct
-#                            message the member's.
+#                            message, or comment and message, the member's.
 #   SWEEP_CONVERSATION_FILE  [one run, fills] `<session id>/<slug>`: a file of the conversation of
 #                            a session that worked in SWEEP_PROJECT alone, which no route lists. The
 #                            full member must read it, and the member must see the session
@@ -200,7 +216,7 @@
 #            proxy read and every row of a route held to a missing object's answer could fail, and
 #            every live control held: the full member's own event feed was sent the comment and the
 #            direct message (a runner: a writer's), and the member's feed their own direct
-#            message, over the whole live window.
+#            message, or their own comment and message, over the whole live window.
 #   FAIL     exit 1: the member was answered a row of the project, admitted to its document's
 #            room, sent an event of it or more of its session's conversation than that no one
 #            answers for it, or a route held to a missing object's answer answered them otherwise
@@ -230,9 +246,12 @@
 #     SWEEP_FULL_COOKIE=... SWEEP_CONVERSATION_FILE=<session id>/<slug> SWEEP_FILLS_FILE=fills.tsv \
 #     bash e2e/acceptance/restricted-sweep.sh
 #   SWEEP_MODE=writer SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 SWEEP_FULL_TOKEN=... \
-#     SWEEP_FULL_COOKIE=... SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh &
+#     SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh &
 #   SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_COOKIE=... \
 #     SWEEP_MEMBER_SESSION=<session id> bash e2e/acceptance/restricted-sweep.sh
+#   # A runner whose member holds no session: their own comment and message on an issue of theirs.
+#   SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_COOKIE=... \
+#     SWEEP_MEMBER_ISSUE=OWN-3 bash e2e/acceptance/restricted-sweep.sh
 #
 # Its tests: e2e/__tests__/restricted-sweep-judging.test.ts, -sockets.test.ts and -split.test.ts
 # hold each judging rule alone against a fake Dispatch (restricted-sweep-fake.ts), the modes among
@@ -365,17 +384,36 @@ else
     unknown "SWEEP_FULL_TOKEN is required: a full member's bearer token that sees $project, or, where no full member's credential may be, SWEEP_FILLS_FILE: the fills a run of SWEEP_MODE=fills wrote"
   case $full_token in *[!A-Za-z0-9._~+/=-]*) unknown 'SWEEP_FULL_TOKEN holds a byte no bearer token holds' ;; esac
 fi
-member_session=''
+member_session='' member_issue=''
 if [ "$mode" = one ] || [ "$mode" = runner ]; then
   [ -n "$cookie" ] || unknown 'SWEEP_RESTRICTED_COOKIE is required: the restricted member'"'"'s session cookie, <name>=<value>'
   holds_line_break "$cookie" && unknown 'SWEEP_RESTRICTED_COOKIE holds a line break'
   case $cookie in *=*) ;; *) unknown 'SWEEP_RESTRICTED_COOKIE must be <name>=<value>, as the Cookie header carries it' ;; esac
   case $cookie in *[!\ -~]*) unknown 'SWEEP_RESTRICTED_COOKIE holds a non-printable header byte' ;; esac
+  # The member's own control of their feed: their own session, or in its place an issue of a
+  # project that lists them, never of the project swept, keyed as Dispatch keys an issue.
   member_session=${SWEEP_MEMBER_SESSION:-}
-  case $member_session in
-    '') unknown "SWEEP_MEMBER_SESSION is required: the member's own session, which the member's direct message of the live window is sent to, the control of their feed" ;;
-    *[!A-Za-z0-9._-]*) unknown "SWEEP_MEMBER_SESSION is no session id: $member_session" ;;
-  esac
+  member_issue=${SWEEP_MEMBER_ISSUE:-}
+  if [ -n "$member_issue" ]; then
+    [ -z "$member_session" ] ||
+      unknown "SWEEP_MEMBER_SESSION and SWEEP_MEMBER_ISSUE are each the control of the member's feed: give one, not both"
+    issue_project=${member_issue%-*}
+    case $member_issue in
+      [A-Z]?*-[1-9]*) ;;
+      *) unknown "SWEEP_MEMBER_ISSUE is no issue key: $member_issue" ;;
+    esac
+    case ${issue_project#?} in *[!A-Z0-9]*) unknown "SWEEP_MEMBER_ISSUE is no issue key: $member_issue" ;; esac
+    if [ "${#issue_project}" -gt 10 ] || ! is_count "${member_issue##*-}"; then
+      unknown "SWEEP_MEMBER_ISSUE is no issue key: $member_issue"
+    fi
+    [ "$issue_project" != "$project" ] ||
+      unknown "SWEEP_MEMBER_ISSUE must be an issue of a project that lists the member, never of $project: $member_issue"
+  else
+    case $member_session in
+      '') unknown "SWEEP_MEMBER_SESSION is required, or SWEEP_MEMBER_ISSUE in its place: the member's own session, which the member's direct message of the live window is sent to, or an issue of a project that lists the member, which the member writes a comment and a message on in the window; either is the control of their feed" ;;
+      *[!A-Za-z0-9._-]*) unknown "SWEEP_MEMBER_SESSION is no session id: $member_session" ;;
+    esac
+  fi
 fi
 if [ -n "$full_cookie" ]; then
   holds_line_break "$full_cookie" && unknown 'SWEEP_FULL_COOKIE holds a line break'
@@ -473,12 +511,15 @@ fi
 if [ "$mode" = one ] || [ "$mode" = runner ]; then
   printf 'Cookie: %s\n' "$cookie" >"$work/restricted.h" || unknown 'could not write the restricted member header'
 fi
-# The full member as the browser's person, for the GitHub proxy, the agent view and a direct
-# message, which read no token.
-full_browser=full
+# The full member as the GitHub proxy reads them: their cookie, the browser's person, where it is
+# given, else their token (proxy_by). The direct messages and the agent view are the token's. A
+# runner holds neither, and reads the proxy rows' full half from the fills.
+full_browser='' proxy_by=''
 if [ -n "$full_cookie" ]; then
   printf 'Cookie: %s\n' "$full_cookie" >"$work/full-browser.h" || unknown 'could not write the full member cookie header'
-  full_browser=full-browser
+  full_browser=full-browser proxy_by=cookie
+elif [ "$mode" != runner ]; then
+  full_browser=full proxy_by=token
 fi
 unset full_token cookie full_cookie
 for record in failed unknown values named can-fail full-status missing own; do

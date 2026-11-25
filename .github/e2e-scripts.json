@@ -33,6 +33,16 @@
       "jj": true
     },
     {
+      "script": "conflict-merger.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "evidence_variable": "CONFLICT_MERGER_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-merger.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
+      "jj": true
+    },
+    {
       "script": "conflict-no-takeover.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -155,6 +165,10 @@
   ],
   "elsewhere": [
     {
+      "script": "approved-version-news.sh",
+      "needs": "the pinned Oh My Pi every pane of its part two runs (LEGION_OMP_PATH, an executable, which a GitHub-hosted runner has none of), the model gateway ANTHROPIC_BASE_URL names and its key file (APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default /var/run/model-gateway-key/key), a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, tar, awk, python3 and bun with this repository's node_modules, for part two's base arm and for part one's negative control (`--control`) a commit of this repository's own history to take the base from with `git archive` (`git merge-base HEAD origin/main`, or, for the control alone, the commit `--base-commit` names), which a shallow CI checkout carries none of, and the wall clock of both parts: part one about two minutes, and the twelve runs of real sessions that part two's driver plans for a full run, each bounded at eight minutes; APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and APPROVED_VERSION_NEWS_RUNS pick a partial run, a measurement whose last line reads MEASURED, never PASS"
+    },
+    {
       "script": "burstable-kind.sh",
       "needs": "a throwaway kind cluster with gVisor on an amd64 Linux host, with docker, go, kubectl, curl, zstd, a tar that supports --zstd and kind, and a worker image by digest (LEGION_E2E_IMAGE)"
     },
@@ -221,6 +235,14 @@
     {
       "script": "leak-guard-image-probe.sh",
       "needs": "the worker image and the Job leak-guard-image-job.sh creates: it is that proof's probe, not a proof of its own, and the harness writes it into the Job's command because a Job holds no checkout to read it from; it runs inside the image against a scratch repository on the Job's emptyDir and judges nothing a runner could give it"
+    },
+    {
+      "script": "pack-memory-job.sh",
+      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), go and a checkout of the head measured, whose role git block it builds with go run, the worker image digest to measure (--image, from the Worker Image run's Record digest step), and the deployment's compute class, storage class, labels and annotations (--node-selector, --storage-class, --label, --annotation); it starts one gVisor Job of that image, an hour or more on the default repository, and nothing of its own"
+    },
+    {
+      "script": "pack-memory-probe.sh",
+      "needs": "the worker image and the Job pack-memory-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and lib/pack-memory-peak.py into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache, fetch and provision on the Job's disk volume and judges nothing a runner could give it"
     },
     {
       "script": "multi-repo-acceptance.sh",

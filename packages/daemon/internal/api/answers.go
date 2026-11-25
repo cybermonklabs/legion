@@ -46,13 +46,15 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193 is the constant rather than its number, because the entry that added the shaped answers
-// names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last two are
-// repositoriesLiveContract and childRouteRemovedContract rather than their numbers for the same
-// reason: dispatch://INFRA-4401's change and dispatch://INFRA-3178's each name their constant, and
-// a renumber of either moves its constant and this list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract}
+// 193, 202, 205 and 213 are constants rather than their numbers, because the entries that added
+// them name them (shapedAnswersContract, the shaped answers' entry; repositoriesLiveContract,
+// dispatch://INFRA-4401's; childRouteRemovedContract, dispatch://INFRA-3178's; and
+// cachesSourceContract, dispatch://INFRA-4036's): a renumber of any of those entries moves its
+// constant and this list with it, and moving one of the two alone would describe a shape at a
+// contract no entry declares. The other entries above 193 follow them as numbers: 199 is
+// version.go's entry for INFRA-4605, and 217 its entry for dispatch://INFRA-3531 and
+// dispatch://INFRA-4567.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -140,10 +142,11 @@ var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor, TypedSettings: typedSettings},
 	// version.go's 193: the per-issue record route a role reads in place of the whole state.
-	// This change adds the route, so no contract below 193 records it.
+	// dispatch://INFRA-2694 added the route, so no contract below 193 records it.
 	{ID: AnswerIssueRecord, Routes: []string{"GET /legion/v1/issues/{key}/record"}, Since: shapedAnswersContract},
-	// version.go's 193: the typed health body (`api.Health`), which this change puts in place of
-	// the one untyped key the route answered, so the typed body has no record below 193 either.
+	// version.go's 193: the typed health body (`api.Health`), which dispatch://INFRA-2694 put in
+	// place of the one untyped key the route answered, so the typed body has no record below 193
+	// either.
 	{ID: AnswerHealth, Routes: []string{"GET /healthz"}, Since: shapedAnswersContract},
 	// Older than the floor: a role's registration answer (`claim.RegisterResponse`).
 	{ID: AnswerRegister, Routes: []string{"POST /legion/v1/claims/register"}, Since: ServingFloor},
@@ -229,7 +232,7 @@ type EnumeratedValue struct {
 // `z.enum(LEGION_WAIT_ANSWERS)`, and a zod enum refuses a value it does not name whether or not
 // the field is optional, so a body carrying a ninth value is refused whole by a reader of the
 // eight — the same refusal an added key gets from a reader before dispatch://INFRA-1048. So
-// both halves of this change read the table: the serving-down takes from a caller's body each
+// both halves of the shaping dispatch://INFRA-2694 put in place read the table: the serving-down takes from a caller's body each
 // value that caller's reader does not admit (shaping.go's valueStrips; fieldArrivals.heldBack
 // says which values and why), and the records carry the value domain of each field beside its
 // key paths, so a value added with no serving-down fails the gate as an added key does
@@ -254,10 +257,11 @@ type EnumeratedValue struct {
 // The first reading is measured rather than guessed: `legion-api.ts` and `legion-roles.ts` were
 // read at the commit that declared each contract of SupportedContracts, and the members of
 // every `z.enum` diffed. The lists below that ever grew are `answeredBy`, which gained
-// `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56, and
-// `waitingLine.kind`, which gained `waiting_on_issue` at 132, so every other list is recorded
-// whole at its own field's arrival. (`suspendedBy` gained `released` at 48 and is no row here:
-// the operator claim answers carry it and no plugin parses them.)
+// `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56,
+// `waitingLine.kind`, which gained `waiting_on_issue` at 132, and `capabilities.*.source`,
+// which gained `caches` at dispatch://INFRA-4036's contract (cachesSourceContract), so every
+// other list is recorded whole at its own field's arrival. (`suspendedBy` gained `released` at
+// 48 and is no row here: the operator claim answers carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
 
 // enumeratedFields is every row the table holds: the state's own, the record's taken from them,
@@ -298,8 +302,8 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "issues.*.architect.state", Values: claimViewStates},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.state", Values: claimViewStates},
 	// `updateState` of a claim view, where the claim's update round stands
-	// (api.ClaimView.UpdateState). This change's own key, served down below its contract with
-	// the rest of the round report (shaping.go's withoutClaimRoundReport).
+	// (api.ClaimView.UpdateState). shapedAnswersContract's own key, served down below that
+	// contract with the rest of the round report (shaping.go's withoutClaimRoundReport).
 	{Answer: AnswerState, KeyPath: "issues.*.architect.updateState", Values: updateStates},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.updateState", Values: updateStates},
 	// `state` of the pull request the daemon observed (api.PullRequestView.State,
@@ -352,7 +356,9 @@ var stateEnumeratedFields = []EnumeratedField{
 	// (api.ControllerLocator.Runtime).
 	{Answer: AnswerState, KeyPath: "controllerLocator.runtime", Values: controllerRuntimes},
 	// `status` and `source` of one row of the deployment's capability report
-	// (api.CapabilityState, capabilities.Deployment.Report).
+	// (api.CapabilityState, capabilities.Deployment.Report). `source`'s list grew: `caches`
+	// arrived at cachesSourceContract, and a row of that source is served without its `source`
+	// below that contract (shaping.go's withoutUnadmittedCapabilitySources).
 	{Answer: AnswerState, KeyPath: "capabilities.*.status", Values: capabilityStatuses},
 	{Answer: AnswerState, KeyPath: "capabilities.*.source", Values: capabilitySources},
 	// `state` of a repository cache under the Kubernetes runtime (api.CacheView.State). The
@@ -550,9 +556,10 @@ var wakeRoles = valuesFrom(wakesWaitingContract, floorRoles...)
 // that contract at all (shaping.go's withoutPause).
 var pauseStopRoles = valuesFrom(pauseContract, floorRoles...)
 
-// updateStates is every value of a claim view's `updateState`, recorded at the contract this
-// change adds the key under. The words are the four the package declares (updatestate.go), so a
-// state renamed there is renamed here and the domain cannot spell one the daemon never writes.
+// updateStates is every value of a claim view's `updateState`, recorded at
+// shapedAnswersContract, the contract that added the key. The words are the four the package
+// declares (updatestate.go), so a state renamed there is renamed here and the domain cannot spell
+// one the daemon never writes.
 var updateStates = valuesFrom(shapedAnswersContract,
 	UpdateStateNone, UpdateStateOpen, UpdateStateAsked, UpdateStateAnswered)
 
@@ -601,16 +608,27 @@ var memoryDrawModes = valuesFrom(memoryContract, config.ExperimentOff, config.Ex
 // word is `kubernetes`, which no constant spells with this meaning.
 var controllerRuntimes = valuesFrom(ServingFloor, "tmux", "kubernetes")
 
-// capabilityStatuses is every status one row of the deployment's capability report can be in,
-// and capabilitySources every source a deployment row's decision can come from. The report is
-// older than the floor (version.go's 16) and so is the source (version.go's 25), and neither
-// list has moved since. The probe's own table prints three words more — `missing`, `reported`
-// and `installed` — which reach no body this daemon writes and are no values of this field, so
-// capabilities.StatusMissing and capabilities.StatusReported are left out here.
+// capabilityStatuses is every status one row of the deployment's capability report can be in.
+// The report is older than the floor (version.go's 16), and the list has not moved since. The
+// probe's own table prints three words more — `missing`, `reported` and `installed` — which reach
+// no body this daemon writes and are no values of this field, so capabilities.StatusMissing and
+// capabilities.StatusReported are left out here.
 var capabilityStatuses = valuesFrom(ServingFloor,
 	capabilities.StatusPresent, capabilities.StatusUnchecked, capabilities.StatusWithheld,
 	capabilities.StatusDecided, capabilities.StatusOpen)
-var capabilitySources = valuesFrom(ServingFloor, capabilities.SourceConfiguration, capabilities.SourceBoot)
+
+// capabilitySources is every source a deployment row's decision can come from. The field is
+// older than the floor (version.go's 25), and `configuration` and `boot` came with it. Its list
+// grew once: `caches`, what the repository caches' last health reads said of their room, the
+// source of the row `repository-cache-room`, arrived at cachesSourceContract (version.go's 213,
+// capabilities.SourceCaches). So it is written out value by value, sorted by value, as
+// waitAnswers is, and a row of that source is served without its `source` to a caller below that
+// contract (shaping.go's withoutUnadmittedCapabilitySources).
+var capabilitySources = []EnumeratedValue{
+	{Value: string(capabilities.SourceBoot), Since: ServingFloor},
+	{Value: string(capabilities.SourceCaches), Since: cachesSourceContract},
+	{Value: string(capabilities.SourceConfiguration), Since: ServingFloor},
+}
 
 // cacheStates is every state a repository cache under the Kubernetes runtime can be in. The
 // field is older than the floor (version.go's 32) and the list has not moved since. It stays a

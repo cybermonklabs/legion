@@ -234,7 +234,8 @@ func TestARefusedBootClosesEverySocketItBoundBeforeItEndsServing(t *testing.T) {
 // TestTheEdgeDrainsBesideTheAPI pins the edge's drain: it closes out of the one shutdown budget
 // beside the API rather than after it, and before the work that outlived the drain stops. The
 // API's fake shutdown returns only once the edge's has begun, so a stop that drained the edge
-// after the API's is caught by the hang guard rather than read as an order.
+// after the API's is caught by the shared wait for that beginning, which names it, rather than
+// read as an order.
 //
 // The named revert: drop ShutdownEdge from stop, or call it after Shutdown has returned.
 func TestTheEdgeDrainsBesideTheAPI(t *testing.T) {
@@ -246,11 +247,7 @@ func TestTheEdgeDrainsBesideTheAPI(t *testing.T) {
 		Draining: func(bool) {},
 		Shutdown: func(context.Context) error {
 			ran.record(theShutdownBegan)
-			select {
-			case <-edgeBegan:
-			case <-time.After(bootListenWait):
-				t.Errorf("the API's shutdown waited %s and the edge's never began beside it", bootListenWait)
-			}
+			testwait.Receive(t, "the edge's shutdown to begin beside the API's", edgeBegan)
 			ran.record(theShutdownReturned)
 			return nil
 		},
@@ -535,11 +532,10 @@ func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
 
 	broker.Terminate(t)
 	for _, addr := range []string{broker.Addr, edgeAddr} {
-		if !testwait.Holds(listenTimeout, listeningPoll, func() bool {
-			return statusOf(t, http.MethodGet, "http://"+addr+"/healthz") == http.StatusServiceUnavailable
-		}) {
-			t.Fatalf("GET /healthz at %s never answered 503 once the broker was asked to stop:\n%s", addr, broker.Log())
-		}
+		testwait.Until(t, fmt.Sprintf("GET /healthz at %s to answer 503 once the broker was asked to stop", addr), func() (int, bool) {
+			status := statusOf(t, http.MethodGet, "http://"+addr+"/healthz")
+			return status, status == http.StatusServiceUnavailable
+		})
 	}
 	status, body = postDeviceAuthorization(t, edge, testEdgeURL, "draining@outside.example", through)
 	if status != http.StatusOK {

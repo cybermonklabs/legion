@@ -17,6 +17,7 @@ import (
 // below marshals the named type beside the literal the handler wrote before it was named, and
 // the two byte slices must be identical; a later reordering of a field fails the row.
 func TestResponseShapes(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	artifact := model.Artifact{ID: "art-1", Project: "TEST", Slug: "spec", Name: "Spec", Kind: "doc"}
 	version := model.Version{Number: 7, Named: true, Summary: new("a named version"), CreatedAt: at}

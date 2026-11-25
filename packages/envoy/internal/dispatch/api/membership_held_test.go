@@ -563,10 +563,13 @@ func serveWithBodyHeld(t *testing.T, handler http.Handler, request *http.Request
 
 // TestAHeldApproverRelaysNoApproval: a machine login's approve or deny by a personal token whose
 // owner was held while its client held the body back is 401 MEMBERSHIP_HELD once the body arrives,
-// and the broker is not called: the decision's re-read of its caller (approverStanding) reads the
-// hold, as the token's own check does. The control, the same decisions with no hold, reaches the
-// broker stand-in, which shows it records a call. The personal token proves the held approver,
-// since it is a credential that may approve.
+// and the broker is not called, not even for its settings: the decision's re-read of its caller
+// (approverStanding) reads the hold, as the token's own check does, before the approve reads
+// whether the broker takes the approver fields. The held decisions come first, while Dispatch's
+// client has read no settings, so a settings read would be one more. The control, the same
+// decisions with no hold, reaches the broker stand-in, which shows it records a call, and its
+// approve reads the settings once. The personal token proves the held approver, since it is a
+// credential that may approve.
 //
 // A broker token approves and denies nothing: no broker-issued token holds the approve scope
 // (brokerPersonScopes), so with no hold its decisions are 403 OAUTH_SCOPE_REQUIRED, and with its
@@ -609,10 +612,43 @@ func TestAHeldApproverRelaysNoApproval(t *testing.T) {
 	routes := []string{"approve", "deny"}
 	for _, route := range routes {
 		path := "/api/v1/credential-requests/rec1/" + route
+		refresh := "carol-refresh-a-personal-token-" + route
+		signInFor(t, database, accessCarol, "carol-account", refresh, model.MemberFull, time.Minute)
 		before := relay.calls
+		body := newHeldRequestBody(decision)
+		response := serveWithBodyHeld(t, handler, byPersonalToken(path, body), body, func() {
+			holdPerson(t, database, accessCarol, "carol-account", refresh)
+		})
+		wantHeldRefusal(t, response, membershipHeldText, "carol's "+route+" by a personal token whose body arrived after she was held")
+		if relay.calls != before || relay.settingsReads != 0 {
+			t.Fatalf("carol's %s by a personal token, held while its body was held back, reached the broker %d times and read its settings %d times, want neither",
+				route, relay.calls-before, relay.settingsReads)
+		}
+		// With carol held, her broker token's decision is refused at its admission, which answers
+		// before the route's scope and reads no body, so the body is not held back. Until the base
+		// made a broker token decide nothing, this row held the body back as the personal token's
+		// does.
+		wantHeldRefusal(t, serve(byBrokerToken(path, strings.NewReader(decision))), membershipHeldText, "carol's "+route+" by her broker token while she is held")
+		if relay.calls != before || relay.settingsReads != 0 {
+			t.Fatalf("carol's %s by her broker token while she is held reached the broker %d times and read its settings %d times, want neither", route, relay.calls-before, relay.settingsReads)
+		}
+	}
+	// The control: carol signs in again, which ends her hold.
+	signInFor(t, database, accessCarol, "carol-account", "carol-refresh-the-control", model.MemberFull, time.Minute)
+	for _, route := range routes {
+		path := "/api/v1/credential-requests/rec1/" + route
+		before, readsBefore := relay.calls, relay.settingsReads
 		if response := serve(byPersonalToken(path, strings.NewReader(decision))); response.Code != http.StatusOK || relay.calls != before+1 {
 			t.Fatalf("the control: carol's %s by a personal token, not held = %d %s with %d broker calls, want 200 and one call",
 				route, response.Code, response.Body.String(), relay.calls-before)
+		}
+		// The approve reads the settings once, on a client that has read none; the deny reads none.
+		wantReads := readsBefore
+		if route == "approve" {
+			wantReads++
+		}
+		if relay.settingsReads != wantReads {
+			t.Fatalf("the control: carol's %s by a personal token read the broker's settings %d times in all, want %d", route, relay.settingsReads, wantReads)
 		}
 		// A broker token neither approves nor mints, whatever its person's standing: the route
 		// refuses it 403 OAUTH_SCOPE_REQUIRED, since no broker-issued token holds approve. This row
@@ -622,28 +658,6 @@ func TestAHeldApproverRelaysNoApproval(t *testing.T) {
 		if refusal := decodeBody[refusalAnswer](t, response); response.Code != http.StatusForbidden || refusal.Code != codeScopeRequired || relay.calls != before {
 			t.Fatalf("carol's %s by her broker token, not held = %d %s with %d broker calls, want 403 %s and none",
 				route, response.Code, response.Body.String(), relay.calls-before, codeScopeRequired)
-		}
-	}
-	for _, route := range routes {
-		path := "/api/v1/credential-requests/rec1/" + route
-		refresh := "carol-refresh-a-personal-token-" + route
-		signInFor(t, database, accessCarol, "carol-account", refresh, model.MemberFull, time.Minute)
-		before := relay.calls
-		body := newHeldRequestBody(decision)
-		response := serveWithBodyHeld(t, handler, byPersonalToken(path, body), body, func() {
-			holdPerson(t, database, accessCarol, "carol-account", refresh)
-		})
-		wantHeldRefusal(t, response, membershipHeldText, "carol's "+route+" by a personal token whose body arrived after she was held")
-		if relay.calls != before {
-			t.Fatalf("carol's %s by a personal token, held while its body was held back, reached the broker %d times, want none", route, relay.calls-before)
-		}
-		// With carol held, her broker token's decision is refused at its admission, which answers
-		// before the route's scope and reads no body, so the body is not held back. Until the base
-		// made a broker token decide nothing, this row held the body back as the personal token's
-		// does.
-		wantHeldRefusal(t, serve(byBrokerToken(path, strings.NewReader(decision))), membershipHeldText, "carol's "+route+" by her broker token while she is held")
-		if relay.calls != before {
-			t.Fatalf("carol's %s by her broker token while she is held reached the broker %d times, want none", route, relay.calls-before)
 		}
 	}
 }

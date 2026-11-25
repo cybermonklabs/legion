@@ -22,6 +22,7 @@ import (
 // with no rows, which is what a list read outside the decision's snapshot answers. bob's next read
 // of the page answers 404, which proves the write committed and took the comment out of his view.
 func TestAPersonPageDecidesAndListsInOneSnapshot(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "SNAP", "A person's page", "# Spec\n\nA passage.\n")
 	const person, reader = "alice", "bob"

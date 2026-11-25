@@ -209,7 +209,8 @@ type whoamiAgent struct {
 //
 // Every caller is told the OAuth scopes its credential holds, which is what decides the routes it
 // may call (gateRouteScopes): both for a person at a browser, the set its own row names for a
-// personal token, and none for the shared token, a pod's service-account token and a
+// personal token, and none for a restricted member's token whatever its row names
+// (personalTokenActor), the shared token, a pod's service-account token and a
 // broker-issued token that names a service and no person. The kind stays `agent` for a personal
 // token holding the person scope, since the kind names the credential and not the act; the
 // person that token acts for is its `owner`, which the dispatch command reads.

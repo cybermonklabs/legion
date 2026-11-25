@@ -19,7 +19,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
-	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -29,11 +28,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// This file is the package's external test because one site it drives lives in a package that
-// imports graphcensus - grapherase, whose erase reads the census's ProvedSessionComments - so the
-// package's own tests cannot import it, and the API's and the document service's drives run on the
-// same rig ahead of the erase's, which takes a comment they wrote. It hands its drives to
-// TestTheSizingCountsEveryTupleTheWritersAppend as the test binary starts.
+// This file is the package's external test: its drives reach the API and the document service,
+// which no test of the package's own imports, through the routes and the calls cmd/dispatch
+// serves them by. It hands its drives to TestTheSizingCountsEveryTupleTheWritersAppend as the
+// test binary starts.
 func init() { graphcensus.ImportedDrives = importedDrives }
 
 // writersServerURL is the public origin the writers' server serves under.
@@ -62,10 +60,9 @@ type writersRig struct {
 	arrived chan struct{}
 	release func()
 	// The issue and its spec, the issue's notes document and the slug an anchor names it by, the
-	// comment on the issue the erase takes, the comment whose held send the settle settles, the
-	// ask the follower follows, the targeted message the session's reply answers, and the
-	// untouched document the removal removes.
-	issue, spec, notes, notesSlug, comment, mentioned, ask, message, removable string
+	// comment whose held send the settle settles, the ask the follower follows, the targeted
+	// message the session's reply answers, and the untouched document the removal removes.
+	issue, spec, notes, notesSlug, mentioned, ask, message, removable string
 }
 
 func newWritersRig(t *testing.T) *writersRig {
@@ -201,7 +198,7 @@ func (r *writersRig) request(t *testing.T, method, target string, body any, logi
 }
 
 // uploadBase is the token an upload replacing the document artifact names, the one it carries
-// now: Dispatch refuses a replacement that names none (docs.ErrPreconditionRequired).
+// now, which Dispatch checks under the write's own locks (docs.Service.ReplaceText).
 func (r *writersRig) uploadBase(t *testing.T, artifact string) map[string]string {
 	t.Helper()
 	document := decoded[struct {
@@ -256,18 +253,17 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 }
 
 // importedDrives are the drives of every site the register of the store's writers lists in api,
-// docs, asks and grapherase, each the real site reached as its own lock-step driver reaches it:
-// the API's through its HTTP routes, the settle of a delivery through the send the stand-in
-// listener answers, the settlement and the block-index tick through the document service, and the
-// erase through grapherase.Erase. They run in this order over one database, each needing what the
-// ones before it wrote: an issue with its spec, an upload and an edit of a document, a comment on
-// the issue and one anchored to the document mentioning a session whose send is held, that send's
-// settle, a reply to a mention whose send was refused, a targeted message's delivery, an ask a
-// session opens, a follow of it, the spec's approval request renewed on a retry and handed back, a
-// settlement opening an ask a session wrote as a block, the tick indexing a version a build
-// without the block index wrote, and the erase of the issue's comment, which appends nothing. The
-// comment path's drives name the sites the path runs in turn (comment): the path itself, which
-// writes the comment's node and its tuples under its event, and who wrote it.
+// docs and asks, each the real site reached as its own lock-step driver reaches it: the API's
+// through its HTTP routes, the settle of a delivery through the send the stand-in listener
+// answers, and the settlement and the block-index tick through the document service. They run in
+// this order over one database, each needing what the ones before it wrote: an issue with its
+// spec, an upload and an edit of a document, a comment on the issue and one anchored to the
+// document mentioning a session whose send is held, that send's settle, a reply to a mention whose
+// send was refused, a targeted message's delivery, an ask a session opens, a follow of it, the
+// spec's approval request renewed on a retry and handed back, a settlement opening an ask a
+// session wrote as a block, and the tick indexing a version a build without the block index
+// wrote. The comment path's drives name the sites the path runs in turn (comment): the path
+// itself, which writes the comment's node and its tuples under its event, and who wrote it.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
@@ -313,8 +309,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Name: "api/comment_create.go#createCommentFor, on an issue", Database: r.database,
 		Sites: comment("api/comment_create.go#createCommentFor"),
 		Drive: func(t *testing.T) {
-			r.comment = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
-				map[string]any{"body": "A remark on the issue."}, "alice", http.StatusCreated)).ID
+			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
+				map[string]any{"body": "A remark on the issue."}, "alice", http.StatusCreated)
 		},
 		// The comment, the first alice writes, and alice: her node is made by the write that first
 		// records her.
@@ -564,25 +560,6 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}
 		},
 		Counts: newBlockCounted,
-	}, {
-		// The erase of the issue's comment, which deletes its tuples and appends none.
-		Name: "grapherase/erase.go#apply", Database: r.database,
-		Sites: []string{"grapherase/erase.go#apply"},
-		Drive: func(t *testing.T) {
-			url := r.database.Pool.Config().ConnString()
-			listing, err := grapherase.Erase(ctx, url, "comment", r.comment, "", 10*time.Millisecond)
-			if err != nil {
-				t.Fatalf("list the erase of comment %s: %v", r.comment, err)
-			}
-			if len(listing.Blockers) > 0 {
-				t.Fatalf("the erase of comment %s is blocked by %v", r.comment, listing.Blockers)
-			}
-			erased, err := grapherase.Erase(ctx, url, "comment", r.comment, listing.Digest, 10*time.Millisecond)
-			if err != nil || !erased.Applied {
-				t.Fatalf("erase comment %s (applied %v): %v", r.comment, erased != nil && erased.Applied, err)
-			}
-		},
-		Counts: map[graphcensus.StoredKind][]string{},
 	}}
 }
 

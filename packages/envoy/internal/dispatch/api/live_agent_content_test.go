@@ -184,16 +184,19 @@ func (rig contentAgentRig) watch(t *testing.T, state string, v contentView) {
 // session his own person's credential alone proved (access.SessionContentClause), with every
 // project public and while PRIV is private alike:
 //
-//   - carol's pod session, which commented on PRIV's issue and read PUB's, answers bob, and bob's
-//     token that lists PRIV, the no-responder verdict, and the relay neither subscribes to it nor
-//     asks it for its replay;
+//   - carol's pod session, which commented on PRIV's issue and read PUB's, answers bob the
+//     no-responder verdict, and the relay neither subscribes to it nor asks it for its replay;
 //   - so does a session both bob's and carol's credentials proved;
-//   - bob's own session that lists PRIV relays its verdict, its replay and its live frames to bob
-//     and to his token, since its listener's list bounds what it read within what bob sees;
-//   - bob's own session whose listener sent no list relays them to bob at his browser, and to his
-//     token that lists PRIV, since each sees every project bob sees: a session with no list passes
-//     only a credential that does (TestARestrictedMembersTokenThatListsFewerProjectsWatchesNoUnlistedSessionOfHis
-//     holds the token that sees fewer).
+//   - bob's own session that lists PRIV relays its verdict, its replay and its live frames to bob,
+//     since its listener's list bounds what it read within what bob sees;
+//   - bob's own session whose listener sent no list relays them to bob at his browser, which sees
+//     every project bob sees: a session with no list passes only a credential that does
+//     (TestARestrictedMembersTokenThatListsFewerProjectsWatchesNoUnlistedSessionOfHis holds the
+//     token that sees fewer).
+//
+// bob's token that lists PRIV watches none of them: a restricted member's token holds no scope
+// (R16), and the view needs the person scope, so each subscribe of it is refused 403
+// OAUTH_SCOPE_REQUIRED.
 //
 // carol, an open viewer of a deployment with no private project, is relayed her pod session (R9).
 // The agents list is not this rule's: it keeps access.SessionClause (K6), whose rows carry no
@@ -212,20 +215,28 @@ func TestARestrictedViewerWatchesOnlyASessionItsOwnPersonProved(t *testing.T) {
 			{callerBob, contentSharedSession, agentViewHidden, "proved by bob's credential and by carol's"},
 			{callerBob, contentBobUnlistedSession, agentViewResponding, "bob's own, its listener sent no list, at his browser"},
 			{callerBob, contentBobSession, agentViewResponding, "bob's own, lists PRIV"},
-			{callerBobPrivToken, contentCarolPodSession, agentViewHidden, "carol's, commented on PRIV and read PUB"},
-			{callerBobPrivToken, contentSharedSession, agentViewHidden, "proved by bob's credential and by carol's"},
-			{callerBobPrivToken, contentBobUnlistedSession, agentViewResponding, "bob's own, its listener sent no list, to a credential that sees every project bob sees"},
-			{callerBobPrivToken, contentBobSession, agentViewResponding, "bob's own, lists PRIV"},
+		}
+	}
+	tokenRefused := func(state string) {
+		t.Helper()
+		for _, session := range []string{contentCarolPodSession, contentSharedSession, contentBobUnlistedSession, contentBobSession} {
+			client := rig.seed.dialLive(t, rig.url, rig.seed.liveHeader(t, callerBobPrivToken))
+			client.send(t, liveSubscribe("v", agentView(session), ""))
+			if refusal, ok := client.next(t, eventFeedWait, "bob's token's agent view").(LiveError); !ok || refusal.Code != codeScopeRequired {
+				t.Errorf("%s, bob's token that lists PRIV subscribes to %s's view as %+v, want %s", state, session, refusal, codeScopeRequired)
+			}
 		}
 	}
 	rig.seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	for _, v := range bobs() {
 		rig.watch(t, "with every project public", v)
 	}
+	tokenRefused("with every project public")
 	rig.seed.makePrivate(t, seedPrivate)
 	for _, v := range bobs() {
 		rig.watch(t, "while PRIV is private", v)
 	}
+	tokenRefused("while PRIV is private")
 	rig.seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	rig.watch(t, "with every project public", contentView{callerCarol, contentCarolPodSession, agentViewResponding, "carol is open and nothing is private"})
 }

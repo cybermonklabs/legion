@@ -22,6 +22,7 @@ POST /api/v1/artifacts/{id}/asks any
 GET /api/v1/artifacts/{id}/blocks any
 GET /api/v1/artifacts/{id}/blocks/{block_id} any
 POST /api/v1/artifacts/{id}/blocks/{block_id}/keep any
+GET /api/v1/artifacts/{id}/changes any
 GET /api/v1/artifacts/{id}/comments any
 POST /api/v1/artifacts/{id}/comments any
 POST /api/v1/artifacts/{id}/edits any
@@ -190,6 +191,7 @@ GET /api/v1/projects/{key}/artifacts/{slug}/text any
 POST /api/v1/projects/{key}/artifacts/{slug}/versions any
 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number} any
 PUT /api/v1/projects/{key}/default-assignee any
+PUT /api/v1/projects/{key}/default-repository any
 PUT /api/v1/projects/{key}/gated-steps any
 GET /api/v1/projects/{key}/legion/board any
 DELETE /api/v1/projects/{key}/legion/daemon any
@@ -213,8 +215,6 @@ PUT /api/v1/settings/delivery any
 GET /api/v1/settings/new-issue any
 GET /api/v1/settings/project-default-assignees any
 GET /api/v1/settings/repo-projects any
-DELETE /api/v1/settings/repo-projects/{owner}/{repo} any
-PUT /api/v1/settings/repo-projects/{owner}/{repo} any
 GET /api/v1/signins any
 POST /api/v1/signins/{id}/revoke any
 GET /api/v1/users any

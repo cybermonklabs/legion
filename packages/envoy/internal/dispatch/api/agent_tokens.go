@@ -28,6 +28,10 @@ type createAgentTokenResponse struct {
 	Token string `json:"token"`
 }
 
+// listAgentTokens is GET /api/v1/me/agent-tokens. Each token is answered with the scopes it acts
+// with: a restricted member's token acts with none, whatever its row holds (personalTokenActor), so
+// a token minted before that rule, or while its owner was a full member, is listed holding none,
+// read in the list's own statement from the owner's people row (a join on its key).
 func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -35,10 +39,13 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		select id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
+		select agent_tokens.id::text, agent_tokens.name, agent_tokens.prefix,
+			case when people.member_kind = 'restricted' then '{}'::text[] else agent_tokens.scopes end,
+			agent_tokens.projects, agent_tokens.created_at, agent_tokens.last_used_at, agent_tokens.revoked_at
 		from agent_tokens
-		where owner = $1
-		order by created_at desc
+		left join people on people.email = canonical_login(agent_tokens.owner)
+		where agent_tokens.owner = $1
+		order by agent_tokens.created_at desc
 	`, actor.ID)
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("list agent tokens: %w", err))
@@ -95,11 +102,13 @@ type createAgentTokenInput struct {
 	Name string `json:"name" required:"true"`
 	// Scopes is the set the new token holds. A body that names none at all leaves it to the
 	// caller's own set, which is why the field is a pointer: an empty array is a token that
-	// holds nothing, and that is a different request from one that asks for the default.
+	// holds nothing, and that is a different request from one that asks for the default. A
+	// restricted member's token holds none (tokenScopes).
 	Scopes *[]string `json:"scopes"`
 	// Projects is the list the new token may use. A body that names none leaves it to the
 	// caller's own list, for the reason Scopes is a pointer: an empty array is a token that lists
-	// nothing, which sees every public project its person sees.
+	// nothing, which sees every public project its person sees. A restricted member's token lists
+	// exactly one project, which a body naming none leaves to the one they see (tokenProjects).
 	Projects *[]string `json:"projects"`
 }
 
@@ -141,6 +150,15 @@ type createAgentTokenInput struct {
 // Directory holds them (browserDeciderHeld), as a decision there does: 401 MEMBERSHIP_HELD while it
 // does, and 503 IDENTITY_UNAVAILABLE past their deadline. A credential's caller is held by its own
 // check before this handler runs.
+//
+// A restricted member's token is their agent's, held to the one project it acts in and settling
+// nothing of theirs (R16): it holds no scope and lists exactly one project they see, so it approves
+// no login, mints no token and decides no credential request (every such route needs a scope). A
+// body asking for a scope, or for a list of other than one project, is 403 RESTRICTED_MEMBER
+// (tokenScopes, tokenProjects), and a body naming neither mints that token. Whether the caller is
+// one is the write's reader's (Viewer.Restricted), resolved before this handler runs
+// (withinProjectScope). Only their browser reaches this handler: no token of theirs holds the
+// scopes this route needs (personalTokenActor drops a stored one's).
 func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -160,7 +178,11 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "AGENT_TOKEN_INPUT", http.StatusBadRequest, "name is required")
 		return
 	}
-	scopes, ok := tokenScopes(w, actor, input.Scopes)
+	restricted, ok := s.restrictedCaller(w, r)
+	if !ok {
+		return
+	}
+	scopes, ok := tokenScopes(w, actor, input.Scopes, restricted)
 	if !ok {
 		return
 	}
@@ -362,6 +384,12 @@ type updateAgentTokenScopesInput struct {
 // does: the commit step marks the request's key committed with the write itself
 // (markRequestKeyCommitted). The mint's hold of a person at their browser under IAP refuses it the
 // same way (browserDeciderHeld), so a held person widens no token there.
+//
+// A restricted member's edit leaves the token in the mint's shape (R16): no scope, and exactly one
+// project they see. A body asking for a scope or naming a list of other than one project is the
+// mint's 403 RESTRICTED_MEMBER, and one that keeps a list of any other shape - a token minted
+// before that rule, or while its owner was a full member - is 403 RESTRICTED_MEMBER too, writing
+// nothing, so the edit that makes such a token act again is the one naming its project.
 func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -380,7 +408,12 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 			"scopes is required: it is the whole set the token is to hold")
 		return
 	}
-	scopes, ok := tokenScopes(w, actor, input.Scopes)
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	restricted := reader.Viewer != nil && reader.Viewer.Restricted
+	scopes, ok := tokenScopes(w, actor, input.Scopes, restricted)
 	if !ok {
 		return
 	}
@@ -388,13 +421,10 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	// the caller sees (tokenProjects); a kept one is cut to what the caller sees in the answer
 	// (seeToken), whose viewer is resolved here, before the transaction holds a connection.
 	var projects []string
-	var reader model.Actor
 	if input.Projects != nil {
 		if projects, ok = s.tokenProjects(w, r, input.Projects); !ok {
 			return
 		}
-	} else if reader, ok = s.readerOf(w, r); !ok {
-		return
 	}
 	// Before the transaction: Standing takes a pooled connection of its own.
 	if err := s.browserDeciderHeld(r.Context(), actor); err != nil {
@@ -421,11 +451,18 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		s.writeHandlerError(w, fmt.Errorf("update agent token scopes: %w", err))
 		return
 	}
+	if restricted && input.Projects == nil {
+		if refusal := restrictedKeptListRefusal(reader.Viewer.Sees, token.Projects); refusal != "" {
+			// The deferred rollback undoes the update.
+			writeError(w, codeRestrictedMember, http.StatusForbidden, refusal)
+			return
+		}
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("update agent token scopes: %w", err))
 		return
 	}
-	if reader.Viewer != nil {
+	if input.Projects == nil && reader.Viewer != nil {
 		seeToken(reader, &token)
 	}
 	WriteJSON(w, http.StatusOK, token)
@@ -440,7 +477,20 @@ const codeTokenScopesInput = "TOKEN_SCOPES_INPUT"
 // false for a set the token may not hold (codeTokenScopesInput) and for one the caller does not
 // hold itself (403 OAUTH_SCOPE_REQUIRED): a credential gives a token only what it holds, or a
 // token narrowed to one scope would mint itself a wide one. A scope named twice is stored once.
-func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string) ([]string, bool) {
+//
+// A restricted member's token holds no scope (R16), restricted being whether the caller is one: a
+// body naming none, or naming the empty set, gives it none, and one naming any scope is 403
+// RESTRICTED_MEMBER saying so, whatever the caller's own credential holds - their browser holds
+// both, since the member themselves approves their own machine's login there.
+func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string, restricted bool) ([]string, bool) {
+	if restricted {
+		if requested != nil && len(*requested) > 0 {
+			writeError(w, codeRestrictedMember, http.StatusForbidden, restrictedTokenScopeRule)
+			return nil, false
+		}
+		// Not nil: agent_tokens.scopes is not null, and its empty set is a token holding none.
+		return []string{}, true
+	}
 	if requested == nil {
 		return callerScopes(actor), true
 	}
@@ -489,6 +539,76 @@ func callerScopes(actor model.Actor) []string {
 // list holds, a list naming none.
 const codeTokenProjectsInput = "TOKEN_PROJECTS_INPUT"
 
+// restrictedTokenScopeRule and restrictedTokenProjectRule are the two halves of a restricted
+// member's token (R16), which every refusal of a mint, an edit or a use that breaks one says.
+const (
+	restrictedTokenScopeRule = "a restricted member's token holds no scope: their agent acts in the one project its token lists, " +
+		"and approves no login, makes no personal token and decides no credential request; leave scopes out, or send []"
+	restrictedTokenProjectRule = "a restricted member's token lists exactly one project, the one their agent acts in"
+)
+
+// restrictedTokenProjects is the list a restricted member's mint or edit gives a token (R16):
+// exactly one project they see, sees being what their browser sees. A body naming none takes the
+// one project they see, and is refused saying to name one where they see several, or none; a body
+// naming any count but one is refused; each 403 RESTRICTED_MEMBER. The one project a body names
+// is held to what the member sees as every list is, in the same words whether a hidden project
+// holds the key or none does (codeTokenProjectsInput).
+func restrictedTokenProjects(w http.ResponseWriter, sees []string, requested *[]string) ([]string, bool) {
+	if requested == nil {
+		if len(sees) != 1 {
+			writeError(w, codeRestrictedMember, http.StatusForbidden, restrictedTokenProjectRule+restrictedSees(sees))
+			return nil, false
+		}
+		return []string{sees[0]}, true
+	}
+	projects := slices.Compact(slices.Sorted(slices.Values(*requested)))
+	if len(projects) != 1 {
+		writeError(w, codeRestrictedMember, http.StatusForbidden, fmt.Sprintf(
+			"%s; this one names %s", restrictedTokenProjectRule, projectCount(len(projects))))
+		return nil, false
+	}
+	if !slices.Contains(sees, projects[0]) {
+		writeError(w, codeTokenProjectsInput, http.StatusBadRequest, fmt.Sprintf(
+			"%q is no project this request's credential sees", projects[0]))
+		return nil, false
+	}
+	return projects, true
+}
+
+// restrictedKeptListRefusal is why a restricted member's edit that keeps its token's list, kept,
+// leaves a token they may not hold, sees being what their browser sees, or "" where kept is one
+// project they see (R16).
+func restrictedKeptListRefusal(sees, kept []string) string {
+	switch {
+	case len(kept) != 1:
+		return fmt.Sprintf("%s, and this token lists %s: name the one it is for in projects",
+			restrictedTokenProjectRule, projectCount(len(kept)))
+	case !slices.Contains(sees, kept[0]):
+		return restrictedTokenProjectRule + ", and this token's project is no project this request's credential sees: name the one it is for in projects"
+	}
+	return ""
+}
+
+// restrictedSees is the tail of a restricted member's refused mint that names no project: the
+// projects their browser sees, which are theirs to read, and what to send.
+func restrictedSees(sees []string) string {
+	if len(sees) == 0 {
+		return ", and this request's credential sees none"
+	}
+	return fmt.Sprintf(", and this request's credential sees %d (%s): name the one it is for in projects", len(sees), strings.Join(sees, ", "))
+}
+
+// projectCount is n projects as a refusal names a list's length.
+func projectCount(n int) string {
+	switch n {
+	case 0:
+		return "none"
+	case 1:
+		return "1 project"
+	}
+	return fmt.Sprintf("%d projects", n)
+}
+
 // tokenProjects is the list a mint or an edit gives a token: the one the body names, or, where it
 // names none, the list that holds the caller's own writes (writesHeldTo). It writes its own refusal
 // and answers false for a list of more than contracts.MaxTokenProjects keys, for a key the caller
@@ -500,6 +620,7 @@ const codeTokenProjectsInput = "TOKEN_PROJECTS_INPUT"
 // project its caller does not reach: a restricted member's credential gives a token only a part of
 // its own list, and a full member's a part of the public projects and of the private ones it lists.
 // A key named twice is listed once, and the list is stored sorted, as Credential.Projects holds it.
+// A restricted member's token lists exactly one project they see (restrictedTokenProjects, R16).
 //
 // What the caller sees, and the list its writes are held to, are read off the write's reader
 // (resolveReader, which finds the one withinProjectScope put in the request's context) and the
@@ -518,6 +639,9 @@ func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested
 	reader, ok := s.readerOf(w, r)
 	if !ok {
 		return nil, false
+	}
+	if reader.Viewer != nil && reader.Viewer.Restricted {
+		return restrictedTokenProjects(w, reader.Viewer.Sees, requested)
 	}
 	own := writesHeldTo(reader, caller.Credential)
 	named := own
@@ -608,12 +732,24 @@ const codeTokenOwnerNotAdmitted = "TOKEN_OWNER_NOT_ADMITTED"
 // never will be again under this token. That holds while the account binding holds
 // (accountsHeldSQL): beside a build without it in the fleet, which admits the token whatever
 // account it records, the token is admitted here too.
-// never will be again under this token.
 //
 // Last, the same join reads whether Dispatch holds the owner (personalTokenHeld): a recorded hold,
 // whether a refresh token is stored, and the confirmation's age, so a token whose owner's
 // confirmation is younger than an hour costs no read beyond the one it always cost. A revocation
 // and the restricted admission rule answer before a hold.
+//
+// A restricted owner's token acts as their agent's (R16), whatever its row holds: a row minted
+// before that rule, or while its owner was a full member, may hold person and approve and list
+// other than one project. Such a token acts with no scope - its row's scopes are dropped here, at
+// every use, as brokerTokenActor gives a person-scope broker token naming a restricted member none
+// - so it approves no login, mints and edits no token and decides no credential request, while its
+// one project's work goes on; dropping them rather than refusing the token keeps that agent
+// working, and it follows the owner's kind both ways, as the admission check does. A token listing
+// other than one project is 403 RESTRICTED_MEMBER (errRestrictedTokenList): it cannot be held to
+// one project without choosing one its owner never named, and one listing none reaches no private
+// project of theirs anyway (access.CredentialCovers), so it is told why and what to do, and acts
+// again once its owner names one (PATCH /api/v1/me/agent-tokens/{id}). Both follow the hold, so a
+// held owner is told to sign in first, and neither costs a read.
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {
 	hash := sha256.Sum256([]byte(plaintext))
 	var id, name, owner string
@@ -635,13 +771,20 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	if revokedAt != nil || replaced {
 		return model.Actor{}, errTokenRevoked()
 	}
-	if memberKind != nil && model.MemberKind(*memberKind) == model.MemberRestricted {
+	restricted := memberKind != nil && model.MemberKind(*memberKind) == model.MemberRestricted
+	if restricted {
 		if err := s.restrictedOwnerAdmitted(ctx, model.CanonicalLogin(owner)); err != nil {
 			return model.Actor{}, err
 		}
 	}
 	if err := s.personalTokenHeld(ctx, model.CanonicalLogin(owner), hold); err != nil {
 		return model.Actor{}, err
+	}
+	if restricted {
+		if len(projects) != 1 {
+			return model.Actor{}, errRestrictedTokenList(len(projects), personalTokenListRemedy)
+		}
+		scopes = nil
 	}
 	if _, err := s.deps.Store.Pool.Exec(ctx, `
 		update agent_tokens
@@ -838,6 +981,20 @@ func tokenOwnerOutsideOff() error {
 		"this token's owner is a restricted member from outside the sign-in domain, and this deployment admits nobody from outside it, so the token acts for nobody")
 }
 
+// errRestrictedTokenList is the refusal of a token acting for a restricted member that lists listed
+// projects, other than one (R16): their personal token (personalTokenActor) or a broker token
+// naming them (brokerTokenActor). It is 403 RESTRICTED_MEMBER, saying what makes such a token act:
+// remedy, the step its kind of token takes. Like every refusal of a token, it names no owner.
+func errRestrictedTokenList(listed int, remedy string) error {
+	return errorf(http.StatusForbidden, codeRestrictedMember,
+		"this token's owner is a restricted member, and %s; this token lists %s, so it acts for nobody until %s",
+		restrictedTokenProjectRule, projectCount(listed), remedy)
+}
+
+// personalTokenListRemedy is what makes a restricted owner's personal token that lists other than
+// one project act again (errRestrictedTokenList).
+const personalTokenListRemedy = "its owner names its one project at their browser (PATCH /api/v1/me/agent-tokens/{id}) or mints another"
+
 func newAgentToken() (string, [sha256.Size]byte, error) {
 	var randomBytes [32]byte
 	if _, err := rand.Read(randomBytes[:]); err != nil {
@@ -845,6 +1002,12 @@ func newAgentToken() (string, [sha256.Size]byte, error) {
 	}
 	plaintext := "dsp_" + base64.RawURLEncoding.EncodeToString(randomBytes[:])
 	return plaintext, sha256.Sum256([]byte(plaintext)), nil
+}
+
+// rowScanner is the one method a pgx.Row and a pgx.Rows share, so one scan function reads a row
+// from either.
+type rowScanner interface {
+	Scan(dest ...any) error
 }
 
 func scanAgentToken(row rowScanner) (model.AgentToken, error) {

@@ -139,6 +139,9 @@ func TestCheckImageRendersEveryRowWhenEveryImageRowIsPresent(t *testing.T) {
 		if row.Site == SiteLive && state.Detail != "a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: "+row.Summary {
 			t.Errorf("%s: detail %q, want it to say a claimed session reports the row while it runs, then the summary", state.Name, state.Detail)
 		}
+		if row.Site == SiteDeployment && state.Detail != "the daemon reports it from "+row.MeasuredFrom+": "+row.Summary {
+			t.Errorf("%s: detail %q, want it to say what the daemon measures the row from, then the summary", state.Name, state.Detail)
+		}
 	}
 	got := byName(states)
 	for name, want := range map[Name]string{
@@ -151,6 +154,8 @@ func TestCheckImageRendersEveryRowWhenEveryImageRowIsPresent(t *testing.T) {
 			s.pin + " pins @anthropic-ai/claude-code " + capabilitiestest.ClaudeCodeVersion + " with the sha512 integrity of @anthropic-ai/claude-code-linux-x64; " +
 			s.onPATH("npm", "node"),
 		RepositoryExtensions: "a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: loads the Oh My Pi extensions the repository it works carries",
+		ResourceLimits:       "the daemon reports it from the deployment's configuration: runs within the CPU and memory the deployment's pod resources give it",
+		RepositoryCacheRoom:  "the daemon reports it from each repository cache's last health read: fills its workspace from a repository cache with room on its volume to fetch and repack the clone",
 	} {
 		if got[name].Detail != want {
 			t.Errorf("%s: detail %q, want %q", name, got[name].Detail, want)

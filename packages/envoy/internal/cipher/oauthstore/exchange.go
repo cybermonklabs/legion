@@ -776,10 +776,10 @@ type CredentialAccount struct {
 
 // CredentialApprover is what a token exchanged from the machine login credentialID names records
 // about it: the Google account that approved the login (launcher_credentials' approver_issuer and
-// approver_subject, migration 0041), as the approval Dispatch relayed named it, written once when
+// approver_subject, migration 0042), as the approval Dispatch relayed named it, written once when
 // the login was approved, and the login's created_at. The exchange reads it once, when it mints a
 // token from that login's own, and writes it onto the token (oauth.Provider.approverAccount). The
-// account is empty for a credential that records none, which is one made before 0041, one an older
+// account is empty for a credential that records none, which is one made before 0042, one an older
 // Dispatch approved, and every credential no person approved (a machine's own, a pod's); all of it
 // is empty for a credential there is no row of.
 func (s *Store) CredentialApprover(ctx context.Context, credentialID string) (CredentialAccount, error) {
@@ -829,7 +829,9 @@ func (s *Store) credentialAccount(ctx context.Context, query string, args ...any
 //
 // A name exchange.ValidSession refuses is one the registration route never wrote a row of, so it
 // is dropped as matching nothing rather than refused, and a name given twice matches the same
-// rows. With no name left it reads nothing and answers 0. The filter is also what keeps a NUL
+// rows. (A row a build before ValidSession refused '*' and '>' wrote under such a name is not
+// released here; its registrar's next renewal of it is refused, and it ends at its expiry.) With
+// no name left it reads nothing and answers 0. The filter is also what keeps a NUL
 // byte out of the query: JSON's \u0000 decodes to one, ValidSession refuses it as unprintable,
 // and Postgres refuses it in text (invalid byte sequence for encoding "UTF8": 0x00), so without
 // the filter a release naming it would fail, and the route would answer 500.

@@ -36,6 +36,7 @@ func planWithoutSeqScans(t *testing.T, database *store.Store, statement string, 
 // paths must use the partial events payload index rather than scale with global
 // event history.
 func TestAskEventQueriesAvoidSequentialEventsScan(t *testing.T) {
+	t.Parallel()
 	_, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -79,6 +80,7 @@ func TestAskEventQueriesAvoidSequentialEventsScan(t *testing.T) {
 // Owner comment lists and recursive reply traversal are hot interactive paths.
 // They must seek their owner or parent instead of scanning unrelated comments.
 func TestCommentQueriesAvoidSequentialCommentsScan(t *testing.T) {
+	t.Parallel()
 	_, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)

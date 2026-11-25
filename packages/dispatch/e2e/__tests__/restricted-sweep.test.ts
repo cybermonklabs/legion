@@ -9,7 +9,8 @@
  *  check of itself:
  *  - on this checkout's server, which holds a restricted member to their own projects, it passes,
  *    with rows that could have failed, every kind of object found and every socket control held,
- *    in one run and split into fills, a writer and a runner;
+ *    in one run and split into fills, a writer and a runner, and in one run whose member's own
+ *    control is their comment and message on an issue of theirs in place of their session;
  *  - for a project the full member finds nothing of, it says UNKNOWN, never PASS;
  *  - on a build with no read check (the commit `noReadCheckBase` picks), it fails, and names the
  *    first route that answered a row, and both sockets;
@@ -151,6 +152,31 @@ describe("the inputs", () => {
       "UNKNOWN: SWEEP_MEMBER_SESSION is no session id: ses own",
     ],
     [
+      "both a session and an issue of the member's for the live check's control",
+      { SWEEP_MEMBER_ISSUE: "OWN-1" },
+      "UNKNOWN: SWEEP_MEMBER_SESSION and SWEEP_MEMBER_ISSUE are each the control of the member's feed: give one, not both",
+    ],
+    [
+      "an issue of the member's that is no issue key",
+      { SWEEP_MEMBER_SESSION: undefined, SWEEP_MEMBER_ISSUE: "OWN 1" },
+      "UNKNOWN: SWEEP_MEMBER_ISSUE is no issue key: OWN 1",
+    ],
+    [
+      "an issue of the member's keyed by no project key",
+      { SWEEP_MEMBER_SESSION: undefined, SWEEP_MEMBER_ISSUE: "own-1" },
+      "UNKNOWN: SWEEP_MEMBER_ISSUE is no issue key: own-1",
+    ],
+    [
+      "an issue of the member's numbered from 0",
+      { SWEEP_MEMBER_SESSION: undefined, SWEEP_MEMBER_ISSUE: "OWN-01" },
+      "UNKNOWN: SWEEP_MEMBER_ISSUE is no issue key: OWN-01",
+    ],
+    [
+      "an issue of the project swept as the member's own",
+      { SWEEP_MEMBER_SESSION: undefined, SWEEP_MEMBER_ISSUE: "TGT-2" },
+      "UNKNOWN: SWEEP_MEMBER_ISSUE must be an issue of a project that lists the member, never of TGT: TGT-2",
+    ],
+    [
       "a writer with no fills to send its direct messages by",
       { SWEEP_MODE: "writer" },
       "UNKNOWN: SWEEP_FILLS_FILE is required in writer mode",
@@ -169,6 +195,22 @@ describe("the inputs", () => {
     "an origin that answers nothing is UNKNOWN, not PASS",
     async () => {
       const { code, stdout } = await script(inputs);
+      expect(stdout).toContain("UNKNOWN: GET /api/v1/whoami as the member answered curl failed");
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the member's issue rows above: an issue of the member's own project, in place
+  // of their session, is taken, and the run goes on to the deployment.
+  test.skipIf(["curl", "jq", "bun"].some((tool) => hostTool(tool) === null))(
+    "an issue of the member's own in place of their session is read, and the run goes on to the deployment",
+    async () => {
+      const { code, stdout } = await script({
+        ...inputs,
+        SWEEP_MEMBER_SESSION: undefined,
+        SWEEP_MEMBER_ISSUE: "OWN-1",
+      });
       expect(stdout).toContain("UNKNOWN: GET /api/v1/whoami as the member answered curl failed");
       expect(code).toBe(2);
     },
@@ -330,6 +372,21 @@ describe("a runner's fills", () => {
       const { code, stdout } = await script({
         ...runnerWith(made(now())),
         SWEEP_LIVE_SECONDS: "45",
+      });
+      expect(stdout).toContain("UNKNOWN: GET /api/v1/whoami as the member answered curl failed");
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  // A runner whose person holds no session: the member's issue in place of their session.
+  test.skipIf(["curl", "jq", "bun"].some((tool) => hostTool(tool) === null))(
+    "fresh fills with the member's own issue in place of their session are read, and the run goes on to the deployment",
+    async () => {
+      const { code, stdout } = await script({
+        ...runnerWith(made(now())),
+        SWEEP_MEMBER_SESSION: undefined,
+        SWEEP_MEMBER_ISSUE: "OWN-1",
       });
       expect(stdout).toContain("UNKNOWN: GET /api/v1/whoami as the member answered curl failed");
       expect(code).toBe(2);
@@ -844,6 +901,29 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
         "UNKNOWN: the full member finds no issue of EMPTY, so no route can be filled with its objects"
       );
       expect(empty.code).toBe(2);
+    },
+    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
+  );
+
+  // A person who holds no session, as the browser leg's: bob's own comment and message on OWN-1,
+  // an issue of the project whose list names him, are the control of his feed. The server takes
+  // both writes from a restricted member, sends each to his live feed in the window, and answers
+  // him his message by its id.
+  test(
+    "on this checkout's server, with the member's own issue in place of their session, the run passes and both writes reach their feed",
+    async () => {
+      const { issue } = (await stacks()).head;
+      const { stdout } = issue;
+      expect(stdout).toContain(`\n${passed}\n`);
+      expect(issue.code, stdout).toBe(0);
+      expect(linesOf(stdout, "FAIL"), stdout).toEqual([]);
+      expect(linesOf(stdout, "UNKNOWN"), stdout).toEqual([]);
+      expect(stdout).toMatch(
+        /^ok {6}\/ws\/live: the member is sent \d+ events in 5 s, none of TGT; the full member is sent the comment and the direct message, and the member their own comment and message on OWN-1 \(controls\)$/m
+      );
+      expect(stdout).toContain(
+        "\nok      GET /api/v1/messages/{id} (the member's own message on OWN-1): 200 (control)\n"
+      );
     },
     rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
   );
