@@ -681,7 +681,7 @@ type actsNext struct {
 func heldForTheFixFromReview(t *testing.T) *fixRig {
 	t.Helper()
 	r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
-	r.move(TriggerReviewRejected, "", reviewReport("the widget renders twice"))
+	r.move(TriggerReviewRejected, "", r.reviewerReported())
 	r.assertHeldForTheFix(phase.Reviewing)
 	return r
 }
