@@ -175,12 +175,13 @@ func (r *listenerStartRun) begin(cfg config.Service, edge *edgeGrant, start *nat
 }
 
 // beginStartRule starts the run as main's Phase 5 makes it: the start rule's tries of the
-// listener's start over cfg (connectListener), which log on logger and return only once a try
-// connects. A try that ends the start ends the test binary, as it ends main's process.
-func (r *listenerStartRun) beginStartRule(cfg config.Service, start *natsStart, logger *logging.Logger) {
+// listener's start over cfg (connectListener), as an edge listener of edge's grant when edge is
+// not nil, which log on logger and return only once a try connects. A try that ends the start ends
+// the test binary, as it ends main's process.
+func (r *listenerStartRun) beginStartRule(cfg config.Service, edge *edgeGrant, start *natsStart, logger *logging.Logger) {
 	r.began = time.Now()
 	go func() {
-		client := connectListener(cfg, nil, listenerTryInstance, logger, start)
+		client := connectListener(cfg, edge, listenerTryInstance, logger, start)
 		r.outcome <- startOutcome{client: client, at: time.Now()}
 	}()
 }
@@ -419,7 +420,7 @@ func TestTheListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 				// ERROR at each try; main waited it out as a refusal of the credential and then
 				// exited.
 				var logs safeLog
-				run.beginStartRule(cfg, start, logging.NewWithWriter("test", &logs))
+				run.beginStartRule(cfg, nil, start, logging.NewWithWriter("test", &logs))
 				for deadline := run.began.Add(reloadAt); ; time.Sleep(200 * time.Millisecond) {
 					refusals := linesIn(logs.String(), streamRefusedLine, map[string]any{"level": "ERROR", "stream": bus.Stream})
 					if len(refusals) >= 2 {
@@ -579,16 +580,20 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 // TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream: an edge listener's start reads the stream
 // (edgeStreamPresent) inside its credential wait (bus.WithStartCheck), so a grant that refuses the
 // read, as a server that has yet to reload the edge's grant refuses it, is waited out under the same
-// bound as a refusal of the connect. The server admits the edge's nkey throughout and refuses its
-// publish to the stream's info request until it reloads a grant that holds it. The first case
-// reloads that grant 20 s after the start's first try: meanwhile /healthz answers 503 naming the
-// read's refusal, and then the start completes. The second, its control, never grants the read: the
-// listener, run as a process with a credential wait of startChildWait, exits 1 at the bound, its
-// last line naming its nkey's public key and the read's refusal. Without the wait over the read,
-// the start ends at the first refusal, milliseconds after its first try, and the child exits as
-// soon. The third case holds the wait to refusals: a stream the server does not hold ends the
-// start at its first try. The fourth has the refusal reach the read as the connection's last error,
-// an authorization violation, rather than as the read's own error, and waits it out too.
+// bound as a refusal of the connect, and past that bound the start rule tries it again for as long
+// as it lasts (connectListener, waitOutGrantRefusal), since only the grant lifts it. The server
+// admits the edge's nkey throughout and refuses its publish to the stream's info request until it
+// reloads a grant that holds it. The first case reloads that grant 20 s after the start's first
+// try: meanwhile /healthz answers 503 naming the read's refusal, and then the start completes. The
+// second never grants the read: the listener, run as a process with a credential wait of
+// startChildWait, stays up and not ready past that bound and past the instant it exited at under
+// the former rule, /livez 204 and /healthz 503, and logs streamRefusedLine at ERROR with the
+// read's refusal at each try after the bound; under the former rule it exited 1 at the bound. The
+// third has the server hold no stream: the start rule logs edgeStreamMissingLine at ERROR at each
+// try, 1 s and then 2 s apart, with /healthz 503 starting and /livez 204, and completes once a
+// program whose grant may create the stream has created it; under the former rule the start ended
+// at its first try. The fourth has the refusal reach the read as the connection's last error, an
+// authorization violation, rather than as the read's own error, and waits it out too.
 func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 	const watchdog = 60 * time.Second
 	readRefusal := `Permissions Violation for Publish to "` + streamInfoSubject + `"`
@@ -623,51 +628,104 @@ func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 		t.Logf("the start completed %s after its first try, having tried %d times", got.at.Sub(run.began), len(listenerTries(t, rig.server.MonitorURL())))
 	})
 
-	t.Run("control: a read the grant refuses for good ends the listener at the bound", func(t *testing.T) {
+	t.Run("a read the grant refuses for good keeps the listener up and not ready past the bound", func(t *testing.T) {
 		rig := startEdgeStartServer(t, refusingRead)
 		broker := ciphertokentest.NewStubBroker(t)
 		account := filepath.Join(t.TempDir(), "account-token")
 		if err := os.WriteFile(account, []byte("edge-listener-account-token"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		listener := startListenerChild(t, rig.uri, rig.seed, edgeStartMachine, func(port int) []string {
+		var port int
+		child := startListenerChild(t, rig.uri, rig.seed, edgeStartMachine, func(held int) []string {
+			port = held
 			return []string{
 				config.EdgeProjectsEnvVar + "=" + edgeProject,
 				EnvBrokerURL + "=" + broker.Server.URL,
 				EnvBrokerAccountTokenFile + "=" + account,
-				EnvPublicURL + "=http://127.0.0.1:" + strconv.Itoa(port),
+				EnvPublicURL + "=http://127.0.0.1:" + strconv.Itoa(held),
 			}
 		})
+		listener := &listenerProcess{Process: child, port: port}
 		// The bound, plus the try at the bound: its dial (connectTimeout, 5 s), the connect's read of
 		// the deployed subjects, which the grant refuses too (at most firstStreamSubjectsRead, 2 s),
-		// and a second of scheduling margin; the refused read of the stream ends at the server's
-		// refusal.
-		awaitChildExitAtBound(t, listener, rig, watchdog, startChildWait+5*time.Second+2*time.Second+time.Second, readRefusal)
+		// and a second of scheduling margin. That is the instant the former rule had the listener
+		// exit by, and the tries after it come at most 2 s and then 4 s apart.
+		pastBound := time.Now().Add(startChildWait + 5*time.Second + 2*time.Second + time.Second)
+		refusals := func() []map[string]any {
+			return linesIn(child.Output.String(), streamRefusedLine, map[string]any{"level": "ERROR", "stream": bus.Stream, "grant": edgeListenerGrant})
+		}
+		for deadline := time.Now().Add(watchdog); time.Now().Before(pastBound) || len(refusals()) < 2; time.Sleep(200 * time.Millisecond) {
+			select {
+			case <-child.Exited:
+				t.Fatalf("the edge listener exited with %s while the grant refused its read of the stream; its last line was %q:\n%s",
+					child.Cmd.ProcessState, lastOutputLine(child.Output.String()), child.Output.String())
+			default:
+			}
+			if status, body := callListener(t, port, http.MethodGet, "/healthz", ""); status != http.StatusServiceUnavailable {
+				t.Fatalf("/healthz while the grant refused the edge listener's read of the stream = %d %s, want 503", status, body)
+			}
+			if status, body := callListener(t, port, http.MethodGet, "/livez", ""); status != http.StatusNoContent {
+				t.Fatalf("/livez while the grant refused the edge listener's read of the stream = %d %s, want 204", status, body)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("watchdog: the edge listener logged %d of the two %q it owes within %s:\n%s", len(refusals()), streamRefusedLine, watchdog, child.Output.String())
+			}
+		}
+		for _, refusal := range refusals() {
+			if text, _ := refusal["error"].(string); !strings.Contains(text, readRefusal) || refusal["subject"] != streamInfoSubject || refusal["retry_in"] == nil {
+				t.Fatalf("the edge listener's refusal line %v, want the read's refusal %q, the subject %q and retry_in", refusal, readRefusal, streamInfoSubject)
+			}
+		}
+		requireLiveAndStarting(t, listener, "the grant refused the edge listener's read of the stream past the credential wait")
+		t.Logf("the edge listener still runs past the bound, having logged %d refusals of its read", len(refusals()))
 	})
 
-	// Only a refusal of the read is waited out: a stream the server does not hold ends the start at
-	// its first try, as it did before the read joined the wait, rather than after the ten tries a
-	// second apart that the wait gives any other error of the connect.
-	t.Run("a stream the server does not hold ends the start at once", func(t *testing.T) {
+	// A stream the server does not hold is no refusal of the credential, so the credential wait ends
+	// the try at once, and the start rule tries the read again for as long as the stream is missing:
+	// an edge listener may not create it, and a shared listener or Dispatch, whose grants may, does.
+	t.Run("a stream the server does not hold is read again until a program creates it", func(t *testing.T) {
+		var logs safeLog
 		run := newListenerStartRun(t)
 		seed, public := testnats.User(t)
 		_, fallback := testnats.User(t)
 		_, uri := testnats.StartConfig(t, nkeyAuthorization(fallback, nkeyUser(public)), []string{"-js"}, true)
 		cfg, edge := edgeStartRun(t, uri)
 		t.Setenv(bus.NkeySeedEnvVar, seed)
-		run.begin(cfg, edge, newNATSStart(listenerCredentialWait))
-		got := run.await(t, watchdog)
-		took := got.at.Sub(run.began)
+		start := newNATSStart(listenerCredentialWait)
+		base := serveStartRoutes(t, start)
+		missing := func() []map[string]any {
+			return linesIn(logs.String(), edgeStreamMissingLine, map[string]any{"level": "ERROR", "stream": bus.Stream})
+		}
+
+		run.beginStartRule(cfg, edge, start, logging.NewWithWriter("test", &logs))
+		for len(missing()) < 2 {
+			if got := run.sleepUntil(t, time.Since(run.began)+200*time.Millisecond); got != nil {
+				t.Fatalf("the edge listener's start on a server with no stream returned %s after its first try, want it to go on reading the stream:\n%s", got.at.Sub(run.began), logs.String())
+			}
+			if time.Since(run.began) > watchdog {
+				t.Fatalf("watchdog: the edge listener's start logged %d of the two %q it owes within %s:\n%s", len(missing()), edgeStreamMissingLine, watchdog, logs.String())
+			}
+		}
 		const want = "the server holds no " + bus.Stream + " stream"
-		if got.err == nil || !strings.Contains(got.err.Error(), want) {
-			t.Fatalf("the edge listener's start on a server with no stream returned %v after %s, want an error naming %q", got.err, took, want)
+		if lines := missing(); lines[0]["retry_in"] != "1s" || lines[1]["retry_in"] != "2s" || !strings.Contains(fmt.Sprint(lines[0]["error"]), want) {
+			t.Fatalf("the edge listener's first lines for the missing stream = %v, want the read's error naming %q, retry_in 1s then 2s", lines[:2], want)
 		}
-		// The connect's read of the deployed subjects can wait out its two seconds
-		// (firstStreamSubjectsRead) before the read of the stream; one more second tells that from a
-		// start that tried a second time.
-		if took > 3*time.Second {
-			t.Fatalf("the edge listener's start on a server with no stream ended %s after its first try, want at its first try: %v", took, got.err)
+		requireStarting(t, base, "while the server held no stream")
+		if status, _ := probe(t, base, "/livez"); status != http.StatusNoContent {
+			t.Fatalf("/livez answered %d while the server held no stream, want 204", status)
 		}
+
+		owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("stream-owner"))
+		if err != nil {
+			t.Fatalf("create the %s stream, as a shared listener or Dispatch does: %v", bus.Stream, err)
+		}
+		t.Cleanup(owner.Close)
+		got := run.await(t, watchdog)
+		if got.client == nil {
+			t.Fatalf("the edge listener's start returned no client %s after its first try, once the stream was created", got.at.Sub(run.began))
+		}
+		requireStarting(t, base, "after the edge listener's start")
+		t.Logf("the start completed %s after its first try, having logged %d lines for the missing stream", got.at.Sub(run.began), len(missing()))
 	})
 
 	// A refusal can reach the read as the connection's last error rather than as the read's own:

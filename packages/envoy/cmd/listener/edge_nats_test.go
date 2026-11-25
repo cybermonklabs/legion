@@ -71,29 +71,40 @@ func listenerStateRequests(log string) []string {
 	return found
 }
 
-// An edge listener reads the stream and never creates it, so its start ends, naming the stream,
-// on a server that holds none, and it starts on the same server once a shared listener, which
-// owns the stream, has created it.
-func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
+// An edge listener reads the stream and never creates it, so on a server that holds none its start
+// stays up and not ready, /livez 204 and /healthz 503 "starting", and reads the stream again at
+// each try, logging edgeStreamMissingLine at ERROR naming the stream, 1 s and then 2 s apart
+// (connectListener); once a shared listener, which owns the stream, has created it, the waiting
+// edge serves, and an edge listener started on the same server after that serves too. Under the
+// former rule the edge's start ended at its first try, exit 1, naming the missing stream.
+func TestAnEdgeListenerWaitsForTheStreamUntilASharedListenerCreatesIt(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	broker := ciphertokentest.NewStubBroker(t)
 
-	refused := startEdgeListenerProcess(t, binary, uri, "edge-no-stream", edgeProject, broker.Server.URL, edgeAccountToken)
-	refused.WaitExit(t, "its start")
-	output := refused.Output.String()
-	if code := refused.Cmd.ProcessState.ExitCode(); code != 1 {
-		t.Fatalf("the edge listener exited %d on a server with no stream, want 1:\n%s", code, output)
+	waiting := startEdgeListenerProcess(t, binary, uri, "edge-no-stream", edgeProject, broker.Server.URL, edgeAccountToken)
+	missing := func() []map[string]any {
+		return linesIn(waiting.Output.String(), edgeStreamMissingLine, map[string]any{"level": "ERROR", "stream": bus.Stream})
 	}
-	if want := "the server holds no " + bus.Stream + " stream, and an edge listener may not create it"; !strings.Contains(output, want) {
-		t.Fatalf("the edge listener's start did not end naming the missing stream (%q):\n%s", want, output)
+	for deadline := time.Now().Add(30 * time.Second); len(missing()) < 2; time.Sleep(200 * time.Millisecond) {
+		requireLiveAndStarting(t, waiting, "the server held no stream")
+		if time.Now().After(deadline) {
+			t.Fatalf("the edge listener logged %d of the two %q it owes within 30 s:\n%s", len(missing()), edgeStreamMissingLine, waiting.Output.String())
+		}
 	}
+	want := "the server holds no " + bus.Stream + " stream, and an edge listener may not create it"
+	lines := missing()
+	if text, _ := lines[0]["error"].(string); lines[0]["retry_in"] != "1s" || lines[1]["retry_in"] != "2s" || !strings.Contains(text, want) {
+		t.Fatalf("the edge listener's first lines for the missing stream = %v, want the read's error naming %q, retry_in 1s then 2s", lines[:2], want)
+	}
+	requireLiveAndStarting(t, waiting, "the server held no stream")
 
 	shared := startListenerProcess(t, binary, uri, "shared-makes-the-stream")
 	shared.waitHealthy(t)
 	shared.Terminate(t)
 	shared.WaitExit(t, "SIGTERM")
+	waiting.waitHealthy(t)
 
 	started := startEdgeListenerProcess(t, binary, uri, "edge-with-stream", edgeProject, broker.Server.URL, edgeAccountToken)
 	started.waitHealthy(t)

@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/natsversion"
 )
 
 func TestStartingGate_Closed_Returns503(t *testing.T) {
@@ -230,9 +231,15 @@ func TestHealthzAnswers503WhenADependencyHangsPastTheDeadline(t *testing.T) {
 
 // The start retries what a later attempt can get past, NATS not answering or not ready yet, and
 // ends on anything else: a refused credential or a configuration the connect refuses before it
-// dials would fail every attempt the same way.
+// dials would fail every attempt the same way. A server that ended the handshake because the
+// CONNECT came after its auth_timeout, a slow link's doing, is one a later dial gets past, and so
+// is the version read an owning client's ensure makes finding its connection closed
+// (natsversion.ConnectedVersion, which wraps nats.ErrConnectionClosed there).
 func TestTheStartRetriesOnlyNATSConnectionErrors(t *testing.T) {
 	t.Parallel()
+	closed := testnats.Connect(t, testnats.URL(t))
+	closed.Close()
+	_, closedVersion := natsversion.ConnectedVersion(context.Background(), closed)
 	for _, tc := range []struct {
 		name  string
 		err   error
@@ -244,6 +251,8 @@ func TestTheStartRetriesOnlyNATSConnectionErrors(t *testing.T) {
 		{name: "a JetStream request ran out of time", err: context.DeadlineExceeded, retry: true},
 		{name: "no responders", err: natsgo.ErrNoResponders, retry: true},
 		{name: "JetStream temporarily unavailable", err: &natsgo.APIError{Code: http.StatusServiceUnavailable, ErrorCode: 10008, Description: "JetStream system temporarily unavailable"}, retry: true},
+		{name: "the server ended the handshake at its auth timeout", err: serverProtocolError("Authentication Timeout"), retry: true},
+		{name: "the version read found the connection closed", err: closedVersion, retry: true},
 		{name: "a refused credential", err: natsgo.ErrAuthorization},
 		{name: "a remote NATS refused", err: fmt.Errorf("%w: nats.example.test", bus.ErrRemoteNATS)},
 		{name: "a JetStream refusal", err: &natsgo.APIError{Code: http.StatusBadRequest, ErrorCode: 10058, Description: "stream name already in use"}},
@@ -254,6 +263,18 @@ func TestTheStartRetriesOnlyNATSConnectionErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// serverProtocolError is an -ERR the server sent in the connect's handshake as nats.go returns it,
+// in place of the PONG the handshake waits for (natsProtoErr in nats.go v1.55.0, which it does not
+// export): "nats: " and the server's words, with an Is method that matches a target by that text
+// lowered.
+type serverProtocolError string
+
+func (e serverProtocolError) Error() string { return "nats: " + string(e) }
+
+func (e serverProtocolError) Is(target error) bool {
+	return strings.ToLower(e.Error()) == target.Error()
 }
 
 func TestDependencyHealthStatus(t *testing.T) {

@@ -30,7 +30,6 @@ package natsversion
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -134,16 +133,20 @@ const reconnectPoll = 20 * time.Millisecond
 // while it reconnects and while it drains among them, which is no reading of the server at all.
 // So an empty answer is never returned as a version: ConnectedVersion looks again until the
 // connection reports one, until it is closed, or until ctx is done or VersionWait passes, and in
-// the last two answers an error that the connection is not connected. It asks nothing else of the
-// connection before it answers (IsConnected counts a draining connection, and a second read could
-// see a reconnect the first did not), so the version it returns is the one it read. A server that
-// is connected and reports no version is answered as not connected at the deadline, which is all
-// that can be said of it. Every decision this module makes on a connection's server version is
-// made on this read, ConnectedRefusal's and the Envoy stream's consumer cap (internal/bus
-// connectedDefaultsAnUnsetCap), except where internal/bus copies a choice nats.go makes on its own
-// read: the subject of a consumer's create (consumerCreateSubject) and the checks and the discard
-// policy of a bucket's create (createBucketStream). Those read ConnectedServerVersion as nats.go
-// does, an empty answer included, and wait for nothing, since they must pick what nats.go picks.
+// the last two answers an error that the connection is not connected. A closed connection is
+// answered with an error that wraps nats.ErrConnectionClosed, so a caller that tries a closed
+// connection again reads it as one: the Envoy listener's start makes this read in its ensure of
+// the stream (internal/bus connectedDefaultsAnUnsetCap) and retries it (cmd/listener
+// natsConnectionError). It asks nothing else of the connection before it answers (IsConnected
+// counts a draining connection, and a second read could see a reconnect the first did not), so
+// the version it returns is the one it read. A server that is connected and reports no version is
+// answered as not connected at the deadline, which is all that can be said of it. Every decision
+// this module makes on a connection's server version is made on this read, ConnectedRefusal's and
+// the Envoy stream's consumer cap (internal/bus connectedDefaultsAnUnsetCap), except where
+// internal/bus copies a choice nats.go makes on its own read: the subject of a consumer's create
+// (consumerCreateSubject) and the checks and the discard policy of a bucket's create
+// (createBucketStream). Those read ConnectedServerVersion as nats.go does, an empty answer
+// included, and wait for nothing, since they must pick what nats.go picks.
 func ConnectedVersion(ctx context.Context, conn *nats.Conn) (string, error) {
 	return connectedVersion(ctx, conn)
 }
@@ -178,7 +181,7 @@ func connectedVersion(ctx context.Context, conn serverConn) (string, error) {
 			return version, nil
 		}
 		if conn.IsClosed() {
-			return "", errors.New("the NATS connection is closed and not connected")
+			return "", fmt.Errorf("the NATS connection is closed and not connected (%w)", nats.ErrConnectionClosed)
 		}
 		select {
 		case <-ctx.Done():

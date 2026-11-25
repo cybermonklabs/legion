@@ -58,3 +58,82 @@ func ClusterStateAnswer(err error) (code int, ok bool) {
 	}
 	return 0, false
 }
+
+// The JetStream API error codes of nats-server's answers that come of the asker's account's
+// JetStream limits rather than of the request (AccountStateAnswer), as nats-server v2.15.1 numbers
+// them in server/errors.json. nats.go v1.55.0 names none of them.
+const (
+	// jsAccountResourcesExceeded (JSAccountResourcesExceededErr, errors.json:35) answers a write the
+	// account's storage or memory has no room for (server/stream.go:7342, :7610, :8108).
+	jsAccountResourcesExceeded = 10002
+	// jsMaximumConsumersLimit (JSMaximumConsumersLimitErr, errors.json:455) answers the create of a
+	// consumer on a stream or in an account at its consumer cap (server/consumer.go:1174), and the
+	// create or the update of a stream whose cap is above the account's own (server/jetstream.go:
+	// 2561-2562): the notification stream's cap is streamMaxConsumers, compiled in, and no setting
+	// of the asker's lowers it.
+	jsMaximumConsumersLimit = 10026
+	// jsMaximumStreamsLimit (JSMaximumStreamsLimitErr, errors.json:595) answers the create of a
+	// stream, a bucket's included, in an account that holds as many streams as its limit
+	// (server/jetstream_api.go:4343-4344, server/jetstream_cluster.go:11019).
+	jsMaximumStreamsLimit = 10027
+	// jsMemoryResourcesExceeded (JSMemoryResourcesExceededErr, errors.json:655) and
+	// jsStorageResourcesExceeded (JSStorageResourcesExceededErr, errors.json:385) answer the create
+	// or the update of a stream whose reservation the account's memory or storage limit, or the
+	// server's, has no room for (server/jetstream.go:2597-2610).
+	jsMemoryResourcesExceeded  = 10028
+	jsStorageResourcesExceeded = 10047
+	// jsStreamMaxBytesRequired (JSStreamMaxBytesRequired, errors.json:1125) answers the create of a
+	// stream that sets no byte limit in an account that requires one (server/stream.go:2460-2461).
+	jsStreamMaxBytesRequired = 10113
+)
+
+// AccountStateAnswer reports whether err carries an answer nats-server gives from the state of the
+// asker's account or of the server itself, which no setting of the asker's changes, with the
+// answer's JetStream API error code: the account at one of its JetStream limits, its resources
+// (jsAccountResourcesExceeded), its consumers (jsMaximumConsumersLimit), its streams
+// (jsMaximumStreamsLimit), or its memory or storage (jsMemoryResourcesExceeded,
+// jsStorageResourcesExceeded); an account that requires every stream to set a byte limit
+// (jsStreamMaxBytesRequired), when byteLimitIsCode is set; and any other answer whose HTTP status
+// is 500 or more, the server failing a request it took, but for the server's refusal of the
+// configuration asked for (nats.JSStreamInvalidConfig, 10052, status 500), which a setting can
+// make: SessionMaxAgeEnvVar below the session bucket's two-minute duplicate window is refused so
+// (server/stream.go:2026-2027, SetKeyValueMaxAge). An operator who raises the account's limit or
+// frees what it counts (a stream or a consumer deleted, stored messages gone) lifts each, as the
+// server's own recovery does, with nothing of the asker changed, so a start that ends on one only
+// crash-loops until then, and every program of a deployment shares the account and would be
+// refused alike.
+//
+// byteLimitIsCode says whether the byte limit of what the request creates is the asker's code and
+// no setting, as a KV bucket's is (EnsureKeyValue): where a setting chooses it, as
+// StreamMaxBytesEnvVar chooses the notification stream's, an account that requires one is answered
+// by that setting, and is not this. An answer ClusterStateAnswer reads is the cluster's, and not
+// this either. The answer is read by its code and its status alone, through the legacy package's
+// *nats.APIError or the jetstream package's *jetstream.APIError as ClusterStateAnswer reads them,
+// and never by its text. Any other error is (0, false), the account limits a setting of the
+// asker's answers among them: a stream byte limit above the account's
+// (JSStreamMaxStreamBytesExceeded, 10122, which StreamMaxBytesEnvVar sets) and no tier of the
+// account's limits at the copies asked for (JSNoLimitsErr, 10120, which ReplicasEnvVar sets).
+func AccountStateAnswer(err error, byteLimitIsCode bool) (code int, ok bool) {
+	if _, cluster := ClusterStateAnswer(err); cluster {
+		return 0, false
+	}
+	var legacy *nats.APIError
+	var api *jetstream.APIError
+	var status int
+	switch {
+	case errors.As(err, &legacy):
+		code, status = int(legacy.ErrorCode), legacy.Code
+	case errors.As(err, &api):
+		code, status = int(api.ErrorCode), api.Code
+	default:
+		return 0, false
+	}
+	switch {
+	case code == jsAccountResourcesExceeded, code == jsMaximumConsumersLimit, code == jsMaximumStreamsLimit,
+		code == jsMemoryResourcesExceeded, code == jsStorageResourcesExceeded,
+		code == jsStreamMaxBytesRequired && byteLimitIsCode,
+		status >= 500 && code != int(nats.JSStreamInvalidConfig):
+		return code, true
+	}
+	return 0, false
+}

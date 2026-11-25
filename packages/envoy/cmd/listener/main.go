@@ -1095,8 +1095,9 @@ func listenerInstance() (string, error) {
 // connect (connectListener), the spent-proof bucket (openSpentProofBucket), each store's buckets
 // (openStartStore), the listener state bucket (openDeliveryLease), and the connections the start
 // opens once the stores are open (openStartConnection). It is the third group of the start rule
-// (cmd/listener/README.md, "Start"); a server that answers from its cluster's state, or a grant
-// that refuses a step, waits by nextRefusedWait instead (waitOutClusterState, waitOutGrantRefusal).
+// (cmd/listener/README.md, "Start"); a server that answers from its cluster's state, a grant that
+// refuses a step, or an account's limits or the server's state that refuse one, waits by
+// nextRefusedWait instead (waitOutClusterState, waitOutGrantRefusal, waitOutAccountState).
 const startRetry = 2 * time.Second
 
 // clusterStateLine is the line the start logs at each try of a request the NATS server answered
@@ -1210,10 +1211,11 @@ func grantName(edge *edgeGrant) string {
 
 // natsConnectionError reports whether err is a failure to reach NATS, or to get an answer from it,
 // that a later attempt can get past: no server answered the dial or closed it during the
-// handshake, a request ran out of time, found no responder or was lost with its connection
-// (bus.ErrRequestLostWithConnection), the connection closed or is reconnecting, or JetStream
-// answered that it is not available yet. Any other error, a credential or configuration the
-// connect refuses before it dials among them, is not one. Each start step asks
+// handshake, the server ended the handshake for a CONNECT it did not take within its auth_timeout
+// (errAuthenticationTimeout), a request ran out of time, found no responder or was lost with its
+// connection (bus.ErrRequestLostWithConnection), the connection closed or is reconnecting, or
+// JetStream answered that it is not available yet. Any other error, a credential or configuration
+// the connect refuses before it dials among them, is not one. Each start step asks
 // bus.ClusterStateAnswer first, so JetStream's "temporarily unavailable" there is waited out as
 // the cluster's state it is (cmd/listener/README.md, "Start").
 func natsConnectionError(err error) bool {
@@ -1221,7 +1223,7 @@ func natsConnectionError(err error) bool {
 		io.EOF, io.ErrUnexpectedEOF, syscall.ECONNREFUSED, syscall.ECONNRESET, context.DeadlineExceeded,
 		nats.ErrNoServers, nats.ErrTimeout, nats.ErrNoResponders, nats.ErrNoStreamResponse,
 		nats.ErrConnectionClosed, nats.ErrDisconnected, nats.ErrConnectionReconnecting, nats.ErrStaleConnection,
-		bus.ErrRequestLostWithConnection,
+		bus.ErrRequestLostWithConnection, errAuthenticationTimeout,
 	} {
 		if errors.Is(err, transient) {
 			return true
@@ -1238,53 +1240,85 @@ func natsConnectionError(err error) bool {
 	return false
 }
 
+// errAuthenticationTimeout is the server ending a connect whose CONNECT it did not take within its
+// auth_timeout, as the connect's handshake meets it: nats-server sends -ERR 'Authentication
+// Timeout' and closes the connection (server/client.go authTimeout), and nats.go returns the
+// protocol error it read in place of the handshake's PONG, "nats: Authentication Timeout", whose Is
+// method matches a target by its own text lowered (natsProtoErr.Is in nats.go v1.55.0), so it
+// matches this error, and nats.go names no error of its own for it. A slow link or a loaded server
+// makes it, no setting of the listener's does, and the next dial gets past it.
+var errAuthenticationTimeout = errors.New("nats: authentication timeout")
+
 // connectListener connects to NATS and reconciles the stream the listener owns
 // (bus.ConnectOwningStream), as instance, at the deployment's replica count and byte limit and
 // with the buckets it keeps (listenerStreamOptions), by the start rule (cmd/listener/README.md,
-// "Start"): a stream the server cannot take in its cluster's present state is tried again after
-// waitOutClusterState; a read or create of the stream the NATS grant refuses (bus.ErrPublishDenied,
-// which the stream's ensure returns as the server's refusal arrives) after waitOutGrantRefusal,
-// each try logging streamRefusedLine at ERROR with the refused subject and the server's text; and
-// a NATS that cannot be reached (natsConnectionError) every startRetry for as long as it takes, so
-// a listener started before its NATS waits for it rather than exiting; and a server that refuses
-// the connection itself for a connection limit, its own or the account's (connectionLimitRefusal),
-// after the same wait as a grant's refusal, each try logging connectionLimitLine at ERROR: the limit
-// is the account's or the server's state, which other connections change, and not the listener's
-// configuration, and every pod of the machine connects as one NATS user and would be refused
-// alike, so an exit would only send each pod into a crash loop.
+// "Start"). Each try that fails is judged by its own error, in this order:
+//   - a credential the server still refuses at the try's end (startCredentialRefused) ends the
+//     start. It is the listener's own configuration, and a restarted pod reads its credential
+//     again, but each try's connect has first waited it out under start's bound
+//     (connectListenerBus, natsStart.option, bus.WithCredentialWait), since a hub that reloads a
+//     new nkey refuses it until its servers have reloaded; /healthz answers 503 naming the refusal
+//     meanwhile (natsStart.healthz), and the last line names the credential (startFailureLine).
+//     It is asked before every case that tries again, since an edge listener's read wraps the
+//     refusal beside the read's own error, a timeout or a closed connection, which would read as
+//     a NATS that did not answer;
+//   - a stream the server cannot take in its cluster's present state is tried again after
+//     waitOutClusterState;
+//   - on an edge listener, a stream the server does not hold (errEdgeStreamMissing) is tried
+//     again after the wait a grant's refusal makes, each try logging edgeStreamMissingLine at
+//     ERROR, until a shared listener or Dispatch, whose grants may, creates it;
+//   - a read or create of the stream the NATS grant refuses (bus.ErrPublishDenied, which the
+//     stream's ensure returns as the server's refusal arrives, or an edge listener's read that met
+//     the server's permissions violation, nats.ErrPermissionViolation) is tried again after
+//     waitOutGrantRefusal, each try logging streamRefusedLine at ERROR with the refused subject and
+//     the server's text, for as long as the refusal lasts: the connect got in
+//     (natsStart.admitted), and the grant alone can lift it;
+//   - a server that refuses the connection itself for a connection limit, its own or the
+//     account's (connectionLimitRefusal), is tried again after the same wait, each try logging
+//     connectionLimitLine at ERROR;
+//   - a NATS that cannot be reached or did not answer (natsConnectionError, which reads
+//     JetStream's 503 too) is tried again every startRetry for as long as it takes, so a listener
+//     started before its NATS waits for it rather than exiting;
+//   - a stream the account's JetStream limits or the server's own failure refuses
+//     (bus.AccountStateAnswer) is tried again after the same wait as a grant's refusal, each try
+//     logging streamAccountStateLine at ERROR with the answer's code and the server's text;
+//   - any other failure ends the start with that same last line: a setting the connect refuses
+//     before it dials, a server that does not take an nkey (nats.ErrNkeysNotSupported), and a
+//     stream whose byte limit or copies a setting chose and the account has no room or tier for
+//     (JetStream codes 10122, 10113 and 10120) among them.
 //
-// A credential the server refuses is the listener's own configuration, and a restarted pod reads
-// its credential again, so it ends the start, but only once each try's connect has waited it out
-// under start's bound (connectListenerBus, natsStart.option, bus.WithCredentialWait): a hub that
-// reloads a new nkey refuses it until its servers have reloaded. /healthz answers 503 naming the
-// refusal meanwhile (natsStart.healthz), and a refusal that outlasts the bound ends the process,
-// its last line naming the credential (startFailureLine). The grant's refusal of the stream's
-// reconcile is no refusal of the credential: the connect got in (natsStart.admitted), and the
-// grant alone can lift it. Any other failure ends the process with that line too.
+// What is tried again is lifted by the cluster, the grant, another program or the account's or
+// the server's state, and no setting of the listener changes it, while every pod of the machine
+// connects as one NATS user and would be refused alike, so an exit would only send each pod into
+// a crash loop. The pod is live and not ready meanwhile.
 //
 // An edge listener (edge) owns no stream (connectListenerBus): its connect follows the same rule,
-// and its start reads the stream in place of the reconcile, inside the same credential wait, and
-// ends naming it when the server holds none or the read fails otherwise (edgeStreamPresent,
-// edgeStreamReadFailed), since its grant may not create one and every reply it asks for comes
-// under its own inbox prefix.
+// and its start reads the stream in place of the reconcile, inside the same credential wait,
+// which waits out the grant's refusal of the read too until start's bound, since its grant may
+// not create the stream and every reply it asks for comes under its own inbox prefix.
 func connectListener(cfg config.Service, edge *edgeGrant, instance string, logger *logging.Logger, start *natsStart) *bus.Client {
 	clusterWait, refusedWait := clusterStateWait{next: durableBindPoll}, durableBindPoll
+	missingWait, stateWait := durableBindPoll, durableBindPoll
 	for {
 		client, err := connectListenerBus(cfg, edge, instance, start)
 		if err == nil {
 			return client
 		}
-		var edgeRead edgeStreamReadFailed
-		if errors.As(err, &edgeRead) {
-			// Named, because a reader of a log that holds only "context deadline exceeded"
-			// cannot tell which step of the start timed out.
+		if startCredentialRefused(err) {
 			endStartOnNATS(err, start)
 		}
 		if code, ok := bus.ClusterStateAnswer(err); ok {
 			waitOutClusterState(logger, &clusterWait, slog.String("stream", bus.Stream), cfg.NATSReplicas, code, err)
 			continue
 		}
-		if errors.Is(err, bus.ErrPublishDenied) {
+		if errors.Is(err, errEdgeStreamMissing) {
+			start.admitted()
+			logger.Error(edgeStreamMissingLine, slog.String("stream", bus.Stream), slog.String("error", err.Error()), slog.String("retry_in", missingWait.String()))
+			time.Sleep(missingWait)
+			missingWait = nextRefusedWait(missingWait)
+			continue
+		}
+		if errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, nats.ErrPermissionViolation) {
 			start.admitted()
 			waitOutGrantRefusal(logger, &refusedWait, streamRefusedLine, err, slog.String("stream", bus.Stream), slog.String("grant", grantName(edge)))
 			continue
@@ -1295,16 +1329,56 @@ func connectListener(cfg config.Service, edge *edgeGrant, instance string, logge
 			refusedWait = nextRefusedWait(refusedWait)
 			continue
 		}
-		if !natsConnectionError(err) {
-			// The line keeps the words it had before it named the credential, which a reader
-			// matches (the natslive edge test reads "connect to NATS and reconcile the ... stream:
-			// "), and names the credential the hub refused, an nkey user by its public key, which
-			// is what an operator looks for in the hub's authorization; err names the step.
-			endStartOnNATS(err, start)
+		if natsConnectionError(err) {
+			logger.Warn("NATS connect failed; retrying", slog.String("retry_in", startRetry.String()), slog.String("error", err.Error()))
+			time.Sleep(startRetry)
+			continue
 		}
-		logger.Warn("NATS connect failed; retrying", slog.String("retry_in", startRetry.String()), slog.String("error", err.Error()))
-		time.Sleep(startRetry)
+		if code, ok := bus.AccountStateAnswer(err, false); ok {
+			start.admitted()
+			waitOutAccountState(logger, &stateWait, streamAccountStateLine, code, err, slog.String("stream", bus.Stream))
+			continue
+		}
+		// The line keeps the words it had before it named the credential, which a reader matches
+		// (the natslive edge test reads "connect to NATS and reconcile the ... stream: "), and
+		// names the credential the hub refused, an nkey user by its public key, which is what an
+		// operator looks for in the hub's authorization; err names the step.
+		endStartOnNATS(err, start)
 	}
+}
+
+// startCredentialRefused reports whether err, the error a try of the main connect ended with
+// (connectListenerBus), is the server refusing the listener's credential at that try, which ends
+// the start (connectListener): the connect's last try refused (bus.FinalTryRefused), or an edge
+// listener's read of the stream at that try ending on a connection whose last error is the
+// refusal, which the read's error wraps beside the read's own (edgeStreamPresent,
+// edgeStreamReadFailed). Both read err as bus.FinalTryRefused reads it, following only the first
+// error of an error that wraps several, so a refusal an earlier try met, which a start that waited
+// it out names after its last try's error (bus.WithCredentialWait), is not one, and that last
+// error picks connectListener's case; a credential wait that ended on a refusal of the dial or of
+// the read is one.
+func startCredentialRefused(err error) bool {
+	if bus.FinalTryRefused(err) {
+		return true
+	}
+	for err != nil {
+		if read, ok := err.(edgeStreamReadFailed); ok {
+			return bus.AuthorizationRefused(read.err)
+		}
+		switch wrapper := err.(type) {
+		case interface{ Unwrap() error }:
+			err = wrapper.Unwrap()
+		case interface{ Unwrap() []error }:
+			wrapped := wrapper.Unwrap()
+			if len(wrapped) == 0 {
+				return false
+			}
+			err = wrapped[0]
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // connectionLimitLine is the line a main connect the server refused for a connection limit logs at
@@ -1312,12 +1386,26 @@ func connectListener(cfg config.Service, edge *edgeGrant, instance string, logge
 const connectionLimitLine = "NATS connect refused by a connection limit; retrying"
 
 // connectionLimitRefusal reports whether err is a server refusing a connection for a connection
-// limit: its own (nats.ErrMaxConnectionsExceeded) or the account's
-// (nats.ErrMaxAccountConnectionsExceeded). Either is the server's state, which a connection that
-// closes frees, and never the listener's configuration (connectListener).
+// limit: its own (errServerConnectionLimit, as the connect's handshake meets it, or
+// nats.ErrMaxConnectionsExceeded, as nats.go names it when the refusal reaches a connection's read
+// loop after its handshake) or the account's (nats.ErrMaxAccountConnectionsExceeded). Either is
+// the server's state, which a connection that closes frees, and never the listener's
+// configuration (connectListener).
 func connectionLimitRefusal(err error) bool {
-	return errors.Is(err, nats.ErrMaxConnectionsExceeded) || errors.Is(err, nats.ErrMaxAccountConnectionsExceeded)
+	return errors.Is(err, errServerConnectionLimit) || errors.Is(err, nats.ErrMaxConnectionsExceeded) ||
+		errors.Is(err, nats.ErrMaxAccountConnectionsExceeded)
 }
+
+// errServerConnectionLimit is the server's own connection limit as the connect's handshake meets
+// it: nats-server sends -ERR 'maximum connections exceeded' (its ErrTooManyConnections,
+// server/client.go maxConnExceeded) in place of the PONG the handshake waits for, and nats.go
+// returns that as its protocol error, "nats: maximum connections exceeded", whose Is method matches
+// a target by its own text lowered (natsProtoErr.Is in nats.go v1.55.0). So the refusal matches
+// this error and never nats.ErrMaxConnectionsExceeded, whose text is "nats: server maximum
+// connections exceeded" and which nats.go sets only when the refusal reaches a connection's read
+// loop after its handshake (processErr). The account's limit reaches the handshake in
+// nats.ErrMaxAccountConnectionsExceeded's own words, so that error matches it.
+var errServerConnectionLimit = errors.New("nats: maximum connections exceeded")
 
 // endStartOnNATS ends a start whose main connect failed with err: it exits with
 // startFailureLine's line. A connect begun once the start's bound had passed waits nothing and
@@ -1331,6 +1419,39 @@ func endStartOnNATS(err error, start *natsStart) {
 	log.Fatal(startFailureLine(err, start, os.LookupEnv))
 }
 
+// The ERRORs the start logs at each try of a step that the account's JetStream limits or the
+// server's own failure refused (bus.AccountStateAnswer, waitOutAccountState), each "<what the step
+// opens> refused by the NATS account's limits or the server's state; retrying".
+const (
+	// streamAccountStateLine is the notification stream's create or update (connectListener),
+	// with the stream.
+	streamAccountStateLine = "notification stream refused by the NATS account's limits or the server's state; retrying"
+	// storeBucketAccountStateLine is a store's buckets (openStartStore), with the buckets.
+	storeBucketAccountStateLine = "KV bucket refused by the NATS account's limits or the server's state; retrying"
+	// spentProofBucketAccountStateLine is the spent-proof bucket (openSpentProofBucket), with the
+	// bucket.
+	spentProofBucketAccountStateLine = "spent-proof bucket refused by the NATS account's limits or the server's state; retrying"
+)
+
+// waitOutAccountState logs line at ERROR for err, a start step's request that the account's
+// JetStream limits or the server's own failure refused with the JetStream API error code code
+// (bus.AccountStateAnswer): what names what the step opens, then the code, the server's text and
+// the wait before the next try. It then sleeps *wait, and doubles *wait up to
+// durableRefusedRetryCap for the step's next such refusal (nextRefusedWait), as a grant's refusal
+// waits (waitOutGrantRefusal); a step starts *wait at durableBindPoll. An operator who raises the
+// account's limit or frees what it counts, or the server's own recovery, lifts the refusal with
+// no change to the listener, and every pod of the machine shares the account and would be refused
+// alike.
+func waitOutAccountState(logger *logging.Logger, wait *time.Duration, line string, code int, err error, what ...slog.Attr) {
+	logger.Error(line, append(what,
+		slog.Int("code", code),
+		slog.String("error", err.Error()),
+		slog.String("retry_in", wait.String()),
+	)...)
+	time.Sleep(*wait)
+	*wait = nextRefusedWait(*wait)
+}
+
 // openStartStore opens one of the listener's stores on client's connection with open, which opens
 // buckets at replicas copies, until it succeeds, by the start rule (cmd/listener/README.md,
 // "Start"). An open the server cannot take in its cluster's present state is tried again after
@@ -1339,10 +1460,19 @@ func endStartOnNATS(err error, start *natsStart) {
 // storeBucketRefusedLine naming the bucket and grant, the name of that user's grant (grantName):
 // nats-server drops a refused request and reports the refusal only as the connection's last
 // error, so the open runs out of time, and a last error that changed across the open to a refusal
-// of one of buckets' subjects is that refusal (bucketRefusal). Any other failure ends the process
-// after one ERROR naming it.
+// of one of buckets' subjects is that refusal (bucketRefusal). An open the account's JetStream
+// limits or the server's own failure refuses (bus.AccountStateAnswer, where a bucket's byte limit
+// is the listener's code and no setting) is tried again after waitOutAccountState, which logs
+// storeBucketAccountStateLine naming the buckets, the code and the server's text.
+//
+// Any other failure ends the process after one ERROR naming it: the server's refusal of the open
+// as it was asked, a configuration the server finds invalid (nats.JSStreamInvalidConfig, which an
+// ENVOY_SESSION_MAX_AGE below the session bucket's two-minute duplicate window draws, at
+// bus.SetKeyValueMaxAge) or another JetStream answer to the request itself, and an error the open
+// makes before it asks, such as a bucket configuration nats.go refuses. Each is the listener's own
+// setting or code, which no try gets past.
 func openStartStore[T any](client *bus.Client, logger *logging.Logger, grant, what string, buckets []string, replicas int, open func(*nats.Conn) (T, error)) T {
-	clusterWait, refusedWait := clusterStateWait{next: durableBindPoll}, durableBindPoll
+	clusterWait, refusedWait, stateWait := clusterStateWait{next: durableBindPoll}, durableBindPoll, durableBindPoll
 	for {
 		conn := client.Conn
 		before := conn.LastError()
@@ -1358,17 +1488,22 @@ func openStartStore[T any](client *bus.Client, logger *logging.Logger, grant, wh
 			waitOutClusterState(logger, &clusterWait, slog.String("buckets", strings.Join(buckets, ",")), replicas, code, err)
 			continue
 		}
-		if !natsConnectionError(err) {
-			logger.Error(what+" open failed", slog.String("buckets", strings.Join(buckets, ",")), slog.String("error", err.Error()))
-			conn.Close()
-			os.Exit(1)
+		if natsConnectionError(err) {
+			logger.Warn(what+" open failed; retrying",
+				slog.String("buckets", strings.Join(buckets, ",")),
+				slog.String("retry_in", startRetry.String()),
+				slog.String("error", err.Error()),
+			)
+			time.Sleep(startRetry)
+			continue
 		}
-		logger.Warn(what+" open failed; retrying",
-			slog.String("buckets", strings.Join(buckets, ",")),
-			slog.String("retry_in", startRetry.String()),
-			slog.String("error", err.Error()),
-		)
-		time.Sleep(startRetry)
+		if code, ok := bus.AccountStateAnswer(err, true); ok {
+			waitOutAccountState(logger, &stateWait, storeBucketAccountStateLine, code, err, slog.String("buckets", strings.Join(buckets, ",")))
+			continue
+		}
+		logger.Error(what+" open failed", slog.String("buckets", strings.Join(buckets, ",")), slog.String("error", err.Error()))
+		conn.Close()
+		os.Exit(1)
 	}
 }
 
@@ -1395,10 +1530,14 @@ const spentProofBucketRefusedLine = "spent-proof bucket refused by the NATS gran
 // logging spentProofBucketRefusedLine at ERROR with grant, the name of the NATS user's grant
 // (grantName), the refused subject and the server's text, as a refused durable's tries do
 // (durableReceiver.prepare): an edge listener started before any full listener made the bucket
-// waits so for one. Any other failure is one no try gets past, an origin ciphertoken.New refuses
-// among them, and ends the process after one ERROR naming it.
+// waits so for one. An open the account's JetStream limits or the server's own failure refuses
+// (bus.AccountStateAnswer, where the bucket's byte limit is the listener's code and no setting) is
+// tried again after waitOutAccountState, each try logging spentProofBucketAccountStateLine at
+// ERROR with the code and the server's text. Any other failure is one no try gets past, an origin
+// ciphertoken.New refuses or a JetStream answer to the request itself among them, and ends the
+// process after one ERROR naming it.
 func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *logging.Logger, grant string, tokens *brokerTokens, replicas int) {
-	refusedWait, clusterWait := durableBindPoll, clusterStateWait{next: durableBindPoll}
+	refusedWait, clusterWait, stateWait := durableBindPoll, clusterStateWait{next: durableBindPoll}, durableBindPoll
 	for {
 		conn := client.Conn
 		err := tokens.open(ctx, conn, replicas)
@@ -1409,6 +1548,7 @@ func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *loggi
 			waitOutClusterState(logger, &clusterWait, slog.String("bucket", bus.DPoPProofBucket), replicas, code, err)
 			continue
 		}
+		code, accountState := bus.AccountStateAnswer(err, true)
 		switch {
 		case errors.Is(err, bus.ErrPublishDenied):
 			waitOutGrantRefusal(logger, &refusedWait, spentProofBucketRefusedLine, err, slog.String("bucket", bus.DPoPProofBucket), slog.String("grant", grant))
@@ -1419,6 +1559,8 @@ func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *loggi
 				slog.String("error", err.Error()),
 			)
 			time.Sleep(startRetry)
+		case accountState:
+			waitOutAccountState(logger, &stateWait, spentProofBucketAccountStateLine, code, err, slog.String("bucket", bus.DPoPProofBucket))
 		default:
 			logger.Error("spent-proof bucket open failed", slog.String("bucket", bus.DPoPProofBucket), slog.String("error", err.Error()))
 			conn.Close()
@@ -2082,10 +2224,11 @@ func runListener(credentialWait time.Duration) {
 	// up to credentialWait (start), as a hub that has yet to reload a new nkey refuses it: /livez
 	// answers 204 meanwhile and /healthz 503 naming the refusal. An edge listener owns no stream:
 	// its start reads it in place of the reconcile, waits out a refusal of the connect or of that
-	// read alike, and ends here when the server has none or the read fails otherwise
-	// (connectListener, edgeStreamPresent). From here until /v1 serves, each failure of the start
-	// ends it, waits out the cluster's state, the grant or the credential, or waits for NATS by the
-	// start rule (cmd/listener/README.md, "Start").
+	// read alike, and tries the read again, live and not ready, while the server holds no stream,
+	// refuses the read under the grant past that wait or does not answer it (connectListener,
+	// edgeStreamPresent). From here until /v1 serves, each failure of the start ends it, waits out
+	// the cluster's state, the grant, the account's or the server's state or the credential, or
+	// waits for NATS by the start rule (cmd/listener/README.md, "Start").
 	client := connectListener(cfg, edge, instance, logger, start)
 	// starting is the context the bucket opens below run under, and it is context.Background() on
 	// purpose: do not replace it with a context a signal ends. Each open waits on the cluster until

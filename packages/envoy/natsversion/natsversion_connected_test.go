@@ -2,6 +2,7 @@ package natsversion
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -79,6 +80,28 @@ func TestConnectedRefusalDecidesOnlyOnAVersionItRead(t *testing.T) {
 		t.Fatalf("connectedRefusal looked at the version %d time(s), want it to look again after the empty reading", reads)
 	}
 }
+
+// A connection that is closed is answered at once, with an error that says so and wraps
+// nats.ErrConnectionClosed, and ConnectedRefusal's error wraps it too. The Envoy listener's start
+// makes this read in its ensure of the stream (internal/bus connectedDefaultsAnUnsetCap) and tries
+// a closed connection again (cmd/listener natsConnectionError), which it can only do when the
+// error carries nats.go's own; the bare text it carried before ended the start.
+func TestAClosedConnectionIsAnsweredWithNATSClosedConnectionError(t *testing.T) {
+	_, err := connectedVersion(context.Background(), closedConn{})
+	if !errors.Is(err, nats.ErrConnectionClosed) || !strings.Contains(err.Error(), "closed and not connected") {
+		t.Fatalf("connectedVersion of a closed connection = %v, want an error that says it is closed and wraps nats.ErrConnectionClosed", err)
+	}
+	if err := connectedRefusal(context.Background(), closedConn{}); !errors.Is(err, nats.ErrConnectionClosed) {
+		t.Fatalf("connectedRefusal of a closed connection = %v, want an error that wraps nats.ErrConnectionClosed", err)
+	}
+}
+
+// closedConn is a connection that is closed: it reports no server version.
+type closedConn struct{}
+
+func (closedConn) ConnectedServerVersion() string { return "" }
+
+func (closedConn) IsClosed() bool { return true }
 
 // A draining connection is connected for nats.go's IsConnected and reports no server version
 // (ConnectedServerVersion answers "" outside CONNECTED), so it is no reading of the server either:
