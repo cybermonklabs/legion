@@ -8,10 +8,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// One row of a close_read and one of a close_wait_publish stand for an issue at a time, so their
-// writers ask the outbox whether a row of that kind is still queued for the issue
-// (OutboxQueued). It answers false where none is, true once one is queued, and false for a row of
-// another issue or of another kind. BranchQueued is its read of the issue_branch kind.
+// The outbox says whether a row of a kind is still queued for an issue (OutboxQueued), whatever its
+// lease. It answers false where none is, true once one is queued, and false for a row of another
+// issue or of another kind. BranchQueued is its read of the issue_branch kind.
 func TestOutboxQueuedSaysWhetherARowOfAKindStandsForAnIssue(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
