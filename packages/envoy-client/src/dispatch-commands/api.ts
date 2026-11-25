@@ -351,7 +351,10 @@ export async function apiCommand(
     config = resolution;
   } else {
     if ("problem" in hosted) return stop(hosted.problem, USAGE);
-    const resolved = await hostedDispatch(hosted.file, env, { cwd: io.cwd, session: hosted.sessionId });
+    const resolved = await hostedDispatch(hosted.file, env, {
+      cwd: io.cwd,
+      session: hosted.sessionId,
+    });
     for (const line of resolved.warnings) say(line);
     if ("problem" in resolved) return stop(resolved.problem, USAGE);
     config = resolved.config;
