@@ -125,19 +125,21 @@ func (r *hourRig) client() *bus.Client { return r.listeners[0].harness.client }
 const hourSweepInterval = 200 * time.Millisecond
 
 // startSweeps starts each listener's sweep of the kept lanes, the loop startKeptRoleSweep runs over
-// its pool of roleKeepSweepHandovers slots, at hourSweepInterval and counting each pass whose scan
-// of the lanes has ended (sweepKeptRoleLanes returned), and stops both when the test ends, waiting
-// for the pass each loop has in flight. A count does not wait for the handovers a pass started: a
-// handover runs on, under roleKeepHandoverWindow (10 minutes), for as long as its lane has a holder
-// to give copies to, holding its role's guard and its slot, and a pass after it passes that role
-// over (roleKeepGuards.tryHold). A wait for that work would wait for the window, not for the sweep.
+// its pool of roleKeepSweepHandovers slots, at hourSweepInterval and phase zero, so each pass falls
+// on a whole interval of the clock and the first within one interval of the start (untilPhase). It
+// counts each pass whose scan of the lanes has ended (sweepKeptRoleLanes returned), and stops both
+// when the test ends, waiting for the pass each loop has in flight. A count does not wait for the
+// handovers a pass started: a handover runs on, under roleKeepHandoverWindow (10 minutes), for as
+// long as its lane has a holder to give copies to, holding its role's guard and its slot, and a
+// pass after it passes that role over (roleKeepGuards.tryHold). A wait for that work would wait
+// for the window, not for the sweep.
 func (r *hourRig) startSweeps() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var loops []<-chan struct{}
 	for _, l := range r.listeners {
 		cfg, slots, passes := l.cfg, make(chan struct{}, roleKeepSweepHandovers), &l.sweepPasses
 		l.sweepStarted = true
-		loops = append(loops, startSweep(ctx, hourSweepInterval, func(ctx context.Context) {
+		loops = append(loops, startSweep(ctx, hourSweepInterval, 0, func(ctx context.Context) {
 			sweepKeptRoleLanes(ctx, cfg, slots)
 			passes.Add(1)
 		}))
