@@ -56,23 +56,27 @@ const StepRecordsRollForward = 20261117064152
 // comment among the migration's statements. The paragraph is a block when its last line ends with
 // ";"; a header whose last paragraph is prose, and a version not embedded, are errors, so no caller
 // runs an empty block, or prose, against a store. That test is all this reads: what the block
-// does is held by the test of the migration that runs it.
+// does is held by the test of the migration that runs it, where one does.
 //
-// The headers below carry a way back by that rule, and internal/textcheck's
-// TestTheWayBackDocNamesEveryHeaderThatCarriesOne holds this list to them. internal/textcheck holds
-// the block of each of these five to the one docs/kubernetes.md gives under its rollback:
-// 20261117023932_outbox_kinds_with_the_plan_record.up.sql, 20261117034837_issue_plans.up.sql,
-// 20261117064152_step_starts_roll_forward.up.sql (StepRecordsRollForward),
-// 20261120012547_set_back_observed_seq.up.sql and 20261120144241_intake_failures.up.sql.
-// docs/kubernetes.md gives the same statements as each of these two, and no textcheck holds their
-// text to the guide's: 20261120055717_dispatch_issue_value_sequences.up.sql and
-// 20261123050533_idle_release_keeps_no_workspace.up.sql. docs/kubernetes.md sends an operator to
-// the header of each of these four, and gives no copy of its block:
-// 20261120042902_claim_agent_resume_generation.up.sql,
-// 20261121170714_dispatch_issue_applied_seq.up.sql, 20261123224717_members_owed.up.sql and
-// 20261125000600_production_check_failed_looks.up.sql. The header of
-// 20261115194357_project_pause.up.sql gives the three statements of its rollback, each as a
-// paragraph of its own. So this answers the last of them alone. No test or tool runs that
+// The headers of these migrations carry a way back by that rule:
+//
+//   - 20261115194357_project_pause.up.sql
+//   - 20261117023932_outbox_kinds_with_the_plan_record.up.sql
+//   - 20261117034837_issue_plans.up.sql
+//   - 20261117064152_step_starts_roll_forward.up.sql (StepRecordsRollForward)
+//   - 20261120012547_set_back_observed_seq.up.sql
+//   - 20261120042902_claim_agent_resume_generation.up.sql
+//   - 20261120055717_dispatch_issue_value_sequences.up.sql
+//   - 20261120144241_intake_failures.up.sql
+//   - 20261121170714_dispatch_issue_applied_seq.up.sql
+//   - 20261123050533_idle_release_keeps_no_workspace.up.sql
+//   - 20261123224717_members_owed.up.sql
+//   - 20261125000600_production_check_failed_looks.up.sql
+//
+// internal/textcheck's TestTheWayBackDocNamesEveryHeaderThatCarriesOne holds this list to the
+// headers by name: it reads each migration file name in this comment as a name of the list. The
+// header of 20261115194357_project_pause.up.sql gives the three statements of its rollback, each as
+// a paragraph of its own. So this answers the last of them alone. No test or tool runs that
 // paragraph, and docs/kubernetes.md gives all three.
 func WayBack(version int) (string, error) {
 	all, err := All()

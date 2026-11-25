@@ -262,7 +262,7 @@ func phaseEntryList(t *testing.T) phaseEntryListing {
 
 // phaseEntryListing is the list as a reader sees it. It holds the migrations its entries describe,
 // every migration name it carries, described or not, and its entries, one to a line. Each guide
-// test reads it only through the method that is its check, so neither reads the other's names.
+// test reads it only through the method that is its check, so no check reads another's fields.
 type phaseEntryListing struct{ described, named, entries []string }
 
 // undescribed is every migration of above that no entry of the list describes, in above's order:
@@ -295,9 +295,10 @@ var errHidden = errors.New("only an HTML comment holds it, and the rendered guid
 
 // readPhaseEntryList reads the list in text, the guide called name, where a reader sees it
 // (visibleMarkdown): the lines after its opening sentence, up to the line phaseEntryListEnd opens.
-// It answers the migrations the list describes and every migration name it carries. A text with
-// no such sentence or with two, with no such line after it, or whose list names no migration is
-// refused: each would otherwise read as a list that names nothing, which
+// It answers the migrations the list describes, every migration name it carries, and its visible
+// lines, one entry to a line. A text with no such sentence or with two, with no such line after
+// it, or whose list names no migration is refused: each would otherwise read as a list that names
+// nothing, which
 // TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations passes. A sentence or line that only
 // an HTML comment holds is refused as hidden (errHidden), a comment opened before the sentence
 // among them: that comment hides the sentence and whatever of the list it runs over.

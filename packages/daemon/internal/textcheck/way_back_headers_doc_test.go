@@ -160,8 +160,9 @@ func wayBackDoc(t *testing.T) string {
 	return ""
 }
 
-// rollbackSection is a section that an entry of the guide's migration list names: the migration
-// the entry opens on, and the heading's words. A link also gives the anchor it names.
+// rollbackSection is a section that an entry of the guide's migration list names, by the heading's
+// words. entry is the first migration name the entry's line carries, which names the entry in a
+// failure. A link also gives the anchor it names.
 type rollbackSection struct {
 	entry, heading, anchor string
 	linked                 bool
