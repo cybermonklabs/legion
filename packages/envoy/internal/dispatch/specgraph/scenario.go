@@ -97,7 +97,7 @@ const (
 // its own letters, a member that one object gives two times, text after the value, and a value of
 // another type than the file's form needs, which it names with the form and the place of the value.
 // It refuses each member that the derivation reads and that a file does not set, by the type that it
-// reads the file into (memberMark), with the functions that the entry of the derivation refuses the
+// reads the file into (members.go), with the functions that the entry of the derivation refuses the
 // same member with (Input.check): one marked nonzero at its zero value, and one marked present that
 // the file leaves out, since the zero value of such a member would read as a real one and turn a
 // state toward true or hide a failure; a member marked zero that a file leaves out reads as its

@@ -32,7 +32,7 @@ const (
 // Result is one result of a check as Dispatch stores it (R7, R12): appended and never edited. Its
 // JSON names are the form of results.json, which names the approved version of the check that ran
 // in the place of CheckDigest (scenarioResult), and its tag input marks how each member reads when
-// its writer does not set it (memberMark).
+// its writer does not set it (members.go).
 type Result struct {
 	// Check is the id of the check, and CheckDigest the Digest of the check's text that ran: the
 	// procedure of the result (R7).

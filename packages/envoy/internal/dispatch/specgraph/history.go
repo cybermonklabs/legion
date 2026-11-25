@@ -30,7 +30,7 @@ type History interface {
 // Commits is nil when it is not set, which check refuses, and an empty list for a history of no
 // commit. Files is the whole tree of each commit, as a label of each path's content: a path that
 // the commit does not hold is no key. It is set at each commit and has each label nonzero, as its
-// mark says for a map (memberMark), and by its own rule each label has a letter or a digit
+// tag input says for a map (members.go), and by its own rule each label has a letter or a digit
 // (hasWord), since one of none names no content: two commits with "" or " " at a path would read
 // as one content, and a change of a label to " " would read as a change of the file. By its own
 // rule, a tree also holds at least one path, and each path is a repository path

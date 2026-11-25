@@ -66,7 +66,7 @@ func (n approvedFileNode) node() ApprovedNode {
 }
 
 // unsetFault is the refusal of n that leaves out removed or partly_checked, whose false is a value
-// of each (memberMark), or nil.
+// of each (its tag input, members.go), or nil.
 func (n approvedFileNode) unsetFault() error {
 	switch {
 	case n.Removed == nil:

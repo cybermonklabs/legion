@@ -83,7 +83,7 @@ func Derive(in Input) (State, error) {
 // that the scenario reader refuses the same fault with. A member that the caller did not set is its
 // zero value, and the judge would read that value as a real one, which turns a state toward true or
 // hides a failure; so the judge never reads one, and no state is given. A member marked present has
-// a type whose zero value is "not set" (memberMark), refused here as a file that leaves it out is;
+// a type whose zero value is "not set" (members.go), refused here as a file that leaves it out is;
 // a member whose zero is a value is the plain value, as its type says what a caller that leaves it
 // zero gives: Leg "" is the leg of no matrix, Ended false a run that has not ended, Removed false a
 // node that the approved spec keeps, and PartlyChecked false a statement whose checks decide all of
@@ -195,7 +195,7 @@ func (in Input) check(current Tree) error {
 // and no digit (hasWord), which names none, so the refusal would count nowhere, as the reader
 // refuses such a commit of a subject; a commit whose map of checks is nil; and a rule "", since a
 // refusal of CI names the rule of R48 that refused the check, and each value of a map marked
-// nonzero is nonzero (memberMark). A map {} of a commit is a value: CI refused no check there. The
+// nonzero is nonzero (members.go). A map {} of a commit is a value: CI refused no check there. The
 // reader of uncited.json and the entry of the derivation both refuse uncited by it, and the least
 // place by commit and then by check is the one named, whatever the order of the map.
 func uncitedFault(uncited map[string]map[string]string) string {

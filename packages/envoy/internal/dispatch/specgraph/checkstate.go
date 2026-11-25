@@ -50,7 +50,7 @@ func subjectFault(p Point, now time.Time) string {
 // approved spec, every stored result, the runs of CI jobs, the tie of each check at each commit, the
 // history of the repository, the time of the derivation, and the checks that CI refused at each
 // commit (R48), by commit and then by check id, each with the rule that refused it. Its tag input
-// marks how each member reads when the caller does not set it (memberMark): a run of a job never
+// marks how each member reads when the caller does not set it (members.go): a run of a job never
 // moves a state toward true, and a refusal by CI makes its check read unknown at its commit and
 // cancels the results of that commit that support true wherever they count (R48, deriveChecks step
 // 2), so each can move a state away from what the evidence without it gives, and never toward
