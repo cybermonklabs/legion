@@ -50,37 +50,37 @@ import type {
  * strands itself, so it holds nothing back here.
  *
  * An interrupt while the host sets up a prompt leaves no sign at all. From the prompt's start
- * (`agent-session.ts` `#promptWithMessage` marks the host busy, 10234 at the pinned tag) to its
+ * (`agent-session.ts` `#promptWithMessage` marks the host busy, 10966 at the pinned tag) to its
  * run's `agent_start` the host runs the usage preflight and the `before_agent_start` handlers,
  * pi-envoy's own read of the open asks (up to `OPEN_ASKS_TIMEOUT_MS`) among them. An abort there
  * cancels the setup with no loop running, so no aborted assistant message comes, and abort's
- * `finally` folds the queued card under the latch the abort set (13218-13220 at the pinned tag).
+ * `finally` folds the queued card under the latch the abort set (13968-13970 at the pinned tag).
  * So a card sent while the host is busy and no run is active, which is from a run's `agent_start`
  * to its `agent_end`, is a setup card and never a candidate for the wake: if the prompt does run,
  * its loop reads the queued aside at the run's first step boundary, after its first model
- * response (`agent-loop.ts` 1932, 1960 at the pinned tag). So is a card sent after a run's
+ * response (`agent-loop.ts` 1938, 1966 at the pinned tag). So is a card sent after a run's
  * `agent_end` while the host still settles because a continuation follows (`willContinue`): the
  * continuation's loop reads it. The host can also drop a run with no `agent_end` for extensions:
- * a switch to a new or resumed session (`newSession`, 13253-13255; `switchSession`, 15069-15070,
+ * a switch to a new or resumed session (`newSession`, 14003-14005; `switchSession`, 15869-15870,
  * at the pinned tag) and a manual or extension compaction (`session-maintenance.ts` `compact`,
- * 1311-1312 at the pinned tag) disconnect from the agent before they abort it. So a run also
+ * 1935-1936 at the pinned tag) disconnect from the agent before they abort it. So a run also
  * ends once the host is seen idle: by a card or a check, or at a `session_switch`, a
  * `session_compact` or a typed input (the `input` event an RPC prompt, a terminal Enter and
- * `sendUserInput` emit before they prompt: `rpc-mode.ts` 1930-1931, `input-controller.ts` 1089,
- * `send-user-input-handler.ts` 95, at the pinned tag) that finds `isIdle` true. The abort before
+ * `sendUserInput` emit before they prompt: `rpc-mode.ts` 1951-1952, `input-controller.ts` 1089,
+ * `send-user-input-handler.ts` 97, at the pinned tag) that finds `isIdle` true. The abort before
  * a switch or a manual compaction waits for the agent and resets the host's in-flight count
- * (13165-13187 at the pinned tag), so the host is idle at its event, and a prompt sent from idle
+ * (13915-13937 at the pinned tag), so the host is idle at its event, and a prompt sent from idle
  * is typed while the host is idle. An automatic compaction runs while the host is busy, between
- * a run's steps (3075-3087 at the pinned tag), in a prompt's setup (after 10234 at the pinned
- * tag) or in a run's post-run maintenance, which the prompt awaits (4783, 6375-6405 at the pinned
+ * a run's steps (3260-3272 at the pinned tag), in a prompt's setup (after 10966 at the pinned
+ * tag) or in a run's post-run maintenance, which the prompt awaits (5076, 6676-6706 at the pinned
  * tag), so it leaves the run going, whatever order its `session_compact` and `auto_compaction_end`
  * reach this module in; an idle compaction finds the host idle. The host emits the extension
- * `agent_end` only at the end of the run's maintenance pass (5638-6018, then `#settleAgentEnd`,
- * 6538-6572, at the pinned tag), after its auto-compaction, a retry's backoff (awaited inside it)
+ * `agent_end` only at the end of the run's maintenance pass (5925-6311, then `#settleAgentEnd`,
+ * 6882-6916, at the pinned tag), after its auto-compaction, a retry's backoff (awaited inside it)
  * and the `session_stop` pass, so a card that lands during that maintenance is the run's, and a
  * fold under an earlier interrupt's latch still gets its wake. What stays unseen is an interrupt
  * during that maintenance at an await that is neither auto-compaction nor a retry's backoff (the
- * `session_stop` hooks, 6016 at the pinned tag, the todo reminder and the goal and empty-stop
+ * `session_stop` hooks, 6309 at the pinned tag, the todo reminder and the goal and empty-stop
  * passes before them): the card the run's last step missed is folded under the latch and woken.
  * A setup card the host folds with no turn and no interrupt, in plan mode, gets no wake.
  *
@@ -95,7 +95,7 @@ import type {
  * its agent subject in `session_start`, ran a whole turn inside the drain, and the host answered
  * no RPC command (`get_state`, `prompt`) until it ended. 18.16.0 passed `drainSends: false`, and
  * held every RPC frame but an extension dialog's answer and `set_ask_dialog` until its startup
- * was over. The pinned build (18.18.6-sami.20261123-024918, `rpc-mode.ts` `runRpcMode`) passes
+ * was over. The pinned build (18.18.6-sami.20261125-001804, `rpc-mode.ts` `runRpcMode`) passes
  * `drainSends: false` too and reads input while its startup runs: it answers `get_state` and every
  * other command that starts no turn at once, and holds one that starts a turn or changes the
  * session (`waitsForStartup`, `STARTUP_HELD_TYPES`: `prompt`, `steer`, `follow_up`,
@@ -104,15 +104,15 @@ import type {
  * discovery, and its goal controller has reconciled (`startupSettled`). The host gives extensions
  * no event once the drain is over. Without the start-turn mark (below) the phase needs `ctx.mode`
  * "rpc", the mode that on 18.12.2 read nothing until the drain returned. ACP initialises
- * extensions with "rpc" too (`acp-agent.ts` 3469 at the pinned tag), so the phase holds there as
- * well, at no cost: ACP's bridge defers a turn the agent starts (`agent-session.ts` 11826-11829 at
+ * extensions with "rpc" too (`acp-agent.ts` 3476 at the pinned tag), so the phase holds there as
+ * well, at no cost: ACP's bridge defers a turn the agent starts (`agent-session.ts` 12550-12553 at
  * the pinned tag), so the wake becomes hidden next-turn context there, as an idle card's turn did.
  * Print and JSON mode prompt right after their own awaits that follow it (`print-mode.ts`, MCP
- * readiness and a tool refresh, 426-430; `session.prompt`, 495-497, at the pinned tag), and that
- * prompt throws `AgentBusyError` (`agent-session.ts` 9611-9618 at the pinned tag) if a wake
+ * readiness and a tool refresh, 429-433; `session.prompt`, 499-501, at the pinned tag), and that
+ * prompt throws `AgentBusyError` (`agent-session.ts` 10340-10347 at the pinned tag) if a wake
  * started a turn first. A terminal subscribes to the agent before its startup hooks run, and runs
  * its whole init, the hooks, its mode, its plan-mode default and the draft included, inside
- * `sends.withHeld` (`interactive-mode.ts` 2473, 2863-2866 and 2925 at the pinned tag): every
+ * `sends.withHeld` (`interactive-mode.ts` 2475, 2865-2868 and 2927 at the pinned tag): every
  * extension send of its startup, an idle card's own `triggerTurn` included, starts only once init
  * has subscribed and settled the mode, and the terminal tracks and drains no send
  * (`extension-ui-controller.ts` 1758 at the pinned tag), so that turn holds none of its startup
@@ -123,7 +123,7 @@ import type {
  * idle while the phase holds goes as a `followUp` with no `triggerTurn`: on an idle host that
  * appends it to the context, persists it and emits its `message_end`, starting no turn and
  * awaiting nothing longer than its pictures (`agent-session.ts` `sendCustomMessage`'s idle
- * append, 11961-11986 at the pinned tag). The card is its own witness that startup is over: the
+ * append, 12679-12704 at the pinned tag). The card is its own witness that startup is over: the
  * host starts a held send only once the hold settles (`send-queue.ts` `dispatch`, 54-57, on the
  * hold `withHeld` settles in its `finally`, 40-50, at the pinned tag), so its `message_end` comes
  * after the hold, and the check
@@ -333,7 +333,7 @@ const NO_CARDS: ReadonlySet<string> = new Set();
  * whose replies ran the start procedure rather than reading it: it was read only by a reply after
  * the start turn ended, which is the first assistant message after the card that ends a model turn
  * (`endsModelTurn`). That later reply is a run of its own, or the start turn's run going on for an
- * aside, a steer or a follow-up the host took at the model's stop (`agent-loop.ts` 1959-1966 at
+ * aside, a steer or a follow-up the host took at the model's stop (`agent-loop.ts` 1965-1972 at
  * the pinned tag). Only the branch's order decides, as for every other card, so the order the host
  * emits its events in changes nothing. Walked from the end, stopping once every card is placed.
  */
@@ -511,9 +511,9 @@ export class CardWake {
   }
 
   /** The host may be idle: at a `session_switch` (a switch to a new or resumed session aborted any
-   *  run unseen, `agent-session.ts` 13253-13255, 15069-15070 at the pinned tag), a
+   *  run unseen, `agent-session.ts` 14003-14005, 15869-15870 at the pinned tag), a
    *  `session_compact` (so did a manual or an extension's compaction, `session-maintenance.ts`
-   *  1311-1312 at the pinned tag) and a typed input.
+   *  1935-1936 at the pinned tag) and a typed input.
    *  If it is, no run is active. A busy host there runs a live run (a fork, an automatic
    *  compaction), sets a prompt up or settles, which changes nothing. */
   noteIfIdle(context: Pick<CardWakeContext, "isIdle">): void {

@@ -87,7 +87,7 @@ const WEAK = `${PROVIDER}/${WEAK_ID}`;
 
 /**
  * Oh My Pi's own floor for how long it suppresses a model it could not classify
- * (`packages/coding-agent/src/session/turn-recovery.ts:2202-2209` at the pinned tag): five
+ * (`packages/coding-agent/src/session/turn-recovery.ts:2276-2283` at the pinned tag): five
  * minutes. Without `retry.fallbackRevertPolicy: never` the host's own restore would come at about
  * this mark, so a pane with no request to the refused model between it and the cooldown's end
  * is the proof that the overlay's `never` and the plugin's ten minutes are both in force.

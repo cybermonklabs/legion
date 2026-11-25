@@ -774,7 +774,7 @@ export interface Refusal {
   readonly explanation?: string;
   /** Text the model streamed before the refusal, committed by the time it came. The host walks
    * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1782-1816` and `:3153-3163`
+   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1820-1854` and `:3228-3238`
    * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
    * which of the two walks a case proves. */
   readonly text?: string;
@@ -783,7 +783,7 @@ export interface Refusal {
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3185-3193` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3194-3202` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It
