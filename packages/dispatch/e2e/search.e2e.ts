@@ -252,8 +252,10 @@ test("a search for an issue key names the issue in every hit that cites it, mark
     await openSearchFromRail(page, false);
     await page.getByRole("combobox", { name: "Search" }).fill(cited.key);
     const dialog = page.getByRole("dialog", { name: "Search" });
-    for (const name of [/^comment /, /^message /]) {
-      const hit = dialog.getByRole("option", { name });
+    // The palette groups its hits under a heading of their kind (search-model.ts), and a row
+    // names no kind of its own.
+    for (const name of ["Comments", "Messages"]) {
+      const hit = dialog.getByRole("group", { exact: true, name }).getByRole("option");
       await expect(hit).toHaveCount(1);
       await expect(hit.locator("mark")).toHaveText([`${cited.key} Gyroscope alignment`]);
       await expect(hit.locator("[data-dispatch-ref] mark")).toHaveCount(1);
@@ -441,7 +443,10 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
     const dialog = page.getByRole("dialog", { name: "Search" });
     for (const body of bodies) {
       await search.fill(body.query);
-      const hit = dialog.getByRole("option", { name: /^comment / }).filter({ hasText: body.shows });
+      const hit = dialog
+        .getByRole("group", { exact: true, name: "Comments" })
+        .getByRole("option")
+        .filter({ hasText: body.shows });
       await expect(hit, body.query).toHaveCount(1);
       // Soft, so a run names every body whose marks moved rather than the first alone.
       await expect.soft(hit.locator("mark"), body.query).toHaveText(body.marks);
@@ -450,7 +455,8 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
     // The query that marks a part of a real key, which the link pass links.
     await search.fill("CORE");
     const linked = dialog
-      .getByRole("option", { name: /^comment / })
+      .getByRole("group", { exact: true, name: "Comments" })
+      .getByRole("option")
       .filter({ hasText: "is waiting on" });
     await expect(linked).toHaveCount(1);
     await expect(linked.locator("mark")).toHaveText([`${issue.key} Bench work`]);
@@ -496,7 +502,10 @@ test("a search mark inside a reference stays on the words as the server sent it,
     const dialog = page.getByRole("dialog", { name: "Search" });
 
     await search.fill("CORE");
-    const hit = dialog.getByRole("option", { name: /^comment / }).filter({ hasText: "quokka" });
+    const hit = dialog
+      .getByRole("group", { exact: true, name: "Comments" })
+      .getByRole("option")
+      .filter({ hasText: "quokka" });
     await expect(hit).toHaveCount(1);
     // The issue's title has not come, so its address is words, marked where the server marked it.
     await expect(hit.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
@@ -518,7 +527,8 @@ test("a search mark inside a reference stays on the words as the server sent it,
 
     await search.fill("CORE/component/nope");
     const component = dialog
-      .getByRole("option", { name: /^comment / })
+      .getByRole("group", { exact: true, name: "Comments" })
+      .getByRole("option")
       .filter({ hasText: missingComponent });
     await expect(component).toHaveCount(1);
     await expect(component.locator("mark")).toHaveText(["CORE/component/nope"]);
@@ -562,7 +572,10 @@ test("a search hit on a stored autolink's key reads as the issue it links to, an
     await page.getByRole("combobox", { name: "Search" }).fill("CORE");
     const dialog = page.getByRole("dialog", { name: "Search" });
 
-    const autolink = dialog.getByRole("option", { name: /^doc / }).filter({ hasText: "Monday" });
+    const autolink = dialog
+      .getByRole("group", { exact: true, name: "Documents" })
+      .getByRole("option")
+      .filter({ hasText: "Monday" });
     await expect(autolink).toHaveCount(1);
     await expect(autolink.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
       `${issue.key} Bench work`
@@ -572,7 +585,10 @@ test("a search hit on a stored autolink's key reads as the issue it links to, an
     await expect(autolink).toContainText(`See ${issue.key} Bench work since Monday.`);
     await expect(autolink).not.toContainText("dispatch://");
 
-    const worded = dialog.getByRole("option", { name: /^doc / }).filter({ hasText: "Tuesday" });
+    const worded = dialog
+      .getByRole("group", { exact: true, name: "Documents" })
+      .getByRole("option")
+      .filter({ hasText: "Tuesday" });
     await expect(worded).toHaveCount(1);
     await expect(worded.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
       "the design"
