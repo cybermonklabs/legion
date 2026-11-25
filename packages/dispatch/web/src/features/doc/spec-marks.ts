@@ -33,7 +33,6 @@ export interface ChangedSinceRead {
  *  (`withEntries`). */
 export const issueDecisionsQuery = (issueKey: string, enabled: boolean) => ({
   enabled,
-  // kept for one release: compat-objects
   queryFn: async (): Promise<IssueDecisions> =>
     // kept for one release: compat-objects
     withEntries(await api.getIssueDecisions(issueKey), issueKey),

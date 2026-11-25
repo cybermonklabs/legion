@@ -385,7 +385,7 @@ func recordBlockIndex(ctx context.Context, tx pgx.Tx, artifactID string, index r
 }
 
 // indexedVersionOf is what version's own row says of its block index (refs.IndexedVersion): the
-// document's ref_key and scope, from its address as this transaction leaves it
+// document's ref_key, issue and scope, from its address as this transaction leaves it
 // (addressOfDocument), and the version's writer (versionWriterOf).
 func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version int) (refs.IndexedVersion, error) {
 	address, err := addressOfDocument(ctx, tx, artifactID)

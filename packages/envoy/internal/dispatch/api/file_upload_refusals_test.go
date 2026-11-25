@@ -63,9 +63,8 @@ func TestAFileUploadUnderARetiredDocumentsNameIsRefusedAsRetiredWithOrWithoutAFi
 
 // A file named decisions.md on an issue is refused 409 DECISIONS_ARE_NODES, as a document of that
 // name is (decisionsAreNodes in storeArtifact's transaction), and beside a file store it is refused
-// before its object is written. refuseUploadBeforeItsObject does not make this change's
-// decisionsAreNodes refusal, so the upload writes its object and only then is refused, leaving an
-// object no row names.
+// before its object is written (refuseUploadBeforeItsObject), so no object is left that no row
+// names.
 func TestAFileNamedDecisionsMdOnAnIssueIsRefusedBeforeItsObjectIsWritten(t *testing.T) {
 	t.Parallel()
 	forEachFileStore(t, func(t *testing.T, handler http.Handler, _ *store.Store, issueKey string, memory *filestest.Memory) {
