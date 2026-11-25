@@ -140,6 +140,9 @@ export class DispatchServiceError extends Error {
   readonly issues: DispatchServiceErrorShape["issues"] | undefined;
   /** A status change's refusal: the entry of each step that wrote before it. */
   readonly changed: DispatchServiceErrorShape["changed"] | undefined;
+  /** Dispatch's `hint`, where to look next, which only its answer to a path no route serves
+   *  carries (`DispatchServiceErrorShape["hint"]`); `messageFor` prints it after the message. */
+  readonly hint: string | undefined;
 
   constructor(
     readonly code: string,
@@ -148,7 +151,7 @@ export class DispatchServiceError extends Error {
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
      *  its answer's JSON, or another refusal whose members it keeps. */
     details: {
-      readonly [Member in "candidates" | "changed" | "current" | "issues" | "mismatches"]?:
+      readonly [Member in "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches"]?:
         | DispatchServiceErrorShape[Member]
         | undefined;
     } = {}
@@ -159,6 +162,7 @@ export class DispatchServiceError extends Error {
     this.mismatches = details.mismatches;
     this.issues = details.issues;
     this.changed = details.changed;
+    this.hint = details.hint;
   }
 }
 
@@ -531,13 +535,17 @@ function isDispatchRefusal(value: DispatchServiceErrorShape): value is DispatchR
   return typeof value.error === "string";
 }
 
-/** The error a refusal of Dispatch's own throws, its message `message` (its `error` unless told). */
+/** The error a refusal of Dispatch's own throws, its message `message` (its `error` unless told),
+ *  carrying its `hint` where the refusal holds a text one. */
 function refusalError(
   status: number,
   refusal: DispatchRefusal,
   message = refusal.error
 ): DispatchServiceError {
-  return new DispatchServiceError(refusal.code ?? `HTTP_${status}`, status, message, refusal);
+  return new DispatchServiceError(refusal.code ?? `HTTP_${status}`, status, message, {
+    ...refusal,
+    hint: typeof refusal.hint === "string" ? refusal.hint : undefined,
+  });
 }
 
 /**
@@ -1487,6 +1495,22 @@ export class DispatchClient {
    *  that enforces it. The client keeps no copy of them: it prints what the server answers. */
   async limits(): Promise<DispatchLimits> {
     return this.#json("GET", ["api", "v1", "limits"]);
+  }
+
+  /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
+   *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
+   *  scheme, a host and a dot segment, so it resolves under this client's server as every other
+   *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it.
+   *
+   *  It sends the GET once (one `#send`) and throws a refusal as `#response` throws it, an answer
+   *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
+   *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
+   *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
+   *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
+   *  so Dispatch's own refusal, which names the route, is printed as it came. */
+  async readRoute(path: string): Promise<unknown> {
+    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    return this.#response("GET", url, await this.#send("GET", url));
   }
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's

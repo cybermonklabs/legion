@@ -15,6 +15,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -100,9 +102,12 @@ var (
 // second per broker process (internal/cipher/api/limits.go, DefaultAccountLimit) — and that one
 // bucket is shared with the approval relays a person's click produces, so introspection has to
 // stay well under it or a flood of checks would refuse a person their own approval. With
-// single-flight in front, one Dispatch pod's sustained introspection rate is its distinct live
-// tokens divided by this window: under 128 live tokens that is under 26 a second, half the
-// bucket's refill and a fifth of its burst, leaving the relays theirs.
+// single-flight in front, and while the cache keeps each answer, one Dispatch pod's sustained
+// introspection rate is its distinct live tokens divided by this window: under 128 live tokens
+// that is under 26 a second, half the bucket's refill and a fifth of its burst, leaving the relays
+// theirs. Verifier.known says when the cache keeps no answer. The address bucket
+// (DefaultAddressLimit) does not hold that rate down: a live token's introspection gives back the
+// request it took (Verifier.known).
 //
 // Shortening it costs broker requests in that proportion; lengthening it leaves a revoked token
 // accepted for longer, which is the other half of the trade and why the window is seconds.
@@ -120,14 +125,11 @@ const AffirmativeCacheTTL = 5 * time.Second
 // costs that token an introspection and nothing else.
 const AffirmativeCacheSize = 4096
 
-// DefaultAddressLimit bounds the introspections one source address can make Dispatch send, in a
-// bucket of its own per address (Options.Address): a burst of 20 and five a second, per
-// process. A caller holding one token spends one token of this bucket per AffirmativeCacheTTL,
-// since every request inside that window is answered from the cache, so an honest caller never
-// meets it; a stranger presenting tokens the broker has never issued meets it at once, before
-// anything of Dispatch's reaches the broker.
+// DefaultAddressLimit is the introspection bucket each source address (Options.Address) has of
+// its own: a burst of 20 and five a second, per process. Each introspection takes one request from
+// it before it is sent, and which of them give that request back is Verifier.known's rule.
 //
-// That ordering is the rule INFRA-228 wrote down
+// Taking the request before the call is the rule INFRA-228 wrote down
 // (docs/solutions/best-practices/a-route-that-verifies-before-it-limits-lets-a-stranger-spend-your-upstream-INFRA-228.md):
 // a check that costs an upstream call is work an unauthenticated caller can make you do, so the
 // bucket is spent before the call and not inside the handler after it. The budget being guarded
@@ -214,7 +216,7 @@ type Caller struct {
 	Cut time.Time
 }
 
-// Options is what a Verifier needs. BrokerURL, Account, Origin, Replay and Address are required.
+// Options is what a Verifier needs. BrokerURL, Account, Origins, Replay and Address are required.
 type Options struct {
 	// BrokerURL is the secrets broker's base URL (DISPATCH_AGENT_SECRETS_URL for Dispatch,
 	// ENVOY_AGENT_SECRETS_URL for a listener), the origin IntrospectPath is asked on.
@@ -223,10 +225,13 @@ type Options struct {
 	// a projected Kubernetes ServiceAccount token (AccountToken) or a machine's Google identity
 	// token (GoogleAccount).
 	Account Account
-	// Origin is the mounting program's own public origin (DISPATCH_SERVER_URL,
-	// ENVOY_PUBLIC_URL): an absolute http(s) URL with no path. A proof's 'htu' is checked
-	// against it plus the request's path, never against a forwarded header — see atOrigin.
-	Origin string
+	// Origins are every origin the mounting program is reached at, each an absolute http(s) URL
+	// with no path: for Dispatch DISPATCH_SERVER_URL's first and then each DISPATCH_PROOF_ORIGINS
+	// adds, for a listener ENVOY_PUBLIC_URL alone. A proof's 'htu' is checked against the one of
+	// them it names plus the request's path, never against a forwarded header or the Host the
+	// request arrived under — see originFor and atOrigin. A proof naming none of them is checked
+	// against the first, and so refused as a target that is not this request's.
+	Origins []string
 	// Replay is where a spent proof is recorded, so a captured one cannot be presented twice
 	// (store.DPoPProofs for Dispatch, the spent-proof KV bucket for a listener).
 	Replay rfc9449.DPoPReplayStorage
@@ -267,11 +272,9 @@ type Options struct {
 type Verifier struct {
 	brokerURL string
 	account   Account
-	origin    *url.URL
-	// originTLS is the TLS state atOrigin puts on the request it rewrites: one empty state for
-	// the whole process when the origin is https, nil when it is not. Nothing reads more of it
-	// than whether it is there, and nothing writes to it, so every request shares this one.
-	originTLS *tls.ConnectionState
+	// origins are Options.Origins, the first the one a proof naming none of them is checked
+	// against (originFor).
+	origins   []proofOrigin
 	http      *http.Client
 	strategy  *rfc9449.DefaultStrategy
 	address   func(r *http.Request) string
@@ -284,9 +287,23 @@ type Verifier struct {
 	servesReadOnly bool
 }
 
+// proofOrigin is one origin of Options.Origins as the verifier keeps it.
+type proofOrigin struct {
+	// url is the origin as configured: atOrigin puts its scheme and host on the request it
+	// rewrites.
+	url *url.URL
+	// host is url's host as the library compares an 'htu' (normalizeHTU), the scheme's default
+	// port dropped, which originFor compares a proof's host with, without case.
+	host string
+	// tls is the TLS state atOrigin puts on the request it rewrites: one empty state for the
+	// whole process when the origin is https, nil when it is not. Nothing reads more of it than
+	// whether it is there, and nothing writes to it, so every request shares this one.
+	tls *tls.ConnectionState
+}
+
 // New builds a Verifier, refusing options it cannot serve a single request with rather than
-// failing one request at a time: a missing dependency and an Origin that is not an absolute
-// http(s) origin are both deployment errors.
+// failing one request at a time: a missing dependency, no origin at all, and an origin that is
+// not an absolute http(s) origin are all deployment errors.
 func New(options Options) (*Verifier, error) {
 	if options.BrokerURL == "" {
 		return nil, errors.New("brokertoken: the broker URL is required")
@@ -300,12 +317,24 @@ func New(options Options) (*Verifier, error) {
 	if options.Address == nil {
 		return nil, errors.New("brokertoken: the source address function is required")
 	}
-	origin, err := url.Parse(options.Origin)
-	if err != nil {
-		return nil, fmt.Errorf("brokertoken: the origin %q does not parse: %w", options.Origin, err)
+	if len(options.Origins) == 0 {
+		return nil, errors.New("brokertoken: at least one origin is required")
 	}
-	if (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.Path != "" {
-		return nil, fmt.Errorf("brokertoken: the origin %q must be an absolute http(s) URL with no path", options.Origin)
+	origins := make([]proofOrigin, len(options.Origins))
+	for i, raw := range options.Origins {
+		origin, err := url.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("brokertoken: the origin %q does not parse: %w", raw, err)
+		}
+		if (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.Path != "" {
+			return nil, fmt.Errorf("brokertoken: the origin %q must be an absolute http(s) URL with no path", raw)
+		}
+		origins[i] = proofOrigin{url: origin, host: withoutDefaultPort(origin.Scheme, origin.Host)}
+		// One empty state serves every request atOrigin rewrites to this origin, built here
+		// rather than per request: what reads it asks only whether the request carried TLS.
+		if origin.Scheme == "https" {
+			origins[i].tls = &tls.ConnectionState{}
+		}
 	}
 	limit := options.AddressLimit
 	if limit == (ratelimit.Limit{}) {
@@ -319,19 +348,12 @@ func New(options Options) (*Verifier, error) {
 	if now == nil {
 		now = time.Now
 	}
-	// One empty state serves every request atOrigin rewrites, built here rather than per
-	// request: what reads it asks only whether the request carried TLS.
-	var originTLS *tls.ConnectionState
-	if origin.Scheme == "https" {
-		originTLS = &tls.ConnectionState{}
-	}
 	return &Verifier{
 		// The trailing slash goes so BrokerURL + IntrospectPath is one path, as cipher.New
 		// trims it for the same reason.
 		brokerURL: strings.TrimRight(options.BrokerURL, "/"),
 		account:   options.Account,
-		origin:    origin,
-		originTLS: originTLS,
+		origins:   origins,
 		http:      client,
 		strategy:  rfc9449.NewDefaultStrategy(proofConfig{}, withoutNonces{options.Replay}),
 		address:   options.Address,
@@ -524,7 +546,7 @@ func (v *Verifier) Prove(ctx context.Context, r *http.Request, live LiveToken) (
 	if token, presented := Presented(r); !presented || token != live.token {
 		return Caller{}, ErrNotPresented
 	}
-	signed := v.atOrigin(r)
+	signed := v.atOrigin(r, v.originFor(r))
 	if _, err := v.strategy.ValidateResourceAccess(ctx, signed, live.token, live.answer.Thumbprint, false); err != nil {
 		return Caller{}, v.refused(err, signed, live.answer.Thumbprint)
 	}
@@ -623,16 +645,39 @@ func shapeOf(answer Introspection) tokenShape {
 //
 // The cache is read first, because an answer served from it reaches no broker and so spends
 // nothing of the budget the bucket guards. A miss joins the single flight for that token, and the
-// bucket is spent inside that flight, by whichever request opens it and once the flight's own
-// look at the cache has missed too — so one request of the source address's bucket is spent for
-// exactly one introspection, which is what the bucket is there to bound. N requests arriving at
-// once with one cold token therefore cost one introspection and one token of the bucket, where
-// charging each of them would refuse an honest caller that made a burst of calls on a token it
-// had just been given. A stranger still pays per distinct token, which is the flood the bucket
-// exists for. The introspection runs under the context of whichever request opened the flight,
-// so one that goes away takes the others' answer with it; they are answered ErrBrokerUnreachable
-// and come back, which is what every other lost answer does. With spend false the bucket is not
-// spent (LiveUntil).
+// request is taken from the source address's bucket inside that flight, by whichever request opens
+// it and once the flight's own look at the cache has missed too — so one request of the bucket is
+// taken for exactly one introspection. N requests arriving at once with one cold token therefore
+// cost one introspection and take one request of the bucket, where charging each of them would
+// refuse an honest caller that made a burst of calls on a token it had just been given.
+//
+// The request is taken before the introspection is sent, as INFRA-228 requires
+// (DefaultAddressLimit), and given back only when the broker answers that the token is live,
+// stamped with Options.Now, the clock the take read. The give-back follows the broker's answer
+// alone, whatever Verify decides about the token after it (a token that is no session's
+// credential, a proof that does not verify), since a token the broker calls live is one it
+// issued. A not-live answer keeps its request, and so does an introspection that ends in an
+// error, an answer that never came or one this reader does not read: nothing has shown the token
+// live, and the call still cost the broker's budget.
+//
+// So the bucket bounds only the introspections of tokens the broker does not answer live. A
+// stranger pays one request per distinct token it presents, which is the flood the bucket exists
+// for, while a live token's introspection gives back what it took, so many honest callers that
+// share one address, as every caller behind a gateway does, are not refused however many live
+// tokens they hold between them. What holds the introspections of a live token down is the cache
+// and the single flight, not the bucket: its answer is remembered (answerCache.remember), so the
+// requests after it are served from the cache until that answer lapses. Where the cache keeps
+// nothing, because it is full of answers still good and keeps those rather than evict one, or
+// because the answer's own 'exp' has already passed, every request on that token is a new
+// introspection and each gives its request back, so the bucket bounds none of them. What bounds
+// them then is the single flight, which holds the token to one introspection in flight at a time,
+// and past it the broker's own bucket, whose 429 is ErrBrokerUnreachable.
+//
+// With spend false the bucket is neither taken from nor given back to (LiveUntil).
+//
+// The introspection runs under the context of whichever request opened the flight, so one that
+// goes away takes the others' answer with it; they are answered ErrBrokerUnreachable and come
+// back, which is what every other lost answer does.
 func (v *Verifier) known(ctx context.Context, r *http.Request, token string, spend bool) (Introspection, error) {
 	key := sha256.Sum256([]byte(token))
 	if answer, ok := v.cache.lookup(key, v.now()); ok {
@@ -644,8 +689,13 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string, spe
 		if answer, ok := v.cache.lookup(key, v.now()); ok {
 			return answer, nil
 		}
-		if spend && !v.addresses.AllowAt(v.address(r), v.now()) {
-			return Introspection{}, ErrRateLimited
+		giveBack := func(time.Time) {}
+		if spend {
+			back, ok := v.addresses.TakeAt(v.address(r), v.now())
+			if !ok {
+				return Introspection{}, ErrRateLimited
+			}
+			giveBack = back
 		}
 		answer, err := v.introspect(ctx, token)
 		if err != nil {
@@ -656,6 +706,7 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string, spe
 		// having: a caller presenting a token the broker does not know is the caller the address
 		// bucket above is there to slow.
 		if answer.Active {
+			giveBack(v.now())
 			v.cache.remember(key, answer, v.now())
 		}
 		return answer, nil
@@ -666,19 +717,85 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string, spe
 	return shared.(Introspection), nil
 }
 
-// atOrigin is r as if it had reached Dispatch's own public origin directly: its URL's scheme and
-// host and its Host are that origin's, it carries TLS state exactly when that origin is https,
-// and it has no forwarding headers.
+// originFor is the origin of Options.Origins that r's proof names in its 'htu', which Verify
+// checks the proof against. A proof that names none of them, or whose 'htu' cannot be read here,
+// is checked against the first, and the library refuses it as it refuses any target that is not
+// this request's: ErrProofInvalid, before the replay store is asked anything. A proof is spent in
+// the one replay store under the target it names, so it is spent once whichever origin it names
+// and whichever host the request arrived under. With one origin there is nothing to choose, and
+// the proof is not read here at all.
+//
+// The 'htu' is read here without the proof's signature being checked: it only chooses the
+// expected target, and the library's check, which verifies that signature, compares that same
+// claim with it, so a proof whose claim was altered is refused there whatever was chosen.
+// Scheme and host are compared as the library compares them (normalizeHTU): without case, and
+// with the scheme's default port dropped, so no proof the library would accept at an origin is
+// refused for having been checked against another.
+func (v *Verifier) originFor(r *http.Request) *proofOrigin {
+	if len(v.origins) > 1 {
+		if target, err := url.Parse(claimedTarget(r.Header.Get("DPoP"))); err == nil {
+			host := withoutDefaultPort(target.Scheme, target.Host)
+			for i := range v.origins {
+				origin := &v.origins[i]
+				if strings.EqualFold(target.Scheme, origin.url.Scheme) && strings.EqualFold(host, origin.host) {
+					return origin
+				}
+			}
+		}
+	}
+	return &v.origins[0]
+}
+
+// claimedTarget is the 'htu' claim of proof, a compact JWS, read without checking its signature
+// (originFor says why that is sound), or "" when proof holds none this can read.
+func claimedTarget(proof string) string {
+	_, rest, found := strings.Cut(proof, ".")
+	if !found {
+		return ""
+	}
+	payload, _, found := strings.Cut(rest, ".")
+	if !found {
+		return ""
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Target string `json:"htu"`
+	}
+	if json.Unmarshal(decoded, &claims) != nil {
+		return ""
+	}
+	return claims.Target
+}
+
+// withoutDefaultPort is host with scheme's default port dropped, as RFC 3986 Section 6.2.3 has an
+// 'htu' compared and the library compares it.
+func withoutDefaultPort(scheme, host string) string {
+	switch {
+	case strings.EqualFold(scheme, "https"):
+		host, _ = strings.CutSuffix(host, ":443")
+	case strings.EqualFold(scheme, "http"):
+		host, _ = strings.CutSuffix(host, ":80")
+	}
+	return host
+}
+
+// atOrigin is r as if it had reached origin, one of the mounting program's own origins, directly:
+// its URL's scheme and host and its Host are that origin's, it carries TLS state exactly when that
+// origin is https, and it has no forwarding headers.
 //
 // The library rebuilds a proof's expected 'htu' from X-Forwarded-Proto and r.Host
 // (oauth2.RequestURL), both of which a caller behind a proxy could choose, so the proof would
-// name a URL the caller picked rather than Dispatch's. The broker answers this the same way for
-// its own OAuth routes (internal/cipher/api/handlers_oauth.go, atPublicURL): the caller signs
-// DISPATCH_SERVER_URL plus the request's path, and Dispatch checks against exactly that.
-func (v *Verifier) atOrigin(r *http.Request) *http.Request {
+// name a URL the caller picked rather than one of Dispatch's. The broker answers this the same
+// way for its own OAuth routes (internal/cipher/api/handlers_oauth.go, atPublicURL): the caller
+// signs the origin it calls plus the request's path, and Dispatch checks against exactly that,
+// for an origin it is configured to be reached at (originFor).
+func (v *Verifier) atOrigin(r *http.Request, origin *proofOrigin) *http.Request {
 	out := r.Clone(r.Context())
-	out.URL.Scheme, out.URL.Host, out.Host = v.origin.Scheme, v.origin.Host, v.origin.Host
-	out.TLS = v.originTLS
+	out.URL.Scheme, out.URL.Host, out.Host = origin.url.Scheme, origin.url.Host, origin.url.Host
+	out.TLS = origin.tls
 	out.Header.Del("X-Forwarded-Proto")
 	out.Header.Del("X-Forwarded-Host")
 	return out

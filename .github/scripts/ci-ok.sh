@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ci-ok is one of the two checks main's ruleset requires of ci.yaml's router, and this script is
-# its verdict. ci.yaml's `ci-ok` job runs it over `toJSON(needs)`, needing every job of the file
+# its verdict. `.github/workflows/ci.yaml#ci-ok` job runs it over `toJSON(needs)`, needing every job of the file
 # but itself and those CI_OK_EXEMPT names, and fails when this script does, so the job's own
 # check run carries the verdict — and a job's check run is in its run's own check suite, where a
 # check run POSTed with POST /repos/.../check-runs joins the first suite at that commit, which is
@@ -87,7 +87,7 @@
 # prints every job's result and whether it was selected, and an `::error::` for each failure
 # naming the job, its result and why.
 #
-# A job its paths selected and a pull request held back (ci-ok.jq's `gated`) did not run at this
+# A job its paths selected and a pull request held back (`.github/scripts/ci-ok.jq#gated`) did not run at this
 # head, and the verdict accepts its skip as it accepts any job changes did not select. Its own
 # line reads `<job>: skipped (...)` among the jobs that ran, and the pass line says every job
 # changes selected succeeded, so a reader of a green ci-ok could take it for a job that passed.

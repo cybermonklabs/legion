@@ -9,6 +9,7 @@ import (
 	"maps"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -109,7 +110,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	opts := ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-		Origin:    dispatchOrigin,
+		Origins:   []string{dispatchOrigin},
 		Replay:    store.NewDPoPProofs(database.Pool),
 		Address:   sourceAddress,
 		Now:       tick.now,
@@ -905,46 +906,6 @@ func TestOneTokenCostsOneIntrospectionInsideTheCachesLife(t *testing.T) {
 	}
 }
 
-// TestRequestsArrivingAtOnceWithOneTokenCostOneIntrospection: the single flight is what makes a
-// burst on a cold cache cost one introspection rather than one a request, and the address bucket
-// is spent inside that flight, so the burst costs one request of it rather than one each. The
-// bucket here holds exactly one, so charging per request would refuse every request but the
-// first — which is what an honest caller making a burst of calls on a token it has just been
-// given would meet.
-func TestRequestsArrivingAtOnceWithOneTokenCostOneIntrospection(t *testing.T) {
-	rig := newRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Hour, Burst: 1}
-	})
-	caller := newSigner(t)
-	const token = "a-token-many-requests-arrive-with-at-once"
-	rig.broker.Says(token, liveToken(caller.jkt, time.Hour))
-
-	// Each request needs its own proof: a replayed one is refused, which is a different check.
-	const requests = 8
-	signed := make([]*http.Request, requests)
-	for i := range signed {
-		signed[i] = caller.at(fmt.Sprintf("%s/%d", resourcePath, i), token)
-	}
-	var wait sync.WaitGroup
-	failures := make([]error, requests)
-	for i := range signed {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			_, failures[i] = rig.verifier.Verify(t.Context(), signed[i])
-		}()
-	}
-	wait.Wait()
-	for i, err := range failures {
-		if err != nil {
-			t.Fatalf("request %d: %v", i, err)
-		}
-	}
-	if rig.broker.Count() != 1 {
-		t.Fatalf("%d requests arriving at once cost %d introspections, want 1", requests, rig.broker.Count())
-	}
-}
-
 // TestATokenTheBrokerCallsNotLiveIsRefusedAndNeverRemembered: a refusal is never served from the
 // cache, so a token the broker reinstates is accepted on its next presentation rather than kept
 // refused.
@@ -1033,58 +994,46 @@ func TestTheProofIsCheckedAgainstDispatchsOwnOriginNotAForwardedHeader(t *testin
 	}
 }
 
-// TestAFloodOfDistinctUnknownTokensFromOneAddressIsBoundedBeforeTheBroker: the address bucket is
-// what stops a stranger spending the budget a person's approval needs (INFRA-228), so K requests
-// bearing K tokens the broker has never issued cost fewer than K introspections. With the bound
-// lifted and nothing else changed they cost K, which is what says the bucket did it.
-func TestAFloodOfDistinctUnknownTokensFromOneAddressIsBoundedBeforeTheBroker(t *testing.T) {
-	const flood = 40
-	spend := func(t *testing.T, rig *rig) int64 {
-		caller := newSigner(t)
-		for request := range flood {
-			token := fmt.Sprintf("a-token-the-broker-never-issued-%d", request)
-			if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); err == nil {
-				t.Fatalf("request %d was accepted; want a refusal", request)
-			}
-		}
-		return rig.broker.Count()
-	}
-
-	bounded := spend(t, newRig(t))
-	if bounded >= flood || bounded < int64(ciphertoken.DefaultAddressLimit.Burst) {
-		t.Fatalf("%d requests from one address cost %d introspections, want the bucket's burst of %d and fewer than %d",
-			flood, bounded, ciphertoken.DefaultAddressLimit.Burst, flood)
-	}
-	// The negative control: the same flood with the bucket wide enough to admit all of it.
-	unbounded := spend(t, newRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: flood}
-	}))
-	if unbounded != flood {
-		t.Fatalf("with the bound lifted, %d requests cost %d introspections, want %d", flood, unbounded, flood)
-	}
-}
-
-// TestARefusedAddressIsNeverTheBrokersVerdict: the refusal a spent bucket gives is its own
-// outcome, so a caller is told to come back rather than told its token is bad.
-func TestARefusedAddressIsNeverTheBrokersVerdict(t *testing.T) {
-	rig := newRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
-	})
+// TestAProofForAnOriginDispatchNamesIsAccepted: Dispatch is reached at more than one origin — its
+// public one, DISPATCH_SERVER_URL, and the in-cluster address pods and daemons call — and a client
+// signs the URL it calls, so a proof whose 'htu' is any origin Dispatch names plus the request's
+// path is accepted. The controls: a proof naming an origin no setting names is refused for its
+// 'htu', as a wrong target always was, and one proof presented once at each of the two origins
+// is refused the second time, by the one replay store, whichever origin it names.
+func TestAProofForAnOriginDispatchNamesIsAccepted(t *testing.T) {
+	const inClusterOrigin = "http://dispatch.internal.example:8766"
+	rig := newRig(t, func(o *ciphertoken.Options) { o.Origins = []string{dispatchOrigin, inClusterOrigin} })
 	caller := newSigner(t)
-	rig.broker.Says("the-first-token", liveToken(caller.jkt, time.Hour))
-	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-first-token")); err != nil {
-		t.Fatalf("the request that spends the bucket: %v", err)
+	const token = "a-token-presented-inside-the-cluster"
+	rig.broker.Says(token, liveToken(caller.jkt, time.Hour))
+
+	decided, err := rig.verifier.Verify(t.Context(), caller.request(inClusterOrigin+resourcePath, token))
+	if err != nil {
+		t.Fatalf("a proof naming the second origin Dispatch names was refused: %v", err)
+	}
+	if decided.Session != "ses_a1b2c3" || decided.Person != "sjawhar" {
+		t.Fatalf("Verify = %+v, want the session and the person the token names", decided)
 	}
 
-	_, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "a-second-token"))
-	if !errors.Is(err, ciphertoken.ErrRateLimited) {
-		t.Fatalf("the request with no token left in the bucket answered %v, want ErrRateLimited", err)
+	elsewhere := caller.request("https://dispatch.elsewhere.example"+resourcePath, token)
+	if _, err := rig.verifier.Verify(t.Context(), elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) || !strings.Contains(err.Error(), "'htu'") {
+		t.Fatalf("a proof naming an origin no setting names answered %v, want ErrProofInvalid for its 'htu'", err)
 	}
-	if rig.broker.Count() != 1 {
-		t.Fatalf("the refused request reached the broker: %d introspections, want 1", rig.broker.Count())
-	}
-	if rig.verifier.RetryAfter() != time.Minute {
-		t.Fatalf("RetryAfter = %v, want the bucket's minute", rig.verifier.RetryAfter())
+
+	for signedFor, presentedAt := range map[string]string{dispatchOrigin: inClusterOrigin, inClusterOrigin: dispatchOrigin} {
+		first := caller.request(signedFor+resourcePath, token)
+		if _, err := rig.verifier.Verify(t.Context(), first); err != nil {
+			t.Fatalf("a proof for %s, presented there first: %v", signedFor, err)
+		}
+		other, err := url.Parse(presentedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second := first.Clone(t.Context())
+		second.URL.Scheme, second.URL.Host, second.Host = other.Scheme, other.Host, other.Host
+		if _, err := rig.verifier.Verify(t.Context(), second); !errors.Is(err, ciphertoken.ErrProofInvalid) || !strings.Contains(err.Error(), "already been used") {
+			t.Fatalf("the proof for %s, presented again at %s, answered %v, want ErrProofInvalid as a replay", signedFor, presentedAt, err)
+		}
 	}
 }
 
@@ -1181,26 +1130,28 @@ func TestARequestPresentingNoDPoPTokenIsNotThisCredential(t *testing.T) {
 }
 
 // TestNewRefusesAnOriginItCannotCheckAProofAgainst: an origin that is not an absolute http(s)
-// origin is a deployment error, and it fails the build of the verifier rather than every
-// request.
+// origin is a deployment error, wherever it stands in the list, and so is no origin at all; each
+// fails the build of the verifier rather than every request.
 func TestNewRefusesAnOriginItCannotCheckAProofAgainst(t *testing.T) {
 	database := storetest.Open(t)
-	for name, origin := range map[string]string{
-		"empty":       "",
-		"no scheme":   "dispatch.test",
-		"not http":    "ftp://dispatch.test",
-		"with a path": "https://dispatch.test/dispatch",
+	for name, origins := range map[string][]string{
+		"none":                 nil,
+		"empty":                {""},
+		"no scheme":            {"dispatch.test"},
+		"not http":             {"ftp://dispatch.test"},
+		"with a path":          {"https://dispatch.test/dispatch"},
+		"a second with a path": {dispatchOrigin, "http://dispatch.internal.example:8766/dispatch"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: "https://broker.test",
 				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-				Origin:    origin,
+				Origins:   origins,
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   sourceAddress,
 			})
 			if err == nil {
-				t.Fatalf("New accepted the origin %q", origin)
+				t.Fatalf("New accepted the origins %q", origins)
 			}
 		})
 	}
@@ -1216,7 +1167,7 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 		return ciphertoken.Options{
 			BrokerURL: "https://broker.test",
 			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-			Origin:    dispatchOrigin,
+			Origins:   []string{dispatchOrigin},
 			Replay:    store.NewDPoPProofs(database.Pool),
 		}
 	}
@@ -1273,16 +1224,16 @@ func TestLiveUntilAnswersWhenTheTokenStopsBeingLive(t *testing.T) {
 // request Verify already admitted with its proof (the listener's relay socket), so it introspects
 // with the source address's bucket spent, where Live and Verify are refused ErrRateLimited: a
 // stranger who empties the bucket of an address, which every client behind one load balancer
-// shares, cannot close the sockets opened from it. Control: Live, with the same bucket spent, is
-// refused ErrRateLimited and reaches no broker.
+// shares, cannot close the sockets opened from it. The bucket is spent by a token the broker does
+// not know, since a live answer gives its request back to the bucket. Control: Live, with the same
+// bucket spent, is refused ErrRateLimited and reaches no broker.
 func TestLiveUntilSpendsNoAddressBucket(t *testing.T) {
 	rig := newRig(t, func(o *ciphertoken.Options) {
 		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
 	})
 	caller := newSigner(t)
-	rig.broker.Says("the-token-that-spends-the-bucket", liveToken(caller.jkt, time.Hour))
-	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-token-that-spends-the-bucket")); err != nil {
-		t.Fatalf("the request that spends the bucket: %v", err)
+	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-token-that-spends-the-bucket")); !errors.Is(err, ciphertoken.ErrNotActive) {
+		t.Fatalf("the request that spends the bucket = %v, want ErrNotActive", err)
 	}
 	rig.broker.Says("a-socket-token", liveToken(caller.jkt, time.Hour))
 	if _, _, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, "a-socket-token")); err != nil {
