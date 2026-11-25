@@ -166,14 +166,15 @@ func (p *planReadFailing) Plan(ctx context.Context, tx pgx.Tx, issue string, gen
 	return p.Store.Plan(ctx, tx, issue, generation)
 }
 
-// A retry of a registration already taken applies nothing, so register_plan reads again where each
-// task of the plan stands (runningAt). When that read fails, the retry is answered
-// 500 RECORD_UNAVAILABLE and records nothing more. The fault is a retry answered 200 without
-// `running`, which would tell the owner that no step of the plan runs. The control is the same
-// retry once the read works again: it is answered 200 with the plan.
-func TestARetryWhoseReadOfTheRecordFailsIsAnsweredRecordUnavailable(t *testing.T) {
+// register_plan reads where each task of the plan stands once the fact is taken (runningAt), on
+// the first registration and on its retry alike: the one path of `running`. When that read fails,
+// the registration is answered 500 RECORD_UNAVAILABLE with the version taken, and a retry while
+// the read still fails is answered the same and records nothing more. The fault is a registration
+// answered 200 without `running`, which would tell the owner that no step of the plan runs. The
+// control is the same registration once the read works again: it is answered 200 with the plan.
+func TestARegistrationWhoseReadOfTheRecordFailsIsAnsweredRecordUnavailable(t *testing.T) {
 	h, facts, statuses := planHarness(t)
-	records := &planReadFailing{Store: record.NewStore()}
+	records := &planReadFailing{Store: record.NewStore(), fail: true}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
@@ -181,20 +182,21 @@ func TestARetryWhoseReadOfTheRecordFailsIsAnsweredRecordUnavailable(t *testing.T
 	}).Handler
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	statuses.givePlan(planDoc, 4, taskBlock("a", "implementer reviewer"))
-	const taken = `{"plan":{"version":4,"tasks":[{"id":"a","steps":["implementer","reviewer"]}]}}`
+	const unread = "Legion took version 4 of the plan, but could not read where its tasks stand; give register_plan the same version again to read them"
+	given := []intake.Fact{givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...)}
 
-	if first := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4); first.Code != http.StatusOK || strings.TrimSpace(first.Body.String()) != taken {
-		t.Fatalf("register version 4 = %d %s, want 200 with its one task", first.Code, first.Body)
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4), http.StatusInternalServerError, "RECORD_UNAVAILABLE", unread)
+	if got := facts.recorded(); !reflect.DeepEqual(got, given) {
+		t.Fatalf("facts after the first registration = %#v, want %#v: the version is taken though its answer could not be read", got, given)
 	}
-	records.fail = true
-	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4), http.StatusInternalServerError, "RECORD_UNAVAILABLE",
-		"could not read where the tasks of the plan stand")
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4), http.StatusInternalServerError, "RECORD_UNAVAILABLE", unread)
 	records.fail = false
+	const taken = `{"plan":{"version":4,"tasks":[{"id":"a","steps":["implementer","reviewer"]}]}}`
 	if again := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4); again.Code != http.StatusOK || strings.TrimSpace(again.Body.String()) != taken {
 		t.Fatalf("the retry once the read works = %d %s, want 200 with its one task", again.Code, again.Body)
 	}
-	if got, want := facts.recorded(), []intake.Fact{givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...)}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("facts = %#v, want %#v: the one registration taken, and nothing for either retry", got, want)
+	if got := facts.recorded(); !reflect.DeepEqual(got, given) {
+		t.Fatalf("facts = %#v, want %#v: the one registration taken, and nothing for either retry", got, given)
 	}
 }
 
@@ -218,14 +220,12 @@ func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	}
 }
 
-// register_plan's answer names each step of a task that runs or waits (contract 262), as a list in
-// the order the workflow read them (record.StoredPlan.Running): both steps of task a, the first
-// first. A task with none, b, carries no `running` key at all, rather than an empty or a null list.
-func TestRegisterPlanNamesEachStepThatRunsOrWaits(t *testing.T) {
-	running := []record.RunningStep{
-		{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer},
-		{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: claim.RoleReviewer},
-	}
+// register_plan's answer names the act each running task stands at (contract 262), as a list of
+// one entry (record.StoredPlan.Running gives one for each running task): step 2 of task a, the
+// reviewer. A task that does not run, b, carries no `running` key at all, rather than an empty or
+// a null list.
+func TestRegisterPlanNamesTheActEachRunningTaskStandsAt(t *testing.T) {
+	running := []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: claim.RoleReviewer}}
 	answer := PlanRegisterResponse{Plan: registeredPlan(plan.Plan{ArtifactID: planDoc, Version: 3, Tasks: []plan.Task{
 		{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}}, {ID: "b"}}}, running)}
 	shaped, _ := shapeAnswer(AnswerPlanRegister, answer, runningStepContract, runningStepContract)
@@ -234,9 +234,9 @@ func TestRegisterPlanNamesEachStepThatRunsOrWaits(t *testing.T) {
 		t.Fatalf("marshal the answer: %v", err)
 	}
 	const want = `{"plan":{"version":3,"tasks":[{"id":"a","steps":["implementer","reviewer"],"running":[` +
-		`{"kind":"step","place":1,"role":"implementer"},{"kind":"step","place":2,"role":"reviewer"}]},{"id":"b","steps":[]}]}}`
+		`{"kind":"step","place":2,"role":"reviewer"}]},{"id":"b","steps":[]}]}}`
 	if string(encoded) != want {
-		t.Errorf("register_plan answers %s,\nwant %s: each step of task a that runs or waits, in its order, and no `running` on task b", encoded, want)
+		t.Errorf("register_plan answers %s,\nwant %s: the act task a stands at, and no `running` on task b", encoded, want)
 	}
 }
 
@@ -302,9 +302,10 @@ func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 	}
 }
 
-// register_plan reads each task block's `parent` against the document it registers (plan.ParentOf),
-// as a reference to one of its blocks names it (documentReference): `dispatch://<KEY>/spec` for
-// the issue's primary document, and `dispatch://<KEY>/artifact/<slug>` for any other. So a
+// register_plan reads each task block's `parent` against the document it registers (plan.ParentOf,
+// which plan.FromBlocks calls), as a reference to one of its blocks names it (dispatch.DocumentRef):
+// `dispatch://<KEY>/spec` for the issue's primary document, and `dispatch://<KEY>/artifact/<slug>`
+// for any other. So a
 // `parent` in the registered document's form puts its block under the block it names, and the
 // other form names another document, whatever its id. Validate's refusals of an element and of a
 // `parent` that names a block the version does not hold reach the answer among its reasons. A

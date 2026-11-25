@@ -41,7 +41,7 @@ func seedPlanOfTheReleaseBefore(t *testing.T, pool *pgxpool.Pool, key string, ge
 		}
 		for i, step := range steps {
 			if _, err := tx.Exec(t.Context(), `insert into plan_steps (issue, generation, task, position, role, type, agent_key)
-				values ($1, $2, $3, $4, $5, $6, $7)`, key, int64(generation), task, i+1, step.Role, builtinDeployment.Roles[step.Role].Type, step.Key); err != nil {
+				values ($1, $2, $3, $4, $5, $6, $7)`, key, int64(generation), task, i+1, step.Role, record.BuiltinDeployment.Roles[step.Role].Type, step.Key); err != nil {
 				return err
 			}
 		}

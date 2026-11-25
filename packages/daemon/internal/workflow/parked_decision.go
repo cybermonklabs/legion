@@ -273,11 +273,11 @@ func (e *Engine) GatedSteps() []record.DesignStep { return e.cfg.Steps }
 func stepRef(key string, step record.DesignStep) string {
 	switch step {
 	case record.DesignStepDecisions:
-		return "dispatch://" + key + "/artifact/" + dispatch.DecisionsSlug
+		return dispatch.DocumentRef(key, false, dispatch.DecisionsSlug)
 	case record.DesignStepCriteria:
-		return "dispatch://" + key + "/artifact/" + dispatch.VerificationSlug
+		return dispatch.DocumentRef(key, false, dispatch.VerificationSlug)
 	}
-	return "dispatch://" + key + "/spec"
+	return dispatch.DocumentRef(key, true, "")
 }
 
 // ChangesSuperseded says whether notice, a design-changes-requested notice on issue, is no longer

@@ -1738,15 +1738,10 @@ type Handler interface {
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
 // sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
 // id stays the same, and writes nothing where it sets it.
-//
-// Running is where each running task of a plan an owner gave stands (PlanGiven), read in the
-// transaction that took the version, which register_plan answers: the owner tells the agent of the
-// act that runs of a decision for it. Every other fact, a refusal and a duplicate carry none.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
-	Running   []record.RunningStep
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
@@ -2163,7 +2158,6 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 				result.Refusal = candidate.Refusal
 			}
 			result.Unspent = result.Unspent || candidate.Unspent
-			result.Running = append(result.Running, candidate.Running...)
 		}
 		if err := settle(ctx, tx); err != nil {
 			return err

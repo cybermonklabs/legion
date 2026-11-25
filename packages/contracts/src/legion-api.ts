@@ -2010,10 +2010,10 @@ const legionAnsweredPause = z.object({
  * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
  * reads when the task's work starts, so it is answered with no step: an empty list, never null.
- * From contract 262 a task that runs also carries `running` (a list of `api.RunningStep`): each
- * step of it that runs or waits once the version is taken, in its order. Each names its `kind`
- * (`step`, `retro` or `merge`), its `place` (from 1 for a step, 0 for the retro and the merge) and
- * the `role` whose agent works it. A later version can change only the text of a running task, and
+ * From contract 262 a task that runs also carries `running` (a list of `api.RunningStep`): one
+ * entry, the act the task stands at once the version is taken. It names its `kind` (`step`,
+ * `retro` or `merge`), its `place` (from 1 for a step, 0 for the retro and the merge) and the
+ * `role` whose agent works it. A later version can change only the text of a running task, and
  * that agent reads no new start of it, so it is the agent the owner sends a message to for a
  * decision about the act that runs now. A plan whose content the daemon does not take is answered
  * `409 PLAN_REFUSED`, whose `error` holds every reason in order; the body's `reasons` lists them by

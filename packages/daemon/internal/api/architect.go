@@ -331,30 +331,30 @@ func requestFactID(route string) string {
 // applyFact applies one fact of a fact route and answers the empty object every fact route
 // answers (AnswerEmptyObject), or the refusal the workflow committed.
 func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, response any) {
-	if _, ok := s.applyFactResult(w, r, eventID, fact); ok {
+	if s.factTaken(w, r, eventID, fact) {
 		s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, response)
 	}
 }
 
-// applyFactResult applies one fact of a fact route and answers its result, or writes the failure
-// of the apply or the refusal the workflow committed and answers false. A route whose answer is
-// not the empty object, and is read from what the fact did (register_plan's AnswerPlanRegister,
-// with intake.Result.Running), writes its answer from the result itself.
-func (s *server) applyFactResult(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact) (intake.Result, bool) {
+// factTaken applies one fact of a fact route and says whether the workflow took it, or writes the
+// failure of the apply or the refusal the workflow committed and answers false. A route whose
+// answer is not the empty object, register_plan's (AnswerPlanRegister), reads what it answers once
+// the fact is taken and writes that itself.
+func (s *server) factTaken(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact) bool {
 	if s.pool == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
-		return intake.Result{}, false
+		return false
 	}
 	result, err := s.apply(r.Context(), "api", eventID, fact)
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact")
-		return intake.Result{}, false
+		return false
 	}
 	if result.Refusal != nil {
 		s.writeRefusal(w, r, result.Refusal)
-		return intake.Result{}, false
+		return false
 	}
-	return result, true
+	return true
 }
 
 func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {

@@ -337,6 +337,19 @@ const (
 	VerificationSlug         = "verification-md"
 )
 
+// DocumentRef is a document of issue as a reference to one of its blocks names it before its
+// `#b-`, as Dispatch writes one (FormatBlockRef in packages/envoy/internal/dispatch/text):
+// `dispatch://<issue>/spec` for the issue's primary document, and
+// `dispatch://<issue>/artifact/<slug>` for any other, which Dispatch files under slug. It is the
+// daemon's one writer of that form: the document a design-gate step reviews (workflow's stepRef)
+// and the plan document a block's `parent` is read against (api's planAt) are both named by it.
+func DocumentRef(issue string, primary bool, slug string) string {
+	if primary {
+		return "dispatch://" + issue + "/spec"
+	}
+	return "dispatch://" + issue + "/artifact/" + slug
+}
+
 // ApprovedLatest is the version Dispatch shows approved when that approval is of its latest
 // version, and 0 otherwise.
 func (a Approval) ApprovedLatest() int {

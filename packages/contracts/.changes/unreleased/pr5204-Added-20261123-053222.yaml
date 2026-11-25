@@ -1,7 +1,7 @@
 kind: Added
 body: |-
   The daemon API schemas describe contract 262. Each task of `register_plan`'s answer that runs
-  carries `running`, a list of each step that runs or waits, each with its `kind`, `place` and `role`.
+  carries `running`, a list of one entry, the act it stands at, with its `kind`, `place` and `role`.
 time: 2026-11-23T05:32:22Z
 custom:
     Issue: pr5204
