@@ -72,8 +72,7 @@ const (
 // nothing of that predicate, and this literal does. No delivery runs out of a person or a session,
 // so it leaves out nothing those reads would answer. Under state=dismissed the walk reads the
 // relations out of the person into each of the page's nodes by graph_tuples_as_of_in, and states
-// none of it; under state=inbox and state=unread it states it, so those reads can take
-// graph_tuples_current (meInboxBuild).
+// none of it (meInboxBuild).
 const meInboxOutOfPerson = `t.kind <> '` + graphstore.TupleDeliveredTo + `'`
 
 // The kinds of row the page draws, as an entry's page column names them (meInboxPageRows).
@@ -1308,7 +1307,8 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + atHorizon
 		} else {
 			// The person's end and then the page's node bind graph_tuples_current's whole key, and
-			// meInboxOutOfPerson states that index's predicate, so this read is one index descent.
+			// the value test and meInboxOutOfPerson state that index's predicate, so this read is one
+			// index descent.
 			outbound = `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
 				and t.to_kind = p.node_kind and t.to_id = p.node_id
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon

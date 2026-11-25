@@ -162,9 +162,8 @@ func versionReads(texts []string) (probes int, beside []string) {
 // that counts each statement of a batch on its own (eachOfABatch) for the one request marked
 // countedRead, the read the test sends, and its horizon observing through the marked horizon pool
 // (markedHorizonPool), so ownStatements leaves out the horizon's own. It is not newMeInboxRig
-// because that rig's recorder may count by a window the test arms rather than by the marked
-// request (legion/INFRA-1152's f43afdc7), which this test does not arm; a recorder built here
-// counts the marked request on either.
+// because that rig's recorder counts only inside a window the test arms (windowedRead) rather than
+// by the marked request, and this test arms none; a recorder built here counts the marked request.
 func newGateRig(t *testing.T) *meInboxRig {
 	t.Helper()
 	database := storetest.Open(t)
@@ -183,15 +182,15 @@ func newGateRig(t *testing.T) *meInboxRig {
 
 // The one read carries each entry's approval gate in its one statement (c-approval-one-statement):
 // over 3 issues with a row each and over 12, alice's Inbox is one statement. The rig counts each
-// statement of a batch on its own (newGateRig's eachOfABatch) and leaves out only the four that
-// frame the read's statement in its read-only transaction and read nothing: its begin, its two
-// set local settings and its commit (meInboxReadStatements). So no statement beside it, in its
-// batch or not, reads a gate document's versions, its review or its request for each document;
-// the text of every statement the read sent reads artifact_versions only through the probe of
-// each gate document's latest version (gateVersionProbe), so it reads no document's version rows
-// to pick the latest among them; each row carries the gate its issue was seeded to, on its ask
-// and on its thread; and the issue read answers the same gate, field for field, so one
-// computation answers both reads.
+// statement of a batch on its own (newGateRig's eachOfABatch) and leaves out only the horizon's
+// own (ownStatements) and the four that frame the read's statement in its read-only transaction
+// and read nothing: its begin, its two set local settings and its commit (meInboxReadStatements).
+// So no statement beside it, in its batch or not, reads a gate document's versions, its review or
+// its request for each document; the text of every statement the read sent reads
+// artifact_versions only through the probe of each gate document's latest version
+// (gateVersionProbe), so it reads no document's version rows to pick the latest among them; each
+// row carries the gate its issue was seeded to, on its ask and on its thread; and the issue read
+// answers the same gate, field for field, so one computation answers both reads.
 func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 	rig := newGateRig(t)
 	handler := rig.handler
@@ -268,7 +267,7 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 
 	if len(three) != 1 || len(twelveStatements) != 1 {
 		t.Fatalf("the 3-row read ran %d statements and the 12-row read %d, want 1 each, counting each statement of a batch "+
-			"but the begin, the set local settings and the commit that frame the read's; every statement the 3-row read sent:\n%s\n"+
+			"but the horizon's own and the begin, the set local settings and the commit that frame the read's; every statement the 3-row read sent:\n%s\n"+
 			"=== every statement the 12-row read sent:\n%s",
 			len(three), len(twelveStatements), strings.Join(threeSent, "\n---\n"), strings.Join(twelveSent, "\n---\n"))
 	}
