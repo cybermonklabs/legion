@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -80,54 +81,50 @@ func TestRunReportsTheCommandsOwnFailureWhenAChildInItsGroupHoldsItsOutput(t *te
 	}
 }
 
-// A command that exits on its own did not time out, however long procgroup.WaitDelay then holds
-// Run open for a child still holding its output pipe, and however much of that time passes after
-// its budget: a Run that read TimedOut from the deadline having passed would report this git's own
-// exit 128 as a timeout, and a clone that failed transiently inside the last WaitDelay of its
-// budget, git-remote-https still holding the pipe, would read as timed out, which
+// A command that exits on its own inside its Timeout did not time out, however long
+// procgroup.WaitDelay then holds Run open for a child still holding its output pipe. The Timeout
+// is 100 ms short of WaitDelay, so a run whose git exits inside it returns past it: a Run that
+// read TimedOut from the deadline having passed, or from the time the run took, would report this
+// git's own exit 128 as a timeout, and a clone that failed transiently inside the last WaitDelay
+// of its budget, git-remote-https still holding the pipe, would read as timed out, which
 // transientCloneFailure never retries.
 //
-// The budget passes at a fact of the run, not at a time: the caller's deadline passes once the
-// git's process group is gone (budgetPassedOnceTheGroupIsGone), after the git has exited on its
-// own and Go has reaped it. The child leaves the group (setsid) before the git exits, so the stop
-// that end sends finds nothing to signal. A Timeout counted from before the shell started could
-// pass, on a loaded machine, before the shell had exited. Only a run in which the budget passed
-// before Run read it (exitedHook, which Run calls just before) is judged: a run of the other order
-// shows nothing of a Run that reads a passed budget, so the row runs the git again until a run of
-// the right order comes, within a minute.
+// The child leaves the git's process group (setsid) and writes its pid from inside its new session
+// before the git exits (heldChild, escaped), so the Timeout's stop, where os/exec still runs it
+// between Go's reap of the git and Wait's read of its context, finds no group left to signal. A
+// loaded machine can hold the git past a Timeout counted from before its shell started, and that
+// run, which the Timeout's stop ended, shows nothing of this. Only a run whose git was seen reaped
+// before its Timeout could pass is judged (watchReaped), so the row runs the git again until a run
+// of the right order comes, within a minute.
 func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline(t *testing.T) {
+	const timeout = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
-	t.Cleanup(func() { exitedHook.Store(nil) })
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		leader, fakeGit := filepath.Join(dir, "leader"), filepath.Join(dir, "git")
-		script := "#!/bin/sh\necho $$ >'" + leader + "'\necho 'fatal: unable to access' >&2\n" + heldChild(t, true) + "\nexit 128\n"
+		script := "#!/bin/sh\necho $$ >" + shellprefix.Literal(leader) + "\necho 'fatal: unable to access' >&2\n" + heldChild(t, true) + "\nexit 128\n"
 		if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
-		ctx, watch := budgetPassedOnceTheGroupIsGone(t, leader, within)
-		passedFirst := false
-		hook := func(Command, *os.ProcessState) { passedFirst = errors.Is(ctx.Err(), context.DeadlineExceeded) }
-		exitedHook.Store(&hook)
-		timeout := testwait.Remaining(t)
+		reaped := watchReaped(leader, within)
 		run := NewRunner(timeout, map[string]string{"git": fakeGit})
 
 		started := time.Now()
-		result, err := run.Run(ctx, Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
+		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
 		elapsed := time.Since(started)
-		exitedHook.Store(nil)
-		<-watch.done
+		at := <-reaped
 
-		if !watch.gone {
-			t.Fatalf("run %d: the git's process group was not gone within %s of the run's start, so its budget never passed (Run = exit %d, TimedOut %t, error %v after %s)",
+		if at.IsZero() {
+			t.Fatalf("run %d: the git was not seen reaped within %s of the run's start (Run = exit %d, TimedOut %t, error %v after %s)",
 				runs, within, result.ExitCode, result.TimedOut, err, elapsed)
 		}
-		if !passedFirst {
+		if !at.Before(started.Add(timeout)) {
 			if time.Now().Before(until) {
+				t.Logf("run %d is not judged: the git was seen reaped %s after the run's start, not inside its %s Timeout", runs, at.Sub(started), timeout)
 				continue
 			}
-			t.Fatalf("no run of the right order in %d runs over %s: in each, the budget passed only after Run had read it", runs, within)
+			t.Fatalf("no run of the right order in %d runs over %s: in each, the git was seen reaped only after its %s Timeout could pass", runs, within, timeout)
 		}
 		if err != nil {
 			t.Fatalf("run %d: Run = %v, want the command's own exit", runs, err)
@@ -136,7 +133,7 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 			t.Fatalf("run %d: Run returned after %s, inside WaitDelay: nothing held the pipe past the git's exit, so this run proves nothing", runs, elapsed)
 		}
 		if result.TimedOut || result.ExitCode != 128 {
-			t.Errorf("run %d: Run = exit %d, TimedOut %t after %s; want exit 128, not timed out: git failed on its own before its budget passed", runs, result.ExitCode, result.TimedOut, elapsed)
+			t.Errorf("run %d: Run = exit %d, TimedOut %t after %s; want exit 128, not timed out: git failed on its own inside its %s Timeout", runs, result.ExitCode, result.TimedOut, elapsed, timeout)
 		}
 		return
 	}
@@ -211,49 +208,47 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t 
 	}
 }
 
-// A RunCommand command that exits on its own did not time out, however long procgroup.WaitDelay
-// then holds the run open for a child still holding its output pipes, and however much of that
-// time passes after its budget: a run that read a timeout from the deadline having passed would
-// report jj's own exit 3 as a timeout. The budget passes once the command's process group is gone
-// (budgetPassedOnceTheGroupIsGone), the child having left it (setsid), as in
-// TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline. Only a
-// run in which the budget passed before RunCommand read it is judged: the Starter's done, which
-// procgroup.Run calls once the wait has read the exit, records whether it had.
+// A RunCommand command that exits on its own inside its budget did not time out, however long
+// procgroup.WaitDelay then holds the run open for a child still holding its output pipes. The
+// budget is 100 ms short of procgroup.WaitDelay, so a run whose command exits inside it returns
+// past it: a run that read a timeout from the deadline having passed, or from the time the run
+// took, would report jj's own exit 3 as a timeout. The child leaves the command's process group
+// before the command exits, and only a run whose command was seen reaped before its budget could
+// pass is judged, as in
+// TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline.
 func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *testing.T) {
+	const budget = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		leader := filepath.Join(dir, "leader")
-		ctx, watch := budgetPassedOnceTheGroupIsGone(t, leader, within)
-		passedFirst := false
-		start := func(cmd *exec.Cmd) (func(), error) {
-			return func() { passedFirst = errors.Is(ctx.Err(), context.DeadlineExceeded) }, cmd.Start()
-		}
+		reaped := watchReaped(leader, within)
 		script := `echo $$ >"$1"; echo answered; echo refused >&2` + "\n" + heldChild(t, true) + "\nexit 3"
-		budget := testwait.Remaining(t)
 
 		started := time.Now()
-		out, err := RunCommand(ctx, start, budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", leader})
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", leader})
 		elapsed := time.Since(started)
-		<-watch.done
+		cancel()
+		at := <-reaped
 
-		if !watch.gone {
-			t.Fatalf("run %d: the command's process group was not gone within %s of the run's start, so its budget never passed (RunCommand = %q, %v after %s)",
-				runs, within, out, err, elapsed)
+		if at.IsZero() {
+			t.Fatalf("run %d: the command was not seen reaped within %s of the run's start (RunCommand = %q, %v after %s)", runs, within, out, err, elapsed)
 		}
-		if !passedFirst {
+		if !at.Before(started.Add(budget)) {
 			if time.Now().Before(until) {
+				t.Logf("run %d is not judged: the command was seen reaped %s after the run's start, not inside its %s budget", runs, at.Sub(started), budget)
 				continue
 			}
-			t.Fatalf("no run of the right order in %d runs over %s: in each, the budget passed only after RunCommand had read it", runs, within)
+			t.Fatalf("no run of the right order in %d runs over %s: in each, the command was seen reaped only after its %s budget could pass", runs, within, budget)
 		}
 		if elapsed < procgroup.WaitDelay {
 			t.Fatalf("run %d: the run returned after %s, inside procgroup.WaitDelay: nothing held the pipe, so this run proves nothing", runs, elapsed)
 		}
 		if err == nil || !strings.Contains(err.Error(), "Command failed (exit 3)") || strings.Contains(err.Error(), "timed out") {
-			t.Errorf("run %d: RunCommand = %q, %v after %s; want an error naming \"Command failed (exit 3)\" and no timeout: the command exited on its own before its budget passed",
-				runs, out, err, elapsed)
+			t.Errorf("run %d: RunCommand = %q, %v after %s; want an error naming \"Command failed (exit 3)\" and no timeout: the command exited on its own inside its %s budget",
+				runs, out, err, elapsed, budget)
 		}
 		return
 	}
@@ -463,7 +458,9 @@ func killPIDFile(t *testing.T, pidFile string) {
 // written its pid. The child runs until the test's cleanup writes its release, and kills it, or
 // until this test process is gone: never for a span of its own, so no run ends, and no assertion
 // holds, by the child's own exit. escaped starts the child under setsid, out of the command's
-// process group, so the group is gone once the command is.
+// process group, so the group is gone once the command is; the child writes its pid from inside
+// its new session, so the command goes on only once the child has left the group. The child's
+// paths reach it as arguments, quoted once (shellprefix.Literal).
 func heldChild(t *testing.T, escaped bool) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -474,16 +471,15 @@ func heldChild(t *testing.T, escaped bool) string {
 		}
 		killPIDFile(t, pidFile)
 	})
-	script := fmt.Sprintf("echo $$ >'%[1]s.tmp' && mv '%[1]s.tmp' '%[1]s'\nwhile [ ! -e '%[2]s' ] && kill -0 %[3]d 2>/dev/null; do sleep 0.05; done\n",
-		pidFile, release, os.Getpid())
+	script := fmt.Sprintf("echo $$ >\"$1.tmp\" && mv \"$1.tmp\" \"$1\"\nwhile [ ! -e \"$2\" ] && kill -0 %d 2>/dev/null; do sleep 0.05; done\n", os.Getpid())
 	if err := os.WriteFile(holder, []byte(script), 0o600); err != nil {
 		t.Fatalf("write the held child's script: %v", err)
 	}
-	start := "sh '" + holder + "' &"
+	start := "sh " + shellprefix.Literal(holder) + " " + shellprefix.Literal(pidFile) + " " + shellprefix.Literal(release) + " &"
 	if escaped {
 		start = "setsid " + start
 	}
-	return start + "\nwhile [ ! -s '" + pidFile + "' ]; do sleep 0.01; done"
+	return start + "\nwhile [ ! -s " + shellprefix.Literal(pidFile) + " ]; do sleep 0.01; done"
 }
 
 // cutRunMargin is what the rows bounded by a minute leave of the test binary's deadline
@@ -491,38 +487,23 @@ func heldChild(t *testing.T, escaped bool) string {
 // WaitDelay, and a second for the row to fail in.
 const cutRunMargin = procgroup.StopGrace + procgroup.WaitDelay + time.Second
 
-// groupWatch is what budgetPassedOnceTheGroupIsGone saw of one run: whether the group was gone
-// within its bound, written before done closes.
-type groupWatch struct {
-	done chan struct{}
-	gone bool
-}
-
-// budgetPassedOnceTheGroupIsGone is a caller's context whose deadline passes as a budget's does
-// (testwait.StandInDeadline: its Err and its cause context.DeadlineExceeded) once the process
-// group of the command that writes its own pid to leader as its first act is gone. kill(-pid, 0)
-// answers ESRCH once no member of that group is left: after the command has exited on its own and
-// Go has reaped it, where its children have left the group (heldChild, escaped). Wait reaps the
-// command before it starts the WaitDelay a child holding the pipes keeps the run open for. A group
-// not gone within bound ends the context as a cancel, so a run still going then reads no budget
-// passed; done closes either way.
-func budgetPassedOnceTheGroupIsGone(t *testing.T, leader string, bound time.Duration) (context.Context, *groupWatch) {
-	t.Helper()
-	ctx, pass, cancel := testwait.StandInDeadline(context.Background())
-	t.Cleanup(cancel)
-	watch := &groupWatch{done: make(chan struct{})}
+// watchReaped watches, from before the command starts, for the command that writes its own pid to
+// leader as its first act, and answers once when it first saw that pid answer ESRCH, which it does
+// once Go has reaped the command (a zombie still answers), or the zero time where it never did
+// within bound. Each moment is read after the fact it stands for.
+func watchReaped(leader string, bound time.Duration) <-chan time.Time {
+	seen := make(chan time.Time, 1)
 	go func() {
-		defer close(watch.done)
-		if watch.gone = testwait.Holds(bound, testwait.Poll, func() bool {
+		var at time.Time
+		if testwait.Holds(bound, testwait.Poll, func() bool {
 			pid := pidIn(leader)
-			return pid > 0 && errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH)
-		}); watch.gone {
-			pass(context.DeadlineExceeded)
-			return
+			return pid > 0 && errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+		}) {
+			at = time.Now()
 		}
-		cancel()
+		seen <- at
 	}()
-	return ctx, watch
+	return seen
 }
 
 // pidIn is the pid a command's shell wrote to path, once the whole line is there, and 0 before.

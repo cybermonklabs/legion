@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -569,7 +570,7 @@ func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t 
 		t.Fatal(err)
 	}
 	ctx, started, held, bound, ran := passedOnceStarted(t, context.DeadlineExceeded)
-	s.install("chromium", "#!/bin/sh\n: >'"+started+"'\nuntil [ -e '"+held+"' ]; do '"+sleep+"' 0.01; done\n")
+	s.install("chromium", "#!/bin/sh\n: >"+shellprefix.Literal(started)+"\nuntil [ -e "+shellprefix.Literal(held)+" ]; do "+shellprefix.Literal(sleep)+" 0.01; done\n")
 
 	states, err := CheckImage(ctx, s.image("LEGION_TEST_NO_PYTHON=1"))
 
@@ -618,9 +619,9 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 	}
 	// Each run's files are in the directory LEGION_TEST_RUN names. Chromium runs until a signal
 	// ends it or the row's cleanup writes held, never on a timer of its own.
-	s.install("chromium", "#!/bin/sh\n"+
-		"trap ': >\"$LEGION_TEST_RUN/stopped\"; until [ -e \"$LEGION_TEST_RUN/release\" ]; do '"+sleep+"' 0.01; done; : >\"$LEGION_TEST_RUN/released\"; exit 1' TERM\n"+
-		"until [ -e \"$LEGION_TEST_RUN/held\" ]; do '"+sleep+"' 0.01; done\n")
+	s.install("chromium", "#!/bin/sh\nSLEEP="+shellprefix.Literal(sleep)+"\n"+
+		"trap ': >\"$LEGION_TEST_RUN/stopped\"; until [ -e \"$LEGION_TEST_RUN/release\" ]; do \"$SLEEP\" 0.01; done; : >\"$LEGION_TEST_RUN/released\"; exit 1' TERM\n"+
+		"until [ -e \"$LEGION_TEST_RUN/held\" ]; do \"$SLEEP\" 0.01; done\n")
 	watch := testwait.Bounded(t, 2*answerBudget, time.Second)
 	until := time.Now().Add(testwait.Bounded(t, 3*answerBudget, 2*answerBudget))
 	for runs := 1; ; runs++ {
@@ -706,23 +707,27 @@ func TestRunReportsTheCommandsOwnExitWhenAChildHoldsItsOutputPastItsExit(t *test
 	}
 }
 
-// A command that exited on its own did not time out either where its budget passed while
-// procgroup.WaitDelay still held the run open for a child holding its output pipe: a run that read
-// a timeout from its budget's cause alone, and not from whether that budget's stop reached the
-// command (killed), would report "timed out" for a check whose command answered. The budget passes
-// here with its cause (errCommandTimeout) once the command's leader has been reaped, a fact of the
-// run (passedOnceReaped), and the child that holds the pipe runs in a session of its own (setsid)
-// until the budget has passed. So the run returns only after the budget passed, and the budget's
-// stop, where os/exec still runs it in the window between the reap and Wait's read of its context,
-// finds no process group left to signal, which leaves killed false whichever way that window
-// falls. A run that returned before the watch released the child (WaitDelay outlasted a watch a
-// loaded machine held up) crossed no budget, so it is not judged, and the row runs again, within a
-// minute.
+// A command that exited on its own inside its budget did not time out, however long
+// procgroup.WaitDelay then holds the run open for a child holding its output pipe, and however much
+// of that time passes after the budget: a run that read a timeout from its budget's cause alone,
+// or from the time the run took, and not from whether that budget's stop reached the command
+// (killed), would report "timed out" for a check whose command answered. The budget is 100 ms
+// short of procgroup.WaitDelay, so a run whose command exits inside it returns past it.
+//
+// The child that holds the pipe runs in a session of its own (setsid) and writes its pid from
+// inside that session, and the command exits only once that pid is written, so the budget's stop,
+// where os/exec still runs it between the command's reap and Wait's read of its context, finds no
+// process group left to signal, which leaves killed false whichever way that window falls. A
+// loaded machine can hold the command past a budget counted from before its shell started, and
+// that run, which the budget's stop ended, shows nothing of this. Only a run whose command was
+// seen reaped before its budget could pass is judged (watchReaped), so the row runs the command
+// again until a run of the right order comes, within a minute.
 func TestRunReportsTheCommandsOwnExitWhenItsBudgetPassesWhileAChildOutsideItsGroupHoldsItsOutput(t *testing.T) {
 	if _, err := exec.LookPath("setsid"); err != nil {
 		t.Fatalf("setsid is not on PATH (%v): this row starts the child that holds the pipe in a session of its own", err)
 	}
-	within := testwait.Bounded(t, time.Minute, answerBudget+time.Second)
+	const budget = procgroup.WaitDelay - 100*time.Millisecond
+	within := testwait.Bounded(t, time.Minute, budget+procgroup.StopGrace+procgroup.WaitDelay+time.Second)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
@@ -731,70 +736,58 @@ func TestRunReportsTheCommandsOwnExitWhenItsBudgetPassesWhileAChildOutsideItsGro
 			_ = os.WriteFile(held, nil, 0o644)
 			killPIDFile(t, holderFile)
 		})
-		ctx, releasedAt := passedOnceReaped(t, leaderFile, held)
+		reaped := watchReaped(leaderFile, within)
 		img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 
-		r := img.runWithin(ctx, answerBudget, "sh", "-c", `echo $$ >"$1"; echo 1.2.3; setsid sh -c 'until [ -e "$1" ]; do sleep 0.01; done' sh "$3" & echo $! >"$2"; exit 0`, "sh", leaderFile, holderFile, held)
-		returned := time.Now()
-		released := releasedAt()
+		started := time.Now()
+		r := img.runWithin(context.Background(), budget, "sh", "-c",
+			`echo $$ >"$1"; echo 1.2.3; setsid sh -c 'echo $$ >"$1.tmp" && mv "$1.tmp" "$1"; until [ -e "$2" ]; do sleep 0.01; done' sh "$2" "$3" & until [ -s "$2" ]; do sleep 0.01; done; exit 0`,
+			"sh", leaderFile, holderFile, held)
+		elapsed := time.Since(started)
+		at := <-reaped
 
-		if released.IsZero() || !released.Before(returned) {
+		if at.IsZero() {
+			t.Fatalf("run %d: the command was not seen reaped within %s of the run's start (run = exit %d, error %v after %s)", runs, within, r.exit, r.err, elapsed)
+		}
+		if !at.Before(started.Add(budget)) {
 			if time.Now().Before(until) {
-				t.Logf("run %d is not judged: the run returned before the watch saw its leader reaped and passed its budget (run = exit %d, error %v)", runs, r.exit, r.err)
+				t.Logf("run %d is not judged: the command was seen reaped %s after the run's start, not inside its %s budget (run = exit %d, error %v)", runs, at.Sub(started), budget, r.exit, r.err)
 				continue
 			}
-			t.Fatalf("no run of the right order in %d runs over %s: in each, the run returned before its budget passed (run = exit %d, error %v)", runs, within, r.exit, r.err)
+			t.Fatalf("no run of the right order in %d runs over %s: in each, the command was seen reaped only after its %s budget could pass", runs, within, budget)
+		}
+		if elapsed < procgroup.WaitDelay {
+			t.Fatalf("run %d returned after %s, inside procgroup.WaitDelay: nothing held the pipe past the command's exit, so this run proves nothing", runs, elapsed)
 		}
 		if r.err != nil || r.exit != 0 || strings.TrimSpace(r.stdout) != "1.2.3" {
-			t.Errorf("run %d = exit %d, error %v, stdout %q; want exit 0, no error, and the answer: the command exited on its own before its budget passed, and the budget's stop reached nothing of it", runs, r.exit, r.err, r.stdout)
+			t.Errorf("run %d = exit %d, error %v, stdout %q after %s; want exit 0, no error, and the answer: the command exited on its own inside its %s budget, and the budget's stop reached nothing of it",
+				runs, r.exit, r.err, r.stdout, elapsed, budget)
 		}
 		return
 	}
 }
 
-// passedOnceReaped is a caller's context whose deadline passes with errCommandTimeout, as the
-// command's own budget passes (testwait.StandInDeadline, the context the attempt derives from),
-// once the process whose pid the command writes into leaderFile has been reaped: kill answers
-// ESRCH for it, which it does not for a zombie. Only then does it write held, which releases the
-// child the row leaves holding the command's pipe, so the run cannot return by that child's exit
-// before the budget has passed. releasedAt answers when it wrote held, read after that fact, or
-// the zero time where it never did within answerBudget.
-func passedOnceReaped(t *testing.T, leaderFile, held string) (ctx context.Context, releasedAt func() time.Time) {
-	t.Helper()
-	ctx, pass, cancel := testwait.StandInDeadline(context.Background())
-	t.Cleanup(cancel)
-	bound := testwait.Bounded(t, answerBudget, time.Second)
-	done := make(chan time.Time, 1)
+// watchReaped watches, from before the command starts, for the command that writes its own pid to
+// leaderFile as its first act, and answers once when it first saw that pid answer ESRCH, which it
+// does once Go has reaped the command (a zombie still answers), or the zero time where it never did
+// within bound. Each moment is read after the fact it stands for.
+func watchReaped(leaderFile string, bound time.Duration) <-chan time.Time {
+	seen := make(chan time.Time, 1)
 	go func() {
-		var released time.Time
-		defer func() { done <- released }()
-		pid := 0
-		if !testwait.Holds(bound, testwait.Poll, func() bool {
+		var at time.Time
+		if testwait.Holds(bound, testwait.Poll, func() bool {
 			raw, err := os.ReadFile(leaderFile)
-			if err != nil {
+			if err != nil || !strings.HasSuffix(string(raw), "\n") {
 				return false
 			}
-			pid, err = strconv.Atoi(strings.TrimSpace(string(raw)))
-			return err == nil && pid > 0
+			pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+			return err == nil && pid > 0 && errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
 		}) {
-			return
+			at = time.Now()
 		}
-		if !testwait.Holds(bound, testwait.Poll, func() bool { return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) }) {
-			return
-		}
-		pass(errCommandTimeout)
-		if os.WriteFile(held, nil, 0o644) == nil {
-			released = time.Now()
-		}
+		seen <- at
 	}()
-	var once time.Time
-	var got bool
-	return ctx, func() time.Time {
-		if !got {
-			once, got = <-done, true
-		}
-		return once
-	}
+	return seen
 }
 
 // answerBudget is a budget no command of these rows that answers comes near, however loaded the
