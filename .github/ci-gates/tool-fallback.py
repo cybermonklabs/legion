@@ -15,7 +15,7 @@ GATE = gate("tool_fallback", "tool-fallback", reads=reads(
                                           "own"),
     (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
                                           "of GitHub's release assets"),
-    *ci_retry(".github/actions/install-jj/action.yml's `Install the worker image's jj` step sources it and retries "
+    *ci_retry("`.github/actions/install-jj/action.yml#Install the worker image's jj` step sources it and retries "
               "`mise install` through it, in each of this job's install-jj steps"),
     (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} and "
                                            f"{at('tool-fallback', TOOL_BLOB_ARM_STEP)} refuse a row that script has "

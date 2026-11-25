@@ -3,10 +3,11 @@
 # host outside --hosts passed on in every one of them, --bind, the window of its own that
 # --per-host-window gives each host under --mode recover, and the outages --coalesce-outage-gap
 # makes the hosts of one call share, with its --probe-host; the counts by host that
-# download-retry-proof.sh's `report` makes of the requests the proxy logged as passed on and as
-# faulted; for a run that faults one host, the window the rig's probe opens and the report's
-# faulted-host and attempt checks; and for an image build, the attempt check `report` reads from
-# a build log, the Dockerfiles' retry() attempt lines and curl's own `curl: (N)` lines.
+# `.github/scripts/download-retry-proof.sh#report` makes of the requests the proxy logged as
+# passed on and as faulted; for a run that faults one host, the window the rig's probe opens and
+# the report's faulted-host and attempt checks; and for an image build, the attempt check
+# `report` reads from a build log, the Dockerfiles' retry() attempt lines and curl's own
+# `curl: (N)` lines.
 #
 # Nothing here touches the real internet. The host that is passed on is an origin this test
 # starts, a `python3 -m http.server` on a loopback port, and the host that is faulted is either

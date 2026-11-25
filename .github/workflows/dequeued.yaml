@@ -79,9 +79,9 @@ jobs:
       # download of this repository's CI goes through, with ci-log-guard.sh beside it, which
       # ci-retry.sh sources, and .github/scripts/gh-read.sh, whose gh_wait_reset waits out
       # GitHub's rate limits in front of that retry; so the .github cone is the whole checkout it
-      # needs, as ci.yaml's `cancel-started` takes it. A pull_request_target run checks out the
-      # base branch's commit (github.sha), never the pull request's, so no code of the pull
-      # request runs here with this token.
+      # needs, as `.github/workflows/ci.yaml#cancel-started` takes it. A pull_request_target run
+      # checks out the base branch's commit (github.sha), never the pull request's, so no code of
+      # the pull request runs here with this token.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github

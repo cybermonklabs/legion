@@ -24,7 +24,7 @@ script itself.
   judge them" waits for it. The harness runs `packages/envoy/loadtest/cluster/render-nats.sh`
   twice. Its refused-chart case stops before
   any fetch, and its fresh render runs the helm the job's install-helm step put on PATH; only
-  where that helm does not answer the version render-nats.sh's `HELM` pins does it make the
+  where that helm does not answer the version that render-nats.sh pins in `HELM` does it make the
   script's one retried fetch, `go install` of helm through `.github/scripts/ci-retry.sh` at the
   180 s module bound, 5 x 180 + 150 = 1050 s, which this budget prices as the harness's worst
   case; the chart is the vendored archive and the images are pinned from the committed render,

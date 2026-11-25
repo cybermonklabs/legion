@@ -16,10 +16,10 @@ the commit's archive, and the Go modules and toolchain its server's build loads,
 (dispatch://INFRA-2899 owns the reach that would make it the check's).
 
 Beside the two downloads the step holds the build itself, which the step's measured duration
-gives: 116 s, the slowest of the 24 runs of `Build the previous build` in ci.yaml runs created from
-2026-11-21T06:57Z to 08:12Z (job 136784988877 of run 44883794202), the same 116 s that job
-132706600704 measured when the step was first budgeted. 1050 + 1050 + 116 = 2216 s, and the step
-carries the next whole minute above, 37 minutes.
+gives: 116 s, the slowest of the 24 runs of `Build the previous build` among the ci.yaml runs
+created from 2026-11-21T06:57Z to 08:12Z (job 136784988877 of run 44883794202), the same 116 s
+that job 132706600704 measured when the step was first budgeted. 1050 + 1050 + 116 = 2216 s, and
+the step carries the next whole minute above, 37 minutes.
 
 `Build the first-rollout build` takes the same budget. It runs the same script over an older
 commit, and in every one of those 24 runs it took 1 s at most, because its pinned entry was
@@ -30,6 +30,5 @@ rather than failing the step by name. `Build this tree as the previous build`, i
 `dispatch-two-builds-same` job, runs the same script over the tree and carries the same 37
 minutes.
 
-Both builds are restored and never saved here: `.github/workflows/ci-caches.yaml`'s
-`dispatch-builds` job builds them and saves them on a push to main, under the keys these restores
-read.
+Both builds are restored and never saved here: `.github/workflows/ci-caches.yaml#dispatch-builds`
+job builds them and saves them on a push to main, under the keys these restores read.

@@ -744,7 +744,7 @@ check "and neither fetch left a temporary file" "$(is "$(temporary_files)" "")"
 
 echo "case: ci_tools_curl's attempt log, where CI_RETRY_ATTEMPT_LOG names one"
 # The download-retry job's recover runs of install-changie name a file in CI_RETRY_ATTEMPT_LOG and
-# read from it which attempt passed (.github/scripts/download-retry-proof.sh, `report`). A fetch
+# read from it which attempt passed (`.github/scripts/download-retry-proof.sh#report`). A fetch
 # the origin serves is one attempt, exit 0. A fetch of a path the origin does not hold fails each
 # attempt with exit 22, the stand-in's `--retry-max-time 1` letting curl make one or two of them,
 # and each is one line, numbered from 1, as many as the `curl: (22)` lines the call still prints

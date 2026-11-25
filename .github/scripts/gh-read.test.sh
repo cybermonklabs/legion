@@ -710,8 +710,8 @@ echo "case: composed, an answer the caller's stdout cannot take fails the call"
 # The answer is written last, from the helper's file to the caller's stdout, which here is
 # /dev/full: every write to it fails. A caller that writes the answer to a file inside an `if`
 # (ci-ok-reconcile.sh's runs, ci-ok-report.sh's jobs, post-check-run.sh's posted) must see that,
-# as a bare retry_fetch shows it (ci-retry.sh's `cat … || status=$?`). With the helper's final
-# `cat` bare it returned 0 (review round 37 of dispatch://INFRA-1545).
+# as a bare retry_fetch shows it (ci-retry.sh writes `cat … || status=$?`). With the helper's
+# final `cat` bare it returned 0 (review round 37 of dispatch://INFRA-1545).
 github never
 drive JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 5 -- gh api repos/o/r/pulls/1 > /dev/full'
 check "exits with the failed write's status" "$(is "$status" 1)"

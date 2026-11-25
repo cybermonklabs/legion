@@ -340,7 +340,7 @@ The Lean toolchain step is airlock-lean's, run here on the same miss that runs t
 `elan toolchain install` of the toolchain lean-toolchain names, through
 `.github/scripts/ci-retry.sh` at 120 s an attempt, so the build after it downloads nothing and the
 entry saved holds the toolchain airlock-lean's build reads.
-`.github/ci-notes/ci-job-airlock-lean.md#the-lean-toolchain-step-and-its-bound` derives that
+.github/ci-notes/ci-job-airlock-lean.md#the-lean-toolchain-step-and-its-bound derives that
 bound from four measured installs, this job's own among them: job 134958116292 of run 44348716140,
 the first fill on ubuntu-24.04-arm, where elan's download took 4.8 s and the whole install 11.6 s.
 5 x 120 + 150 = 750 s -> 13 min.
@@ -389,7 +389,7 @@ and refuses a commit older than its floor release, which it reads by its tag.
 
 The job builds, on a miss of its key, each of the two builds ci.yaml's dispatch-two-builds job
 restores, with the script and the bounds that job's build steps run
-(`.github/ci-notes/ci-job-dispatch-two-builds.md#the-build-steps-budgets`): each build step is
+(.github/ci-notes/ci-job-dispatch-two-builds.md#the-build-steps-budgets): each build step is
 1050 + 1050 + 116 = 2216 s -> 37 min.
 
 No run of it is measured yet, so its first term is built from what it runs: the checkout of the
@@ -447,7 +447,7 @@ retried step, 300 + 1200 = 1500 s -> 26 min.
 `Write every Go release archive's third-party notices and cross-build the commands`, in the notices
 job, runs `.github/scripts/go-release-notices.sh`, the script ci.yaml's lint job runs, and so waits
 for the one go-licenses install of `scripts/go-third-party-notices.sh` that
-`.github/ci-notes/ci-job-lint.md#the-notices-step-whose-script-the-gate-does-not-read` derives,
+.github/ci-notes/ci-job-lint.md#the-notices-step-whose-script-the-gate-does-not-read derives,
 1050 s, which `.github/scripts/check-download-retry.sh` does not price. Beside it is the step's
 measured duration from a cold cache, which holds the cold build of every release target: 674 s at
 most over the 2 runs of the step in the 100 successful runs of this workflow created from

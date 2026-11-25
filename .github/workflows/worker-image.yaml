@@ -107,8 +107,8 @@ jobs:
     # this job carried, which holds its build, plus its slowest retried step alone — the build
     # step, priced at the longest single ladder of the Dockerfile it builds, since a build runs
     # its fetches one after another and pays a fault window once, through the first fetch that
-    # meets it (.github/scripts/check-download-retry.sh, rule 10): the `go` stage's
-    # `go mod download` of packages/daemon/docker/worker.Dockerfile, 5 x 900 + 150 = 4650 s,
+    # meets it (.github/scripts/check-download-retry.sh, rule 10): the `go mod download` that
+    # packages/daemon/docker/worker.Dockerfile runs in its `go` stage, 5 x 900 + 150 = 4650 s,
     # above its 600 s ladders, 5 x 600 + 150 = 3150 s each, and above the ci-ok report's
     # `gh api` reads of the jobs and of the queue's tip and the POST of the check run,
     # 3 x (5 x 30 + 150) = 900 s, with two calls of runner-shutdown.sh's check-run read and

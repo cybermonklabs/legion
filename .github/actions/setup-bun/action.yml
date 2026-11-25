@@ -26,7 +26,7 @@ description: >-
   passes `save: 'true'` and the run is a push to main: only an event that writes the default
   branch's cache scope leaves an entry every later run can read, and the input names the one job
   that writes it, as each Go family has one saving job. That job is
-  .github/workflows/ci-caches.yaml's `bun`, which runs on every push to main, with no `paths:`,
+  `.github/workflows/ci-caches.yaml#bun`, which runs on every push to main, with no `paths:`,
   and passes the input on each of its two legs. THE KEY NAMES THE RUNNER'S ARCHITECTURE, SO EACH
   ARCHITECTURE NEEDS AN ENTRY AND A SAVING JOB OF ITS OWN: a Bun binary is a binary of one
   architecture, and an entry one architecture saved is one no job of the other restores, so the
@@ -83,7 +83,7 @@ inputs:
   save:
     description: >-
       'true' saves the bun family's entry where the restore missed, on a push to main and on no
-      other event. .github/workflows/ci-caches.yaml's `bun` job alone passes it, one leg per
+      other event. `.github/workflows/ci-caches.yaml#bun` job alone passes it, one leg per
       runner architecture; every other caller leaves it 'false' and only restores.
     required: false
     default: 'false'
@@ -125,8 +125,8 @@ runs:
     # leaves `bun --revision` failing, so that job downloads the release asset on every run and
     # the restore buys it nothing; and an arm64 binary saved first leaves every x64 job restoring
     # a binary it cannot run and downloading too, with no way to replace the entry. With it, each
-    # architecture keeps an entry of its own, which the leg of ci-caches.yaml's `bun` job that
-    # runs on that architecture saves.
+    # architecture keeps an entry of its own, which the leg of
+    # `.github/workflows/ci-caches.yaml#bun` job that runs on that architecture saves.
     #
     # Every job but the two that prove the second source. ci.yaml's tool-fallback and
     # tool-fallback-arm fault every source they can reach and then read what each case
@@ -277,12 +277,12 @@ runs:
         printf 'row=%s\nsource=%s\n' "$row" "$source" >> "$GITHUB_OUTPUT"
 
     # What the two steps above left in ~/.bun/bin, kept for every later run: only where the
-    # caller passed `save: 'true'`, which ci-caches.yaml's `bun` job alone does, and on a push to
-    # main, for the scope reason the description gives; and only where the restore missed, since
-    # an entry already under this key is never replaced and re-uploading 51,794,595 bytes would
-    # buy nothing. A job whose restore was skipped reports no hit at all, which reads as a miss
-    # here; the two jobs that skip it pass no `save` and run in ci.yaml, which runs on no push, so
-    # neither reaches this step.
+    # caller passed `save: 'true'`, which `.github/workflows/ci-caches.yaml#bun` job alone does,
+    # and on a push to main, for the scope reason the description gives; and only where the
+    # restore missed, since an entry already under this key is never replaced and re-uploading
+    # 51,794,595 bytes would buy nothing. A job whose restore was skipped reports no hit at all,
+    # which reads as a miss here; the two jobs that skip it pass no `save` and run in ci.yaml,
+    # which runs on no push, so neither reaches this step.
     # It runs before the digest check rather than after it because the check is this action's
     # last step and has to stay that way: a step after it runs with the bun it allowed on PATH,
     # which is what rule 9 of .github/scripts/check-bun-version.sh refuses. So an entry can be

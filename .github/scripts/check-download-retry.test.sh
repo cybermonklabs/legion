@@ -1500,7 +1500,7 @@ build_key_fixture "$root" 2 27
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the step's key and the ladder" \
-  "$(contains "$out" "file=.github/workflows/image.yaml,line=9::step 'Build and push' of job 'image' carries .timeout-minutes: 2., 120 s, and it builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s, the .apt-get install. at .github/docker/browser.Dockerfile:7")"
+  "$(contains "$out" "file=.github/workflows/image.yaml,line=9::step 'Build and push' of job 'image' carries .timeout-minutes: 2., 120 s, and it builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s, the .apt-get install. at .github/docker/browser.Dockerfile[:]7")"
 check "names the job's key, at the ladder's own minute, and the ladder" \
   "$(contains "$out" "file=.github/workflows/image.yaml,line=6::job 'image' carries .timeout-minutes: 27., 1620 s, and step 'Build and push' of job 'image' builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s")"
 check "says why one ladder" \
@@ -2452,9 +2452,9 @@ check "says a site costs one call of itself" \
   "$(contains "$out" 'A site costs at least one call of itself')"
 
 # The shape that reached no comparison at all: a step whose whole arithmetic is a composite
-# action's, carrying no budget of its own. ci.yaml's `airlock-lean` held install-elan's
-# 8 x 60 + 127 = 607 s ladder that way, under a job budget with no term for it, and this check
-# built a budget only for a step that wrote one.
+# action's, carrying no budget of its own. `.github/workflows/ci.yaml#airlock-lean` held
+# install-elan's 8 x 60 + 127 = 607 s ladder that way, under a job budget with no term for it, and
+# this check built a budget only for a step that wrote one.
 echo "case: a step running a composite action's ladder with no budget of its own is refused"
 root=$(fixture action-unbudgeted)
 mkdir -p "$root/.github/actions/install-elan"
@@ -3140,8 +3140,9 @@ check "refuses the key's text by name at its line" \
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # A key line may carry a YAML comment after its number, and its key is that number, as YAML reads
-# it. Without the pattern's `\s+#.*` alternative such a line read as no key, so the job below
-# priced nothing and was refused (dispatch://INFRA-1545, review round 28).
+# it. Without the pattern's alternative for blanks, a `#` and the rest of the line, such a line
+# read as no key, so the job below priced nothing and was refused (dispatch://INFRA-1545, review
+# round 28).
 echo "case: a key carrying a trailing comment is the key its block prices"
 root=$(fixture arrow-key-trailing-comment)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
@@ -5710,9 +5711,10 @@ check "names the budget that would hold them" "$(contains "$out" 'timeout-minute
 
 # T13. A `sleep` written as the last command of a loop's body runs after every pass, the last one
 # included, so a loop of three passes sleeps three times. around() adds `(passes - 1) * sleep`,
-# which is right only where the body skips its last sleep, as dequeued.yaml's
-# `[ "$attempt" = 7 ] || sleep 10` does. The step runs r44-fetch.sh, which retries at 30 s,
-# 5 x 30 + 150 = 300 s, in three passes, each followed by `sleep 300`: bash waits
+# which is right only where the body skips its last sleep, as
+# `.github/workflows/dequeued.yaml#[ "$attempt" = 7 ] || sleep 10` does. The step runs
+# r44-fetch.sh, which retries at 30 s, 5 x 30 + 150 = 300 s, in three passes, each followed by
+# `sleep 300`: bash waits
 # 3 x 300 + 3 x 300 = 1800 s, which `timeout-minutes: 29`, 1740 s, does not exceed. At c53b3c8d
 # the gate charges 3 x 300 + 2 x 300 = 1500 s and passes the step. Timed in bash, with every
 # figure divided by 100, r43's step above ran 45.9 s where the gate charges it 28.8 s, and under
@@ -7790,7 +7792,7 @@ check "charges it once in each of an action's two steps" \
 # nothing and refused nothing (dispatch://INFRA-1545, round 37). These are the shapes round 37's
 # tester found in this tree, written over zz-c.sh, whose 1050 s would refuse a one-minute key:
 # browser-image.yaml's summary line naming a script inside `{ … } >> "$GITHUB_STEP_SUMMARY"`,
-# ci.yaml tool-fallback's `::error` line, and ci.yaml's `grep` of a script's name, with a
+# ci.yaml tool-fallback's `::error` line, and a `grep` of a script's name in ci.yaml, with a
 # `printf`, a comment line and a comment after a command beside them.
 echo "case: a script's path in echo, grep or a comment is no call"
 root=$(fixture non-calls)
@@ -8035,11 +8037,11 @@ check "reads neither as a place it does not read" \
 # the whole command of a backtick substitution, one inside an array's parentheses, a run beside a
 # backtick substitution that holds a case pattern's `)`, a run beside a `$(…)` holding a subshell, a
 # run inside a subshell, a run on the line after a process substitution, after a comment that ends
-# the command before it, and after a `${…#…}` expansion on its line, a run through `\bash`, a run
-# after an escaped quote, a run through a quoted `"ba\<newline>sh"` (the shell joins the two lines
-# inside the quotes, so the command is `bash`), and a run whose output is redirected before its
-# path. A reading that loses the backtick, the subshell, the comment's newline or the escape reads
-# the path as an argument, a variable or nothing and refuses it as unread, or crashes.
+# the command before it, and after a prefix-removing `#` expansion on its line, a run through
+# `\bash`, a run after an escaped quote, a run through a quoted `"ba\<newline>sh"` (the shell joins
+# the two lines inside the quotes, so the command is `bash`), and a run whose output is redirected
+# before its path. A reading that loses the backtick, the subshell, the comment's newline or the
+# escape reads the path as an argument, a variable or nothing and refuses it as unread, or crashes.
 echo "case: a run written beside substitutions, quotes and escapes is charged, and one inside backticks, a subshell or after bash is refused"
 root=$(fixture sa-scanner-runs)
 cat > "$root/.github/scripts/sa-c.sh" <<'SH'
@@ -8734,8 +8736,8 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # flag is a run, since the comment starts at the `#` and not at the run's line; a run after a
 # comment line is a run, wherever the comment sits; a run in a `run: |-` body whose last line
 # ends in a backslash is a run, with no line after it to join; a word of one character followed
-# by a backslash and a line starting with `#` is one word, `x#y`, to which the path is an
-# argument, refused by name as any argument of a command this check does not know is; and a
+# by a backslash and a line starting with `#` is one word, `x` and `#y` joined, to which the path
+# is an argument, refused by name as any argument of a command this check does not know is; and a
 # line starting with `#` inside a string is part of the string, so a string echoed into a shell
 # holds the path whatever that shell makes of the line, and is refused as a pipe into a shell,
 # as `echo <path> | bash` is. Each of the first three steps runs sc-c.sh, 1050 s.
@@ -12566,7 +12568,7 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses the step at its key for a bound written as a variable" \
-  "$(contains "$out" "::error file=.github/workflows/release.yaml,line=21::step 'Fetch the asset at a bound the step sets' carries .timeout-minutes: 5. and this check can put no figure on it: it runs a retried call whose attempts are bounded by a variable rather than by a number — .curl. at .github/workflows/release.yaml:23\.")"
+  "$(contains "$out" "::error file=.github/workflows/release.yaml,line=21::step 'Fetch the asset at a bound the step sets' carries .timeout-minutes: 5. and this check can put no figure on it: it runs a retried call whose attempts are bounded by a variable rather than by a number — .curl. at .github/workflows/release.yaml[:]23\.")"
 check "says of no excepted curl bounded by a variable that it has no bound" \
   "$(is "$(contains "$out" 'no bound this check finds')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
@@ -13937,10 +13939,11 @@ check "refuses the quoted brace by name at its line" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'A function that writes a closing brace and then fetches, called twice' of job 'build' writes .}. where bash reads it as a word of its command")"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
-# A2's correction. A parameter expansion is one word to its closing `}`, as bash reads
-# `${1##* }`: this check split it at its blank and took its `}` for the brace closing the
-# function, so the fetch after it was charged once, 1650 s, where two calls run it twice, 3300 s,
-# over a key of 28 minutes. Read whole, the function's body runs to its own `}`.
+# A2's correction. A parameter expansion is one word to its closing `}`, as bash reads one that
+# removes all of `$1` up to and including its last blank: this check split it at its blank and
+# took its `}` for the brace closing the function, so the fetch after it was charged once, 1650 s,
+# where two calls run it twice, 3300 s, over a key of 28 minutes. Read whole, the function's body
+# runs to its own `}`.
 echo "case: r37 A2 a parameter expansion holding a blank is one word, and the body runs on"
 root=$(fixture r37-expansion-word)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
@@ -14848,8 +14851,9 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # passes, a `retry_fetch` behind `env -i` is the helper behind a wrapper, which
 # fetches nothing, and `env -i` inside the helper is a retried fetch that passes. Any other option
 # of a wrapper, `env -S` and `nice --adjustment=5` here, and `busybox`, are refused by name in a
-# step, in a `bash -c` text and in a Dockerfile RUN, and worker.Dockerfile's `env -u CGO_ENABLED
-# go env CGO_ENABLED` reads as `go env`, which fetches nothing.
+# step, in a `bash -c` text and in a Dockerfile RUN, and the
+# `env -u CGO_ENABLED go env CGO_ENABLED` that worker.Dockerfile runs reads as `go env`, which
+# fetches nothing.
 echo "case: r37 W14 a wrapper option this check does not read, and busybox, are refused by name, and the options it reads pass through to the command"
 root=$(fixture r37-w14-wrappers)
 printf '%s\n' 'RUN nice --adjustment=5 curl -fsSL -o b https://example.com/b' \
@@ -14985,14 +14989,15 @@ YAML
   check "$guard: and nothing else" "$(is "$status|$(printf '%s\n' "$out" | grep -c '^::error')" "1|1")"
 done
 
-# W55. gh-read.sh's `gh_wait_reset`, a shell function that runs the words after it, is the one
-# wrapper a `retry_fetch` may stand behind, in exactly one form, `gh_wait_reset [--stderr <file>]
-# retry_fetch …`, which the gate reads and charges as a bare call, one ladder (rule 6;
-# dispatch://INFRA-1545, round 55). Each case writes gh-read.sh as a one-line stand-in, the shape
-# check-workflow-files.test.sh gives it: the gate reads the words of the call, never the helper's
-# body. Behind any other wrapper, alone behind it or with gh_wait_reset in front of that wrapper,
-# `retry_fetch` stays refused by name; and a `gh` or a `curl` behind gh_wait_reset with no
-# `retry_fetch` is a fetch the gate reads as one behind any other wrapper, refused at the floor.
+# W55. `.github/scripts/gh-read.sh#gh_wait_reset`, a shell function that runs the words after it,
+# is the one wrapper a `retry_fetch` may stand behind, in exactly one form,
+# `gh_wait_reset [--stderr <file>] retry_fetch …`, which the gate reads and charges as a bare
+# call, one ladder (rule 6; dispatch://INFRA-1545, round 55). Each case writes gh-read.sh as a
+# one-line stand-in, the shape check-workflow-files.test.sh gives it: the gate reads the words of
+# the call, never the helper's body. Behind any other wrapper, alone behind it or with gh_wait_reset
+# in front of that wrapper, `retry_fetch` stays refused by name; and a `gh` or a `curl` behind
+# gh_wait_reset with no `retry_fetch` is a fetch the gate reads as one behind any other wrapper,
+# refused at the floor.
 # gh_read_stub <root>: that stand-in, in the fixture.
 gh_read_stub() {
   printf '%s\n' '#!/usr/bin/env bash' 'gh_wait_reset() { "$@"; }' > "$1/.github/scripts/gh-read.sh"
@@ -16680,8 +16685,9 @@ check "and refuses nothing else, the tool's bare name passing" \
 # runner its own `"$@"`, `wrap() { run "$@"; }`, whose call `wrap "$p"` is the one refused, while
 # `run "$@"` inside it is read at wrap's callers. Each runs r37-c.sh, 1050 s, under a key of
 # 1 minute, and the gate before this refusal passed each step. A literal command, `run grep …`,
-# and a literal path pass. The tree's seven calls of such a function, check-plugin-names.sh's and
-# check-private-names.sh's `run`, each hand it `git` or `grep`.
+# and a literal path pass. The tree's seven calls of such a function,
+# `.github/scripts/check-plugin-names.sh#run` and `.github/scripts/check-private-names.sh#run`,
+# each hand it `git` or `grep`.
 echo "case: r37 E2 a call handing a function the word it runs, built from data, is refused by name"
 root=$(fixture r37-runner-calls)
 cat > "$root/.github/scripts/r37-c.sh" <<'SH'
@@ -17108,8 +17114,8 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # that silently lowers fewer is seen; and the list the case walks is first held to the tree, so it
 # is not narrower than it: every workflow job that writes its own whole-number `timeout-minutes`
 # and holds a site --list prints must be in --jobs. A key written as an expression is outside, as
-# the gate's header says under A CEILING WRITTEN AS AN EXPRESSION (e2e.yaml's `proof` and
-# dispatch-unit-repeat.yaml's `repeat`).
+# the gate's header says under A CEILING WRITTEN AS AN EXPRESSION
+# (`.github/workflows/e2e.yaml#proof` and `.github/workflows/dispatch-unit-repeat.yaml#repeat`).
 # THIS CASE FOUND A GAP THE FIXTURES DID NOT: at the head before round 35, `arrows`, both decoys
 # and `split` left `download-retry`, `download-retry-images`, `re-record`, `embedder` and
 # `visual` unnamed, because the derivation clause read only the comment block directly above the

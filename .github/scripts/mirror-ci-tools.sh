@@ -23,7 +23,7 @@
 # costs a ladder for every request a row makes and a run that filled every row of both machines
 # would put that job past the 360 minutes a GitHub-hosted job may run (.github/ci-budgets.md,
 # "The ci-images job's ceiling and the tool copy"). Which rows a machine's run fills is read with
-# .github/scripts/ci-tools.sh's `ci_tools_mirror_rows`, which the tool-fallback job's two blob
+# `.github/scripts/ci-tools.sh#ci_tools_mirror_rows`, which the tool-fallback job's two blob
 # checks read their rows with too, so the filler and the check split the manifest one way. That
 # reading refuses a ghcr-mirror row built for neither machine by name, and a machine no row is
 # built for, in either machine's run and before this run asks the package anything, so no row is

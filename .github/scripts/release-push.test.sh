@@ -39,12 +39,13 @@
 # read goes through retry_fetch: npm's E404 starts from 0.0.0 with one call,
 # and a 504 is retried, once or on every attempt, which wait out the helper's
 # sleeps for real: its first, 10 s, and all of them, 150 s, which
-# ci-job-test.yaml's `test` job key carries. Five more reads fail on every
-# attempt and wait nothing, run with one shared stub sleep that returns at
-# once: three 504s whose body carries an E404's text (`npm error code E404`
-# in npm's message, npm's E404 status line on a line of its own, and that line
-# with a whole fake 404 answer after it), a 504 whose body writes a carriage
-# return and then a workflow command, and a 200 npm answers with no version.
+# `.github/workflows/ci-job-test.yaml#test` job key carries. Five more reads
+# fail on every attempt and wait nothing, run with one shared stub sleep that
+# returns at once: three 504s whose body carries an E404's text
+# (`npm error code E404` in npm's message, npm's E404 status line on a line of
+# its own, and that line with a whole fake 404 answer after it), a 504 whose
+# body writes a carriage return and then a workflow command, and a 200 npm
+# answers with no version.
 # The `tag` cases run it with $GITHUB_SHA naming the clone's HEAD and check
 # that the tag names that commit and nothing else moves: no commit is added,
 # the manifests and the lockfile keep their blobs, the work tree stays clean

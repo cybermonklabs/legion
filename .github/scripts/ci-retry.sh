@@ -45,10 +45,10 @@
 # path the caller wrote. dash gives none: it sets no BASH_SOURCE, and a sourced file has no other
 # way to find its own path. So a caller that runs under dash sources ci-log-guard.sh itself, just
 # before this file, and this file then finds ci_log_block_open defined and reads nothing:
-# scripts/go-third-party-notices.sh (`#!/bin/sh`) and dispatch-browser.yaml's shard and alone
-# jobs (`sh -e {0}` in their container) do. A caller that does neither, or a copy of this file
-# with no ci-log-guard.sh beside it, gets one `::error::` naming that rule, and the source
-# returns 2, so a `sh -e` step stops at it rather than at dash's bare "can't open".
+# scripts/go-third-party-notices.sh (a `#!/bin/sh` script) and dispatch-browser.yaml's shard
+# and alone jobs (`sh -e {0}` in their container) do. A caller that does neither, or a copy of
+# this file with no ci-log-guard.sh beside it, gets one `::error::` naming that rule, and the
+# source returns 2, so a `sh -e` step stops at it rather than at dash's bare "can't open".
 # BASH_SOURCE is written with no index: bash reads the bare name as element 0, this file, and
 # dash reads `${BASH_SOURCE[0]}` as a bad substitution wherever it expands it.
 if ! command -v ci_log_block_open > /dev/null 2>&1; then
@@ -144,11 +144,12 @@ fi
 # each attempt appends one line to it as it ends, `attempt <n> exit <status>`: its number and its
 # command's exit status, 0 for the attempt that succeeded. Nothing else this function prints says
 # which attempt succeeded, and the download-retry job's recover runs must know it: each sets the
-# variable for its site (.github/scripts/download-retry-proof.sh, `start --attempt-log`) and its
-# report refuses a call that passed only on its last attempt. .github/scripts/ci-tools.sh's
-# ci_tools_curl writes the same lines for the attempts curl makes itself. Unset or empty, nothing
-# is written. A line that cannot be written leaves bash's own refusal on standard error and
-# changes nothing else, so the call still returns the command's status.
+# variable for its site (through `start --attempt-log`, a verb and option of
+# .github/scripts/download-retry-proof.sh) and its report refuses a call that passed only on its
+# last attempt. .github/scripts/ci-tools.sh's ci_tools_curl writes the same lines for the
+# attempts curl makes itself. Unset or empty, nothing is written. A line that cannot be written
+# leaves bash's own refusal on standard error and changes nothing else, so the call still
+# returns the command's status.
 #
 # THREE STATED LIMITS. First, a successful attempt's standard output that the caller neither
 # captures nor sends to standard error reaches the log outside any block, as the command printed
@@ -171,26 +172,27 @@ fi
 # is not $tip` (the tip of the queue's branch, main's #4983); ci-ok-hold.sh's notices `This run
 # was created at $created` (this run's creation time), `$HEAD_REF is ${group:-gone}` (the group
 # branch's commit) and `its base $BASE_SHA is not $tip` (the tip of the queue's branch, main's
-# #5186); dequeued.yaml's `left the queue at … for reason '$reason'` (the removal's createdAt and
-# reason) and `What that commit's runs are` (the group head's runs, as jq's compact JSON);
+# #5186); dequeued.yaml's lines `left the queue at … for reason '$reason'` (the removal's createdAt
+# and reason) and `What that commit's runs are` (the group head's runs, as jq's compact JSON);
 # mirror-ci-images.sh's check_go, in its refusal and its `go` notice (the GOLANG_VERSION an
 # image's config holds), and its refusal `landed at $have` (the digest crane read);
 # post-check-run.sh's notice `posted $CHECK_NAME …` (the check run's html_url);
-# browser-image.yaml's `publish=$publish: $why` in `Decide whether to publish` (the recipe label
-# an image's config carries); dispatch-browser-fetch-binaries.sh's notice `artifact $name, id $id,
-# … $size bytes, digest …`, its refusal that the artifact `id $id` has expired and its last
-# refusal's `of $size bytes` (the run's artifact list, main's #5144); and main-bypass-check.yaml's
-# `cat "$RUNNER_TEMP/reasoning" >&2` (main-bypass-check.sh's lines, which name the conclusions of
-# the runs and check runs it read, escaped by jq's @tsv). Those lines are the callers' own, outside
-# this function: the boundary of the INFRA-3862 lane (dispatch://INFRA-5224). Third, the callers'
-# rule: the runner keeps one stop state for the whole step and reads standard output and standard
-# error on two threads, so a workflow command a caller writes on STANDARD OUTPUT beside a call of
-# this function, just before it or just after it, can be read while one of the call's blocks is
-# open, and dropped: 32 of 50 just after a call, measured by the INFRA-3862 flakes peer with the
-# runner's own ProcessInvoker and ActionCommandManager, and 15 of 30 just before one, on GitHub's
-# own runner (the tester's run 45074154101 of dispatch://INFRA-1545). So every workflow command a
-# caller prints in the same step as a call of this function, before it or after it, goes to
-# standard error, where it stays in order with the blocks, as this function's own lines do.
+# browser-image.yaml's line `publish=$publish: $why` in `Decide whether to publish` (the recipe
+# label an image's config carries); dispatch-browser-fetch-binaries.sh's notice `artifact $name,
+# id $id, … $size bytes, digest …`, its refusal that the artifact `id $id` has expired and its
+# last refusal's `of $size bytes` (the run's artifact list, main's #5144); and
+# main-bypass-check.yaml's command `cat "$RUNNER_TEMP/reasoning" >&2` (main-bypass-check.sh's
+# lines, which name the conclusions of the runs and check runs it read, escaped by jq's @tsv).
+# Those lines are the callers' own, outside this function: the boundary of the INFRA-3862 lane
+# (dispatch://INFRA-5224). Third, the callers' rule: the runner keeps one stop state for the
+# whole step and reads standard output and standard error on two threads, so a workflow command
+# a caller writes on STANDARD OUTPUT beside a call of this function, just before it or just
+# after it, can be read while one of the call's blocks is open, and dropped: 32 of 50 just after
+# a call, measured by the INFRA-3862 flakes peer with the runner's own ProcessInvoker and
+# ActionCommandManager, and 15 of 30 just before one, on GitHub's own runner (the tester's run
+# 45074154101 of dispatch://INFRA-1545). So every workflow command a caller prints in the same
+# step as a call of this function, before it or after it, goes to standard error, where it stays
+# in order with the blocks, as this function's own lines do.
 #
 retry_fetch() {
   local what bound attempts attempt status left noun refusal buffer withheld unit token

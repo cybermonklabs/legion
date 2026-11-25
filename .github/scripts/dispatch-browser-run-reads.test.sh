@@ -6,13 +6,13 @@
 # Each case writes the one slurped page a stand-in `gh` answers with - the array of page objects
 # `gh api --paginate --slurp` prints - and how many calls that stand-in refuses first, then runs
 # the real script with the stand-in first on PATH and reads the file it wrote, the arguments the
-# stand-in recorded and the lines the script printed. The ladder is the `retry_fetch` of
-# .github/scripts/ci-retry.sh: five attempts, with waits of 10, 20, 40 and 80 s between them,
-# and no knob that shortens them. Those waits are ci-retry.test.sh's to prove, by measuring
-# them; paying for them here would add 150 s to every case that exhausts the ladder, so `sleep`
-# is a no-op stand-in on this PATH, as the retry delay this file used to set to zero was. It
-# records the seconds each call asked for, so a case still reads which waits the ladder made
-# without waiting them. Two checks are what catch a stand-in lost from this PATH: with the real
+# stand-in recorded and the lines the script printed. The ladder is
+# `.github/scripts/ci-retry.sh#retry_fetch`: five attempts, with waits of 10, 20, 40 and 80 s
+# between them, and no knob that shortens them. Those waits are ci-retry.test.sh's to prove, by
+# measuring them; paying for them here would add 150 s to every case that exhausts the ladder,
+# so `sleep` is a no-op stand-in on this PATH, as the retry delay this file used to set to zero
+# was. It records the seconds each call asked for, so a case still reads which waits the ladder
+# made without waiting them. Two checks are what catch a stand-in lost from this PATH: with the real
 # `sleep` running, nothing is written under `$work/sleeps`, so `waited` answers an empty line
 # where the case `every attempt refused with HTTP 502` holds it to `10 20 40 80` and the case
 # `refused once, answered on the second attempt` holds it to `10` - named by their own

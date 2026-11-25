@@ -86,7 +86,7 @@ key_rule_on() {
   release legion-v9.1.0 2026-11-20T06:00:00Z
 }
 # release_calls: the tags whose release the run asked for, in order, one a line (a flag after the
-# route, check-pr-text.sh's `-i`, is left out).
+# route, the `-i` that check-pr-text.sh writes there, is left out).
 release_calls() { sed -n 's#^api repos/example/repo/releases/tags/\([^ ]*\).*#\1#p' "$work/calls"; }
 # opened_at <time>: the pull request was opened then.
 opened_at() { jq --arg at "$1" '.created_at = $at' "$work/pull" > "$work/pull.next" && mv "$work/pull.next" "$work/pull"; }

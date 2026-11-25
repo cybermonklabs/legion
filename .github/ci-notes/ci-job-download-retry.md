@@ -57,33 +57,33 @@ dispatch://INFRA-1545).
 The four budgets, each call's sleeps and its failed attempts read from run 45383555145's two
 images jobs as the third term above says:
 
-- The worker image: the key of `.github/workflows/worker-image.yaml`'s `build` job, which holds
+- The worker image: the key of `.github/workflows/worker-image.yaml#build` job, which holds
   that build and no other fetch but the ci-ok report: 1800 s, the 30 minutes the job carried,
-  which holds its build, plus the `go` stage's `go mod download` of
-  packages/daemon/docker/worker.Dockerfile, 5 x 900 + 150 = 4650 s. That key names no measured
-  build of its own, so its 1800 s is the measured term here too. Its Dockerfile makes 39 inline
-  retries in 17 RUN lines and 25 curl ladders in two (mise's tarball, and the notices stage's 17
-  reads and 7 HEAD checks), and their failed attempts took 337.0 s in job 138409597020, 338 s
-  rounded up: the go-modules download's four, 133.2 s; the plugin workspace install's one,
-  56.8 s; the runtime-base RUN's apt and pgdg calls, 45.9 s; the three other `apt-get update`
-  calls' three each, 64.2 s; the azure-cli wheels' four, 21.5 s; the WebKit download's three,
-  8.1 s; and 7.3 s across the rest. 1800 + 4650 + 20 + 39 x 150 + 25 x 127 + 338 = 15833 s.
+  which holds its build, plus the `go mod download` that packages/daemon/docker/worker.Dockerfile
+  runs in its `go` stage, 5 x 900 + 150 = 4650 s. That key names no measured build of its own, so
+  its 1800 s is the measured term here too. Its Dockerfile makes 39 inline retries in 17 RUN lines
+  and 25 curl ladders in two (mise's tarball, and the notices stage's 17 reads and 7 HEAD checks),
+  and their failed attempts took 337.0 s in job 138409597020, 338 s rounded up: the go-modules
+  download's four, 133.2 s; the plugin workspace install's one, 56.8 s; the runtime-base RUN's apt
+  and pgdg calls, 45.9 s; the three other `apt-get update` calls' three each, 64.2 s; the
+  azure-cli wheels' four, 21.5 s; the WebKit download's three, 8.1 s; and 7.3 s across the rest.
+  1800 + 4650 + 20 + 39 x 150 + 25 x 127 + 338 = 15833 s.
 - The Envoy image: the key of `.github/workflows/ci-job-envoy-smoke.yaml`'s job, whose comment
   names this build's own 203 s (job 133743044741), plus the `bun install` and the `go mod
-  download` of packages/envoy/docker/Dockerfile at 5 x 600 + 150 = 3150 s each. Its five retried
-  calls are in four RUN lines (`apt-get update` and `apt-get install`, `bun install`, the
+  download` that packages/envoy/docker/Dockerfile runs, at 5 x 600 + 150 = 3150 s each. Its five
+  retried calls are in four RUN lines (`apt-get update` and `apt-get install`, `bun install`, the
   go-licenses install and `go mod download`), and their failed attempts took 139.7 s in job
   138409597173, 140 s rounded up: the `bun install`'s one, 108.5 s, which bun's own retries of
   each tarball kept running across the window; the `apt-get update`'s three, 21.5 s; `go mod
   download`'s three, 9.3 s; and the go-licenses install's four, 0.5 s.
   203 + 3150 + 20 + 5 x 150 + 140 = 4263 s.
 - The held-port image: the same key, whose comment names this build's 11 s in the same job, plus
-  the wrapper stage's `go mod download` of packages/envoy/infra/host/heldportwrapper/Dockerfile,
-  5 x 600 + 150 = 3150 s. That `go mod download` is its one retried call, and its four failed
-  attempts took 28.7 s, 29 s rounded up. 11 + 3150 + 20 + 150 + 29 = 3360 s.
+  the `go mod download` that packages/envoy/infra/host/heldportwrapper/Dockerfile runs in its
+  wrapper stage, 5 x 600 + 150 = 3150 s. That `go mod download` is its one retried call, and its
+  four failed attempts took 28.7 s, 29 s rounded up. 11 + 3150 + 20 + 150 + 29 = 3360 s.
 - The browser image: the key of `.github/workflows/browser-image.yaml`'s "Build and push" step:
   66 s, the slowest of the image's 33 cold builds measured in that job (job 128991520632 of run
-  42565616054), plus the package set's `apt-get install` of .github/docker/browser.Dockerfile,
+  42565616054), plus the `apt-get install` of the package set in .github/docker/browser.Dockerfile,
   5 x 300 + 150 = 1650 s, above the signing key's and the index read's 750 s each. Its one RUN
   line makes three retried calls, the signing key, `apt-get update` and `apt-get install`, and
   their failed attempts took 21.3 s, 22 s rounded up: the update's three, 21.2 s, and the key's
@@ -332,7 +332,7 @@ stencil.so, aliyuncs.com, charm.land and zenmux.ai. What it fetches from them is
 background model refresh, which is no retried call and fails nothing (the paragraph on the worker
 image's hosts above cites the code). So a run that faults those hosts alone drives no retry, and
 the report's attempt check refuses it: the build log holds no attempt line and no `curl: (N)`
-line at all (.github/scripts/download-retry-proof.sh, `report`). Until INFRA-1310's architect's
+line at all (`.github/scripts/download-retry-proof.sh#report`). Until INFRA-1310's architect's
 ruling at 05:59Z on 2026-11-25, a sixth worker run listed those 7 hosts alone. In job 138996340757
 of run 45551940814 (at c9788e014f22) it faulted all 7 hosts, 8 requests in all, in one outage
 from 246.5 s to 306.5 s. The build reached its last stage, and the report failed on the attempt
@@ -394,7 +394,7 @@ five.
 
 Each run's window opens on its site's own first request to its host, not on the probe's: under
 `--per-host-window` the probe asks for `download-retry-probe.<host>`, a name the entry covers and
-no site fetches (.github/scripts/download-retry-proof.sh, `probe`), and the proxy keys a window by
+no site fetches (`.github/scripts/download-retry-proof.sh#probe`), and the proxy keys a window by
 the host a request names. Each run's report checks two things beyond what every recover arm
 checks (the same script's `report`), and fails naming which:
 
@@ -453,5 +453,5 @@ those empty values and rejects nonempty proxy or bypass values.
 
 The verdict runs after cleanup unless the job is cancelled. The final step sends
 `job.status`, which includes the verdict, to the caller's ci-ok reporter. The `ci-ok-changes`
-input carries `ci.yaml`'s `toJSON(needs.changes)`. The reporter can post a failing ci-ok
-immediately in a merge group, but neither lane runs in merge groups.
+input carries `.github/workflows/ci.yaml#toJSON(needs.changes)`. The reporter can post a failing
+ci-ok immediately in a merge group, but neither lane runs in merge groups.

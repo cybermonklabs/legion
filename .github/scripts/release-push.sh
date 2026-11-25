@@ -398,7 +398,7 @@ leak_guard() {
       dir=$(mktemp -d)
       on_exit_remove "$dir"
       # The leak engine is a release asset like any other this repository fetches, so it
-      # comes down through the one helper at the release-asset bound of .github/ci-budgets.md:
+      # comes down through the one helper at the release-asset bound of .github/ci-budgets.md,
       # 5 x 60 + 150 = 450 s. Written as `--retry 3 --max-time 120` it sat below that floor,
       # and rule 8 of check-download-retry.sh charges every step that calls this script the
       # arithmetic of the floor it would have to meet, once per call site: 6522 s on 46 steps,

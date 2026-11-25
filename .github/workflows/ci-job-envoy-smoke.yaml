@@ -38,7 +38,7 @@ jobs:
     # step, priced at the longest single ladder of the Dockerfile it builds, since a build runs
     # its fetches one after another and pays a fault window once, through the first fetch that
     # meets it (.github/scripts/check-download-retry.sh, rule 10): the `bun install` and the
-    # `go mod download` of packages/envoy/docker/Dockerfile, at 5 x 600 + 150 = 3150 s each;
+    # `go mod download` that packages/envoy/docker/Dockerfile runs, at 5 x 600 + 150 = 3150 s each;
     # the held-port image's `go mod download` is the same 3150 s. Both are above the ci-ok
     # report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"), the Go module
     # download, whose two calls for packages/envoy and packages/envoy/infra are

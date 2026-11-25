@@ -15,7 +15,7 @@ Retries: every step below that gets something over the network makes five bounde
 The loop lives in one place, .github/scripts/ci-retry.sh, which a step sources and then calls as `retry_fetch <what> <per-attempt bound in seconds> -- <command...>`;
 that file's own header says why it is sourced rather than run, and why each attempt is bounded on its own.
 Where the verb is curl no helper is needed:
-`--retry 7 --retry-all-errors --max-time <bound>` beside `-fsSL` makes 8 attempts whose last starts 127 s after the first, and .github/scripts/ci-tools.sh's `ci_tools_curl` carries the one full explanation of that spelling, `--fail` and its `--retry-max-time 300` included:
+`--retry 7 --retry-all-errors --max-time <bound>` beside `-fsSL` makes 8 attempts whose last starts 127 s after the first, and `.github/scripts/ci-tools.sh#ci_tools_curl` carries the one full explanation of that spelling, `--fail` and its `--retry-max-time 300` included:
 every tool install of .github/ci-tools.yaml fetches through it, and the actions that fetch anything else write the options themselves in the same shape.
 What retries is the download and never the work after it:
 a job's Go modules come down in a `go mod download` step of its own, so no `go build`, `go test`, `go vet` or `go run` is ever re-run by a retry.
@@ -75,7 +75,7 @@ Budgets: a retried download's worst case is five attempts at its own bound with 
 or, where curl makes the attempts itself, eight at its own bound with curl's waits doubling from one second, `8 x <bound> + 127 s`.
 
 A third worst case is a figure this file cites rather than derives, because the bound it multiplies is not a number anybody wrote at the call:
-.github/scripts/ci-tools.sh's `ci_tools_curl` and `ci_tools__curl_held` pass `--max-time "$max_time"`, the manifest row's own field, so one call of either is priced by the DeclaredArithmetic entry for .github/scripts/ci-tools.sh `curl` in DECLARED_LOOPS of .github/scripts/check-download-retry.sh.
+`.github/scripts/ci-tools.sh#ci_tools_curl` and `.github/scripts/ci-tools.sh#ci_tools__curl_held` pass `--max-time "$max_time"`, the manifest row's own field, so one call of either is priced by the DeclaredArithmetic entry in DECLARED_LOOPS of .github/scripts/check-download-retry.sh whose file is .github/scripts/ci-tools.sh and whose verb is `curl`.
 That entry writes 854 s for each of those two curls and charges one `ci_tools_fetch` both, 1708 s, which it derives there as four ladders
 — the release asset, then the ghcr token, the blob request to the package and the read of the store that request's redirect points at
 — each priced at the ceiling .github/scripts/ci-tools.sh's own `--retry-max-time` block derives, which is the one place that per-ladder figure is worked out.
@@ -124,7 +124,7 @@ A job's budget is rounded up to the whole minute too, and that rounding is what 
 where the slowest step's arithmetic is not itself a whole number of minutes the job's round-up already covers the step's, and where it is
 — 300 s, 600 s, 2100 s — the step takes one more whole minute and the job takes it with it, so the job still outlives the step it names.
 The ci-ok report takes more than that one minute, and this is the one place that says why, since every job of `.github/workflows/ci.yaml` carries that step:
-its arithmetic is `ci-ok-report.sh`'s two `gh api` reads, of the run's jobs and of the tip of the queue's branch (main's #4983), and `post-check-run.sh`'s POST of the check run, 3 x (5 x 30 + 150) = 900 s, and two calls of `runner-shutdown.sh`'s `runner_shutdown_kills` (main's #2945).
+its arithmetic is `ci-ok-report.sh`'s two `gh api` reads, of the run's jobs and of the tip of the queue's branch (main's #4983), and `post-check-run.sh`'s POST of the check run, 3 x (5 x 30 + 150) = 900 s, and two calls of `.github/scripts/runner-shutdown.sh#runner_shutdown_kills` (main's #2945).
 The first is `ci-ok-report.sh`'s own, on a merge-group run where the reporting job failed, to tell a runner shutdown from a failure of the change;
 where it finds none, the script runs `ci-ok.sh`, which makes the second for the run's failed jobs in a process of its own, so it reads the check runs again rather than reusing the first call's.
 Each call is two reads: the check runs on the head, 5 x 30 + 150 = 300 s, and the annotations loop, which one deadline of 180 s bounds and `check-download-retry.sh`'s DECLARED_LOOPS prices at that deadline plus one read's whole ladder, 180 + 300 = 480 s.
@@ -153,7 +153,7 @@ A step budget at or under that step's own arithmetic would cancel it in the midd
 ## The ci-images job's ceiling and the tool copy
 
 The tool copy is this job's slowest retried step, and its arithmetic is derived here once, for the steps' budgets and the job's ceiling both.
-Every request .github/scripts/mirror-ci-tools.sh makes rides the one ladder .github/scripts/ci-tools.sh holds (dispatch://INFRA-1545, R2), and each of its requests costs the ceiling .github/scripts/ci-tools.sh's `--retry-max-time` block derives for that request's own bound
+Every request .github/scripts/mirror-ci-tools.sh makes rides the one ladder .github/scripts/ci-tools.sh holds (dispatch://INFRA-1545, R2), and each of its requests costs the ceiling .github/scripts/ci-tools.sh derives for that request's own bound in the block on its `--retry-max-time`
 — 397 s at the 30 s a request carrying no asset bytes is given, 427 s at the `max_time: 60` of a request that carries them — and this paragraph derives neither.
 A ghcr-mirror row a run fills costs nine requests, none of its HEADs following a redirect
 — the two HEADs that read its state, the asset, the layer's POST and PUT, the config's POST and PUT, the manifest and the read-back, two of them carrying the asset's bytes
@@ -163,7 +163,7 @@ THE COPY IS FILLED ONE MACHINE AT A TIME, IN TWO STEPS, AND THE CEILING IS WHY.
 Main's #4313 gave each of the five ghcr-mirror rows (crane, changie, mise, jj and elan) an arm64 build of its own, `<tool>-aarch64`, so the manifest holds ten.
 One step that filled all ten would wait, cold, for 427 + 10 x 3633 = 36757 s, and the job's ceiling by the Budgets note's rule would be 1500 + 36757 = 38257 s -> 638 min, past the 360 minutes GitHub runs a job on one of its hosted runners: a ceiling the runner cannot honour is one the step's own ladder outlives, and the step would then end in GitHub's bare timeout line rather than naming the row that failed.
 So the job runs the script once per machine, `Fill the copy of every x86_64 tool asset the package does not hold` and `Fill the copy of every aarch64 tool asset the package does not hold`, and each run fills the five rows of its machine with the one token request, 427 + 5 x 3633 = 18592 s.
-Which rows a machine's run fills is read by ci-tools.sh's `ci_tools_mirror_rows`, the one reading of that split, which the tool-fallback job's two blob checks read their rows with too:
+Which rows a machine's run fills is read by `.github/scripts/ci-tools.sh#ci_tools_mirror_rows`, the one reading of that split, which the tool-fallback job's two blob checks read their rows with too:
 an `-aarch64` row is aarch64's and any other x86_64's, as the install actions read it from `uname -m`, and the asset the row's copy is filled from must name that machine as release assets do.
 It refuses, by name and in either machine's run, a ghcr-mirror row the two readings do not agree on, which is how a third machine's row would read, and it refuses a machine no row is built for, so every ghcr-mirror row is filled by exactly one of the two steps or both fail; nothing is skipped in silence.
 That is a cold fill, the run in which the package answers no request of a machine's five rows until every ladder is exhausted, and it is what each step can wait for.
@@ -227,7 +227,7 @@ Measured, this job sits far inside the 162 minutes its key carries, and the ladd
 In five green runs on 2026-11-10, with the Bun halves alone, it took 41 s, 41 s, 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs;
 in run 44073112404 (2026-11-17), with the arm64 rows' cases and before mise's fetch was retried, the whole job took 76 s, 11:31:39Z to 11:32:55Z, the new cases 25 s of it and the two Bun halves 2 s and 33 s, as before them.
 The reason is the shape of this job's faulted Bun install.
-It reads ci_tools_fetch_fallback (.github/actions/setup-bun/action.yml's `ci_tools_fetch_fallback "$row" "$HOME/.bun/bin/bun"`), which reads the second source alone and tries no primary (the `ci_tools_fetch_fallback()` function of .github/scripts/ci-tools.sh), and the primary it does not try is fetched by oven-sh/setup-bun, a Node action that calls no curl.
+It reads ci_tools_fetch_fallback (`.github/actions/setup-bun/action.yml#ci_tools_fetch_fallback "$row" "$HOME/.bun/bin/bun"`), which reads the second source alone and tries no primary (the `ci_tools_fetch_fallback()` function of .github/scripts/ci-tools.sh), and the primary it does not try is fetched by oven-sh/setup-bun, a Node action that calls no curl.
 The one fetch the helper makes there is of npm, which answers.
 In the step list of job 129743510021 one step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.
 The 427 s above stay as the headroom of the run where npm does not answer at once.
@@ -286,7 +286,7 @@ That refusal is the parser reading one `env:` map, which is why the bypass this 
 an environment file is lines and not a map, so it carries both spellings of no_proxy without the workflow refusing to start.
 
 A proxy per site, not one per job: a recovery window is counted from the proxy's first moment, so a second site under the first site's proxy would run after that window closed and would meet no fault.
-install-changie, install-omp and the Go download run once per outage of their call's chain instead, each run faulting its outage's host, most of them with a window of its own (ci-fault-proxy.py's `--per-host-window`) which the site's own first request opens and the rig's probe never does, and the proxy.golang.org run with one window over every host, so that `|direct` cannot answer for the retry:
+install-changie, install-omp and the Go download run once per outage of their call's chain instead, each run faulting its outage's host, most of them with a window of its own (the `--per-host-window` option of ci-fault-proxy.py) which the site's own first request opens and the rig's probe never does, and the proxy.golang.org run with one window over every host, so that `|direct` cannot answer for the retry:
 one window from the proxy's start had closed before those calls first reached release-assets.githubusercontent.com behind github.com's redirect, and storage.googleapis.com and sum.golang.org behind proxy.golang.org (round 63 of dispatch://INFRA-1545), and faulting a chain's hosts together made the calls meet their windows as a series no real outage is (round 64).
 .github/ci-notes/ci-job-download-retry.md, "The sites lane's arms with a window per host", derives each run's budget and says what its report checks beyond the rest.
 
@@ -380,7 +380,7 @@ it differed by how many of the two ladders the drive ran.
 
 The same recovering fault, inside the four Dockerfiles whose network RUN lines carry the inline retry (dispatch://INFRA-1545, T7, check #23856666).
 The rig is two jobs' since round 63: download-retry-images builds the Envoy and held-port images and the browser image twice (round 65), and download-retry-images-worker the worker image five times, as the five runs of one matrix, each a runner job of its own, because one job holding all the builds would come to 33922 s, above the 360 minutes GitHub gives a job on a hosted runner; .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build derives each budget and the two keys.
-Each build's proxy runs ci-fault-proxy.py's `--coalesce-outage-gap <G>`: the first request of a listed host opens an outage that answers 504 for 60 s, a host first reached while it is open joins it, a host first reached less than G s after it ended is passed on, and the first host reached G s or more after it ended opens the next outage, however late in the build that comes.
+Each build's proxy runs ci-fault-proxy.py with `--coalesce-outage-gap <G>`: the first request of a listed host opens an outage that answers 504 for 60 s, a host first reached while it is open joins it, a host first reached less than G s after it ended is passed on, and the first host reached G s or more after it ended opens the next outage, however late in the build that comes.
 A call that meets listed hosts one after another meets one outage, as a real outage is, where a window per host (round 63) spent its ladder on each in turn.
 G is 190 s for the Envoy image, 290 for the held-port image, 380 for the browser image and 230 for the worker image: 80 s, the inline retry's last sleep, plus the longest single attempt of a retried call in that arm's own builds, rounded up to the next whole 10 s.
 Every RUN line of a Dockerfile that reaches a listed host is meant to meet a fault in some run of its arm, which is why the browser image is built in two runs and the worker image in five, and the seven lines no run faults are stated: .github/ci-notes/ci-job-download-retry.md#the-image-arms-outages-and-their-coverage.
@@ -423,7 +423,7 @@ Each job clears the bypass for its own steps all the same, since the probe is on
 
 The proof that no install of this repository fetches the proof editor's upstream sources over the network:
 packages/proof-editor/package.json installs proof-sdk-upstream from the tarball committed beside it, so a frozen install reads those bytes out of the checkout and asks no host for them.
-This job runs that install behind a proxy that answers HTTP 504 for the hosts of the old `github:sjawhar/proof-sdk#<sha>` route - api.github.com, where Bun asks for a `github:` dependency's tarball, and codeload.github.com and objects.githubusercontent.com, which that request redirects to, and every subdomain of the three - and fails when the proxy's log holds a single refusal, on a cold install and on a warm one.
+This job runs that install behind a proxy that answers HTTP 504 for the hosts of the old route, `github:sjawhar/proof-sdk` with a hash and a commit sha after it - api.github.com, where Bun asks for a `github:` dependency's tarball, and codeload.github.com and objects.githubusercontent.com, which that request redirects to, and every subdomain of the three - and fails when the proxy's log holds a single refusal, on a cold install and on a warm one.
 It refuses the behaviour rather than the text:
 a gate on the string `github:sjawhar/proof-sdk` would pass the same dependency spelled another way, and this one asks what the install actually reaches.
 It is permanent because a reintroduced remote dependency necessarily moves bun.lock, which the proof_sdk_offline filter selects on, and the install then asks the proxy for one of those hosts:

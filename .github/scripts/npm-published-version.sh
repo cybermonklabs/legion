@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The version npm's registry publishes for one package: release-push.sh's `version` reads it in
-# place of a tag when a release line has no tag yet and --first-npm names the package.
+# The version npm's registry publishes for one package: `.github/scripts/release-push.sh#version`
+# reads it in place of a tag when a release line has no tag yet and --first-npm names the package.
 #
 # Usage: npm-published-version.sh <package>
 #
@@ -48,7 +48,7 @@
 # registry's answer and not a fault, so it must succeed on the first attempt, with no retry and
 # no `::error::`; every other failure is left to the retry.
 #
-# release-push.test.sh's `version` cases run it, against a stub npm first on PATH.
+# The `version` cases of release-push.test.sh run it, against a stub npm first on PATH.
 set -euo pipefail
 
 package=${1:?usage: npm-published-version.sh <package>}

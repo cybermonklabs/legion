@@ -95,7 +95,7 @@ jobs:
   pr-title:
     runs-on: ubuntu-24.04-arm
     # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes
-    # this job carried, plus its slowest retried step alone — check-pr-text.sh's `gh api`
+    # this job carried, plus its slowest retried step alone — check-pr-text.sh's own `gh api`
     # ladders, 9300 s (that step's comment sums them), a whole number of minutes, so that step's
     # own budget takes one more and this job takes it too. 600 + 9360 = 9960 s -> 167 min, the
     # whole minute above a sum that is itself a whole number of minutes.
@@ -128,7 +128,7 @@ jobs:
       # check-pr-text.sh runs by the checkout's own path, the form every job that holds the list
       # runs the check by, and runs check-private-names.sh from its own directory.
       - name: Check the title, body, branch name, commits, comments and reviews
-        # Its own retry arithmetic: check-pr-text.sh's `gh api` reads, each 5 x 30 + 150 = 300 s.
+        # Its own retry arithmetic: each `gh api` read of check-pr-text.sh is 5 x 30 + 150 = 300 s.
         # Its GraphQL read (main's #4956), which the rounds' `while :` calls once a round and the
         # `while` over a review thread's later comments once a page, is 900 s, three of its
         # ladders, the figure .github/scripts/check-download-retry.sh's DECLARED_LOOPS writes for

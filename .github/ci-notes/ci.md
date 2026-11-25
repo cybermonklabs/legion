@@ -1179,11 +1179,12 @@ A job split off another keeps its steps in that job's file instead: its caller p
 docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
 Caches: no step of the jobs this workflow calls saves an Actions cache entry. dispatch-two-builds
-restores the two builds it compares the tree against (ci-job-dispatch-two-builds.yaml's `Restore
-the previous build` and `Restore the first-rollout build`) and builds one on a miss;
-ci-caches.yaml's dispatch-builds job builds and saves both on main, since an entry a pull request
-or a merge group saves lands in a scope no other run reads (dispatch://INFRA-1545, R4; the
-two-build section below says why). Two actions its jobs call can save one, and only in a
+restores the two builds it compares the tree against
+(`.github/workflows/ci-job-dispatch-two-builds.yaml#Restore the previous build` and
+`.github/workflows/ci-job-dispatch-two-builds.yaml#Restore the first-rollout build`) and builds
+one on a miss; ci-caches.yaml's dispatch-builds job builds and saves both on main, since an entry
+a pull request or a merge group saves lands in a scope no other run reads (dispatch://INFRA-1545,
+R4; the two-build section below says why). Two actions its jobs call can save one, and only in a
 dispatched run (architecture-check and spec-check, at this paragraph's end); a third, setup-bun,
 saves only where its caller passes `save: 'true'` on a push to main, which no job of this
 workflow does and no run of it is.

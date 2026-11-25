@@ -85,10 +85,10 @@
 #
 # Rule 8 reads one step across more than one of those files: a step that runs a script under
 # .github/scripts/ carries that script's own retried calls, and those of every script it calls
-# in turn. Three budgets of this tree were a one-line `run:` of a script
-# call and nothing else — ci.yaml's `pr-title` and `ci-ok` steps and pr-title.yaml's, 1200 s,
-# 600 s and 900 s of retries under a 20-, a 10- and a 15-minute budget — and a rule 8 that
-# stopped at the `run:` saw the arithmetic of none of them.
+# in turn. Three budgets of this tree were a one-line `run:` of a script call and nothing else
+# — the `.github/workflows/ci.yaml#pr-title` and `.github/workflows/ci.yaml#ci-ok` steps and
+# pr-title.yaml's, 1200 s, 600 s and 900 s of retries under a 20-, a 10- and a 15-minute budget
+# — and a rule 8 that stopped at the `run:` saw the arithmetic of none of them.
 #
 # THE FORMS RULE 8 READS, AND NO OTHERS (dispatch://INFRA-1545, round 37). Each reading of rule
 # 8 accepts the forms this tree writes, measured on the tree at d65e47ae with an instrumented copy
@@ -119,10 +119,10 @@
 #        - a NON-CALL, 16: an argument of `echo` or `grep` (NONCALL_COMMANDS) whose output no
 #          shell runs, and a comment, charged nothing and refused nothing. Until round 37 a path
 #          anywhere on a line that was not a comment line was a call, so two echo lines of
-#          ci.yaml's `tool-fallback` step read as calls, 3843 s where its call is 1281 s. Such an
-#          argument inside a `$( … )` or backticks is a non-call where what they print is an
-#          assignment's value or an argument of a command that runs no text, as
-#          ci-job-tool-fallback.yaml's `reader_lines=$(grep … ci-tools-proof.sh)` writes, and is
+#          `.github/workflows/ci.yaml#tool-fallback` step read as calls, 3843 s where its call is
+#          1281 s. Such an argument inside a `$( … )` or backticks is a non-call where what they
+#          print is an assignment's value or an argument of a command that runs no text, as
+#          ci-job-tool-fallback.yaml writes in `reader_lines=$(grep … ci-tools-proof.sh)`, and is
 #          refused where it is the command word or an argument of `eval`, `.`, `source` or a
 #          shell, which run it (dispatch://INFRA-1545, round 37). What such a command prints may
 #          still run later, from a file it is written to, from a variable or through a pipe into
@@ -244,8 +244,8 @@
 #      ./R38-FE[T]CH.SH` passed r38-fetch.sh's 1050 s under a 17-minute key. Measured at
 #      de0334a3, this refused two lines of the tree, each a `shopt -s nullglob`: the one
 #      go-tagged-tests.sh set below its `set -euo pipefail` for its loop over `"$dir"/*_test.go`,
-#      and the one in release-envoy-listener.yaml's `Create the image index`, each rewritten to
-#      test the first name its glob gives with `[ -e … ]`, which runs as it did;
+#      and the one in `.github/workflows/release-envoy-listener.yaml#Create the image index`, each
+#      rewritten to test the first name its glob gives with `[ -e … ]`, which runs as it did;
 #      the tree's 14 `shopt -s inherit_errexit` and its `set -euo pipefail` and `set -o pipefail`
 #      are outside the class. ROUND 42 CLOSES FOUR ROUTES TO SUCH A SETTING AS ROUTES, NOT AS
 #      SPELLINGS, each measured on the tree at 96dde7f1 before its refusal was written
@@ -266,8 +266,8 @@
 #      check cannot read so, a `printf` whose format builds each line, a file `cat` prints, a
 #      name holding an expansion or the output of any other command, a group's or a loop's, is
 #      refused by name whatever it writes (env_file_writes, ENV_FILE_UNREAD). Of the tree's ten
-#      writes nine were read so, none naming such a variable, and ci-tools-proof.sh's `printf
-#      '%s\n' "$line"` was rewritten to spell each name out, printing and writing the same bytes.
+#      writes nine were read so, none naming such a variable, and ci-tools-proof.sh's one, `printf
+#      '%s\n' "$line"`, was rewritten to spell each name out, printing and writing the same bytes.
 #      And BASH_ENV, the file a non-interactive bash runs before its text, and ENV, sh's, join
 #      that list, read through every route it is read by: a word assigning one before a command,
 #      alone or after `env`, a declaration, an `env:` key of the file, a job or a step, and a
@@ -314,14 +314,14 @@
 #      handing such a function its own parameter there, `wrap() { run "$@"; }`, runs it too, so
 #      `wrap "$p"` is the call refused, and a script handing on its own arguments, `run "$@"` at
 #      its top level, is refused, since this check does not follow its callers. The tree's seven
-#      such calls, of check-plugin-names.sh's and check-private-names.sh's `run`, hand it `git`
-#      or `grep`. A run another refusal already names, on any line of its command, is not refused
-#      a second time. Until round 37 each way a printed or assembled path reached a run had a
-#      model of its own, and round 37's survey found five that undercounted, each passing a
-#      1650 s call under a one-minute key. The tree wrote the shape four times,
-#      install-claude-code's `"$claude"`, install-omp's `"$omp"` and download-retry-proof.sh's two
-#      `. "$file"`, and round 37 rewrote each to name its target literally, running what it ran
-#      before.
+#      such calls, of `.github/scripts/check-plugin-names.sh#run` and
+#      `.github/scripts/check-private-names.sh#run`, hand it `git` or `grep`. A run another refusal
+#      already names, on any line of its command, is not refused a second time. Until round 37
+#      each way a printed or assembled path reached a run had a model of its own, and round 37's
+#      survey found five that undercounted, each passing a 1650 s call under a one-minute key.
+#      The tree wrote the shape four times, install-claude-code's `"$claude"`, install-omp's
+#      `"$omp"` and download-retry-proof.sh's two `. "$file"`, and round 37 rewrote each to name
+#      its target literally, running what it ran before.
 #   2. A CALL OF A FUNCTION, 503: a command whose first word is the name of a function the same
 #      text defines, outside that function's own body, after no word (480) or after `if` (9),
 #      `if !` (9), `!` (4) or `elif !` (1) (CALL_PREFIXES). A call after any other word — a
@@ -330,14 +330,18 @@
 #      which each of the tree's 170 definitions writes; every other spelling is refused by name
 #      where a fetch is in its reach, as the list below says. Its lines run from its definition
 #      to its body's last command, so a command after a `}` that starts its line is the text's
-#      own; and a parameter expansion is one word to its closing `}`, as bash reads
-#      `${name##* }`, which this tree writes in ci-tools-proof.sh's `probe` (`${reading##* }`,
-#      twice) and `ladder_report` (`${names# }`) and in release-push.sh's `fold-check`
-#      (`${changie_output//$'\n'/ }`). Until round 37 the function's lines ran to its `}`'s
-#      line, and the expansion was split at its blank and its `}` read as the function's own,
-#      which ended ci-tools-proof.sh's `probe` at its first `${reading##* }` and `ladder_report`
-#      at its `${names# }`; no fetch or call this check charges sat after either, so no figure
-#      moved (dispatch://INFRA-1545, round 37).
+#      own; and a parameter expansion is one word to its closing `}`, as bash reads one whose
+#      pattern holds a blank, such as an expansion of name that removes all up to and including its
+#      last blank (the `##` operator). This tree writes such expansions in
+#      `.github/scripts/ci-tools-proof.sh#probe`, twice, each removing all up to and including the
+#      last blank of reading, in `.github/scripts/ci-tools-proof.sh#ladder_report`, once, removing
+#      one leading blank of names (the `#` operator), and in
+#      `.github/scripts/release-push.sh#fold-check` (`${changie_output//$'\n'/ }`). Until round 37
+#      the function's lines ran to its `}`'s line, and the expansion was split at its blank and its
+#      `}` read as the function's own, which ended `.github/scripts/ci-tools-proof.sh#probe` at its
+#      first such expansion of reading and `.github/scripts/ci-tools-proof.sh#ladder_report` at its
+#      expansion of names; no fetch or call this check charges sat after either, so no figure moved
+#      (dispatch://INFRA-1545, round 37).
 #   3. A LIBRARY'S FUNCTIONS: a library is a script a body sources, and a call of one of its
 #      fetching functions is read as a call of a function is, with the same words before it.
 #      This tree sources three, ci-retry.sh, ci-tools.sh and runner-shutdown.sh, and calls into
@@ -376,7 +380,7 @@
 #      list, a `for ((…))`, a `while`, and a `for` over anything else is a loop whose passes this
 #      check does not read, refused where it holds a priced call unless a DECLARED_LOOPS entry
 #      writes its seconds; the tree's five `$(seq …)` loops and its four `for ((…))`, one of them
-#      over check-pr-text.sh's `lists`, enter no figure. A loop runs from a
+#      over `.github/scripts/check-pr-text.sh#lists`, enter no figure. A loop runs from a
 #      bare `for`, `while`, `until` or `select` opening a command to a bare `done` opening one,
 #      and such a word in quotes or after a backslash, or a `case` pattern or an extglob
 #      alternative that opens a command, `done)` on a line of its own or after `;;`, `(done)` or
@@ -390,7 +394,7 @@
 #      retry or any other wrapper but `time`, fetches nothing — the helper refuses the first and
 #      the wrapper cannot run a shell function — and is refused by name and charged nothing;
 #      seconds written as a variable are refused as no number this check reads. One wrapper is
-#      no such wrapper: .github/scripts/gh-read.sh's `gh_wait_reset`, a shell function that runs
+#      no such wrapper: `.github/scripts/gh-read.sh#gh_wait_reset`, a shell function that runs
 #      the words after it, in exactly one form, `gh_wait_reset [--stderr <file>] retry_fetch …`
 #      with nothing before or between, which is read and charged as the bare call is, one ladder.
 #      That charge holds because gh_wait_reset waits, and runs the ladder again, only when the
@@ -609,11 +613,12 @@
 # nowhere runs what the sourcing text sets, which the reading of holders follows there only
 # where that text can see a function that fetches. The architect accepted this model for the
 # forms this tree writes, because a refusal alone would refuse the tree's own scripts:
-# ci-tools.sh's `$fetch` and `$seam`, whose fetches DECLARED_LOOPS prices, and release-push.sh's
-# `"$leak_engine"` and its `true` or `false` flags, DECLARED_CALLS entries, each run a function,
-# a tool or a builtin and never a script, and a declaration names its figure and why where a
-# reviewer reads it (dispatch://INFRA-1545, round 37). Until round 37 every call that did not
-# write the script's path was this limit. A path that is written, in a variable or in any other
+# ci-tools.sh's calls through `$fetch` and `$seam`, whose fetches DECLARED_LOOPS prices, and
+# release-push.sh's calls through `"$leak_engine"` and its `true` or `false` flags, DECLARED_CALLS
+# entries, each run a function, a tool or a builtin and never a script, and a declaration names
+# its figure and why where a reviewer reads it (dispatch://INFRA-1545, round 37). Until round 37
+# every call that did not write the script's path was this limit. A path that is written, in a
+# variable or in any other
 # place the first list refuses, is refused where its script fetches. And a script outside
 # .github/scripts/ is not read at all, since the `.sh` files directly in that one directory are
 # the whole set: a `run:` that calls the repository's own scripts/<name>.sh or a
@@ -752,7 +757,7 @@
 #
 # The wrappers stripped before the command is read are an assignment, a shell keyword, `sudo`,
 # `env`, `exec`, `command`, `nice`, `nohup`, `time`, `timeout <seconds>`, `retry_fetch <what>
-# <bound> --` and a Dockerfile's `retry <bound> <what>`. The last three are also what says a
+# <bound> --` and a Dockerfile's inline `retry <bound> <what>`. The last three are also what says a
 # fetch is retried and bounded. A wrapper and a verb are read by their name whatever directory
 # names them, `/usr/bin/env` as `env` (program_name; dispatch://INFRA-1545, round 42). A command
 # that answers about itself (`--version`, `--help`, `--usage`) is read as no fetch, whatever its
@@ -760,7 +765,7 @@
 # nothing from the network. It is false for a corepack shim: `pnpm`, `yarn` and `yarnpkg
 # --version` and `pnpx --help` download the package manager on their first run, and this check
 # reads each of them as no fetch all the same. A STATED LIMIT: the tree's four such calls are in
-# the worker image's `RUN` in packages/daemon/docker/worker.Dockerfile that runs `pnpm --version`,
+# the worker image's RUN in packages/daemon/docker/worker.Dockerfile that runs `pnpm --version`,
 # `yarn --version`, `yarnpkg --version` and `pnpx --help` under that file's `retry`, each retried
 # by its author at 120 s, and no rule holds a new one to the floor.
 #
@@ -771,15 +776,15 @@
 #
 # THE RULES.
 #
-#   1. In a workflow `run:`, an action.yml `run:` or a *.sh under .github/scripts/, a fetch must
-#      be a `retry_fetch` call or, for curl, carry curl's own options at the floor.
+#   1. In the `run:` of a workflow or of an action.yml, or in a *.sh under .github/scripts/, a
+#      fetch must be a `retry_fetch` call or, for curl, carry curl's own options at the floor.
 #   2. A loop (`while`, `until`, `for`) whose body holds a fetch that is not a `retry_fetch` call
 #      is a copy of the helper and is refused as one, whether or not that fetch would pass rule 1
 #      on its own: R2's rule is that one place holds the attempts. A loop reaches a fetch two
 #      ways, and both count: the fetch is written in the body, or the body is a function the same
 #      block calls with a fetch among the call's words — `attempts 2 "apt-get update" sudo timeout
 #      90 apt-get update`, the shape the shared helper was made from.
-#   3. A Dockerfile `RUN` that fetches opens with the canonical `retry()` text (CANONICAL below),
+#   3. A Dockerfile RUN that fetches opens with the canonical `retry()` text (CANONICAL below),
 #      compared with its backslash continuations joined and each run of blank space collapsed to
 #      one space, which is the one liberty the tree's own two shapes force: a `RUN --mount=...`
 #      indents the definition under the flag. Each fetch of that `RUN` is then wrapped in
@@ -820,8 +825,8 @@
 #      an exception below removes are outside this rule as they are outside the rest.
 #   6. In Python, inside the heredoc of a *.sh under .github/scripts/, a `urlopen` read,
 #      `urllib.request.urlopen(…)` or a bare `urlopen(…)` (PYTHON_READ), goes through
-#      check-ci-images.sh's `read_retrying`, which carries the floor in that check's own idiom —
-#      five attempts, waits of 10, 20, 40 and 80 seconds, each bounded by the read's own
+#      `.github/scripts/check-ci-images.sh#read_retrying`, which carries the floor in that check's
+#      own idiom — five attempts, waits of 10, 20, 40 and 80 seconds, each bounded by the read's own
 #      `timeout=30`. One definition, no copies, as the shell has. A read is `read_retrying`'s
 #      where it is written in the same heredoc, each a program of its own, indented deeper than
 #      the `def` with no line between them at the `def`'s indentation or shallower; until round
@@ -832,7 +837,7 @@
 #      (dispatch://INFRA-1545, round 38). No rule reads a `.py` or `.jq` program's own downloads
 #      or its runs of other scripts, as PYTHON IS READ IN ONE PLACE ONLY says below.
 #   7. A `mise x`, `mise exec`, `mise up` or `mise upgrade` carries no retry, anywhere: not a
-#      `retry_fetch` call and not a Dockerfile `retry` call. None of the four fails when it
+#      `retry_fetch` call and not a `retry` call in a Dockerfile. None of the four fails when it
 #      cannot resolve the tool. `mise x` warns (`Failed to resolve tool version list for … HTTP
 #      host https://api.github.com:443 is unavailable`) and then runs whatever binary of that
 #      name is already on PATH — a different build, at a version nobody asked for — and exits 0;
@@ -874,8 +879,8 @@
 #
 #      A step holding an arithmetic above zero and writing no `timeout-minutes` at all is
 #      refused with the figure it needs. A budget that does not exist is judged by nothing, and
-#      nothing was what judged ci.yaml's `airlock-lean` at 61e220f36: the step running
-#      .github/actions/install-elan carried that action's curl of the elan tarball,
+#      nothing was what judged `.github/workflows/ci.yaml#airlock-lean` at 61e220f36: the step
+#      running .github/actions/install-elan carried that action's curl of the elan tarball,
 #      8 x 60 + 127 = 607 s, wrote no budget of its own, and the job's twenty minutes carried
 #      no term for it either, so an exhausted ladder there would have ended the job on GitHub's
 #      bare timeout line. This check read that step's cost and compared it with nothing,
@@ -893,11 +898,11 @@
 #      worth stating here rather than leaving for whoever writes the next one.
 #      `written_minutes` takes a whole number and nothing else, so `timeout-minutes: ${{ matrix.timeout_minutes }}`
 #      reads as a job that wrote none and is judged at the 360-minute default, whatever the
-#      matrix row really allows. This tree writes two such jobs. .github/workflows/e2e.yaml's
-#      `proof` job takes its limits from the rows of .github/e2e-scripts.json: those rows are
+#      matrix row really allows. This tree writes two such jobs. `.github/workflows/e2e.yaml#proof`
+#      job takes its limits from the rows of .github/e2e-scripts.json: those rows are
 #      derived by hand, each against the slowest retried step its own flags select, and that
-#      file says so where they are written. .github/workflows/dispatch-unit-repeat.yaml's
-#      `repeat` job writes `timeout-minutes: ${{ matrix.job_minutes }}`, and each row of its
+#      file says so where they are written. `.github/workflows/dispatch-unit-repeat.yaml#repeat`
+#      job writes `timeout-minutes: ${{ matrix.job_minutes }}`, and each row of its
 #      matrix's `include:` writes its figure's arithmetic beside it, the job's first term plus
 #      `retry_seconds`, the setup-bun step's two `ci_tools_fetch` calls, 3416 s: web
 #      4080 + 74 + 3416 = 7570 s under 127 minutes, web-cold 480 + 88 + 3416 = 3984 s under 67,
@@ -907,9 +912,10 @@
 #      arithmetic has to be written beside it. A step that writes its budget as an expression
 #      is read the same way, as writing none, which refuses it where it holds a retried call:
 #      the same file's `Run the lane under one seed with --reruns ${{ matrix.reruns }}` step
-#      writes `timeout-minutes: ${{ matrix.step_minutes }}`, and e2e.yaml's `Run the
-#      proof` step writes `timeout-minutes: ${{ matrix.run_timeout_minutes }}`, each row's figure
-#      derived by hand in .github/e2e-scripts.json and .github/ci-notes/e2e.md, which
+#      writes `timeout-minutes: ${{ matrix.step_minutes }}`, and
+#      `.github/workflows/e2e.yaml#Run the proof` step writes
+#      `timeout-minutes: ${{ matrix.run_timeout_minutes }}`, each row's figure derived by hand in
+#      .github/e2e-scripts.json and .github/ci-notes/e2e.md, which
 #      select-e2e-proofs.sh holds strictly below the row's job key. Both pass because neither
 #      holds a retried call this check reads: the proof step's retries are in scripts/e2e/'s
 #      libraries, outside .github/scripts/ (dispatch://INFRA-1545, round 48).
@@ -936,9 +942,10 @@
 #      interpreter is no such program, and is refused, as WHAT IT READS says. And in the
 #      heredocs rule 6 does read it reads a
 #      `urlopen` alone, so another urllib call, such as `urllib.request.urlretrieve`, gets no
-#      floor either (dispatch://INFRA-1545, round 38). ci.yaml's `Check the package holds every
-#      row of .github/ci-images.yaml` is this tree's instance: its reads are `urlopen` calls inside
-#      .github/scripts/check-ci-images.sh, held to the floor by rule 6 and budgeted by hand.
+#      floor either (dispatch://INFRA-1545, round 38). ci.yaml's ci-images job is this tree's
+#      instance, in its step `Check the package holds every row of .github/ci-images.yaml`: its
+#      reads are `urlopen` calls inside .github/scripts/check-ci-images.sh, held to the floor by
+#      rule 6 and budgeted by hand.
 #      This is the rule ci-budgets.md's Budgets note already writes for a reader — a job carries its
 #      measured duration plus the arithmetic of its slowest retried step — read here as the
 #      half a check can make, which is the arithmetic and not the measurement.
@@ -992,7 +999,8 @@
 #      included, so it is charged once for each pass, and two of them in one body are both
 #      charged. One in a branch of an `if` or a `case` runs at most once in a pass, so the
 #      construct is charged its longest branch at every pass. And one the text itself skips on
-#      the last pass, read literally as dequeued.yaml's `[ "$attempt" = 7 ] || sleep 10` is, the
+#      the last pass, read literally as
+#      `.github/workflows/dequeued.yaml#[ "$attempt" = 7 ] || sleep 10` is, the
 #      loop's own variable tested against the last word of its list in a body that sets it
 #      nowhere, is charged once for each pass but the last: the poll's six 10 s waits above. A
 #      sleep written directly after the `&&` or the `||` of any other test, or of that one where
@@ -1075,9 +1083,9 @@
 #          fetches, the call is refused unless each fetch such a function holds is a
 #          DECLARED_LOOPS entry, whose figure is that fetch's whole contribution for every
 #          caller, or a DECLARED_CALLS entry writes what the calls through that variable add.
-#          .github/scripts/ci-tools.sh's `$fetch` and `$seam` calls are covered by its `curl`
-#          entry, which every fetch they reach goes through; release-push.sh's calls of its leak
-#          engine and of its `true`/`false` flags are DECLARED_CALLS entries at 0 s.
+#          .github/scripts/ci-tools.sh's calls through `$fetch` and `$seam` are covered by its
+#          `curl` entry, which every fetch they reach goes through; release-push.sh's calls of its
+#          leak engine and of its `true`/`false` flags are DECLARED_CALLS entries at 0 s.
 #          runner-shutdown.sh writes no call through a variable.
 #        * a library a step reaches along more than one path — it sources it and runs a script
 #          that sources it too, or runs two scripts that each do — or along one path more than
@@ -1087,7 +1095,7 @@
 #          step is refused unless a DECLARED_LIBRARIES entry writes what the library
 #          contributes to it, which then replaces that charge. The tool-fallback and
 #          tool-fallback-arm steps that source .github/scripts/ci-tools.sh and run
-#          ci-tools-proof.sh's `version-answers`, which fetches nothing, are declared at 1708 s,
+#          ci-tools-proof.sh with `version-answers`, which fetches nothing, are declared at 1708 s,
 #          the library's one `ci_tools_fetch`, and so are the step 'Seed mise's install of jj
 #          with the staged binary, one byte changed', which runs ci-tools-proof.sh three times,
 #          and the tool-fallback-arm steps that run its `version-answers` and its `refusals`,
@@ -1100,7 +1108,7 @@
 #          loop whose passes this check cannot read, which are charged as the library's one
 #          charge (library_functions). The body is refused unless a DECLARED_LIBRARIES entry,
 #          for the step or for the file whose calls they are, writes what the library
-#          contributes. ci-tools-proof.sh's `stage`, which calls ci_tools_fetch, or
+#          contributes. `.github/scripts/ci-tools-proof.sh#stage`, which calls ci_tools_fetch, or
 #          ci_tools_fetch_primary for uv, once for each of its ten staged rows, is declared for
 #          the staging step at the 12383 s its budget writes and for every other step running
 #          that script at 1708 s; each of the two blob checks' loops of ci_tools_registry_head
@@ -1192,10 +1200,11 @@
 #      No site in the tree is refused by this rule today, and three lines look as though they
 #      would be. Both pipeline spellings count: `|`, and `|&`, which is bash's pipe of standard
 #      error beside standard output and loses the fetch's status the same way. `||` is neither
-#      of them but a logical OR, and it sets nothing — which is what ci.yaml's `cancel-started`
-#      step and dequeued.yaml's `cancel-dequeued` write, each ending a line with `gh api
+#      of them but a logical OR, and it sets nothing — which is what the
+#      `.github/workflows/ci.yaml#cancel-started` step and
+#      `.github/workflows/dequeued.yaml#cancel-dequeued` write, each ending a line with `gh api
 #      --silent --method POST … ||`, and what the scanner tells from a `|` by the character
-#      after it. release-envoy-listener.yaml's `if ! legacy_source=$(gh api …)` is the third
+#      after it. release-envoy-listener.yaml's test `if ! legacy_source=$(gh api …)` is the third
 #      line, and it reads that fetch's own status, which is what this rule asks for.
 #
 #      A site this rule refuses that another rule refuses too is one `::error` and not two. The
@@ -1214,9 +1223,9 @@
 #      be building any file at all: a `file:` or a `--file` written as an expression or a
 #      variable, and a build naming no file, which builds its context's own `Dockerfile`. A path
 #      is read from the repository's root, as every build of this tree writes it. Not read: a
-#      build written inside a script a step runs (download-retry-proof.sh's `docker buildx build
-#      --file "$file"`), a `docker` command with a global option before its subcommand or in any
-#      other spelling, and a `working-directory:` the step runs in.
+#      build written inside a script a step runs (the `docker buildx build --file "$file"` that
+#      download-retry-proof.sh runs), a `docker` command with a global option before its
+#      subcommand or in any other spelling, and a `working-directory:` the step runs in.
 #
 #      And the key that holds such a build strictly exceeds the longest single ladder of the
 #      Dockerfile it builds: the step's own `timeout-minutes` where it writes one, and its job's,
@@ -1260,9 +1269,10 @@
 #      (dispatch://INFRA-1545).
 #      Main's two actionlint steps make two more, each a `docker run` of the pinned actionlint
 #      copy, ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5…, which pulls it where the runner
-#      does not hold it: 'Check every workflow file with actionlint' in ci-job-ci-filters.yaml's
-#      `ci-filters` job and in workflow-files.yaml's `workflow-files` job. EXEMPTIONS
-#      names neither, since neither is a site here (dispatch://INFRA-1545, round 47). A STATED
+#      does not hold it: 'Check every workflow file with actionlint' in
+#      `.github/workflows/ci-job-ci-filters.yaml#ci-filters` job and in
+#      `.github/workflows/workflow-files.yaml#workflow-files` job. EXEMPTIONS names neither, since
+#      neither is a site here (dispatch://INFRA-1545, round 47). A STATED
 #      LIMIT: this check reads no `docker run` and no `docker create` as a fetch, so an own-image
 #      pull made that way is read by no rule and is named only in this text; a `docker pull` is
 #      a fetch, and one of this package is left unretried only where EXEMPTIONS names it.
@@ -1273,8 +1283,9 @@
 #      toolchain $toolchain" 120 -- elan toolchain install "$toolchain"` in a step of its own,
 #      keyed by hand at 5 x 120 + 150 = 750 s -> 13 min, before a `lake build` that then
 #      downloads nothing: the `Install the Lean toolchain lean-toolchain names` step of
-#      ci-job-airlock-lean.yaml's `airlock-lean` job and of ci-caches.yaml's `elan` job. No rule
-#      holds a new one to the floor or charges it to a key.
+#      `.github/workflows/ci-job-airlock-lean.yaml#airlock-lean` job and of
+#      `.github/workflows/ci-caches.yaml#elan` job. No rule holds a new one to the floor or charges
+#      it to a key.
 #   b. A `uses:` reference, and anything inside a third-party action. This needs no entry: only a
 #      step's `run:` is read for its fetches, and no third-party action's source is in this tree.
 #      A composite action cannot wrap a `uses:` step in a loop, which is why R4 answers the Bun
@@ -1326,14 +1337,14 @@
 #      what check-release-credentials.sh refuses: its rule 1(a) lets a credentialed job run no
 #      dependency code, and its dependency_command() names as dependency code any command whose
 #      path holds a `scripts/` component other than release-push.sh itself (`if
-#      DEPENDENCY_PATH.search(path) and path != RELEASE_PUSH`). A `.` of ci-retry.sh is read
+#      DEPENDENCY_PATH.search(path) and path != RELEASE_PUSH`). A `.` sourcing ci-retry.sh is read
 #      through that check's INTERPRETERS to exactly that path. Measured: sourcing the helper into
-#      release.yaml's `publish` step 'pi-envoy: Create GitHub release' makes that check print
+#      release.yaml's publish step 'pi-envoy: Create GitHub release' makes that check print
 #      `job 'publish' holds a credential, but step '…' runs '.github/scripts/ci-retry.sh';
 #      dependency code runs only in a job that holds none` and exit 1. Writing the `.` inside
 #      release-push.sh instead would hide the same code from that check rather than keep it out
 #      of the job, so these sites are left unretried. The leak guard is the one place where the
-#      tree does what that sentence declines: its `.` of ci-retry.sh is written inside
+#      tree does what that sentence declines: its `.` sourcing ci-retry.sh is written inside
 #      release-push.sh, and it runs in the publish jobs' `release`, `release-section` and
 #      `push-tag`, where check-release-credentials.sh does not read it.
 #
@@ -1362,21 +1373,22 @@
 #     the same reason.
 #   * A call whose own failure is consumed as the answer rather than as a fault — `x=$(cmd …
 #     2>/dev/null || true)`, whose result is then tested — is a probe. The one site in the tree is
-#     mirror-ci-images.sh's `crane digest` of the package's own tag: that refusal is the signal to
-#     copy, and five attempts there would sleep 150 s for every row the package lacks, which are
-#     exactly the rows the copy after it then writes. The copy itself, and the digest read that
-#     confirms it, do retry.
+#     the `crane digest` that mirror-ci-images.sh makes of the package's own tag: that refusal is
+#     the signal to copy, and five attempts there would sleep 150 s for every row the package
+#     lacks, which are exactly the rows the copy after it then writes. The copy itself, and the
+#     digest read that confirms it, do retry.
 #   * `docker buildx imagetools create` and `docker buildx imagetools inspect` in the `Create the
-#     image index` step of release-envoy-listener.yaml's `image_index` job are a release's write
-#     to its registry and its read of what it wrote: they join the platform images the docker legs
-#     pushed into the `envoy:<sha>` index and print that index, and bring no tool and no dependency
-#     into the job. `docker buildx` is none of THE VERBS, so no rule reads them. Exception (d) does
-#     not reach the job either: its `packages: write` is no scope of check-release-credentials.sh's
-#     WRITE_SCOPES (`contents`, `id-token`, `attestations`, `actions`), so the job is no
-#     credentialed one by that check's definition, and this scoping is what leaves it unretried.
+#     image index` step of `.github/workflows/release-envoy-listener.yaml#image_index` job are a
+#     release's write to its registry and its read of what it wrote: they join the platform images
+#     the docker legs pushed into the `envoy:<sha>` index and print that index, and bring no tool
+#     and no dependency into the job. `docker buildx` is none of THE VERBS, so no rule reads them.
+#     Exception (d) does not reach the job either: its `packages: write` is no scope of
+#     check-release-credentials.sh's WRITE_SCOPES (`contents`, `id-token`, `attestations`,
+#     `actions`), so the job is no credentialed one by that check's definition, and this scoping is
+#     what leaves it unretried.
 #
 # One more scoping, which the tree states where it uses it: e2e.yaml's package step and
-# ci.yaml's `Install tmux` step. An `apt-get install` with no `-d` that follows an
+# the `Install tmux` step of ci.yaml's jobs. An `apt-get install` with no `-d` that follows an
 # `apt-get install -d`
 # in the same `run:` unpacks an archive already on disk and takes no network, so the download
 # before it is the half that retries. An `apt-get` carrying a simulate flag (`-s`, `--simulate`,
@@ -1519,17 +1531,17 @@ HELPER = ".github/scripts/ci-retry.sh"
 # This file, named by the problems it raises about its own lists.
 SELF = ".github/scripts/check-download-retry.sh"
 # The `.test.sh` harnesses beside the checks are not read. A harness is not a job's download: the
-# two network calls in the tree today are ci-fault-proxy.test.sh's `run_curl`, which drives one
-# curl at the fault proxy precisely to watch a single unretried attempt, and
-# release-push.test.sh's `gh api meta`, which compares the pinned host keys with what GitHub
+# two network calls in the tree today are `.github/scripts/ci-fault-proxy.test.sh#run_curl`, which
+# drives one curl at the fault proxy precisely to watch a single unretried attempt, and
+# release-push.test.sh's read `gh api meta`, which compares the pinned host keys with what GitHub
 # publishes and prints SKIP when the read fails. A retry at either would destroy what the test
 # measures, and neither brings a tool, a toolchain or a dependency into a job.
 #
 # The widened gh table above does not add a third. The other gh words a harness writes reach no
 # host: release-push.test.sh and check-private-names.test.sh each write a stub `gh` into the
 # test's own bin directory and put that directory first on PATH, so the words are the stub's own
-# `case` arms and the calls the script under test makes land on it; check-ci-filters.test.sh's
-# `gh run cancel` is a line of a workflow fixture it writes for the checker to read, which
+# `case` arms and the calls the script under test makes land on it; the `gh run cancel` that
+# check-ci-filters.test.sh writes is a line of a workflow fixture for the checker to read, which
 # nothing runs. A retry around any of them would wrap a shell function or a string.
 TEST_HARNESS = ".test.sh"
 # A harness's library: a `*-test-lib.sh` directly in .github/scripts/, which the `.test.sh`
@@ -1589,7 +1601,7 @@ NONCALL_COMMANDS = {"echo", "grep"}
 # The canonical inline retry of a Dockerfile RUN, already in the shape the comparison uses: its
 # continuations joined and each run of blank space one space. Each attempt that fails prints
 # `retry: <what>: attempt <k> of 5 failed` on stderr, and the fifth then prints `<what> failed
-# after 5 attempts (last exit <s>)` too. .github/scripts/download-retry-proof.sh's `report` reads
+# after 5 attempts (last exit <s>)` too. `.github/scripts/download-retry-proof.sh#report` reads
 # those lines from an image build's log, so a build under the download-retry-images jobs' fault
 # shows which attempt each retried call reached.
 CANONICAL = (
@@ -1707,11 +1719,11 @@ PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", 
 # The options of a PASSTHROUGH wrapper this check reads, each with the number of words after it
 # that it takes, or RUNS_NOTHING where the wrapper then runs no command: `command -v curl` prints
 # where curl is found. These are the forms the tree writes behind a wrapper, `command -v` in its
-# actions, scripts and Dockerfiles, `env -u <name>` in worker.Dockerfile's two `go env` reads,
-# `sudo -u <user>` in dispatch-unit-repeat.yaml's psql as the server's postgres account, and
-# `setsid --wait` and `env --default-signal=INT,QUIT` in harness-pool.sh's start and run, and the
-# three a wrapper is most often written with, `env -i`, `nice -n <n>` and `sudo -E`. Any other
-# option after a wrapper, `env -S`, which splits a string this check does not read, `nice
+# actions, scripts and Dockerfiles, `sudo -u <user>` where dispatch-unit-repeat.yaml runs psql as
+# the server's postgres account, `setsid --wait` and `env --default-signal=INT,QUIT` used by
+# harness-pool.sh's start and run, `env -u <name>` in the two `go env` reads of worker.Dockerfile,
+# and the three a wrapper is most often written with, `env -i`, `nice -n <n>` and `sudo -E`. Any
+# other option after a wrapper, `env -S`, which splits a string this check does not read, `nice
 # --adjustment=5` or `sudo --user=<user>`, a long form no entry reads, among them, is refused by
 # name wherever it is written (odd_command): until round 38 the word after a wrapper was read as
 # the command, so `nice -n 10 curl …` was a run of a program named `-n`, and its fetch, or the
@@ -1727,9 +1739,10 @@ WRAPPER_OPTIONS = {
     # (dispatch://INFRA-1545, round 65).
     "env": {"-i": 0, "-u": 1, "--default-signal=INT,QUIT": 0},
     "nice": {"-n": 1},
-    # `-u <user>` since this branch's merge of main's #4267, whose
-    # .github/workflows/dispatch-unit-repeat.yaml's `Start PostgreSQL for the harness rows that
-    # need a database` step runs `sudo -u postgres psql …`, which the gate refused by name.
+    # `-u <user>` since this branch's merge of main's #4267. That merge added the step
+    # `Start PostgreSQL for the harness rows that need a database` to
+    # .github/workflows/dispatch-unit-repeat.yaml, and the step runs `sudo -u postgres psql …`,
+    # which the gate refused by name.
     "sudo": {"-E": 0, "-u": 1},
     # `--stderr <file>`, where gh_wait_reset writes the stderr of the run it ended on: the form
     # release-push.sh's release view and check-daemon-api-contract.sh's reads write
@@ -1776,7 +1789,7 @@ APK_SUBCOMMANDS = {"update", "add"}
 # A command that answers about itself is read as no fetch, whatever its verb: true of a binary
 # installed whole, false of a corepack shim, which the header's paragraph on the wrappers names as
 # a stated limit (the worker image's `RUN` that runs `pnpm --version`, `yarn --version`,
-# `yarnpkg --version` and `pnpx --help` under worker.Dockerfile's `retry`).
+# `yarnpkg --version` and `pnpx --help` under `packages/daemon/docker/worker.Dockerfile#retry`).
 INFORMATIONAL = {"--version", "--help", "--usage"}
 # The mise subcommands that fetch and say so: both exit 1 when the fetch fails.
 MISE_SUBCOMMANDS = {"install", "use"}
@@ -2003,8 +2016,9 @@ class Scanner:
     written in quotes or after a backslash, or after a word of its command that is no reserved
     word, such as `echo '}'` (dispatch://INFRA-1545, round 37). `braces` is how many `${` are
     open around what it reads: a parameter expansion is one word to its closing `}`, as bash
-    reads `${name##* }` and `${name:-$(cmd)}`, and `expansion` marks a word whose `}` closed one,
-    which is no group's brace (dispatch://INFRA-1545, round 37)."""
+    reads `${name:-$(cmd)}` and one whose pattern holds a blank, such as one that removes all up to
+    and including its last blank; `expansion` marks a word whose `}` closed one, which is no
+    group's brace (dispatch://INFRA-1545, round 37)."""
 
     def __init__(self, first_line: int) -> None:
         self.commands: list[Command] = []
@@ -2133,9 +2147,10 @@ class Scanner:
                     self.add(char, i)
             elif char == "$" and after == "{":
                 # A parameter expansion is one word to its closing `}`, blanks and operators
-                # included, as bash reads `${name##* }`: until round 37 this reading split it at
-                # its blank and took its `}` for a group's brace (dispatch://INFRA-1545, round
-                # 37). A `$( … )` or a quote inside it is read as anywhere else.
+                # included, as bash reads one that removes all up to and including its last
+                # blank: until round 37 this reading split it at its blank and took its `}` for a
+                # group's brace (dispatch://INFRA-1545, round 37). A `$( … )` or a quote inside it
+                # is read as anywhere else.
                 self.add(char, i)
                 self.add(after, i + 1)
                 self.braces += 1
@@ -2223,7 +2238,7 @@ class CallScanner(Scanner):
     It reads two more things as bash reads them, which the rules reading sites do not need
     (dispatch://INFRA-1545, round 37). Where each comment runs, in `comments`: from a `#` that
     starts a word outside quotes to the end of its physical line, which a backslash there does
-    not continue, so `true;# …` and `(true)# …` each end in one, and a line starting with `#`
+    not continue, so a `#` right after `true;` or `(true)` starts one, and a line starting with `#`
     inside a string that spans lines is part of that string. And which newlines a backslash
     continues, in `continued`. A `[[ … ]]`, an extglob pattern and a `case` pattern are not
     modelled: their `(`, `)`, `|`, `<` and `>` read as the shell's own operators, which the
@@ -2647,9 +2662,9 @@ def loop_list(text: str, command: Command) -> tuple[str, list[str]] | None:
     command printed or over `$(seq 1 7)`, and a `for ((…))` — writes no count this check reads,
     and reads as None rather than as one pass, which is a loop refused unless a declaration
     writes its seconds. Until round 37 a `$(seq …)` list and a `for ((i = 0; i < <bound>; i +=
-    <step>))` over a number or an array's `${#name[@]}` were counted too, and the count of an
-    array's words read `read -ra name` and `("${@}")` as one word each; no such loop of this
-    tree holds a call whose figure its passes enter (dispatch://INFRA-1545, round 37). The
+    <step>))` over a number or an array's length, `#name[@]` in braces, were counted too, and the
+    count of an array's words read `read -ra name` and `("${@}")` as one word each; no such loop of
+    this tree holds a call whose figure its passes enter (dispatch://INFRA-1545, round 37). The
     variable and the last word are what the one guard of a sleep this check reads tests
     (last_pass_guard; round 44)."""
     match = re.match(r"for\s+([A-Za-z_]\w*)\s+in\s+([^\n;]*)", text[command.offset:])
@@ -2704,10 +2719,11 @@ def command_text(text: str, offset: int, lead: int) -> str:
 def last_pass_guard(text: str, test: Command | None, sleep: Command,
                     listed: tuple[str, list[str]] | None) -> bool:
     """Whether a `sleep <n>` written after `||` is skipped on its loop's last pass, read
-    literally in the one form this tree writes, dequeued.yaml's `[ "$attempt" = 7 ] || sleep
-    10`: the command before the `||` is that test and nothing else, opening its list, of the
-    loop's own variable against the last word of the loop's list (dispatch://INFRA-1545, round
-    44). Bash then runs the sleep at every pass but the last, where the test holds."""
+    literally in the one form this tree writes,
+    `.github/workflows/dequeued.yaml#[ "$attempt" = 7 ] || sleep 10`: the command before the `||`
+    is that test and nothing else, opening its list, of the loop's own variable against the last
+    word of the loop's list (dispatch://INFRA-1545, round 44). Bash then runs the sleep at every
+    pass but the last, where the test holds."""
     if test is None or listed is None:
         return False
     variable, words = listed
@@ -3053,9 +3069,9 @@ LOOP_REFUSAL = ("writes {shape}, and a fetch, or a call of a script that fetches
 # One that a `{`, a `(`, `time` or `!` opens there is charged at every pass, not refused. Its cure
 # for an `&&`, and with `!` for an `||`, is the `if` that sleeps at the same passes, whose sleep
 # this check charges at every pass; none is written in this tree, whose one guarded sleep in a
-# loop around a fetch is dequeued.yaml's `[ "$attempt" = 7 ] || sleep 10`, whose body sets no
-# `attempt`. The sentence is SLEEP_GUARD_REFUSAL's with the reason and the cure of its form, and
-# quotes the sleep as written, `sleep 5m` as `sleep 5m` (round 45).
+# loop around a fetch is `.github/workflows/dequeued.yaml#[ "$attempt" = 7 ] || sleep 10`, whose
+# body sets no `attempt`. The sentence is SLEEP_GUARD_REFUSAL's with the reason and the cure of
+# its form, and quotes the sleep as written, `sleep 5m` as `sleep 5m` (round 45).
 SLEEP_GUARD_REFUSAL = (
     "writes `{sleep}` after `{operator}` in the loop over `{variable}` opened on line "
     "{loop}, and a fetch, or a call of a script that fetches, is in that loop. This check "
@@ -3098,7 +3114,7 @@ NESTED_UNREAD_REFUSAL = (
 # script that fetches (sleep_of; dispatch://INFRA-1545, round 45). Until round 45 every sleep but
 # `sleep <digits>` was charged 0 s there with nothing said. The sentence is SLEEP_FORM_REFUSAL's
 # with the reason and the cure of the form, each the `why` and the cure below it. None is written
-# in this tree, whose one sleep in a loop around a fetch is dequeued.yaml's `sleep 10`.
+# in this tree, whose one sleep in a loop around a fetch is the `sleep 10` dequeued.yaml writes.
 SLEEP_FORM_REFUSAL = (
     "writes `{sleep}` in the loop opened on line {loop}, and a fetch, or a call of a script that "
     "fetches, is in that loop. This check charges a loop's passes each sleep of its body that "
@@ -3354,26 +3370,26 @@ SHELL_TEXT_REFUSAL = (
 # attempt made, both charged nothing; a `timeout` whose short options end in one that takes the
 # next word, which hides the command behind it; a definition of the helper's own name; and a
 # command after the `}` that closes a function, on a line its body holds a command of. None is
-# written in this tree. gh-read.sh's `gh_wait_reset`, a shell function itself, runs the helper,
-# and `gh_wait_reset [--stderr <file>] retry_fetch …` is no such form (rule 6;
+# written in this tree. `.github/scripts/gh-read.sh#gh_wait_reset`, a shell function itself, runs
+# the helper, and `gh_wait_reset [--stderr <file>] retry_fetch …` is no such form (rule 6;
 # dispatch://INFRA-1545, round 55). The refusal is chosen by the wrapper nearest the
 # `retry_fetch`, so RETRY_BEHIND is said of `gh_wait_reset` too where another wrapper stands in
 # front of it (`env gh_wait_reset retry_fetch …`, `ci_log_guard gh_wait_reset retry_fetch …`),
 # and its words are true of either: a wrapper that runs a program cannot run a shell function,
 # `gh_wait_reset` included, and a shell function in front of the call only hides it (review
-# round 37 of dispatch://INFRA-1545). ci-log-guard.sh's `ci_log_guard` and `ci_log_guard_stderr`
-# are shell functions too, which run the helper whole (that file runs `"$@"` in the shell), so a
-# `retry_fetch` right behind either is refused for the reason RETRY_BEHIND_GUARD says (review
-# round 36 of dispatch://INFRA-1545).
+# round 37 of dispatch://INFRA-1545). `.github/scripts/ci-log-guard.sh#ci_log_guard` and
+# `.github/scripts/ci-log-guard.sh#ci_log_guard_stderr` are shell functions too, which run the
+# helper whole (that file runs `"$@"` in the shell), so a `retry_fetch` right behind either is
+# refused for the reason RETRY_BEHIND_GUARD says (review round 36 of dispatch://INFRA-1545).
 RETRY_BEHIND = (
     "runs `retry_fetch` behind `{wrapper}`, a form this check does not read as a call of the "
     "helper, so it charges it nothing. The one wrapper `retry_fetch` may stand behind is "
-    "gh-read.sh's `gh_wait_reset [--stderr <file>]`, alone: a wrapper that runs a program, such as "
-    "`timeout`, `env` or `sudo`, cannot run the helper, a shell function, so behind one, directly "
-    "or in front of `gh_wait_reset`, the call fails before any attempt and fetches nothing; and a "
-    "shell function in front of the call, or in front of `gh_wait_reset`, only hides it from this "
-    "reading. Call `retry_fetch` as a command of its own, with nothing before it but variable "
-    "assignments, or as `gh_wait_reset retry_fetch \"<what>\" <bound> -- …`, and write any "
+    "`gh_wait_reset [--stderr <file>]`, from gh-read.sh, alone: a wrapper that runs a program, "
+    "such as `timeout`, `env` or `sudo`, cannot run the helper, a shell function, so behind one, "
+    "directly or in front of `gh_wait_reset`, the call fails before any attempt and fetches "
+    "nothing; and a shell function in front of the call, or in front of `gh_wait_reset`, only hides "
+    "it from this reading. Call `retry_fetch` as a command of its own, with nothing before it but "
+    "variable assignments, or as `gh_wait_reset retry_fetch \"<what>\" <bound> -- …`, and write any "
     "wrapper inside it, after its `--`")
 LOG_GUARDS = ("ci_log_guard", "ci_log_guard_stderr")
 RETRY_BEHIND_GUARD = (
@@ -4692,8 +4708,8 @@ def pattern_place(commands: list[Command], index: int, text: str) -> bool:
     and does not close. A pattern holds `*`, `?` and `[…]` as a glob does, and is no run: measured
     at bd06b2a2 merged with main, the tree writes twenty such places holding a pattern character,
     `case` arms and regex pieces of eight scripts, and four of them would be refused as runs built
-    from patterns without this reading, ci-tools-proof.sh's `*)` after a comment line,
-    `*"$version"* | …)` and `^seconds=([0-9]{1,6})`, and dispatch-browser-postgres.sh's
+    from patterns without this reading, ci-tools-proof.sh's arm `*)` after a comment line,
+    `*"$version"* | …)` and `^seconds=([0-9]{1,6})`, and dispatch-browser-postgres.sh's arm
     `'' | *[!0-9]* | 0)`. A one-word command ending at the `)` of a `( … )` subshell, or of a
     substitution, is a run, `( .github/scripts/x?.sh )` among them, which leaves a `case` written
     inside one of them read as runs, which the tree writes nowhere. A command inside a `$( … )` or
@@ -4740,8 +4756,8 @@ def occurrences_of(text: str, first_line: int, loops: Loops) -> list[Occurrence]
     is bash's: a comment runs from a `#` that starts a word outside quotes to the end of its
     physical line. Until round 37 both were read off the line's text, with every line ending in
     a backslash joined to the next first, which was wrong three ways (dispatch://INFRA-1545,
-    round 37): `true;# <path>` and `(true)# <path>` were refused as a place no command is read
-    at; a comment line ending in a backslash took the next line into the comment, so a run
+    round 37): `# <path>` right after `true;` or after `(true)` was refused as a place no command
+    is read at; a comment line ending in a backslash took the next line into the comment, so a run
     written there was charged nothing, where bash ends the comment at the newline and runs it;
     and a line starting with `#` inside a string spanning lines was left out as a comment, so a
     path written there, an argument of the command the string belongs to, was not refused.
@@ -4757,9 +4773,9 @@ def occurrences_of(text: str, first_line: int, loops: Loops) -> list[Occurrence]
 
     A heredoc body is left out with the comments, which is the reading without_heredocs makes:
     the paths a `cat` or a `python3 <<'PY'` body spells are paths something prints rather than
-    runs — check-ci-images.sh's `MIRROR_SCRIPT`, which names the script a reader is told to
-    run, and this file's own EXEMPTIONS and DECLARED_LOOPS, which name the files their entries
-    cover. Counting those as calls gave the lint step that runs this check 15000 s of other
+    runs — `.github/scripts/check-ci-images.sh#MIRROR_SCRIPT`, which names the script a reader is
+    told to run, and this file's own EXEMPTIONS and DECLARED_LOOPS, which name the files their
+    entries cover. Counting those as calls gave the lint step that runs this check 15000 s of other
     scripts' arithmetic, and the ci-images job's two check steps mirror-ci-images.sh's 3000 s,
     none of which those steps wait for. A body fed to anything that may run it names a script
     that fetches only to be refused by name (unread_heredocs)."""
@@ -5136,8 +5152,8 @@ def uncounted_of(found: list[Site]) -> list[Uncounted]:
 def unpacks_dropped(found: list[Site]) -> list[Site]:
     """The sites with the apt unpack phases taken out. An `apt-get install` with no `-d` that
     follows an `apt-get install -d` in the same body installs an archive already on disk and
-    takes no network: the download before it is the half that retries, which is what
-    e2e.yaml's package step and ci.yaml's `Install tmux` step each say where they do it."""
+    takes no network: the download before it is the half that retries, which is what e2e.yaml's
+    package step and the `Install tmux` step of ci.yaml's jobs each say where they do it."""
     downloaded = False
     kept = []
     for site in found:
@@ -5582,7 +5598,7 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "fill of the one machine's rows a run fills, 18592 s, which "
                        ".github/ci-budgets.md's \"The ci-images job's "
                        "ceiling and the tool copy\" derives. "
-                       ".github/scripts/ci-tools-proof.sh's `stage` calls ci_tools_fetch, or "
+                       "`.github/scripts/ci-tools-proof.sh#stage` calls ci_tools_fetch, or "
                        "ci_tools_fetch_primary, once per row of its STAGED_ROWS, a call of a "
                        "function this file defines, "
                        "which this check charges as the file's one charge: the twenty-nine "
@@ -5650,12 +5666,12 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
                     "comment writes for its 29 minutes"),
     DeclaredLibrary(TOOL_FALLBACK, "Check every tool is the version its row pins", CI_TOOLS,
                     1708,
-                    "the step sources ci-tools.sh and runs ci-tools-proof.sh `version-answers` "
+                    "the step sources ci-tools.sh and runs ci-tools-proof.sh with `version-answers` "
                     "for each of eight rows, and `version-answers` compares a printed version "
                     "with the row and fetches nothing, so the library's fetches are the step's "
                     "once: 1 x 1708 s, the figure the step's comment writes for its 29 minutes"),
     DeclaredLibrary(TOOL_FALLBACK, "Print what every tool answers now", CI_TOOLS, 1708,
-                    "the step sources ci-tools.sh and runs ci-tools-proof.sh `version-answers` "
+                    "the step sources ci-tools.sh and runs ci-tools-proof.sh with `version-answers` "
                     "for crane, changie, jj and helm, which fetches nothing, and calls "
                     "ci_tools_verify, a digest read off disk: 1 x 1708 s, the figure the step's "
                     "comment writes for its 29 minutes"),
@@ -5667,10 +5683,10 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
                     "Seed mise's install of jj with the staged binary, one byte changed",
                     CI_TOOLS, 1708,
                     "the step runs ci-tools-proof.sh three times, each run a shell of its own "
-                    "that sources ci-tools.sh: `payload-path jj` reads the row's second source "
-                    "and its digest off .github/ci-tools.yaml (ci_tools_field, ci_tools_digest), "
-                    "`flip-last-byte` changes the copy's last byte with python3, and "
-                    "`seed-mise-jj` installs that copy in mise's directory. None of the three "
+                    "that sources ci-tools.sh: the rig's `payload-path jj` reads the row's "
+                    "second source and its digest off .github/ci-tools.yaml (ci_tools_field, "
+                    "ci_tools_digest), `flip-last-byte` changes the copy's last byte with python3, "
+                    "and `seed-mise-jj` installs that copy in mise's directory. None of the three "
                     "calls a function that fetches, so the runs fetch 0 + 0 + 0 = 0 s, and the "
                     "step is charged the library once, as it sources it, the charge every step "
                     "running a subcommand of the rig but `stage` carries: 1 x 1708 s, the figure "
@@ -5680,7 +5696,7 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
     # and `refusals` reads the fault proxy's own log, and neither calls a function that fetches.
     DeclaredLibrary(TOOL_FALLBACK_ARM, "Read what the release assets served of the other arm64 rows",
                     CI_TOOLS, 1708,
-                    "the step sources ci-tools.sh and runs ci-tools-proof.sh `version-answers` "
+                    "the step sources ci-tools.sh and runs ci-tools-proof.sh with `version-answers` "
                     "for each of the five other -aarch64 rows, which fetches nothing, and calls "
                     "ci_tools_verify, a digest read off disk: 1 x 1708 s, the figure the step's "
                     "comment writes for its 29 minutes"),
@@ -5695,7 +5711,7 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
                     "neither calling a function that fetches: 1 x 1708 s, the figure the step's "
                     "comment writes for its 29 minutes"),
     DeclaredLibrary(TOOL_FALLBACK_ARM, "Read the mise and the jj the copies served", CI_TOOLS, 1708,
-                    "the step sources ci-tools.sh, runs ci-tools-proof.sh `version-answers` for "
+                    "the step sources ci-tools.sh, runs ci-tools-proof.sh with `version-answers` for "
                     "mise-aarch64 and jj-aarch64 and `refusals github.com`, none of which fetches, "
                     "and calls ci_tools_verify, a digest read off disk: 1 x 1708 s, the figure "
                     "the step's comment writes for its 29 minutes"),
@@ -5723,7 +5739,8 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
                     "427 + 3970 = 4397 s, the sum the step's comment writes for its 74 minutes"),
     DeclaredLibrary(".github/scripts/mirror-ci-tools.sh", None, CI_TOOLS, 18592,
                     "a cold fill of the ghcr-mirror rows of the one machine the script's argument "
-                    "names, the rows ci-tools.sh's `ci_tools_mirror_rows` selects, which "
+                    "names, the rows "
+                    "`.github/scripts/ci-tools.sh#ci_tools_mirror_rows` selects, which "
                     ".github/ci-budgets.md's \"The ci-images job's ceiling and the tool copy\" "
                     "derives: a ghcr-mirror row costs nine requests, none of its HEADs following "
                     "a redirect, the two of them carrying the asset's bytes at 427 s and seven at "
@@ -6334,9 +6351,10 @@ for path in workflows + actions:
             action_uncounted.setdefault(path, []).extend(blocked)
         # Every step of a workflow gets an entry, whether or not it writes a budget: a step
         # that holds a retried call and writes none is refused below, which is the shape that
-        # let .github/actions/install-elan's 607 s ladder under ci.yaml's `airlock-lean` reach
-        # no comparison at all. A composite action's step gets none, because GitHub takes no
-        # `timeout-minutes` there and the `uses:` step that runs the action is its budget.
+        # let .github/actions/install-elan's 607 s ladder under
+        # `.github/workflows/ci.yaml#airlock-lean` reach no comparison at all. A composite action's
+        # step gets none, because GitHub takes no `timeout-minutes` there and the `uses:` step that
+        # runs the action is its budget.
         if path not in action_files:
             minutes = written_minutes(step)
             job_minutes = written_minutes(holder)
@@ -7361,8 +7379,9 @@ HANDED_ON_RUN = ("which runs words its callers hand it or that it sets itself, a
 # "$root/.github/scripts/ci-fault-proxy.py"` (ci-tools-proof.sh and download-retry-proof.sh);
 # eight command words of a `.py` opening `#!/usr/bin/env python3`, disk_watch.py six times,
 # ci-fault-proxy.py and race_memory.py once each, the last as `../../.github/scripts/…` from its
-# step's working directory; and download-retry-proof.sh's `pkill -f ci-fault-proxy.py`, a pattern
-# `pkill` matches against the command lines of running processes, which reads no file.
+# step's working directory; and the `pkill -f ci-fault-proxy.py` that download-retry-proof.sh
+# runs, where the name is a pattern `pkill` matches against the command lines of running
+# processes, which reads no file.
 UNREAD_USE = (
     "writes `{word}` {where}, and it {names}, a file under .github/scripts/ this check does not "
     "read as a script. Such a file appears in a command only where this tree writes one: as what "
@@ -7719,8 +7738,9 @@ def runners_of(loops: Loops) -> dict[str, tuple[int, bool]]:
     parameters in the place that function runs, `wrap() { run "$@"; }`, runs that parameter too,
     as the reading of calls through a variable follows a library's holders up their callers
     (variable_holders), so the call refused is the one handing `wrap` a word built from data.
-    This tree defines three: ci-retry.sh's `retry_fetch`, which reduce_words reads as a wrapper
-    instead, and check-plugin-names.sh's and check-private-names.sh's `run`."""
+    This tree defines three: `.github/scripts/ci-retry.sh#retry_fetch`, which reduce_words reads
+    as a wrapper instead, and `.github/scripts/check-plugin-names.sh#run` and
+    `.github/scripts/check-private-names.sh#run`."""
     if id(loops) in RUNNERS_READ:
         return RUNNERS_READ[id(loops)]
     text = without_arithmetic(loops.text)
@@ -8779,9 +8799,9 @@ def tree_sources(text: str, first_line: int, action: str | None, within: str = "
     <<<'shopt -s nocaseglob'` and `source /dev/fd/0 <<'EOF'` are refused, whatever a here-string
     or a heredoc feeds them, and so is a file another step wrote, `. "$RUNNER_TEMP/settings"`. A
     `.` given no operand runs nothing, and one given a process substitution is unnamed_runs's.
-    Measured at 96dde7f1, the tree wrote two such sources, download-retry-proof.sh's `.
-    "$state_dir/$name.state"`, each rewritten to read the file as data; its other 141 sources
-    each name a script of .github/scripts/."""
+    Measured at 96dde7f1, the tree wrote two such sources in download-retry-proof.sh, each
+    `. "$state_dir/$name.state"` and each rewritten to read the file as data; its other 141
+    sources each name a script of .github/scripts/."""
     commands = CallScanner(first_line).scan(text)
     found = []
     for _index, command, after_bar in commands_read(commands, text):
@@ -8917,8 +8937,8 @@ def env_file_writes(text: str, first_line: int,
     round 42 `cat >> "$GITHUB_ENV" <<'EOF'` around `BASHOPTS=nocaseglob`, and `printf '%s=%s\\n'
     BASHOPTS nocaseglob >> "$GITHUB_ENV"`, passed r38-fetch.sh's 1050 s, named in a later step
     under a 17-minute key. Measured at 96dde7f1, the tree wrote ten lines into `$GITHUB_ENV`, nine
-    of them read so, none naming such a variable, and one it could not read, ci-tools-proof.sh's
-    `printf '%s\\n' "$line"`, rewritten to spell each name out."""
+    of them read so, none naming such a variable, and one it could not read, in ci-tools-proof.sh,
+    a `printf '%s\\n' "$line"`, rewritten to spell each name out."""
     if "GITHUB_ENV" not in text:
         return []
     scanner = CallScanner(first_line)
@@ -9818,8 +9838,8 @@ for path, name, (who, loops, found, called), owner in body_reads:
                 break
     # A call through a variable can run any of these functions, and is charged nothing: it is
     # refused unless a DECLARED_LOOPS entry writes the whole of each fetch it can reach, which
-    # is how ci-tools.sh's `$fetch` calls are priced, by its `curl` entry, or, in a script, a
-    # DeclaredCall entry writes what the calls through that variable add.
+    # is how ci-tools.sh's calls through `$fetch` are priced, by its `curl` entry, or, in a
+    # script, a DeclaredCall entry writes what the calls through that variable add.
     reached = [site for function in sorted(local)
                for site in function_sites(found, loops, function)]
     reached += [site for function, library in sorted(libraries.items())
@@ -10316,8 +10336,8 @@ for budget in budgets:
                 "writes, and a step writing none is judged by nothing while the job's ceiling "
                 "cuts it with GitHub's bare `The action '…' has timed out after N minutes.` "
                 "That is how .github/actions/install-elan's 8 x 60 + 127 = 607 s ladder sat "
-                "under ci.yaml's `airlock-lean` with no term for it and nothing said so. "
-                "GitHub's granularity is the minute, so write "
+                "under `.github/workflows/ci.yaml#airlock-lean` with no term for it and nothing "
+                "said so. GitHub's granularity is the minute, so write "
                 f"`timeout-minutes: {cost // 60 + 1}` or more on this step.")
         continue
     if 60 * budget.minutes <= cost:
@@ -10561,8 +10581,8 @@ for path in sorted(set(budget.path for budget in budgets)):
 #     both ways, so it is no instance of this: .github/ci-budgets.md's "The tool-fallback job's
 #     budget, part by part" states the construction, `114 was the 104 this construction gives
 #     with ten minutes added` and, at the staging step's 207 minutes, 207 + 18 = 225 and 235 with
-#     the ten, and the comment above its key (the `tool-fallback` job's `timeout-minutes: 236`
-#     in .github/workflows/ci-job-tool-fallback.yaml, since the merge of main's #3675) also
+#     the ten, and the comment above its key (the `tool-fallback` job's `timeout-minutes: 236`,
+#     which .github/workflows/ci-job-tool-fallback.yaml writes since the merge of main's #3675) also
 #     writes the Budgets note's sum, `1727 + 12383 = 14110 s -> 236 min` since review round 36
 #     of dispatch://INFRA-1545 counted every staged row, which this clause reads and which the
 #     key's 14160 s strictly exceeds.

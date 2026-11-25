@@ -28,7 +28,7 @@ arithmetic of its single slowest retried step, the rule of the Budgets note of
   longest single ladder of the Dockerfile it builds, since a build runs its fetches one after
   another and pays a fault window once, through the first fetch that meets it
   (`.github/scripts/check-download-retry.sh`, rule 10): the `bun install` and the `go mod
-  download` of packages/envoy/docker/Dockerfile, at 5 x 600 + 150 = 3150 s each. The publish
+  download` that packages/envoy/docker/Dockerfile runs, at 5 x 600 + 150 = 3150 s each. The publish
   build after it reuses that build's layers from the same builder, so its RUN lines fetch nothing
   again. It is above `Check this job holds no credential (tripwire)` too, which runs
   `.github/scripts/release-push.sh` and so holds that script's leak-guard fetch at every one of

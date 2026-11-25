@@ -56,7 +56,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Copy every image the package does not hold
-        # Its own retry arithmetic: mirror-ci-images.sh's `crane config` at 5 x 60 + 150 =
+        # Its own retry arithmetic: mirror-ci-images.sh's call `crane config` at 5 x 60 + 150 =
         # 450 s, written once in image_go() and reached by the two check_go() calls the row
         # loop holds, 900 s; its `crane copy` at 5 x 300 + 150 = 1650 s; and its `crane digest`
         # at 450 s. 3000 s, a whole number of minutes, so the budget is the next one strictly

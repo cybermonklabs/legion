@@ -32,15 +32,15 @@ stage1-skeleton.sh and verification-results.sh.
   step-records.sh and sub-architect.sh at 25 minutes, 1500 + 1050 = 2550 s -> 43 min,
   owner-steps-client.sh at 30 minutes, 1800 + 1050 = 2850 s -> 48 min, and
   phase-entry-converge.sh at 20 minutes, 1200 + 1050 = 2250 s -> 38 min.
-- Sourcing neither file, directly or through `lib/rig.sh`, `lib/codex-host.sh`,
-  `lib/model-endpoint.sh` or the libraries those source: dispatch-claimant-delivery.sh,
+- Sourcing neither file, directly or through `lib/rig.sh`, through `lib/codex-host.sh`, through
+  `lib/model-endpoint.sh` or through the libraries those source: dispatch-claimant-delivery.sh,
   1500 s -> 26 min; nats-callout-sessions.sh, 2100 s -> 36 min; and stage1-skeleton.sh and
   verification-results.sh, 1200 s -> 21 min.
 
 Those 1050 s are under each of the three retry figures a row's `timeout_minutes` carries, 3866,
 3416 and 1400 s, so they size no job limit, and every row's job limit stays above its step's: 90
 over 43, 95 over 48, 85 over 38, 82 over 26, 92 over 36, 44 over 21 and 77 over 21.
-plan-ratings.sh's `timeout_minutes` was 25, its measured figure alone, though its row's `jj` is
+plan-ratings.sh's row had a `timeout_minutes` of 25, its measured figure alone, though its `jj` is
 true, which put the job's limit under both install-jj's 65-minute step and this step's 43 minutes;
 it is now the other 25-minute `jj` rows' 1500 + 3866 = 5366 s -> 90 min (dispatch://INFRA-1545).
 Main's #4611 added owner-steps.sh and owner-steps-client.sh with their measured figures alone and
