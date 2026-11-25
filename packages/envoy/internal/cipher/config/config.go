@@ -82,8 +82,8 @@ type Config struct {
 	// host.
 	DatabaseIAM bool
 	// BROKER_PUBLIC_URL: the broker's own address as its callers reach it, an absolute http or
-	// https URL with no path. Required. Every signed proof and request object names it, so a client's
-	// AGENT_SECRETS_URL must be exactly this.
+	// https URL with no user information, path, query or fragment. Required. Every signed proof and
+	// request object names it, so a client's AGENT_SECRETS_URL must be exactly this.
 	PublicURL string
 	// BROKER_MACHINE_LOGIN_URL: the absolute http(s) URL of the page where a person types a
 	// machine login's code (Dispatch's /credentials/machine). Optional. The device grant's
@@ -2491,11 +2491,14 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
 		return Config{}, err
 	}
-	// publicURL is BROKER_PUBLIC_URL parsed, held to an absolute URL with no path here and to an
-	// http or https scheme by Load's last check.
+	// publicURL is BROKER_PUBLIC_URL parsed, held to an absolute URL with no user information,
+	// path, query or fragment here (the authorization server metadata publishes it as the issuer,
+	// which RFC 8414 section 2 holds to no query or fragment) and to an http or https scheme by
+	// Load's last check. The refusal names the setting alone: the URL as written is where a
+	// credential would be.
 	publicURL, parseErr := url.Parse(cfg.PublicURL)
-	if parseErr != nil || publicURL.Scheme == "" || publicURL.Host == "" || publicURL.Path != "" {
-		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an absolute URL with no path: %q", redact.URL(cfg.PublicURL))
+	if parseErr != nil || publicURL.Scheme == "" || publicURL.Host == "" || publicURL.User != nil || publicURL.Path != "" || publicURL.RawQuery != "" || publicURL.Fragment != "" {
+		return Config{}, errors.New("BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment")
 	}
 	// Optional, and still held to its form when it is given: a page the broker cannot build an
 	// absolute URL for is a verification_uri no machine could follow, which is worse than the
