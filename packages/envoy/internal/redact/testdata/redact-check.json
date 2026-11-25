@@ -5225,8 +5225,8 @@
       "capture": "envoy.Client.Unsubscribe",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: %s: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
-        "replacement": "\"%w: %s: %v\", ErrUnavailable, route, err"
+        "preimage": "\"%w: %s: %w\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "replacement": "\"%w: %s: %w\", ErrUnavailable, route, err"
       }
     },
     {
@@ -5253,8 +5253,8 @@
       "capture": "envoy.Client.Sessions",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: GET %s: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
-        "replacement": "\"%w: GET %s: %v\", ErrUnavailable, route, err"
+        "preimage": "\"%w: GET %s: %w\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "replacement": "\"%w: GET %s: %w\", ErrUnavailable, route, err"
       }
     },
     {
