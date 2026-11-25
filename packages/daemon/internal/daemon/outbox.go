@@ -234,10 +234,10 @@ type outbox struct {
 
 // outboxTrees is the store's lifecycle barrier (store.Store) as the outbox runs it: an issue
 // close's suspension and the cleanup of its own lifecycle that follows it, an idle release's own
-// two decisions, the check of its workspace and the decline that check can record, a stop's wait
-// for a stored claim's machine, a delivery wake and the open resume that refuses one, a project
-// pause's stop of a role and which pause stopped a role, and the end of a pause's hold of a pod a
-// deletion took.
+// two decisions, the check of its workspace and the decline that check can record, a finished
+// issue's drop of the record of its pods' disks, a stop's wait for a stored claim's machine, a
+// delivery wake and the open resume that refuses one, a project pause's stop of a role and which
+// pause stopped a role, and the end of a pause's hold of a pod a deletion took.
 type outboxTrees interface {
 	Pool() *store.Pool
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
@@ -256,6 +256,7 @@ type outboxTrees interface {
 	DeclineLeftPodClose(ctx context.Context, project, issue string, decline store.IdleReleaseDecline) (bool, error)
 	ReleaseIdleIssue(ctx context.Context, project, issue string, decide store.IdleReleaseDecide) (bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
+	DeleteIssuePodDisks(ctx context.Context, issue string) error
 	NoteReleaseTeardown(ctx context.Context, project, issue string, release int64, teardown store.ReleaseTeardown) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error)
@@ -1375,8 +1376,8 @@ func (r *outbox) statusRefusal(ctx context.Context, row record.OutboxRow, payloa
 			"row", row.ID, "issue", row.Issue, "status", payload.Status, "code", refusal.Code)
 		written := fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err)
 		if tellErr := r.tellStatusScopeOnce(ctx, row, fmt.Sprintf(
-			"Dispatch refused the daemon's status write on %s with %d %s: the token the daemon writes Dispatch with lacks the scope Dispatch asks of a write of a Legion issue's status. The daemon keeps the write and writes it again, and every later status write waits the same way, until a person gives the daemon a token that holds the scope.",
-			row.Issue, refusal.Status, refusal.Code)); tellErr != nil {
+			"Dispatch refused the daemon's status write on %s with %d %s: the token the daemon writes Dispatch with lacks the scope Dispatch asks of a write of a Legion issue's status. The daemon keeps the write and writes it again, and every later status write waits the same way, %s",
+			row.Issue, refusal.Status, refusal.Code, statusScopeRemedy(row.Issue))); tellErr != nil {
 			return true, errors.Join(written, tellErr)
 		}
 		return true, written
@@ -1412,9 +1413,21 @@ func (r *outbox) parentRuleRefused(ctx context.Context, row record.OutboxRow, pa
 	return nil
 }
 
+// statusScopeRemedy is the end of the controller's status-scope notice for a refused write on
+// issue: the write waits until a person gives the daemon a Dispatch token that holds the required
+// scope, and the notice names where that token comes from. Under dispatch_token_broker it is the
+// token the secrets broker issues for the daemon's own session, legion-daemon:<PROJECT>
+// (dispatch.DaemonSession); otherwise it is the bearer dispatch_token_file names, which the daemon
+// reads at boot.
+func statusScopeRemedy(issue string) string {
+	return fmt.Sprintf("until a person gives the daemon a Dispatch token that holds the required scope. Under dispatch_token_broker, that token is the one the secrets broker issues for the session %s; otherwise it is the bearer dispatch_token_file names, which the daemon reads at boot.",
+		dispatch.DaemonSession(issue))
+}
+
 // tellStatusScopeOnce queues the controller's status-scope notice of row's refusal, whose reason
-// names the code and the issue and says that a person must give the daemon a token that holds the
-// scope, unless this daemon's run has queued it already: one notice for the run, whichever of the
+// names the code and the issue and says that a person must give the daemon a Dispatch token that
+// holds the required scope (statusScopeRemedy), unless this daemon's run has queued it already:
+// one notice for the run, whichever of the
 // two refusals it is told of comes first (statusRefusal's LEGION_STATUS_SCOPE_REQUIRED,
 // publishRoleHolders' ROLE_HOLDER_FORBIDDEN; decision 12 of dispatch://INFRA-4730). The notice is
 // queued in a transaction of its own whose commit wakes its lane; a queue that fails leaves the
@@ -2090,8 +2103,8 @@ func (r *outbox) publishRoleHolders(ctx context.Context, row record.OutboxRow, p
 	r.log.Warn("outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session to Dispatch; the publication is kept and written again",
 		"row", row.ID, "issue", payload.Issue, "code", refusal.Code)
 	if tellErr := r.tellStatusScopeOnce(ctx, row, fmt.Sprintf(
-		"Dispatch refused the daemon's publication of the role holders of %s with %d %s: the token the daemon writes Dispatch with does not prove the daemon's own session with the scope Dispatch asks of a write of a Legion issue. The daemon keeps the publication and writes it again, and the architects' own status writes that Dispatch reads it for wait the same way, until a person gives the daemon a token that holds the scope.",
-		payload.Issue, refusal.Status, refusal.Code)); tellErr != nil {
+		"Dispatch refused the daemon's publication of the role holders of %s with %d %s: the token the daemon writes Dispatch with does not prove the daemon's own session with the scope Dispatch asks of a write of a Legion issue. The daemon keeps the publication and writes it again, and the architects' own status writes that Dispatch reads it for wait the same way, %s",
+		payload.Issue, refusal.Status, refusal.Code, statusScopeRemedy(payload.Issue))); tellErr != nil {
 		return errors.Join(published, tellErr)
 	}
 	return published

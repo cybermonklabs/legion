@@ -19,14 +19,14 @@ import (
 // 20261110225246, which added the hook prompt's — so each of the three names that kind, since a
 // database main migrated can carry a hook-prompt row the constraint would otherwise refuse — and
 // after both the head-arrival column and the drop that takes it away again (20261109130413),
-// which leaves the table as main has it, and the resume's own anchor (20261111181500). The ten
+// which leaves the table as main has it, and the resume's own anchor (20261111181500). The nine
 // versions of main's above the claim-death charge, the drop of the waiting-for-slot notice
 // (20261109060737), the retirement's write mark (20261109191929), the backward-move counts with
 // the hook prompt (20261110225246), the unmarked start of accepting, retro or merging
-// (20261110233602), the design gates' publish kind (20261110235320), the kind of the rule that
-// wrote a release mark (20261111001612), the issue's movement time (20261111010031), the declined
-// ask (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
-// (20261111212544), are main's own and are applied as main's run applied them.
+// (20261110233602), the kind of the rule that wrote a release mark (20261111001612), the issue's
+// movement time (20261111010031), the declined ask (20261111021610), the tree-stalled mark
+// (20261111041503) and the claim's failure cause (20261111212544), are main's own and are applied
+// as main's run applied them.
 //
 // The set is computed rather than written (thisBranchsMigrations): the versions this branch added
 // at or below main's newest (thisBranchsMigrationsAtOrBelowMainsNewest), and every embedded version

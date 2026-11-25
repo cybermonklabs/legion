@@ -45,7 +45,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 
 	first := &outbox{
 		dispatchProject: "LEGION",
-		pool:            pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, token),
+		pool:            pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now },
 	}
 	if err := first.RunOnce(context.Background()); err != nil {
@@ -57,7 +57,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 
 	restarted := &outbox{
 		dispatchProject: "LEGION",
-		pool:            pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool:            pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now.Add(outboxLease + time.Second) },
 	}
 	if err := restarted.RunOnce(context.Background()); err != nil {
@@ -67,7 +67,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 		t.Fatalf("outbox rows after recovery = %d, want finished row", remaining)
 	}
 
-	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil)).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 
 	first := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now },
 	}
 	if err := first.RunOnce(context.Background()); err != nil {
@@ -114,7 +114,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 	}
 	restarted := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now.Add(outboxLease + time.Second) },
 	}
 	if err := restarted.RunOnce(context.Background()); err != nil {
@@ -124,7 +124,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 		t.Fatalf("outbox rows after recovery = %d, want the row posted and finished", remaining)
 	}
 
-	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil)).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -152,14 +152,14 @@ func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDis
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, over, now))
 	runner := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now },
 	}
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run the outbox: %v", err)
 	}
 
-	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil)).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := createScratchDispatchIssue(t, baseURL)
-	client := dispatch.New(baseURL, token)
+	client := dispatch.New(baseURL, dispatch.BearerTransport(token, nil))
 	before, err := client.GetIssue(context.Background(), issue)
 	if err != nil {
 		t.Fatalf("read the scratch issue: %v", err)
@@ -207,7 +207,7 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 		record.OrdinaryStatusWrite("done", before.Status, reason), now))
 	runner := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now },
 	}
 	if err := runner.RunOnce(context.Background()); err != nil {
@@ -257,7 +257,7 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	r := newRoleHoldersRig(t)
-	r.runner.dispatch = dispatch.New(baseURL, token)
+	r.runner.dispatch = dispatch.New(baseURL, dispatch.BearerTransport(token, nil))
 	logs := &syncBuffer{}
 	r.runner.log = slog.New(slog.NewTextHandler(logs, nil))
 	tester := r.seedClaim(issue, claim.RoleTester, "ses-tester", "ready", time.Minute)
@@ -348,7 +348,7 @@ func TestTheStatusChangeClientReadsEachAnswerOfTheRealDispatch(t *testing.T) {
 	ruleOff := startScratchDispatchOn(t, scratchDispatchOptions{env: []string{parentStatusRule + "=off"}})
 	if !servesStatusChange(t, ruleOff.base) {
 		issue := createScratchDispatchIssue(t, ruleOff.base)
-		_, err := dispatch.New(ruleOff.base, ruleOff.token).ChangeStatus(context.Background(), issue,
+		_, err := dispatch.New(ruleOff.base, dispatch.BearerTransport(ruleOff.token, nil)).ChangeStatus(context.Background(), issue,
 			dispatch.StatusChange{Status: "backlog", UnlinkChildren: true, IdempotencyKey: "status-change-no-route"})
 		if !dispatch.NoRoute(err) {
 			t.Fatalf("a status change against a Dispatch that lists no such route = %v, want its router's 404 (dispatch.NoRoute)", err)
@@ -376,7 +376,7 @@ const parentStatusRule = "DISPATCH_PARENT_STATUS_RULE"
 func readEachStatusChangeAnswer(t *testing.T, d *scratchDispatch, ruleOn bool) {
 	t.Helper()
 	ctx := context.Background()
-	client := dispatch.New(d.base, d.token)
+	client := dispatch.New(d.base, dispatch.BearerTransport(d.token, nil))
 	createScratchDispatchIssue(t, d.base)
 	calls := 0
 	change := func(key string, call dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
@@ -628,7 +628,13 @@ type scratchDispatchOptions struct {
 	root string
 	// log, when set, receives the server's output as well.
 	log io.Writer
-	// env is each further setting the server runs with, as NAME=value. Dispatch's parent-status
+	// env is settings of the caller's own, each NAME=value, set after every setting the server
+	// otherwise runs with, so a caller adds one the scratch server does not set or replaces one
+	// it does (os/exec keeps the last value of a name): DISPATCH_SERVER_URL naming an origin the
+	// server is not served at, the secrets broker its broker tokens are read back at
+	// (DISPATCH_AGENT_SECRETS_URL and its account token, DISPATCH_PROOF_ORIGINS), a listener
+	// (ENVOY_URL) or a GitHub App and the GitHub it calls. Nothing else of the caller's
+	// environment named DISPATCH_, ENVOY_ or NATS_ reaches the server. Dispatch's parent-status
 	// rule (DISPATCH_PARENT_STATUS_RULE) is on unless env names it, as it is in production once the
 	// rule rolls out (decision 23 of dispatch://INFRA-4730). A Dispatch whose settings table does
 	// not name a setting reads nothing of it.

@@ -114,7 +114,7 @@ func captureKeyedRepeat(t *testing.T, d *scratchDispatch) {
 func openChildren(t *testing.T, d *scratchDispatch, name string, count int) (string, int64) {
 	t.Helper()
 	ctx := context.Background()
-	client := dispatch.New(d.base, d.token)
+	client := dispatch.New(d.base, dispatch.BearerTransport(d.token, nil))
 	parent := createScratchDispatchIssueUnder(t, d.base, name+": the parent", "")
 	if _, err := client.SetStatus(ctx, parent, "in_progress"); err != nil {
 		t.Fatalf("move %s into work: %v", parent, err)
@@ -153,7 +153,7 @@ const midwaySteps = 3
 // adds a child.status event to the parent, which moves its sequence past seq, the call's fence.
 func awaitSteps(t *testing.T, d *scratchDispatch, parent string, seq int64, steps int) {
 	t.Helper()
-	client := dispatch.New(d.base, d.token)
+	client := dispatch.New(d.base, dispatch.BearerTransport(d.token, nil))
 	testwait.WithinPolling(t, time.Minute, 5*time.Millisecond, fmt.Sprintf("%d steps of the call over %s to commit", steps, parent), func() bool {
 		issue, err := client.GetIssue(context.Background(), parent)
 		return err == nil && issue.LastSeq >= seq+int64(steps)

@@ -101,6 +101,10 @@ type State struct {
 	// (runtime.kubernetes.agent_secrets), absent when the deployment configures
 	// no broker.
 	AgentSecretsLogin *AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
+	// DispatchCredential is the daemon's own Dispatch credential under dispatch_token_broker and
+	// the two counts a deployment reads before it removes dispatch_token_transition_file
+	// (DispatchCredentialView), absent when the setting is off (contract 275).
+	DispatchCredential *DispatchCredentialView `json:"dispatchCredential,omitempty"`
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live
 	// sessions' reports prove (present), fail (open) or have not reported yet (unchecked), what a
@@ -528,6 +532,22 @@ func ControllerLocatorOf(runtimeName string, record controller.Record) *Controll
 // why a login failed — those live only in the daemon's process memory and its log.
 type AgentSecretsLoginView struct {
 	State string `json:"state"`
+}
+
+// DispatchCredentialView is the daemon's Dispatch credential under dispatch_token_broker, as the
+// state shows it: Session, the session its own Dispatch calls run under (`legion-daemon:<project>`,
+// dispatch.DaemonSession), which the secrets broker grants a token of; TransitionLaunches, the
+// launches since the daemon's boot that carried the transition token of
+// dispatch_token_transition_file, and LastTransitionLaunchAt, when the latest of them was sent,
+// null before the first; and LiveLaunchesWithDispatchToken, the live launches whose start carried a
+// Dispatch token, whichever daemon started them (sandbox.Runtime.DispatchTokens). A deployment
+// removes dispatch_token_transition_file once the last is zero: a pod started before the setting
+// holds the shared token while a generation started with it runs. Never a token.
+type DispatchCredentialView struct {
+	Session                       string     `json:"session"`
+	TransitionLaunches            int        `json:"transitionLaunches"`
+	LastTransitionLaunchAt        *time.Time `json:"lastTransitionLaunchAt"`
+	LiveLaunchesWithDispatchToken int        `json:"liveLaunchesWithDispatchToken"`
 }
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,

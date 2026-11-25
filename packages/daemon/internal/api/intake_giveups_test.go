@@ -711,7 +711,7 @@ func TestTheGiveUpRoutesRefuseAnotherProjectsRecord(t *testing.T) {
 // key, and the rest of the two bodies is the same. Every build from shapedAnswersContract on
 // states its contract in the header, and a pod's claims place no caller at 193 or above
 // (podContracts), so the header is what places a caller below this band. Both callers stand below
-// podHoldContract, priorityContract, causeTimesContract, gateBasisContract and chainContract too,
+// podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract, gateBasisContract and chainContract too,
 // whose bands serve each the state without their keys, so the older caller's log holds one line
 // for each band above its contract (narrowingsExpected), the give-ups' first; a later band's own
 // line is that band's test's to name.

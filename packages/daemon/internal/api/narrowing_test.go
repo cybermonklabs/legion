@@ -312,13 +312,71 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	t.Run("the priority, cause times, basis and chain narrowings write their own lines for a caller below priorityContract", func(t *testing.T) {
+	// Every unrecorded contract between the cause times and the Dispatch credential is served at
+	// causeTimesContract, with the Dispatch credential's, gateBasisContract's and chainContract's
+	// keys stripped. A caller at the Dispatch credential's contract is served it with
+	// gateBasisContract's and chainContract's keys stripped. A caller at gateBasisContract, and the
+	// unrecorded contract between it and chainContract, is served gateBasisContract with
+	// chainContract's key alone stripped. These are the three rows above the cause times, in the
+	// table's order.
+	t.Run("the three highest narrowings write their own lines", func(t *testing.T) {
+		state := populatedState(t)
+		highest := stateNarrowings[len(stateNarrowings)-1]
+		basis := stateNarrowings[len(stateNarrowings)-2]
+		credential := stateNarrowings[len(stateNarrowings)-3]
+		if highest.contract != chainContract || basis.contract != gateBasisContract || credential.contract != dispatchCredentialContract {
+			t.Fatalf("the three highest narrowings are contracts %d, %d and %d, want dispatchCredentialContract (%d), gateBasisContract (%d) and chainContract (%d): name here the keys the newer row takes off",
+				credential.contract, basis.contract, highest.contract, dispatchCredentialContract, gateBasisContract, chainContract)
+		}
+		served := func(body []byte) int {
+			var answer struct {
+				Contract struct {
+					Caller int `json:"caller"`
+				} `json:"contract"`
+			}
+			if err := json.Unmarshal(body, &answer); err != nil {
+				t.Fatalf("decode the state served: %v", err)
+			}
+			return answer.Contract.Caller
+		}
+		for caller := causeTimesContract + 1; caller < dispatchCredentialContract; caller++ {
+			body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), caller)
+			if got := served(body); got != causeTimesContract {
+				t.Fatalf("caller at %d was served contract %d, want %d", caller, got, causeTimesContract)
+			}
+			if bytes.Contains(body, []byte(`"dispatchCredential"`)) {
+				t.Errorf("caller at %d was served dispatchCredential", caller)
+			}
+			wantNarrowings(t, narrowings, caller, []string{"dispatchCredential", basis.dropped, highest.dropped})
+		}
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), dispatchCredentialContract)
+		if got := served(body); got != dispatchCredentialContract {
+			t.Fatalf("caller at %d was served contract %d, want %d", dispatchCredentialContract, got, dispatchCredentialContract)
+		}
+		if !bytes.Contains(body, []byte(`"dispatchCredential"`)) {
+			t.Errorf("caller at %d was served no dispatchCredential, the key its own contract added", dispatchCredentialContract)
+		}
+		wantNarrowings(t, narrowings, dispatchCredentialContract, []string{basis.dropped, highest.dropped})
+		for caller := gateBasisContract; caller < chainContract; caller++ {
+			body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), caller)
+			if got := served(body); got != gateBasisContract {
+				t.Fatalf("caller at %d was served contract %d, want %d", caller, got, gateBasisContract)
+			}
+			if !bytes.Contains(body, []byte(`"dispatchCredential"`)) {
+				t.Errorf("caller at %d was served no dispatchCredential, which a contract below its own added", caller)
+			}
+			wantNarrowings(t, narrowings, caller, []string{highest.dropped})
+		}
+	})
+
+	t.Run("the priority, cause times, Dispatch credential, basis and chain narrowings write their own lines for a caller below priorityContract", func(t *testing.T) {
 		below := priorityContract - 1
 		state := populatedState(t)
 		_, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
 		wantNarrowings(t, narrowings, below, []string{
 			"the issues' priority and their waitingLine's priority",
 			"the claim views' lastDeathAt and lastStartFailureAt",
+			"dispatchCredential",
 			"the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis",
 			"daemon.convertedAt",
 		})
@@ -346,8 +404,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 7 {
-			t.Fatalf("a caller at %d expects the lines %v, want plan, give-ups, pod hold, priority, cause times, basis and chain alone", below, want)
+		if len(want) != 8 {
+			t.Fatalf("a caller at %d expects the lines %v, want plan, give-ups, pod hold, priority, cause times, Dispatch credential, basis and chain alone", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
 	})
@@ -362,8 +420,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				podHoldContract, body)
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 5 {
-			t.Fatalf("a caller at %d expects the lines %v, want pod hold, priority, cause times, basis and chain alone", below, want)
+		if len(want) != 6 {
+			t.Fatalf("a caller at %d expects the lines %v, want pod hold, priority, cause times, Dispatch credential, basis and chain alone", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
 	})
@@ -389,14 +447,15 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// The repositories narrowing is a row of the table like every other, so the caller below it is
 	// told what it lost: a caller one contract below that row, which states that contract in its
 	// header as every plugin from shapedAnswersContract on does, is served at the recorded contract
-	// at or below it (recordedContractAtOrBelow). That contract stands below eight rows of
-	// stateNarrowings, that row and the seven above it, the assignments' plan, the intake's
-	// give-ups, the pod hold, the issues' priority, the claim views' cause times,
-	// gateBasisContract's and chainContract's, so the log holds what narrowingsExpected names for
-	// it: those eight rows' lines, then the line of each value strip that took a value off this
-	// state, the caches source's among them. This subtest does not catch a strip applied beside the
-	// loop, because it reads both its expectation and its answer from stateNarrowings and
-	// valueStrips; the subtests below, which name their lines as literals, are what catch that.
+	// at or below it (recordedContractAtOrBelow). That contract stands below nine rows of
+	// stateNarrowings, that row and the eight above it, the assignments' plan, the intake's
+	// give-ups, the pod hold, the issues' priority, the claim views' cause times, the Dispatch
+	// credential, gateBasisContract's and chainContract's, so the log holds what
+	// narrowingsExpected names for it: those nine rows' lines, then the line of each value strip
+	// that took a value off this state, the caches source's among them. This subtest does not catch
+	// a strip applied beside the loop, because it reads both its expectation and its answer from
+	// stateNarrowings and valueStrips; the subtests below, which name their lines as literals, are
+	// what catch that.
 	t.Run("the narrowings above a caller just below the repositories contract write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",

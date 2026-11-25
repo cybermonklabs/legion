@@ -96,7 +96,7 @@ func (e *Engine) acceptedBasis(ctx context.Context, tx pgx.Tx, fact intake.GateR
 // own store shows (record.BasisAcceptance), comes first, then the ancestor's Dispatch status, ""
 // for none read, and whether it carries the legion label (labelled). The pending-basis seed's read
 // of Dispatch gives the status and the label (judgeBasisRead), an event of the ancestor's issue
-// gives its own to say whether it can be a cue at all (basisCueEvent) and to name the end of the
+// gives its own to say whether it can be a cue at all (readBasisOnCue) and to name the end of the
 // bases standing open on it (basisIssue), and the daemon's own move of the ancestor gives why
 // alone (movedAccepted).
 func ancestorLeft(ancestor, why, status string, labelled bool) string {
@@ -708,12 +708,10 @@ func BasisChangesRequest(gate record.DesignGate, changes bool, version int, acto
 // or of its issue, is a cue for gate: a step that waits, closed, on that request
 // (record.DesignGate.PendingOnBasis), for which such an event queues the step's pending-basis seed
 // (readBasisLater), whose read of Dispatch alone opens or ends the wait (pendingBasisRead,
-// judgeBasisRead). It takes only an event that can be a cue for some step (basisCueEvent), which
-// its callers settle first. Of those events, the cues are an event of the basis document at the
-// basis version or a newer one, other than the basis version's own version event; a close of the
-// request other than a person's answer, whose review is an event of the document; and an event of
-// the ancestor's issue that shows it leaving R1's first condition. It is the one place an event is
-// judged a cue for a particular step.
+// judgeBasisRead). The cues are an event of the basis document at the basis version or a newer
+// one, other than the basis version's own version event; a close of the pending request; and an
+// event of the ancestor's issue. It is the one place an event is judged a cue for a particular
+// step.
 func pendingBasisCue(gate record.DesignGate, fact intake.Fact) bool {
 	if !gate.PendingOnBasis() {
 		return false
@@ -727,23 +725,6 @@ func pendingBasisCue(gate record.DesignGate, fact intake.Fact) bool {
 		return fact.Ask == basis.Pending.Ask
 	case intake.DispatchIssue:
 		return fact.Key == basis.Issue
-	}
-	return false
-}
-
-// basisCueEvent says whether fact can be a cue for any step at all (pendingBasisCue), before any
-// step is read: an event of a document, a close of an approval request other than an answer (a
-// question is no request a step waits on; an ask whose kind an older Dispatch does not say is
-// read), or an event of an issue that shows it leaving R1's first condition. Most issue events
-// show no leave, so the engine reads no step for them.
-func basisCueEvent(fact intake.Fact) bool {
-	switch fact := fact.(type) {
-	case intake.DispatchArtifact:
-		return true
-	case intake.DispatchAskClosed:
-		return fact.State != "answered" && fact.Kind != record.AskQuestion
-	case intake.DispatchIssue:
-		return ancestorLeft(fact.Key, "", fact.Status, fact.HandedOver) != ""
 	}
 	return false
 }
@@ -1082,22 +1063,26 @@ func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Is
 // an ancestor's (Store.GatesByPendingAsk, since the root-only ask mirror records no ancestor's
 // ask). A person's answer of an approval request is no cue: it is a review, which Dispatch writes
 // in the answer's transaction and whose artifact.* event, appended after the ask's, is the cue
-// (basisArtifact). An event of an issue that shows it leaving R1's first condition (Dispatch shows
-// it done or retro, or it no longer carries the legion label) reaches the steps that wait on a
-// request of that issue (Store.GatesRestingOn). Most events that reach here are of issues nothing
-// waits on, and most issue events show no leave, so the steps are read only for an event that can
-// be a cue (basisCueEvent). A row of a step the deployment does not gate holds nothing and takes
-// no event (eachWaitingRoot).
+// (basisArtifact), and a question is no request a step waits on (an ask whose kind an older
+// Dispatch does not say is read). An event of an issue that shows it leaving R1's first condition
+// (Dispatch shows it done or retro, or it no longer carries the legion label) reaches the steps
+// that wait on a request of that issue (Store.GatesRestingOn). Most events that reach here are of
+// issues nothing waits on, and most issue events show no leave, so the steps are read only for an
+// event that can be a cue. A row of a step the deployment does not gate holds nothing and takes no
+// event (eachWaitingRoot).
 func (e *Engine) readBasisOnCue(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
-	if !basisCueEvent(fact) {
-		return nil
-	}
 	var gates []record.DesignGate
 	var err error
 	switch fact := fact.(type) {
 	case intake.DispatchAskClosed:
+		if fact.State == "answered" || fact.Kind == record.AskQuestion {
+			return nil
+		}
 		gates, err = e.store.GatesByPendingAsk(ctx, tx, fact.Ask)
 	case intake.DispatchIssue:
+		if ancestorLeft(fact.Key, "", fact.Status, fact.HandedOver) == "" {
+			return nil
+		}
 		gates, err = e.store.GatesRestingOn(ctx, tx, fact.Key)
 	default:
 		return nil

@@ -1077,7 +1077,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // with 403 LEGION_STATUS_SCOPE_REQUIRED: the daemon's token lacks the scope Dispatch asks of a
 // write of a Legion issue's status (R26 of dispatch://INFRA-3320; decision 12 of
 // dispatch://INFRA-4730). Its issue is the issue whose write was refused, and its Reason names the
-// code and the issue and says that a person must give the daemon a token that holds the scope. The
+// code and the issue and says that a person must give the daemon a Dispatch token that holds the required scope. The
 // write is kept and written again; the first such refusal in a daemon run queues one notice (the
 // daemon's status executor), and no architect is told, since no architect can change a token.
 //

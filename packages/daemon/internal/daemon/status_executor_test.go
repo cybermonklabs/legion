@@ -36,7 +36,7 @@ import (
 // client makes of the route's real answer.
 func capturedAnswer(t *testing.T, name string, change dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
 	t.Helper()
-	return dispatch.New(capturedServer(t, name).URL, "captured-answer-token").ChangeStatus(context.Background(), "LEGION-1", change)
+	return dispatch.New(capturedServer(t, name).URL, dispatch.BearerTransport("captured-answer-token", nil)).ChangeStatus(context.Background(), "LEGION-1", change)
 }
 
 // capturedRoleHoldersRefusal is the dispatch client's reading of Dispatch's captured 403
@@ -45,7 +45,7 @@ func capturedAnswer(t *testing.T, name string, change dispatch.StatusChange) (di
 // PutRoleHolders, so the outbox meets exactly the error the client makes of it.
 func capturedRoleHoldersRefusal(t *testing.T) error {
 	t.Helper()
-	err := dispatch.New(capturedServer(t, "role_holders_forbidden.http").URL, "captured-answer-token").PutRoleHolders(context.Background(), "LEGION-1", nil)
+	err := dispatch.New(capturedServer(t, "role_holders_forbidden.http").URL, dispatch.BearerTransport("captured-answer-token", nil)).PutRoleHolders(context.Background(), "LEGION-1", nil)
 	if err == nil {
 		t.Fatal("the captured role-holder refusal read as a publication Dispatch took")
 	}
@@ -557,7 +557,7 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 			if !stepBefore || !stepAfter {
 				t.Fatalf("the person's write at %d landed outside the call (a step before it %t, a write after it %t): nothing was refused midway", retitled.LastSeq, stepBefore, stepAfter)
 			}
-			shown, err := dispatch.New(r.baseURL, r.dispatch.token).GetIssue(t.Context(), parent.Key)
+			shown, err := dispatch.New(r.baseURL, dispatch.BearerTransport(r.dispatch.token, nil)).GetIssue(t.Context(), parent.Key)
 			if err != nil || !strings.Contains(shown.Title, "retitled by a person") {
 				t.Fatalf("the parent's title = %q (%v), want the person's write kept", shown.Title, err)
 			}
@@ -652,7 +652,7 @@ func (r *stopReturnRig) allAt(status string, keys ...string) {
 // that holds the scope (R26 of dispatch://INFRA-3320; decision 12 of dispatch://INFRA-4730). The
 // wait is not silent: each refusal logs a line naming the code and the issue, and the first
 // refusal in a daemon run queues one notice to the project's controller alone, naming the code and
-// the issue and saying that a person must give the daemon a token that holds the scope. A 401 and
+// the issue and saying that a person must give the daemon a Dispatch token that holds the required scope. A 401 and
 // a 403 of another code keep and retry the row as they always did, and tell nobody. A publication
 // of role holders that Dispatch refuses with 403 ROLE_HOLDER_FORBIDDEN, read from the answer
 // captured from a real Dispatch (internal/dispatch/testdata/role_holders_forbidden.http), is kept
@@ -718,7 +718,7 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 			}
 			for _, notice := range told {
 				if !strings.Contains(notice.Reason, statusScopeCode) || !strings.Contains(notice.Reason, issue) ||
-					!strings.Contains(notice.Reason, "a person gives the daemon a token that holds the scope") {
+					!strings.Contains(notice.Reason, "a person gives the daemon a Dispatch token that holds the required scope") {
 					t.Fatalf("status-scope notice reason = %q, want the code, the issue and the token a person must give", notice.Reason)
 				}
 			}
@@ -798,7 +798,7 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 			}
 			for _, notice := range told {
 				if !strings.Contains(notice.Reason, roleHolderForbiddenCode) || !strings.Contains(notice.Reason, issue) ||
-					!strings.Contains(notice.Reason, "a person gives the daemon a token that holds the scope") {
+					!strings.Contains(notice.Reason, "a person gives the daemon a Dispatch token that holds the required scope") {
 					t.Fatalf("status-scope notice reason = %q, want the code, the issue and the token a person must give", notice.Reason)
 				}
 			}

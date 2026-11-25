@@ -74,7 +74,7 @@ func TestARefusedCloseChangesNothingAndIsWrittenAgain(t *testing.T) {
 		r.patch(child.Key, asPerson, map[string]any{"parent": nil})
 		r.quiet(child.Key)
 		r.closeTaken(t, root)
-		shown, err := dispatch.New(r.baseURL, r.dispatch.token).GetIssue(t.Context(), child.Key)
+		shown, err := dispatch.New(r.baseURL, dispatch.BearerTransport(r.dispatch.token, nil)).GetIssue(t.Context(), child.Key)
 		if err != nil || shown.Status != "triage" || shown.Parent != nil {
 			t.Fatalf("Dispatch shows %s at %q under %v (%v), want it open in triage under no parent", child.Key, shown.Status, shown.Parent, err)
 		}

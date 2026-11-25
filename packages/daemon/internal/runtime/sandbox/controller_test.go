@@ -167,7 +167,7 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.T) {
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal.example", "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal.example", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.ControllerSlackChannels = []string{"C00000000", "G00000001"}
 	r, err := configure(opts)
 	if err != nil {

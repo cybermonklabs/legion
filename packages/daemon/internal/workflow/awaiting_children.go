@@ -231,11 +231,11 @@ func (e *Engine) childrenHoldingStart(ctx context.Context, tx pgx.Tx, issue reco
 
 // childrenHoldingSamePhaseStart is R9's guard on the release of a hold (retryPhase), a start of the
 // phase issue already stands in on the entry that phase's role stands on: the open Dispatch
-// children of issue that hold it (childrenHoldingStart), none where R9 exempts that start for its
-// pull request or for that entry (samePhaseExempt). It answers the pull request it read too, which
-// the retry composes its task from and reads its review round on, whether or not children hold the
-// start. The promotion of a carried run raises an entry of its own and reads no such exemption
-// (carriedStartHeld).
+// children of issue that hold it (childrenHoldingStart, which holds no start once the pull request
+// has merged), none where that entry is one R9 exempts (samePhaseExempt). It answers the pull
+// request it read too, which the retry composes its task from and reads its review round on,
+// whether or not children hold the start. The promotion of a carried run raises an entry of its
+// own and reads no such exemption (carriedStartHeld).
 func (e *Engine) childrenHoldingSamePhaseStart(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]record.OpenChild, *record.PullRequest, error) {
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
@@ -245,21 +245,16 @@ func (e *Engine) childrenHoldingSamePhaseStart(ctx context.Context, tx pgx.Tx, i
 	if err != nil || len(open) == 0 {
 		return nil, pr, err
 	}
-	if _, exempt, err := e.samePhaseExempt(ctx, tx, issue, pr); err != nil || exempt {
+	if _, exempt, err := e.samePhaseExempt(ctx, tx, issue); err != nil || exempt {
 		return nil, pr, err
 	}
 	return open, pr, nil
 }
 
 // samePhaseExempt says whether R9 leaves alone a start of the phase issue stands in that open
-// children would hold: its pull request pr has merged, or the role of that phase stands on an
-// entry a move out of retro or merging raised (acceptedEntry). It answers that role's phases row,
-// which it reads only where pr has not merged. The admission pass's stop (StopForChildren) and the
-// release of a hold (childrenHoldingSamePhaseStart) each read the exemption here.
-func (e *Engine) samePhaseExempt(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (record.PhaseRow, bool, error) {
-	if pr != nil && pr.State == record.PullRequestMerged {
-		return record.PhaseRow{}, true, nil
-	}
+// children would hold because the role of that phase stands on an entry a move out of retro or
+// merging raised (acceptedEntry), and answers that role's phases row.
+func (e *Engine) samePhaseExempt(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.PhaseRow, bool, error) {
 	entry, err := e.phaseRow(ctx, tx, issue.Key, RoleFor(issue.Phase))
 	if err != nil {
 		return record.PhaseRow{}, false, err
@@ -424,10 +419,10 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		return false, nil
 	}
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
-	if err != nil {
+	if err != nil || (pr != nil && pr.State == record.PullRequestMerged) {
 		return false, err
 	}
-	entry, exempt, err := e.samePhaseExempt(ctx, tx, issue, pr)
+	entry, exempt, err := e.samePhaseExempt(ctx, tx, issue)
 	if err != nil || exempt {
 		return false, err
 	}

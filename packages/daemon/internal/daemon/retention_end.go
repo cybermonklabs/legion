@@ -18,8 +18,8 @@ import (
 // (record.Issue.RetainedUntil), for that issue while it stays out of Legion's work, and after any
 // production check it owes, it does what that linger's expiry did for it alone — each suspended or
 // failed claim of it retires with its session kept (supervise.RequestIssueClose), as that expiry's
-// close retired every claim it could stop, the decline of an idle release of it goes
-// (forgetIdleRelease), and its workspace on the daemon's own host is removed
+// close retired every claim it could stop, the decline of an idle release of it and the record of
+// its pods' disks go (forgetIdleRelease), and its workspace on the daemon's own host is removed
 // (removeRetainedWorkspace), called here directly, with no workspace_remove row, which waits for
 // every claim of the issue to retire. A failed claim left standing would hold that removal, and
 // the row, for good. Nothing of any other issue is touched. The row is fenced by the run and the
