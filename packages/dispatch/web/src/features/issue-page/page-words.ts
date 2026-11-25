@@ -661,9 +661,10 @@ export function coverageLineWords(line: string): string | undefined {
  * What the page draws for the coverage read's own lines (`IssueCoverage.gaps`) that name no gap of
  * a requirement - a requirement's gap is drawn on the requirement, from its own gaps - each in the
  * words `coverageLineWords` draws it in, where it draws any. Today that is the line of each
- * document still being indexed, which says why no requirement is drawn as lacking a check: today's
- * Spec tab draws these over its list of requirements (`SpecRequirements`), and the outline in the
- * body of each statement (`TreeNode.coverageNotes`).
+ * document still being indexed, which says why no requirement is drawn as lacking a check: the
+ * outline draws these in the body of each statement (`TreeNode.coverageNotes`). Today's Spec tab
+ * draws the same lines with words of its own (`SpecRequirements`), since no file today's pages
+ * load imports this one.
  */
 export function coverageNotes(coverage: IssueCoverage | undefined): string[] {
   return (coverage?.gaps ?? []).flatMap((line) => {

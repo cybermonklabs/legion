@@ -142,7 +142,7 @@ func TestTheDaemonReadsNeedsAndFallsBackToBlockedBy(t *testing.T) {
 		writeJSON(t, w, answer(strings.TrimPrefix(r.URL.Path, "/api/v1/issues/")))
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	want := []string{"LEGION-2", "OTHER-3"}
 	listed, err := client.ListIssues(context.Background(), "LEGION", nil)
 	if err != nil {
