@@ -180,12 +180,11 @@ func (h parkedMoveHistory) write(t testing.TB, random *rand.Rand, key, status st
 	return rows, newest
 }
 
-// parkedMoveCorpus is what seedParkedMoveCorpus wrote: the server that reads it, its store, the
-// live priorities it holds, the status each issue stands in, the newest move into backlog or
-// icebox each issue's events record (no entry for an issue whose events record none), the rows
-// of the parked fault, and the issue among them whose events record no move.
+// parkedMoveCorpus is what seedParkedMoveCorpus wrote: its store, the live priorities it holds,
+// the status each issue stands in, the newest move into backlog or icebox each issue's events
+// record (no entry for an issue whose events record none), the rows of the parked fault, and the
+// issue among them whose events record no move.
 type parkedMoveCorpus struct {
-	served     *server
 	database   *store.Store
 	priorities []string
 	statuses   map[string]string
@@ -217,11 +216,11 @@ type parkedMoveCorpus struct {
 // cuts its list at, so it lists every parked row.
 func seedParkedMoveCorpus(t *testing.T) parkedMoveCorpus {
 	t.Helper()
-	_, database, deps := newTestServer(t, testServerOptions{})
+	_, database, _ := newTestServer(t, testServerOptions{})
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	random := rand.New(rand.NewPCG(5, 6))
 	corpus := parkedMoveCorpus{
-		served: directServer(deps), database: database,
+		database:   database,
 		priorities: []string{parkedMoveFleetPriority, parkedMoveOwnPriority},
 		statuses:   map[string]string{}, moves: map[string]parkedMove{},
 	}

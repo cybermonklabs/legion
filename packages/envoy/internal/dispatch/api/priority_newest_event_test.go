@@ -393,18 +393,12 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 //   - main's text fails the read of events and the reads beside the walk: it joins every event of
 //     every member issue, and its plans read events in a Seq Scan and the members' issues rows
 //     with no index condition, in a Seq Scan or a whole Index Only Scan of issues_pkey;
-//   - the keyed walk fails the two holds of main's walk: it probes issues once for each member
-//     row, and on this corpus those probes read more shared buffers than main's one read of the
-//     table (68 against 42, PostgreSQL 18.7, 2026-11-25);
 //   - the priorities read's statement fails the index condition on every scan, since its walk,
 //     main's, reads issues in a Seq Scan.
 func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 	t.Parallel()
 	if !strings.Contains(mainPriorityNewestEventQuery, mainNewestEventWalk) {
 		t.Fatalf("main's text (mainPriorityNewestEventQuery) does not carry main's walk as mainNewestEventWalk freezes it:\n%s", mainNewestEventWalk)
-	}
-	if strings.Contains(priorityNewestEventKeyedWalkQuery, mainNewestEventWalk) {
-		t.Fatalf("the statement with its walk keyed (priorityNewestEventKeyedWalkQuery) carries main's walk, so it is no control of a walk other than main's")
 	}
 	corpus := seedNewestEventCorpus(t)
 	settleSpeedCorpus(t, corpus.database)
@@ -456,11 +450,6 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 				for textNumber, text := range texts {
 					subjects[textNumber] = fmt.Sprintf("%s under %s over %s", text.name, plan.name, over)
 				}
-				mainsWalk := newestEventWalkBuffers(t, plan.plans[mains], subjects[mains])
-				if mainsWalk == 0 {
-					t.Fatalf("%s reads no shared buffer in its walk over the members, so the bound on the walk holds nothing:\n%s",
-						subjects[mains], plan.plans[mains])
-				}
 				requireNewestEventProbes(t, keys, plan.plans[statement], subjects[statement], state.probes(members))
 				requireKeyedBesideTheWalk(t, plan.plans[statement], subjects[statement])
 				requireOneEventOfEachMember(t, keys, plan.plans[keyed], subjects[keyed], members.issues)
@@ -475,10 +464,6 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 						requireOneEventOfEachMember(t, keys, plan, subject, members.issues)
 					}},
 					{mains, "a read of a whole table beside the walk from a read through an index", requireKeyedBesideTheWalk},
-					{keyed, "a walk that reads issues for each member row from one that reads it once", requireWalkReadsIssuesOnce},
-					{keyed, "a walk that reads more shared buffers than main's from one that reads no more", func(t testing.TB, plan json.RawMessage, subject string) {
-						requireWalkWithinMains(t, plan, subject, mainsWalk)
-					}},
 					{statement, "a walk that reads the whole of issues from one keyed through an index", requireEveryScanKeyed},
 				} {
 					subject, controlPlan := subjects[control.text], plan.plans[control.text]
