@@ -13,9 +13,11 @@ body: |-
   creates it at the stream's next sequence, as an explicit start, so the first bind hands the
   intake none of the stream's 72-hour retained history. A take-over of a durable that exists starts
   it right after its ack floor, read by the session consumers' rule, and a durable with no start of
-  its own that has delivered and acknowledged nothing starts at the stream's next sequence too. A
-  durable lost while the intake delivers from it is logged at ERROR and created again right after
-  the last ack floor the intake read of it.
+  its own whose own delivered and acknowledged counts are 0 starts at the stream's next sequence
+  too. A start past the stream's end, after the stream was cut or created again, moves back to the
+  first message the stream holds and is logged at ERROR. A durable lost while the intake delivers
+  from it is logged at ERROR and created again right after the last ack floor the intake read of
+  it.
 time: 2026-11-25T09:36:38Z
 custom:
     Issue: intake-without-settings
