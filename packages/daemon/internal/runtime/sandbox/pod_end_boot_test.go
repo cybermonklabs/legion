@@ -19,6 +19,7 @@ import (
 // The control is ReconcileOrphans without tellEndReadings: the end of that pod is then in no line
 // at all, and the test fails at the line it wants after the reconciliation.
 func TestAPodEndReadAtBootIsLoggedOnceItsClaimsAreAdopted(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	name, uid := loc.Sandbox.Name, loc.Sandbox.PodUID

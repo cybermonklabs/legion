@@ -76,6 +76,7 @@ func (g *rig) leaveTheStore() {
 // never as a limit of the pod's own it did not pass, and any other end in words naming no
 // container of the pod over its request.
 func TestPlainCauseAnEvictionWithNoDisruptionTargetIsMarkedWithTheCauseItsMessageNames(t *testing.T) {
+	t.Parallel()
 	checkSelfEvictions(t, []selfEviction{
 		{name: "the pod's own limit", message: "Pod ephemeral local storage usage exceeds the total limit of containers 10Gi. ",
 			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("10Gi")}, words: evictedForItsOwnUse},
@@ -111,6 +112,7 @@ func TestPlainCauseAnEvictionWithNoDisruptionTargetIsMarkedWithTheCauseItsMessag
 // role homes emptyDir every issue pod holds counts for nothing here: only the test database's
 // volume is read.
 func TestPGDiskADiskLimitEvictionCarriesWhetherTheLimitCountedTheTestDatabase(t *testing.T) {
+	t.Parallel()
 	const podLimit = "Pod ephemeral local storage usage exceeds the total limit of containers 10Gi. "
 	roleHomes := corev1.Volume{Name: roleHomesVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
 	inEmptyDir := corev1.Volume{Name: testPGVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
@@ -188,6 +190,7 @@ func checkSelfEvictions(t *testing.T, cases []selfEviction) {
 // cause, and neither does an OOMKilled container the spec gives no memory limit, which the kernel
 // ended for the node's memory under no limit of its own: that one keeps the out-of-memory mark.
 func TestPlainCauseAnOOMKilledRolesContainerCarriesItsMemoryLimit(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	memoryLimit := runtime.DeathCause{Kind: runtime.DeathMemoryLimit, Limit: bytesOf("19Gi")}
 	for _, tc := range []struct {
@@ -267,6 +270,7 @@ const (
 // daemon itself started is its own whatever the kubelet then wrote, so a pod the daemon is ending
 // that the kubelet evicts continues no role and carries no cause.
 func TestPlainCauseANodePressureEvictionNamingThisPodsContainerIsItsOwnUse(t *testing.T) {
+	t.Parallel()
 	const act = "the daemon suspended the pod's sandbox to close or release its issue"
 	ownMemory := runtime.DeathCause{Kind: runtime.DeathMemoryRequest, Container: runtime.IssuePodContainer,
 		Use: bytesOf("9437188Ki"), Request: bytesOf("8Gi")}

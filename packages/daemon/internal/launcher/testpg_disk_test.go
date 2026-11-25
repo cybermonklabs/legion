@@ -320,6 +320,7 @@ func (r *pgDiskRig) assertReset(t *testing.T) string {
 // cluster, and the reset's line names every database the old cluster held, with its owner and
 // its size, so a role reads which harness filled the disk.
 func TestPGDiskUnderTheFloorResetsAServerThatAnswersAndNamesWhatItHeld(t *testing.T) {
+	// Not parallel: it sets PATH and writes the package variable testPGServedDSN (newPGDiskRig).
 	r := newPGDiskRig(t)
 	r.makeDatabases(t, "tpg_one", "tpg_two")
 	r.check(pgDiskUnder)
@@ -349,6 +350,7 @@ const pgDiskNamed = 20
 // which names the first pgDiskNamed, each with its owner and its size, and ends `, and 1 more`,
 // and the server's log holds the same line (assertReset).
 func TestPGDiskTheResetLineNamesTheFirstTwentyDatabasesAndCountsTheRest(t *testing.T) {
+	// Not parallel: it sets PATH and writes the package variable testPGServedDSN (newPGDiskRig).
 	r := newPGDiskRig(t)
 	// Every cluster holds postgres and the DSN's legion_test besides the databases a case makes.
 	var names []string
@@ -384,6 +386,7 @@ func TestPGDiskTheResetLineNamesTheFirstTwentyDatabasesAndCountsTheRest(t *testi
 // A server that does not answer is reset all the same, since waiting on it would let a full disk
 // crash it again and again, and the line says it read no databases.
 func TestPGDiskUnderTheFloorResetsAServerThatDoesNotAnswer(t *testing.T) {
+	// Not parallel: it sets PATH and writes the package variable testPGServedDSN (newPGDiskRig).
 	r := newPGDiskRig(t)
 	r.makeDatabases(t, "tpg_one", "tpg_two")
 	r.script(t, "stop")
@@ -399,6 +402,7 @@ func TestPGDiskUnderTheFloorResetsAServerThatDoesNotAnswer(t *testing.T) {
 // `legion-testpg: reset` line after it: the reset writes one line, which names the database with
 // its newline replaced.
 func TestPGDiskTheResetLineReplacesANewlineInADatabaseName(t *testing.T) {
+	// Not parallel: it sets PATH and writes the package variable testPGServedDSN (newPGDiskRig).
 	r := newPGDiskRig(t)
 	name := "tpg_one\n" + testPGProgram + ": reset forged"
 	r.makeDatabases(t, `"`+name+`"`)
@@ -413,6 +417,7 @@ func TestPGDiskTheResetLineReplacesANewlineInADatabaseName(t *testing.T) {
 // server answers, is down (and is started again) or refuses the DSN's login for want of
 // connections, which the check may log.
 func TestPGDiskAtOrOverTheFloorChangesNothing(t *testing.T) {
+	// Not parallel: it sets PATH and writes the package variable testPGServedDSN (newPGDiskRig).
 	r := newPGDiskRig(t)
 	r.makeDatabases(t, "tpg_one", "tpg_two")
 	want := []string{"tpg_one", "tpg_two"}
@@ -475,6 +480,7 @@ func pgDiskHolder(t *testing.T, cmd *exec.Cmd) (release func()) {
 // lock, the reset waits and the databases made before it are still there, served through the DSN,
 // and once the lock is released the reset runs.
 func TestPGDiskAResetWaitsForTheStartLock(t *testing.T) {
+	// Not parallel: it sets PATH and writes the package variable testPGServedDSN (newPGDiskRig).
 	r := newPGDiskRig(t)
 	r.makeDatabases(t, "tpg_one", "tpg_two")
 	lock := filepath.Join(r.dir, ".lock")
@@ -520,6 +526,7 @@ func TestPGDiskAResetWaitsForTheStartLock(t *testing.T) {
 // data directory, as a backend's is, the reset stops the server and then waits, and the cluster
 // stays where it is, whole, until that process is gone; then the reset runs.
 func TestPGDiskAResetMovesNothingAProcessStillHolds(t *testing.T) {
+	// Not parallel: it sets PATH and writes the package variable testPGServedDSN (newPGDiskRig).
 	r := newPGDiskRig(t)
 	r.makeDatabases(t, "tpg_one", "tpg_two")
 	data := filepath.Join(r.dir, "data")
@@ -658,6 +665,7 @@ func (r *pgDiskRig) assertNextCheckServesAnEmptyCluster(t *testing.T) {
 // directory, and the next check, over the floor or under it, deletes what was set aside and
 // serves an empty cluster on the DSN. The cut is an initdb that kills the reset's own shell.
 func TestPGDiskACheckAfterAResetCutAtItsRenameDeletesTheOldClusterAndServesAnEmptyOne(t *testing.T) {
+	// Not parallel: it sets PATH and PGBIN and writes the variable testPGServedDSN (newPGDiskRig).
 	r := newPGDiskRig(t)
 	r.makeDatabases(t, "tpg_one", "tpg_two")
 	initdb := "#!/bin/sh\n# The reset's own shell runs initdb: killing it here cuts the reset right after its rename.\nkill -KILL \"$PPID\"\nexit 1\n"
@@ -676,6 +684,7 @@ func TestPGDiskACheckAfterAResetCutAtItsRenameDeletesTheOldClusterAndServesAnEmp
 // the same arguments, waits until it has written PG_VERSION in the directory --pgdata names, and
 // then kills it and the reset's own shell, which runs initdb.
 func TestPGDiskAResetCutDuringItsInitdbLeavesNoClusterAndTheNextCheckServesAnEmptyOne(t *testing.T) {
+	// Not parallel: it sets PATH and PGBIN and writes the variable testPGServedDSN (newPGDiskRig).
 	r := newPGDiskRig(t)
 	r.makeDatabases(t, "tpg_one", "tpg_two")
 	initdb := "#!/bin/sh\n" +
@@ -708,6 +717,7 @@ func TestPGDiskAResetCutDuringItsInitdbLeavesNoClusterAndTheNextCheckServesAnEmp
 // lock is free at once, and the next check deletes the old cluster the reset set aside and serves
 // an empty one on the DSN.
 func TestPGDiskAResetCutByItsBoundLeavesNoProcessAndTheNextCheckServesAnEmptyCluster(t *testing.T) {
+	// Not parallel: it sets PATH, PGBIN, testPGServedDSN (newPGDiskRig) and testPGResetBound.
 	r := newPGDiskRig(t)
 	r.makeDatabases(t, "tpg_one", "tpg_two")
 	// The server is stopped first, so the reset reaches its initdb with no stop of its own to wait
@@ -777,6 +787,7 @@ func callLines(calls string) []string {
 // under the floor each one resets, told the free bytes, the disk's size and the floor, and the
 // first deletes a cluster a cut reset set aside.
 func TestPGDiskTheLoopChecksTheDiskAtOnceAndAtEveryTick(t *testing.T) {
+	// Not parallel: it sets PATH (stubPGDisk) and writes testPGInterval and testPGDiskSpace.
 	calls := stubPGDisk(t)
 	testPGInterval = 20 * time.Millisecond
 	t.Cleanup(func() { testPGInterval = 15 * time.Second })
@@ -813,6 +824,7 @@ func TestPGDiskTheLoopChecksTheDiskAtOnceAndAtEveryTick(t *testing.T) {
 // A disk the check cannot read is logged, and that check runs the plain `ensure`: a reading that
 // fails never resets a cluster, and never leaves a dead server unstarted.
 func TestPGDiskACheckThatCannotReadTheDiskLogsAndEnsures(t *testing.T) {
+	// Not parallel: it sets the environment variable PATH (stubPGDisk).
 	calls := stubPGDisk(t)
 	rolesDir := t.TempDir()
 	if err := makeTestPGLog(rolesDir); err != nil {

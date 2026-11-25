@@ -73,6 +73,7 @@ const (
 // is Guaranteed (podKind.asksExtendedRunTime), and the "Anatomy of a Sandbox pod" bullet is where
 // an operator reads that rule and what a Burstable issue pod gives up for it.
 func TestKubernetesDocStatesWhichPodsCarryTheExtendedRunTimeAnnotation(t *testing.T) {
+	t.Parallel()
 	const what = `docs/kubernetes.md's annotation bullet of "Anatomy of a Sandbox pod"`
 	_, region := testdoc.Region(t, evictionDocExtract, what, annotationRuleStart, annotationRuleEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
@@ -103,6 +104,7 @@ func TestKubernetesDocStatesWhichPodsCarryTheExtendedRunTimeAnnotation(t *testin
 // that sentence says what an earlier daemon release does, so this release's code is not what it
 // answers to.
 func TestKubernetesDocStatesTheSafeToEvictRuleWhereverElseItNamesIt(t *testing.T) {
+	t.Parallel()
 	const rule = "only while its reservation is `Guaranteed`"
 	safeToEvict := "`" + safeToEvictAnnotation + `: "false"` + "`"
 	for _, tc := range []struct {
@@ -157,6 +159,7 @@ func TestKubernetesDocStatesTheSafeToEvictRuleWhereverElseItNamesIt(t *testing.T
 // condition — what becomes of disk use in the pod's emptyDir volumes, which names no container,
 // and the daemon's own end whatever the kubelet wrote.
 func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t *testing.T) {
+	t.Parallel()
 	const what = `docs/kubernetes.md's "An end from outside the pod" paragraph`
 	lines, region := testdoc.Region(t, evictionDocExtract, what, endReadingsStart, endReadingsEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
@@ -227,6 +230,7 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 // Karpenter's annotation is unchanged by this release, which is what tells an AWS deployment that
 // it gains the uncharged continue and pays no repacking for it.
 func TestKubernetesDocStatesKarpentersAnnotationStaysOnEveryPod(t *testing.T) {
+	t.Parallel()
 	const what = `docs/kubernetes.md's AWS paragraph of "Issue sizing: one reservation per pod"`
 	_, region := testdoc.Region(t, evictionDocExtract, what, karpenterStart, karpenterEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{

@@ -28,6 +28,7 @@ const testPGDiskDocExtract = "testpg_disk_doc_extract.txt"
 // database sends the agent looking for one it does not name. The region is read out of the
 // committed copy (testPGDiskDocExtract) with its whitespace collapsed, since the guide wraps.
 func TestPGDiskTheGuideNamesTheResetLineAndTheCommandThatShowsIt(t *testing.T) {
+	t.Parallel()
 	_, flat := testdoc.Region(t, testPGDiskDocExtract, "the reset's line and how to read it",
 		"`legion-testpg: reset of the cluster in <data directory>", "a role reads it there or in `$LEGION_TEST_PG_LOG`.")
 	resetLine := testPGProgram + ": reset"

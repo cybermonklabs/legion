@@ -104,6 +104,7 @@ func (g *rig) observed(loc runtime.Locator) runtime.Observation {
 // and by the time the end is final there is no object left to read it from. Nothing of the daemon
 // replaced that pod, so the end is no displacement either.
 func TestAPodDeletedByNoActOfTheDaemonsIsObservedAsAnEndFromOutsideIt(t *testing.T) {
+	t.Parallel()
 	g := runningIssuePod(t)
 	name := SandboxName(workerToken)
 	deleted := metav1.NewTime(rigNow)
@@ -148,6 +149,7 @@ func (g *rig) awaitEndReadingGone(uid string) {
 // claim when it is: timed from its making, it would have expired, and the claim would be charged a
 // death for an end the cluster made. The second eviction leaves the reading as the first made it.
 func TestAnOutsideEndOfAPodStillInTheStoreOutlivesTheTenMinutes(t *testing.T) {
+	t.Parallel()
 	const replacing = "uid-pod-replacing"
 	const again = "Taint manager: deleting due to NoExecute taint"
 	g := runningIssuePod(t)
@@ -197,6 +199,7 @@ func TestAnOutsideEndOfAPodStillInTheStoreOutlivesTheTenMinutes(t *testing.T) {
 // the handlers as an update of the old one, so no delete of the old uid ever comes; that reading is
 // timed from the first prune that finds the store holding another uid.
 func TestAnOutsideEndsReadingIsDroppedTenMinutesAfterItsPodLeavesTheStore(t *testing.T) {
+	t.Parallel()
 	// act is a record the runtime writes for another pod, which prunes the records it holds.
 	const act = "a launch replaced the pod"
 	for _, tc := range []struct {
@@ -265,6 +268,7 @@ func TestAnOutsideEndsReadingIsDroppedTenMinutesAfterItsPodLeavesTheStore(t *tes
 // charges a death for
 // (TestAnEvictionWithNoDisruptionTargetIsChargedADeathAndFailsTheClaimAtTheThird).
 func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		reason     string
@@ -320,6 +324,7 @@ func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 // under daemonSuspendedAct first, so that none of them can end a pod without one. The record is
 // consumed by the end it was written for, so the runtime holds none afterwards.
 func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
+	t.Parallel()
 	t.Run("a suspending patch of the sandbox", func(t *testing.T) {
 		g := runningIssuePod(t)
 		name := SandboxName(workerToken)
@@ -429,6 +434,7 @@ func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 // says ended the pod is read first, and is an end from outside it with a deletion timestamp beside
 // it as without one.
 func TestATerminalPodIsObservedFromItsStatusAloneWhateverDeletionTimestampItCarries(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		status  corev1.PodStatus
@@ -487,6 +493,7 @@ func TestATerminalPodIsObservedFromItsStatusAloneWhateverDeletionTimestampItCarr
 // call a neighbour's pressure the pod's own, and any order of readEndReading's cases that asked it
 // before disruption, or any other caller of it, would have every role of that pod charged.
 func TestAnEvictionIsThePodsOwnOnlyWithNoDisruptionTargetWhateverAsksFirst(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		reason     string
@@ -520,6 +527,7 @@ func TestAnEvictionIsThePodsOwnOnlyWithNoDisruptionTargetWhateverAsksFirst(t *te
 // death for (TestAnEvictionWithNoDisruptionTargetIsChargedADeathAndFailsTheClaimAtTheThird). The
 // expired record is dropped where the next one is written, so the map cannot grow without bound.
 func TestAnIntendedEndThatNeverCameExpiresSoTheNextDeathIsCharged(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	act := "the daemon suspended the pod's sandbox to close or release its issue"
 	crash := func(g *rig) {
@@ -563,6 +571,7 @@ func TestAnIntendedEndThatNeverCameExpiresSoTheNextDeathIsCharged(t *testing.T) 
 // this issue pod run in the one container, so both are named by the one line their shared pod's
 // end gets.
 func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) {
+	t.Parallel()
 	logs := &lockedLog{}
 	g := newRig(t, nil, withLog(logs))
 	tester := g.spawn(workerSpec(t))
@@ -614,6 +623,7 @@ func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) 
 // behind it is read as an end from outside it, and the terminal status the kubelet then gives it
 // leaves it so: read from that status, an eviction's delete would be charged a death.
 func TestAPodsEndIsObservedByTheRuleWhicheverOfItsTerminalStatusAndItsDeletionComesFirst(t *testing.T) {
+	t.Parallel()
 	const refused = "UnexpectedAdmissionError"
 	deleted := metav1.NewTime(rigNow)
 	fail := func(p *corev1.Pod) { p.Status = endedPodStatus(refused) }
@@ -671,6 +681,7 @@ func TestAPodsEndIsObservedByTheRuleWhicheverOfItsTerminalStatusAndItsDeletionCo
 // and it is the one the pod's line names: the empty reading before it decided nothing and wrote no
 // line, so the end writes one line, the not-ours one.
 func TestAnEndReadNeitherWayIsReadAgainAtTheEventThatSaysTheClusterEndedIt(t *testing.T) {
+	t.Parallel()
 	const disrupted = "TerminationByKubelet"
 	logs := &lockedLog{}
 	g := newRig(t, nil, withLog(logs))
@@ -704,6 +715,7 @@ func TestAnEndReadNeitherWayIsReadAgainAtTheEventThatSaysTheClusterEndedIt(t *te
 // makes, the record would turn the pod's own failure into the daemon's end, in the words of an act
 // that did not make it. The end stays read neither way, and the record is left to its expiry.
 func TestAReReadOfAnEndTakesNoRecordTheDaemonWroteAfterThePodShowedIt(t *testing.T) {
+	t.Parallel()
 	g := runningIssuePod(t)
 	name := SandboxName(workerToken)
 	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus("") })
@@ -737,6 +749,7 @@ func TestAReReadOfAnEndTakesNoRecordTheDaemonWroteAfterThePodShowedIt(t *testing
 // roles=[]. The reading itself is made all the same, since a claim of the pod may be watched by
 // the time the end is evaluated.
 func TestNoLineIsWrittenForTheEvictedPodNoWatchedClaimRunsIn(t *testing.T) {
+	t.Parallel()
 	logs := &lockedLog{}
 	g := runningIssuePod(t, withLog(logs))
 	name := SandboxName(workerToken)
@@ -763,6 +776,7 @@ func TestNoLineIsWrittenForTheEvictedPodNoWatchedClaimRunsIn(t *testing.T) {
 // The control is a re-read that keeps the standing record whenever the reading is empty both
 // times: the record then still holds the first words, and the test fails at the second reading.
 func TestAReReadThatReadsTheEndNeitherWayInOtherWordsKeepsThemAndWritesNoLine(t *testing.T) {
+	t.Parallel()
 	const refused = "UnexpectedAdmissionError"
 	logs := &lockedLog{}
 	g := newRig(t, nil, withLog(logs))

@@ -403,6 +403,7 @@ func TestEveryGuaranteedIssueAndControllerPodCarriesBothStopEvictionAnnotations(
 // be ended cheaply, which its request decides and its runtime class does not, so each reservation
 // is read in a gVisor project and in a microVM one.
 func TestABurstableIssuePodCarriesNoSafeToEvictAnnotation(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		issue    config.Reservation
 		extended bool
@@ -467,6 +468,7 @@ func TestABurstableIssuePodCarriesNoSafeToEvictAnnotation(t *testing.T) {
 // 1000m, 1Gi against 1024Mi), a request a hair below its limit, and ephemeral storage, which
 // neither reads.
 func TestTheSafeToEvictAnnotationsGuaranteedRuleAgreesWithTheConfigurations(t *testing.T) {
+	t.Parallel()
 	reservation := func(cpu, cpuRequest, memory, memoryRequest string) config.Reservation {
 		return config.Reservation{CPU: cpu, CPURequest: cpuRequest, Memory: memory, MemoryRequest: memoryRequest,
 			EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}
@@ -507,6 +509,7 @@ func TestTheSafeToEvictAnnotationsGuaranteedRuleAgreesWithTheConfigurations(t *t
 // repacking autoscaler. The issue pod of the same deployment, at the Guaranteed defaults, keeps
 // both too: a controller's reservation decides the controller's pod alone.
 func TestABurstableControllerPodKeepsBothStopEvictionAnnotations(t *testing.T) {
+	t.Parallel()
 	for name, controller := range map[string]config.Reservation{
 		"a cpu request below its limit": {
 			CPU: "2", CPURequest: "500m", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi",

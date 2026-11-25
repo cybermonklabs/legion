@@ -50,6 +50,7 @@ func testPGFlags(c corev1.Container) (serves, disk bool) {
 // --test-postgres. The Sandbox carries the claim in fields the CRD declares, so the API server
 // keeps every one of them.
 func TestPGDiskAnIssuePodKeepsTheTestDatabaseOnADiskOfItsOwn(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		sandbox SandboxConfig
 		class   string
@@ -115,6 +116,7 @@ func TestPGDiskAnIssuePodKeepsTheTestDatabaseOnADiskOfItsOwn(t *testing.T) {
 // Where the deployment sizes no disk, an issue pod that runs the test database keeps today's
 // emptyDir on the node's disk, byte for byte, and its launcher is told of no disk.
 func TestPGDiskWithoutTheSettingTheTestDatabaseStaysInItsEmptyDir(t *testing.T) {
+	t.Parallel()
 	r, err := configure(testPGDiskOptions(""))
 	if err != nil {
 		t.Fatal(err)
@@ -133,6 +135,7 @@ func TestPGDiskWithoutTheSettingTheTestDatabaseStaysInItsEmptyDir(t *testing.T) 
 // to: the controller's pod of a deployment that sizes the disk, and an issue pod of a runtime that
 // serves no test database.
 func TestPGDiskAPodThatRunsNoTestDatabaseHasNoDisk(t *testing.T) {
+	t.Parallel()
 	sized, err := configure(testPGDiskOptions("20Gi"))
 	if err != nil {
 		t.Fatal(err)

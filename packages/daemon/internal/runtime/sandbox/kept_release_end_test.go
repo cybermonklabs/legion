@@ -17,6 +17,7 @@ import (
 // the end would read as one from outside the pod (deletedByAnother), logged as a warning that
 // something outside the pod ended it, which nothing did.
 func TestAReleaseEndsAPodWhoseInitFailedOnItsKeptVolumeAsTheDaemonsOwn(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
 	old := g.spawn(workerSpec(t))
