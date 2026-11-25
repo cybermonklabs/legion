@@ -25,7 +25,7 @@ func derivedHandler(t *testing.T) (http.Handler, *store.Store) {
 		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 		return service
 	})
-	return withDeadline(handler), database
+	return withDeadline(t, handler), database
 }
 
 // A message is inserted in the batch that appends its event, so the message the route answers and
