@@ -378,7 +378,8 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 //     columns that answers at most one row;
 //   - reads every table through an index in its newest event (requireKeyedBesideTheWalk). The
 //     issues row of each member issue is not the newest event's own read: the statement reads it
-//     once for all its parts (member_issue), from one read of issues joined to the members.
+//     once for all its parts (member_issue), from one read of issues joined to the members, in one
+//     scan of issues that runs once (requireMemberIssueReadsIssuesOnce).
 //
 // The walk the statement holds is held on the corpus of production's counts
 // (TestThePrioritiesReadWalksIssuesOnceOnTheCorpus), where it walks as a deployment's does; on
@@ -393,8 +394,12 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 //   - main's text fails the read of events and the reads beside the walk: it joins every event of
 //     every member issue, and its plans read events in a Seq Scan and the members' issues rows
 //     with no index condition, in a Seq Scan or a whole Index Only Scan of issues_pkey;
-//   - the priorities read's statement fails the index condition on every scan, since its walk,
-//     main's, reads issues in a Seq Scan.
+//   - a copy of the statement whose member_issue probes issues_pkey for each member issue
+//     (priorityMemberIssueProbedQuery) fails the one read of issues in member_issue.
+//
+// The control of the index condition on every scan, the statement's walk, which reads issues in a
+// Seq Scan, is held on the corpus of production's counts with the walk holds
+// (TestThePrioritiesReadWalksIssuesOnceOnTheCorpus).
 func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 	t.Parallel()
 	if !strings.Contains(mainPriorityNewestEventQuery, mainNewestEventWalk) {
@@ -411,7 +416,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 	}
 	defer connection.Release()
 
-	const mains, statement, keyed = 0, 1, 2
+	const mains, statement, keyed, probed = 0, 1, 2, 3
 	for stateNumber, state := range newestEventStates {
 		if state.setup != nil {
 			state.setup(t, corpus.database)
@@ -433,6 +438,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 				mains:     {"main's newest event", mainPriorityNewestEventQuery, seeded},
 				statement: {"the priorities read's statement", priorityReadQuery, []any{corpus.priorities, scope.projects}},
 				keyed:     {"the newest event with its walk keyed", priorityNewestEventKeyedWalkQuery, seeded},
+				probed:    {"the statement with member_issue probed", priorityMemberIssueProbedQuery(t), []any{corpus.priorities, scope.projects}},
 			}
 			plans := []struct {
 				name  string
@@ -452,6 +458,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 				}
 				requireNewestEventProbes(t, keys, plan.plans[statement], subjects[statement], state.probes(members))
 				requireKeyedBesideTheWalk(t, plan.plans[statement], subjects[statement])
+				requireMemberIssueReadsIssuesOnce(t, plan.plans[statement], subjects[statement])
 				requireOneEventOfEachMember(t, keys, plan.plans[keyed], subjects[keyed], members.issues)
 				requireEveryScanKeyed(t, plan.plans[keyed], subjects[keyed])
 
@@ -464,7 +471,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 						requireOneEventOfEachMember(t, keys, plan, subject, members.issues)
 					}},
 					{mains, "a read of a whole table beside the walk from a read through an index", requireKeyedBesideTheWalk},
-					{statement, "a walk that reads the whole of issues from one keyed through an index", requireEveryScanKeyed},
+					{probed, "a member_issue that probes issues_pkey once for each member issue from one that reads issues in one scan", requireMemberIssueReadsIssuesOnce},
 				} {
 					subject, controlPlan := subjects[control.text], plan.plans[control.text]
 					explaintest.RequireControlFails(t, subject, "a control", control.cannotTell, controlPlan,
@@ -714,6 +721,59 @@ func requireKeyedBesideTheWalk(t testing.TB, plan json.RawMessage, subject strin
 		t.Errorf("%s reads %s with no index condition in its newest event beside its walk over the members (%s), want every read beside the walk through an index:\n%s",
 			subject, strings.Join(unkeyed, ", "), newestEventWalkCTE, plan)
 	}
+}
+
+// requireMemberIssueReadsIssuesOnce holds member_issue in plan, an analyzed plan of the
+// priorities read's statement (its subplan priorityMemberIssueCTE, planSubplan), to one read of
+// issues: one scan of the table, which runs once. The statement hashes issues from that one read
+// and joins the members to the hash; a member_issue that probes issues_pkey for each member issue
+// (priorityMemberIssueProbedQuery) runs its scan once for each. The failure names the CTE, the
+// table, and each scan of it with its index and its loops, and prints the plan through t.Errorf,
+// which is what a control reads (explaintest.RequireControlFails).
+func requireMemberIssueReadsIssuesOnce(t testing.TB, plan json.RawMessage, subject string) {
+	t.Helper()
+	var reads []string
+	loops := 0.0
+	for _, scan := range explaintest.Scans(t, planSubplan(t, plan, priorityMemberIssueCTE, subject)) {
+		if scan.Relation != "issues" {
+			continue
+		}
+		through := "no index"
+		if scan.Index != "" {
+			through = scan.Index
+		}
+		reads = append(reads, fmt.Sprintf("a scan of issues through %s that runs %v times", through, scan.Loops))
+		loops += scan.Loops
+	}
+	if len(reads) != 1 || loops != 1 {
+		t.Errorf("%s reads issues in %s in %d scans, running %v times in all (%s), want one scan of issues that runs once:\n%s",
+			subject, priorityMemberIssueCTE, len(reads), loops, strings.Join(reads, "; "), plan)
+		return
+	}
+	t.Logf("%s reads issues in %s in one scan, %s", subject, priorityMemberIssueCTE, reads[0])
+}
+
+// priorityMemberIssueProbedQuery is the control of requireMemberIssueReadsIssuesOnce: a copy of
+// the priorities read's statement (priorityReadQuery) whose member_issue reads the issues row of
+// each member issue by a probe of its own, a lateral read keyed on issues_pkey that `offset 0`
+// keeps the planner from flattening into a join, in place of the join of members to issues. It
+// answers the statement's rows, and its member_issue runs its scan of issues once for each member
+// issue. It fails the test where the statement holds no such join to replace.
+func priorityMemberIssueProbedQuery(t testing.TB) string {
+	t.Helper()
+	joined := `from members m
+		join issues i on i.key = m.key
+		where ` + priorityProjectFilter + `
+		group by i.key
+	), member_event`
+	probed := `from (select distinct key from members) m
+		cross join lateral (select * from issues i where i.key = m.key offset 0) i
+		where ` + priorityProjectFilter + `
+	), member_event`
+	if strings.Count(priorityReadQuery, joined) != 1 {
+		t.Fatalf("the priorities read's statement does not read member_issue as one join of members to issues, so the control that probes issues for each member issue copies no text the read runs:\n%s", priorityReadQuery)
+	}
+	return strings.Replace(priorityReadQuery, joined, probed, 1)
 }
 
 // requireWalkReadsIssuesOnce holds the walk over the members in plan (newestEventWalk) to one

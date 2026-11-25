@@ -94,21 +94,30 @@ func TestThePrioritiesReadKeepsItsPlansWithAProjectNamed(t *testing.T) {
 // TestThePrioritiesReadWalksIssuesOnceOnTheCorpus holds the walk over the members that the full
 // read's statement (priorityReadQuery) takes, main's walk (mainNewestEventWalk) seeded from the
 // relations the statement reads itself, on the corpus of production's counts
-// (seedPrioritiesReadCorpus), with no project named, under the generic plan a prepared statement
-// settles on and under the plan made for its values, each run at the planner's default settings:
+// (seedPrioritiesReadCorpus), with no project named and with project PRDW named (the corpus's
+// readCorpusAdvancesProject), under the generic plan a prepared statement settles on and under the
+// plan made for its values, each run at the planner's default settings:
 //
 //   - one read of issues in the walk, which runs once (requireWalkReadsIssuesOnce);
-//   - no more shared buffers in the walk, the read of the relations in it aside, than main's
-//     walk reads under the same plan (mainPriorityNewestEventQuery, over the same relations as
-//     two arrays, which its walk reads by their subscripts and so reads no relation);
+//   - no more shared buffers in the walk, the read of the relations it counts aside
+//     (newestEventWalkRelationsBuffers), than main's walk reads under the same plan over the same
+//     scope (mainPriorityNewestEventQuery, over the same relations as two arrays, which its walk
+//     reads by their subscripts and so reads no relation);
+//   - one read of issues in member_issue, the issues row of each member issue that every part of
+//     the statement takes, in one scan that runs once (requireMemberIssueReadsIssuesOnce);
 //   - in steady state, every member's newest-event pair naming its event of last_seq, as the
 //     corpus's fill leaves it: no read of events in the newest event (requireNewestEventProbes).
 //
 // These holds read the corpus of production's counts because the planner sizes the statement's
 // walk from the relations it reads: over a corpus of a few relations it scans issues at each step
-// of the walk, where over a deployment's relations it hashes issues once. The walk keyed through
-// issues_parent_key (priorityNewestEventKeyedWalkQuery) is the control both walk holds must fail
-// under each plan (explaintest.RequireControlFails).
+// of the walk, where over a deployment's relations it hashes issues once. Each must fail a control
+// under each plan over each scope, and the test fails where a control passes
+// (explaintest.RequireControlFails): the walk keyed through issues_parent_key
+// (priorityNewestEventKeyedWalkQuery) fails both walk holds; a copy of the statement whose
+// member_issue probes issues_pkey for each member issue (priorityMemberIssueProbedQuery) fails the
+// read of issues in member_issue; and the statement itself, whose walk reads issues in a Seq Scan,
+// fails the index condition on every scan (requireEveryScanKeyed) that
+// TestPriorityNewestEventReadsOneEventOfEachMember holds the walk keyed to.
 //
 // Both plans of each text run on one connection, the plan for its values right after the generic
 // plan of the same text, so each count is what the plan reads on a connection that has run the
@@ -139,63 +148,101 @@ func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
 	}
 	defer connection.Release()
 
-	const mains, statement, keyed = 0, 1, 2
-	seeded := []any{seedKeys, seedIDs, []string{}}
-	texts := []struct {
-		name, statement string
-		arguments       []any
+	probedQuery := priorityMemberIssueProbedQuery(t)
+	const mains, statement, keyed, probed = 0, 1, 2, 3
+	for scopeNumber, scope := range []struct {
+		name     string
+		projects []string
 	}{
-		mains:     {"main's newest event", mainPriorityNewestEventQuery, seeded},
-		statement: {"the priorities read's statement", priorityReadQuery, []any{ids, []string{}}},
-		keyed:     {"the newest event with its walk keyed", priorityNewestEventKeyedWalkQuery, seeded},
-	}
-	plans := []struct {
-		name  string
-		plans []json.RawMessage
-	}{{name: "the generic plan"}, {name: "the plan for its values"}}
-	for textNumber, text := range texts {
-		parameters, literals := benchtime.PreparedArguments(t, text.name, text.arguments...)
-		plans[0].plans = append(plans[0].plans, explaintest.AnalyzedGenericPlan(t, ctx, connection,
-			fmt.Sprintf("corpus_walk_%d", textNumber), text.statement, parameters, literals))
-		plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlan(t, ctx, connection,
-			text.statement, nil, text.arguments...))
-	}
-	for _, plan := range plans {
-		subjects := make([]string, len(texts))
+		{"no project named", []string{}},
+		{"project " + readCorpusAdvancesProject + " named", []string{readCorpusAdvancesProject}},
+	} {
+		seeded := []any{seedKeys, seedIDs, scope.projects}
+		texts := []struct {
+			name, statement string
+			arguments       []any
+		}{
+			mains:     {"main's newest event", mainPriorityNewestEventQuery, seeded},
+			statement: {"the priorities read's statement", priorityReadQuery, []any{ids, scope.projects}},
+			keyed:     {"the newest event with its walk keyed", priorityNewestEventKeyedWalkQuery, seeded},
+			probed:    {"the statement with member_issue probed", probedQuery, []any{ids, scope.projects}},
+		}
+		plans := []struct {
+			name  string
+			plans []json.RawMessage
+		}{{name: "the generic plan"}, {name: "the plan for its values"}}
 		for textNumber, text := range texts {
-			subjects[textNumber] = fmt.Sprintf("%s under %s on the corpus", text.name, plan.name)
+			parameters, literals := benchtime.PreparedArguments(t, text.name+" with "+scope.name, text.arguments...)
+			plans[0].plans = append(plans[0].plans, explaintest.AnalyzedGenericPlan(t, ctx, connection,
+				fmt.Sprintf("corpus_walk_%d_%d", scopeNumber, textNumber), text.statement, parameters, literals))
+			plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlan(t, ctx, connection,
+				text.statement, nil, text.arguments...))
 		}
-		mainsWalk := newestEventWalkBuffers(t, plan.plans[mains], subjects[mains])
-		if mainsWalk == 0 {
-			t.Fatalf("%s reads no shared buffer in its walk over the members, so the bound on the walk holds nothing:\n%s",
-				subjects[mains], plan.plans[mains])
-		}
-		requireWalkReadsIssuesOnce(t, plan.plans[statement], subjects[statement])
-		relations := 0.0
-		for _, node := range explaintest.Nodes(t, newestEventWalk(t, plan.plans[statement], subjects[statement])) {
-			if node.Relation == "priority_tuples" {
-				relations += node.SharedHitBlocks + node.SharedReadBlocks
+		for _, plan := range plans {
+			subjects := make([]string, len(texts))
+			for textNumber, text := range texts {
+				subjects[textNumber] = fmt.Sprintf("%s under %s on the corpus with %s", text.name, plan.name, scope.name)
+			}
+			mainsWalk := newestEventWalkBuffers(t, plan.plans[mains], subjects[mains])
+			if mainsWalk == 0 {
+				t.Fatalf("%s reads no shared buffer in its walk over the members, so the bound on the walk holds nothing:\n%s",
+					subjects[mains], plan.plans[mains])
+			}
+			requireWalkReadsIssuesOnce(t, plan.plans[statement], subjects[statement])
+			relations := newestEventWalkRelationsBuffers(t, plan.plans[statement], subjects[statement])
+			walk := newestEventWalkBuffers(t, plan.plans[statement], subjects[statement]) - relations
+			t.Logf("%s reads %v shared buffers in its walk over the members beside %v in its read of the relations, and main's walk %v",
+				subjects[statement], walk, relations, mainsWalk)
+			if walk > mainsWalk {
+				t.Errorf("%s reads %v shared buffers in its walk over the members beside its read of the relations, more than the %v of main's walk under the same plan, want at most main's:\n%s",
+					subjects[statement], walk, mainsWalk, plan.plans[statement])
+			}
+			requireMemberIssueReadsIssuesOnce(t, plan.plans[statement], subjects[statement])
+			requireNewestEventProbes(t, keys, plan.plans[statement], subjects[statement], 0)
+			for _, control := range []struct {
+				text       int
+				cannotTell string
+				check      func(t testing.TB, plan json.RawMessage, subject string)
+			}{
+				{keyed, "a walk that reads issues for each member row from one that reads it once", requireWalkReadsIssuesOnce},
+				{keyed, "a walk that reads more shared buffers than main's from one that reads no more", func(t testing.TB, plan json.RawMessage, subject string) {
+					requireWalkWithinMains(t, plan, subject, mainsWalk)
+				}},
+				{probed, "a member_issue that probes issues_pkey once for each member issue from one that reads issues in one scan", requireMemberIssueReadsIssuesOnce},
+				{statement, "a walk that reads the whole of issues from one keyed through an index", requireEveryScanKeyed},
+			} {
+				subject, controlPlan := subjects[control.text], plan.plans[control.text]
+				explaintest.RequireControlFails(t, subject, "a control", control.cannotTell, controlPlan,
+					func(t testing.TB) { control.check(t, controlPlan, subject) })
 			}
 		}
-		walk := newestEventWalkBuffers(t, plan.plans[statement], subjects[statement]) - relations
-		t.Logf("%s reads %v shared buffers in its walk over the members beside %v in its read of the relations, and main's walk %v",
-			subjects[statement], walk, relations, mainsWalk)
-		if walk > mainsWalk {
-			t.Errorf("%s reads %v shared buffers in its walk over the members beside its read of the relations, more than the %v of main's walk under the same plan, want at most main's:\n%s",
-				subjects[statement], walk, mainsWalk, plan.plans[statement])
-		}
-		requireNewestEventProbes(t, keys, plan.plans[statement], subjects[statement], 0)
-		for _, control := range []struct {
-			cannotTell string
-			check      func(t testing.TB, plan json.RawMessage, subject string)
-		}{
-			{"a walk that reads issues for each member row from one that reads it once", requireWalkReadsIssuesOnce},
-			{"a walk that reads more shared buffers than main's from one that reads no more", func(t testing.TB, plan json.RawMessage, subject string) {
-				requireWalkWithinMains(t, plan, subject, mainsWalk)
-			}},
-		} {
-			explaintest.RequireControlFails(t, subjects[keyed], "a control", control.cannotTell, plan.plans[keyed],
-				func(t testing.TB) { control.check(t, plan.plans[keyed], subjects[keyed]) })
+	}
+}
+
+// newestEventWalkRelationsBuffers is the shared buffers, hit plus read, that the walk over the
+// members in plan counts in its own (newestEventWalk) for the read of the relations it is seeded
+// from. A node's buffers count every read made while it runs, so the walk counts the relations'
+// read wherever it runs it: the scans of priority_tuples inside it, where the planner folds the
+// relations' term (members_seed) into the walk, and, where the term is a CTE of its own, as it is
+// once the second fault's climb reads it too (priorityBacklogTerms), the buffers of that CTE's
+// plan, which the walk's scan of the CTE runs when it reads the CTE first. A scan of the CTE that
+// another node ran first counts none of the CTE's reads, so the walk's scan counts at most the
+// CTE's own buffers.
+func newestEventWalkRelationsBuffers(t testing.TB, plan json.RawMessage, subject string) float64 {
+	t.Helper()
+	seed := 0.0
+	if seeds := planSubplans(t, plan, "CTE members_seed", subject); len(seeds) == 1 {
+		top := explaintest.Nodes(t, seeds[0])[0]
+		seed = top.SharedHitBlocks + top.SharedReadBlocks
+	}
+	relations := 0.0
+	for _, node := range explaintest.Nodes(t, newestEventWalk(t, plan, subject)) {
+		switch {
+		case node.Relation == "priority_tuples":
+			relations += node.SharedHitBlocks + node.SharedReadBlocks
+		case node.Type == "CTE Scan" && node.CTE == "members_seed":
+			relations += min(node.SharedHitBlocks+node.SharedReadBlocks, seed)
 		}
 	}
+	return relations
 }

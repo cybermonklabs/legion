@@ -137,9 +137,10 @@ const priorityFaultRowColumns = `'key', i.key, 'title', i.title, 'project', i.pr
 			'assignee', i.assignee, 'claimed_by', i.claimed_by, 'claimed_at', i.claimed_at, 'changed_at', i.updated_at`
 
 // The names EXPLAIN gives the parts of priorityReadQuery that a test holds on their own: the
-// newest event's read of one event of each member issue, and the second fault's read of each
-// listed issue's move.
+// issues row of each member issue, read once for every part; the newest event's read of one event
+// of each member issue; and the second fault's read of each listed issue's move.
 const (
+	priorityMemberIssueCTE = "CTE member_issue"
 	priorityNewestEventCTE = "CTE member_event"
 	priorityBacklogListCTE = "CTE backlog_listed"
 )
