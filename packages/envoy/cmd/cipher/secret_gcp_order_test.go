@@ -257,6 +257,7 @@ func useOrderSources(t *testing.T, dir, tokenURI string, setup orderSetup) {
 // configuration is the machine's own (box) and whose person's login is in another (person).
 // Each row adds one source to the row before it and reads the bearer token Secret Manager saw.
 func TestGCPSecretCredentialOrder(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:290); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	const (
 		wk           = "wk@example.iam.gserviceaccount.com"
 		gac          = "gac@example.iam.gserviceaccount.com"
@@ -310,6 +311,7 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 // one refusal that names each of the six sources (the third by both its variables, the well-known
 // file by the setting that names its directory, never its path).
 func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:317); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	dir := useGcloudConfigurations(t, "", nil)
@@ -347,6 +349,7 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 // source is never retried under another. The metadata server is there in every row, so a fall
 // through would show as a call under it.
 func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:363); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	for _, row := range []struct {
 		name     string
 		use      func(t *testing.T, dir, tokenURI string, fake *fakeSecretManager)
@@ -513,6 +516,7 @@ func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) *meta
 // metadata client's own deadlines allow it (waits), less the time this process was held up
 // (requireOnTime).
 func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:542); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	for _, row := range []struct {
 		name         string
 		token, email metadataAnswer
