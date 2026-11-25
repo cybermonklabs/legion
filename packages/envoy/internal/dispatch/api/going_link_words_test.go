@@ -86,7 +86,9 @@ func TestAnAnswerIsStoredWithTheWordsOfItsLinks(t *testing.T) {
 // drew no chip of it and no one read its title. The server stores the reply frame of an answer
 // with each issue key it names bare that a tool result of the run holds written as the issue's
 // link, and every other field as the agent sent it. A key no read of the run returned stays text,
-// though its issue is real, so the answer links only items its run read.
+// though its issue is real, so the answer links only items its run read; and a word of a key's
+// shape that a read returned but that names no issue, SHA-256 or UTF-8, stays text, since a link
+// to it would draw a chip of no issue.
 func TestAnAnswerIsStoredWithTheBareKeysItsReadsReturnedLinked(t *testing.T) {
 	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
@@ -94,9 +96,10 @@ func TestAnAnswerIsStoredWithTheBareKeysItsReadsReturnedLinked(t *testing.T) {
 	unread := rig.issue(t, "Rotate the signing keys")
 	run, token := rig.working(t, "alice", "what is "+read)
 	body, err := json.Marshal(map[string]any{
-		"call":   map[string]any{"id": "call_1", "tool": "read", "arguments": map[string]any{"ref": "dispatch://" + read}},
-		"error":  false,
-		"result": `{"key": "` + read + `", "title": "Export: CSV and PDF", "status": "backlog", "priority_shown": "P3", "assignee": null}`,
+		"call":  map[string]any{"id": "call_1", "tool": "read", "arguments": map[string]any{"ref": "dispatch://" + read}},
+		"error": false,
+		"result": `{"key": "` + read + `", "title": "Export: CSV and PDF", "status": "backlog", "priority_shown": "P3", "assignee": null, ` +
+			`"spec": "Verify the SHA-256 digest and write the file as UTF-8."}`,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,13 +109,14 @@ func TestAnAnswerIsStoredWithTheBareKeysItsReadsReturnedLinked(t *testing.T) {
 		t.Fatalf("save the tool step of run %s: %v", run, err)
 	}
 	answer := map[string]any{"step": 2, "tools": []string{}, "labels": []string{}, "waits_for_person": false, "model_ms": 80,
-		"text": read + " is a P3 backlog feature with no assignee, and " + unread + " waits on it."}
+		"text": read + " is a P3 backlog feature with no assignee, and " + unread + " waits on it. It asks for a SHA-256 digest and UTF-8."}
 	storeReply(t, rig, run, token, 2, answer)
 	want := map[string]any{}
 	for field, value := range answer {
 		want[field] = value
 	}
-	want["text"] = "[" + read + "](dispatch://" + read + ") is a P3 backlog feature with no assignee, and " + unread + " waits on it."
+	want["text"] = "[" + read + "](dispatch://" + read + ") is a P3 backlog feature with no assignee, and " + unread +
+		" waits on it. It asks for a SHA-256 digest and UTF-8."
 	requireStoredReplies(t, rig, run, want)
 }
 

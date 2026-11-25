@@ -136,9 +136,11 @@ test("a run whose bar is closed goes on, and the chip reads working, then done w
     await expect(chip).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
     await expect(chip).toContainText("Done");
     await chip.getByTestId("going-chip-open").click();
-    await expect(newestRun(page).getByTestId("going-run-answer")).toContainText(
-      `The comet is tracked in ${key}.`
-    );
+    // The answer's bare key, which the run's read returned, is stored as the issue's link, so
+    // the bar draws the issue's chip after the answer's words.
+    const answer = newestRun(page).getByTestId("going-run-answer");
+    await expect(answer).toContainText("The comet is tracked in");
+    await expect(answer.getByTestId("item-chip")).toContainText(key);
   });
 });
 

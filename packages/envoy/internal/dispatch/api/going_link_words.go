@@ -36,10 +36,12 @@ const goingReplyFrame = "reply"
 
 // goingKeepLinkWords writes, in place, the text of each reply frame of frames that answers - one
 // that names no tool call, which the bar draws as the run's answer (web
-// features/going/run-frames.ts) - with each bare issue key that a tool result of run holds
-// written as the issue's link (chips.LinkBareKeys, goingRunResults), so the answer links only
-// items its run read, and then as chips.KeepLinkWords writes it, each item the text links read
-// from q for run's person (goingAnswerItems). Every other frame, and a reply frame that writes as
+// features/going/run-frames.ts) - with each bare issue key that a tool result of run holds and
+// that names an issue run's person may read written as the issue's link (chips.LinkBareKeys,
+// goingRunResults, goingAnswerItems), so the answer links only items its run read, and a word of
+// a key's shape that is no issue, such as SHA-256 or UTF-8, stays text; and then as
+// chips.KeepLinkWords writes it, each item the text links read from q for run's person
+// (goingAnswerItems). Every other frame, and a reply frame that writes as
 // it came, stays as it came, byte for byte. A reply frame of tool calls is the header the bar
 // writes over its calls in plain words, with no chip, so it stays as it came too.
 func goingKeepLinkWords(ctx context.Context, q queryer, run string, frames []agentwire.Frame) error {
@@ -53,9 +55,18 @@ func goingKeepLinkWords(ctx context.Context, q queryer, run string, frames []age
 		if frame.Name != goingReplyFrame || json.Unmarshal(frame.Data, &reply) != nil || reply.Text == "" || len(reply.Tools) > 0 {
 			continue
 		}
-		linked := chips.LinkBareKeys(reply.Text, results.returned)
+		linked := chips.LinkBareKeys(reply.Text, func(key string) bool {
+			if !results.returned(key) {
+				return false
+			}
+			_, _, issue := items.IssueChip(key)
+			return issue
+		})
 		if results.err != nil {
 			return results.err
+		}
+		if items.err != nil {
+			return items.err
 		}
 		kept := chips.KeepLinkWords(linked, items)
 		if items.err != nil {

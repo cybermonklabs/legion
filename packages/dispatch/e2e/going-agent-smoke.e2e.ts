@@ -1,5 +1,5 @@
 import { callTool, modelsLane, prose, runCalls, say, scriptChat } from "./fake-models-helpers";
-import { openBarOver, RUN_STEPS_MS, searchBox } from "./going-locators";
+import { newestRun, openBarOver, RUN_STEPS_MS, searchBox } from "./going-locators";
 import { seedCoreIssue } from "./going-panel";
 import { expect, test } from "./test";
 import { withAlice } from "./users";
@@ -22,6 +22,8 @@ test("a question asked in the bar runs the agent: its read of the issue reaches 
   modelsLane();
   test.setTimeout(90_000);
   const key = await seedCoreIssue(title);
+  // The answer names the issue by its bare key, which the run's read returned, so the server
+  // stores it as the issue's link and the bar draws its chip in its place.
   const answer = `The sightings are kept in ${key}, ${title}.`;
   await scriptChat({
     default: prose("A short answer while the person pauses."),
@@ -32,7 +34,10 @@ test("a question asked in the bar runs the agent: its read of the issue reaches 
     await searchBox(page).fill(words);
     await searchBox(page).press("Enter");
 
-    await expect(page.getByText(answer)).toBeVisible({ timeout: RUN_STEPS_MS });
+    const shown = newestRun(page).getByTestId("going-run-answer");
+    await expect(shown).toContainText("The sightings are kept in", { timeout: RUN_STEPS_MS });
+    await expect(shown.getByTestId("item-chip")).toContainText(key);
+    await expect(shown.getByTestId("item-chip")).toContainText(title);
     const calls = await runCalls(words);
     expect(calls.map((call) => call.turn)).toEqual([0, 1]);
     // The run carries the page it was asked from, and its first call offers the agent's tools.
