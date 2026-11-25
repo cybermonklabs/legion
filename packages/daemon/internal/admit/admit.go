@@ -221,10 +221,11 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 	return intake.Result{Refusal: refusal}, a.endPass(ctx, tx, released, tick)
 }
 
-// endPass ends every admission pass, Apply's on each fact and Reconcile's at boot, with the readers
-// of the pass's final judgement (finalJudgement), which it takes at most once and only where one
-// of them reads it: the admission block (queueAdmissionBlock), the free-slot wake for the slots the
-// pass released (wakeForFreeSlot), and, for the controller tick, the tick's own wake (tickWake).
+// endPass ends every admission pass, Apply's on each fact and Reconcile's at boot and at each
+// repository recovery (internal/daemon's recoverRepositories), with the readers of the pass's final
+// judgement (finalJudgement), which it takes at most once and only where one of them reads it: the
+// admission block (queueAdmissionBlock), the free-slot wake for the slots the pass released
+// (wakeForFreeSlot), and, for the controller tick, the tick's own wake (tickWake).
 // The judgement is taken after every write of the pass that any judgement reads, and the rows
 // these three write are none of those (finalJudgement says why), so each reads the transaction's
 // final state.
@@ -3739,7 +3740,8 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 		return err
 	}
 	// The read is the pass's last, which the pass's end judges where the convergence wrote no
-	// row a judgement reads (finalJudgement), so the sweep's block reads nothing of its own.
+	// row a judgement reads, so the sweep's block reads the project's records no second time
+	// (finalJudgement).
 	a.last = &passJudgement{passRead: read}
 	return a.resumeSlottedWorkers(ctx, tx, read.issues, read.slots, read.facts, floor)
 }

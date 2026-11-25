@@ -303,11 +303,13 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // role (roleHolder, EnqueueRoleHolders): the agent registers, a new session takes the role, or the
 // claim leaves a state that holds it — retired, failed, suspended, or launching again. The state
 // event is queued when the write moves the state the state route serves at c's issue's role, or
-// is the first to list an issue the daemon holds no record of (queueClaimState). Both are read
-// against the row the write replaces, read under its lock (lockedClaim). A write that changes
-// neither queues nothing, and neither does a write that can queue nothing (queuesRoleHolders,
-// queuesState). A write of a claim of another project's issue queues no publication, since only
-// that project's daemon runs a row keyed by its issue (queuesRoleHolders).
+// lists c's issue first (storedClaim.unlisted, queueClaimState). Both are read against the row the
+// write replaces, read under its lock (lockedClaim). The two switches (queuesRoleHolders,
+// queuesState) depend on no stored row, so putClaim reads them inside tx before it takes that lock:
+// a write for which both are off writes the row without reading it first (upsertClaim) and queues
+// nothing. A write that changes neither queues nothing either. A write of a claim of another
+// project's issue queues no publication, since only that project's daemon runs a row keyed by its
+// issue (queuesRoleHolders).
 // A write that queued a row wakes that row's lane once tx commits, as the hook of tx's commit
 // (wakeRoleHolders, and the state events' wake, PublishState): no caller wakes it. Every claim
 // write goes through here — PutClaim, PutClaimAndDelivery, RetireDelivery, ReleaseHolds,
@@ -352,8 +354,9 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 // write is the first to list the claim's issue in the state route at all: the issue has no issues
 // row of the daemon's Dispatch project, so the route serves it for its claims alone, at phase
 // unrecorded (internal/projection's Project, over the issues internal/daemon's projectRecords
-// keeps), and no claim of the claim's project names it yet. It is read only with the state events
-// on (PublishState).
+// keeps), and no claim of the claim's project names it yet. It is false for a claim the store holds
+// a row of, since that row names the issue already, and it is read only with the state events on
+// (PublishState).
 type storedClaim struct {
 	state    supervise.ClaimState
 	session  string
@@ -364,11 +367,10 @@ type storedClaim struct {
 // of the claim lands between this read and the write that replaces it. A claim's first row is its
 // admission (AdmitClaim), which is globally serialized, so two first writes of one claim never race
 // past this read. With the state events on (state), a claim the store holds no row of is read for
-// whether the write lists c's issue first (storedClaim.unlisted): never for a claim the store holds
-// a row of, since that row names the issue already; else whether the issue has a record of state's
-// project, and, only for an issue that has none, whether any claim of c's project names it. That
-// second read is rare, since almost every claim write is of a claim the store already holds, and
-// the claims table has no index on the issue.
+// whether the write lists c's issue first (storedClaim.unlisted): whether the issue has a record of
+// state's project, and, only for an issue that has none, whether any claim of c's project names it.
+// That second read is rare, since almost every claim write is of a claim the store already holds,
+// and the claims table has no index on the issue.
 func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *statePublication) (storedClaim, error) {
 	var stored storedClaim
 	var storedState, session *string

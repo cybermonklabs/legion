@@ -43,14 +43,13 @@ type variantInstructions struct {
 
 // readBoot is every refusal boot makes from the configuration, the daemon's environment (lookup,
 // and getenv for the OMP invocation) and the files they name, writing nothing: the project key's
-// shape (config.CheckProjectKey, which the loader holds too, so a configuration built any other
-// way is refused before the store is opened or migrated and before any App token is minted), the
-// project token, the operator bearer's file, operator configuration colliding with Legion's own
-// (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
-// (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
-// file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
-// file, or under dispatch_token_broker the transition token's file where the configuration names
-// one, and the runtime's own reads (readTmux, readSandbox).
+// shape (config.CheckProjectKey), the project token, the operator bearer's file, operator
+// configuration colliding with Legion's own (checkOperatorConfig), the launch secrets
+// (readLaunchSecrets), the daemon's own NATS nkey seed (natsauth.DaemonSeed), the instructions
+// file, every declared variant's instructions file, the file of every hook that reads its words
+// from one (`hooks[].prompt_file`), the Dispatch bearer's file, or under dispatch_token_broker the
+// transition token's file where the configuration names one, and the runtime's own reads
+// (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check refuses
 // whatever boot refuses before its first write, with one exception: under dispatch_token_broker,

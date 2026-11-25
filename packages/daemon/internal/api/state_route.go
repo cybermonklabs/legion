@@ -128,21 +128,20 @@ func (s *server) readSnapshot(w http.ResponseWriter, r *http.Request, reading co
 
 // stateRoute answers the whole state, or with `?view=observed` the observed view, which is what
 // Dispatch reads (ObservedState). Each is read in its own snapshot (projectState, observedState)
-// and served through the one writer at the caller's contract: the observed view is the whole
-// state's members read through observedOf after the whole state's own bands and strips, so at
-// every contract its members are the whole state's (shaping.go's observedFor).
+// and served through the one writer at the caller's contract (shaping.go's observedFor shapes the
+// observed view to it).
 //
-// A request that names any other `view` (stateViewOf) gets the whole state, as a daemon without
-// the view serves it. For that request the route logs a warning that names the values it was given
-// and the one view the route serves, because a later version may refuse such a request. The route
-// authenticates nobody and the values are the caller's, so the warning is logged at most once in
-// otherViewWarnEvery in all (otherViewWarnings.admit). The warning names how many such requests
-// since the last one were not logged.
+// A request whose `view` is other than exactly one observedView (stateViewOf says which) gets the
+// whole state, as a daemon without the view serves it. The route warns of such requests, because a
+// later version may refuse them, but the route authenticates nobody and the values are the
+// caller's, so it logs at most one warning in otherViewWarnEvery in all (otherViewWarnings.admit):
+// the warning names the values of the request it is logged for, the one view the route serves,
+// and how many such requests since the last warning were not logged.
 func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	observed, others := stateViewOf(r)
 	if others != nil {
 		if skipped, logged := s.otherViews.admit(s.now()); logged {
-			s.log.Warn("api: the request names no view of the state, so it gets the whole state; a later version may refuse such a request",
+			s.log.Warn("api: the request's view is not the one view the state has, so it gets the whole state; a later version may refuse such a request",
 				"views", others, "onlyView", observedView, "caller", r.RemoteAddr, "skipped", skipped)
 		}
 	}
@@ -182,13 +181,12 @@ func stateViewOf(r *http.Request) (observed bool, others []string) {
 	return false, views
 }
 
-// otherViewWarnEvery is the least time between two warnings for a request to the state route that
-// names a view other than observedView.
+// otherViewWarnEvery is the least time between two warnings for requests to the state route whose
+// `view` is other than exactly one observedView (stateViewOf).
 const otherViewWarnEvery = time.Minute
 
-// otherViewWarnings spaces the warnings for requests to the state route that name a view other
-// than observedView (stateRoute): one line in all, whoever asks, each otherViewWarnEvery.
-// The zero value is ready for use.
+// otherViewWarnings spaces the warnings otherViewWarnEvery is for (stateRoute): at most one line in
+// each otherViewWarnEvery, whoever asks. The zero value is ready for use.
 type otherViewWarnings struct {
 	mu sync.Mutex
 	// last is when the latest warning was logged, and the zero time before the first.

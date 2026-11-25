@@ -4,13 +4,15 @@
 // the phase the state route and a change serve for an issue the daemon holds no record of
 // (Unrecorded), with the checks a row must pass before it is queued (Validate).
 //
-// internal/record queues the rows of the issue, slot and admission-block writes, and internal/store
-// computes the change of each claim write. The tests of internal/record import internal/store, so
+// internal/record queues the rows of its own issue, slot and admission-block writes, internal/store
+// computes the change of each claim write, and internal/daemon queues each run's boot row through
+// record's insert (record.Postgres.Enqueue). The tests of internal/record import internal/store, so
 // internal/store cannot import internal/record. So the shape is written here once: record's state
 // payloads are types over this package's (record.StateChange over Change, StateAdmission over
 // Admission, StateBoot over Boot), and the store hands each change it computes to the record
-// store's queue (store.Store.PublishState), which checks it and inserts it as it checks and inserts
-// its own (record.NewOutboxRow, record.Postgres.Enqueue).
+// store's queue of a state change (record.Postgres.EnqueueStateChange, which the daemon hands it
+// through store.Store.PublishState), which checks it and inserts it as it checks and inserts the
+// changes of record's own writes (record.NewOutboxRow, record.Postgres.Enqueue).
 package stateevent
 
 import (
@@ -31,13 +33,14 @@ const (
 	KindBoot      = "state_boot"
 )
 
-// Change is one write that moved what Dispatch observes of an issue: the issue and each field the
-// write moved, from its old value to its new one (FieldChange). Project is the Dispatch project key
-// the daemon works for, and the row's issue column holds that key too, so every state row of the
-// project runs on its one state lane (record.LaneState). Issue is the issue the change is of. Run is
-// the id of the daemon run that wrote the row. The row carries no sequence and no time: it takes
-// both when its transaction commits (record.OutboxRow.StateSeq, StateAt), and the executor puts
-// them, Project and Run on the message it publishes.
+// Change is what one write moved of what Dispatch observes of one issue, a write that moves several
+// issues (a tree's slot release) queueing one Change for each: the issue and each field the write
+// moved, from its old value to its new one (FieldChange). Project is the Dispatch project key the
+// daemon works for, and the row's issue column holds that key too, so every state row of the
+// project runs on its one state lane (record.LaneState). Issue is the issue the change is of. Run
+// is the id of the daemon run that wrote the row. The row carries no sequence and no time: it
+// takes both when its transaction commits (record.OutboxRow.StateSeq, StateAt), and the executor
+// puts them, Project and Run on the message it publishes.
 type Change struct {
 	Project string        `json:"project"`
 	Run     string        `json:"run"`
@@ -109,13 +112,15 @@ var Null = json.RawMessage("null")
 // rather than in the domain's phases.
 const Unrecorded phase.Phase = "unrecorded"
 
-// A state row's message is what Dispatch writes its observations from, so a row whose message the
-// contract refuses (legionStateMessage) is refused before it is queued, by the checks below.
+// A state row's message is what Dispatch writes its observations from, so each row is checked
+// before it is queued, by the checks below. They check the row's own fields, not the whole message
+// the contract takes (legionStateMessage), which holds more than they do: each changed field's old
+// and new value to that field's values, the run to a UUID, and the admission block and the
+// settings to their own schemas.
 
-// Validate refuses a change the contract refuses: one with no bare project key or no run
-// (checkRow), of no issue key, that names no field, or that names a field outside Fields, a claim
-// change with no claim role, a role on any other change, or an old or a new value that is no JSON
-// value.
+// Validate refuses a change with no bare project key or no run (checkRow), of no issue key, that
+// names no field, or that names a field outside Fields, a claim change with no claim role, a role
+// on any other change, or an old or a new value that is no JSON value.
 func (c Change) Validate() error {
 	if err := checkRow(KindChange, c.Project, c.Run); err != nil {
 		return err

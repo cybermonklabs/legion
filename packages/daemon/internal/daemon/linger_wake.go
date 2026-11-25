@@ -63,14 +63,13 @@ func (l *lingerWake) fired(deadline time.Time) {
 }
 
 // wakeAtLingerDeadlines holds the daemon's one timer for the clock's own change of the admission
-// block, until ctx ends. The block's held list reads a root's linger against the pass's clock
-// (record.HeldReasonOf's tree_closed word), so it changes at a linger's deadline with no write, and
-// an admission pass runs only on a fact: the timer is armed for the deadline the newest pass
-// reported (lingerWake), moved whenever a pass reports an earlier or a later one, and armed for none
-// while none lies ahead, and at the deadline it applies an admission pass (applyLingerDeadline),
-// which writes the block's change and queues its state event then, with no fact arriving and no
-// tick. The pass it applies reports the next deadline in turn. A wake at a known time, and no poll:
-// nothing runs between two deadlines.
+// block, until ctx ends: the block changes at a linger's deadline with no write (admit's
+// queueAdmissionBlock), and an admission pass runs only on a fact. The timer is armed for the
+// deadline the newest pass reported (lingerWake), moved whenever a pass reports an earlier or a
+// later one, and armed for none while none lies ahead, and at the deadline it applies an admission
+// pass (applyLingerDeadline), which writes the block's change and queues its state event then, with
+// no fact arriving and no tick. The pass it applies reports the next deadline in turn. A wake at a
+// known time, and no poll: nothing runs between two deadlines.
 func (w *workflowRuntime) wakeAtLingerDeadlines(ctx context.Context) {
 	// A runtime openWorkflow did not build, a test's, registered no wake: no pass reports to it.
 	if w.lingerWake == nil {

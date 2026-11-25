@@ -29,23 +29,17 @@ type AdmissionJudgement struct {
 // JudgeAdmission is project's admission block, judged from one read of tx: the project's live
 // records (record.Store.LiveIssues), its own slots among slots, every project's as the caller read
 // them in tx (record.Store.Slots, record.OwnSlots), the pass's facts (record.ReadLineFacts) under
-// the design-gate steps the deployment gates, and the line those leave (JudgeLine). From them,
-// under cap: `active`, the issues holding the project's own slots in slot order; `waiting`, the
-// line in its order; `trees`, the live roots by key (record.LiveRoots); `blocked`, what waits on
-// another issue (Blocked); and `held`, what the daemon holds in the workflow and runs nothing of
-// (record.HeldList). now is the caller's clock, the one thing the judgement reads beside the
-// records (JudgeLine).
+// the design-gate steps the deployment gates, and the line those leave (JudgeLine), from which
+// AdmissionOf builds the block under cap. now is the caller's clock, the one thing the judgement
+// reads beside the records (JudgeLine).
 //
-// It is the state route's judgement of the block (projection.Project), which serves it. Both
-// readers of the block build it with AdmissionOf: the state route over the JudgeLine this function
-// calls, and the admission pass over its own final judgement of the line (admit's finalJudgement),
-// from which it writes the block's state event where the block changed (admit's
-// queueAdmissionBlock) and tells the controller its held and blocked lists (admit's tickRows). The
-// pass reads the live records too (admit's reread), which leave out a done record holding no slot,
-// so the route judges the block from that read as well, and the two cannot differ for any record
-// of the project. The records a live read leaves out still reach the judgement where it needs
-// them: a done parent on a chain (LineFacts.Parents) and a done or parked root (LineFacts.Roots),
-// each read by ReadLineFacts.
+// It is the state route's judgement of the block, for the whole state (projection.Project) and for
+// the observed view (projection.Observe) alike; AdmissionOf says which judgement each reader of
+// the block builds it over. The admission pass reads the live records too (admit's reread), which
+// leave out a done record holding no slot, so the route judges the block from that read as well,
+// and the two cannot differ for any record of the project. The records a live read leaves out
+// still reach the judgement where it needs them: a done parent on a chain (LineFacts.Parents) and
+// a done or parked root (LineFacts.Roots), each read by ReadLineFacts.
 func JudgeAdmission(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep,
 	slots []record.Slot, cap int, now time.Time,
 ) (AdmissionJudgement, error) {

@@ -12,19 +12,17 @@ import (
 
 // AdmissionBlock is a project's admission block: the cap and the five lists GET /legion/v1/state
 // serves under `admission` (api.Admission, which is built from this type) and a state_admission
-// event carries (StateAdmission). Both readers build it with blockers.AdmissionOf from one
-// judgement of the line over one read of the project: the state route over the JudgeLine of
-// blockers.JudgeAdmission, and the admission pass over its final judgement (admit's
-// finalJudgement). So the block the route serves and the block the event carries are the same
-// value for the same records.
+// event carries (StateAdmission). Both readers build it with blockers.AdmissionOf, which says from
+// which judgement each does, so the block the route serves and the block the event carries are the
+// same value for the same records.
 //
 // It is declared here, below both readers, because the admission pass that writes the event cannot
 // import api. Its JSON is the route's own: the keys api.Admission writes, in its order, and every
 // list an array, never null (MarshalJSON). No field holds a time, so a block judged twice over the
 // same records encodes the same. One word of the held list does read the clock: HeldTreeClosed
 // asks whether a root's linger still runs at the pass's moment (LineFacts.Now), so a member of a
-// parked tree moves from tree_closed to tree_parked when that linger runs out, with no write, and
-// the next pass writes that change.
+// parked tree moves from tree_closed to tree_parked when that linger runs out, with no write
+// (admit's queueAdmissionBlock says when that change is written).
 type AdmissionBlock struct {
 	Cap     int            `json:"cap"`
 	Active  []string       `json:"active"`
@@ -61,8 +59,9 @@ func (b AdmissionBlock) MarshalJSON() ([]byte, error) {
 // differs from the block stored there, and queues the state event of that change (StateAdmission,
 // carrying the run the state events were turned on with, PublishState): a block equal to the stored
 // one writes nothing and queues nothing. The two are compared as jsonb, so no key order or spacing
-// can make two equal blocks differ. It answers whether it queued the event, and tells the state
-// events it did as every write that queues one does.
+// can make two equal blocks differ. It answers whether it queued the event, and once it has, it
+// calls the call PublishState was handed (statePublication.queued), as the issue and slot writes
+// do once they queue a change (queueStateChange).
 //
 // The caller holds the switch: it reads StatePublished first, since the block it hands in costs a
 // judgement of its own (admit's queueAdmissionBlock), so a call while the state events are off is

@@ -164,13 +164,14 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// The three facts each issue's view reads of its own rows — its phase rows, its pull request and
 	// its design gates — are each read once for every issue the state lists, before the loop below,
 	// which looks each issue up in the answers and makes no statement of its own. Each bulk read
-	// answers an issue what its read by key answers it (record.Store.AllPhases beside Phases,
-	// PullRequestsOf beside PullRequest, Gates beside GatesOf); an issue holding no row has no
-	// entry, which reads as the empty list, the nil pull request and the empty gates. The phase
-	// rows are read for the issues of project alone, as the assignments above are, and with the
-	// columns this state reads of them (record.Store.AllPhases).
-	// PullRequestsOf loads none of what each pull request remembers of its settled heads: the
-	// state shows none of it, and it writes no record back.
+	// answers an issue what its read by key answers it of what this state reads
+	// (record.Store.AllPhases beside Phases, PullRequestsOf beside PullRequest, Gates beside
+	// GatesOf), and leaves the rest out: the phase rows are read for the issues of project alone,
+	// as the assignments above are, with only the columns this state reads of them
+	// (record.Store.AllPhases), and PullRequestsOf loads none of what each pull request remembers
+	// of its settled heads, since the state shows none of it and writes no record back. An issue
+	// holding no row has no entry, which reads as the empty list, the nil pull request and the
+	// empty gates.
 	phases, err := in.Store.AllPhases(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
@@ -400,11 +401,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			own = append(own, issue)
 		}
 	}
-	// The admission block is the one judgement of it (blockers.JudgeAdmission), built by
-	// blockers.AdmissionOf, which also builds the block the admission pass's state event carries:
-	// the project's live records and its own slots among the slots read above, the waiting line
-	// those leave, what blocks and what holds its issues, its live trees and the cap, read in this
-	// transaction's snapshot like every other fact here.
+	// The admission block is the one judgement of it (blockers.JudgeAdmission, which builds it with
+	// blockers.AdmissionOf), read in this transaction's snapshot like every other fact here.
 	// The line it judged, the mirror rows it judged the links from and the facts it read are what
 	// each issue's view below is read from, so a member's place and every issue's `why` come from
 	// the judgement whose lists the block serves.

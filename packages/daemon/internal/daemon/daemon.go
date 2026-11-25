@@ -548,7 +548,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// lane once a write that queued a row commits (publishRecordStates, publishClaimStates).
 		// Only a daemon with a workflow runs the outbox that sends and deletes the rows, so a daemon
 		// with none writes no boot row and turns nothing on. The event carries the schema version
-		// the store records now that this boot's migrations ran, the one the state route serves.
+		// the store records now that this boot's migrations ran (stateevent.Boot).
 		schemaVersion, err := st.SchemaVersion(boot)
 		if err != nil {
 			workflow.stop()
@@ -867,15 +867,13 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 }
 
 // queueStateBoot queues the boot event of run (record.StateBoot) in a transaction of its own
-// (enqueueOutbox): the settings the state route serves (api.SettingsOf), and schemaVersion, the
-// highest migration version the store records once this boot's migrations ran, which the state
-// route serves as `daemon.schemaVersion`: a reader compares it with the version its starting point
-// holds, since a boot that moved the schema can have rewritten what Dispatch observes outside every
-// write that queues a state event. The row carries the bare Dispatch project key in its issue
-// column, as every state row does, so it runs on the project's one state lane (record.LaneState),
-// and it takes the lane's next sequence when the transaction commits. run calls it before it turns
-// the state events on, so that sequence is below every one the run's other state rows take. The
-// key is the project's own, so enqueueOutbox always writes the row (claim.KeyOfProject).
+// (enqueueOutbox): the settings the state route serves (api.SettingsOf), and schemaVersion
+// (stateevent.Boot says what it is and why a reader compares it). The row carries the bare Dispatch
+// project key in its issue column, as every state row does, so it runs on the project's one state
+// lane (record.LaneState), and it takes the lane's next sequence when the transaction commits. run
+// calls it before it turns the state events on, so that sequence is below every one the run's other
+// state rows take. The key is the project's own, so enqueueOutbox always writes the row
+// (claim.KeyOfProject).
 func (w *workflowRuntime) queueStateBoot(ctx context.Context, run string, settings api.Settings, schemaVersion int64) error {
 	encoded, err := json.Marshal(settings)
 	if err != nil {
@@ -904,11 +902,12 @@ func publishRecordStates(workflow *workflowRuntime, run string) {
 
 // publishClaimStates turns the state events of the claim writes on (store.Store.PublishState) for
 // run, the id of this daemon run, under the workflow's Dispatch project, through the record store's
-// queue (record.Postgres.EnqueueStateChange), which checks and inserts every state row, and routes
-// their wake as the role-holder publication's is routed: once a claim write that queued a state row
-// commits, the store tells it, and the project's state lane is woken (workflowRuntime.wakeOutbox),
-// which every state row of the project names by the bare project key in its issue column. Only a
-// daemon with a workflow runs the outbox that sends the rows, so only that daemon calls it; and it is
+// queue of a state change (record.Postgres.EnqueueStateChange), which checks and inserts each claim
+// write's change as it does the changes of the issue and slot writes. Their wake is routed as the
+// role-holder publication's is, not through the record store's call (publishRecordStates): once a
+// claim write that queued a state row commits, the store tells it, and the project's state lane is
+// woken (workflowRuntime.wakeOutbox), which every state row of the project names by the bare
+// project key in its issue column. Only a daemon with a workflow calls it (run says why), and it is
 // called before supervision restores a claim, as PublishRoleHolders is, so that no claim write of
 // the boot goes without its event.
 func publishClaimStates(st *store.Store, workflow *workflowRuntime, run string) {
@@ -3358,9 +3357,12 @@ type source struct {
 // ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps, DropStatusWrites, and
 // ClearGeneration and ClearTreeGeneration, which queue the publication of the gates they empty —
 // refuses a key of another project, and EnqueueID refuses it with claim.ErrKeyOfAnotherProject.
-// The state rows are not among them: the record store queues each one itself, in the write of an
-// issue, a slot or the admission block that moved what Dispatch observes
-// (record.Postgres.PublishState), keyed by the bare Dispatch project key of what that write names.
+// The state rows a record store write queues inside itself are not among them: the changes of the
+// issue and slot writes record.Postgres.PublishState lists (record.Postgres.EnqueueStateChange) and
+// the admission block's row (record.Postgres.QueueAdmissionBlock), each keyed by the bare Dispatch
+// project key of what that write names. The claim writes of internal/store queue theirs through the
+// same EnqueueStateChange, outside this wrapper (publishClaimStates). The boot row goes in through
+// Enqueue (workflowRuntime.queueStateBoot), and its key is the project's own.
 // The rest act on a row by its id under a lease this daemon holds of a row its own scope gave it
 // (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule
 // here.
@@ -3712,12 +3714,10 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	// The sequence of the newest state event the project's daemon committed, read in this same
-	// snapshot as everything else the body holds, so every event at or below it is in the body
-	// and every event above it is not (api.DaemonInfo.StateSeq): a reader of the events starts
-	// after this body at the next one. A project with no state row reads 0, which is served too.
-	// The same read is the id of the store that count is kept in (api.DaemonInfo.StateID), which
-	// every state message carries, and none while the project has no state row.
+	// The state publication, read in this same snapshot as everything else the body holds: its
+	// sequence and its store id are the body's `daemon.stateSeq` and `daemon.stateId`
+	// (api.DaemonInfo.StateSeq and StateID say what each tells a reader). A project with no state
+	// row reads 0 and no id, and the 0 is served too.
 	published, err := s.records.StatePublication(ctx, tx, s.project)
 	if err != nil {
 		return api.State{}, nil, err
@@ -3862,10 +3862,8 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 // issues and its admission block hold, as the full state's is. The route reads the caller's plugin
 // contract from the claims, as it does for State, so the view and the contract it is cut to come
 // from one snapshot. It reads only what the view needs: the schema version, the boots, the state
-// publication and the project's claims here, and in projection.Observe the issues, the project's
-// phase rows in one statement, the slots and what the admission judgement reads. It makes no read
-// for any one issue, and it judges nothing the view does not serve: no stranded claims, no stalled
-// architects, no paced wakes.
+// publication and the project's claims here, and what projection.Observe reads there; it judges
+// nothing the view does not serve: no stranded claims, no stalled architects, no paced wakes.
 func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
 	version, err := s.store.SchemaVersionTx(ctx, tx)
 	if err != nil {

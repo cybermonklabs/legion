@@ -135,13 +135,16 @@ const (
 // has the route, delays no status write, notice or start of that issue: a record is history, and
 // the work it records never waits for it.
 //
-// The state lane runs the daemon's state events (state_change, state_admission, state_boot), and
-// it is a project's lane, not an issue's: every state row carries the bare Dispatch project key in
-// its issue column, as the gated-steps publish does, so a project has exactly one state lane. Each
-// row takes its sequence when its transaction commits (OutboxRow.StateSeq), and the lane publishes
-// the rows strictly in that order (store.go's outboxInOrder): a row that fails holds every later
-// state row of its project until it is published. Dispatch reads the sequence for gaps, and lanes
-// that ran side by side, one per issue, would publish out of sequence.
+// The state lane (LaneState) runs the daemon's state events (state_change, state_admission,
+// state_boot), and it is a project's lane, not an issue's: every state row carries the bare
+// Dispatch project key in its issue column, as the gated-steps publish does, so a project has
+// exactly one state lane. Each row takes its sequence when its transaction commits
+// (OutboxRow.StateSeq), and the lane publishes the rows strictly in that order (store.go's
+// outboxInOrder), since Dispatch reads the sequence for gaps and lanes that ran side by side, one
+// per issue, would publish out of sequence. So a state row that fails holds every later state row
+// of its project until it is published, but for one the listener refuses the same way however
+// often it is sent: internal/daemon's settle finishes that row, logged (permanentRefusal,
+// finishRefused), and the rows after it run.
 type OutboxLane string
 
 const (
@@ -181,9 +184,9 @@ func LaneKinds(lane OutboxLane) []OutboxKind {
 	return slices.Clone(laneKinds[lane])
 }
 
-// OutboxLanes is every lane the outbox's rows run on, in name order: the lanes laneKinds holds, an
-// issue's six and the project's state lane, so a reader that needs every lane, or every kind,
-// takes them from here rather than from a list of its own, which a new lane would leave short.
+// OutboxLanes is every lane the outbox's rows run on (OutboxLane), in name order: the lanes
+// laneKinds holds, so a reader that needs every lane, or every kind, takes them from here rather
+// than from a list of its own, which a new lane would leave short.
 func OutboxLanes() []OutboxLane {
 	return slices.Sorted(maps.Keys(laneKinds))
 }
@@ -1579,12 +1582,13 @@ type RoleHoldersPublish struct {
 
 func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
 
-// StateChange is a state_change row's payload: one write that moved what Dispatch observes of an
-// issue (stateevent.Change, which documents its fields). Its shape and its checks are package
-// stateevent's, which the claim writes of internal/store build too, so every state row has one
-// shape. It is a type of its own over that shape, not an alias, only because an outbox payload
-// carries its kind as a method (OutboxPayload), and a method cannot be declared on another
-// package's type; StateChange(change) and stateevent.Change(value) convert between the two.
+// StateChange is a state_change row's payload: what one write moved of what Dispatch observes of
+// one issue, one row for each issue the write moved (stateevent.Change, which documents its
+// fields). Its shape and its checks are package stateevent's, which the claim writes of
+// internal/store build too, so every state row has one shape. It is a type of its own over that
+// shape, not an alias, only because an outbox payload carries its kind as a method
+// (OutboxPayload), and a method cannot be declared on another package's type; StateChange(change)
+// and stateevent.Change(value) convert between the two.
 type StateChange stateevent.Change
 
 func (StateChange) OutboxKind() OutboxKind { return OutboxKindStateChange }
@@ -2688,9 +2692,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Issue == "" {
 			return fmt.Errorf("a role-holders publish requires the issue whose role sessions it writes")
 		}
-	// A state row's message is what Dispatch writes its observations from, so a row that would
-	// publish a message the contract refuses (legionStateMessage) is refused here instead, by the
-	// checks package stateevent holds for every state row, the claim writes' among them.
+	// A state row's message is what Dispatch writes its observations from, so each state row, the
+	// claim writes' among them, is checked here by the checks package stateevent holds for every
+	// state row (stateevent.Change.Validate): checks of the row's own fields, not of the whole
+	// message.
 	case StateChange:
 		if err := stateevent.Change(value).Validate(); err != nil {
 			return err

@@ -19,14 +19,12 @@ import (
 // (PublishState), the claim write that moves the state the route serves queues one state_change
 // row in that write's own transaction, so the change and its event commit together or not at all,
 // and the row takes its sequence and its time when the transaction commits (the commit trigger of
-// migration 20261122163303_state_events). This package computes the change, in the shape package
-// stateevent holds for every state event, and hands it to the queue PublishState was given: the
-// record store's own (record.Postgres.EnqueueStateChange), which checks it and inserts it as it
-// checks and inserts the rows of the issue and slot writes. This package cannot import record,
-// whose tests import this package, so the queue is handed in.
+// migration 20261122163303_state_events). This package computes the change and hands it to the
+// queue PublishState was given (StateQueue); package stateevent's comment says whose queue that is
+// and why it is handed in.
 
 // StateQueue queues one state change in tx, due at due: record.Postgres.EnqueueStateChange, the
-// one queue of every state change.
+// queue package stateevent's comment names.
 type StateQueue func(ctx context.Context, tx pgx.Tx, change stateevent.Change, due time.Time) error
 
 // statePublication is what PublishState turns the state events on with: the Dispatch project key
@@ -40,18 +38,17 @@ type statePublication struct {
 }
 
 // PublishState turns the state events of the claim writes on: from this call on, each claim write
-// that moves the state the state route serves at its issue's role queues one state_change row
-// naming the claim with its role, in the write's own transaction, through queue, and woken is told
-// once that transaction commits, where the daemon wakes the project's state lane so the row waits
-// for no sweep. A transaction that rolls back tells nothing, since it queued nothing. project is
-// the Dispatch project key, which the row's issue column holds so that every state row of the
-// project runs on its one state lane (record.LaneState), and which the payload names; run is the id
-// of the daemon run that writes the rows, the run the record store's events carry
-// (record.Postgres.PublishState); queue is the record store's (StateQueue), and must not be nil.
+// that moves what the state route serves of its claim queues one state_change row (queueClaimState)
+// in the write's own transaction, through queue, and woken is told once that transaction commits,
+// where the daemon wakes the project's state lane so the row waits for no sweep. A transaction that
+// rolls back tells nothing, since it queued nothing. project is the Dispatch project key, which the
+// row's issue column holds so that every state row of the project runs on its one state lane
+// (record.LaneState), and which the payload names; run is the id of the daemon run that writes the
+// rows, the run the record store's events carry (record.Postgres.PublishState); queue is the record
+// store's (StateQueue), and must not be nil.
 //
-// Until it is called the store queues no state row, for the reason it queues no role-holder
-// publication before PublishRoleHolders: only a daemon with a workflow runs the outbox that sends
-// and deletes the rows, so only that daemon turns the events on.
+// Until it is called the store queues no state row; only a daemon with a workflow calls it
+// (internal/daemon's run says why).
 func (s *Store) PublishState(project, run string, queue StateQueue, woken func()) {
 	if woken == nil {
 		woken = func() {}
@@ -62,8 +59,7 @@ func (s *Store) PublishState(project, run string, queue StateQueue, woken func()
 // queuesState is the state events' switch as a write of claim c reads it: nil when the write can
 // queue no state row, because the daemon has not turned the events on (PublishState) or because
 // c is no claim a state event can name (statesClaim), and the switch otherwise. Neither depends on
-// the stored row, so each is read before a transaction opens, and a write for which it is nil
-// needs none for its state (PutClaim).
+// the stored row, so putClaim reads it before it locks that row (putClaim).
 func (s *Store) queuesState(c supervise.Claim) *statePublication {
 	if !statesClaim(c) {
 		return nil

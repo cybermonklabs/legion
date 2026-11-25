@@ -791,11 +791,10 @@ func (a Admission) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// AdmissionOf is the block the state route serves, built from the one judgement of it
-// (blockers.JudgeAdmission) by blockers.AdmissionOf, which also builds the block the admission
-// pass's state event carries (record.StateAdmission): the cap and the five lists, field for field,
-// so the block a caller reads here and the block an event carries are one value, and the two
-// encodings write the same keys (record.AdmissionBlock.MarshalJSON).
+// AdmissionOf is the block the state route serves: the cap and the five lists of the block
+// blockers.AdmissionOf builds, field for field (blockers.AdmissionOf says over which judgement each
+// reader builds it), so the block a caller reads here and the block a state event carries are one
+// value, and the two encodings write the same keys (record.AdmissionBlock.MarshalJSON).
 func AdmissionOf(block record.AdmissionBlock) Admission {
 	return Admission{Cap: block.Cap, Active: block.Active, Waiting: block.Waiting, Trees: block.Trees,
 		Blocked: block.Blocked, Held: block.Held}
@@ -1061,13 +1060,10 @@ type AssignmentView struct {
 	Plan       string     `json:"plan,omitempty"`
 }
 
-// WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting): an ask
-// or a spec version, when the wait began and, once an act answered it, when and by what act. The
-// answered root then stands in admission's waiting line as well, within its priority, among the
-// issues whose work came back, oldest first, until the pass that resumes it. It is
-// record.WaitingOnView, where its fields are declared: the state's `waitingOn` and a state event's
-// are the same value read two ways (record.ObservationOf), and the view is declared once, under
-// both.
+// WaitingOnView is what a root in awaiting_person waits on from a person: record.WaitingOnView,
+// which declares its fields and where an answered root stands in admission's line. The state's
+// `waitingOn` and a state event's are the same value read two ways (record.ObservationOf), and the
+// view is declared once, under both.
 type WaitingOnView = record.WaitingOnView
 
 // PriorityView is a Dispatch priority on this wire, as Dispatch sends one: its number, 0 for P0
@@ -2038,9 +2034,8 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 // same kind of repeatable-read snapshot: the same DaemonInfo, stateSeq, stateId and stateRun
 // included, the same settings, and the same admission block, unfiltered and in the same order.
 // Issues lists every issue the full state lists, and each carries only the members Dispatch
-// observes (ObservedIssue). The route serves it at the caller's contract by the full state's own
-// bands and value strips (shaping.go's observedFor), so at every contract each member is the full
-// state's member at that contract.
+// observes (ObservedIssue). The route serves it at the caller's contract (shaping.go's
+// observedFor).
 type ObservedState struct {
 	Daemon    DaemonInfo               `json:"daemon"`
 	Settings  Settings                 `json:"settings"`
@@ -2158,13 +2153,10 @@ func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
 // table a second time at another moment.
 //
 // ObservedState answers, through the same transaction, the part of the state that the observed
-// view reads (observedOf), and reads only what that part needs: the daemon block, the settings,
-// the admission block, and each issue the full state lists with its key, phase, tree, wait, slot,
-// `architect` and `workers` as the full state holds them, except that each claim view is the view
-// ClaimViewOf builds, with no update state, wake or capabilities. Every other member of an issue
-// is left empty. The route serves the observed view of that State (shaping.go's observedFor). It
-// answers the project's claims beside it for the same reason as State, so the view is cut to the
-// caller's contract from the claims of the snapshot it serves.
+// view reads (observedOf), and reads only what that part needs (internal/projection's Observe says
+// what it reads and what it leaves empty). The route serves the observed view of that State
+// (shaping.go's observedFor). It answers the project's claims beside it for the same reason as
+// State, so the view is cut to the caller's contract from the claims of the snapshot it serves.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
 	ObservedState(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)

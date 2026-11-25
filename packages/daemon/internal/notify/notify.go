@@ -186,14 +186,14 @@ func ControllerTopic(project string) string {
 }
 
 // StateTopic is the topic of the project's state events (legionStateSubject,
-// packages/contracts/src/subject.ts). The daemon publishes one message there for each transaction
-// it committed that queued state events (the outbox's stateEvents executor), carrying that
-// transaction's events in sequence order (legionStateMessage,
-// packages/contracts/src/legion-api.ts): each change of what Dispatch observes of an issue (its
-// phase, tree, slot, waitingOn or a role's claim), each change of the admission block, and the boot
-// event that opens each run. Dispatch reads it from a durable of its own and writes its
-// observations from it. token is the project token panes are told as LEGION_PROJECT, as
-// ControllerTopic's is, never the Dispatch project key, which each message carries itself.
+// packages/contracts/src/subject.ts). The daemon publishes there the events of each transaction it
+// committed that queued state events, in sequence order, in one message or, past the message bound,
+// in several (legionStateMessage, packages/contracts/src/legion-api.ts; the outbox's stateEvents
+// executor splits them): each change of what Dispatch observes of an issue (its phase, tree, slot,
+// waitingOn or a role's claim), each change of the admission block, and the boot event that opens
+// each run. Dispatch reads it from a durable of its own and writes its observations from it. token
+// is the project token panes are told as LEGION_PROJECT, as ControllerTopic's is, never the
+// Dispatch project key, which each message carries itself.
 func StateTopic(token string) string {
 	return "notifications.legion." + token + ".state"
 }

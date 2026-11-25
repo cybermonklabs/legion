@@ -1910,10 +1910,9 @@ type OutboxRow struct {
 // StatePublication is a project's counter of its state events (state_publication, migration
 // 20261122163303_state_events): Seq, the sequence of the newest state row the project's daemon
 // committed, and StateID, the id of the store those events are counted in. The commit trigger
-// makes StateID once, at the project's first state row, and nothing changes it after, so a reader
-// that holds a starting point read under one id applies only messages carrying that id: a message
-// of another id is another store's count, whose sequences say nothing of this one's. Seq is 0 and
-// StateID empty while the project has no state row.
+// makes StateID once, at the project's first state row, and nothing changes it after; a reader
+// applies only the messages that carry its starting point's id (api.DaemonInfo.StateID). Seq is 0
+// and StateID empty while the project has no state row.
 type StatePublication struct {
 	Seq     int64
 	StateID string
@@ -2722,7 +2721,8 @@ type Store interface {
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
 	// StateRowsAfter is every state row still in the outbox that committed in head's transaction
 	// (OutboxRow.StateTx) with a higher sequence, in sequence order: the rows the state lane
-	// publishes with head as one message.
+	// publishes after head, in head's message or, past the message bound, in the next ones
+	// (internal/daemon's stateEvents).
 	StateRowsAfter(ctx context.Context, tx pgx.Tx, head OutboxRow) ([]OutboxRow, error)
 	// FinishStateRows finishes head under its lease, and with it the rows of head's transaction
 	// with sequences above head's and at most through; a lease no longer head's is

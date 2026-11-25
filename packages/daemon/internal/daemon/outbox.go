@@ -875,11 +875,11 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		// Permanent where the listener answers the same message the same way however often it is
 		// sent: its own NATS grant denies the subject (notify.ErrPublishDenied), which ends a
 		// notice too, or it refuses the message itself, a field, the topic or a size NATS does not
-		// take (notify.ErrMessageRefused). The state lane publishes in sequence order, so such a
-		// row would hold every later state event of the project behind it for ever. Every other
-		// failure — the listener, NATS or the stream down or full, a bearer the listener does not
-		// take — ends with an outage or an operator's repair, and the row retries on its backoff,
-		// keeping its sequence.
+		// take (notify.ErrMessageRefused). The state lane publishes in sequence order
+		// (record.LaneState), so such a row would hold every later state event of the project
+		// behind it for ever. Every other failure — the listener, NATS or the stream down or full,
+		// a bearer the listener does not take — ends with an outage or an operator's repair, and
+		// the row retries on its backoff, keeping its sequence.
 		var denied notify.ErrPublishDenied
 		var refused notify.ErrMessageRefused
 		return errors.As(err, &denied) || errors.As(err, &refused)
@@ -2489,13 +2489,13 @@ const stateAtLayout = "2006-01-02T15:04:05.000000Z07:00"
 // run that wrote the rows, each lifted off the rows' payloads, which every row of one transaction
 // carries alike; StateID is the id of the store the rows' sequences are counted in
 // (record.StatePublication.StateID), read with the rows, which the state route serves as
-// `daemon.stateId`, so a reader applies only the messages of the store its starting point was read
-// from; FirstSeq and Seq are the first and the last event's sequence, which the events run between
-// with no gap; At is when the transaction committed (OutboxRow.StateAt), which every row of it
-// shares (stateAtLayout); More is true on every message of a split transaction but its last, and
-// absent from that last message and from every transaction that fits in one, so a reader applies a
-// transaction's events only once the message without it has arrived. Each event is a stateEvent,
-// encoded once: the encoding the message's size is counted on is the one published.
+// `daemon.stateId` (api.DaemonInfo.StateID); FirstSeq and Seq are the first and the last event's
+// sequence, which the events run between with no gap; At is when the transaction committed
+// (OutboxRow.StateAt), which every row of it shares (stateAtLayout); More is true on every message
+// of a split transaction but its last, and absent from that last message and from every
+// transaction that fits in one, so a reader applies a transaction's events only once the message
+// without it has arrived. Each event is a stateEvent, encoded once: the encoding the message's size
+// is counted on is the one published.
 type stateMessage struct {
 	Project  string            `json:"project"`
 	Run      string            `json:"run"`
@@ -2511,8 +2511,7 @@ type stateMessage struct {
 // off, its sequence (OutboxRow.StateSeq) put on, and the kind the contract names it by. A change
 // (record.StateChange) names its issue and each field the write moved; an admission
 // (record.StateAdmission) carries the whole block the state route serves; a boot
-// (record.StateBoot) carries the settings the state route serves and the schema version the store
-// records after that boot's migrations, which the state route serves as `daemon.schemaVersion`.
+// (record.StateBoot) carries the settings and the schema version stateevent.Boot names.
 type stateEvent struct {
 	Seq           int64                     `json:"seq"`
 	Kind          string                    `json:"kind"`
@@ -2557,10 +2556,11 @@ func stateCarried(encoded []byte) int {
 	return len(encoded) + bytes.Count(encoded, []byte{'"'}) + bytes.Count(encoded, []byte{'\\'})
 }
 
-// stateEvents publishes the state events of head's transaction as one message on the project's
-// state topic (stateMessage, notify.StateTopic). head is the project's lowest unfinished state row,
-// the only one its lane can claim (record.Store's outboxInOrder): every state row of the project
-// carries the bare Dispatch project key as its issue and runs on that one lane (record.LaneState).
+// stateEvents publishes the state events of head's transaction, from head's own on, on the
+// project's state topic (stateMessage, notify.StateTopic): as one message where they fit, and split
+// as below where they do not. head is the project's lowest unfinished state row, the only one its
+// lane can claim (record.Store's outboxInOrder): every state row of the project carries the bare
+// Dispatch project key as its issue and runs on that one lane (record.LaneState).
 // The rows that committed with head (record.Store.StateRowsAfter) hold the sequences that follow
 // its own, and ride beside it, so Dispatch takes a transaction's events together and collapses a
 // field one fact wrote twice (a pass's slot release and grant) to the value that committed. A
@@ -2577,17 +2577,17 @@ func stateCarried(encoded []byte) int {
 // The message's key is the head's own (record.OutboxKey), so a message published again after a
 // failed finish is one the stream already holds. Once the listener has taken it, head and the rows
 // published beside it are finished in one transaction fenced on head's lease
-// (record.Store.FinishStateRows), which is why settle finishes no state row itself. The other rows
-// are not leased, and are finished by their sequences instead: while head is unfinished the lane
-// rule lets no runner claim them, and a runner whose lease on head lapsed, and was taken by
-// another, finishes nothing, the other runner publishing the same message under the same key. A
-// finish that does not commit is the row's failure and head runs again; one cut short by the
-// daemon's stop is recorded on a bounded context of its own, as settle's is (settleContext),
-// since the message was published.
+// (record.Store.FinishStateRows), which is why settle finishes no published state row itself; it
+// finishes only a head the listener refused (finishRefused). The other rows are not leased, and
+// are finished by their sequences instead: while head is unfinished the lane rule lets no runner
+// claim them, and a runner whose lease on head lapsed, and was taken by another, finishes nothing,
+// the other runner publishing the same message under the same key. A finish that does not commit
+// is the row's failure and head runs again; one cut short by the daemon's stop is recorded on a
+// bounded context of its own, as settle's is (settleContext), since the message was published.
 //
 // A publish that fails returns its error, and settle retries head on the outbox's backoff with its
-// sequence, holding every later state row of the project behind it; one the listener refuses the
-// same way however often it is sent is finished, logged, instead (permanentRefusal, finishRefused).
+// sequence, or finishes it, logged, where the listener refuses it the same way however often it is
+// sent (permanentRefusal, finishRefused); record.LaneState says what each holds of the later rows.
 func (r *outbox) stateEvents(ctx context.Context, head record.OutboxRow, payload record.OutboxPayload) error {
 	if r.notices == nil {
 		return errors.New("state event executor has no Envoy publisher")

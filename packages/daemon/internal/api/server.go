@@ -194,8 +194,8 @@ type Options struct {
 	// at no variant; the empty list, which draws nothing, is a caller that declared none.
 	// ExperimentSource is the random source a `random` mode is drawn with; nil is
 	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
-	// from, and the clock that spaces the state route's warning for an unknown view
-	// (otherViewWarnings); nil is time.Now, and a test pins it.
+	// from, and the clock that spaces the state route's warning for a `view` other than exactly
+	// one `observed` (otherViewWarnings); nil is time.Now, and a test pins it.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	Now              func() time.Time
@@ -400,7 +400,8 @@ type server struct {
 	drained   context.Context
 	decisions *RouteDecisions
 	log       *slog.Logger
-	// otherViews spaces the warning for a state request that names a view other than observed.
+	// otherViews spaces the warning for a state request whose `view` is other than exactly one
+	// `observed` (otherViewWarnings).
 	otherViews otherViewWarnings
 	// beforeForgetSessionHandle pauses the route's preflight in its concurrency regression test.
 	beforeForgetSessionHandle func()

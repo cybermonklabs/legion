@@ -77,10 +77,11 @@ func (a *Admission) judge(ctx context.Context, tx pgx.Tx, read passRead) (*passJ
 // judgement was made over: both counts are ok and equal (record.Store.JudgedWrites answers the
 // count that read was taken at). Then a fresh read would read the same rows and a fresh judgement
 // judge them alike, so the pass judges nothing again. Where the pass's last read stands and it
-// made no judgement over it (the entry sweep's), it judges that read, reading nothing. Otherwise,
-// and wherever Postgres keeps no counts, it reads the project again and judges that read. Either
-// way the answer is recorded as the pass's last judgement, so a second caller at the pass's end
-// gets the same judgement.
+// made no judgement over it (the entry sweep's), it judges that read and reads the project's
+// records no second time, though the judgement still reads the Dispatch mirror's facts
+// (blockers.JudgeLine). Otherwise, and wherever Postgres keeps no counts, it reads the project
+// again and judges that read. Either way the answer is recorded as the pass's last judgement, so a
+// second caller at the pass's end gets the same judgement.
 //
 // The rows a pass writes after this — the block's own row and its state event, a controller
 // notice — are no input of any judgement: the block's table is not among the tables a judgement

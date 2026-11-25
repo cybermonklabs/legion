@@ -557,12 +557,11 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 
 // LingerDeadline is the moment a root's linger the admission block reads runs out, applied as a
 // synthetic fact by the daemon's one timer for it (internal/daemon's wakeAtLingerDeadlines) and
-// never decoded from an event. The block reads a root's linger against the pass's clock
-// (record.HeldReasonOf's tree_closed word, record.Lingering), so it changes at that deadline with
-// no write at all, and an admission pass runs on a fact: this is the fact that runs one there.
-// Admission is the only handler that acts on it, and does nothing but end its pass as every pass
-// ends, with the block written where it moved (admit's queueAdmissionBlock), which queues that
-// change's state event. It carries nothing: the pass reads the whole project and the clock.
+// never decoded from an event: the block changes at that deadline with no write at all (admit's
+// queueAdmissionBlock), and an admission pass runs only on a fact, so this is the fact that runs
+// one there. Admission is the only handler that acts on it, and does nothing but end its pass as
+// every pass ends, with the block written where it moved, which queues that change's state event.
+// It carries nothing: the pass reads the whole project and the clock.
 type LingerDeadline struct{}
 
 func (LingerDeadline) namedIssue() (string, bool) { return "", false }

@@ -4,9 +4,9 @@ package api
 // the caller's own plugin read? It holds the contract header a caller states, the reading of the
 // pod a caller that states none is in, the shape of every answer at every contract this daemon
 // serves, and the one writer each answer goes through. The table it reads is answers.go's, beside
-// it. server.go routes the requests, and its handlers and state_route.go's call writeAnswer and
-// writeAnswerFrom for every body they answer. state_route.go reads lowestPluginContract for the
-// number the state carries.
+// it. server.go routes the requests, and the handlers, in server.go and in the files beside it,
+// call writeAnswer and writeAnswerFrom for every body they answer. state_route.go reads
+// lowestPluginContract for the number the state carries.
 
 import (
 	"encoding/json"
@@ -493,12 +493,13 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 
 // observedFor is the observed view's row of shapeAnswer (AnswerObservedState): the observed view
 // of state, the part of a whole state the observed read answers (StateSource.ObservedState), as a
-// caller at restore and strip reads it. The state is shaped by the very bands and value strips
-// stateFor applies to the whole state and then read as the observed view (observedOf), so at every
-// contract each member of the view is the whole state's member at that contract, and a band a
-// later contract adds to a member the view carries reaches the view with no line here. The whole
-// state's mark (ContractView) is no member of the view and is left out with the rest of the whole
-// state's keys.
+// caller at restore and strip reads it, whose wire shape is the contract's
+// LegionObservedStateResponse (packages/contracts/src/legion-api.ts). The state is shaped by the
+// very bands and value strips stateFor applies to the whole state and then read as the observed
+// view (observedOf), so at every contract each member of the view is the whole state's member at
+// that contract, and a band a later contract adds to a member the view carries reaches the view
+// with no line here. The whole state's mark (ContractView) is no member of the view and is left
+// out with the rest of the whole state's keys.
 //
 // A caller at this daemon's own contract takes no band and no value strip, and stateFor copies no
 // issue map for it. That is every read Dispatch makes, since it states no contract and asks from
@@ -2122,8 +2123,7 @@ const answerUnparsed AnswerID = "unparsed"
 // `GET /legion/v1/state?view=observed` (ObservedState), which Dispatch reads. It is no row of
 // Answers, which is the plugin's table alone: no plugin parses the view, and pi-shared's census of
 // that table holds every row to a parse site of the plugin's client. It is shaped all the same,
-// unlike answerUnparsed: a caller below a contract reads no member of the view that the whole
-// state does not serve it at that contract. The route writes it the State that the observed read
+// unlike answerUnparsed (observedFor). The route writes it the State that the observed read
 // answers (StateSource.ObservedState), and observedFor shapes that State to the view.
 const AnswerObservedState AnswerID = "observed-state"
 
