@@ -1059,6 +1059,9 @@ const API_ROUTE_REWRITTEN = /["<>^`{}]/;
  *  that names none is a GET, so GET is none of them. */
 export const DISPATCH_API_METHODS = ["POST", "PUT", "PATCH", "DELETE"] as const;
 
+/** A method `dispatch api` sends in place of its GET. */
+export type DispatchApiMethod = (typeof DISPATCH_API_METHODS)[number];
+
 const API_PATH_RULE =
   'path is a route under /api/v1: it begins /api/v1 and names no scheme or host, every character is printable ASCII other than a space, a backslash and #, no character before the query is ", <, >, ^, `, { or }, and no segment before the query is . or ..';
 
@@ -1075,7 +1078,8 @@ const API_CALL_RULE = `${API_PATH_RULE}; ${API_BODY_RULE}`;
  * `/` and resolves a `.` or `..` segment, spelled plainly or percent-encoded (`%2e`), and each of
  * those could move the request outside `/api/v1`; it also percent-encodes `"`, `<`, `>`, `^`,
  * `` ` ``, `{` and `}` in a path, so a route holding one is refused rather than sent spelled as
- * the caller did not write it. The query is sent as the caller wrote it.
+ * the caller did not write it. The rule leaves the query alone, and the URL parser writes it
+ * (percent-encoding `"`, `'`, `<` and `>`).
  */
 function apiPathProblem(value: unknown): string | undefined {
   const { path } = value as { readonly path?: unknown };
@@ -2881,7 +2885,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_api",
     example: { path: "/api/v1/issues/DSP-1/events?limit=200" },
     description:
-      "Send one request of a route of Dispatch's HTTP API under /api/v1, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends a GET of path unless method names another: path is a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. With method it sends POST, PUT, PATCH or DELETE instead, and body, when given, as the request's JSON body (Content-Type: application/json), read from a file with --body-file <file> or from stdin with --body-file -; a body goes only with a method. A write that a named dispatch command makes goes through that command (dispatch --help lists them): dispatch api is for a route no command sends. In a session whose AskGate reviews Dispatch writes it sends GET alone, and refuses each method, naming the dispatch command that makes that write, and exits 1. It sends the request once: it follows no redirect and sends no Idempotency-Key. It exits 0 on a 2xx answer. When Dispatch refuses the request, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1; an answer that is not Dispatch's JSON is named by its status, and exits 1 too. A call refused before anything is sent, such as a path outside /api/v1, exits 2. Where no host runs the command, as in a GitHub Actions job, it reads Dispatch from the environment alone, and a broker trade names the session of DISPATCH_SESSION_ID, else of AGENT_SECRETS_SESSION. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
+      "Send one request of a route of Dispatch's HTTP API under /api/v1, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends a GET of path unless method names another: path is a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. With method it sends POST, PUT, PATCH or DELETE instead, and body, when given, as the request's JSON body (Content-Type: application/json), read from a file with --body-file <file> or from stdin with --body-file -; a body goes only with a method. A write that a named dispatch command makes goes through that command (dispatch --help lists them): dispatch api is for a route no command sends. In a session whose AskGate reviews Dispatch writes it sends GET alone, and refuses each method, naming the dispatch command that makes that write, and exits 1. It sends the request once, and once more only after Dispatch answers that the token it presented is not live (Dispatch then authenticated nothing, so nothing ran), with no redirect followed and no Idempotency-Key. It exits 0 on a 2xx answer. When Dispatch refuses the request, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1; an answer that is not Dispatch's JSON is named by its status, and exits 1 too. A usage error, such as a path outside /api/v1 or a body with no method, exits 2. Where no host runs the command, as in a GitHub Actions job, it reads Dispatch from the environment alone, and a broker trade names the session of DISPATCH_SESSION_ID, else of AGENT_SECRETS_SESSION. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
     arguments: (z) => ({
       path: z
         .string({ min: 1 })

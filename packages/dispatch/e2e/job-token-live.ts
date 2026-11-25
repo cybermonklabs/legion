@@ -139,7 +139,7 @@ async function dispatchApi(
     child.exited,
   ]);
   // The command prints Dispatch's refusal on standard output, as it prints every line of its own.
-  const refused = exit === 0 ? undefined : /^([A-Z][A-Z0-9_]*): /.exec(body)?.[1];
+  const refused = /^([A-Z][A-Z0-9_]*): /.exec(body)?.[1];
   const said = (body.trim() || stderr.trim()).split("\n").at(-1) ?? "";
   return { body, code: exit === 0 ? "-" : (refused ?? `(${said})`), exit };
 }

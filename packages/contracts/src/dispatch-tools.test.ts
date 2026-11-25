@@ -805,7 +805,8 @@ describe("dispatchToolSpecs", () => {
       "body goes only with method: a call that names no method is a GET, which sends no body.",
     ]);
     // Each character Bun's URL percent-encodes in a path is refused before the query, naming the
-    // path, and taken in the query, which is sent as written.
+    // path, and taken in the query, which the rule leaves alone and the URL parser writes
+    // (percent-encoding `"`, `'`, `<` and `>`).
     for (const character of ['"', "<", ">", "^", "`", "{", "}"]) {
       const path = `/api/v1/issues/a${character}b`;
       expect(refusals({ path }), character).toEqual([

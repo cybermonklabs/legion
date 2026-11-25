@@ -1347,7 +1347,7 @@ request of a route under `/api/v1` that no other command sends (`apiCommand`,
 `src/dispatch-commands/api.ts`), with the session's own credential as every command presents it
 (a set bearer, the token files' broker token, else a token traded at the secrets broker, with a
 new DPoP proof for the request), and prints Dispatch's JSON answer for `jq`. It is the contract's
-spec `dispatch_api`, so an agent's tool call runs it as the CLI does. With no `--method` it sends
+spec `dispatch_api`. With no `--method` it sends
 a GET (`DispatchClient.readRoute`); `--method` sends `POST`, `PUT`, `PATCH` or `DELETE` in its
 place (`DispatchClient.sendRoute`), and `GET` is no value of it. A write that a named command
 makes goes through that command (`dispatch --help` lists them): `dispatch api` is for a route no
@@ -1362,14 +1362,15 @@ query after `?`. The spec refuses, before anything is sent, a path that does not
 ASCII, one that holds `"`, `<`, `>`, `^`, `` ` ``, `{` or `}` before its query, which a URL parser
 would send percent-encoded, and one with a `.` or `..` segment, plain or percent-encoded, since a
 URL parser would resolve any of those out of `/api/v1`; each refusal names the path, so the
-credential goes to no other server and no other route. It sends the request once: it follows no
-redirect and sends no `Idempotency-Key`. It exits 0 on a 2xx answer, printing a bodiless 204 as
-empty text. A refusal is Dispatch's error with its code and, where Dispatch gives one, its hint
+credential goes to no other server and no other route. It sends the request once, and once more
+only after Dispatch answers that the token it presented is not live (Dispatch authenticated
+nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. It exits 0 on a 2xx
+answer, printing a bodiless 204 as empty text. A refusal is Dispatch's error with its code and,
+where Dispatch gives one, its hint
 (`NOT_FOUND: no route for GET /api/v1/x; GET /api/v1 lists every route`), exit 1; an answer
 that is not Dispatch's JSON, such as a proxy's page or a redirect, is named by its status, exit
-1 too. A call refused before anything is sent, such as a path outside `/api/v1` or a body with
-no method, is a usage error, exit 2. Under Claude Code, an answer longer than the output limit is
-written to a file the output names.
+1 too. A usage error, such as a path outside `/api/v1` or a body with no method, exits 2. Under
+Claude Code, an answer longer than the output limit is written to a file the output names.
 
 Under a host it acts as that host's session, as every command does, and refuses a missing
 session id with the usage error they give. Where no host is found (`commandHost`), as in a
@@ -1386,11 +1387,11 @@ records nothing. For a write, the AskGate record of every session the environmen
 (`ENVOY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `DISPATCH_SESSION_ID`, `CODEX_THREAD_ID`) is read,
 host or no host. Where any of them is on, or cannot be read, it sends only `GET`, and refuses
 every other method before any request with exit 1, naming the `dispatch` command that makes that
-write (`WRITE_ROUTES`), which AskGate reviews, for the CLI and an agent's tool call alike; the
-refusal's ledger line carries AskGate's mark, so pi-envoy counts it. For a write, a variable that
-holds no valid session id (1 to 128 letters, digits, `.`, `_` or `-`) is a usage error that names
-the variable; a `GET` reads no AskGate record. Where every record is off, or the environment
-names no session (CI, a terminal, a script), every method is sent.
+write (`WRITE_ROUTES`), which AskGate reviews; the gate sits in the command itself, under a host
+and with none, and the refusal's ledger line carries AskGate's mark, so pi-envoy counts it. For a
+write, a variable that holds no valid session id (1 to 128 letters, digits, `.`, `_` or `-`) is a
+usage error that names the variable; a `GET` reads no AskGate record. Where every record is off,
+or the environment names no session (CI, a terminal, a script), every method is sent.
 
 A GitHub Actions job runs it with no host plugin. The command is the `bin/dispatch` of
 `@sjawhar/codex-envoy`, which is that package's npm `bin`

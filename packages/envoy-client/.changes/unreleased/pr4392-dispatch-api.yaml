@@ -14,7 +14,8 @@ body: |-
   a path that does not begin `/api/v1`, a path that holds a space, a backslash, a `#` or a character
   outside printable ASCII, a path that holds `"`, `<`, `>`, `^`, `` ` ``, `{` or `}` before its
   query, and a path with a `.` or `..` segment, plain or percent-encoded. It sends the request
-  once, with no redirect followed and no `Idempotency-Key`. When Dispatch refuses the request, the
-  command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits
-  1; a path Dispatch has no route for is answered at once, not sent again.
-  `dispatch api --path /api/v1` lists every route.
+  once, and once more only after Dispatch answers that the token it presented is not live
+  (Dispatch authenticated nothing, so nothing ran), with no redirect followed and no
+  `Idempotency-Key`. When Dispatch refuses the request, the command prints Dispatch's error with
+  its code and, where Dispatch gives one, its hint, and exits 1; a path Dispatch has no route for
+  is answered at once, not sent again. `dispatch api --path /api/v1` lists every route.

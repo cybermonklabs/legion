@@ -8,7 +8,8 @@
 // Dispatch, a proxy's 502 page, a bodiless 204 and a redirect. They hold the paths it refuses
 // before anything is sent, the credential it presents and the session its trade names, with a
 // host and without one, and the AskGate rule: in a session whose gate is on it sends GET alone,
-// and names the command that makes the write, for the CLI and an agent's tool call alike.
+// and names the command that makes the write; the gate sits in the command itself, under a host
+// and with none.
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -18,10 +19,7 @@ import { SUBJECT_TOKEN_TYPE_GITHUB } from "@legion/cipher-client/wire";
 import { IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { processStart } from "../askgate-marker";
-import { bearerCredential } from "../bearer";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
-import { ApiGateRefusal } from "../dispatch-commands/api";
-import { executeDispatchTool } from "../dispatch-execute";
 import { type ResultEntry, readResultsSince } from "../dispatch-session-state";
 import { brokerStandIns } from "./broker-stand-ins";
 
@@ -229,6 +227,14 @@ const BODY_WITHOUT_METHOD =
 
 /** The characters a URL parser rewrites in a path, which the contract's rule refuses there. */
 const REWRITTEN = ['"', "<", ">", "^", "`", "{", "}"];
+
+/** Each of `REWRITTEN` the URL parser percent-encodes in a query too, as it writes it there; it
+ *  writes the rest as they are. */
+const QUERY_WRITTEN: Readonly<Partial<Record<string, string>>> = {
+  '"': "%22",
+  "<": "%3C",
+  ">": "%3E",
+};
 
 describe("a request", () => {
   test("--path /api/v1/whoami trades a token, sends one GET with a new DPoP proof, prints the answer and exits 0", async () => {
@@ -493,7 +499,7 @@ describe("the calls it refuses", () => {
 
   test.each(
     REWRITTEN
-  )("a route holding %s is refused naming the path, and the same character in the query is sent", async (character) => {
+  )("a route holding %s is refused naming the path, and in the query it is sent as the URL parser writes it", async (character) => {
     const broker = stubBroker(300);
     const server = stubDispatch();
     const env = jobEnvironment(broker.url, server.url, tempDir());
@@ -509,6 +515,8 @@ describe("the calls it refuses", () => {
     const taken = await dispatch(["api", "--path", `/api/v1/whoami?q=a${character}b`], env);
     expect(taken.code, taken.stdout).toBe(0);
     expect(server.sent.map((sent) => sent.url.pathname)).toEqual(["/api/v1/whoami"]);
+    // The rule leaves the query alone; the URL parser percent-encodes ", < and > in it.
+    expect(server.sent[0]?.url.search).toBe(`?q=a${QUERY_WRITTEN[character] ?? character}b`);
   });
 });
 
@@ -935,30 +943,6 @@ describe("AskGate", () => {
     );
     expect(ran.code, ran.stdout).toBe(0);
     expect(server.sent.map((sent) => sent.method)).toEqual(["POST"]);
-  });
-
-  // The gate is the command's, not only the CLI's: a call of the contract's tool that no CLI
-  // parsed is refused the same way, with the mark its ledger line carries, and sends nothing.
-  test("an agent's tool call of a write in a gated session is refused by the command itself", async () => {
-    const server = stubDispatch();
-    const stateDir = tempDir();
-    writeRecord(stateDir, SESSION);
-    const refusal = await executeDispatchTool({
-      tool: "dispatch_api",
-      args: { method: "POST", path: "/api/v1/issues/ACME-1/comments", body: COMMENT },
-      cwd: tempDir(),
-      host: "omp",
-      sessionId: SESSION,
-      config: { url: server.url, credential: bearerCredential(fixtureSecret("dsp")) },
-      env: { DISPATCH_STATE_DIR: stateDir, DISPATCH_SESSION_ID: SESSION },
-    }).then(
-      () => undefined,
-      (error: unknown) => error
-    );
-    expect(refusal).toBeInstanceOf(ApiGateRefusal);
-    expect((refusal as ApiGateRefusal).message).toStartWith(GATED);
-    expect((refusal as ApiGateRefusal).askgate).toEqual({ mode: "block", why: GATED_WHY });
-    expect(server.sent).toHaveLength(0);
   });
 });
 

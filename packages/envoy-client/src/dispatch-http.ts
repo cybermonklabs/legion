@@ -33,6 +33,7 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DispatchApiMethod,
   DispatchEvent,
   DispatchLimits,
   DispatchServiceErrorShape,
@@ -83,7 +84,6 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
-  type DISPATCH_API_METHODS,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -1456,31 +1456,26 @@ export class DispatchClient {
    *  scheme, a host and a dot segment, so it resolves under this client's server as every other
    *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it.
    *
-   *  It sends the GET once (one `#send`) and throws a refusal as `#response` throws it, an answer
+   *  It sends the GET through one `#send` (once, and once more only after Dispatch answers that
+   *  the token presented is not live) and throws a refusal as `#response` throws it, an answer
    *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
    *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
    *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
    *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
    *  so Dispatch's own refusal, which names the route, is printed as it came. */
   async readRoute(path: string): Promise<unknown> {
-    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
-    return this.#response("GET", url, await this.#send("GET", url));
+    return this.#route("GET", path);
   }
 
   /** `<method> <path>`, for `dispatch api --method`: one write of a route no method here names,
    *  `path` resolved as `readRoute` resolves it, with `body`, where given, sent as written as
-   *  the request's JSON body. Like `readRoute` it sends the request once (one `#send`, skipping
-   *  `#noRoute`) and answers Dispatch's JSON or throws its refusal as `#response` does. It is no
-   *  write of `#write`'s: it carries no `Idempotency-Key` and is never asked again, so a caller
-   *  that repeats it decides that itself. */
-  async sendRoute(
-    method: (typeof DISPATCH_API_METHODS)[number],
-    path: string,
-    body?: string
-  ): Promise<unknown> {
-    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
-    const encoded = body === undefined ? undefined : { content: body, type: "application/json" };
-    return this.#response(method, url, await this.#send(method, url, encoded));
+   *  the request's JSON body. Like `readRoute` it goes through one `#send`, skipping `#noRoute`,
+   *  and answers Dispatch's JSON or throws its refusal as `#response` does. It is no write of
+   *  `#write`'s: it goes once, and once more only after Dispatch answers that the token it
+   *  presented is not live (Dispatch authenticated nothing, so nothing ran), with no redirect
+   *  followed and no `Idempotency-Key`, so a caller that repeats it decides that itself. */
+  async sendRoute(method: DispatchApiMethod, path: string, body?: string): Promise<unknown> {
+    return this.#route(method, path, body);
   }
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
@@ -2409,6 +2404,15 @@ export class DispatchClient {
         }
       }
     }
+  }
+
+  /** `readRoute`'s and `sendRoute`'s one request of `path`, the route its caller wrote, resolved
+   *  under this client's server, with `body`, where given, as its JSON body: one `#send`, skipping
+   *  `#noRoute`, its answer read by `#response`. */
+  async #route(method: "GET" | DispatchApiMethod, path: string, body?: string): Promise<unknown> {
+    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    const encoded = body === undefined ? undefined : { content: body, type: "application/json" };
+    return this.#response(method, url, await this.#send(method, url, encoded));
   }
 
   /**

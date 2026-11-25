@@ -63,9 +63,7 @@ export function hostSession(
   }
   // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
   // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
-  // Bracket access, not a dot: claude-envoy type-checks this source under
-  // noPropertyAccessFromIndexSignature, which refuses a dot on an index signature.
-  // biome-ignore-start lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
+  // biome-ignore-start lint/complexity/useLiteralKeys: claude-envoy type-checks this source under noPropertyAccessFromIndexSignature, which refuses a dot on an index signature
   const [sessionId, sessionVariable] =
     host === "claude"
       ? [

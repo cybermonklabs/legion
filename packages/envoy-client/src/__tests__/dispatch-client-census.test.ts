@@ -26,7 +26,7 @@ const inline = { name: "notes.md", content: "# Notes", actor };
 /** The write methods whose POST or PATCH carries no `Idempotency-Key`, each with why. */
 const UNKEYED: Readonly<Partial<Record<ClientMethod, string>>> = {
   sendRoute:
-    "dispatch api's write of the route its caller names, sent once as written, so the caller decides whether to send it again",
+    "dispatch api's write of the route its caller names, sent through one #send as written, so the caller decides whether to send it again",
 };
 
 /** One call of each method, with arguments of the shapes it takes; what it answers is not read. */

@@ -4,19 +4,22 @@
 // that no named command sends, a GET or the method `--method` names, sent through the client
 // every command uses, so it presents the credential every command presents (a set bearer, the
 // token files' broker token, else a token traded at the secrets broker, with a new DPoP proof for
-// the request), and Dispatch's JSON answer printed for `jq` to read. The contract's rule
-// (`apiPathProblem`) refused a path that could leave `/api/v1`, and a body with no method, before
-// this runs. The request goes once (`DispatchClient.readRoute` and `sendRoute`): no redirect
-// followed, no `Idempotency-Key`, no retry. A refusal is Dispatch's own error, thrown as the
-// client throws it, which the command prints and exits 1 on.
+// the request), and Dispatch's JSON answer printed for `jq` to read. The contract's rule refused
+// a path that could leave `/api/v1` (`apiPathProblem`), and a body with no method
+// (`apiCallProblem`), before this runs. The request goes once (`DispatchClient.readRoute` and
+// `sendRoute`), and once more only after Dispatch answers that the token it presented is not
+// live (Dispatch authenticated nothing, so nothing ran), with no redirect followed and no
+// `Idempotency-Key`. A refusal is Dispatch's own error, thrown as the client throws it, which the
+// command prints and exits 1 on.
 //
 // A script and a job send it too: a broker token is bound to a key, so no script can send it as a
 // bearer. Where no host is found, as in a GitHub Actions job, the CLI reads Dispatch from the
 // environment alone (`unhostedDispatch`). In a session whose AskGate reviews Dispatch writes it
-// sends GET alone, for the CLI and an agent's tool call alike, and names the command that makes
-// the write, which the gate reviews (`gatedWrite`, src/askgate-marker.ts).
+// sends GET alone, and names the command that makes the write, which the gate reviews
+// (`gatedWrite`, src/askgate-marker.ts). The gate sits in the command itself (`sendApiCall`),
+// under a host and with none.
 
-import type { DISPATCH_API_METHODS } from "@legion/contracts";
+import type { DispatchApiMethod } from "@legion/contracts";
 import { type AskgateState, askgateState } from "../askgate-marker";
 import { brokerRouteConfigured } from "../broker-credential";
 import {
@@ -38,9 +41,6 @@ import {
   type ToolArguments,
 } from "./context";
 import { SESSION_VARIABLES } from "./host-session";
-
-/** A method `dispatch api` sends in place of its GET. */
-type WriteMethod = (typeof DISPATCH_API_METHODS)[number];
 
 /** Why the gate refuses a write here, as the refusal and its ledger line's AskGate mark say it:
  *  AskGate reviews the `dispatch` commands, and no `dispatch api` call. */
@@ -70,7 +70,7 @@ const NO_FILE: EnvoyConfig = {
 /** A write route a `dispatch` command sends: its method, its path with each `{name}` standing for
  *  one segment, and the commands that send it. */
 export interface WriteRoute {
-  readonly method: WriteMethod;
+  readonly method: DispatchApiMethod;
   readonly pattern: string;
   readonly commands: readonly string[];
 }
@@ -196,7 +196,7 @@ export class ApiGateRefusal extends Error {
  * the throw stays at the call.
  */
 function gatedWriteRefusal(
-  method: WriteMethod,
+  method: DispatchApiMethod,
   path: string,
   env: Readonly<Record<string, string | undefined>>
 ): Error | undefined {
@@ -250,7 +250,7 @@ export async function sendApiCall(
   client: DispatchClient
 ): Promise<DispatchToolResult> {
   const path = stringArg(args, "path");
-  const method = optionalString(args, "method") as WriteMethod | undefined;
+  const method = optionalString(args, "method") as DispatchApiMethod | undefined;
   if (method !== undefined) {
     const refusal = gatedWriteRefusal(method, path, env);
     if (refusal !== undefined) throw refusal;
@@ -266,8 +266,9 @@ export async function sendApiCall(
 }
 
 /**
- * `dispatch api` as the command table runs it (`executeDispatchTool`), for the CLI under a host
- * and an agent's tool call alike. It names no owner, so it runs on the session's context alone.
+ * `dispatch api` under a host, as the command table runs it (`executeDispatchTool`); with none,
+ * `runDispatchCli` calls `sendApiCall` itself, so the gate sits in the command, under a host and
+ * with none. It names no owner, so it runs on the session's context alone.
  */
 export async function apiCommand(context: SessionContext): Promise<DispatchToolResult> {
   return await sendApiCall(context.args, context.input.env ?? {}, context.newClient());
