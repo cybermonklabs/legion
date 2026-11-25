@@ -137,10 +137,5 @@ type askBlockNodeState struct {
 // own, not a default for a node the store has not recorded.
 func readAskBlockNodeState(t *testing.T, database *store.Store, address string) askBlockNodeState {
 	t.Helper()
-	node := storedNodeOf(t, database, address)
-	history, err := graphstore.History(context.Background(), database.Pool, node.Kind, node.ID, graphstore.AttributeState)
-	if err != nil {
-		t.Fatalf("read the state tuples of %s: %v", address, err)
-	}
-	return askBlockNodeState{state: node.State, tuples: len(history)}
+	return askBlockNodeState{state: storedNodeOf(t, database, address).State, tuples: len(stateHistoryOf(t, database, address))}
 }
