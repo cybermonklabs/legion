@@ -494,6 +494,7 @@ func TestAnUpdateAfterTheFixEndsKeepsEachOpenStepsBranch(t *testing.T) {
 				t.Fatalf("the owner's phases row names entry %d, want none raised", entry)
 			}
 
+			rig.engine.UpdateByRunningFix()
 			asks := rig.askedPushes(besideRoles...)
 			wantPushes(t, asks, map[claim.Role]supervise.UpdatePush{tc.role: {Branch: own}})
 			branch := asks[tc.role].Branch
