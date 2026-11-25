@@ -54,6 +54,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
   limits: (client) => client.limits(),
+  readRoute: (client) => client.readRoute("/api/v1/issues/DSP-1/events?limit=200"),
   inbox: (client) => client.inbox("me"),
   myReplies: (client) => client.myReplies(),
   credentialPending: (client) => client.credentialPending(),
@@ -83,6 +84,9 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       commit: "1111111111111111111111111111111111111111",
     }),
   issueResults: (client) => client.issueResults("DSP-1"),
+  recordDeploy: (client) =>
+    client.recordDeploy({ repo: "acme/widgets", program: "worker", commit: "1".repeat(40) }),
+  deploys: (client) => client.deploys("acme/widgets"),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
   issueCoverage: (client) => client.issueCoverage("DSP-1"),

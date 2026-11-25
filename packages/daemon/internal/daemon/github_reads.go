@@ -69,10 +69,11 @@ func (w *workflowRuntime) unapplied(ctx context.Context, eventID string) bool {
 // GET /pulls: its number, state (open or closed), page, body, base branch, head branch and commit,
 // when it last changed, its nullable, lazily computed `mergeable`, which the list leaves out, and
 // `mergeable_state`, GitHub's own merge state for the head, which the list leaves out too. Merged
-// and MergeCommitSHA are whether GitHub merged it and the commit the merge made, which the
-// merge-queue read applies as the merge (outbox's mergeQueueRead): GitHub answers a merged pull
-// request `closed`, so State alone cannot tell a merge from a close. The list leaves Merged out,
-// and only the read of one pull request names it.
+// and MergeCommitSHA are whether GitHub merged it and the commit the merge made, and MergedAt when
+// it merged (zero where GitHub sends null), which the merge-queue read applies as the merge
+// (outbox's mergeQueueRead): GitHub answers a merged pull request `closed`, so State alone cannot
+// tell a merge from a close. The list leaves Merged out, and only the read of one pull request
+// names it.
 type githubPullRequest struct {
 	Number  int    `json:"number"`
 	State   string `json:"state"`
@@ -90,6 +91,7 @@ type githubPullRequest struct {
 	MergeableState string    `json:"mergeable_state"`
 	Merged         bool      `json:"merged"`
 	MergeCommitSHA string    `json:"merge_commit_sha"`
+	MergedAt       time.Time `json:"merged_at"`
 }
 
 // mergeability is the pull request's `mergeable` as the mergeability fact reads it: null

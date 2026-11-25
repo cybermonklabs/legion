@@ -136,7 +136,7 @@ attested on main when asked for `refs/heads/Main`, so a deployment's check, whic
 `refs/heads/main`, refuses an attestation made on `Main`. The npm publishes and the GitHub
 releases and tags check nothing of the kind; the listener's `latest` step alone also checks that
 its commit is on main. The `github.ref` comparisons that stay, in cache conditions
-(setup-bun's `no-cache`, worker-image.yaml's `cache-to`, the `restore-keys` lines) and in
+(setup-bun's `no-cache`, `.github/workflows/worker-image.yaml#cache-to`, the `restore-keys` lines) and in
 worker_image_attest's `skip_attest`, still take `Main` for main. On `Main`, `no-cache` and
 `cache-to` write only `Main`'s own cache scope, the `restore-keys` lines write nothing and only
 restore less, and `skip_attest` skips an attestation.
@@ -214,7 +214,7 @@ GitHub release. Nothing is committed: the tag records the version.
 ## Why only main publishes a plugin
 
 Only main publishes: a workflow_dispatch from another branch skips this job and publish, so
-no branch build ever reaches npm or moves `latest` (AGENTS.md, "Deploys come only from
+no branch build ever reaches npm or moves `latest` (CONTRIBUTING.md, "Deploys come only from
 main"). A workflow_dispatch on main runs it as a push does.
 
 ## Why pi_envoy_build reads the tags before setup-bun, and what a re-run releases
@@ -448,9 +448,9 @@ another commit) leaves no attestation for archives no release carries.
 
 ## What legion's GitHub release step does on a re-run
 
-release-push.sh `release`: creates the release, reuses a published one, or publishes a draft
-an earlier attempt left, with the files the "legion: Check build's archives and write SHA256SUMS" step listed. Its version and tag are the
-job's outputs, which worker_image_release names the worker image on.
+`.github/scripts/release-push.sh#release)`: creates the release, reuses a published one, or publishes a draft an
+earlier attempt left, with the files the "legion: Check build's archives and write SHA256SUMS" step listed. Its
+version and tag are the job's outputs, which worker_image_release names the worker image on.
 
 ## What the worker image build is given and what it pushes
 
@@ -466,8 +466,7 @@ released it.
 
 No `secrets:`: the called workflow reads only GITHUB_TOKEN, which it receives automatically;
 `inherit` would hand DEPLOY_KEY and every other repository secret to a job that runs a
-PR-authored Dockerfile. This job's permissions must cover every scope worker-image.yaml's
-`permissions:` blocks declare, even for the `attest` job this call skips: its workflow-level
+PR-authored Dockerfile. This job's permissions must cover every scope `.github/workflows/worker-image.yaml#permissions:` blocks declare, even for the `attest` job this call skips: its workflow-level
 block (the build, with actions: read and checks: write for the ci-ok report its build runs
 only on ci.yaml's pull_request call) and its `attest` job's (id-token and attestations:
 write, for the image's GitHub attestation). The release note, which needs contents: write,

@@ -1539,6 +1539,10 @@ list, so the audience is the whole of the bound. Pick one no other workload of t
 kubelet for, and leave `oidcAudience` unset where no caller needs it, which is how Dispatch
 behaves today: neither variable renders and no token is verified.
 
+`projectOwnerFallback` (plain) renders `DISPATCH_PROJECT_OWNER_FALLBACK`: the lowercase email of a
+full member, whom Dispatch makes, at boot, the owner of every project the migration left without
+one. Unset, nothing renders.
+
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the
 component's namespace holding the App's PEM private key, as GKE SecretSync copies it from Secret
@@ -3933,8 +3937,9 @@ connection, so the auth service must do that when its handler stops answering.
 The two options apply to every client connection on the server. A client whose event loop blocks,
 or whose link stalls, keeps its connection through any stall shorter than 40 s, and is closed as
 stale after one longer than 40 to 80 s; under the defaults, 4 to 8 minutes (the same test file
-keeps a client through a 15 s stall). envoy-client's own 10 s `Bun.spawnSync` block
-(`packages/envoy-client/src/envoy-config.ts:332-372`) is survived. A client that sends nothing for
+keeps a client through a 15 s stall). envoy-client's settings read no longer blocks: a `!` token
+command runs while the client's event loop goes on serving (`runCommand` in
+`packages/envoy-client/src/envoy-config.ts`). A client that sends nothing for
 a whole 20 s interval while the server's queue to it takes more than about 40 to 60 s to drain is
 closed as stale 40 to 60 s in, where under the defaults the server kept it 4 to 6 minutes; no hub
 client is known to read that slowly. All in-cluster sessions reach

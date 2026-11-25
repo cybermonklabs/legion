@@ -312,6 +312,17 @@ type Issue struct {
 	// released_for_wait_at: every write site that records the root holds a copy read before its own
 	// fact, and a copy read before the clear would otherwise owe the members a second return.
 	MembersOwed bool
+	// TreeGeneration is the tree's run, read on a tree root: what fences each member's idle
+	// release, its suspension and its design-news credits, and the run of the tree's architect.
+	// A root's next change raises the root's Generation and leaves it, so the members and the
+	// tree's architect run on. Only a rerun of the whole tree raises it (ClearTreeGeneration). A
+	// record starts at its own generation where it gives none, and it is read through TreeRun,
+	// which says so for a record built and not read back. PutIssue writes it when it records the
+	// issue, and when a write moves the issue to another tree, at the issue's generation: a root a
+	// hand-over made starts its tree's run at its own generation. It never writes it otherwise, so
+	// a copy of the root read before a rerun never writes the tree's run back. On a child's row it
+	// is the generation the child entered its tree at, and nothing reads it.
+	TreeGeneration uint64
 	// Merge is the issue's newest merge, its merge snapshot: the pull request that merged, its final
 	// reviewed head, the merge commit, the base it merged into, the repository the merge fact named
 	// and GitHub's merged_at of that pull request. It is zero before the issue's first merge. One
@@ -385,6 +396,28 @@ const (
 	// MergeHistoryNone is a record that holds nothing of the issue's merges.
 	MergeHistoryNone MergeHistoryClass = "NONE"
 )
+
+// TreeRun is the tree's run of the issue's record: TreeGeneration as the record holds it, and on a
+// record that names none, one built and not read back, the issue's own generation, which is what
+// PutIssue's insert writes for it. Every reader of the tree's run reads it here, so a root built in
+// a transaction reads the run the record will hold.
+func (i Issue) TreeRun() uint64 {
+	if i.TreeGeneration == 0 {
+		return i.Generation
+	}
+	return i.TreeGeneration
+}
+
+// ArchitectGeneration is the generation the issue's architect runs on, and its design gate's
+// rows with it: the tree's run (TreeRun) on a tree root, whose architect is the tree's, and the
+// issue's own generation on a child, whose own architect runs on the child's run. A root's next
+// change raises its Generation alone, so it ends no run of its tree's architect.
+func (i Issue) ArchitectGeneration() uint64 {
+	if i.Key == i.Tree {
+		return i.TreeRun()
+	}
+	return i.Generation
+}
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
 // every repository-dependent action of the issue works and mints for its owner.

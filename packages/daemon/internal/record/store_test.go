@@ -101,8 +101,12 @@ func written(t *testing.T, got *Issue) *Issue {
 	if got.MergeHistory != MergeHistoryNone || got.Merge.Merged() {
 		t.Fatalf("issue %s reads back with the merge history %q and the merge %+v, want NONE and none: PutIssue writes neither", got.Key, got.MergeHistory, got.Merge)
 	}
+	// tree_generation is written at the insert, from the record or its generation, and by an update
+	// only where it moves the issue to another tree (TestAWholeTreeRerunRaisesTheTreeGeneration and
+	// TestARootAHandOverMadeStartsItsTreeGenerationAtItsOwn hold it), so it is left out of the
+	// comparisons of the fields PutIssue writes on every write.
 	bare := *got
-	bare.MovedAt, bare.MergeHistory = time.Time{}, ""
+	bare.MovedAt, bare.MergeHistory, bare.TreeGeneration = time.Time{}, "", 0
 	return &bare
 }
 

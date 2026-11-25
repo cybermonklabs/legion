@@ -68,7 +68,7 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status string
 		var lingering bool
-		err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, root.generation, root.linger_until is not null
+		err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, root.tree_generation, root.linger_until is not null
 			from issues i join issues root on root.key = i.tree where i.key = $1 and i.tree = $2`,
 			close.Issue, close.Tree).Scan(&issueGeneration, &issuePhase, &status, &rootGeneration, &lingering)
 		if errors.Is(err, pgx.ErrNoRows) {

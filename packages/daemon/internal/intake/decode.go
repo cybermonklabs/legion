@@ -572,6 +572,44 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			return nil, nil
 		}
 		return DispatchClaim{Key: event.IssueKey, Seq: event.Seq, ClaimedBy: holder}, nil
+	case "result.recorded", "result.retracted":
+		// A result's events are appended on the issue whose Verification document holds the check
+		// (the event's issue_key), whichever issue the result was recorded on, which the payload's
+		// issue names. A field that cannot be read is named in unread rather than making the event
+		// poison: the event's one act is to have the issue's checks read again, which needs only
+		// its issue.
+		var result struct {
+			ResultID string `json:"result_id"`
+			Check    string `json:"check_block_id"`
+			Verdict  string `json:"verdict"`
+		}
+		if err := json.Unmarshal(event.Payload, &result); err != nil {
+			return nil, fmt.Errorf("decode Dispatch %s payload: %w", event.Type, err)
+		}
+		if result.ResultID == "" {
+			*unread = append(*unread, event.Type+" has no result_id")
+		}
+		if result.Check == "" {
+			*unread = append(*unread, event.Type+" has no check_block_id")
+		}
+		changed := DispatchResultChanged{Key: event.IssueKey, Seq: event.Seq, ResultID: result.ResultID, Check: result.Check}
+		if event.Type == "result.recorded" {
+			if result.Verdict == "" {
+				*unread = append(*unread, "result.recorded has no verdict")
+			}
+			changed.Verdict = result.Verdict
+		}
+		return changed, nil
+	case "issue.pull_request_attribution_changed":
+		// A pull request reached the issue or left it, which can change the commits Dispatch
+		// compares each check's results with. Dispatch appends the event on each issue the move
+		// concerns, so this one is the event's issue.
+		return DispatchResultChanged{Key: event.IssueKey, Seq: event.Seq}, nil
+	case "deploy.recorded":
+		// A new deploy of a program: Dispatch appends it on each open issue that holds a result,
+		// not retracted, of a live check that reads that program or names none, so this one is the
+		// event's issue. It can turn a pass of such a check into unknown, or unknown into a pass.
+		return DispatchResultChanged{Key: event.IssueKey, Seq: event.Seq}, nil
 	default:
 		return nil, nil
 	}
@@ -781,7 +819,9 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 		merged, _ := rawString(raw, "merged")
 		if merged == "true" {
 			mergeSHA, _ := rawString(raw, "merge_commit_sha")
-			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA, HeadSHA: sha}, nil
+			// A merged_at that is absent or does not parse is left zero (rawTimestamp).
+			mergedAt, _ := rawTimestamp(raw, "merged_at")
+			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA, HeadSHA: sha, MergedAt: mergedAt}, nil
 		}
 		return PullRequestClosed{Repo: repo, Number: number, HeadSHA: sha, UpdatedAt: updatedAt}, nil
 	case "dequeued":

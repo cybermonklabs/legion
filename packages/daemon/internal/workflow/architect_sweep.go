@@ -118,7 +118,7 @@ func resumeOwed(root record.Issue, entry record.PhaseEntry, run record.RoleRun) 
 // clears it.
 func ArchitectCarried(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue) (*record.HandedOverRoot, error) {
 	handed, err := store.HandedOverRoot(ctx, tx, root.Key)
-	if err != nil || handed == nil || handed.Generation != root.Generation {
+	if err != nil || handed == nil || handed.Generation != root.TreeRun() {
 		return nil, err
 	}
 	return handed, nil
@@ -161,7 +161,7 @@ func ArchitectStartPending(root record.Issue, entry int64, run record.RoleRun) (
 		}
 		return "", false
 	}
-	if p := run.Claim.Pending; p != nil && p.SupersededBy(root.Generation, entry) {
+	if p := run.Claim.Pending; p != nil && p.SupersededBy(root.TreeRun(), entry) {
 		held := *run.Claim
 		held.Pending = nil
 		run.Claim = &held
@@ -349,5 +349,5 @@ func (e *Engine) enqueueArchitectStart(ctx context.Context, tx pgx.Tx, root reco
 	kept *record.KeptDecisions, entry int64,
 ) error {
 	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
-		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept}, kept, e.now())
+		Role: claim.RoleArchitect, Generation: root.TreeRun(), Task: task, Entry: entry, Kept: kept}, kept, e.now())
 }

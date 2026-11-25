@@ -461,6 +461,25 @@ type DispatchClaim struct {
 
 func (f DispatchClaim) namedIssue() (string, bool) { return f.Key, true }
 
+// DispatchResultChanged is a change of what Dispatch computes for the checks of Key's
+// Verification document, at Seq in Key's event log: a result recorded against one of them
+// (result.recorded, with its id, its check's block id and its verdict), a retraction of one
+// (result.retracted, with no verdict), a pull request that reached Key or left it
+// (issue.pull_request_attribution_changed), or a new deploy of a program a live check of Key reads
+// (deploy.recorded), the last two with no result and no check. Dispatch appends a result's events
+// on the issue whose document holds the check, whichever issue the result was recorded on, so Key
+// is the issue whose close the change may decide. None of them decides a check: the read of the
+// checks does (record.CloseRead), which each queues for an issue whose close waits.
+type DispatchResultChanged struct {
+	Key      string
+	Seq      int64
+	ResultID string
+	Check    string
+	Verdict  string
+}
+
+func (f DispatchResultChanged) namedIssue() (string, bool) { return f.Key, true }
+
 // DispatchConsumerPosition is one measurement of the Dispatch consumer's own position: its ack
 // floor as a stream sequence — the point before which every matching message is acknowledged,
 // redeliveries and naks included — and whether it is idle, nothing pending or unacknowledged at
@@ -879,13 +898,16 @@ type PullRequestMergeability struct {
 
 func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }
 
-// PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
-// the head the pull request merged at, "" when the observation names none.
+// PullRequestMerged records GitHub's terminal merged observation: the merge commit, HeadSHA, the
+// head the pull request merged at, "" when the observation names none, and MergedAt, GitHub's
+// merged_at of the pull request, which orders a later merge of the issue after an earlier one. It
+// is zero where the observation carries none, or one that does not parse: no reader invents one.
 type PullRequestMerged struct {
 	Repo     string
 	Number   int
 	MergeSHA string
 	HeadSHA  string
+	MergedAt time.Time
 }
 
 func (PullRequestMerged) namedIssue() (string, bool) { return "", false }
@@ -928,6 +950,25 @@ type MergeQueueReadDone struct {
 }
 
 func (f MergeQueueReadDone) namedIssue() (string, bool) { return f.Issue, true }
+
+// CloseChecksRead is the outbox's read of Dispatch's states for the close of Issue
+// (record.CloseRead), carried back as a fact: never decoded from an event. Generation is the
+// generation the read was queued for, and ReadAt the moment its row began its first Dispatch call,
+// so a read in flight across an entry into verifying is not taken as a read after it. Answer is
+// what Dispatch answered, in the layout the close's stored read keeps (record.CheckReadAnswer): the
+// results, the results at the newest merge's final head where the close needs them, the issue's
+// children, and the Verification document's approval. It is nil where the read failed, and Failure
+// then says why. The workflow stores it as the issue's newest read (record.CheckRead) and judges
+// the close on it.
+type CloseChecksRead struct {
+	Issue      string
+	Generation uint64
+	ReadAt     time.Time
+	Failure    string
+	Answer     *record.CheckReadAnswer
+}
+
+func (f CloseChecksRead) namedIssue() (string, bool) { return f.Issue, true }
 
 // ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
 // finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for

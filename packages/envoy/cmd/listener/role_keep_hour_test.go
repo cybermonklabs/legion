@@ -77,6 +77,10 @@ type hourListener struct {
 	// lane is the role lane's handler over cfg: a raw role publish handed to it is one the lane
 	// took on its own subscription.
 	lane natsgo.MsgHandler
+	// sweepPasses counts the passes its sweep has ended (startSweeps), and sweepStarted says
+	// whether startSweeps has started that sweep.
+	sweepPasses  atomic.Int64
+	sweepStarted bool
 }
 
 func newHourRig(t *testing.T, sessionOptions ...session.SessionRegistryOption) *hourRig {
@@ -115,14 +119,28 @@ func (r *hourRig) setClock(at time.Time) { r.offset.Store(int64(time.Until(at)))
 // client is the first listener's connection, which the tests read the stream through.
 func (r *hourRig) client() *bus.Client { return r.listeners[0].harness.client }
 
-// startSweeps starts each listener's sweep of the kept lanes at an interval of one second, where
-// main.go starts it at five minutes, and stops both when the test ends, waiting for the pass each
-// loop has in flight.
+// hourSweepInterval is how often the rig's listeners sweep their kept lanes, where main.go sweeps
+// every roleWakeInterval. It is short because no row waits out an interval: letSweepsRun waits for
+// a count of passes, and every other wait polls for the state a pass makes.
+const hourSweepInterval = 200 * time.Millisecond
+
+// startSweeps starts each listener's sweep of the kept lanes, the loop startKeptRoleSweep runs over
+// its pool of roleKeepSweepHandovers slots, at hourSweepInterval and counting each pass whose scan
+// of the lanes has ended (sweepKeptRoleLanes returned), and stops both when the test ends, waiting
+// for the pass each loop has in flight. A count does not wait for the handovers a pass started: a
+// handover runs on, under roleKeepHandoverWindow (10 minutes), for as long as its lane has a holder
+// to give copies to, holding its role's guard and its slot, and a pass after it passes that role
+// over (roleKeepGuards.tryHold). A wait for that work would wait for the window, not for the sweep.
 func (r *hourRig) startSweeps() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var loops []<-chan struct{}
 	for _, l := range r.listeners {
-		loops = append(loops, startKeptRoleSweep(ctx, l.cfg, time.Second))
+		cfg, slots, passes := l.cfg, make(chan struct{}, roleKeepSweepHandovers), &l.sweepPasses
+		l.sweepStarted = true
+		loops = append(loops, startSweep(ctx, hourSweepInterval, func(ctx context.Context) {
+			sweepKeptRoleLanes(ctx, cfg, slots)
+			passes.Add(1)
+		}))
 	}
 	r.t.Cleanup(func() {
 		cancel()
@@ -132,10 +150,23 @@ func (r *hourRig) startSweeps() {
 	})
 }
 
-// letSweepsRun lets each listener's one-second sweep make at least two more passes. It is the one
-// wait in these tests that does not poll for a state, because what it waits for is that nothing
-// more happens.
-func letSweepsRun() { time.Sleep(2500 * time.Millisecond) }
+// letSweepsRun waits until each listener's sweep has scanned its lanes twice more, in two passes
+// that began after the call (startSweeps). It is the wait these rows make for nothing more to
+// happen, which only the sweeps could still make happen, as the 2.5 s sleep it replaces was, and it
+// counts passes rather than waiting out a stretch of time.
+func (r *hourRig) letSweepsRun() {
+	r.t.Helper()
+	for i, l := range r.listeners {
+		if !l.sweepStarted {
+			r.t.Fatalf("listener %d's sweep was waited for before startSweeps started it", i)
+		}
+		// The pass in flight now may have begun before the call; the two after it did not.
+		through := l.sweepPasses.Load() + 3
+		waitFor(r.t, 20*time.Second, fmt.Sprintf("two more passes of listener %d's kept-lane sweep", i), func() bool {
+			return l.sweepPasses.Load() >= through
+		})
+	}
+}
 
 // hourAnswer is the publish route's answer as these tests read it: the envelope it names and the
 // fields of a 202 kept.
@@ -480,7 +511,7 @@ func (r *hourRig) lines(name string, where map[string]any) []map[string]any {
 // subject once, which frames, its own subscription of that subject, receives once.
 func (r *hourRig) returnTo(holder, eventID string, frames <-chan contracts.Envelope) {
 	r.t.Helper()
-	letSweepsRun()
+	r.letSweepsRun()
 	if held := r.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 0 {
 		r.t.Fatalf("%s's agent subject holds %d messages while it is not live, want none", holder, len(held))
 	}
@@ -490,7 +521,7 @@ func (r *hourRig) returnTo(holder, eventID string, frames <-chan contracts.Envel
 	waitFor(r.t, 20*time.Second, "the kept copy reaching "+holder, func() bool {
 		return len(r.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 	})
-	letSweepsRun()
+	r.letSweepsRun()
 	if held := r.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != eventID {
 		r.t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, eventID)
 	}
@@ -623,9 +654,10 @@ func (s *deadLetterSeam) assertTakenOver(t *testing.T, held laneCopy) []deadLett
 // rows (p), (q) and (r) for the parts of R1 and R3 no check covers: a kept copy is forwarded
 // within its hour or dropped at its end, its sender gets one dead letter where it is owed one, and
 // every outcome is counted and logged once however many listeners and sweeps reach the copy. Each
-// row runs two listeners on a stream of its own, sweeping every second where the row sweeps, and
+// row runs two listeners on a stream of its own, sweeping every hourSweepInterval where the row sweeps, and
 // moves their clock rather than waiting an hour.
 func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
+	t.Parallel()
 	t.Run("a a publish to a role with no claim is answered 202 with kept_until one hour after the keep", func(t *testing.T) {
 		rig := newHourRig(t)
 		const role = "hour-unclaimed"
@@ -660,7 +692,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		defer release()
 		rig.startSweeps()
-		letSweepsRun()
+		rig.letSweepsRun()
 		if forwards := rig.lines(hourForwardLine, map[string]any{"role": role}); len(forwards) != 0 {
 			t.Fatalf("the copy was forwarded with no claim: %v", forwards)
 		}
@@ -695,7 +727,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		for _, by := range []time.Duration{0, 59 * time.Minute} {
 			rig.moveClock(by)
-			letSweepsRun()
+			rig.letSweepsRun()
 			if dropped, letters := rig.count(hourExpired), rig.deadLetters(sender, held.item.EventID); dropped != 0 || len(letters) != 0 {
 				t.Fatalf("with the clock %s on, inside the copy's hour, the sweeps counted %d drops and stored %d dead letters, want none", by, dropped, len(letters))
 			}
@@ -704,7 +736,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 		if dropped := rig.count(hourExpired); dropped != 1 {
 			t.Fatalf("envoy_role_kept_expired_total rose by %d, want one", dropped)
 		}
@@ -733,7 +765,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			held = append(held, rig.copyOf(role, answer.EventID))
 		}
 		rig.startSweeps()
-		letSweepsRun()
+		rig.letSweepsRun()
 		for i, sender := range senders {
 			if dropped, letters := rig.count(hourExpired), rig.deadLetters(sender, held[i].item.EventID); dropped != 0 || len(letters) != 0 {
 				t.Fatalf("inside the copies' hour, the sweeps counted %d drops and stored %d dead letters for %s, want none", dropped, len(letters), sender)
@@ -742,7 +774,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitPassed(role, held[1].sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 		for i, sender := range senders {
 			letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 			if len(letters) != 1 {
@@ -762,14 +794,14 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		unnamed := rig.copyOf(role, answer.EventID)
 		outbox := rig.keep(role, outboxCopy(role, "ses_hour_outbox_sender", "a Dispatch event routed to the role"))
 		rig.startSweeps()
-		letSweepsRun()
+		rig.letSweepsRun()
 		if dropped, letters := rig.count(hourExpired)+rig.count(hourExpiredOutbox), rig.envoyLetters(); dropped != 0 || len(letters) != 0 {
 			t.Fatalf("inside the copies' hour, the sweeps counted %d drops and stored dead letters %+v, want none", dropped, letters)
 		}
 
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitPassed(role, outbox.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 		for _, tc := range []struct {
 			held   laneCopy
 			keptBy string
@@ -852,8 +884,8 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitPassed(role, held[copies-1].sequence)
-		letSweepsRun()
-		letSweepsRun()
+		rig.letSweepsRun()
+		rig.letSweepsRun()
 
 		for _, each := range held {
 			event, sender := each.item.EventID, each.item.SourceSession
@@ -899,7 +931,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		seam.assertTakenOver(t, held)
 		if letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender)); len(letters) != 1 {
@@ -971,7 +1003,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
@@ -997,7 +1029,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.moveClock(2*time.Hour + time.Minute)
 		rig.startSweeps()
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		if stale, fresh := rig.count(hourExpiredStale), rig.count(hourExpired); stale != 1 || fresh != 0 {
 			t.Fatalf("envoy_role_kept_expired_total counts %d stale and %d not stale, want one stale", stale, fresh)
@@ -1035,7 +1067,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		seam.assertTakenOver(t, held)
 		if letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender)); len(letters) != 1 {
@@ -1067,7 +1099,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		held := rig.copyOf(role, answer.EventID)
 		rig.startSweeps()
-		letSweepsRun()
+		rig.letSweepsRun()
 		if dropped, letters := rig.count(hourExpired), rig.deadLetters(sender, held.item.EventID); dropped != 0 || len(letters) != 0 {
 			t.Fatalf("inside the copy's hour, the sweeps counted %d drops and stored %d dead letters, want none", dropped, len(letters))
 		}
@@ -1075,7 +1107,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
@@ -1098,7 +1130,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		rig.startSweeps()
 		rig.waitPassed(role, ack.Sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		if ended := rig.count(hourUndecodable); ended != 1 {
 			t.Fatalf("envoy_role_kept_undecodable_total is %d, want one", ended)
@@ -1125,7 +1157,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		waitFor(t, 60*time.Second, "every copy ended", func() bool { return rig.count(hourExpired) >= copies })
 		rig.waitPassed(role, last.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		if dropped := rig.count(hourExpired); dropped != copies {
 			t.Fatalf("envoy_role_kept_expired_total rose by %d, want %d", dropped, copies)
@@ -1207,7 +1239,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
@@ -1255,7 +1287,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		if calls := seam.made(); len(calls) < 2 {
 			t.Fatalf("the dead letter was published %d times, want the failed one and the one sent again: %+v", len(calls), calls)
@@ -1322,7 +1354,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
@@ -1360,6 +1392,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 // is written under (keptRoleDrop.claimReason) back as that drop, so a claim taken over again and
 // again is judged as the first takeover judged it.
 func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
+	t.Parallel()
 	stored := bus.StoredMessage{Sequence: 7, Time: time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)}
 	data, err := json.Marshal(contracts.Envelope{EventID: "evt_claimed", SourceSession: "ses_claim_sender", Payload: `{"delivery":{"mode":"steer"}}`})
 	if err != nil {
@@ -1649,6 +1682,7 @@ func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
 // that copy, and one that repeats the key of a copy that was forwarded or whose hour ended is kept
 // as a copy of its own, however many times.
 func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
+	t.Parallel()
 	t.Run("k a repeat inside the copy's hour is answered with the first copy and the lane holds one copy", func(t *testing.T) {
 		rig := newHourRig(t)
 		const (
@@ -1777,6 +1811,7 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 // makes it live, so its registration would not read it as returning, and it is handed the copy
 // at that refresh though the claim is refused (roleSetHandler).
 func TestALapsedHolderIsKeptFor(t *testing.T) {
+	t.Parallel()
 	t.Run("a a publish to a role whose holder deleted its record is kept and reaches that session once it registers again", func(t *testing.T) {
 		rig := newHourRig(t)
 		const (
@@ -1812,7 +1847,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		waitFor(t, 20*time.Second, "the kept copy reaching "+successor, func() bool {
 			return len(rig.envelopesOn(contracts.LegacyAgentSubject(successor))) > 0
 		})
-		letSweepsRun()
+		rig.letSweepsRun()
 		if held := rig.envelopesOn(contracts.LegacyAgentSubject(successor)); len(held) != 1 || held[0].EventID != answer.EventID {
 			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", successor, held, answer.EventID)
 		}
@@ -2123,6 +2158,7 @@ func (r *hourRig) keepWakes(role string) []string {
 // once in each 5-minute interval across both listeners. A copy that is taken, or whose hour has
 // ended, and a copy Dispatch's outbox wrote, wake nothing.
 func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
+	t.Parallel()
 	t.Run("f a kept copy wakes its role once in each interval of its first forty minutes until it is taken or ends", func(t *testing.T) {
 		rig := newHourRig(t)
 		const (
@@ -2185,7 +2221,7 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 				woken++
 			}
 			if woken == 0 {
-				letSweepsRun()
+				rig.letSweepsRun()
 			}
 			if step == 3 {
 				// A live session takes the copy, then leaves the role with no live holder: the

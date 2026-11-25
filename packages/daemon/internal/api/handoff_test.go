@@ -1364,10 +1364,10 @@ func TestHandoffCompleteRefusesExpiredAndRevokedGrants(t *testing.T) {
 }
 
 // A completion the workflow refused while the child's tree lingered is recorded as processed under
-// its key. Re-admission starts a new generation of the tree, bumping only the root's generation,
-// and restarts the child's worker in the phase it stood in; the same completion there belongs to
-// the new generation, so the key names the tree's generation and the completion is applied rather
-// than answered already received.
+// its key. Re-admission starts a new generation of the tree, raising the root's generation and the
+// tree's run and no member's, and restarts the child's worker in the phase it stood in; the same
+// completion there belongs to the new generation, so the key names the tree's run and the
+// completion is applied rather than answered already received.
 func TestHandoffCompleteAppliesAfterReadmissionTheCompletionALingeringTreeRefused(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, &intake.Refusal{Status: http.StatusConflict, Code: "TREE_LINGERING", Message: "the tree LEGION-208 is lingering after it left the workflow"})
@@ -1384,7 +1384,7 @@ func TestHandoffCompleteAppliesAfterReadmissionTheCompletionALingeringTreeRefuse
 	facts.mu.Lock()
 	facts.refusal = nil
 	facts.mu.Unlock()
-	setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Generation++ })
+	readmitRoot(t, h, "LEGION-208")
 	request.GrantID = planner.grant(t)
 	completion(t, h.complete(request))
 	if got := facts.recorded(); len(got) != 2 {

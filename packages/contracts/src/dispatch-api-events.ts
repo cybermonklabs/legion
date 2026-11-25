@@ -13,6 +13,7 @@ import type {
   ArchitectureSyncFailedEventPayload,
   DisplayTree,
   PriorityUpdatedEventPayload,
+  ProjectAccessChangedEventPayload,
   ProjectDefaultAssigneeUpdatedEventPayload,
   RepoProjectUpdatedEventPayload,
 } from "./dispatch-api-core";
@@ -32,6 +33,7 @@ import type {
   CheckResultRetractedEventPayload,
   ChildEventPayload,
   ChildStatusEventPayload,
+  DeployRecordedEventPayload,
   IssueClaimEventPayload,
   IssueDeployedEventPayload,
   IssueEventPayload,
@@ -151,6 +153,10 @@ export type DispatchEvent =
       readonly type: "priority.updated";
       readonly payload: PriorityUpdatedEventPayload;
     })
+  | (DispatchEventBase & {
+      readonly type: "project.access_changed";
+      readonly payload: ProjectAccessChangedEventPayload;
+    })
   | (DispatchEventBase & { readonly type: "issue.created"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.updated"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.closed"; readonly payload: IssueEventPayload })
@@ -165,6 +171,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "issue.deployed";
       readonly payload: IssueDeployedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "deploy.recorded";
+      readonly payload: DeployRecordedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "handoff.recorded";
@@ -395,6 +405,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.reopened": true,
   "comment.resolved": true,
   "decision.kept": true,
+  "deploy.recorded": true,
   "handoff.recorded": true,
   "issue.claimed": true,
   "issue.closed": true,
@@ -410,6 +421,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "message.delivery": true,
   "message.edited": true,
   "priority.updated": true,
+  "project.access_changed": true,
   "project.created": true,
   "project.updated": true,
   "result.recorded": true,
