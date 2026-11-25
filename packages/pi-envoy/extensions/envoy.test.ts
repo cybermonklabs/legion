@@ -14706,6 +14706,67 @@ console.log(JSON.stringify(args));
     expect(notifications).toEqual([]);
   });
 
+  /**
+   * Drives a session's heartbeat by hand (`intervals[0]`) against a listener stand-in that counts
+   * the registrations it accepts (`registrations`). `onAccepted` sets the callback the stand-in
+   * calls at the next registration it accepts, or clears it. Each wait answers with the count the
+   * listener reached. Neither wait carries a deadline of its own: a registration that never comes
+   * is left to the row's own limit, which names the test, rather than decided on a deadline here,
+   * which would hand the caller a stale count and say nothing about why. Once that limit has
+   * ended the row, the file's `afterEach` advances `rowGeneration`, and each wait throws
+   * (`stillOn`) before its next tick and in place of its answer: it ticks no dead extension into
+   * the rows after it, and it answers no count once its row has ended.
+   */
+  function heartbeatTicks(
+    intervals: readonly (() => void)[],
+    registrations: () => number,
+    onAccepted: (told: (() => void) | undefined) => void
+  ) {
+    return {
+      /**
+       * Ticks once, and waits for the listener to accept the next registration. It is for a tick
+       * no pass is running at: that tick starts a pass, and the pass registers. It never ticks
+       * again. A tick while that pass runs, once a whole refresh interval has passed since the
+       * last registration, meets a stall, and the heartbeat says so.
+       */
+      registered: async (): Promise<number> => {
+        const ownRow = rowCheck();
+        stillOn(ownRow, "waiting for a tick's registration");
+        const waiting = Promise.withResolvers<void>();
+        onAccepted(() => waiting.resolve());
+        intervals[0]?.();
+        await waiting.promise;
+        onAccepted(undefined);
+        stillOn(ownRow, "waiting for a tick's registration");
+        return registrations();
+      },
+      /**
+       * Ticks until the listener has accepted one more registration. A tick that lands inside the
+       * refresh interval posts nothing, so this ticks again after a grace instead of deciding on
+       * one tick, and a refresh is awaited where it shows — at the listener. It polls until the
+       * count moves.
+       */
+      refreshed: async (): Promise<number> => {
+        const seen = registrations();
+        const ownRow = rowCheck();
+        while (registrations() === seen) {
+          stillOn(ownRow, "ticking for a refresh");
+          // The tick's own pacing, not a bound on the row: a tick inside the refresh interval
+          // posts nothing, so this hands the loop on to the next tick.
+          const waiting = Promise.withResolvers<void>();
+          onAccepted(() => waiting.resolve());
+          const grace = setTimeout(() => waiting.resolve(), 250);
+          intervals[0]?.();
+          await waiting.promise;
+          clearTimeout(grace);
+          onAccepted(undefined);
+        }
+        stillOn(ownRow, "ticking for a refresh");
+        return registrations();
+      },
+    };
+  }
+
   test("a pass stuck on a listener call that never answers still lets later ticks refresh the registration", async () => {
     // The registration refresh is the last step of a pass. A listener socket that neither answers
     // nor errors used to hold every later pass behind it for the life of the process: the pane's
@@ -14753,35 +14814,13 @@ console.log(JSON.stringify(args));
           ...sessionContext("ses_wedged_pass"),
           setInterval: (callback) => intervals.push(callback),
         };
-        /**
-         * Ticks until the listener has accepted one more registration, and answers with the count
-         * it reached. A tick that lands inside the refresh interval posts nothing, so the row ticks
-         * again after a grace instead of deciding on one tick, and a refresh is awaited where it
-         * shows — at the listener. It polls until the count moves: a refresh that never resumes is
-         * left to the row's own limit, which names the test, rather than decided on a deadline
-         * here, which would hand the caller a stale count and say nothing about why. Once that limit
-         * has ended the row, the file's `afterEach` advances `rowGeneration`, and this throws
-         * (`stillOn`) before its next tick and in place of its answer: it ticks no dead extension
-         * into the rows after it, and it answers no count once its row has ended.
-         */
-        const refreshed = async (): Promise<number> => {
-          const seen = registrations;
-          const ownRow = rowCheck();
-          while (registrations === seen) {
-            stillOn(ownRow, "ticking for a refresh");
-            // The tick's own pacing, not a bound on the row: a tick inside the refresh interval
-            // posts nothing, so this hands the loop on to the next tick.
-            const waiting = Promise.withResolvers<void>();
-            accepted = () => waiting.resolve();
-            const grace = setTimeout(() => waiting.resolve(), 250);
-            intervals[0]?.();
-            await waiting.promise;
-            clearTimeout(grace);
-            accepted = undefined;
+        const { refreshed } = heartbeatTicks(
+          intervals,
+          () => registrations,
+          (told) => {
+            accepted = told;
           }
-          stillOn(ownRow, "ticking for a refresh");
-          return registrations;
-        };
+        );
         await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
         expect(registrations).toBe(1);
@@ -14806,12 +14845,10 @@ console.log(JSON.stringify(args));
     );
     // A hang guard: what can hang is a refresh that never comes (`refreshed`), which a tick with
     // no refresh of its own leaves for good, since the wedged pass outlasts the limit. The row's
-    // work is a handful of ticks. The readings below were taken with the pass's deadline at 5 s.
-    // Worst measured cost: 12 099.87 ms at the 96 rung in the Job infra-1580-t24-j2-z6l42 of the
-    // cluster's `builds` namespace, two CPUs and 8 GiB (140 busy loops, at which row A took
-    // 37.3 s), at 919ee888; 7 802.57 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-j5-sjzwb (271 busy loops, at which row A's runs took 51.2 s against the
-    // calibration's 31.2 s), 2026-11-21T23:05Z to 23:21Z. 90_000 is 7.4 times the worst.
+    // work is a handful of ticks. Worst measured cost: 8 110 ms over 20 runs at the 96 rung in
+    // the Jobs infra-1580-r30tka-w852q and infra-1580-r30tkb-twv9q of the cluster's `builds`
+    // namespace, two CPUs and 8 GiB (140 and 109 busy loops for the 96 rung, row A 35.9 s and
+    // 34.0 s), at 6ecd329a with `heartbeatTicks`. 90_000 is 11 times the worst.
   }, 90_000);
 
   test("a role move that never settles still lets the next tick refresh the registration", async () => {
@@ -14819,137 +14856,215 @@ console.log(JSON.stringify(args));
     // held, and the heartbeat's pass awaits its own move inside it. Without the move's deadline
     // and the tick's own refresh, the session's registry record lapses while the pane runs on,
     // and the listener reaps the very role claim the move was about.
-    // Real waits between hand-driven ticks: the refresh is decided on a real-clock age.
-    await withEnvoyTimings({ heartbeatMs: 25, passDeadlineMs: 5000 }, async () => {
-      const role = "legion-controller";
-      let wedgeRoleRead = false;
-      const answered = Promise.withResolvers<void>();
-      let registrations = 0;
-      globalThis.fetch = async (input, init) => {
-        const url = new URL(input.toString());
-        if (url.pathname === `/v1/roles/${role}`) {
-          if (wedgeRoleRead) {
-            wedgeRoleRead = false;
-            await answered.promise;
+    // The ticks are hand-driven. The tick that starts the pass is awaited until the pass's
+    // registration reaches the listener, and then until its move is parked at the listener. The
+    // refresh after it is decided on the registration's age on the real clock, so a tick inside
+    // the 25 ms interval posts nothing: the row ticks again until the refresh shows at the
+    // listener (`heartbeatTicks`), rather than reading the count after a sleep a loaded machine
+    // outruns.
+    // An hour, past the row's limit, so no deadline ends the pass or its move
+    // (`UNRACED_PASS_DEADLINE_MS`). The move then stays parked until the row answers it, and only
+    // the tick's own refresh can move the count meanwhile. At the 5 s deadline the row had
+    // before, a loaded host could reach that deadline. The move was then abandoned, and an
+    // ordinary pass behind it could move the count in place of the tick.
+    await withEnvoyTimings(
+      { heartbeatMs: 25, passDeadlineMs: Number(UNRACED_PASS_DEADLINE_MS) },
+      async () => {
+        const role = "legion-controller";
+        let wedgeRoleRead = false;
+        const parked = Promise.withResolvers<void>();
+        const answered = Promise.withResolvers<void>();
+        let registrations = 0;
+        /** Told of the next registration the listener accepts, while a tick waits for one. */
+        let accepted: (() => void) | undefined;
+        globalThis.fetch = async (input, init) => {
+          const url = new URL(input.toString());
+          if (url.pathname === `/v1/roles/${role}`) {
+            if (wedgeRoleRead) {
+              // The move's read of its role, as a listener that never answers leaves it.
+              wedgeRoleRead = false;
+              parked.resolve();
+              await answered.promise;
+            }
+            return response({ role, holder: "ses_wedged_move", last_seen: 1 });
           }
-          return response({ role, holder: "ses_wedged_move", last_seen: 1 });
-        }
-        if (url.pathname === "/v1/roles/set") {
-          return response({
-            session_id: "ses_wedged_move",
-            machine_id: "test",
-            dir: "/tmp/envoy-omp-test",
-            topics: [`notifications.role.${role}`],
-          });
-        }
-        if (url.pathname === "/v1/interests/subscribe") registrations += 1;
-        return responseWithRegistration(input, init, {});
-      };
-      const { default: envoyExtension }: EnvoyModule = await import(
-        "./envoy.ts?heartbeat-wedged-move"
-      );
-      const fixture = createPi();
-      const intervals: (() => void)[] = [];
-      const context: SessionContext = {
-        ...sessionContext("ses_wedged_move"),
-        setInterval: (callback) => intervals.push(callback),
-      };
-      await envoyExtension(fixture.pi);
-      await fixture.handlers.get("session_start")?.({}, context);
-      await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
-      expect(registrations).toBe(1);
+          if (url.pathname === "/v1/roles/set") {
+            return response({
+              session_id: "ses_wedged_move",
+              machine_id: "test",
+              dir: "/tmp/envoy-omp-test",
+              topics: [`notifications.role.${role}`],
+            });
+          }
+          if (url.pathname === "/v1/interests/subscribe") {
+            registrations += 1;
+            accepted?.();
+          }
+          return responseWithRegistration(input, init, {});
+        };
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?heartbeat-wedged-move"
+        );
+        const fixture = createPi();
+        const intervals: (() => void)[] = [];
+        const context: SessionContext = {
+          ...sessionContext("ses_wedged_move"),
+          setInterval: (callback) => intervals.push(callback),
+        };
+        const ticks = heartbeatTicks(
+          intervals,
+          () => registrations,
+          (told) => {
+            accepted = told;
+          }
+        );
+        await envoyExtension(fixture.pi);
+        await fixture.handlers.get("session_start")?.({}, context);
+        await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
+        expect(registrations).toBe(1);
 
-      // This tick registers, then parks in the role move its pass awaits.
-      wedgeRoleRead = true;
-      intervals[0]?.();
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      expect(registrations).toBe(2);
+        // This tick's pass registers, then parks in the role move it awaits.
+        wedgeRoleRead = true;
+        expect(await ticks.registered()).toBe(2);
+        await parked.promise;
+        expect(registrations).toBe(2);
 
-      // The move is still in flight, and the next tick refreshes the registration regardless.
-      intervals[0]?.();
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      expect(registrations).toBe(3);
+        // The move is still in flight, and a tick refreshes the registration regardless.
+        expect(await ticks.refreshed()).toBeGreaterThan(2);
 
-      answered.resolve();
-      for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
-    });
-  });
+        // Answer at last, so the move and its pass settle and leave no deadline timer behind.
+        answered.resolve();
+        for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
+      }
+    );
+    // A hang guard, not a bound on the row's work: what can hang is a refresh that never comes
+    // (`heartbeatTicks`), which a tick with no refresh of its own leaves for good, since the parked
+    // move outlasts the limit. The row's work is a few ticks. Worst measured cost: 6 991 ms over
+    // 20 runs at the 96 rung in the Jobs infra-1580-r30tka-w852q and infra-1580-r30tkb-twv9q
+    // (above), at 6ecd329a with this row. Six times that is 41 946 ms, rounded up to 45_000.
+  }, 45_000);
 
   test("a whole stall says so once in the pane and once in the log, and a healthy tick says nothing", async () => {
     // A stall lasts as long as the wedged call does, and every tick inside it meets the same
     // symptom. One line per episode is what a registry outage gets; a line per tick would bury
     // the pane and the log under a notice the agent can do nothing about.
-    // Real waits between hand-driven ticks: the refresh is decided on a real-clock age.
-    await withEnvoyTimings({ heartbeatMs: 25, passDeadlineMs: 5000 }, async () => {
-      const ownRow = rowCheck();
-      let wedgePass = false;
-      const answered = Promise.withResolvers<void>();
-      globalThis.fetch = async (input, init) => {
-        if (new URL(input.toString()).pathname === "/v1/interests/subscribe" && wedgePass) {
-          wedgePass = false;
-          await answered.promise;
-        }
-        return responseWithRegistration(input, init, {});
-      };
-      const { default: envoyExtension }: EnvoyModule = await import(
-        "./envoy.ts?heartbeat-stall-said-once"
-      );
-      const warnings: string[] = [];
-      const stopSink = rowLogSink((entry) => {
-        if (entry.level === "warn") warnings.push(entry.message);
-      });
-      try {
-        const fixture = createPi();
-        const intervals: (() => void)[] = [];
-        const notifications: string[] = [];
-        const context: SessionContext = {
-          ...sessionContext("ses_stall_once"),
-          setInterval: (callback) => intervals.push(callback),
-          ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+    // The ticks are hand-driven. A tick no pass is running at is awaited until its pass's
+    // registration reaches the listener. Inside the stall, the refresh is decided on the
+    // registration's age on the real clock, so a tick inside the 25 ms interval posts nothing:
+    // the row ticks again until the refresh shows at the listener (`heartbeatTicks`). So each
+    // refresh the row counts is a tick that met the stall, which a count read after a sleep a
+    // loaded machine outruns could not show.
+    // An hour, past the row's limit, so no deadline ends the wedged pass
+    // (`UNRACED_PASS_DEADLINE_MS`): the stall lasts until the row answers it. At the 5 s deadline
+    // the row had before, a loaded host could reach that deadline. The episode then ended early,
+    // and an ordinary pass could refresh the registration in place of the tick.
+    await withEnvoyTimings(
+      { heartbeatMs: 25, passDeadlineMs: Number(UNRACED_PASS_DEADLINE_MS) },
+      async () => {
+        let wedgePass = false;
+        const wedged = Promise.withResolvers<void>();
+        const answered = Promise.withResolvers<void>();
+        let registrations = 0;
+        /** Told of the next registration the listener accepts, while a tick waits for one. */
+        let accepted: (() => void) | undefined;
+        globalThis.fetch = async (input, init) => {
+          if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
+            // The call the pass awaits, as a socket that is accepted and never answered leaves it.
+            if (wedgePass) {
+              wedgePass = false;
+              wedged.resolve();
+              await answered.promise;
+            } else {
+              registrations += 1;
+              accepted?.();
+            }
+          }
+          return responseWithRegistration(input, init, {});
         };
-        await envoyExtension(fixture.pi);
-        await fixture.handlers.get("session_start")?.({}, context);
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?heartbeat-stall-said-once"
+        );
+        const warnings: string[] = [];
+        const stopSink = rowLogSink((entry) => {
+          if (entry.level === "warn") warnings.push(entry.message);
+        });
+        try {
+          const fixture = createPi();
+          const intervals: (() => void)[] = [];
+          const notifications: string[] = [];
+          const context: SessionContext = {
+            ...sessionContext("ses_stall_once"),
+            setInterval: (callback) => intervals.push(callback),
+            ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+          };
+          const ticks = heartbeatTicks(
+            intervals,
+            () => registrations,
+            (told) => {
+              accepted = told;
+            }
+          );
+          await envoyExtension(fixture.pi);
+          await fixture.handlers.get("session_start")?.({}, context);
+          expect(registrations).toBe(1);
 
-        // A healthy tick before any stall is silent.
-        intervals[0]?.();
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        expect(notifications).toEqual([]);
+          // A healthy tick before any stall is silent.
+          expect(await ticks.registered()).toBe(2);
+          expect(notifications).toEqual([]);
+          // Its pass finishes before the wedge, so the tick that wedges starts a pass of its own.
+          // What is left of the pass once the listener has its registration is promise steps of
+          // the stand-ins, which wait on no clock, so the turns of `settle` finish it.
+          await settle();
 
-        wedgePass = true;
-        intervals[0]?.();
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        // Three ticks of the one stall, each refreshing the registration on its own.
-        for (let tick = 0; tick < 3; tick += 1) {
+          wedgePass = true;
           intervals[0]?.();
-          await new Promise((resolve) => setTimeout(resolve, 60));
-          stillOn(ownRow, "ticking through the stall");
-        }
-        expect(notifications.filter((message) => message.includes("has stalled"))).toHaveLength(1);
-        expect(notifications).toHaveLength(1);
-        expect(
-          warnings.filter(
-            (message) =>
-              message === "envoy: reconcile pass stalled; registration refreshed on its own"
-          )
-        ).toHaveLength(1);
+          // The pass is inside that call, so its registration never reached the listener, and no
+          // tick has met the stall yet.
+          await wedged.promise;
+          expect(registrations).toBe(2);
+          expect(notifications).toEqual([]);
 
-        // The pass settles: the episode is over, and the tick after it is silent again.
-        answered.resolve();
-        for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
-        intervals[0]?.();
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        expect(notifications).toHaveLength(1);
-        expect(
-          warnings.filter(
-            (message) =>
-              message === "envoy: reconcile pass stalled; registration refreshed on its own"
-          )
-        ).toHaveLength(1);
-      } finally {
-        stopSink();
+          // Three refreshes inside the one stall, each posted by a tick on its own. A tick says
+          // the stall before it posts its refresh, so the notice is there once the refresh is.
+          for (let round = 0; round < 3; round += 1) await ticks.refreshed();
+          expect(notifications.filter((message) => message.includes("has stalled"))).toHaveLength(
+            1
+          );
+          expect(notifications).toHaveLength(1);
+          expect(
+            warnings.filter(
+              (message) =>
+                message === "envoy: reconcile pass stalled; registration refreshed on its own"
+            )
+          ).toHaveLength(1);
+
+          // The pass settles: the episode is over, and the tick after it is silent again. What is
+          // left of the pass once its call answers waits on no clock either (`settle`), so the
+          // tick after it starts a pass of its own, which `settle` lets finish too.
+          answered.resolve();
+          await settle();
+          await ticks.registered();
+          await settle();
+          expect(notifications).toHaveLength(1);
+          expect(
+            warnings.filter(
+              (message) =>
+                message === "envoy: reconcile pass stalled; registration refreshed on its own"
+            )
+          ).toHaveLength(1);
+        } finally {
+          stopSink();
+        }
       }
-    });
-  });
+    );
+    // A hang guard, not a bound on the row's work: what can hang is a registration that never
+    // reaches the listener (`heartbeatTicks`). That is a refresh that never comes inside the
+    // stall, which lasts past the limit, or a pass that never registers. A pass that never
+    // reaches the wedged call hangs too (`wedged`). The row's work is a few ticks. Worst measured
+    // cost: 7 502 ms over 20 runs at the 96 rung in the Jobs infra-1580-r30tka-w852q and
+    // infra-1580-r30tkb-twv9q (above), at 6ecd329a with this row. Six times that is 45 012 ms,
+    // rounded up to 50_000.
+  }, 50_000);
 
   // The backstop's clock is per session: a registration accepted for the session the host has
   // left says nothing about the one running now. A `/new` during a wedged pass is exactly that —
