@@ -97,7 +97,7 @@ func must[T any](v T, err error) T {
 
 // TestEachProxyTagRefusalNamesWhatIsWrong holds one row per load refusal of a secret's own proxy
 // tags, each with its detail: a proxy tag naming no kind of the file; a kind whose ways do not hold
-// the way the secret's type takes (an azure-login secret under a kind of swap, mint and app-token;
+// the way the secret's type takes (an azure-login secret under a kind of swap and mint;
 // a stored value under the anthropic kind, which mints alone); a kind with a max_grant that the
 // secret's max-grant tag is absent under or above; and a proxy-narrowed tag of any value but true.
 // Each row's control is served: a kind that holds the way (a stored value under aws signs), a
@@ -124,7 +124,7 @@ func TestEachProxyTagRefusalNamesWhatIsWrong(t *testing.T) {
 	}{
 		{"a kind the file does not declare", policytest.Kinds, withTags(plain(), map[string]string{policy.TagProxy: "gitlab"}), policy.ReasonProxyKindUnknown, []string{`"gitlab"`, "no kind"}},
 		{"an empty proxy tag", policytest.Kinds, withTags(plain(), map[string]string{policy.TagProxy: ""}), policy.ReasonProxyKindUnknown, []string{`""`}},
-		{"an azure-login secret under a kind that does not exchange", policytest.Kinds, withTags(azure(), map[string]string{policy.TagProxy: "github"}), policy.ReasonProxyWay, []string{"azure-login", "exchange", "github", "swap, mint, app-token"}},
+		{"an azure-login secret under a kind that does not exchange", policytest.Kinds, withTags(azure(), map[string]string{policy.TagProxy: "github"}), policy.ReasonProxyWay, []string{"azure-login", "exchange", "github", "swap, mint)"}},
 		{"a stored value under a kind that mints alone", policytest.Kinds, withTags(plain(), map[string]string{policy.TagProxy: "anthropic", policy.TagMaxGrant: "1h"}), policy.ReasonProxyWay, []string{"stored-value", "swap", "anthropic"}},
 		{"no max-grant under a kind with a max_grant", capped, withTags(plain(), map[string]string{policy.TagProxy: "capped"}), policy.ReasonProxyMaxGrant, []string{"no max-grant", "capped", "12h"}},
 		{"a max-grant above the kind's", capped, withTags(plain(), map[string]string{policy.TagProxy: "capped", policy.TagMaxGrant: "13h"}), policy.ReasonProxyMaxGrant, []string{"13h", "above", "12h"}},
@@ -214,7 +214,7 @@ func TestWayOfTakesTheWayOfEachType(t *testing.T) {
 	}
 }
 
-// TestAProxyStringServesAProfileUntilItsSourceIsTagged (SC13): a profile's proxy string serves it
+// TestAProxyStringServesAProfileUntilItsSourceIsTagged: a profile's proxy string serves it
 // behind that kind while its source carries no proxy tag; a string that names its source's tag's
 // kind is served, and each full load writes one ProxyKindRedundantMessage line for it, a reread
 // none; a string that names another kind refuses the profile, naming both. A profile behind its
@@ -303,7 +303,7 @@ func enterpriseAdmin(narrowed bool) secrets.LocalSecret {
 	return s
 }
 
-// TestANarrowedSecretIsServedThroughExactlyOneProfileWithAnAllow (SC17, plan item (c)): a secret
+// TestANarrowedSecretIsServedThroughExactlyOneProfileWithAnAllow: a secret
 // tagged proxy-narrowed=true is served through exactly one profile, and that profile has an allow.
 // On GITHUB_ENTERPRISE_ADMIN with its profile holding its five rows, which is served: the profile
 // deleted refuses the source by its own name; a second profile of the source with no allow refuses
@@ -403,7 +403,7 @@ func TestANarrowedSecretIsServedThroughExactlyOneProfileWithAnAllow(t *testing.T
 	})
 }
 
-// TestANarrowedProfilesAllowStaysInsideItsKind (plan item (a2)): a profile's allow narrows its kind
+// TestANarrowedProfilesAllowStaysInsideItsKind: a profile's allow narrows its kind
 // at the proxy and never widens it. A profile with an allow whose source lacks proxy-narrowed=true
 // is refused, naming the tag; control, the same file with the tag serves it. A row naming a host
 // its kind does not bind is refused, naming the row; control, the same row on a host the kind
@@ -468,7 +468,7 @@ func TestANarrowedProfilesAllowStaysInsideItsKind(t *testing.T) {
 	})
 }
 
-// TestAProfileOfASourceOnlyTheProxyScopesNeedsAKind (plan item (d)): GITHUB_ENTERPRISE_ADMIN's
+// TestAProfileOfASourceOnlyTheProxyScopesNeedsAKind: GITHUB_ENTERPRISE_ADMIN's
 // source carrying no proxy tag, and its profile no proxy string, refuses the profile and the source
 // by that name, profile-source-not-proxied; control, the same file with the tag serves it.
 func TestAProfileOfASourceOnlyTheProxyScopesNeedsAKind(t *testing.T) {

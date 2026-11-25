@@ -37,9 +37,15 @@ type Profiles struct {
 	// fileRules is FileRules: the file's kinds, and an inline binding for each dpop block, built
 	// once as the file is read, since every set the policy builds starts from it (Set.ProxyRules).
 	fileRules proxyrules.Rules
+	// kindAllow is, for each kind of the file that has an allow, that allow in its one written
+	// form (allowForm), built once as the file is read: every fingerprint of a name behind the kind
+	// holds it (proxyDigest, digestOf), and the load writes one for each such name at each load.
+	kindAllow map[string]string
 	// legacy is, at each index of list, the proxy block an old file gives that profile in a form the
 	// kinds replaced (LegacyProxy), and nil where it gives none. Only DecodeProfiles' answer holds
-	// any: ParseProfiles refuses such a block.
+	// any: ParseProfiles refuses such a block. It is transitional: it goes, with LegacyProxy, once
+	// no profiles file in force before the kinds is left for `profiles check --against` to read,
+	// which is once every deployment's file in force declares kinds.
 	legacy []*ProxyBlock
 	// fileDigest is the SHA-256, in hex, of the file's bytes as ParseProfiles read them, and ""
 	// for the zero Profiles and for DecodeProfiles' answer. ProfilesAppliedMessage writes it.
@@ -63,12 +69,16 @@ type Profile struct {
 	Google   *GoogleBlock  `json:"google,omitempty"`
 	// Proxy is the profile's proxy block of kind dpop, the one block a kinds file still serves (a
 	// capability the broker mints for a grant of its own and holds), and nil for every other
-	// profile.
+	// profile. It is transitional: it goes, with each branch that reads it, once the broker's
+	// minted capabilities are a kind of the file whose grants name the kind (the dispatch kind),
+	// so that no profile holds a block.
 	Proxy *ProxyBlock `json:"proxy,omitempty"`
-	// ProxyKind is the kind the profile's proxy key names as a string (SC13's transitional form),
-	// and "" for none: the profile is served behind that kind until its source carries a proxy tag
-	// (TagProxy). digestOf writes the kind the profile is served behind, which is this or its
-	// source's tag, so it is no field of the JSON a Profile marshals to.
+	// ProxyKind is the kind the profile's proxy key names as a string, and "" for none: the
+	// profile is served behind that kind until its source carries a proxy tag (TagProxy).
+	// digestOf writes the kind the profile is served behind, which is this or its source's tag, so
+	// it is no field of the JSON a Profile marshals to. The string is transitional: it goes, with
+	// each branch that reads it, once every source a profile names carries its own proxy tag, so
+	// that no file needs the string and ParseProfiles can refuse it.
 	ProxyKind string `json:"-"`
 	// Allow is the profile's own allow: the rows its source's credential may travel on at the
 	// proxy, within its kind's (proxyrules.Covers), each row a method, a path prefix and, where it
@@ -103,7 +113,9 @@ type GoogleBlock struct {
 // (Profile.Proxy), which the proxy reads as an inline binding of the profile's name (FileRules);
 // a block of kind "", aws or azure is the form the kinds replaced, which only an old file read by
 // DecodeProfiles holds (LegacyProxy). Who decides a request for the credential is no part of it:
-// that is the source key's own judge and guidance tags (TagJudge, TagGuidance).
+// that is the source key's own judge and guidance tags (TagJudge, TagGuidance). The type goes when
+// both its readers have: the dpop block once the minted capabilities are a kind of the file, and
+// the old blocks once no file before the kinds is left for `profiles check --against` to read.
 type ProxyBlock struct {
 	Hosts   []string           `json:"hosts"`
 	Headers []string           `json:"headers"` // nil: the default ["authorization"]; empty: no header
@@ -236,8 +248,16 @@ func readProfiles(kinds []proxyrules.Kind, entries []profileEntry) (Profiles, er
 	}
 	profiles := Profiles{list: list, digests: make([]string, len(list)), index: make(map[string]int, len(list)), legacy: legacy}
 	profiles.fileRules.Kinds = kinds
+	for _, k := range kinds {
+		if k.Allow != nil {
+			if profiles.kindAllow == nil {
+				profiles.kindAllow = map[string]string{}
+			}
+			profiles.kindAllow[k.Name] = allowForm(k.Allow)
+		}
+	}
 	for i, profile := range list {
-		profiles.digests[i] = digestOf(profile, servedAs{kind: profile.ProxyKind})
+		profiles.digests[i] = digestOf(profile, profiles.fileServed(i))
 		if _, repeated := profiles.index[profile.Name]; !repeated {
 			profiles.index[profile.Name] = i
 		}
@@ -390,7 +410,10 @@ func checkKinds(kinds []proxyrules.Kind) error {
 // of kinds, which serves the profile behind that kind until its source carries a proxy tag; or a
 // proxy block of kind dpop, which sets no judge and no guidance and binds what the airlock serves
 // (ProxyBlock.check). A block of any other kind is the form the kinds replaced, and is refused
-// naming them, so a file written before them is not served with its names' rules missing.
+// naming them, so a file written before them is not served with its names' rules missing. Both
+// forms it serves are transitional: the string goes once every source a profile names carries its
+// own proxy tag, and the dpop block once the minted capabilities are a kind of the file; then the
+// key goes too, and the file's strict read refuses it as a field it does not know.
 func (e profileEntry) checkProxy(kinds []proxyrules.Kind, refuse func(field, why string) error) error {
 	switch {
 	case e.Proxy == nil:
@@ -414,7 +437,7 @@ func (e profileEntry) checkProxy(kinds []proxyrules.Kind, refuse func(field, why
 // is made from no stored secret and its grant is decided by the kind, not by the tag policy. A
 // field that scopes or limits a stored secret's grant would read as a limit that holds nothing, and
 // an allow of the profile's own beside the block's would be a second list the block's binding
-// never reads.
+// never reads. It goes with the dpop block, once the minted capabilities are a kind of the file.
 func (e profileEntry) checkMinted(refuse func(field, why string) error) error {
 	if e.Proxy == nil || e.Proxy.block == nil || e.Proxy.block.Kind != proxyrules.WayDPoP {
 		return nil
@@ -736,7 +759,8 @@ func (p Profiles) proxyRules(secrets map[string]Secret) proxyrules.Rules {
 // replaced, of kind "", aws or azure, and nil for any other profile and for a name p holds no
 // profile of. Only DecodeProfiles' answer holds one: `profiles check --against` reads a file in
 // force written before the kinds through it, while ParseProfiles refuses such a block, so its
-// answer holds none.
+// answer holds none. It is transitional: it goes once no profiles file in force before the kinds
+// is left for `--against` to read, which is once every deployment's file in force declares kinds.
 func (p Profiles) LegacyProxy(name string) *ProxyBlock {
 	if i, held := p.index[name]; held && p.legacy != nil {
 		return p.legacy[i]
@@ -760,23 +784,56 @@ func (p Profiles) Digest(name string) string {
 }
 
 // servedAs is what a profile is served as beyond its entry: the kind it is behind, its source's
-// proxy tag or else its own proxy string ("" for none); whether its source is tagged
-// proxy-narrowed; and its source's judge seconds (Secret.Judge, 0 for none). digestOf reads the
-// judge only for a profile behind the proxy, where a proxy block once held it.
+// proxy tag or else its own proxy string ("" for none), and that kind's allow in its one written
+// form (allowForm, "" for a kind with none); whether its source is tagged proxy-narrowed; and its
+// source's judge seconds (Secret.Judge, 0 for none). digestOf reads the judge only for a profile
+// behind the proxy, where a proxy block once held it.
 type servedAs struct {
-	kind     string
-	narrowed bool
-	judge    uint32
+	kind      string
+	kindAllow string
+	narrowed  bool
+	judge     uint32
+}
+
+// fileServed is how the profile at index i is served by its file alone: behind the kind its own
+// proxy string names, with that kind's allow, under no proxy-narrowed tag and no judge tag. Its
+// fingerprint is the file's own (Digest).
+func (p Profiles) fileServed(i int) servedAs {
+	kind := p.list[i].ProxyKind
+	return servedAs{kind: kind, kindAllow: p.kindAllow[kind]}
 }
 
 // servedDigest is the fingerprint the profile at index i is served with, as served: digestOf of it
-// served so, which is its file's own fingerprint (Digest), computed once, while it is served
-// behind no kind or behind its own proxy string's, under no proxy-narrowed tag and no judge tag.
+// served so, which is its file's own fingerprint (Digest), computed once, while it is served as its
+// file alone serves it (fileServed).
 func (p Profiles) servedDigest(i int, served servedAs) string {
-	if served == (servedAs{kind: p.list[i].ProxyKind}) {
+	if served == p.fileServed(i) {
 		return p.digests[i]
 	}
 	return digestOf(p.list[i], served)
+}
+
+// allowForm is a kind's allow in the one form its fingerprint writes: its rows sorted, as JSON, so
+// two orders of one list are one form; "[]" for a present empty list, which allows nothing; and ""
+// for no allow, which allows every method and path, so the two never meet.
+func allowForm(allow []proxyrules.Allow) string {
+	if allow == nil {
+		return ""
+	}
+	rows := slices.Clone(allow)
+	slices.SortFunc(rows, func(a, b proxyrules.Allow) int {
+		return cmp.Or(strings.Compare(a.Method, b.Method), strings.Compare(a.PathPrefix, b.PathPrefix), strings.Compare(a.Host, b.Host))
+	})
+	// Marshal cannot fail for a slice of proxyrules.Allow, a struct of strings.
+	encoded, _ := json.Marshal(rows)
+	return string(encoded)
+}
+
+// kindAllowForm is the allow of rules' kind of name in its one written form (allowForm), read
+// once as the file was (kindAllow) where p is the file rules came from, and "" for a kind with
+// none or no kind of that name.
+func (p Profiles) kindAllowForm(name string) string {
+	return p.kindAllow[name]
 }
 
 // digestOf is the fingerprint of profile served as served. Its JSON is the Profile's, and then,
@@ -787,15 +844,19 @@ func (p Profiles) servedDigest(i int, served servedAs) string {
 // that kind's name under "proxy", the kind it is served behind and not the file's spelling of it,
 // so a proxy string dropped for its source's tag of the same kind moves no digest, then its
 // source's judge seconds under "judge" where it has any, as its block held them; then
-// "proxyNarrowed": true where the source carries that tag, and the profile's own allow under
-// "allow", a present empty list included. A profile neither behind the proxy, under that tag nor
-// with an allow writes the bytes it wrote before the kinds existed.
+// "proxyNarrowed": true where the source carries that tag, the profile's own allow under "allow",
+// a present empty list included, and its kind's allow under "kindAllow" where the kind has one
+// (allowForm). A profile neither behind the proxy, under that tag nor with an allow writes the
+// bytes it wrote before the kinds existed.
 //
 // Each request records the digest of the profile it was decided under
 // (request_secrets.airlock_digest), and a release ends a grant whose profile's digest moved, so a
-// change of the kind a profile is behind, of its source's proxy-narrowed tag, of its allow, or, for
-// a profile behind the proxy, of its source's judge tag, ends the profile's grants. The guidance
-// is in no fingerprint, as it never was: it decides nothing a live grant may do.
+// change of the kind a profile is behind, of that kind's allow, of its source's proxy-narrowed
+// tag, of its allow, or, for a profile behind the proxy, of its source's judge tag, ends the
+// profile's grants. A kind's hosts and headers are in no fingerprint: a kind that only gains one
+// ends no grant, and the release ends a grant whose kind lost one by the hosts and headers its
+// request recorded. The guidance is in no fingerprint, as it never was: it decides nothing a live
+// grant may do.
 func digestOf(profile Profile, served servedAs) string {
 	type digestProxy struct {
 		ProxyBlock
@@ -806,10 +867,11 @@ func digestOf(profile Profile, served servedAs) string {
 	// written before the kinds wrote, and the fields after it are new.
 	form := struct {
 		Profile
-		Proxy    any                 `json:"proxy,omitempty"`
-		Judge    *uint32             `json:"judge,omitempty"`
-		Narrowed bool                `json:"proxyNarrowed,omitempty"`
-		Allow    *[]proxyrules.Allow `json:"allow,omitempty"`
+		Proxy     any                 `json:"proxy,omitempty"`
+		Judge     *uint32             `json:"judge,omitempty"`
+		Narrowed  bool                `json:"proxyNarrowed,omitempty"`
+		Allow     *[]proxyrules.Allow `json:"allow,omitempty"`
+		KindAllow json.RawMessage     `json:"kindAllow,omitempty"`
 	}{Profile: profile, Narrowed: served.narrowed}
 	var judge *uint32
 	if served.judge != 0 {
@@ -820,12 +882,16 @@ func digestOf(profile Profile, served servedAs) string {
 		form.Proxy = &digestProxy{ProxyBlock: *profile.Proxy, Judge: judge}
 	case served.kind != "":
 		form.Proxy, form.Judge = served.kind, judge
+		if served.kindAllow != "" {
+			form.KindAllow = json.RawMessage(served.kindAllow)
+		}
 	}
 	if profile.Allow != nil {
 		form.Allow = &profile.Allow
 	}
 	// Marshal cannot fail for this form: every field is a string, a bool, a duration, a slice or
-	// map of strings, a slice of proxyrules.Allow, a *uint32 or a pointer to a struct of those.
+	// map of strings, a slice of proxyrules.Allow, a *uint32, JSON allowForm wrote, or a pointer
+	// to a struct of those.
 	encoded, _ := json.Marshal(form)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
@@ -833,15 +899,22 @@ func digestOf(profile Profile, served servedAs) string {
 
 // proxyDigest is the fingerprint of a stored secret served by its own name behind the proxy (its
 // Secret.ProfileDigest): the SHA-256, in hex, of {"proxy": kind}, with "proxyNarrowed": true
-// beside it where the secret carries that tag. Each request records it as it records a profile's
-// (request_secrets.airlock_digest), so a change of the secret's proxy tag, its proxy-narrowed tag,
-// or of either one off, ends the grants of its name; a secret behind no proxy has none, and writes
-// the "" it wrote before the kinds existed.
-func proxyDigest(kind string, narrowed bool) string {
-	encoded, _ := json.Marshal(struct {
-		Proxy    string `json:"proxy"`
-		Narrowed bool   `json:"proxyNarrowed,omitempty"`
-	}{kind, narrowed})
+// beside it where the secret carries that tag, and "kindAllow" and its kind's allow in its one
+// written form (allowForm) where the kind has one. Each request records it as it records a
+// profile's (request_secrets.airlock_digest), so a change of the secret's proxy tag, its
+// proxy-narrowed tag, or of either one off, or any change of its kind's allow, a widening most of
+// all, ends the grants of its name; a kind that only gains a host or a header changes none of it.
+// A secret behind no proxy has none, and writes the "" it wrote before the kinds existed.
+func proxyDigest(kind string, narrowed bool, kindAllow string) string {
+	form := struct {
+		Proxy     string          `json:"proxy"`
+		Narrowed  bool            `json:"proxyNarrowed,omitempty"`
+		KindAllow json.RawMessage `json:"kindAllow,omitempty"`
+	}{Proxy: kind, Narrowed: narrowed}
+	if kindAllow != "" {
+		form.KindAllow = json.RawMessage(kindAllow)
+	}
+	encoded, _ := json.Marshal(form)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
 }

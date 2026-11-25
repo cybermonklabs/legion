@@ -65,7 +65,7 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 		delete(served, profile.Name)
 		delete(versions, profile.Name)
 		secret, refusal := p.serve(i, set, prefix)
-		if narrowedRefusal, held := narrowedProfiles[i]; held && refusal.Reason != ReasonProfileMinted {
+		if narrowedRefusal, held := narrowedProfiles[profile.Name]; held && refusal.Reason != ReasonProfileMinted {
 			secret, refusal = Secret{}, narrowedRefusal
 		}
 		if refusal.Reason == "" {
@@ -73,6 +73,8 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 			if version, listed := set.versions[profile.Source]; listed {
 				versions[profile.Name] = version
 			}
+			// A proxy string its source's tag repeats is one the file can drop. This goes with the
+			// string, once every source a profile names carries its own proxy tag.
 			if profile.ProxyKind != "" && set.Secrets[profile.Source].Proxy == profile.ProxyKind {
 				redundant = append(redundant, profile.Name)
 			}
@@ -135,49 +137,61 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 	return next
 }
 
-// narrowed is SC17's rule over set's stored secrets tagged proxy-narrowed=true (Secret.
-// ProxyNarrowed): each is served through exactly one profile, which names it as its source or by
-// its name, and which has an allow. It answers the refusal of each profile, by its index, that
-// the rule refuses, and the refusal of each such secret it refuses by its own name: one no
-// profile names, and one whose one profile has no allow, or which more than one profile names,
-// with each of those profiles.
-func (p Profiles) narrowed(set *Set) (map[int]Refusal, map[string]Refusal) {
-	profiles, sources := map[int]Refusal{}, map[string]Refusal{}
+// narrowed is the narrowed rule over set's stored secrets tagged proxy-narrowed=true (Secret.
+// ProxyNarrowed), as NarrowedFaults words it: the refusal of each profile the rule refuses, by its
+// name, and of each such secret it refuses by its own name, each with the secret's owner.
+func (p Profiles) narrowed(set *Set) (map[string]Refusal, map[string]Refusal) {
+	profiles, sources := map[string]Refusal{}, map[string]Refusal{}
 	for name, secret := range set.Secrets {
 		if !secret.ProxyNarrowed {
 			continue
 		}
-		var naming []int
-		for i := range p.list {
-			if p.list[i].Source == name || p.list[i].Name == name {
-				naming = append(naming, i)
-			}
+		own, of := p.NarrowedFaults(name)
+		if own.Reason != "" {
+			sources[name] = Refusal{Reason: own.Reason, Owner: secret.Owner, Detail: own.Detail}
 		}
-		refuse := func(detail string) Refusal {
-			return Refusal{Reason: ReasonProxyNarrowedProfiles, Owner: secret.Owner, Detail: detail}
-		}
-		switch {
-		case len(naming) == 0:
-			sources[name] = refuse("it is tagged " + TagProxyNarrowed + "=" + ProxyNarrowedTrue + ", and no profile names it")
-			continue
-		case len(naming) == 1 && p.list[naming[0]].Allow != nil:
-			continue
-		case len(naming) == 1:
-			sources[name] = refuse("it is tagged " + TagProxyNarrowed + "=" + ProxyNarrowedTrue + ", and its one profile, " + p.list[naming[0]].Name + ", has no allow")
-			profiles[naming[0]] = refuse("its source " + name + " is tagged " + TagProxyNarrowed + "=" + ProxyNarrowedTrue + ", and the profile has no allow")
-		default:
-			names := make([]string, len(naming))
-			for j, i := range naming {
-				names[j] = p.list[i].Name
-			}
-			why := fmt.Sprintf("%s is tagged %s=%s, and %d profiles name it: %s", name, TagProxyNarrowed, ProxyNarrowedTrue, len(naming), strings.Join(names, ", "))
-			sources[name] = refuse(why)
-			for _, i := range naming {
-				profiles[i] = refuse(why)
-			}
+		for profile, fault := range of {
+			profiles[profile] = Refusal{Reason: fault.Reason, Owner: secret.Owner, Detail: fault.Detail}
 		}
 	}
 	return profiles, sources
+}
+
+// NarrowedFaults is the narrowed rule for the stored secret name, tagged proxy-narrowed=true: it is
+// served through exactly one profile of p, which names it as its source or by its name, and which
+// has an allow. It answers the secret's own fault, the zero ProfileFault where the rule serves it,
+// and the fault of each profile the rule refuses, by the profile's name, nil for none; each fault
+// is ReasonProxyNarrowedProfiles, worded as the policy load words it. No profile names it: the
+// secret is refused. Its one profile has no allow: the secret and that profile are. More than one
+// names it: the secret and each of them are, since each would put its credential on its kind's
+// hosts with the kind's allow alone. The load holds every served stored secret so tagged to it
+// (apply), and `envoy-broker profiles check` holds each secret its store list so tags to it.
+func (p Profiles) NarrowedFaults(name string) (ProfileFault, map[string]ProfileFault) {
+	var naming []string
+	for i := range p.list {
+		if p.list[i].Source == name || p.list[i].Name == name {
+			naming = append(naming, p.list[i].Name)
+		}
+	}
+	fault := func(detail string) ProfileFault {
+		return ProfileFault{Reason: ReasonProxyNarrowedProfiles, Detail: detail}
+	}
+	tagged := TagProxyNarrowed + "=" + ProxyNarrowedTrue
+	switch {
+	case len(naming) == 0:
+		return fault("it is tagged " + tagged + ", and no profile names it"), nil
+	case len(naming) == 1 && p.Lookup(naming[0]).Allow != nil:
+		return ProfileFault{}, nil
+	case len(naming) == 1:
+		return fault("it is tagged " + tagged + ", and its one profile, " + naming[0] + ", has no allow"),
+			map[string]ProfileFault{naming[0]: fault("its source " + name + " is tagged " + tagged + ", and the profile has no allow")}
+	}
+	why := fault(fmt.Sprintf("%s is tagged %s, and %d profiles name it: %s", name, tagged, len(naming), strings.Join(naming, ", ")))
+	profiles := make(map[string]ProfileFault, len(naming))
+	for _, profile := range naming {
+		profiles[profile] = why
+	}
+	return why, profiles
 }
 
 // servesAny reports whether set serves a secret match holds of.
@@ -213,7 +227,8 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	if profile.Proxy != nil && profile.Proxy.Kind == proxyrules.WayDPoP {
 		// Proxy configuration for a capability the broker mints for a grant of its own and holds:
 		// no stored secret is ever its value, so a stored secret of its name is not served
-		// through it, and nothing of it can be requested or approved.
+		// through it, and nothing of it can be requested or approved. This branch goes with the
+		// dpop block, once the minted capabilities are a kind of the file.
 		return Secret{}, Refusal{Reason: ReasonProfileMinted, Detail: "a profile of kind " + proxyrules.WayDPoP + " is a capability the broker mints and holds, never a secret the policy serves"}
 	}
 	source, ok := set.Secrets[profile.Source]
@@ -290,72 +305,131 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	return secret, Refusal{}
 }
 
-// proxied holds the profile at index i, served from source as secret, to Cipher's proxy, and
-// writes into secret the kind it is behind, its way, its source's proxy-narrowed tag and its
-// fingerprint (servedDigest), answering the reason and detail of the first rule it fails:
-//
-//   - its proxy string names another kind than its source's proxy tag (ReasonProxyKindConflict);
-//     the same kind is served, the tag's;
-//   - it is behind no kind, and its source's credential is one only the proxy scopes
-//     (scopedOnlyByProxy), or it has an allow, which narrows only at the proxy
-//     (ReasonProfileSourceNotProxied);
-//   - behind its kind, its source's type takes a way the kind's ways do not hold
-//     (ReasonProxyWay), or its grant cap, its own over its source's, is not within the kind's
-//     max_grant (ReasonProxyMaxGrant), which the load held a tagged source to already and holds a
-//     profile behind its own proxy string to here;
-//   - it has an allow, and its source carries no proxy-narrowed=true tag
-//     (ReasonProfileAllowNotNarrowed); a row of it names a host its kind does not bind
-//     (ReasonProfileAllowHost); or rows of it are outside its kind's allow, by the cover rule
-//     proxyrules.Covers (ReasonProfileAllowOutsideKind).
+// proxied holds the profile at index i, served from source as secret, to Cipher's proxy
+// (ProxyFaults), refusing it for the first fault, and otherwise writes into secret the kind it is
+// behind, its way, its source's proxy-narrowed tag and its fingerprint (servedDigest).
 func (p Profiles) proxied(i int, source Secret, secret *Secret) (reason, detail string) {
 	profile := &p.list[i]
-	if source.Proxy != "" && profile.ProxyKind != "" && source.Proxy != profile.ProxyKind {
-		return ReasonProxyKindConflict, fmt.Sprintf("the profile's proxy string names the kind %s, and its source %s's %s tag names %s", profile.ProxyKind, profile.Source, TagProxy, source.Proxy)
+	if faults := p.ProxyFaults(profile, &source); len(faults) > 0 {
+		return faults[0].Reason, faults[0].Detail
 	}
-	name := cmp.Or(source.Proxy, profile.ProxyKind)
-	kind := p.fileRules.Kind(name)
+	kind := p.fileRules.Kind(ProfileKind(profile, source.Proxy))
 	if kind == nil {
-		switch {
-		case scopedOnlyByProxy(source.Type()):
-			return ReasonProfileSourceNotProxied, fmt.Sprintf("a %s source's credential is scoped only by Cipher's proxy, and neither its source %s's %s tag nor the profile's proxy string names a kind", kindOf(source.Type()), profile.Source, TagProxy)
-		case profile.Allow != nil:
-			return ReasonProfileSourceNotProxied, fmt.Sprintf("its allow narrows its source's credential only at Cipher's proxy, and neither its source %s's %s tag nor the profile's proxy string names a kind", profile.Source, TagProxy)
-		}
 		secret.ProfileDigest = p.servedDigest(i, servedAs{})
 		return "", ""
 	}
-	way, ok := WayOf(*kind, source.Type())
-	if !ok {
-		return ReasonProxyWay, wayRefusal(*kind, source.Type(), way)
-	}
-	if why := kindMaxGrant(*kind, secret.MaxGrant); why != "" {
-		return ReasonProxyMaxGrant, why
-	}
-	if profile.Allow != nil {
-		if !source.ProxyNarrowed {
-			return ReasonProfileAllowNotNarrowed, fmt.Sprintf("its allow narrows its source %s at the proxy, and %s carries no %s=%s tag", profile.Source, profile.Source, TagProxyNarrowed, ProxyNarrowedTrue)
-		}
-		for _, row := range profile.Allow {
-			if row.Host != "" && !proxyrules.HostBound(kind.Hosts, row.Host) {
-				return ReasonProfileAllowHost, fmt.Sprintf("allow row %s names the host %s, which the kind %s does not bind (%s)", rowWords(row), row.Host, kind.Name, strings.Join(kind.Hosts, ", "))
-			}
-		}
-		if outside := proxyrules.Outside(kind.Allow, profile.Allow); outside != nil {
-			rows := make([]string, len(outside))
-			for j, row := range outside {
-				rows[j] = rowWords(row)
-			}
-			return ReasonProfileAllowOutsideKind, fmt.Sprintf("allow rows %s are outside the kind %s's allow, and a profile narrows its kind and never widens it", strings.Join(rows, " and "), kind.Name)
-		}
-	}
+	way, _ := WayOf(*kind, source.Type())
 	secret.Proxy, secret.Way, secret.ProxyNarrowed = kind.Name, way, source.ProxyNarrowed
-	secret.ProfileDigest = p.servedDigest(i, servedAs{kind: kind.Name, narrowed: source.ProxyNarrowed, judge: source.Judge})
+	secret.ProfileDigest = p.servedDigest(i, servedAs{kind: kind.Name, kindAllow: p.kindAllowForm(kind.Name), narrowed: source.ProxyNarrowed, judge: source.Judge})
 	return "", ""
 }
 
-// rowWords is an allow row as a refusal names it: its method and path prefix, and its host where
-// it names one.
-func rowWords(row proxyrules.Allow) string {
+// ProfileFault is one fault the policy load refuses a profile for at Cipher's proxy: Reason, one
+// of the Reason* constants, and Detail, worded as the load's Refusal words it.
+type ProfileFault struct {
+	Reason string
+	Detail string
+}
+
+// ProfileKind is the name of the kind profile p is served behind, where its source's proxy tag
+// names sourceTag ("" for none): that tag's kind, or else the kind p's own proxy string names, or
+// "" for none. The tag wins because the store, not the file, says where a credential may go; a
+// string that names another kind is a fault (ReasonProxyKindConflict).
+func ProfileKind(p *Profile, sourceTag string) string {
+	return cmp.Or(sourceTag, p.ProxyKind)
+}
+
+// ProxyFaults is every fault for which the policy load refuses profile, a profile of p, at
+// Cipher's proxy, under p's kinds, in the order the load weighs them; the load refuses profile for
+// the first (proxied), and `envoy-broker profiles check` reports each. source is profile's source
+// as the load reads it (Profiles.SecretOfTags reads one from its store tags), and nil where its
+// tags were not read: then each fault a tag decides is left out, and a profile with no proxy
+// string, whose kind is its source's tag, is held to no kind at all. The faults:
+//
+//   - its proxy string names another kind than its source's proxy tag (ReasonProxyKindConflict);
+//     the rest are weighed under the tag's kind, which the load serves it behind when the two agree;
+//   - it is behind no kind (ProfileKind), and its source's credential is one only the proxy scopes
+//     (a stored token, a google-login, an azure-login or an anthropic-federation secret), or it has
+//     an allow, which narrows only at the proxy (ReasonProfileSourceNotProxied); no fault follows;
+//   - the kind it is behind is no kind of p (ReasonProxyKindUnknown); no fault follows. The load
+//     never meets it: ParseProfiles holds a proxy string to the file's kinds, and the load refuses
+//     a source whose tag names none (SecretOfTags);
+//   - its source's type takes a way the kind's ways do not hold (WayOf, ReasonProxyWay);
+//   - its grant cap, its own maxGrant over its source's max-grant, is not within the kind's
+//     max_grant (ReasonProxyMaxGrant); with source nil it is weighed only when profile sets a
+//     maxGrant;
+//   - it has an allow, and its source carries no proxy-narrowed=true tag
+//     (ReasonProfileAllowNotNarrowed);
+//   - a row of its allow names a host the kind does not bind (ReasonProfileAllowHost), one fault for
+//     each such row;
+//   - rows of its allow are outside the kind's allow, by the cover rule proxyrules.Covers
+//     (ReasonProfileAllowOutsideKind), one fault naming them all.
+//
+// It reads nothing but p and its arguments, and answers nil for a profile the load serves.
+func (p Profiles) ProxyFaults(profile *Profile, source *Secret) []ProfileFault {
+	var faults []ProfileFault
+	fault := func(reason, detail string) { faults = append(faults, ProfileFault{reason, detail}) }
+	var tag string
+	if source != nil {
+		tag = source.Proxy
+	}
+	if tag != "" && profile.ProxyKind != "" && tag != profile.ProxyKind {
+		fault(ReasonProxyKindConflict, fmt.Sprintf("the profile's proxy string names the kind %s, and its source %s's %s tag names %s", profile.ProxyKind, profile.Source, TagProxy, tag))
+	}
+	name := ProfileKind(profile, tag)
+	if name == "" {
+		switch {
+		case source == nil:
+		case scopedOnlyByProxy(source.Type()):
+			fault(ReasonProfileSourceNotProxied, fmt.Sprintf("a %s source's credential is scoped only by Cipher's proxy, and neither its source %s's %s tag nor the profile's proxy string names a kind", kindOf(source.Type()), profile.Source, TagProxy))
+		case profile.Allow != nil:
+			fault(ReasonProfileSourceNotProxied, fmt.Sprintf("its allow narrows its source's credential only at Cipher's proxy, and neither its source %s's %s tag nor the profile's proxy string names a kind", profile.Source, TagProxy))
+		}
+		return faults
+	}
+	kind := p.fileRules.Kind(name)
+	if kind == nil {
+		fault(ReasonProxyKindUnknown, fmt.Sprintf("it is behind the kind %q, which is no kind of the profiles file", name))
+		return faults
+	}
+	if source != nil {
+		if way, ok := WayOf(*kind, source.Type()); !ok {
+			fault(ReasonProxyWay, wayRefusal(*kind, source.Type(), way))
+		}
+	}
+	if grantCap := profile.MaxGrant; grantCap != 0 || source != nil {
+		if source != nil {
+			grantCap = cmp.Or(profile.MaxGrant, source.MaxGrant)
+		}
+		if why := kindMaxGrant(*kind, grantCap); why != "" {
+			fault(ReasonProxyMaxGrant, why)
+		}
+	}
+	if profile.Allow == nil {
+		return faults
+	}
+	if source != nil && !source.ProxyNarrowed {
+		fault(ReasonProfileAllowNotNarrowed, fmt.Sprintf("its allow narrows its source %s at the proxy, and %s carries no %s=%s tag", profile.Source, profile.Source, TagProxyNarrowed, ProxyNarrowedTrue))
+	}
+	for _, row := range profile.Allow {
+		if row.Host != "" && !proxyrules.HostBound(kind.Hosts, row.Host) {
+			fault(ReasonProfileAllowHost, fmt.Sprintf("allow row %s names the host %s, which the kind %s does not bind (%s)", RowWords(row), row.Host, kind.Name, strings.Join(kind.Hosts, ", ")))
+		}
+	}
+	if outside := proxyrules.Outside(kind.Allow, profile.Allow); outside != nil {
+		rows := make([]string, len(outside))
+		for j, row := range outside {
+			rows[j] = RowWords(row)
+		}
+		fault(ReasonProfileAllowOutsideKind, fmt.Sprintf("allow rows %s are outside the kind %s's allow, and a profile narrows its kind and never widens it", strings.Join(rows, " and "), kind.Name))
+	}
+	return faults
+}
+
+// RowWords is an allow row as a refusal names it: its method and path prefix, and " on " and its
+// host where it names one. It is the one wording of a row, the load's refusals' and `envoy-broker
+// profiles check`'s alike.
+func RowWords(row proxyrules.Allow) string {
 	if row.Host == "" {
 		return row.Method + " " + row.PathPrefix
 	}

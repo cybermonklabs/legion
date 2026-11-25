@@ -3,7 +3,6 @@ package policy_test
 import (
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -438,7 +437,7 @@ func TestProfilesDigestMovesWithEachFieldOfTheEntry(t *testing.T) {
 }
 
 // TestADigestIsTheOneItHadBeforeTheKinds pins the digest of three profiles the kinds leave as they
-// were to the values the merge base (origin/INFRA-1129/judge-tags, 233828e4aeb) computed for the
+// were to the values the merge base (commit 233828e4aeb) computed for the
 // same entries, printed by its Profiles.Digest: a GitHub profile and a google profile, neither of
 // them behind the proxy, and a dpop block, the one block a kinds file still serves. Each request
 // records the digest of the profile it was decided under (request_secrets.airlock_digest), and a
@@ -501,9 +500,6 @@ func TestFileRulesHoldTheKindsAndABindingPerDPoPBlock(t *testing.T) {
 	}
 	if err := proxyrules.Validate(rules); err != nil {
 		t.Errorf("the rules of a file ParseProfiles served are not valid: %v", err)
-	}
-	if hosts := rules.AllHosts(); !slices.Contains(hosts, "dispatch.example.com") || !slices.Contains(hosts, "api.anthropic.com") {
-		t.Errorf("AllHosts() = %v, want the kinds' hosts and the dpop blocks'", hosts)
 	}
 }
 

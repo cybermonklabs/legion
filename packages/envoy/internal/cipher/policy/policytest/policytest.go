@@ -325,7 +325,7 @@ func ProfilesFile(profiles ...string) string {
 // others is held to nothing a test has not set itself.
 const Kinds = `[` +
 	`{"name": "example", "hosts": ["api.example.com"], "ways": ["swap", "mint", "exchange"]}, ` +
-	`{"name": "github", "hosts": ["api.github.com", "github.com", "uploads.github.com"], "headers": ["Authorization"], "variables": ["GH_TOKEN", "GITHUB_TOKEN"], "ways": ["swap", "mint", "app-token"]}, ` +
+	`{"name": "github", "hosts": ["api.github.com", "github.com", "uploads.github.com"], "headers": ["Authorization"], "variables": ["GH_TOKEN", "GITHUB_TOKEN"], "ways": ["swap", "mint"]}, ` +
 	`{"name": "gcp", "hosts": ["*.googleapis.com", "*.pkg.dev"], "headers": ["Authorization"], "ways": ["mint"]}, ` +
 	`{"name": "slack", "hosts": ["slack.com"], "headers": ["Authorization"], "variables": ["SLACK_BOT_TOKEN"], "ways": ["swap"]}, ` +
 	`{"name": "aws", "hosts": ["*.amazonaws.com"], "ways": ["sign"]}, ` +

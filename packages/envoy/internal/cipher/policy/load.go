@@ -40,7 +40,8 @@ const ProfilesAppliedMessage = "broker: profiles applied"
 // ProxyKindRedundantMessage is the line Current writes, at WARN, once for each full load, for
 // each profile it serves whose proxy string (Profile.ProxyKind) names the kind its source's proxy
 // tag names too: profile, source and kind. The profile is served behind that kind; the string says
-// nothing the tag does not, so the file can drop it, and the line stands out until it does.
+// nothing the tag does not, so the file can drop it, and the line stands out until it does. It goes
+// with the proxy string, once every source a profile names carries its own proxy tag.
 const ProxyKindRedundantMessage = "profile's proxy string names its source's proxy kind; drop the string"
 
 // ServableMessage is the line Current writes, at INFO, when a secret the live policy refused is
@@ -268,7 +269,8 @@ const (
 	// ReasonProxyKindConflict: a profile's proxy string names another kind than its source's
 	// proxy tag, so the file and the store disagree on where its credential may go. A string that
 	// names the source's own kind is served, and Current's reload writes ProxyKindRedundantMessage
-	// for it. Its detail names both kinds.
+	// for it. Its detail names both kinds. It goes with the proxy string, once every source a
+	// profile names carries its own proxy tag.
 	ReasonProxyKindConflict = "proxy-kind-conflict"
 	// ReasonProxyNarrowedMalformed: the proxy-narrowed tag (TagProxyNarrowed) is set to anything
 	// but "true", the empty string included. A mark the broker cannot read names no narrowing it
@@ -297,6 +299,7 @@ const (
 	// policy serves, so serve answers it whatever the store holds - with no stored secret of its
 	// name, and with one, which would otherwise be requested and approved like any stored secret -
 	// and apply serves it as nothing and records it in no Refused, since it is no fault to report.
+	// It goes with the dpop block, once the minted capabilities are a kind of the file.
 	ReasonProfileMinted = "profile-minted"
 	// ReasonGitHubAppNoProfile: a github-app secret no profile names, as its own name or as its
 	// source. Every GitHub token the broker hands over is a profile's, held to that profile's
@@ -551,7 +554,7 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	if err != nil || reason != "" {
 		return Secret{}, reason, "", err
 	}
-	if reason, detail := l.proxyTags(&s, ls.Tags); reason != "" {
+	if reason, detail := proxyTags(l.Profiles, &s, ls.Tags); reason != "" {
 		return Secret{}, reason, detail, nil
 	}
 	if !ls.HasCurrentValue {
@@ -568,16 +571,20 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	return s, "", "", nil
 }
 
-// proxyTags reads the secret's proxy tags into s against the profiles file's kinds
-// (Loader.Profiles), after every other tag, so the type and max-grant they weigh are read, and
+// proxyTags reads the secret's proxy tags into s against rules' kinds (the profiles file's,
+// Loader.Profiles), after every other tag, so the type and max-grant they weigh are read, and
 // before the value, which only a fault no tag can fix is checked after: proxy-narrowed, whose one
 // value is "true" (ReasonProxyNarrowedMalformed); and proxy, which names a kind of the file
 // (ReasonProxyKindUnknown) whose ways hold the way the secret's type takes (WayOf,
 // ReasonProxyWay) and whose max_grant the secret's max-grant is within (kindMaxGrant,
 // ReasonProxyMaxGrant). A secret behind a kind takes that kind, its way, and the fingerprint of its
-// proxy tags (proxyDigest), which ends the grants of its name when either tag changes. It answers
-// the reason and detail of the first refusal, or "" for a secret its tags serve.
-func (l Loader) proxyTags(s *Secret, tags map[string]string) (reason, detail string) {
+// proxy tags and its kind's allow (proxyDigest), which ends the grants of its name when either tag
+// or that allow changes. It answers the reason and detail of the first refusal, or "" for a secret
+// its tags serve. A secret that carries a proxy tag and no kinds rollback guard in its requesters
+// tag (KindsRollbackGuard) is served all the same, as one that carries a project tag without the
+// project tags' guard is: the guard keeps an older broker from serving it, and `agent-secrets
+// secret list --json` reports a secret written without it.
+func proxyTags(file Profiles, s *Secret, tags map[string]string) (reason, detail string) {
 	if raw, tagged := tags[TagProxyNarrowed]; tagged {
 		if raw != ProxyNarrowedTrue {
 			return ReasonProxyNarrowedMalformed, fmt.Sprintf("%s is %q, and its one value is %s", TagProxyNarrowed, raw, ProxyNarrowedTrue)
@@ -588,7 +595,7 @@ func (l Loader) proxyTags(s *Secret, tags map[string]string) (reason, detail str
 	if !tagged {
 		return "", ""
 	}
-	kind := l.Profiles.fileRules.Kind(raw)
+	kind := file.fileRules.Kind(raw)
 	if kind == nil {
 		return ReasonProxyKindUnknown, fmt.Sprintf("the %s tag names %q, which is no kind of the profiles file", TagProxy, raw)
 	}
@@ -600,8 +607,41 @@ func (l Loader) proxyTags(s *Secret, tags map[string]string) (reason, detail str
 		return ReasonProxyMaxGrant, why
 	}
 	s.Proxy, s.Way = kind.Name, way
-	s.ProfileDigest = proxyDigest(kind.Name, s.ProxyNarrowed)
+	s.ProfileDigest = proxyDigest(kind.Name, s.ProxyNarrowed, file.kindAllowForm(kind.Name))
 	return "", ""
+}
+
+// SecretOfTags is the stored secret whose store source is storeSource and whose store tags are
+// tags, as far as Cipher's proxy reads it, read as the policy load reads it under p (Loader.secret):
+// its max-grant (ParseMaxGrant), its type (TypeFromTags, the old kind tag beside it) frozen into
+// its Source (TypeSource), and its proxy-narrowed and proxy tags against p's kinds (proxyTags),
+// which give it its kind, its way and its fingerprint. It answers the reason and detail the load
+// refuses the secret for by one of those tags, in the load's order (ReasonMaxGrantMalformed,
+// ReasonTypeUnknown, then proxyTags' reasons), and "" for none. It reads no other tag, so a secret
+// it answers no reason for may still be refused for its owner, tier or the rest; and it writes no
+// line where the load writes LegacyTypeTagMessage. storeSource is not "": a typed secret's Source
+// holds it after its type, and Secret.Type reads none from a Source with no store source.
+// `envoy-broker profiles check` reads a store's tags through it, so a source it holds a profile
+// to (ProxyFaults) is the Secret the load would hold it to.
+func (p Profiles) SecretOfTags(storeSource string, tags map[string]string) (Secret, string, string) {
+	s := Secret{Source: storeSource}
+	if raw, tagged := tags[TagMaxGrant]; tagged {
+		maxGrant, err := ParseMaxGrant(raw)
+		if err != nil {
+			return Secret{}, ReasonMaxGrantMalformed, ""
+		}
+		s.MaxGrant = maxGrant
+	}
+	if secretType := TypeFromTags(tags); secretType != "" {
+		if !ValidType(secretType) {
+			return Secret{}, ReasonTypeUnknown, ""
+		}
+		s.Source = TypeSource(secretType, storeSource)
+	}
+	if reason, detail := proxyTags(p, &s, tags); reason != "" {
+		return Secret{}, reason, detail
+	}
+	return s, "", ""
 }
 
 // wayRefusal is ReasonProxyWay's detail: the way a secret of secretType takes, "" for a type that
@@ -696,10 +736,11 @@ func (l Loader) storedSecret(ctx context.Context, slug string, ls secrets.Listin
 	// alike, and so is the guidance tag, whose length they weigh, beside the judge tag it goes
 	// with. A type whose own rules demand a list is refused for a missing one, so TagRules runs
 	// whether the tags are there or not.
-	// The project tags' rollback guard is no requester (RequestersRollbackGuard): it is taken out
-	// before the list is read, and a tag that held it alone is no list.
+	// The project tags' rollback guard and the kinds' are no requesters (RequestersRollbackGuard,
+	// KindsRollbackGuard): each is taken out before the list is read, and a tag that held only
+	// guards is no list.
 	if raw, tagged := ls.Tags[TagRequesters]; tagged {
-		if rest, guarded := SplitRequestersGuard(raw); !guarded || rest != "" {
+		if rest, guarded := splitGuards(raw); !guarded || rest != "" {
 			if s.Requesters, err = ParseRequesters(rest, l.Services); err != nil {
 				return Secret{}, ReasonRequestersMalformed, nil
 			}

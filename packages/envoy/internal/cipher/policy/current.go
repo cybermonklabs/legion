@@ -234,7 +234,8 @@ func (c *Current) reload(ctx context.Context) (reads []valueRead, first bool, er
 	c.publish(c.withhold(), first)
 	// Each profile the live set serves behind its own proxy string whose source's proxy tag names
 	// the same kind is a string the file can drop now: one line for each, at each full load, so
-	// it stands out until the file drops it, and no reread repeats it.
+	// it stands out until the file drops it, and no reread repeats it. The loop goes with the
+	// proxy string, once every source a profile names carries its own proxy tag.
 	live := c.Get()
 	for _, name := range live.redundantProxy {
 		served := live.Secrets[name]

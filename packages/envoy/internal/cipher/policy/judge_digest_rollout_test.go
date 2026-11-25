@@ -9,7 +9,7 @@ import (
 )
 
 // TestAProfileKeepsItsDigestWhenItsProxyStringMovesToItsSourcesTag: a profile served behind the
-// kind its proxy string names (SC13) keeps its digest through the rollout that moves the kind to
+// kind its proxy string names keeps its digest through the rollout that moves the kind to
 // its source's proxy tag: tag the key with the same kind, drop the string from the file, roll. Each
 // request records the digest of the profile it was decided under (request_secrets.airlock_digest),
 // and checkRelease ends a grant whose digest moved (machine_read.go, profileChanged), so a digest

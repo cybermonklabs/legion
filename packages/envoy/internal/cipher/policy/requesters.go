@@ -198,12 +198,33 @@ func ParseRequesterShapes(raw string) (string, error) {
 // the entry was there, and raw unchanged when it was not, so a tag no guard was written into
 // reaches ParseRequesters exactly as the store holds it. An entry is a run of characters between
 // white space, as ParseRequesters reads it, so a guard joined to another entry by a comma is no
-// guard, and ParseRequesters refuses that tag for its comma.
+// guard, and ParseRequesters refuses that tag for its comma. It leaves KindsRollbackGuard where it
+// stands (SplitKindsGuard).
 func SplitRequestersGuard(raw string) (rest string, guarded bool) {
+	return splitGuard(raw, RequestersRollbackGuard)
+}
+
+// SplitKindsGuard is SplitRequestersGuard for KindsRollbackGuard: raw without that entry, and
+// whether it held it, leaving RequestersRollbackGuard where it stands.
+func SplitKindsGuard(raw string) (rest string, guarded bool) {
+	return splitGuard(raw, KindsRollbackGuard)
+}
+
+// splitGuards is raw without both guards, and whether it held either: the list the policy load
+// reads.
+func splitGuards(raw string) (rest string, guarded bool) {
+	rest, project := splitGuard(raw, RequestersRollbackGuard)
+	rest, kinds := splitGuard(rest, KindsRollbackGuard)
+	return rest, project || kinds
+}
+
+// splitGuard is raw without each entry guard, single-spaced, and whether it held one; raw itself
+// when it held none.
+func splitGuard(raw, guard string) (rest string, guarded bool) {
 	fields := strings.Fields(raw)
 	kept := fields[:0]
 	for _, field := range fields {
-		if field != RequestersRollbackGuard {
+		if field != guard {
 			kept = append(kept, field)
 		}
 	}
@@ -221,6 +242,19 @@ func WithRequestersGuard(list string) string {
 		return RequestersRollbackGuard
 	}
 	return list + " " + RequestersRollbackGuard
+}
+
+// WithKindsGuard answers list, a requesters tag's text ("" for none), with KindsRollbackGuard
+// after it, once: the requesters tag `agent-secrets secret` writes for a secret that carries a
+// proxy or a proxy-narrowed tag. A RequestersRollbackGuard list holds stays where it stands, so
+// WithKindsGuard(WithRequestersGuard(list)) is a tag holding both, the project guard first; a
+// KindsRollbackGuard list already holds is not written twice, and the answer is single-spaced.
+func WithKindsGuard(list string) string {
+	rest, _ := SplitKindsGuard(list)
+	if rest = strings.Join(strings.Fields(rest), " "); rest == "" {
+		return KindsRollbackGuard
+	}
+	return rest + " " + KindsRollbackGuard
 }
 
 // parseRequesters is the one reading behind both exported functions. registered says which check

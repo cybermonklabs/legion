@@ -6,9 +6,9 @@
 
 --- a/packages/envoy/internal/cipher/policy/profiles.go
 +++ b/packages/envoy/internal/cipher/policy/profiles.go
-@@ -811,10 +811,8 @@
- 		Narrowed bool                `json:"proxyNarrowed,omitempty"`
- 		Allow    *[]proxyrules.Allow `json:"allow,omitempty"`
+@@ -863,10 +863,8 @@
+ 		Allow     *[]proxyrules.Allow `json:"allow,omitempty"`
+ 		KindAllow json.RawMessage     `json:"kindAllow,omitempty"`
  	}{Profile: profile, Narrowed: served.narrowed}
  	var judge *uint32
 -	if served.judge != 0 {

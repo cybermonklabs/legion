@@ -84,12 +84,14 @@ func decodeProfiles(data []byte) ([]proxyrules.Kind, []profileEntry, error) {
 }
 
 // proxyField is a profile's proxy key as the file writes it, which takes one of two forms: a
-// kind's name as a string (SC13's transitional form: the profile is served behind that kind until
-// its source carries a proxy tag), or an object, a proxy block. ParseProfiles serves a block of
-// kind dpop alone, a capability the broker mints and holds, and refuses every other block, which
-// the kinds replaced; DecodeProfiles keeps them all, for `profiles check --against` reading a file
-// written before the kinds. A JSON null is no proxy key at all, as it was when the key took a
-// block alone.
+// kind's name as a string (the profile is served behind that kind until its source carries a
+// proxy tag), or an object, a proxy block. ParseProfiles serves a block of kind dpop alone, a
+// capability the broker mints and holds, and refuses every other block, which the kinds replaced;
+// DecodeProfiles keeps them all, for `profiles check --against` reading a file written before the
+// kinds. A JSON null is no proxy key at all, as it was when the key took a block alone. Every form
+// is transitional: the string goes once every source a profile names carries its own proxy tag,
+// the dpop block once the minted capabilities are a kind of the file, and the old blocks once no
+// file before the kinds is left for `--against` to read; then the key and this type go.
 type proxyField struct {
 	kind  string
 	block *proxyEntry

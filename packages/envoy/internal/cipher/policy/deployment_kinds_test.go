@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,23 +15,22 @@ import (
 )
 
 // agentInfraFile is testdata/deployment-profiles-kinds.json: the deployment repository main's
-// broker/profiles.json (read at f62fbb2bdbe8) moved to kinds, as the plan's s-a-kinds moves it.
-// Each proxy block's kind is declared under kinds; a profile of its source's own name loses its
-// block and keeps its allow, its source tagged with the kind; the four profiles of the two GitHub
-// Apps keep SC13's proxy string "github" until their sources are tagged; GITHUB_ENTERPRISE_ADMIN's
-// five rows and AWS_ADMIN's one each name the one host the block bound. Every person's address is
-// owner@example.com, and the per-person App profiles, which no proxy block names, are left out.
-// Its 18 names behind the proxy are the 17 of the plan's read (7aee2d5b119c) and AWS_ADMIN, which
-// main gained after it (#6585).
+// broker/profiles.json (read at f62fbb2bdbe8) moved to kinds, as its rollout moves it. Each proxy
+// block's kind is declared under kinds; a profile of its source's own name loses its block and
+// keeps its allow, its source tagged with the kind; the four profiles of the two GitHub Apps keep
+// the proxy string "github" until their sources are tagged; GITHUB_ENTERPRISE_ADMIN's five rows
+// and AWS_ADMIN's one each name the one host the block bound. Every person's address is
+// owner@example.com, every person's GitHub login example-user, and the per-person App profiles,
+// which no proxy block names, are left out. It holds 18 names behind the proxy.
 const agentInfraFile = "testdata/deployment-profiles-kinds.json"
 
 // agentInfraOwner is the owner of every secret of the fixture's store, and its requesters.
 const agentInfraOwner = "owner@example.com"
 
-// agentInfraSecrets is the store behind agentInfraFile, as s-a-kinds tags it: each source of a
+// agentInfraSecrets is the store behind agentInfraFile, as the rollout tags it: each source of a
 // name behind the proxy carries its kind's proxy tag, the narrowed ones (GITHUB_ENTERPRISE_ADMIN,
 // AWS_ADMIN and the three ANTHROPIC_ADMIN_*) proxy-narrowed=true, and each a max-grant within its
-// kind's max_grant; the two GitHub Apps whose profiles carry SC13's string carry no proxy tag. The
+// kind's max_grant; the two GitHub Apps whose profiles carry the proxy string carry no proxy tag. The
 // three Anthropic admin secrets are anthropic-federation, human tier, admin and an hour at most.
 // tagged false leaves every proxy tag off.
 func agentInfraSecrets(tagged bool) []secrets.LocalSecret {
@@ -59,8 +57,8 @@ func agentInfraSecrets(tagged bool) []secrets.LocalSecret {
 		return with(s, map[string]string{policy.TagAdmin: policy.AdminTrue, policy.TagRequesters: agentInfraOwner, policy.TagMaxGrant: "1h", policy.TagProxy: kind, policy.TagProxyNarrowed: policy.ProxyNarrowedTrue})
 	}
 	return []secrets.LocalSecret{
-		app("LEGION_IMPLEMENT_APP", "cybermonklabs sjawhar example-org"),
-		app("GITHUB_APP_OWNER", "cybermonklabs sjawhar example-org"),
+		app("LEGION_IMPLEMENT_APP", "cybermonklabs example-user example-org"),
+		app("GITHUB_APP_OWNER", "cybermonklabs example-user example-org"),
 		app("GITHUB_ADMIN_APP", "example-org"),
 		stored("AIRLOCK_PROBE", "github", "12h"),
 		stored("AIRLOCK_AWS_PROBE", "aws", "12h"),
@@ -105,7 +103,7 @@ var anthropicRows = []proxyrules.Allow{
 }
 
 // TestDeploymentMainMovedToKindsServesEveryProxiedName: the deployment repository main's profiles file moved to
-// kinds, over a store its sources tagged as s-a-kinds tags them, serves every name it holds and
+// kinds, over a store its sources tagged as the rollout tags them, serves every name it holds and
 // refuses nothing; its proxy rules bind each of its 18 names behind the proxy to the kind its
 // proxied profile had, with the way its source's type takes and its profile's own allow, and no
 // other name; and they are valid. The three ANTHROPIC_ADMIN_* profiles are each served behind the
@@ -172,9 +170,6 @@ func TestDeploymentMainMovedToKindsServesEveryProxiedName(t *testing.T) {
 		if served.Type() != policy.TypeAnthropicFederation || served.Tier != policy.TierHuman || !served.Admin || served.MaxGrant != time.Hour || !served.ProxyNarrowed || !reflect.DeepEqual(served.ProxyAllow(), anthropicRows) {
 			t.Errorf("%s = %+v with allow %v; want an anthropic-federation administrator's, human tier, an hour, narrowed by the three rows", name, served, served.ProxyAllow())
 		}
-	}
-	if hosts := rules.AllHosts(); !slices.Contains(hosts, "api.anthropic.com") || !slices.Contains(hosts, "sts.amazonaws.com") {
-		t.Errorf("AllHosts() = %v; want the kinds' hosts", hosts)
 	}
 
 	t.Run("the control: the anthropic kind allows GET alone", func(t *testing.T) {

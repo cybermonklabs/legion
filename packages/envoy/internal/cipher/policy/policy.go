@@ -221,6 +221,17 @@ const (
 	// it, by a console or an infra-applier, leaves that rollback open: never run a broker from
 	// before the project tags against a store holding one.
 	RequestersRollbackGuard = "rollback-guard:project-tags"
+	// KindsRollbackGuard is the entry `agent-secrets secret` writes into a secret's requesters
+	// tag beside a proxy or a proxy-narrowed tag (TagProxy, TagProxyNarrowed), and takes out once
+	// the secret carries neither, as RequestersRollbackGuard is beside the project tags. This
+	// broker takes it out before it reads the list (SplitKindsGuard), so it means nothing here.
+	// Brokers before the kinds read neither proxy tag, and would serve a secret behind the proxy
+	// by its tag alone as its value, to a command; they read the guard as a requester, which is
+	// no person's email and no registered service (it holds a colon, which record.ValidService
+	// refuses), so they refuse the secret (requesters-malformed) instead. A proxy tag written
+	// without it, by a console or an infra-applier, leaves that rollback open, and `agent-secrets
+	// secret list --json` shows such a secret.
+	KindsRollbackGuard = "rollback-guard:kinds"
 	// OwnerShared is the owner value of a secret nobody owns alone.
 	OwnerShared = "shared"
 	// TierAgent is a secret its owner's agents use without asking.
@@ -744,7 +755,8 @@ type Secret struct {
 	// Proxy is the kind the secret is served behind (TagProxy), and "" for a secret not behind
 	// Cipher's proxy, whose credential the release hands to an approved command. A profile is
 	// behind its source's tag's kind, or, where its source carries none, its own proxy string's
-	// (Profile.ProxyKind).
+	// (Profile.ProxyKind), until the string goes, once every source a profile names carries its
+	// own proxy tag.
 	Proxy string
 	// ProxyNarrowed is true when the secret, or a profile's source, carries proxy-narrowed: "true"
 	// (TagProxyNarrowed): the one profile it is served through narrows it at the proxy.
@@ -882,7 +894,8 @@ type Set struct {
 	rules proxyrules.Rules
 	// redundantProxy is each profile the set serves whose proxy string names the kind its source's
 	// proxy tag names too, in the file's order: Current's reload writes ProxyKindRedundantMessage
-	// for each, once per load.
+	// for each, once per load. It goes with the proxy string, once every source a profile names
+	// carries its own proxy tag.
 	redundantProxy []string
 }
 
