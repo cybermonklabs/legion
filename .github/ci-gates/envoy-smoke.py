@@ -20,11 +20,11 @@ GATE = gate("envoy_smoke", "envoy-smoke", runs=[
     (".github/actions/install-pulumi/**", at("envoy-smoke", "./.github/actions/install-pulumi")),
     (".github/actions/install-docker-plugin/**",
      at("envoy-smoke", "Download the docker provider plugin the live tests install")),
-    (".github/ci-tools.yaml", ".github/actions/install-pulumi/action.yml:20-21 installs the pulumi-cli row's "
-                              "tarball, and .github/actions/install-docker-plugin/action.yml:33-35 downloads the "
+    (".github/ci-tools.yaml", "`.github/actions/install-pulumi/action.yml#ci_tools_fetch pulumi-cli` installs the pulumi-cli row's "
+                              "tarball, and `.github/actions/install-docker-plugin/action.yml#ci_tools_fetch pulumi-docker` downloads the "
                               "pulumi-docker row's"),
-    (".github/scripts/ci-tools.sh", ".github/actions/install-pulumi/action.yml:19 and "
-                                    ".github/actions/install-docker-plugin/action.yml:30 source it, and "
+    (".github/scripts/ci-tools.sh", "`.github/actions/install-pulumi/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` and "
+                                    "`.github/actions/install-docker-plugin/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` source it, and "
                                     "ci_tools_fetch reads each row's two sources"),
     (".github/scripts/repo-paths.sh",
      f"{at('envoy-smoke', SCHEMA_STEP)}: it derives the download URL the build stamps in"),
@@ -35,37 +35,31 @@ GATE = gate("envoy_smoke", "envoy-smoke", runs=[
                                    f"{at('envoy-smoke', BASE_IMAGES_STEP)} reads its FROM lines"),
     (".dockerignore", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds with `context: .`, so the root .dockerignore "
                       "decides which of the files below reach any COPY of that Dockerfile"),
-    (".bun-version", "packages/envoy/docker/Dockerfile:20 COPY .bun-version, which :21-27 holds the web stage's own Bun to"),
-    ("package.json", "packages/envoy/docker/Dockerfile:29 COPY package.json bun.lock ./"),
-    ("bun.lock", "packages/envoy/docker/Dockerfile:29 COPY package.json bun.lock ./"),
-    ("patches/**", "packages/envoy/docker/Dockerfile:30 COPY patches patches"),
-    ("packages/cipher-client/package.json", "packages/envoy/docker/Dockerfile:32"),
-    ("packages/envoy-client/package.json", "packages/envoy/docker/Dockerfile:33"),
-    ("packages/pi-envoy/package.json", "packages/envoy/docker/Dockerfile:34"),
-    ("packages/pi-legion/package.json", "packages/envoy/docker/Dockerfile:35"),
-    ("packages/pi-shared/package.json", "packages/envoy/docker/Dockerfile:36"),
-    ("packages/claude-envoy/package.json", "packages/envoy/docker/Dockerfile:37"),
-    ("packages/test-fixtures/package.json", "packages/envoy/docker/Dockerfile's `COPY packages/test-fixtures/package.json …`"),
-    ("docs/site/package.json", "packages/envoy/docker/Dockerfile's `COPY docs/site/package.json …`; the web stage's "
-                               "`retry 600 \"bun install\"` RUN, whose bun install --frozen-lockfile reads every manifest above"),
-    ("packages/contracts/**", "packages/envoy/docker/Dockerfile's `COPY packages/contracts/package.json …` and "
-                              "`COPY packages/contracts packages/contracts`, the directory its `RUN bun run gen:go` runs in"),
-    ("packages/dispatch/**", "packages/envoy/docker/Dockerfile's `COPY packages/dispatch/package.json …` and "
-                             "`COPY packages/dispatch packages/dispatch`, the directory its `RUN bun run build:web` runs in"),
-    ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile's `COPY packages/proof-editor/package.json …`, "
-                                 "`COPY packages/proof-editor/proof-sdk-*.tgz …` and `COPY packages/proof-editor "
-                                 "packages/proof-editor`, which the SPA build aliases"),
-    ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile's `COPY scripts/third-party-notices.ts …`, which the SPA build writes its notices with"),
-    ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile's `COPY scripts/go-third-party-notices.sh "
-                                          "scripts/assemble-third-party-notices.sh /usr/local/bin/`, run by "
-                                          "`go-third-party-notices.sh --install` and `go-third-party-notices.sh /tmp/go-notices`"),
-    ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile's `COPY scripts/go-third-party-notices.sh "
-                                                "scripts/assemble-third-party-notices.sh /usr/local/bin/`, run by "
-                                                "`assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES`"),
-    # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile's
-    # `COPY packages/envoy ./`), and the held-port image's build copies it whole with the
-    # envoy-infra module under it (packages/envoy/infra/host/heldportwrapper/Dockerfile:30
-    # COPY packages/envoy /src/packages/envoy). Each reads every file of it but what its
+    (".bun-version", "`packages/envoy/docker/Dockerfile#COPY .bun-version .bun-version`, and the RUN right after it holds the web stage's own Bun to it"),
+    ("package.json", "`packages/envoy/docker/Dockerfile#COPY package.json bun.lock ./`"),
+    ("bun.lock", "`packages/envoy/docker/Dockerfile#COPY package.json bun.lock ./`"),
+    ("patches/**", "`packages/envoy/docker/Dockerfile#COPY patches patches`"),
+    ("packages/cipher-client/package.json", "`packages/envoy/docker/Dockerfile#COPY packages/cipher-client/package.json`"),
+    ("packages/envoy-client/package.json", "`packages/envoy/docker/Dockerfile#COPY packages/envoy-client/package.json`"),
+    ("packages/pi-envoy/package.json", "`packages/envoy/docker/Dockerfile#COPY packages/pi-envoy/package.json`"),
+    ("packages/pi-legion/package.json", "`packages/envoy/docker/Dockerfile#COPY packages/pi-legion/package.json`"),
+    ("packages/pi-shared/package.json", "`packages/envoy/docker/Dockerfile#COPY packages/pi-shared/package.json`"),
+    ("packages/claude-envoy/package.json", "`packages/envoy/docker/Dockerfile#COPY packages/claude-envoy/package.json`"),
+    ("packages/test-fixtures/package.json", "`packages/envoy/docker/Dockerfile#COPY packages/test-fixtures/package.json`"),
+    ("docs/site/package.json", "`packages/envoy/docker/Dockerfile#COPY docs/site/package.json` and "
+                               '`packages/envoy/docker/Dockerfile#retry 600 "bun install"`, '
+                               "the web stage's RUN whose bun install --frozen-lockfile reads every manifest above"),
+    ("packages/contracts/**", "`packages/envoy/docker/Dockerfile#COPY packages/contracts/package.json`, `packages/envoy/docker/Dockerfile#COPY packages/contracts packages/contracts` and `packages/envoy/docker/Dockerfile#RUN bun run gen:go` copies the manifest and then the package, which it runs gen:go in"),
+    ("packages/dispatch/**", "`packages/envoy/docker/Dockerfile#COPY packages/dispatch/package.json`, `packages/envoy/docker/Dockerfile#COPY packages/dispatch packages/dispatch` and `packages/envoy/docker/Dockerfile#RUN bun run build:web` copies the manifest and then the package, which it runs build:web in"),
+    ("packages/proof-editor/**", "`packages/envoy/docker/Dockerfile#COPY packages/proof-editor/package.json`, `packages/envoy/docker/Dockerfile#COPY packages/proof-editor/proof-sdk-*.tgz` and `packages/envoy/docker/Dockerfile#COPY packages/proof-editor packages/proof-editor` copies the manifest, the upstream tarball and then the package, which the SPA build aliases"),
+    ("scripts/third-party-notices.ts", "`packages/envoy/docker/Dockerfile#COPY scripts/third-party-notices.ts`, which the SPA build writes its notices with"),
+    ("scripts/go-third-party-notices.sh", "`packages/envoy/docker/Dockerfile#COPY scripts/go-third-party-notices.sh`, `packages/envoy/docker/Dockerfile#go-third-party-notices.sh --install` and `packages/envoy/docker/Dockerfile#go-third-party-notices.sh /tmp/go-notices` copies it and runs it twice"),
+    ("scripts/assemble-third-party-notices.sh", "`packages/envoy/docker/Dockerfile#scripts/assemble-third-party-notices.sh /usr/local/bin/` and `packages/envoy/docker/Dockerfile#assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES` copies it and runs it"),
+    # The image's Go stage copies the Envoy module whole
+    # (`packages/envoy/docker/Dockerfile#COPY packages/envoy ./`), and the held-port image's build
+    # copies it whole with the envoy-infra module under it
+    # (`packages/envoy/infra/host/heldportwrapper/Dockerfile#COPY packages/envoy /src/packages/envoy`).
+    # Each reads every file of it but what its
     # .dockerignore drops: test files, internal/integration, internal/smoke (the smoke step
     # compiles that one), deploy and the changelog fragments, and infra for the first. No go
     # command of this gate reaches most of those files, so rule 9 of check-ci-filters.sh reads
@@ -73,9 +67,9 @@ GATE = gate("envoy_smoke", "envoy-smoke", runs=[
     # check-image-trigger-paths.sh refuses the filter without it: the read is the image
     # builds', and this is where the two checks meet. listenerwire's envelope_generated.go is
     # among them, which the Go stage then replaces with the web stage's fresh generation
-    # (`COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go …`).
-    *[(path, "packages/envoy/docker/Dockerfile's `COPY packages/envoy ./`, and "
-             "packages/envoy/infra/host/heldportwrapper/Dockerfile:30 COPY packages/envoy /src/packages/envoy")
+    # (`packages/envoy/docker/Dockerfile#COPY --from=web /repo/packages/envoy/listenerwire`).
+    *[(path, "`packages/envoy/docker/Dockerfile#COPY packages/envoy ./`, and "
+             "`packages/envoy/infra/host/heldportwrapper/Dockerfile#COPY packages/envoy /src/packages/envoy`")
       for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
       if not path.startswith(tuple(f"{ENVOY}/{d}/" for d in ("internal/integration", "internal/smoke", "deploy")))],
     *ci_retry(f"{at('envoy-smoke', GO_DOWNLOAD_STEP)} sources it: the step downloads both of this job's modules through it"),

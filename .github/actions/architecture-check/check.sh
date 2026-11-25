@@ -97,7 +97,7 @@ run() {
 }
 
 # go_path checks that the Go on PATH is the release packages/envoy/go.mod names. The action's
-# go-path mode (action.yml, `go: path`) runs it before the build, so a caller whose Go differs
+# go-path mode (its input `go` set to `path`) runs it before the build, so a caller whose Go differs
 # from go.mod's release sees a refusal naming both releases instead of a build failure.
 go_path() {
   local gomod="$GITHUB_ACTION_PATH/../../../packages/envoy/go.mod"

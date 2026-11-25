@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ci.yaml's `changes` job selects each job through a dorny/paths-filter filter, and a change to a
+# `.github/workflows/ci.yaml#changes` job selects each job through a dorny/paths-filter filter, and a change to a
 # file a job reads but its filter misses skips that job, on the pull request and again on the
 # merge group that lands it, after which nothing runs it. So every filter must match every file
 # its job reads. No file of the repository holds the filters: the changes job computes them when
@@ -22,7 +22,7 @@
 #     .github/scripts/ci_filter_sources.py): the closure of a go command it starts, and each file
 #     it reads through `..`;
 #   * the module files of each go command's workspace: go.work, go.work.sum and every bound
-#     module's go.mod and go.sum (`go env GOWORK`, `go work edit -json`);
+#     module's go.mod and go.sum, as `go env GOWORK` and `go work edit -json` report them;
 #   * for a claimed go command this check does not reduce (below), every Go file of the
 #     repository and every file under a Go module's directory;
 #   * the static reads of the job's other steps: actions, the Bun install, Biome, scripts,
@@ -57,7 +57,7 @@
 #      shape - an output inside a larger expression, a value built from one - is
 #      refused naming the input, the calling job and both files, since the resolution may never
 #      be guessed. A value naming the changes job nowhere carries no filter and is read as no
-#      gate: dispatch-browser.yaml's `lane`, which each of ci.yaml's two callers of it passes as
+#      gate: `.github/workflows/dispatch-browser.yaml#lane`, which each of ci.yaml's two callers of it passes as
 #      a literal, chooses which projects the browser suite runs, never whether it runs,
 #      and where such a value stands in for a gate the table declares, this rule's own first
 #      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone.
@@ -149,7 +149,7 @@
 #      matches. Such a pattern holds its filter to nothing, so a change to the files it means
 #      starts no job. Its other half, a filter pattern matching nothing its job reads, has no
 #      subject left: a computed filter selects exactly what its job reads.
-#  10. an `if:` of ci.yaml, a job's or a step's, that tests `github.event_name == 'push'` or
+#  10. an if: condition of ci.yaml, a job's or a step's, that tests `github.event_name == 'push'` or
 #      `github.event_name != 'push'`, or that compares `github.ref` with a single-quoted
 #      `'refs/heads/...'` literal with `==` or `!=` (either operand first), naming the file, the
 #      job, the
@@ -239,7 +239,7 @@
 #      from the day it was added, and its own typecheck and tests ran in no job for a second
 #      reason no rule reads, that no step ran them. The other way round is a read every Bun job
 #      declares of a manifest no install reads. The manifest is read as
-#      .github/scripts/check-bun-workspace-manifests.sh:103-111 reads it, at every shape: a
+#      `.github/scripts/check-bun-workspace-manifests.sh#root_manifest` reads it, at every shape: a
 #      package.json that is missing or is not valid JSON, and a `workspaces` that is not a list
 #      or holds anything but non-empty strings, are named rather than taken for an empty list; an
 #      empty array is accepted, as that script accepts it, since a root declaring no workspace

@@ -24,9 +24,9 @@
 #            whole history; npm-published-version.sh, beside this script,
 #            reads it through retry_fetch, and a failure other than E404 that
 #            outlasts the retries is an ::error:: naming the package, exit 1.
-#            release-bump.sh's `empty` (no commit in the paths) and `none` (no
-#            version-bumping commit: a ::notice and a job-summary line) both
-#            give skip=true.
+#            `.github/scripts/release-bump.sh#empty` (no commit in the paths)
+#            and `none` (no version-bumping commit: a ::notice and a
+#            job-summary line) both give skip=true.
 #            --expect <X.Y.Z> is for a publish job checking what its build job
 #            handed it. When the tags now give another version, or nothing to
 #            release, another run took the tag first: a ::notice says so, and
@@ -951,7 +951,7 @@ case "$command" in
           fail_error "npm did not give the published version of $first_npm, so no release version is computed from it; npm's own error is above"
         range=HEAD
       else
-        echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the commit before its first release)" >&2
+        echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the first release's parent commit)" >&2
         exit 1
       fi
       # release-bump.sh refuses a previous version that is not X.Y.Z (the

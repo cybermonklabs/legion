@@ -90,7 +90,7 @@ images:
 
   # The S3-compatible server the envoy-go job starts: tests3.Image. No dispatch job starts it:
   # a job inside a container cannot start a container it could reach, so
-  # .github/docker/browser.Dockerfile's `weed` stage copies /usr/bin/weed out of this image and
+  # the `.github/docker/browser.Dockerfile#weed` stage copies /usr/bin/weed out of this image and
   # the shard job of .github/workflows/dispatch-browser.yaml starts that baked binary instead.
   - upstream: docker.io/chrislusf/seaweedfs:3.97
     tag: seaweedfs-3.97-bb05d66d
@@ -181,7 +181,7 @@ images:
   # The browser image this repository builds from the row above, and the one row of this file
   # with `built:` where every other has `upstream:`: .github/workflows/browser-image.yaml builds
   # and pushes it, and nothing copies it. Every CI job that can launch WebKit or Firefox runs in
-  # it, pinned at this digest by a `container:` of .github/workflows/dispatch-browser.yaml.
+  # it, pinned at this digest by each `.github/workflows/dispatch-browser.yaml#container:`.
   - built: .github/docker/browser.Dockerfile
     tag: browser-cdf02b4c
     digest: sha256:cdf02b4c77c5b25825922f77ce9134d07975120b9ca141405fadc2f35dbb863c

@@ -643,7 +643,7 @@ check "no tag, npm's 0.0.0 placeholder: logs the bump from the placeholder" "$(c
 version_run "$work/v/c" pkg-v -- packages/pkg/
 check "no tag, no --first-npm: exits 1 printing nothing" "$(is "$rc|$out" "1|")"
 check "no tag, no --first-npm: the error says a release line starts from a tag" \
-  "$(contains "$err" '^::error::release-push.sh version: no pkg-v\* tag; a release line starts from a tag (push pkg-v0\.0\.0 on the commit before its first release)$')"
+  "$(contains "$err" "^::error::release-push.sh version: no pkg-v\* tag; a release line starts from a tag (push pkg-v0\.0\.0 on the first release's parent commit)$")"
 # --expect: what the build job handed against what the tags give now. Another
 # run that took the tag first leaves nothing on stdout, no ::error:: and one
 # ::notice, and exits 3 when nothing of this checkout is left to release or 4

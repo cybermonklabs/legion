@@ -8,9 +8,9 @@ GATE = gate("airlock_lean", AIRLOCK_JOB, exact=[
     ]),
 ], reads=reads(
     (".github/actions/install-elan/**", at(AIRLOCK_JOB, "./.github/actions/install-elan")),
-    (".github/ci-tools.yaml", ".github/actions/install-elan/action.yml:38-39 installs the tarball of the elan row, or "
+    (".github/ci-tools.yaml", "`.github/actions/install-elan/action.yml#ci_tools_fetch` installs the tarball of the elan row, or "
                               "of elan-aarch64 on an arm64 runner"),
-    (".github/scripts/ci-tools.sh", ".github/actions/install-elan/action.yml:22 sources it, and ci_tools_fetch "
+    (".github/scripts/ci-tools.sh", "`.github/actions/install-elan/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` sources it, and ci_tools_fetch "
                                     "reads that row's two sources"),
     (f"{AIRLOCK_LEAN}/**", f"{at(AIRLOCK_JOB, AIRLOCK_BUILD_STEP)}: lake build reads the model's whole project, and "
                            f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} runs Axioms.lean over the library it builds"),

@@ -63,21 +63,21 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
     # must start this job: the Run stands for what the command compiles, never for what it reads.
     ("packages/contracts/schemas/dispatch-openapi.json",
      f"{at('envoy-go-build', 'Check the OpenAPI document is generated from the route table')}: "
-     "cmd/dispatch/subcommands.go:127 reads the committed document to compare it (:173 only builds a "
-     "candidate path for it)"),
+     "`packages/envoy/cmd/dispatch/subcommands.go#writeOpenAPIDocument` and `packages/envoy/cmd/dispatch/subcommands.go#committedOpenAPIPath`: the first reads the "
+     "committed document to compare it, and the second only builds a candidate path for it"),
     (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
     (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-build', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
-    ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-6 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),
+    ("packages/proof-editor/src/**", "`packages/envoy/internal/dispatch/pmdoc/gen/gen.ts#setBlockIdGenerator`, `packages/envoy/internal/dispatch/pmdoc/gen/gen.ts#createHeadlessProof` and `packages/envoy/internal/dispatch/pmdoc/gen/gen.ts#readDocument` imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),
     # The web app's display-tree fixture, whose content the fixture step's --check compares the
     # trees it builds with, and whose existence the other test of WEB_FIXTURE_TESTS,
-    # TestTheWebFixtureFindsItsFilesFromAnyDirectory (web_fixtures_test.go:248-255), stats in
+    # `packages/envoy/internal/dispatch/pmdoc/web_fixtures_test.go#TestTheWebFixtureFindsItsFilesFromAnyDirectory`, stats in
     # that same step. Declared on this step and not as a //ci:reads line in
     # web_fixtures_test.go: a line in that file would put the fixture into every job that
     # compiles pmdoc's tests, envoy-go's unit step among them, which skips both tests and so
     # touches the file in no way. The fixture is this job's read alone.
     ("packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json",
-     f"{at('envoy-go-build', FIXTURE_STEP)}: internal/dispatch/pmdoc/web_fixtures_test.go:40-45 "
-     "webFixturePath joins it under pmdocSourceDir, and --check reads its content to compare"),
+     f"{at('envoy-go-build', FIXTURE_STEP)}: `packages/envoy/internal/dispatch/pmdoc/web_fixtures_test.go#webFixturePath` "
+     "joins it under pmdocSourceDir, and --check reads its content to compare"),
     (NOTICES, f"{at('envoy-go-build', 'Pack envoy binaries')} runs it"),
     (GO_TARGETS, f"{at('envoy-go-build', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
     # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and
@@ -88,29 +88,30 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
      f"{at('envoy-go-build', './.github/actions/architecture-check')} runs the action it defines"),
     (".github/actions/architecture-check/check.sh",
      f"{at('envoy-go-build', './.github/actions/architecture-check')}: "
-     ".github/actions/architecture-check/action.yml's `Check the Go on PATH is the release packages/envoy/go.mod "
-     "names`, `Build the architecture-check command` and `Check the architecture notes` steps run it"),
+     "`.github/actions/architecture-check/action.yml#Check the Go on PATH is the release packages/envoy/go.mod names`, `.github/actions/architecture-check/action.yml#Build the architecture-check command` and `.github/actions/architecture-check/action.yml#Check the architecture notes` run it"),
     (".dispatch/architecture/**",
      f"{at('envoy-go-build', './.github/actions/architecture-check')} judges the action's default path "
-     "(the `path` input's default in .github/actions/architecture-check/action.yml), which check.sh's `run` "
-     "resolves against GITHUB_WORKSPACE and the command it runs, `\"$binary\" \"$@\"`, reads"),
+     "(`.github/actions/architecture-check/action.yml#default: .dispatch/architecture`, the `path` input's default), "
+     "which `.github/actions/architecture-check/check.sh#run()` resolves against GITHUB_WORKSPACE and the command it "
+     "runs, `\"$binary\" \"$@\"`, reads"),
     (".github/actions/spec-check/action.yml",
      f"{at('envoy-go-build', './.github/actions/spec-check')} runs the action it defines"),
     (".github/actions/spec-check/check.sh",
      f"{at('envoy-go-build', './.github/actions/spec-check')}: "
-     ".github/actions/spec-check/action.yml's `Build the spec-check command` and `Check the spec files` steps run it"),
+     "`.github/actions/spec-check/action.yml#Build the spec-check command` and `.github/actions/spec-check/action.yml#Check the spec files` run it"),
     (".github/scripts/build-envoy-command.sh",
      f"{at('envoy-go-build', './.github/actions/architecture-check')} and "
      f"{at('envoy-go-build', './.github/actions/spec-check')}: "
-     "the `build` functions of .github/actions/architecture-check/check.sh and .github/actions/spec-check/check.sh run it"),
+     "`.github/actions/architecture-check/check.sh#build()` and `.github/actions/spec-check/check.sh#build()` run it"),
     (EDITED_MIGRATIONS_BASE, f"{at('envoy-go-build', EDITED_MIGRATIONS_STEP)} runs it for the base it compares with"),
     # The step judges the action's default path, .dispatch/spec, which holds no file on main;
     # the read names .dispatch whole because a read that matches no file is refused, and the
     # envoy_go_build filter names .dispatch whole too.
     (".dispatch/**",
      f"{at('envoy-go-build', './.github/actions/spec-check')} judges the action's default path "
-     "(the `path` input's default in .github/actions/spec-check/action.yml), which check.sh's `run` resolves "
-     "against GITHUB_WORKSPACE and the command it runs, `\"$binary\" \"$@\"`, reads"),
+     "(`.github/actions/spec-check/action.yml#default: .dispatch/spec`, the `path` input's default), "
+     "which `.github/actions/spec-check/check.sh#run()` resolves against GITHUB_WORKSPACE and the command it "
+     "runs, `\"$binary\" \"$@\"`, reads"),
     *[(glob, f"{at('envoy-go-build', 'Check that no CI file of this repository compares the spec files')}: "
              "spec-check guard reads every file under it")
       for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],

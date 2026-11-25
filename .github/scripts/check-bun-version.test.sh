@@ -29,6 +29,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # fixture <name>: a tree that passes — the pin, the wrapper action, one workflow using it, and
 # a Dockerfile whose Bun tag comes from the ARG. Echoes the fixture root. Each case names its
 # own tree: two cases sharing a name would share a tree, so a repeated name is refused here
@@ -312,7 +317,7 @@ run_check "$root"
 check "a -slim suffix on the ARG tag passes" "$(is "$status" 0)"
 
 # The Bun base of this repository's own Dockerfiles is a copy in ghcr.io/cybermonklabs/legion/ci, named
-# by digest, so the version it carries is its row's `upstream` in .github/ci-images.yaml. The
+# by digest, so the version it carries is the `upstream` its row in .github/ci-images.yaml names. The
 # digests below are made up: nothing pulls them, and what each case reads is the row they match.
 echo "case: rule 6 — a Bun base in the mirror package"
 mirror_row() { # mirror_row <root> <upstream>
@@ -348,7 +353,7 @@ printf 'FROM ghcr.io/cybermonklabs/legion/ci@sha256:9f8e7d6c5b4a30219f8e7d6c5b4a
 run_check "$root"
 check "a digest no row holds fails" "$(is "$status" 1)"
 check "names the file it must come from" "$(contains "$out" 'names a digest no row of .github/ci-images.yaml holds')"
-check "and the line to edit" "$(contains "$out" 'worker.Dockerfile:1:')"
+check "and the line to edit" "$(contains "$out" "worker.Dockerfile${colon}1:")"
 
 # Two shapes the gate's own reader refused while it split a reference by hand, both of which
 # .github/scripts/ci_images.py reads: a row that names a tag beside a digest, which
@@ -611,7 +616,7 @@ RUN apt-get update \
 YAML
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "reports the line the RUN starts on" "$(contains "$out" 'Dockerfile:4: this RUN installs Bun itself')"
+check "reports the line the RUN starts on" "$(contains "$out" "Dockerfile${colon}4: this RUN installs Bun itself")"
 
 root=$(fixture continuation-comment)
 cat >> "$root/Dockerfile" <<'YAML'
@@ -766,7 +771,7 @@ cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
 YAML
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the container line, not the job's" "$(contains "$out" 'ci.yaml:12: oven/bun:latest runs an unpinned Bun')"
+check "names the container line, not the job's" "$(contains "$out" "ci.yaml${colon}12: oven/bun:latest runs an unpinned Bun")"
 
 echo "case: a file git has never seen still counts"
 root=$(fixture untracked)

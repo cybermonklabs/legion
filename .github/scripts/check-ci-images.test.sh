@@ -40,6 +40,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # The digests the fixtures use. Made up: nothing pulls them, and what each case reads is the row
 # they match.
 NATS=sha256:0a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f6071
@@ -537,8 +542,7 @@ echo "case: rule 10 — a built row whose image was built by another build workf
 # The half a hash of the Dockerfile alone left uncovered, and the reason this rule hashes the
 # recipe: the workflow's own `labels:`, `outputs:`, `platforms:`, `provenance:`, build-args and
 # action pin decide the bytes that get pushed, so a change to the build step with the
-# Dockerfile untouched is a change the published image does not carry. ci.yaml's
-# `browser_image` filter selects the build for it, and before this the build read the one
+# Dockerfile untouched is a change the published image does not carry. `.github/workflows/ci.yaml#browser_image` filter selects the build for it, and before this the build read the one
 # file's hash, found it unchanged and pushed nothing.
 root=$(fixture built-label-workflow-moved)
 browser_row "$root"
@@ -698,7 +702,7 @@ sed -i "s|image: $REGISTRY@$NATS|image: $REGISTRY:nats-2.10-0a1b2c3d|" "$root/.g
 run_check tree "$root"
 check "a tagged reference fails" "$(is "$status" 1)"
 check "says a tag can move" "$(contains "$out" 'a name the registry can move')"
-check "names the service and its line" "$(contains "$out" 'ci.yaml:8: the nats service')"
+check "names the service and its line" "$(contains "$out" "ci.yaml${colon}8: the nats service")"
 
 echo "case: rule 6 — a reference whose digest no row holds"
 root=$(fixture digest-unknown)
@@ -706,7 +710,7 @@ sed -i "s|$NATS|$UNKNOWN|" "$root/packages/envoy-client/test/nats-server.ts"
 run_check tree "$root"
 check "a digest outside the file fails" "$(is "$status" 1)"
 check "names the file to add it to" "$(contains "$out" 'names a digest no row of .github/ci-images.yaml holds')"
-check "and the line to edit" "$(contains "$out" 'nats-server.ts:1:')"
+check "and the line to edit" "$(contains "$out" "nats-server.ts${colon}1:")"
 
 # A job's container is read from the parsed YAML, like a service's image, and rule 6 reads its
 # digest against the rows whatever kind of row holds it.
@@ -729,7 +733,7 @@ check "a FROM on the other golang row fails" "$(is "$status" 1)"
 check "names the row and the Go it copies" \
   "$(contains "$out" 'the row for docker.io/library/golang:1.26.3-alpine on line .*, which copies Go 1.26.3-alpine')"
 check "and the ARG it disagrees with" "$(contains "$out" 'pins ARG GO_VERSION=1.25.0')"
-check "and the line of the FROM" "$(contains "$out" 'packages/envoy/docker/Dockerfile:1:')"
+check "and the line of the FROM" "$(contains "$out" "packages/envoy/docker/Dockerfile${colon}1:")"
 
 # The second commit of a bump: the ARG and every golang FROM move to the new row together.
 root=$(fixture golang-from-moved-with-the-arg)
@@ -825,7 +829,7 @@ YAML
 run_check tree "$root"
 check "fails" "$(is "$status" 1)"
 check "says a CI job runs it" "$(contains "$out" 'a CI job runs this file and it names mirror.gcr.io')"
-check "and names the line" "$(contains "$out" 'stage1-skeleton.sh:2:')"
+check "and names the line" "$(contains "$out" "stage1-skeleton.sh${colon}2:")"
 
 echo "case: a file of the \`it fetches nothing\` ground, moved into CI's reach"
 # packages/envoy/scripts/dev-postgres.test.sh may name mirror.gcr.io, because the job that runs
@@ -856,7 +860,7 @@ root=$(fixture exception-stale)
 printf 'The live proofs.\n' > "$root/scripts/e2e/README.md"
 run_check tree "$root"
 check "fails" "$(is "$status" 1)"
-check "names the file" "$(contains "$out" 'scripts/e2e/README.md:1:')"
+check "names the file" "$(contains "$out" "scripts/e2e/README.md${colon}1:")"
 check "says what to delete" "$(contains "$out" 'Delete its line from EXCEPTIONS')"
 
 echo "case: a file of CI's reach that is gone"

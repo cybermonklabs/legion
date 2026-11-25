@@ -28,7 +28,7 @@ on:
         required: true
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the merge job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the merge job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends, for the job that calls
           this file. Empty for the nightly workflow, which reports no check.
         type: string

@@ -86,8 +86,7 @@ jobs:
     # arrival order: two pushes seconds apart, or a re-run of an older head's run, can cancel the
     # newest head's build, and ci.yaml's ci-ok then fails, or is never posted, for that run.
     # `gh run rerun` of the newest head's run restores it, so re-run an older head's run only
-    # after the newest head's build has completed. The job has no draft or closed `if:`: ci.yaml's
-    # `changes` skips a draft, and ci.yaml has no `closed` trigger.
+    # after the newest head's build has completed. The job has no draft or closed `if:`: `.github/workflows/ci.yaml#changes` skips a draft, and ci.yaml has no `closed` trigger.
     concurrency:
       group: browser-image-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -183,7 +182,7 @@ jobs:
           # the hash this run stamps and the hash that gate demands cannot drift apart. A second
           # hashing rule here -- `sha256sum` over the Dockerfile alone, which is what stood here
           # -- left every other part of the recipe out: a change to this file's build step
-          # selected the job through ci.yaml's `browser_image` filter and then built nothing,
+          # selected the job through `.github/workflows/ci.yaml#browser_image` filter and then built nothing,
           # because the published label still matched the one file the hash covered. It is
           # printed from this one run of Python and not a second one beside it, which is a
           # second import of the same module to say one more line about the same Dockerfile.
@@ -298,7 +297,7 @@ jobs:
       # itself — the build context directory and this workflow — so every path the trigger
       # selects is a path the term reads, and rule 10 of .github/scripts/check-ci-images.sh
       # refuses a row whose published image was built from other bytes. The filter that decides
-      # whether this job runs at all is ci.yaml's `browser_image`, which that check still reads
+      # whether this job runs at all is `.github/workflows/ci.yaml#browser_image`, which that check still reads
       # and still holds to every file this build receives.
       - name: Build and push
         id: build

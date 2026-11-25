@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The rig of .github/workflows/ci.yaml's `tool-fallback` and `tool-fallback-arm` jobs, the live
+# The rig of `.github/workflows/ci.yaml#tool-fallback` and `.github/workflows/ci.yaml#tool-fallback-arm` jobs, the live
 # proof that every tool install of this repository reads the second source .github/ci-tools.yaml
 # names when the first source does not serve the bytes, and that no unverified byte is ever
 # installed (dispatch://INFRA-1873).
@@ -296,7 +296,7 @@ STAGED_ROWS="crane changie mise jj bun-linux-x64 elan uv pulumi-docker pulumi-cl
 # row, which is what a primary that answered after all leaves behind.
 FAULT_HOSTS="github.com,release-assets.githubusercontent.com,objects.githubusercontent.com,get.helm.sh"
 
-# The address .github/workflows/ci.yaml's `tool-fallback` job writes at every seam and every
+# The address `.github/workflows/ci.yaml#tool-fallback` job writes at every seam and every
 # dead proxy that stands for a second source that cannot be reached: the CI_TOOLS_GHCR_BASE,
 # CI_TOOLS_NPM_BASE and CI_TOOLS_URL_BASE of its controls, and the http_proxy and https_proxy
 # of its base-pulumi control, each of them `http://127.0.0.1:1`.
@@ -353,17 +353,18 @@ LADDER_CEILING=450
 
 # How many fetches of one run may carry CI_TOOLS_PROOF_FULL_LADDER, read by `ladder-report`
 # over the log the stand-in wrote.
-# That variable is set at exactly one step's `env:` in
-# .github/workflows/ci-job-tool-fallback.yaml, the head's install-crane step, so one install
+# That variable is set at exactly one step, `.github/workflows/ci-job-tool-fallback.yaml#CI_TOOLS_PROOF_FULL_LADDER: crane-head`, the head's install-crane step, so one install
 # keeps the pinned ladder. That one install makes four fetches through the stand-in: the
-# release asset behind the fault, which ci_tools__fetch_release reads (ci_tools__fetch_address's
-# `ci_tools_curl "$target"` in .github/scripts/ci-tools.sh), and then the pull token, the blob
+# release asset behind the fault, which ci_tools__fetch_release reads
+# (`.github/scripts/ci-tools.sh#ci_tools__fetch_release`, through ci_tools__fetch_address's
+# `.github/scripts/ci-tools.sh#ci_tools_curl "$target"`), and then the pull token, the blob
 # request to the package and the read of the store that request's redirect points at, which
-# ci_tools__fetch_ghcr makes one after the other (ci_tools_ghcr_token's `ci_tools__curl_held` of
-# the token, the blob request's `ci_tools__curl_held` with the bearer, and the `ci_tools_curl` of
-# the redirect's `$location`). ghcr.io answers a
-# blob's GET with a 307 to pkg-containers.githubusercontent.com (measured 2026-11-17), and a
-# request with the bearer follows no redirect, so that store is read in a curl call of its own.
+# ci_tools__fetch_ghcr makes one after the other (`.github/scripts/ci-tools.sh#ci_tools__fetch_ghcr`:
+# `.github/scripts/ci-tools.sh#ci_tools_ghcr_token`'s ci_tools__curl_held of the token, the blob
+# request's ci_tools__curl_held with the bearer, and the ci_tools_curl of the redirect's
+# `$location`). ghcr.io answers a blob's GET with a 307 to pkg-containers.githubusercontent.com
+# (measured 2026-11-17), and a request with the bearer follows no redirect, so that store is
+# read in a curl call of its own.
 # Merge_group run 42975857631, job 130374882879 (`tool-fallback`, success, head 9300f28b1c), read
 # three, as records 18 to 20 of its listing at 63 s, 0 s and 1 s, when the blob request still
 # followed that redirect inside its own call.
@@ -999,9 +1000,9 @@ esac
 [ -n "$host" ] || host=none
 
 # faulted <host>: the fault proxy's own rule for a host it holds, which is exact or dot-suffix
-# (the host test that opens .github/scripts/ci-fault-proxy.py's `Fault.faults` is that same
-# rule): github.com holds github.com and x.github.com, and it does not hold github.com.invalid,
-# the reserved control name the probe verb asks for.
+# (the host test that opens `.github/scripts/ci-fault-proxy.py#faults` is that same rule):
+# github.com holds github.com and x.github.com, and it does not hold github.com.invalid, the
+# reserved control name the probe verb asks for.
 faulted() {
   local host=${1,,} held
   local IFS=,
@@ -1247,8 +1248,7 @@ probe() {
 # that pins it. The job runs it once per installed tool, before the corrupted cases and again
 # after them.
 # A fork's binary prints the version upstream released, where the row's version is the fork's
-# own tag with a suffix on it (docs/solutions/daemon/omp-pin-bump-behavioral-proof.md:79
-# measures that for the Oh My Pi fork this repository pins the same way), so a reading is held
+# own tag with a suffix on it (`docs/solutions/daemon/omp-pin-bump-behavioral-proof.md#the -sami suffix is the tag` measures that for the Oh My Pi fork this repository pins the same way), so a reading is held
 # to the row's version or to the part of it before that suffix.
 version_answers() {
   [ "$#" -eq 2 ] ||

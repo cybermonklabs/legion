@@ -1463,7 +1463,7 @@ ci_tools__fetch_url() {
 #      .github/scripts/check-ci-tools.sh, which decide which words a row may write on each
 #      side and which fields each word then makes that row carry, so a row whose word this
 #      file would never be asked about is refused by the gate.
-#   3. `route_of` in .github/scripts/ci-tools-proof.sh, which says which route of that rig's
+#   3. `.github/scripts/ci-tools-proof.sh#route_of`, which says which route of that rig's
 #      origin a word is served on.
 #   4. The GITHUB_WORDS and URL_WORDS sets of that rig's origin program, which is a program of
 #      its own started with the manifest and no word of that shell, and which decide which of
