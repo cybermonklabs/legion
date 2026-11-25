@@ -8006,11 +8006,13 @@ interface ShownControl {
   readonly group: ReachGroup | null;
 }
 
-/** Where the focus is after a key: the listed control that holds it, or -1, and whether it is
- *  back on the first element a Tab of the walk gave it to. */
+/** Where the focus is after a key: the listed control that holds it, or -1, whether it is back on
+ *  the first element a Tab of the walk gave it to, and how many elements the list does not hold
+ *  took the focus since the list was read, each counted once (`others`). */
 interface FocusAt {
   readonly index: number;
   readonly back: boolean;
+  readonly others: number;
 }
 
 /** What `installReach` leaves on the page's `window`. */
@@ -8076,12 +8078,18 @@ async function installReach(page: Page): Promise<void> {
     let listed: Element[] = [];
     let first: Element | null = null;
     const focused = new Set<number>();
+    // The elements outside `listed` that took the focus since `list`: a control of a row or a
+    // column the viewport did not show when the list was read, which Tab stops on on its way.
+    const others = new Set<Element>();
     const groups: { readonly name: string; readonly node: Node; readonly size: number }[] = [];
     document.addEventListener(
       "focusin",
       (event) => {
         const index = event.target instanceof Element ? listed.indexOf(event.target) : -1;
         if (index !== -1) focused.add(index);
+        else if (event.target instanceof Element && event.target !== document.body) {
+          others.add(event.target);
+        }
       },
       true
     );
@@ -8244,13 +8252,13 @@ async function installReach(page: Page): Promise<void> {
         const active = document.activeElement;
         const index = active === null ? -1 : listed.indexOf(active);
         if (active === null || active === document.body || active === document.documentElement) {
-          return { back: false, index };
+          return { back: false, index, others: others.size };
         }
         if (first === null) {
           first = active;
-          return { back: false, index };
+          return { back: false, index, others: others.size };
         }
-        return { back: active === first, index };
+        return { back: active === first, index, others: others.size };
       },
       kept: () =>
         listed.flatMap((element, index) =>
@@ -8265,6 +8273,7 @@ async function installReach(page: Page): Promise<void> {
         listed = controlsIn(root);
         first = null;
         focused.clear();
+        others.clear();
         groups.length = 0;
         return listed.map((element, index) => ({
           group: groupOf(element),
@@ -8351,8 +8360,14 @@ async function expectKeyboardReach(page: Page, at: ReachPage): Promise<void> {
   };
 
   // Tab until the focus comes back to the first element it took, or at most twice as many presses
-  // as the page shows controls: on a page from its start, and in a dialog, which keeps the focus
-  // inside it, from the control the dialog put the focus on as it opened.
+  // as the page shows controls and as the other elements that took the focus in the walk, each
+  // counted once (Verification version 23): on a page from its start, and in a dialog, which
+  // keeps the focus inside it, from the control the dialog put the focus on as it opened. Tab
+  // stops on the controls of the rows and the columns outside the viewport too, which the list
+  // does not hold, on its way to a control below them: the project's List draws its pager after
+  // 24 rows, and its walk reaches the pager at the 180th press of a page that lists 89 controls
+  // (builds Job `infra-2160-pr-reach-gvjzg`). A walk that goes round the same stops adds nothing,
+  // so a focus trap or a cycle still ends it, and the row fails by name.
   if (at.scope === undefined) {
     await page.evaluate(() => {
       const active = document.activeElement;
@@ -8365,14 +8380,16 @@ async function expectKeyboardReach(page: Page, at: ReachPage): Promise<void> {
     );
     if (start.index >= 0) reached.add(start.index);
   }
-  for (let press = 0; press < 2 * controls.length; press += 1) {
+  let others = 0;
+  for (let press = 0; press < 2 * (controls.length + others); press += 1) {
     await page.keyboard.press("Tab");
     // A Tab moves the focus inside its own key press, so this reads where it settled.
     const focus = await page.evaluate(
-      () => window.__keyboardReach?.at() ?? { back: true, index: -1 }
+      () => window.__keyboardReach?.at() ?? { back: true, index: -1, others: 0 }
     );
     if (focus.back) break;
     if (focus.index >= 0) reached.add(focus.index);
+    others = focus.others;
   }
   await addFocused();
 
