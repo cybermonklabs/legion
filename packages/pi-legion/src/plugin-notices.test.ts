@@ -22,12 +22,12 @@ function workspaceShown(issue: string): string {
 }
 
 /** The text of the restart message this host steers into the session for `call`. */
-function restartShown(call: StallCall, overdue: StallOverdue): string {
+async function restartShown(call: StallCall, overdue: StallOverdue): Promise<string> {
   const sent: string[] = [];
   const sendMessage: PiApi["sendMessage"] = (message) => {
     if ("content" in message) sent.push(String(message.content));
   };
-  createStallAborter({ context: () => undefined, sendMessage }).sendMessage(
+  await createStallAborter({ context: () => undefined, sendMessage }).sendMessage(
     restartMessage(call, overdue)
   );
   const [text] = sent;
@@ -52,7 +52,7 @@ function call(toolName: string, toolCallId: string): StallCall {
 // Each notice this plugin shows its session, as it shows it, each variant of it rendered twice
 // from different values in every field: a sentence the same in every notice of its kind is what
 // two renderings would share.
-test("every plugin notice states its fields", () => {
+test("every plugin notice states its fields", async () => {
   const renderings = [
     {
       declared: WORKSPACE_RECREATED_NOTICE,
@@ -62,24 +62,24 @@ test("every plugin notice states its fields", () => {
       declared: TURN_ENDED_NOTICE,
       variants: [
         [
-          restartShown(call("bash", "toolu_stuck"), {
+          await restartShown(call("bash", "toolu_stuck"), {
             rule: { kind: "bound", boundMs: 1_200_000 },
             openMs: 1_260_000,
             pastMs: 60_000,
           }),
-          restartShown(call("read", "toolu_02Lw"), {
+          await restartShown(call("read", "toolu_02Lw"), {
             rule: { kind: "bound", boundMs: 600_000 },
             openMs: 645_000,
             pastMs: 45_000,
           }),
         ],
         [
-          restartShown(call("eval", "toolu_01Kq"), {
+          await restartShown(call("eval", "toolu_01Kq"), {
             rule: { kind: "deadline", deadlineMs: 120_000, graceMs: 300_000 },
             openMs: 431_000,
             pastMs: 11_000,
           }),
-          restartShown(call("python", "toolu_03Zr"), {
+          await restartShown(call("python", "toolu_03Zr"), {
             rule: { kind: "deadline", deadlineMs: 30_000, graceMs: 90_000 },
             openMs: 127_000,
             pastMs: 7_000,

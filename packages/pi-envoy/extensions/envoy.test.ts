@@ -14685,10 +14685,13 @@ console.log(JSON.stringify(args));
     // compaction's own end does, as an automatic compaction's end does.
     test("held through a compaction the session asked for is handed once it ends", async () => {
       let idle = false;
-      const { agent, context, delivered, fixture } = await bootDirectSession("low-manual-compaction", {
-        idle: () => idle,
-        pending: () => false,
-      });
+      const { agent, context, delivered, fixture } = await bootDirectSession(
+        "low-manual-compaction",
+        {
+          idle: () => idle,
+          pending: () => false,
+        }
+      );
 
       agent.push(daemonEnvelope("held notice", "low-manual-compaction", { urgency: "low" }));
       agent.push(daemonEnvelope("busy notice", "med-manual-compaction", { urgency: "med" }));
@@ -26024,8 +26027,7 @@ describe("consumer delivery", () => {
         envelope: (key: string) => directDispatchEnvelope(mode, key, { bodyTruncated: true }),
         carried: () => DIRECT_MESSAGE_BODY,
         read: `/api/v1/messages/${DIRECT_MESSAGE_ID}`,
-        deleted: () =>
-          response({ message: { id: DIRECT_MESSAGE_ID, ...deletion }, replies: [] }),
+        deleted: () => response({ message: { id: DIRECT_MESSAGE_ID, ...deletion }, replies: [] }),
       });
       const rows = [
         { name: "a person's Send", key: "deleted-send", ...direct("steer") },
@@ -26513,7 +26515,9 @@ describe("an envelope that carries the role field", () => {
     expect(await shown("role-field-card-with", withRole)).toEqual(before);
     expect(before.cards[0]?.content).toContain(`id: ${withoutRole.event_id}`);
     // A session's words come in a block after the card's fields.
-    expect(before.cards[0]?.content).toContain("<message>\nReview the plan before noon.\n</message>");
+    expect(before.cards[0]?.content).toContain(
+      "<message>\nReview the plan before noon.\n</message>"
+    );
     expect(JSON.parse(before.inbox ?? "[]")).toEqual([
       {
         event_id: withoutRole.event_id,
