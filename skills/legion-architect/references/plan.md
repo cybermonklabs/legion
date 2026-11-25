@@ -24,7 +24,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 
 - To have one agent work several steps, give each of them the same key after its role, as `steps="implementer:a tester:a reviewer"`.
   Legion runs the steps of one key as one agent, in one claim and one session, whatever their roles; a step with no key is an agent of its own.
-  The agent of the step whose role your `Production check` line names keeps its session past the close, for that check; where no step of the task has that role, the check starts a fresh agent of it.
+  The agent of the step whose role your `Production check` line names keeps its session past the close, for that check, and where two steps of the task have that role, the agent of the one that ran last; where no step of the task has that role, the check starts a fresh agent of it.
   A key other than `owner` may stand on any role but `acceptance`, and `owner` on `acceptance` alone.
   A role may stand at two steps, of one agent where both steps carry one key, or of two.
   Each agent is named for the role of its first step, and an agent whose role's name another agent of the plan holds takes a numbered name of its own:
