@@ -746,18 +746,12 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 			case tc.told == "" && len(added) != 0:
 				t.Fatalf("the todo wrote notices %+v, want none", added)
 			case tc.told != "":
-				if len(added) != 1 {
-					t.Fatalf("the todo wrote notices %+v, want one %s for the architect", added, tc.told)
-				}
-				notice, ok := added[0].(record.Notice)
-				if !ok || notice.Kind != tc.told {
-					t.Fatalf("the todo's notice = %+v, want a %s", added[0], tc.told)
-				}
-				// The notice names no reader (StatusReassertedNotice): the list gives its kind the
-				// architect as its one reader, and the outbox sends it to the architect the owner walk
-				// from the issue its row names ends at (the daemon's noticeArchitect), the root's.
-				if entry, listed := texts.Lookup(notice.Kind); !listed || !slices.Equal(entry.Readers, []claim.Role{claim.RoleArchitect}) {
-					t.Fatalf("the readers of %s = %v, want the architect alone", notice.Kind, entry.Readers)
+				// The todo wrote one notice row, on the root's rows, for the architect and not for
+				// the controller, with what StatusReassertedNotice writes: its kind, the root, the
+				// session, the status it wrote and the status the daemon set back.
+				told := record.Notice{Kind: tc.told, Issue: root, Session: tc.session, Wrote: "todo", Status: "in_progress"}
+				if want := []record.OutboxPayload{told}; !reflect.DeepEqual(added, want) {
+					t.Fatalf("the todo wrote notices %+v, want the one %+v", added, want)
 				}
 				if onRoot := noticesOf(t, pool, root, tc.told); len(onRoot) != 1 {
 					t.Fatalf("the %s notices on %s's rows = %+v, want the one the todo wrote", tc.told, root, onRoot)
