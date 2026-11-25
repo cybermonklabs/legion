@@ -15,7 +15,8 @@
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
-// then reads them as boot does (daemon.CheckStart).
+// then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
+// at each launch, so an edit of one needs no restart.
 package config
 
 import (
@@ -67,9 +68,14 @@ const (
 // Config is the daemon's settled configuration: the file, the environment, and the defaults
 // resolved into the values the daemon runs on.
 type Config struct {
-	Project string
-	Port    int
-	Bind    string
+	// Revision is the commit this binary was built from (cmd/legion's revision, which the worker
+	// image and the release link in), "" for a build nothing stamped. It is not read from the file:
+	// `legion start` sets it, and the daemon names it after its NATS connection's name
+	// (natsauth.ConnectionName).
+	Revision string
+	Project  string
+	Port     int
+	Bind     string
 	// AdvertiseHost is `advertise_host`: the host every pod's shim dials the worker stream at in
 	// Bind's place, so Bind can be the unspecified address a daemon running as a pod listens on; ""
 	// (the default) has pods dial Bind. Only runtime: kubernetes accepts it, and readAdvertiseHost
@@ -330,6 +336,12 @@ const (
 	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
+
+	// DefaultReviewRoundCap is `review_round_cap`'s default (Config.ReviewRoundCap). It is exported
+	// for a test that builds its Config by hand: the daemon API contract takes a positive cap
+	// alone (packages/contracts/src/legion-api.ts), so a pane's `legion` tool refuses every state
+	// read of a daemon whose cap is 0.
+	DefaultReviewRoundCap = 3
 )
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
@@ -1003,7 +1015,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		StalledTreeNotice:    6 * time.Hour,
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
-		ReviewRoundCap:       3,
+		ReviewRoundCap:       DefaultReviewRoundCap,
 		Warnings:             file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {

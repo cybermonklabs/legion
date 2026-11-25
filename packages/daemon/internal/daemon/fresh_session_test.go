@@ -227,6 +227,7 @@ func (r *freshSessionRig) recordedPhase() (phase.Phase, phase.Phase) {
 // can retry it. That one retry must reach a working agent: a new session, because every turn of
 // the recorded one was refused, and the phase's task in it.
 func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *testing.T) {
+	t.Parallel()
 	rig := newFreshSessionRig(t)
 	ctx := context.Background()
 	refusal := "Refusal (reasoning_extraction): this request was blocked"
@@ -286,7 +287,7 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 	// provider refused: a worker reading an empty transcript would otherwise take the task for a
 	// fresh start and do again what the abandoned session already pushed.
 	prompts := rig.conn.Prompts()
-	task := "Continue Workflow. Issue: LEGION-208. Phase: implementing. Reason: retry held phase."
+	task := phaseTask + workflow.WorkingCopy(rig.issue, nil).String() + " Reason: retry held phase."
 	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, task) {
 		t.Fatalf("the new session was prompted %+v, want it to end with the retried phase's task %q", prompts, task)
 	}
@@ -299,6 +300,7 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 // the one command that must give that phase a working agent: the stopped claim forgets the session
 // it recorded, the workflow starts its phase again, and the new session is given the phase's task.
 func TestTheOperatorsFreshSessionRetryOfAStoppedWorkerStartsANewSessionWithThePhaseTask(t *testing.T) {
+	t.Parallel()
 	rig := newFreshSessionRig(t)
 	ctx := context.Background()
 	route := "/legion/v1/operator/claims/" + string(rig.implementer)

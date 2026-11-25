@@ -38,8 +38,8 @@
 # attributed to the issue, read just now, so the delivery reconcile has no reason to read it
 # again. The fake GitHub is given one repository holding the same pull requests and each head's
 # check runs, replacing every repository it served. That repository is PROJECT's default where
-# PROJECT maps one, since every issue then resolves to it and a recorded result's commit must be
-# one it holds, and otherwise one of this run's own, which nothing maps.
+# PROJECT has one, since every issue then resolves to it and a recorded result's commit must be
+# one it holds, and otherwise one of this run's own, which is no project's default.
 #
 # It writes nine issues in PROJECT and closes every one of them, also when a check fails; on exit
 # it deletes the pull_request_heads rows it staged and empties the fake GitHub. Nothing it writes
@@ -462,14 +462,15 @@ SQL
 
 # --- setup ---------------------------------------------------------------------------------------
 
-# PROJECT's default repository, under the name it is called today, where it maps one: every issue
-# of the project resolves to it, so a recorded result's commit must be one it holds, and the fake
-# serves it. Where PROJECT maps none, the run drives a repository of its own, which nothing maps.
-get "/api/v1/settings/repo-projects"
-want_status 200 setup "the repository mappings answer"
+# PROJECT's default repository, where it has one (`default_repo` on GET /api/v1/projects, stored
+# under the name the repository is called today): every issue of the project resolves to it, so a
+# recorded result's commit must be one it holds, and the fake serves it. Where PROJECT has none,
+# the run drives a repository of its own, which no project has as its default.
+get "/api/v1/projects"
+want_status 200 setup "the projects answer"
 default_repo="$(jq -r --arg p "$project" \
-  'first(.[] | select(.project == $p and .default) | (.renamed_to // .repo)) // ""' "$work/body")" ||
-  fail setup "read the repository mappings" "$(body)"
+  'first(.[] | select(.key == $p) | .default_repo // empty) // ""' "$work/body")" ||
+  fail setup "read $project's default repository" "$(body)"
 driven_repo="${default_repo:-acme/ci-check-$run_tag}"
 readonly driven_repo
 fake setup "seed the fake GitHub with $driven_repo" '.'

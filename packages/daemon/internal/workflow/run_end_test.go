@@ -23,7 +23,7 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 	engine := stepEngine(nil)
 	moved := 0
 	for i, row := range Table {
-		from, _, _, runs := stepOf(row.From)
+		from, _, _, runs := placeOnWalk(todaysWalk(), row.From)
 		if !runs {
 			continue
 		}
@@ -47,7 +47,7 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if err := engine.transition(ctx, tx, issue, row.Trigger, target, record.PhaseRow{}, pr, "the table test's move"); err != nil {
+			if err := engine.transition(ctx, tx, issue, row.Trigger, target, record.PhaseRow{}, pr, moveWhy{Reason: "the table test's move"}); err != nil {
 				return err
 			}
 			runs, err := factRunsOf(ctx)

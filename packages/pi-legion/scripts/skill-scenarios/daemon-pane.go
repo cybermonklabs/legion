@@ -1,15 +1,26 @@
 // Daemon-pane is the skill-scenario rig's one reading of the Legion daemon: what the daemon gives a
 // phase worker's or a tree's root architect's pane, computed by the daemon's own functions, for
-// worker-pane.ts and daemon-standin.ts to run Oh My Pi and the stand-in daemon under. It belongs to
-// no module: daemon-pane.ts runs it with `go run -overlay` as a main inside a checkout's
-// packages/daemon, the one place the daemon's internal packages can be imported from.
+// worker-pane.ts and daemon-standin.ts to run Oh My Pi and the stand-in daemon under, and the
+// prompt a launch of any role starts with, for a reader of that prompt. It belongs to no module:
+// daemon-pane.ts runs it with `go run -overlay` as a main inside a checkout's packages/daemon, the
+// one place the daemon's internal packages can be imported from.
 //
 //	phase <role>             prints the phase the role's worker runs in, the first phase
 //	                         workflow.RoleFor gives to the role, then on a second line the word of
 //	                         the handoff record that phase ends with (handoffWords), empty for a
 //	                         phase that ends with none
 //	pane                     reads a paneRequest (JSON) on stdin, writes the claim's gh bundle
-//	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON)
+//	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON);
+//	                         a tree's root architect is told the design gate steps of a deployment
+//	                         that gates no step (systemPromptArgument)
+//	prompt <role> <root|child> <repository> <default branch>
+//	                         prints the system prompt a launch of the role starts with
+//	                         (rolePrompt), byte for byte as the daemon writes its prompt file, for
+//	                         the rig's claim on the root issue of its tree or on a child under it,
+//	                         whose repository (`owner/name`) and its default branch are the rig's
+//	                         world (rig-world.json); a root architect's prompt ends with the design
+//	                         gate steps of a deployment that sets no `gates.design`, as such a
+//	                         launch's does
 package main
 
 import (
@@ -23,11 +34,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
@@ -36,7 +49,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | pane < request.json"
+const usage = "usage: daemon-pane phase <role> | pane < request.json | prompt <role> <root|child> <repository> <default branch>"
 
 func main() {
 	args := os.Args[1:]
@@ -46,6 +59,8 @@ func main() {
 		err = printPhase(claim.Role(args[1]))
 	case len(args) == 1 && args[0] == "pane":
 		err = pane()
+	case len(args) == 5 && args[0] == "prompt" && (args[2] == "root" || args[2] == "child"):
+		err = printPrompt(claim.Role(args[1]), args[2] == "root", args[3], args[4])
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -74,6 +89,50 @@ func printPhase(role claim.Role) error {
 		}
 	}
 	return fmt.Errorf("%q works no phase", role)
+}
+
+// rigProject, rigRoot and rigChild are the claim `prompt` composes for: the rig's project, the
+// root issue of its tree, and a child issue under that root.
+const (
+	rigProject = "rig"
+	rigRoot    = "RIG-1"
+	rigChild   = "RIG-2"
+)
+
+// printPrompt prints the system prompt a launch of role starts with (rolePrompt), for the rig's
+// claim on the root issue of its tree (root) or on a child issue under it, in repo (`owner/name`)
+// whose default branch is defaultBranch, and nothing else: no newline is added, so the output is
+// the text of the claim's prompt file. A root architect's prompt ends with the design gate steps
+// of a deployment that leaves `gates.design` unset.
+func printPrompt(role claim.Role, root bool, repo, defaultBranch string) error {
+	issue := rigChild
+	if root {
+		issue = rigRoot
+	}
+	token, err := claim.NewToken(rigProject, issue, role)
+	if err != nil {
+		return err
+	}
+	repository, err := ghrepo.Parse("the rig's repository", repo)
+	if err != nil {
+		return err
+	}
+	if defaultBranch == "" {
+		return errors.New("no default branch: the rig's world (rig-world.json) gives one")
+	}
+	stateDir, err := os.MkdirTemp("", "daemon-pane-prompt-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stateDir)
+	prompt, err := rolePrompt(stateDir, rigProject, supervise.Claim{
+		Token: token, Project: rigProject, Tree: rigRoot, Issue: issue, Role: role, Generation: 1,
+	}, repository, defaultBranch, config.Gates{})
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(os.Stdout, prompt)
+	return err
 }
 
 // paneRequest is the claim a pane is launched for, and the rig's stand-ins for what the daemon
@@ -223,32 +282,30 @@ func firstBytes(path string, n int) ([]byte, error) {
 	return head[:read], nil
 }
 
-// systemPromptArgument composes the pane's role prompt as the daemon does (specs.SpawnSpec): the
-// role prompts snapshotted under the state directory, the role's parts, then its addressing, and
-// for a tree's root architect the design gate fragment after it, which the rig gives as the daemon
-// gives it for a deployment that gates no step (DesignGateFragment(nil): "Design gate steps:
-// none."); it writes the text to the claim's prompt file, as a pane's launch does, and answers the
-// argument that names that file. The join and the write are this program's own copies of the
-// daemon's (runtime.ComposePrompt, runtime.WriteSystemPrompt), since the rig runs it against each
-// label's checkout of the daemon module, an older one among them, which has neither.
-func systemPromptArgument(req paneRequest, token claim.Token, repository ghrepo.Repository) (string, error) {
-	role := claim.Role(req.Role)
-	composer, err := prompts.New(req.StateDir)
+// rolePrompt is the system prompt a launch of c starts with, composed as the daemon composes it
+// (specs.SpawnSpec): the role prompts snapshotted under stateDir, the role's parts concatenated
+// with the newlines that end them dropped, a blank line, then its addressing for repository and
+// its default branch, which for the architect of a tree's root ends with the design gate steps
+// gates gives (config.Gates.Steps), as workerSpawnSpec appends them. It is the prompt of a
+// deployment with no instructions file and no experiment, whose roles run on Oh My Pi, a backend
+// whose launch is told no prompt part of its own. The join is this program's own copy of the
+// daemon's (runtime.ComposePrompt), since the rig runs it against each label's checkout of the
+// daemon module, an older one among them, which lacks it.
+func rolePrompt(stateDir, project string, c supervise.Claim, repository ghrepo.Repository, defaultBranch string, gates config.Gates) (string, error) {
+	composer, err := prompts.New(stateDir)
 	if err != nil {
 		return "", err
 	}
-	parts, err := composer.Compose(role, claim.IsTreeRoot(req.Issue, req.Issue))
+	parts, err := composer.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
 	if err != nil {
 		return "", err
 	}
-	addressing, err := daemon.AddressingFragment(req.Project, supervise.Claim{
-		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1,
-	}, repository, req.DefaultBranch, []string{repository.Owner()})
+	addressing, err := daemon.AddressingFragment(project, c, repository, defaultBranch, []string{repository.Owner()})
 	if err != nil {
 		return "", err
 	}
-	if claim.IsTreeArchitect(role, req.Issue, req.Issue) {
-		addressing += " " + daemon.DesignGateFragment(nil)
+	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
+		addressing += " " + daemon.DesignGateFragment(gates.Steps())
 	}
 	var body strings.Builder
 	for _, path := range parts.RolePromptPaths {
@@ -258,7 +315,23 @@ func systemPromptArgument(req paneRequest, token claim.Token, repository ghrepo.
 		}
 		body.Write(text)
 	}
-	prompt := strings.TrimRight(body.String(), "\n") + "\n\n" + addressing
+	return strings.TrimRight(body.String(), "\n") + "\n\n" + addressing, nil
+}
+
+// systemPromptArgument writes the pane's system prompt (rolePrompt; the pane's tree is its issue)
+// to the claim's prompt file, as a pane's launch does, and answers the argument that names that
+// file. A tree's root architect is told the design gate steps of a deployment that gates no step
+// (`gates.design: off`, "Design gate steps: none."), since the rig's stand-in daemon serves its
+// acceptance and move back and no design gate. The write is this program's own copy of the
+// daemon's (runtime.WriteSystemPrompt), since the rig runs it against each label's checkout of the
+// daemon module, an older one among them, which lacks it.
+func systemPromptArgument(req paneRequest, token claim.Token, repository ghrepo.Repository) (string, error) {
+	prompt, err := rolePrompt(req.StateDir, req.Project, supervise.Claim{
+		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: claim.Role(req.Role), Generation: 1,
+	}, repository, req.DefaultBranch, config.Gates{Design: []record.DesignStep{}})
+	if err != nil {
+		return "", err
+	}
 	promptFile := filepath.Join(req.StateDir, "secrets", string(token)+"-system-prompt.md")
 	if err := os.MkdirAll(filepath.Dir(promptFile), 0o700); err != nil {
 		return "", err

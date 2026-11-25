@@ -35,15 +35,16 @@ func (r *statesProof) testerRun(issue *statesIssue, results []statesResult, summ
 // readyTester waits for issue's tester's pane, which the boot relaunched, to register, take the
 // testing task its claim held, and end that turn, which the testers' stand-in answers with a line
 // starting WAITING; it holds the session the pane registered, which every write of the tester's is
-// made as. The case's own task then starts a turn of a worker that holds no task of its phase but
-// is serving its run, as a tester that said it waits is.
+// made as. The turn is found by the task seed left pending (statesIssue.seededTask), the test's own
+// input and no text of the daemon's. The case's own task then starts a turn of a worker that holds
+// no task of its phase but is serving its run, as a tester that said it waits is.
 func (r *statesProof) readyTester(issue *statesIssue) {
 	r.t.Helper()
 	if issue.tester != "" {
 		return
 	}
 	token := r.token(issue.key, claim.RoleTester)
-	task := "Issue: " + issue.key + ". Phase: testing."
+	task := issue.seededTask
 	r.until("tester", "the tester's pane to take its testing task "+strconv.Quote(task), paneReady, func() bool {
 		if state := r.claim(token).State; state == string(supervise.StateFailed) {
 			r.fail("tester", "%s failed before its pane took its task; its workers' output is under %s", token, r.rt.paneLogs)

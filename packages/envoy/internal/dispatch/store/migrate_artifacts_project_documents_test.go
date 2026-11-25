@@ -15,10 +15,7 @@ const artifactsProjectDocumentsVersion = 91
 // project document, under the predicate the copy lookups use.
 func TestMigrationIndexesAProjectsUnlinkedDocuments(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, artifactsProjectDocumentsVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", artifactsProjectDocumentsVersion-1, err)
-	}
+	store := openMigratedTestStore(t, artifactsProjectDocumentsVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank)

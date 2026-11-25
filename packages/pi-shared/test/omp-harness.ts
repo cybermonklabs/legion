@@ -18,6 +18,8 @@ import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { loopbackHost } from "@legion/test-fixtures/loopback-host";
+import { readStandinBody } from "@legion/test-fixtures/standin-body";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
 
@@ -81,11 +83,15 @@ export function serveStandin(
   const requests: Request[] = [];
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    // An address of its own, out of reach of a client of another test that still dials this port
+    // at 127.0.0.1 (`loopbackHost`); the clients' URLs are built from `base` below.
+    hostname: loopbackHost(),
     fetch: keyedLayer(async (request: globalThis.Request) => {
       const url = new URL(request.url);
-      const text = request.method === "POST" ? await request.text() : "";
-      const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
+      // A body that is no JSON object is refused by name, and is neither recorded nor handed to
+      // `answer` (`readStandinBody`).
+      const { body, refusal } = await readStandinBody(request);
+      if (refusal !== undefined) return refusal;
       requests.push({ path: url.pathname, body });
       return answer(url, body);
     }),
@@ -93,7 +99,7 @@ export function serveStandin(
   cleanup.push(async () => {
     await server.stop(true);
   });
-  return { requests, base: `http://127.0.0.1:${server.port}` };
+  return { requests, base: server.url.origin };
 }
 
 /** The stream the stand-in listener's answers and relay frames name, one for every case here. */
@@ -728,14 +734,66 @@ export function refusalStream(id: string, refusal: Refusal = {}): string {
 }
 
 /**
+ * Oh My Pi's date/cwd reminder (`packages/coding-agent/src/prompts/system/date-cwd-reminder.md` at
+ * the pin) at the start of a text, with the newline or two the host puts between it and the
+ * text it leads. The host sends the reminder in one of two forms (`DateCwdReminderInjector`,
+ * `packages/coding-agent/src/session/date-cwd-reminder.ts`): ahead of a user turn that is new since
+ * the session's previous request, or, when the local date or the working directory has changed
+ * since then and the request holds no such turn, as a message of its own after the request's
+ * newest message, where it stays in every later request.
+ */
+const DATE_CWD_REMINDER = /^<system-reminder>\nToday: [^\n]*\n<\/system-reminder>(\n\n?|$)/;
+
+/** `message` without the host's date/cwd reminder: the reminder taken off the start of its text,
+ *  and undefined when the reminder was the whole message. */
+function withoutDateCwdReminder(message: unknown): unknown {
+  if (typeof message !== "object" || message === null || !("content" in message)) return message;
+  const { content } = message;
+  if (typeof content === "string") {
+    const rest = content.replace(DATE_CWD_REMINDER, "");
+    if (rest === content) return message;
+    return rest === "" ? undefined : { ...message, content: rest };
+  }
+  if (!Array.isArray(content)) return message;
+  const [first, ...others] = content;
+  if (typeof first !== "object" || first === null || !("text" in first)) return message;
+  if (typeof first.text !== "string") return message;
+  const rest = first.text.replace(DATE_CWD_REMINDER, "");
+  if (rest === first.text) return message;
+  const kept = rest === "" ? others : [{ ...first, text: rest }, ...others];
+  return kept.length === 0 ? undefined : { ...message, content: kept };
+}
+
+/**
+ * A Messages request's messages as the session sent them, without the host's date/cwd reminder in
+ * either form (`DATE_CWD_REMINDER`), so a case that reads a request's newest message, or a message
+ * by its place or its exact text, reads the same on a run that crosses midnight as on one that
+ * does not. Measured in the stall watch's live proof
+ * (`pi-legion/extensions/legion-stall-watchdog-omp.test.ts`): with the pane's local date moved on
+ * between two requests, the second ended with the reminder as a message of its own, so a case that
+ * took its last message for the one that started the turn waited for a turn that had already run,
+ * as CI's did on a case that ran across midnight UTC (merge-group run 44963211024, 00:00:14Z on
+ * 2026-11-22).
+ */
+export function ownMessages(body: Record<string, unknown>): unknown[] {
+  const messages: unknown[] = Array.isArray(body.messages) ? body.messages : [];
+  return messages.map(withoutDateCwdReminder).filter((message) => message !== undefined);
+}
+
+/** The newest of a Messages request's own messages (`ownMessages`), as JSON: the message the turn
+ *  the request asks for was started on. */
+export function newestMessage(body: Record<string, unknown>): string {
+  return JSON.stringify(ownMessages(body).at(-1) ?? null);
+}
+
+/**
  * Whether a Messages request is a side turn rather than a turn. The host sends one as an
- * ordinary Messages request over a snapshot of the conversation whose last message is the `<btw>`
- * block around the question, which pi-envoy adds for `ctx.runEphemeralTurn` — so the stand-in
- * answers it distinctly and nothing about it reaches the transcript.
+ * ordinary Messages request over a snapshot of the conversation whose newest message is the
+ * `<btw>` block around the question, which pi-envoy adds for `ctx.runEphemeralTurn` — so the
+ * stand-in answers it distinctly and nothing about it reaches the transcript.
  */
 export function isSelfCheck(request: Request): boolean {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null).includes("<btw>");
+  return newestMessage(request.body).includes("<btw>");
 }
 
 /** A `tool_result` block as the host sent it back to the gateway. */
@@ -937,6 +995,16 @@ export interface LegionPane {
   readonly transcript: () => Promise<unknown[]>;
   /** The persisted transcript's entries of `customType`, in order, each its `data`. */
   readonly transcriptEntries: (customType: string) => Promise<unknown[]>;
+  /**
+   * Replaces the `data` of the newest persisted transcript entry of `customType` with what `edit`
+   * returns for it, and throws when the transcript holds none. Only between lives, while no omp
+   * process holds the file: a case sets a recorded value the next life reads with it, for example
+   * a due time that runs on the omp process's own clock, which no test can move.
+   */
+  readonly editTranscriptEntry: (
+    customType: string,
+    edit: (data: unknown) => unknown
+  ) => Promise<void>;
   /**
    * Runs omp again over this pane's own transcript (`--resume <session>`), in the same scratch
    * root and against the same stand-in, and settles it as the first life settled: what the
@@ -1211,6 +1279,27 @@ export async function runLegionPane(
           ? ["data" in entry ? entry.data : undefined]
           : []
       ),
+    editTranscriptEntry: async (customType, edit) => {
+      for (const file of (await transcripts(sessions)).reverse()) {
+        const lines = (await readFile(file, "utf8")).split("\n");
+        const at = lines.findLastIndex((line) => {
+          if (line === "") return false;
+          const entry: unknown = JSON.parse(line);
+          return (
+            typeof entry === "object" &&
+            entry !== null &&
+            "customType" in entry &&
+            entry.customType === customType
+          );
+        });
+        if (at === -1) continue;
+        const entry: Record<string, unknown> = JSON.parse(lines[at] ?? "");
+        lines[at] = JSON.stringify({ ...entry, data: edit(entry.data) });
+        await writeFile(file, lines.join("\n"));
+        return;
+      }
+      throw new Error(`no transcript entry of ${customType} under ${sessions}`);
+    },
     resume: async (more, prompt) => {
       scripted.push(...more);
       await live(typeof prompt === "string" ? [prompt] : prompt, [

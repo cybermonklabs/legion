@@ -556,7 +556,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		return labelPeer(map[string]string{"app": app})
 	}
 	policy := func(name string, ingress networkingv1.NetworkPolicyIngressRuleArray) error {
-		return networkPolicy(ctx, name, s.namespace, map[string]string{"app": name}, ingress, child...)
+		_, err := networkPolicy(ctx, name, s.namespace, map[string]string{"app": name}, ingress, child...)
+		return err
 	}
 
 	// The front door, one thing and registered as one: the Tailscale Service svc:<hostname> itself

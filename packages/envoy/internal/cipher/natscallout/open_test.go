@@ -76,7 +76,7 @@ func TestAGrantWithAnEmptyDirectionIsRefused(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, "grant opens every subject: its "+direction+" allow list is empty", response.Error)
 			require.Empty(t, response.Jwt, "a user was encoded for a grant that opens its %s direction", direction)
-			_, refused := admit(Request{UserNkey: userKey}, Decision{Grant: grant}, nil)
+			_, refused := admit(config.GlobalNATSAccount, Request{UserNkey: userKey}, Decision{Grant: grant}, nil)
 			require.Equal(t, labelOpenDirection, refused.Label)
 		})
 	}
@@ -172,7 +172,7 @@ func standInGranting(t *testing.T, url string, keys testnats.CalloutKeys, publis
 			return
 		}
 		user := jwt.NewUserClaims(claims.UserNkey)
-		user.Audience = globalAccount
+		user.Audience = config.GlobalNATSAccount
 		user.Pub.Allow.Add(publish...)
 		user.Sub.Allow.Add(subscribe...)
 		userJWT, err := user.Encode(issuer)

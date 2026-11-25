@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -69,11 +70,6 @@ func projectKeyProblem(field, value string) string {
 	return fmt.Sprintf("%s %q is not a project key: %s", field, value, contracts.ProjectKeyRule)
 }
 
-// repoLabelPrefix marks an issue created through DISPATCH_DEFAULT_PROJECT
-// with the external repository it came from, so the repository stays
-// visible and filterable once it's no longer named by the project key.
-const repoLabelPrefix = "repo:"
-
 // ServiceTokenVerifier verifies a Kubernetes pod's projected service-account token.
 // *oidc.LazyVerifier is the one Dispatch serves with: until its issuer is discovered every Verify
 // fails with an error matching oidc.ErrIssuerUnavailable.
@@ -94,10 +90,9 @@ type AgentPublisher interface {
 
 // Deps are the API's application dependencies.
 type Deps struct {
-	Store          *store.Store
-	Identity       identity.Identity
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	Store       *store.Store
+	Identity    identity.Identity
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
 	// from the words a person typed when those words match nothing it found
 	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
@@ -127,6 +122,14 @@ type Deps struct {
 	// fetches one project twice at once. The source row, not this sharing, orders every process's
 	// writes (architecture.Importer).
 	Architecture *architecture.Importer
+	// Renames is the rename pairs the boot read (store.ReadRepoRenames). The results routes name
+	// a check's repository by its canonical name under them, and GET /api/v1/issues/resolve finds
+	// a link stored under either name of a pair. The zero value holds no pairs.
+	Renames refs.Renames
+	// Attributor attributes the pull requests a results read or a recorded result reads through
+	// for (delivery.Attributor.ReadThroughCommitPulls). NewDeps builds it of Renames, so it
+	// attributes by the same pairs renamedRepo and resolveIssueRef read.
+	Attributor *delivery.Attributor
 	// OIDC verifies a JWT-shaped bearer as a Kubernetes pod's projected
 	// service-account token; nil is the unconfigured deployment, where a
 	// JWT-shaped bearer is only ever an unknown personal token. A configured
@@ -233,10 +236,9 @@ const defaultStreamHeartbeat = 15 * time.Second
 
 // DepsInput contains raw boot values used to construct API dependencies.
 type DepsInput struct {
-	Store          *store.Store
-	Identity       identity.Identity
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	Store       *store.Store
+	Identity    identity.Identity
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession are the two new-issue settings; see Deps. A label longer
 	// than one an issue may carry, or a session id that is no session id, refuses startup.
 	NewIssueLabel   string
@@ -260,13 +262,21 @@ type DepsInput struct {
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
 	EnvoyTimeout time.Duration
-	Docs         docs.API
+	// Docs is the document service the API serves documents through, and NewDeps refuses an input
+	// without one. Its caller builds it (docs.New; cmd/dispatch's newDocumentService) and shuts it
+	// down (docs.Service.Shutdown) once the server is done with it. NewDeps builds none of its own:
+	// nothing would hold a service it built to shut it down, and that service's compaction worker
+	// (startCompactionQueue) would run for the rest of the process.
+	Docs docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
 	Events   *events.Broker
+	// Renames is the rename pairs the boot read; see Deps.Renames. The zero value holds none.
+	// NewDeps builds Deps.Attributor of them.
+	Renames refs.Renames
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -325,12 +335,9 @@ type DepsInput struct {
 	BuildCommit string
 }
 
-// NewDeps parses boot configuration once and returns API dependencies.
+// NewDeps parses boot configuration once and returns API dependencies. It refuses an input with
+// no document service (DepsInput.Docs).
 func NewDeps(input DepsInput) (Deps, error) {
-	defaultProject := strings.TrimSpace(input.DefaultProject)
-	if defaultProject != "" && !projectKeyPattern.MatchString(defaultProject) {
-		return Deps{}, fmt.Errorf("invalid DISPATCH_DEFAULT_PROJECT %q (expected project key)", defaultProject)
-	}
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
 	case "label":
@@ -338,16 +345,11 @@ func NewDeps(input DepsInput) (Deps, error) {
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
+	if input.Docs == nil {
+		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
+	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
-	}
-	if input.Docs == nil {
-		input.Docs = docs.New(docs.Deps{
-			Store:     input.Store,
-			Events:    input.Events,
-			Identity:  input.Identity,
-			ServerURL: input.ServerURL,
-		})
 	}
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
@@ -385,7 +387,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Store:                  input.Store,
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
-		DefaultProject:         defaultProject,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
@@ -396,6 +397,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Events:                 input.Events,
 		GitHub:                 github,
 		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
+		Renames:                input.Renames,
+		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
@@ -417,42 +420,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
 	}, nil
-}
-
-// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...). Each entry is
-// trimmed, and its repository is read as a mapping's path is (refs.ParseGitHubRepo: lower-cased,
-// one trailing `.git` trimmed, and held to the names GitHub allows in that form), so the seed
-// stores no mapping the settings route refuses: `acme/.git=KEY`, which reads as `acme/`, a
-// mapping no request reaches, or `acme/..=KEY`. Nothing more is trimmed, so a space before the
-// `=` stays in the name and `acme/x =KEY` is refused. Such an entry is refused, naming it, and the
-// boot with it: one whose repository GitHub's rule refuses with that rule's own words, any other
-// with the form an entry takes.
-func ParseRepoProjects(raw string) (map[string]string, error) {
-	projects := make(map[string]string)
-	if strings.TrimSpace(raw) == "" {
-		return projects, nil
-	}
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		repo, project, ok := strings.Cut(part, "=")
-		project = strings.TrimSpace(project)
-		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !projectKeyPattern.MatchString(project) {
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
-		}
-		owner, name, err := refs.ParseGitHubRepo(repo)
-		switch {
-		case errors.Is(err, refs.ErrNotGitHubRepo):
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q: %w", part, err)
-		case err != nil:
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
-		}
-		canonical := owner + "/" + name
-		if _, exists := projects[canonical]; exists {
-			return nil, fmt.Errorf("duplicate DISPATCH_REPO_PROJECTS repository %q", canonical)
-		}
-		projects[canonical] = project
-	}
-	return projects, nil
 }
 
 type server struct {
@@ -498,6 +465,19 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// beforeCommentCommit runs on a comment write's own request, once the comment, its node and
+	// every event it appended are written and before its transaction commits, with those events;
+	// its error stands in for the commit failing, so the route answers it and rolls the write
+	// back. Only a test sets it: it is how a case holds a write open after its events are
+	// appended, to read whether any of them reaches a subscriber before the commit, and how it
+	// ends one in a rollback.
+	beforeCommentCommit func(ctx context.Context, events []model.Event) error
+	// betweenPersonPageReads runs on a person page's request once the route has decided it
+	// answers 200 and before it lists the rows (listPersonNodes), inside the transaction both
+	// reads share; nil, which every server the deployment builds leaves it, runs nothing. Only a
+	// test sets it: it is how a case commits a write between the decision and the list, to read
+	// that the list answers the snapshot the decision read.
+	betweenPersonPageReads func()
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -596,6 +576,12 @@ type server struct {
 	// that. Only a test sets it, so a body that stalls is the test's choice rather than a minute of
 	// wall clock.
 	drainReadLimit time.Duration
+	// drainDeadlineSet is called with the moment a drain began and the read deadline it computed
+	// from that moment, before the drain sets the deadline on the connection (readFor); nil, which
+	// every server the deployment builds leaves it, calls nothing. Only a test sets it, to judge the
+	// deadline in effect when a stalled read ended against the bound the drain chose, which no
+	// clock the test reads afterwards can name.
+	drainDeadlineSet func(began, deadline time.Time)
 	// repeatFoundInFlight is called when the keyed layer finds a repeat's key held by a first
 	// request still running, before it reads a byte of the repeat's body; nil, which every server
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
@@ -1371,6 +1357,28 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		if supplied != nil {
 			actor.Origin = supplied.Origin
 		}
+		// The credential itself proved this session, and for a token the broker scoped to a
+		// person it proved whose session it is too (brokerTokenActor sets Owner from the token
+		// and never from a body). That pair is what R14 calls "a session the server itself
+		// proved theirs", and the store ties the two with an alias_of tuple on the next write
+		// (graphstore.aliases). The act names the session the credential proved, exactly as
+		// actingPerson names the agent that acted for a person, and says it was proved
+		// (SessionProven), as every act naming a session the credential proved does; the actor's
+		// kind and id are left as they were, so every stored author, every event and every reader
+		// keeps the shape it has.
+		//
+		// A session named in a request body earns none of this: the branch below, which every
+		// credential that proves no session of its own takes, records the session the caller
+		// asked for, no act and no Proven mark, because an actor that merely claims a session
+		// proves nothing about whose it is (R14).
+		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
+			authenticated.Credential.Session == authenticated.ID {
+			actor.Act = &model.ActorAct{
+				Session:       authenticated.ID,
+				SessionProven: true,
+				Scopes:        authenticated.Credential.Scopes,
+			}
+		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
 		return actor, nil
 	}
@@ -1620,10 +1628,11 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // proven.
 //
 // Only those routes read it: decodeJSON ignores a member the route's input struct does not
-// declare (it logs it at debug), so a body actor on any other route is dropped unread, and four of
-// the mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor
-// names no agent (act is nil), so there is nothing for a body to name, and its body actor is
-// ignored here as it always was.
+// declare (it logs the member at debug and decodes the rest), so a body actor on any other route
+// is dropped unread and the caller's credential alone decides the act, and four of the mutating
+// rows a person's scope opened are DELETEs with no body at all. A browser's actor names no agent
+// (act is nil), so there is nothing for a body to name, and its body actor is ignored here as it
+// always was.
 func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {
@@ -1877,6 +1886,23 @@ func encodeJSON(value any) ([]byte, error) {
 
 func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) (model.Event, error) {
 	return s.deps.Events.Append(ctx, tx, event)
+}
+
+// appendCausingEvent is appendEvent for an event that causes a write of the node and tuple store
+// made before it existed (graphstore.Uncaused): the event's append and the append of what that
+// write stated under it, in one batch, the second naming the event's id as the id sequence left it
+// (graphstore.LatestEvent). A route that writes as it goes pays one statement for the two, as
+// it paid for the event alone.
+func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
+	var appended model.Event
+	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := s.deps.Events.QueueAppend(b, event, func(written model.Event) { appended = written }); err != nil {
+			return err
+		}
+		graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		return nil
+	})
+	return appended, err
 }
 
 // publish hands each event to the broker and then stores the display trees of the stored texts

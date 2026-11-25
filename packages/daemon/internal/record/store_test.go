@@ -49,7 +49,7 @@ func migratedStore(t *testing.T) *store.Store {
 
 func inTx(t *testing.T, st *store.Store, fn func(pgx.Tx)) {
 	t.Helper()
-	if err := st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		fn(tx)
 		return nil
 	}); err != nil {
@@ -136,7 +136,7 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			issue := issueFixture("LEGION-301")
 			tc.change(&issue)
-			err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutIssue(ctx, tx, issue) })
+			err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.PutIssue(ctx, tx, issue) })
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("PutIssue = %v, want %q", err, tc.want)
 			}
@@ -156,7 +156,7 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			moved := recorded
 			tc.change(&moved)
-			err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutIssue(ctx, tx, moved) })
+			err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.PutIssue(ctx, tx, moved) })
 			want := "record issue LEGION-302: it is recorded on acme/widgets@release/v7.1 (GitHub's Acme/Widgets), and a record keeps its repository and default branch: only the one-time rename pass writes another repository name on it"
 			if err == nil || err.Error() != want {
 				t.Fatalf("PutIssue = %v, want %q", err, want)
@@ -399,7 +399,7 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		// The counts of two kinds of move and the cap the row told for read back as they were
 		// written: the map keeps a count for each pair it holds, and nothing of either is lost to
 		// the column the other rides in.
-		BackwardMoves: map[string]int{"testing-implementing": 2, "reviewing-implementing": 1}, CapTold: 3}
+		BackwardMoves: map[string]int{"testing-implementing": 2, "reviewing-implementing": 1}, CapTold: 3, StepTask: "a", StepPlace: 2}
 	gate := DesignGate{Issue: issue.Key, Step: DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: 7, ApprovedVersion: &approved}
 	slot := Slot{Issue: issue.Key, Index: 0, AdmittedAt: updatedAt}
 
@@ -799,7 +799,7 @@ func TestStoreRoundTripsLingerStateAndRefusesHeldFromHeld(t *testing.T) {
 
 	invalid := issueFixture("LEGION-211")
 	invalid.Hold = &Hold{From: phase.Held}
-	err := st.Tx(ctx, func(tx pgx.Tx) error {
+	err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, invalid)
 	})
 	if err == nil {
@@ -931,7 +931,7 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 	})
 	refused := done
 	refused.Outcome = "shrug"
-	if err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutProductionCheck(ctx, tx, refused) }); err == nil || !strings.Contains(err.Error(), "check constraint") {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.PutProductionCheck(ctx, tx, refused) }); err == nil || !strings.Contains(err.Error(), "check constraint") {
 		t.Fatalf("PutProductionCheck with outcome %q = %v, want the check constraint to refuse it", refused.Outcome, err)
 	}
 }
@@ -1022,11 +1022,12 @@ func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
 	})
 }
 
-// A new generation clears each role's handoff of its current phase — the commit it reported and the
-// Dispatch handoff record it named — so no role of the new generation reads as having completed,
-// and keeps the record each role last named, which a completion naming it again is refused against.
-// It clears the implementer's counts of the moves back as well, and the cap value the row told
-// for, so the new generation counts and tells from its own first crossing.
+// A new generation clears each role's handoff of its current phase — the commit it reported, the
+// Dispatch handoff record it named and the step a tester's completion named for its task to return
+// to — so no role of the new generation reads as having completed, and keeps the record each role
+// last named, which a completion naming it again is refused against. It clears the implementer's
+// counts of the moves back as well, and the cap value the row told for, so the new generation
+// counts and tells from its own first crossing.
 func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -1034,7 +1035,7 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 	issue := issueFixture("LEGION-286")
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
-		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "tester", HandoffRecord: "test-record", HandoffVersion: 2, LastHandoff: "test-record", StatesSerial: 5}))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "tester", HandoffRecord: "test-record", HandoffVersion: 2, LastHandoff: "test-record", StatesSerial: 5, ReturnTo: 2}))
 		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer", HandoffCommit: "head", HandoffRecord: "implement-record", HandoffVersion: 1, LastHandoff: "implement-record", Rounds: 1,
 			BackwardMoves: map[string]int{"testing-implementing": 1}, CapTold: 3}))
 		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
@@ -1047,8 +1048,8 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 			t.Fatalf("phases after ClearGeneration = %#v, want both rows kept", rows)
 		}
 		for _, row := range rows {
-			if row.Completed() || row.HandoffVersion != 0 || row.StatesSerial != 0 || row.LastHandoff != want[row.Role] {
-				t.Fatalf("the %s row after ClearGeneration = %#v, want no commit, record, version or check states serial, and %q kept as the record it last named", row.Role, row, want[row.Role])
+			if row.Completed() || row.HandoffVersion != 0 || row.StatesSerial != 0 || row.ReturnTo != 0 || row.LastHandoff != want[row.Role] {
+				t.Fatalf("the %s row after ClearGeneration = %#v, want no commit, record, version, check states serial or step to return to, and %q kept as the record it last named", row.Role, row, want[row.Role])
 			}
 			if len(row.BackwardMoves) != 0 || row.CapTold != 0 {
 				t.Fatalf("the %s row after ClearGeneration counts %#v moves back and told cap %d, want no count and no cap told", row.Role, row.BackwardMoves, row.CapTold)
@@ -1230,7 +1231,7 @@ func TestClaimRowLeasesADueRowExactlyOnceUntilItsLeaseLapses(t *testing.T) {
 		row = due[0]
 	})
 
-	tx1, err := st.BeginTx(ctx, pgx.TxOptions{})
+	tx1, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	first, ok, err := records.ClaimRow(ctx, tx1, row.ID, now, time.Minute)
 	must(t, err)
@@ -1243,7 +1244,7 @@ func TestClaimRowLeasesADueRowExactlyOnceUntilItsLeaseLapses(t *testing.T) {
 	}
 	second := make(chan attempt, 1)
 	go func() {
-		tx2, err := st.BeginTx(ctx, pgx.TxOptions{})
+		tx2, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			second <- attempt{err: err}
 			return
@@ -1742,7 +1743,7 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 	})
 
 	// Daemon A's lane claims the suspend and is a moment from committing.
-	txA, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txA, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	_, okA, err := records.ClaimRow(ctx, txA, suspendID, now, time.Minute)
 	must(t, err)
@@ -1759,7 +1760,7 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 	}
 	second := make(chan attempt, 1)
 	go func() {
-		txB, err := st.BeginTx(ctx, pgx.TxOptions{})
+		txB, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			second <- attempt{err: err}
 			return
@@ -1833,7 +1834,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 	})
 
 	// Daemon A's lifecycle lane claims the suspend and is a moment from committing.
-	txA, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txA, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	_, okA, err := records.ClaimRow(ctx, txA, suspendID, now, time.Minute)
 	must(t, err)
@@ -1849,7 +1850,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 	}
 	second := make(chan attempt, 1)
 	go func() {
-		txB, err := st.BeginTx(ctx, pgx.TxOptions{})
+		txB, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			second <- attempt{err: err}
 			return
@@ -1934,7 +1935,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 	})
 
 	// The lane's lease of the catch-up, a moment from committing.
-	txLane, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txLane, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txLane.Rollback(ctx) }()
 	if _, leased, err := records.ClaimRow(ctx, txLane, catchUp, now, time.Minute); err != nil || !leased {
@@ -1945,7 +1946,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 	// drop that returned before then read the row without waiting on the lane at all.
 	dropped := make(chan error, 1)
 	go func() {
-		dropped <- st.Tx(ctx, func(tx pgx.Tx) error { return records.DropCatchUps(ctx, tx, "LEGION-1", now) })
+		dropped <- store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.DropCatchUps(ctx, tx, "LEGION-1", now) })
 	}()
 	returned := false
 	testwait.Eventually(t, "the drop to wait on the lane's lease or to return", func() bool {
@@ -2017,7 +2018,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	})
 
 	// The adoption's transaction locks the tree's decisions.
-	txAdopt, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txAdopt, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txAdopt.Rollback(ctx) }()
 	if _, _, err := records.UnclaimedKept(ctx, txAdopt, "LEGION-1"); err != nil {
@@ -2026,7 +2027,9 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	// The lane's finish deletes the row and waits on those decisions.
 	finished := make(chan error, 1)
 	go func() {
-		finished <- st.Tx(ctx, func(tx pgx.Tx) error { return records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken) })
+		finished <- store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			return records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken)
+		})
 	}()
 	testwait.Eventually(t, "the finish to wait on the decisions the adoption locked", func() bool {
 		var waiting int
@@ -2101,7 +2104,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	})
 
 	// The drop, which takes both rows and holds its lock from here until it commits.
-	txDrop, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txDrop, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txDrop.Rollback(ctx) }()
 	must(t, records.DropCatchUps(ctx, txDrop, "LEGION-1", now))
@@ -2110,7 +2113,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	claimed := make(chan error, 1)
 	leased := make(chan bool, 1)
 	go func() {
-		claimed <- st.Tx(ctx, func(tx pgx.Tx) error {
+		claimed <- store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			_, ok, err := records.ClaimRow(ctx, tx, copyID, now, time.Minute)
 			leased <- ok
 			return err
@@ -2339,13 +2342,16 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "check_states_seq"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "states_serial", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "states_serial", "return_to", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
+		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
+		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
+		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
 		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",
-			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq"},
+			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq", "applied_seq"},
 		"dispatch_issue_refills": {"project", "marked_at", "refilled_at"},
 		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
 		"slots":                  {"issue", "index", "admitted_at"},

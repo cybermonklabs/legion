@@ -404,13 +404,16 @@ async function buildOut(out: string): Promise<void> {
 }
 
 /** What the Codex plugin, `@sjawhar/codex-envoy`, takes from `codex/`: its npm
- *  manifest, its plugin manifest, its hooks and its README. It is a package of its own because
- *  Codex's plugin rules and Claude Code's cannot both hold in one directory: Codex's validator
- *  (`validate_plugin.py` of the `plugin-creator` skill Codex installs) refuses a manifest that
- *  names its hooks file, so its hooks must sit at `hooks/hooks.json`, which is also where Claude
- *  Code reads its own, and an npm install of a plugin reads the package's root, never a
- *  subdirectory. Measured on Codex CLI 0.154.0 and Claude Code 2.1.325. */
-const CODEX_SOURCES = [".codex-plugin", "hooks", "package.json", "README.md"] as const
+ *  manifest, its plugin manifest, its hooks, its README, and `bin/dispatch`, the `dispatch`
+ *  command a terminal runs (the manifest's npm `bin`), since the plugin's `dispatch` tool ends a
+ *  command after 120 s and `dispatch login --device` waits longer for a person's approval. It is
+ *  a package of its own because Codex's plugin rules and Claude Code's cannot both hold in one
+ *  directory: Codex's validator (`validate_plugin.py` of the `plugin-creator` skill Codex
+ *  installs) refuses a manifest that names its hooks file, so its hooks must sit at
+ *  `hooks/hooks.json`, which is also where Claude Code reads its own, and an npm install of a
+ *  plugin reads the package's root, never a subdirectory. Measured on Codex CLI 0.154.0 and
+ *  Claude Code 2.1.325. */
+const CODEX_SOURCES = [".codex-plugin", "bin", "hooks", "package.json", "README.md"] as const
 
 /** Each skill Claude Code may not load on its own (`disable-model-invocation: true`) and what
  *  Codex shows for it. Codex's validator refuses that field; Codex's own form of it is the skill's

@@ -30,13 +30,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
-	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -209,7 +210,7 @@ func envoyJSONHome(t *testing.T) string {
 func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) http.Handler {
 	t.Helper()
 	built.Lifetime = t.Context()
-	appCtx, err := appContextFor(boot, built)
+	appCtx, err := appContextFor(t, boot, built)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}
@@ -224,15 +225,31 @@ var testSigningKey = auth.SingleSigningKey("signing-key")
 // appContextFor is routes.BuildAppContext as main calls it, with the signing key, the session store
 // and the request identity main builds for boot (requestIdentityFor) filled in, so a request
 // carrying signedIn's cookie is that person's. built.People is a store with no database unless the
-// case's requests record people (dev sign-in, a pool sign-in, header identity).
-func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
+// case's requests record people (dev sign-in, a pool sign-in, header identity). A case that gives no
+// document service (built.Docs) gets one over the router's store, event broker, identity and
+// server URL, which is shut down once t ends.
+func appContextFor(t testing.TB, boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
+	t.Helper()
 	built.SigningKey = testSigningKey
 	if built.People == nil {
 		built.People = store.NewPgPeopleStore(nil, built.SigningKey, nil)
 	}
 	built.Sessions = currentSessions{}
 	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn)
-	return routes.BuildAppContext(appContextOptions(boot, built))
+	options := appContextOptions(boot, built)
+	if options.Docs == nil {
+		if options.Events == nil {
+			options.Events = events.NewBroker()
+		}
+		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, ServerURL: options.ServerURL})
+		t.Cleanup(func() {
+			if err := documents.Shutdown(context.Background()); err != nil {
+				t.Errorf("shut the document service down: %v", err)
+			}
+		})
+		options.Docs = documents
+	}
+	return routes.BuildAppContext(options)
 }
 
 // testPeople is a people store over a fresh test database, with the pool it writes through, so a
@@ -286,11 +303,12 @@ func devSignIn(t *testing.T, boot bootConfig, login string) *httptest.ResponseRe
 }
 
 // signInPool is a sign-in pool on this machine with Dispatch's app client, clientID and
-// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case.
+// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case, registering the callback the
+// router signInRouter builds names for the Host startSignIn's request carries, dispatch.test.
 func signInPool(t *testing.T, clientID, clientSecret string) *oidctest.Issuer {
 	t.Helper()
 	pool := oidctest.New(t)
-	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret)
+	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret, "http://dispatch.test/auth/callback")
 	return pool
 }
 
@@ -1110,42 +1128,6 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": "envoy-listener", "ENVOY_ACCOUNT_TOKEN_FILE": "/run/token"}, "ENVOY_ACCOUNT_GOOGLE_AUDIENCE")
 		},
-		"DISPATCH_REPO_PROJECTS": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": " acme/widgets=WID "}); boot.RepoProjects != "acme/widgets=WID" {
-				t.Errorf("RepoProjects = %q", boot.RepoProjects)
-			}
-			// Its one reader is api.SeedRepoProjects, which main runs before it builds the router: a
-			// malformed mapping is refused there, naming the variable, before anything is written.
-			if err := api.SeedRepoProjects(context.Background(), nil, nil, resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": "acme/widgets"}).RepoProjects); err == nil || !strings.Contains(err.Error(), "DISPATCH_REPO_PROJECTS") {
-				t.Errorf("DISPATCH_REPO_PROJECTS=acme/widgets: seeding the repository mappings: err = %v, want a refusal naming DISPATCH_REPO_PROJECTS", err)
-			}
-		},
-		"DISPATCH_DEFAULT_PROJECT": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_DEFAULT_PROJECT": " WID "}); boot.DefaultProject != "WID" {
-				t.Errorf("DefaultProject = %q", boot.DefaultProject)
-			}
-			// The project the router files an external issue in when no mapping names its
-			// repository: a create naming another project is refused naming that one, and with
-			// no default the repository is unmapped.
-			t.Run("router", func(t *testing.T) {
-				database := storetest.Open(t)
-				create := func(overrides map[string]string) *httptest.ResponseRecorder {
-					t.Helper()
-					request := httptest.NewRequest(http.MethodPost, "/api/v1/issues", strings.NewReader(`{"external":"acme/unmapped#7","project":"OTHER","actor":{"kind":"session","id":"settings-test"}}`))
-					request.Header.Set("Authorization", "Bearer agent-token")
-					request.Header.Set("Content-Type", "application/json")
-					response := httptest.NewRecorder()
-					routerFor(t, resolveWith(t, overrides), routes.AppContextOptions{Store: database}).ServeHTTP(response, request)
-					return response
-				}
-				if response := create(map[string]string{"DISPATCH_DEFAULT_PROJECT": "WID"}); errorCode(response) != "EXTERNAL_PROJECT_MISMATCH" || !strings.Contains(response.Body.String(), "project WID") {
-					t.Errorf("DISPATCH_DEFAULT_PROJECT=WID: POST /api/v1/issues answered %d %s, want the unmapped repository's project to be WID", response.Code, response.Body.String())
-				}
-				if response := create(nil); errorCode(response) != "PROJECT_UNMAPPED" {
-					t.Errorf("unset: POST /api/v1/issues answered %d %s, want PROJECT_UNMAPPED", response.Code, response.Body.String())
-				}
-			})
-		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
 				t.Errorf("set: client %q from %q, %v; want the variable over app.json", clientID, source, err)
@@ -1250,7 +1232,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			_, url := testnats.Start(t)
 			_, pemText := githubapptest.Key(t)
 			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
-				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, cireconcile.Interval, &registeredInstance{})
+				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, cireconcile.Interval, &registeredInstance{}, refs.Renames{})
 			if err != nil || reconciler == nil {
 				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
 			}
@@ -2236,7 +2218,13 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		if got := capOf(newDocumentService(boot, docs.Deps{}).RoomCapsForTest()); got != want {
+		documents := newDocumentService(boot, docs.Deps{})
+		t.Cleanup(func() {
+			if err := documents.Shutdown(context.Background()); err != nil {
+				t.Errorf("shut the document service down: %v", err)
+			}
+		})
+		if got := capOf(documents.RoomCapsForTest()); got != want {
 			t.Errorf("%s=%q: the document service's cap is %d, want %d", name, value, got, want)
 		}
 	}

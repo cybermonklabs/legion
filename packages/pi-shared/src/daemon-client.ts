@@ -21,6 +21,8 @@ import {
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPlanRegisterRequest,
+  LegionPlanRegisterResponse,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -35,6 +37,7 @@ import {
   LegionSignOffRequest,
   type LegionState,
   LegionStateResponse,
+  LegionTaskStopRequest,
   LegionTurnOutcomeRequest,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
@@ -54,9 +57,10 @@ import type { z } from "zod";
  * of a type the schema does not describe is still a refusal, and the daemon's golden tests still
  * hold the reader to the daemon's own types, by the equality between each golden's parse and its
  * file in `packages/contracts/src/legion-api.test.ts`. The requests are the claim wire of
- * `packages/daemon/internal/claim/wire.go`, which refuses a member it does not read. There is no
- * secret recovery: the daemon persists a registration's capability before it answers, so a
- * restart forgets no secret.
+ * `packages/daemon/internal/claim/wire.go`. The daemon refuses a member a route does not read
+ * (`readBody`), except on the registration, whose body it reads leniently (`readRegisterBody`).
+ * There is no secret recovery: the daemon persists a registration's capability before it answers,
+ * so a restart forgets no secret.
  */
 
 /** `claim.RegisterRequest`: the pane's boot token and the session this agent became.
@@ -205,6 +209,19 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
+   * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
+   * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason in the sentence,
+   * and a plan of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
+  readonly planRegister: (
+    input: z.input<typeof LegionPlanRegisterRequest>
+  ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
+  /** The owner's `stop_task` (contract 219): one task of the plan Legion runs for the issue stops,
+   * and the issue is held `task-stopped` until a later version of the plan changes that task or,
+   * on a root, a person sets the root `todo`. */
+  readonly taskStop: (
+    input: z.input<typeof LegionTaskStopRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
 }
 
@@ -377,8 +394,10 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
  * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again) and
- * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
+ * takes as a re-registration of the same document and tells no one again), `register_plan` (its
+ * fact is keyed by the issue, the generation, the document and the version, so a repeat is the
+ * same fact, answered the same), `stop_task` (a repeat finds the task stopped and changes nothing)
+ * and `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
  * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
@@ -708,5 +727,14 @@ export function createLegionDaemonClient(
       post("/legion/v1/roots/close", LegionRootCloseRequest, LegionEmptyResponse, input),
     childRerun: (input) =>
       post("/legion/v1/children/rerun", LegionChildRequest, LegionEmptyResponse, input),
+    planRegister: (input) =>
+      post(
+        "/legion/v1/plans/register",
+        LegionPlanRegisterRequest,
+        LegionPlanRegisterResponse,
+        input
+      ),
+    taskStop: (input) =>
+      post("/legion/v1/tasks/stop", LegionTaskStopRequest, LegionEmptyResponse, input),
   };
 }

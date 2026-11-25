@@ -17,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -259,6 +258,14 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// the text whose digest that is.
 	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
 	if err != nil {
+		return refused(err)
+	}
+	// The check may be on an issue of another project, which a parent of another project puts
+	// above the recording issue, and the result is appended to that issue. The pre-handler
+	// check read only the path's issue, so a credential scoped to one project is refused such a
+	// check here, before anything is written.
+	callerProject, _ := s.callerProject(r)
+	if err := refuseCheckOutsideCallerProject(r.Context(), pool, callerProject, check.IssueKey); err != nil {
 		return refused(err)
 	}
 	// A CI job's check run, read once and before the transaction opens for the reason the check
@@ -1010,7 +1017,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if repo == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
 	}
-	known, err := delivery.HeadAttributedTo(ctx, s.deps.Store.Pool, checkIssueKey, sha)
+	known, err := s.deps.Attributor.HeadAttributedTo(ctx, s.deps.Store.Pool, checkIssueKey, sha)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a recorded result", "issue", checkIssueKey, "error", err)
 		return
@@ -1018,7 +1025,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if known {
 		return
 	}
-	if _, _, err := delivery.ReadThroughCommitPulls(
+	if _, _, err := s.deps.Attributor.ReadThroughCommitPulls(
 		ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)

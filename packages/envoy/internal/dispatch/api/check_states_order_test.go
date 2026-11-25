@@ -6,7 +6,6 @@ package api
 
 import (
 	"maps"
-	"net/http"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -62,10 +61,7 @@ func TestALateCloseAndAResultAfterItEndAsInTheOrderOfTheirPlaces(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				rig := newCheckStatesRig(t, checkStatesTwoChecks)
-				if response := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/settings/repo-projects/"+oldRepo,
-					map[string]any{"project": ciJobProject, "renamed_to": ciJobRepository}, "alice"); response.Code != http.StatusOK {
-					t.Fatalf("map %s, renamed to %s: status=%d body=%s", oldRepo, ciJobRepository, response.Code, response.Body.String())
-				}
+				learnRename(t, rig, oldRepo, ciJobRepository)
 				writeHead(t, rig.database, oldRepo, 70, eachHeadH2, "open", "")
 				for _, head := range schedule.visits {
 					upsertHead(t, rig, 70, head, rig.issue, "A change")
@@ -176,10 +172,7 @@ func TestAJoinOfTwoNamesAppliedApartEndsAsInTheOrderOfTheirPlaces(t *testing.T) 
 		t.Fatalf("before the rename is known #70 has %d identities, %d ended under the old name and %d under the canonical one, %d records unapplied and %d rows pending; want two, the old one ended, everything applied: this test holds no join", identities, endedOld, endedCanonical, moves, pending)
 	}
 
-	if response := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/settings/repo-projects/"+oldRepo,
-		map[string]any{"project": ciJobProject, "renamed_to": ciJobRepository}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map %s, renamed to %s: status=%d body=%s", oldRepo, ciJobRepository, response.Code, response.Body.String())
-	}
+	learnRename(t, rig, oldRepo, ciJobRepository)
 	if _, err := rig.database.Pool.Exec(t.Context(), `select check_states_owe($1)`, rig.issue); err != nil {
 		t.Fatalf("owe %s: %v", rig.issue, err)
 	}

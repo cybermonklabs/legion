@@ -26,6 +26,23 @@ var helperChildVariables = []string{
 	roleInitEnv, roleProbeEnv, peerPlanEnv, peerStandInEnv,
 }
 
+// mainHelpers are this package's helper children that no test can re-enter: one started as the
+// controller's shim (`<test binary> worker-shim …`) or as Oh My Pi's eval kernel (`<a copy>
+// __omp_worker_js_eval_process`) takes the arguments of the process it stands for, and its first
+// argument is no -test flag, so m.Run would refuse it or run every test of the package. Each is
+// keyed by its LEGION_ marker, and TestMain runs the one whose marker is set before anything else
+// and exits; the file whose helper it is registers it, as roleinit_test.go registers its markers
+// in helperChildVariables.
+var mainHelpers = map[string]func(){}
+
+// guardKeep is what TestMain's guard keeps beyond fixtureenv's own test inputs: the inputs of a
+// gated live test, which a person or a measurement Job sets for that test alone and none of which
+// names a workspace, a remote or a credential. Each is a LEGION_ variable, which Guard would
+// otherwise take out before the test reads it, so the test would skip wherever it was asked to
+// run. The file whose test reads them registers them, as it registers its helpers in mainHelpers
+// (memoryguard_live_test.go).
+var guardKeep []string
+
 // TestMain takes out of the process every variable that could lead git or jj to a workspace,
 // remote or credential not the test's own (fixtureenv.Guard). The tests here run both: a released
 // workspace's bundle is restored by this package's own code, in process, with the real git and jj
@@ -35,7 +52,8 @@ var helperChildVariables = []string{
 // that variable names the pod's live workspace, so without this a test whose start named no
 // workspace of its own would unbundle into it, move its bookmarks --allow-backwards and jj edit
 // the working copy back to a saved head, over the work the pod's own roles have done
-// (docs/testing.md, "A test that starts jj or git inherits no pod's environment").
+// (docs/testing.md, "A test that starts jj or git inherits no pod's environment"). It keeps
+// guardKeep, the gated live tests' own inputs.
 //
 // It takes out the two variables that name a session store as well, which Guard leaves: Guard
 // takes out the LEGION_, GIT_, JJ_, GH_ and GITHUB_ variables and not these. A start's
@@ -50,6 +68,12 @@ var helperChildVariables = []string{
 // every test, so TestMain runs the stand-in before anything else, and only in a process that
 // carries the test's marker (sessionPeerShim).
 func TestMain(m *testing.M) {
+	for name, helper := range mainHelpers {
+		if os.Getenv(name) != "" {
+			helper()
+			os.Exit(0)
+		}
+	}
 	if len(os.Args) > 1 && os.Args[1] == shimArgument && os.Getenv(peerPlanEnv) != "" {
 		os.Exit(sessionPeerShim())
 	}
@@ -58,7 +82,7 @@ func TestMain(m *testing.M) {
 			os.Exit(m.Run())
 		}
 	}
-	fixtureenv.MustGuard()
+	fixtureenv.MustGuard(guardKeep...)
 	for _, name := range []string{ompsessions.DSNFileVariable, ompsessions.StorageVariable} {
 		if err := os.Unsetenv(name); err != nil {
 			fmt.Fprintln(os.Stderr, "TestMain:", err)

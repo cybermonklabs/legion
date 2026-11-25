@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
@@ -294,7 +295,7 @@ func privateHome(cfg RoleInitConfig, home, homes, work string) error {
 		return err
 	}
 	// A mount under another is carried by that one's recursive bind, so only the outermost of
-	// each nest is bound; mountinfo lists a mount after the one it sits on.
+	// each nest is bound; mountsUnder lists a mount above another first.
 	var bound []string
 	for _, mount := range mounts {
 		if slices.ContainsFunc(bound, func(outer string) bool { return strings.HasPrefix(mount, outer+"/") }) {
@@ -453,20 +454,31 @@ func copyRegular(source, target string, perm fs.FileMode) error {
 }
 
 // carryOver puts the role's own filesystem at dir (place) while keeping every mount strictly
-// under dir — an operator's volume under /tmp, say — visible on top of it: each is held aside on
-// the role's stage first and bound back at its own path after, since the new filesystem would
-// otherwise hide it and what the role writes there would never reach the volume. What the role
-// writes anywhere else under dir is its own: no sibling role and nothing in the container sees it.
-// The home is not carried this way (privateHome): an overlay's lower layer may have no mount under
-// it at all.
+// under dir that a path reaches — an operator's volume under /tmp, say — visible on top of it:
+// the outermost mount of each nest is held aside on the role's stage first and bound back at its
+// own path after, since the new filesystem would otherwise hide it and what the role writes there
+// would never reach the volume. Its recursive bind brings every mount inside it, so role-init
+// resolves no path inside a carried mount: a volume every role may write, where a sibling role
+// could put a link in the way of a mount inside it. A mount already hidden beneath another mount
+// is not carried (mountsUnder): the role could not reach it in the container either, and its path
+// reaches something else, or nothing. What the role writes anywhere else under dir is its own: no
+// sibling role and nothing in the container sees it. The home is not carried this way
+// (privateHome): an overlay's lower layer may have no mount under it at all.
 //
 // The directory it holds the mounts aside in is its own, and it removes it once every stand-in in
 // it is let go of, so it leaves nothing on the stage whichever entry of the list comes after it:
 // the stage is under the roles directory, which a cover goes over (RoleCover.replaced).
 func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error {
-	root, carried, err := mountsUnder(dir)
+	root, mounts, err := mountsUnder(dir)
 	if err != nil {
 		return err
+	}
+	// mountsUnder lists a mount above another first.
+	carried := mounts[:0]
+	for _, mount := range mounts {
+		if !slices.ContainsFunc(carried, func(outer string) bool { return strings.HasPrefix(mount, outer+"/") }) {
+			carried = append(carried, mount)
+		}
 	}
 	if err := os.MkdirAll(stage, 0o700); err != nil {
 		return err
@@ -622,17 +634,23 @@ func reportStatus(cfg RoleInitConfig, state *os.ProcessState) {
 	_ = file.Close()
 }
 
+// roleLogf writes one line of role-init's own to cfg.Stderr, through the URL rule
+// (redact.URLCredentials): cfg.Stderr is the stream the role's shim is handed as its own, so the
+// rule is applied to this line alone rather than to the stream.
 func roleLogf(cfg RoleInitConfig, format string, args ...any) {
 	if cfg.Stderr == nil {
 		return
 	}
-	fmt.Fprintf(cfg.Stderr, format+"\n", args...)
+	fmt.Fprintln(cfg.Stderr, redact.URLCredentials(fmt.Sprintf(format, args...)))
 }
 
-// mountsUnder are the mount points strictly under dir, in the order the namespace holds them, so
-// a mount above another is bound back first, and the path dir resolves to, by which mountinfo
-// names them: a dir reached through a link (the image's /var/run is a link to /run) is listed
-// by its target, so dir as given would match none of its mounts.
+// mountsUnder are the mount points strictly under dir that a path reaches, sorted, so a mount
+// above another comes first and is bound back first, and the path dir resolves to, by which
+// mountinfo names them: a dir reached through a link (the image's /var/run is a link to /run) is
+// listed by its target, so dir as given would match none of its mounts. A mount the table lists
+// that no path reaches, one hidden beneath a later mount on /tmp say, is left out
+// (reachableMount): every caller acts on a mount by its path, which reaches something else there,
+// or nothing. The table's order is not used: a table may list a mount before the mount it sits on.
 func mountsUnder(dir string) (string, []string, error) {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -643,7 +661,7 @@ func mountsUnder(dir string) (string, []string, error) {
 		return "", nil, fmt.Errorf("read this namespace's mounts: %w", err)
 	}
 	defer file.Close()
-	var under []string
+	var table []tableMount
 	lines := bufio.NewScanner(file)
 	lines.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for lines.Scan() {
@@ -651,15 +669,84 @@ func mountsUnder(dir string) (string, []string, error) {
 		if len(fields) < 5 {
 			continue
 		}
-		point := unescapeMount(fields[4])
-		if strings.HasPrefix(point, resolved+string(filepath.Separator)) {
-			under = append(under, point)
-		}
+		table = append(table, tableMount{id: fields[0], parent: fields[1], point: unescapeMount(fields[4])})
 	}
 	if err := lines.Err(); err != nil {
 		return "", nil, fmt.Errorf("read this namespace's mounts: %w", err)
 	}
-	return resolved, under, nil
+	return resolved, reachableUnder(table, resolved), nil
+}
+
+// reachableUnder are the mount points in table strictly under dir that a path reaches
+// (reachableMount), sorted: of two that a path reaches, one under the other sits in that one's
+// tree, so sorting puts each mount after every mount it sits in.
+func reachableUnder(table []tableMount, dir string) []string {
+	byID := make(map[string]tableMount, len(table))
+	for _, mount := range table {
+		byID[mount.id] = mount
+	}
+	var under []string
+	for _, mount := range table {
+		if strings.HasPrefix(mount.point, dir+string(filepath.Separator)) && reachableMount(table, byID, mount) {
+			under = append(under, mount.point)
+		}
+	}
+	slices.Sort(under)
+	return under
+}
+
+// tableMount is one line of mountinfo: the mount's id, the id of the mount it sits on, and its
+// mount point.
+type tableMount struct {
+	id, parent, point string
+}
+
+// reachableMount reports whether a path reaches mount, decided as a lookup goes: at a mount point
+// it goes into the mount there, and a mount over another sits on that one's root, so the one it
+// covers is its parent. A mount is hidden when another mount sits on its root, when another mount
+// on the same parent sits at its mount point or at a directory above it, or when the mount it sits
+// on is hidden. The chain of parents decides it and the table's order does not: a table may list a
+// mount after the mount that hides it, as one made beneath a mount through a handle on the covered
+// directory is, and as gVisor may list two mounts on one parent in a namespace it copies, which it
+// numbers in the order it walks a Go map (cloneMountTree, pkg/sentry/vfs/mount.go).
+//
+// The chain ends at the top of the table, which has one of two shapes. In the first, the top
+// mount's parent is a mount the table does not list. Linux writes the table this way, and so does
+// gVisor in a runsc container, an issue pod's included: runsc mounts the container's root
+// filesystem over a dummy root mount of the namespace (createMountNamespace, runsc/boot/vfs.go),
+// and mountinfo lists only the mounts from the process's root down (GenerateProcMountInfo,
+// pkg/sentry/vfs/mount.go), which leaves the dummy root out. In the second, the top mount is its
+// own parent: gVisor writes this for a namespace's root mount, which has no parent, and lists that
+// mount only when the process's root is on it.
+func reachableMount(table []tableMount, byID map[string]tableMount, mount tableMount) bool {
+	for _, other := range table {
+		if other.parent == mount.id && other.id != mount.id && other.point == mount.point {
+			return false
+		}
+	}
+	// Each step goes one mount up a tree, so a chain longer than the table is a loop, which no
+	// kernel lists.
+	for range len(table) {
+		if mount.parent == mount.id {
+			return true
+		}
+		for _, other := range table {
+			if other.id != mount.id && other.id != mount.parent && other.parent == mount.parent && pathAtOrAbove(other.point, mount.point) {
+				return false
+			}
+		}
+		parent, listed := byID[mount.parent]
+		if !listed {
+			return true
+		}
+		mount = parent
+	}
+	return false
+}
+
+// pathAtOrAbove reports whether the absolute path above is path or a directory path is under.
+func pathAtOrAbove(above, path string) bool {
+	return above == path || strings.HasPrefix(path, strings.TrimSuffix(above, "/")+"/")
 }
 
 // unescapeMount reads mountinfo's octal escapes for the characters it cannot write plainly.

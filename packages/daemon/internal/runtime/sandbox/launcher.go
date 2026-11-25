@@ -56,10 +56,15 @@ type launchers struct {
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
 	held     runtime.HeldWorkspaceBundleDrop
-	// guardKilled takes a memory guard's report of one process it ended into the daemon's fact
-	// path (Options.MemoryGuardKilled). A launchers built without it reads the frame, logs that
-	// no receiver took it, and drops it (memoryKilled).
-	guardKilled runtime.MemoryGuardKilled
+	// guardKilled takes a launcher's report of one process ended in an issue pod into the daemon's
+	// fact path (Options.MemoryGuardKilled), and controllerKilled one ended in the controller's pod
+	// (Options.ControllerMemoryGuardKilled): in a pod of either kind, one the memory guard ended in
+	// gVisor, or one the pod's own kernel stopped in a microVM, with the report's Cause
+	// (shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process
+	// that runs a role's session or the controller's). A launchers built without the one a report
+	// needs reads the frame, logs that no receiver took it, and drops it (memoryKilled).
+	guardKilled      runtime.MemoryGuardKilled
+	controllerKilled runtime.ControllerMemoryGuardKilled
 	// volume takes a cache trimmer's sweep report into the daemon's fact path
 	// (Options.VolumeReported). A launchers built without it reads the frame, logs that no
 	// receiver took it, and drops it (volumeReported).
@@ -111,9 +116,11 @@ type launcherSession struct {
 }
 
 func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
-	held runtime.HeldWorkspaceBundleDrop, guardKilled runtime.MemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
+	held runtime.HeldWorkspaceBundleDrop, guardKilled runtime.MemoryGuardKilled, controllerKilled runtime.ControllerMemoryGuardKilled,
+	volume runtime.VolumeReported, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheckSetting: setting, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		saved: saved, restored: restored, held: held, guardKilled: guardKilled, volume: volume, log: log}
+		saved: saved, restored: restored, held: held, guardKilled: guardKilled, controllerKilled: controllerKilled,
+		volume: volume, log: log}
 }
 
 // accept registers a launcher connection of the pod of issue, created at podCreated, whose
@@ -691,9 +698,15 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 // cannot tell another role, issue or pod of a kill. The report's guard and sequence are what
 // apply it once however often it arrives (the event id the daemon applies it under).
 //
-// A report the frame's own rule refuses (LauncherMemoryKill.Validate), and one on a session of no
-// issue, which is the controller's pod, whose role has no issue to hold its note, are logged
-// naming the launcher and dropped. None of the drops closes the connection: closing costs the
+// A session of no issue is the controller's pod, whose one role is the project's controller: its
+// report goes to the controller's receiver (Options.ControllerMemoryGuardKilled), which tells the
+// controller of the kill, with the session's token and pod. Every other session is an issue
+// pod's, and its report goes to the issue's receiver (Options.MemoryGuardKilled) with the
+// session's issue as well.
+//
+// A report the frame's own rule refuses (LauncherMemoryKill.Validate), and one whose receiver
+// this runtime was not given, are logged naming the launcher and dropped; the second names the
+// line that sets the missing receiver. None of the drops closes the connection: closing costs the
 // launcher a redial a second later (ServeLauncher's `default: return`) over a frame the daemon
 // could not have used anyway, and the launcher's other frames would go with it.
 //
@@ -707,23 +720,29 @@ func (d *launchers) memoryKilled(s *launcherSession, report shimwire.LauncherMem
 			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "error", err)
 		return
 	}
-	if s.issue == "" {
-		d.log.Warn("launcher memory guard: a launcher of no issue reported a kill, and no issue holds a note for its role, so it is dropped; the connection stays open",
-			"launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID)
-		return
-	}
-	if d.guardKilled == nil {
-		// A runtime built with no receiver drops every report of every pod, and nothing else
-		// shows it: no role is told why its process is gone. So the drop names the line that sets
-		// the receiver.
+	controller := s.issue == ""
+	if (controller && d.controllerKilled == nil) || (!controller && d.guardKilled == nil) {
+		// A runtime built with no receiver for a pod kind drops every report of every pod of that
+		// kind, and nothing else shows it: nobody is told why the process is gone. So the drop
+		// names the line that sets the receiver.
+		setter := "opts.MemoryGuardKilled"
+		if controller {
+			setter = "opts.ControllerMemoryGuardKilled"
+		}
 		d.log.Warn("launcher memory guard: the pod's launcher reported a kill and this runtime has no receiver for it, which is dropped; "+
-			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime (opts.MemoryGuardKilled)",
+			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime ("+setter+")",
 			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
 	defer cancel()
-	if err := d.guardKilled(ctx, s.issue, s.token, s.podUID, report); err != nil {
+	var err error
+	if controller {
+		err = d.controllerKilled(ctx, s.token, s.podUID, report)
+	} else {
+		err = d.guardKilled(ctx, s.issue, s.token, s.podUID, report)
+	}
+	if err != nil {
 		d.log.Warn("launcher memory guard: the pod's launcher reported a kill the daemon could not record, which is dropped",
 			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "error", err)
 	}

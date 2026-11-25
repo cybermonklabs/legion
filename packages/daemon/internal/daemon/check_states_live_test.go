@@ -188,6 +188,9 @@ type statesIssue struct {
 	key, title, head string
 	number           int
 	tester           string
+	// seededTask is the task seed left pending on the tester's claim, the test's own input, which
+	// readyTester finds the tester's first turn by: no word of it is the daemon's.
+	seededTask string
 	// staged is whether the issue's pull request is staged in Dispatch's database (stageHead).
 	staged bool
 	// recorded is each result the case recorded on the issue, as statesRecordedAs spells it.
@@ -293,7 +296,6 @@ func newStatesProof(t *testing.T) *statesProof {
 		}
 	}
 	cases := statesSelected(t)
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/check-states.sh")
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
@@ -393,7 +395,7 @@ func (r *statesProof) setUpDispatch() {
 	t := r.t
 	t.Helper()
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Check states live proof"}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	base, err := strconv.ParseInt(randomSuffix(t)[:5], 16, 64)
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +434,7 @@ func (r *statesProof) seed() {
 	t.Helper()
 	ctx := context.Background()
 	all := r.allIssues()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range all {
 			listed := r.dispatch.issue(issue.key)
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
@@ -470,6 +472,7 @@ func (r *statesProof) seed() {
 			t.Fatalf("record the tester's unfinished launch on %s: %v", issue.key, err)
 		}
 		task := fmt.Sprintf("Continue %s. Issue: %s. Phase: testing. Pull request: #%d.", issue.title, issue.key, issue.number)
+		issue.seededTask = task
 		if err := r.st.PutDelivery(ctx, tester, supervise.Delivery{
 			ID: "seeded-start-" + randomSuffix(t), Task: task, Generation: 1, Phase: phase.Testing, QueuedAt: time.Now(),
 		}); err != nil {

@@ -48,8 +48,7 @@ func insertReturningID(t *testing.T, store *Store, query string, args ...any) st
 // project (an agent conversation's file) has no page to open, so neither makes a row.
 func TestUserThreadsSeedStartsReadAndTriggersKeepEachRow(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeUserThreads)
+	store := openMigratedTestStore(t, beforeUserThreads)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank)
@@ -173,8 +172,7 @@ func TestUserThreadsSeedStartsReadAndTriggersKeepEachRow(t *testing.T) {
 // the reply, and starts read like every thread the seed meets.
 func TestUserThreadsSeedMergesWithRowsTheTriggerWrote(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeUserThreads+1)
+	store := openMigratedTestStore(t, beforeUserThreads+1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank)
@@ -207,8 +205,7 @@ func TestUserThreadsSeedMergesWithRowsTheTriggerWrote(t *testing.T) {
 // names the reply.
 func TestUserThreadsCatchUpCountsAReplyTheSeedRaced(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeUserThreads)
+	store := openMigratedTestStore(t, beforeUserThreads)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank)
@@ -220,7 +217,7 @@ func TestUserThreadsCatchUpCountsAReplyTheSeedRaced(t *testing.T) {
 	root := insertReturningID(t, store, `
 		insert into comments (issue_key, author, body) values ('CORE-1', '{"kind":"user","id":"alice"}', 'Ship it?')
 		returning id::text`)
-	migrateThrough(t, store, beforeUserThreads+3)
+	migrateAbove(t, store, beforeUserThreads, beforeUserThreads+3)
 
 	seed, err := migrationFiles.ReadFile("migrations/0098_user_threads_seed.up.sql")
 	if err != nil {
@@ -263,8 +260,7 @@ func TestUserThreadsCatchUpCountsAReplyTheSeedRaced(t *testing.T) {
 // participant's row unread, the asker's included, naming the ask, and leaves the answerer's read.
 func TestUserThreadsCountAnAnswerAsAWrite(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeUserThreads)
+	store := openMigratedTestStore(t, beforeUserThreads)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank)
@@ -314,8 +310,7 @@ func TestUserThreadsCountAnAnswerAsAWrite(t *testing.T) {
 // steps. A message 65 deep belongs to its first reply's thread, not the root's, in both.
 func TestUserThreadsSeedStopsTheMessageWalkWhereTheTriggerDoes(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeUserThreads)
+	store := openMigratedTestStore(t, beforeUserThreads)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank)

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -175,8 +176,15 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 // document: Dispatch refuses a body that names no list rather than read it as the empty one, so a
 // nil slice would be refused where it means the same thing. Dispatch answers 400 INVALID_ISSUE
 // for a set it will not take and 404 ISSUE_NOT_FOUND for an issue it does not know; a Dispatch
-// older than the route answers its router's 404 (NoRoute), which the outbox's row waits on until the
-// server release that has it.
+// older than the route answers its router's 404 (NoRoute), which the outbox's row waits on until
+// the server release that has the route. A Dispatch that has the route but not an entry's `holds`
+// ignores that member, as it ignores every member a body carries that it does not declare (its
+// decodeJSON), and answers 200: the publish finishes, and that Dispatch keeps no `holds` for the
+// row. Its advice then reads the row by the project's gated steps, so a `criteria` row a root
+// registered beside a deployment whose list names `spec` and not `criteria` is left out of the
+// superseded-approval advice until the set is published again, which every daemon boot does
+// (queueRecordedGatesPublish). So deploy Dispatch first, or restart the daemon once Dispatch has
+// the column.
 func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
 	if gates == nil {
 		gates = []DesignGateDocument{}
@@ -237,12 +245,14 @@ func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write St
 
 // PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that
 // issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session, the one session
-// the route takes a plan of the issue from. The write appends no event and notifies nobody, and
-// Dispatch sets each field once, so a plan sent again changes nothing. Dispatch answers 400
-// PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other writer, 404
-// ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id that is a plan
-// of another issue; a Dispatch older than the route answers its router's 404 (NoRoute), which the
-// outbox's row waits on until the server release that has it.
+// the route takes a plan of the issue from. The write appends no event and notifies nobody. The
+// plan's source, document, version and tasks are one fact: a write whose version is above the
+// version Dispatch holds replaces all four, and a write at or below it changes nothing, a version
+// left out (the source default) counting as 0, so a plan sent again or late changes nothing.
+// Dispatch answers 400 PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other
+// writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id
+// that is a plan of another issue; a Dispatch older than the route answers its router's 404
+// (NoRoute), which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutPlan(ctx context.Context, key, id string, plan PlanWrite) error {
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/plans/"+url.PathEscape(id), planWrite{
 		PlanWrite: plan,
@@ -481,6 +491,121 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	return approved, nil
 }
 
+// PlanDocument reads one version of a document with its typed blocks: GET
+// /api/v1/artifacts/{id}/versions/{version}?blocks=true, whose blocks Dispatch reads from that
+// version's own text, then GET /api/v1/artifacts/{id} for the issue carrying it. Each block's
+// text is its body, cut from the markdown of the same answer at the block's byte range, without
+// its opening line and its closing fence. A Dispatch that answers no blocks key predates that read
+// and gives ErrNoBlocks. An answer for another version, or a block whose range is not a fenced
+// block of its markdown, is an error naming it; a refusal of Dispatch's passes through (Missing).
+func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error) {
+	if version < 1 {
+		return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: a version is 1 or more", artifactID, version)
+	}
+	var response versionBlocksResponse
+	path := "/api/v1/artifacts/" + url.PathEscape(artifactID) + "/versions/" + strconv.Itoa(version) + "?blocks=true"
+	if err := c.request(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return DocumentVersion{}, err
+	}
+	if response.Blocks == nil {
+		return DocumentVersion{}, ErrNoBlocks
+	}
+	if response.Number != version {
+		return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: Dispatch answered version %d", artifactID, version, response.Number)
+	}
+	document := DocumentVersion{ArtifactID: artifactID, Version: version, Blocks: make([]DocumentBlock, 0, len(*response.Blocks))}
+	for _, block := range *response.Blocks {
+		if block.From < 0 || block.To < block.From || block.To > len(response.Markdown) {
+			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: block %s spans %d to %d of %d bytes", artifactID, version, block.ID, block.From, block.To, len(response.Markdown))
+		}
+		rendering := response.Markdown[block.From:block.To]
+		_, rest, opened := strings.Cut(rendering, "\n")
+		closing := strings.LastIndexByte(rest, '\n')
+		if !opened || closing < 0 {
+			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: block %s is %q, not a fenced block", artifactID, version, block.ID, rendering)
+		}
+		attributes := make(map[string]string, len(block.Attributes))
+		for _, attribute := range block.Attributes {
+			attributes[attribute.Name] = attribute.Value
+		}
+		document.Blocks = append(document.Blocks, DocumentBlock{ID: block.ID, Type: block.Type, Attributes: attributes, Text: rest[:closing]})
+	}
+	var artifact artifactResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID), nil, &artifact); err != nil {
+		return DocumentVersion{}, err
+	}
+	if artifact.IssueKey != nil {
+		document.IssueKey = *artifact.IssueKey
+	}
+	return document, nil
+}
+
+// ArtifactChanges reads GET /api/v1/artifacts/{id}/changes?from=&to=: what changed in the document
+// between versions from and to, both positive and from below to, as Dispatch answers them (a pair
+// from 0 has no earlier version to compare, and Dispatch refuses it). A 404 ARTIFACT_NOT_FOUND is
+// ErrDocumentNotFound wrapped around Dispatch's own refusal (documentNotFound): Dispatch holds no
+// document of that id, a document deleted since its gate recorded it, and the caller records the
+// pair unreadable at once, since a deleted document does not come back. The router's `404
+// NOT_FOUND` `no route for <METHOD> <path>`, and a 405, are ErrNoChangesRoute wrapped the same
+// way: the build that answered has no such route. During a roll of Dispatch two builds answer,
+// and the next attempt can reach the one that has it, so the caller retries that answer as any
+// other failure within its bounded attempts. Dispatch also answers 404 NOT_FOUND for a version
+// the document does not have, which the daemon does not ask for, since the versions it reads are
+// the ones its gate recorded; that answer, and every other failure, is the request's own, which a
+// caller rides out.
+func (c *HTTPClient) ArtifactChanges(ctx context.Context, artifactID string, from, to int) (ArtifactChanges, error) {
+	query := url.Values{}
+	query.Set("from", fmt.Sprint(from))
+	query.Set("to", fmt.Sprint(to))
+	var changes ArtifactChanges
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/changes?"+query.Encode(), nil, &changes); err != nil {
+		var refusal *Error
+		switch {
+		case !errors.As(err, &refusal):
+		case artifactNotFound(refusal):
+			return ArtifactChanges{}, documentNotFound(err)
+		case NoRoute(err), refusal.Status == http.StatusMethodNotAllowed:
+			return ArtifactChanges{}, fmt.Errorf("%w: %w", ErrNoChangesRoute, err)
+		}
+		return ArtifactChanges{}, err
+	}
+	return changes, nil
+}
+
+// ApprovedVersionBefore reads GET /api/v1/artifacts/{id}/reviews, every review of the document,
+// newest first, and answers the highest version below version that one of them approved, 0 when
+// none did: the version a holder whose told version the record does not know is taken to have
+// worked from. It takes the highest such version wherever it stands in the list, so the answer
+// rests on no order of the list: a changes request names no approved version, and a review of a
+// version at or above the one asked about is not before it. A 404 ARTIFACT_NOT_FOUND is
+// ErrDocumentNotFound wrapped around Dispatch's own refusal, as ArtifactChanges answers it: a
+// document deleted since its gate recorded it, whose review history the caller records unread at
+// once rather than read again on its backoff.
+func (c *HTTPClient) ApprovedVersionBefore(ctx context.Context, artifactID string, version int) (int, error) {
+	var reviews []reviewResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/reviews", nil, &reviews); err != nil {
+		var refusal *Error
+		if errors.As(err, &refusal) && artifactNotFound(refusal) {
+			return 0, documentNotFound(err)
+		}
+		return 0, err
+	}
+	approved := 0
+	for _, review := range reviews {
+		if review.State == "approved" && review.Version < version && review.Version > approved {
+			approved = review.Version
+		}
+	}
+	return approved, nil
+}
+
+// documentNotFound is Dispatch's 404 ARTIFACT_NOT_FOUND, err, as the reads of one document answer
+// it: ErrDocumentNotFound wrapped around Dispatch's own refusal, so errors.Is finds it and the
+// message keeps what Dispatch said.
+func documentNotFound(err error) error {
+	return fmt.Errorf("%w: %w", ErrDocumentNotFound, err)
+}
+
 // Handoff reads GET /api/v1/handoffs/{id}: one handoff record with its issue, phase, version and
 // author. A record Dispatch does not have is its 404 HANDOFF_NOT_FOUND (Missing).
 func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
@@ -680,6 +805,27 @@ type artifactResponse struct {
 	Approval *approvalResponse `json:"approval"`
 }
 
+// versionBlocksResponse is a document version as GET …/versions/{n}?blocks=true answers it: its
+// markdown, its number, and its typed blocks, nil when Dispatch sent no blocks key.
+type versionBlocksResponse struct {
+	Markdown string                `json:"markdown"`
+	Number   int                   `json:"number"`
+	Blocks   *[]versionBlockAnswer `json:"blocks"`
+}
+
+// versionBlockAnswer is one block of that answer: its id, type, byte range in the answer's
+// markdown and attributes, each a name and the value its opening line writes.
+type versionBlockAnswer struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	From       int    `json:"from"`
+	To         int    `json:"to"`
+	Attributes []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	} `json:"attributes"`
+}
+
 type approvalResponse struct {
 	State         string  `json:"state"`
 	LatestVersion int     `json:"latest_version"`
@@ -722,6 +868,13 @@ func (r handoffResponse) handoff() Handoff {
 		handoff.CheckStatesSerial = *r.CheckStatesSerial
 	}
 	return handoff
+}
+
+// reviewResponse is one review as GET /api/v1/artifacts/{id}/reviews serves it, read for the
+// version it was given on and its state (`approved` or `changes_requested`) alone.
+type reviewResponse struct {
+	Version int    `json:"version"`
+	State   string `json:"state"`
 }
 
 type actor struct {

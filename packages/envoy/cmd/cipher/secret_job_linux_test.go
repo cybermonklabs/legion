@@ -816,19 +816,21 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 					}
 				}
 			}()
-			exitWithin := 10 * time.Second
-			if sig == syscall.SIGABRT {
-				// Go's GOTRACEBACK=crash relays SIGQUIT between threads. A
-				// SIGQUIT subscriber can make that relay wait for its 10s
-				// watchdog before the runtime raises the fatal SIGABRT.
-				exitWithin = 30 * time.Second
-			}
-			select {
-			case <-done:
-			case <-time.After(exitWithin):
-				_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-				state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
-				t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)
+			// The process ends on the signal; the one bound of this wait is the moment every wait
+			// of these tests gives up (waitsGaveUp). The end can be slow even on an idle machine:
+			// Go's GOTRACEBACK=crash relays SIGQUIT between threads, and a SIGQUIT subscriber can
+			// make that relay wait for its 10s watchdog before the runtime raises the fatal SIGABRT.
+			for ended := false; !ended; time.Sleep(time.Millisecond) {
+				select {
+				case <-done:
+					ended = true
+				default:
+					if waitsGaveUp(t) {
+						_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+						state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
+						t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)
+					}
+				}
 			}
 			if err := controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
 				t.Fatal(err)

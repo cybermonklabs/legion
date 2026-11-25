@@ -401,3 +401,151 @@ func TestThePinnedOhMyPiRootsItsStateUnderTheStateHomeOnlyWhereTheShimMadeThePro
 		})
 	}
 }
+
+// shippedExtensions is an image's gh extension directory (GhExtensionsDir) under dir holding one
+// extension, gh-hello, whose executable prints "hello <its arguments>", beside a file and a
+// directory no gh extension is named like, which gh reads as no extension and nothing links.
+func shippedExtensions(t *testing.T, dir string) string {
+	t.Helper()
+	shipped := filepath.Join(dir, "opt", "legion", "gh-extensions")
+	for _, made := range []string{filepath.Join(shipped, "gh-hello"), filepath.Join(shipped, "not-an-extension")} {
+		if err := os.MkdirAll(made, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(shipped, "gh-hello", "gh-hello"), []byte("#!/bin/sh\necho hello \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shipped, "gh-stray"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return shipped
+}
+
+// The image's gh extensions reach gh only through gh's own extension directory under the data
+// home, which starts empty in every pod: EnsureGhExtensions links each one there, leaves an entry
+// already at its path alone (a sibling role's link, or an extension an agent installed itself),
+// links nothing for an image that ships none or a data home it is not told, and refuses, naming
+// the extension, a link it cannot make.
+func TestEnsureGhExtensionsLinksEachShippedExtensionWhereGhReadsIt(t *testing.T) {
+	t.Run("each extension, once, whoever runs it first", func(t *testing.T) {
+		dir := t.TempDir()
+		shipped := shippedExtensions(t, dir)
+		data := filepath.Join(dir, "legion", "scratch", "data")
+		environ := []string{"XDG_DATA_HOME=" + data}
+		for range 2 {
+			if err := EnsureGhExtensions(environ, shipped); err != nil {
+				t.Fatal(err)
+			}
+		}
+		extensions := filepath.Join(data, "gh", "extensions")
+		if target, err := os.Readlink(filepath.Join(extensions, "gh-hello")); err != nil || target != filepath.Join(shipped, "gh-hello") {
+			t.Errorf("gh-hello links to %q (%v), want %s", target, err, filepath.Join(shipped, "gh-hello"))
+		}
+		entries, err := os.ReadDir(extensions)
+		if err != nil || len(entries) != 1 {
+			t.Errorf("gh's extension directory holds %v (%v), want gh-hello alone", entries, err)
+		}
+	})
+	t.Run("an entry already at the path is left as it is", func(t *testing.T) {
+		dir := t.TempDir()
+		shipped := shippedExtensions(t, dir)
+		data := filepath.Join(dir, "data")
+		installed := filepath.Join(data, "gh", "extensions", "gh-hello")
+		if err := os.MkdirAll(installed, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnsureGhExtensions([]string{"XDG_DATA_HOME=" + data}, shipped); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Lstat(installed); err != nil || !info.IsDir() {
+			t.Errorf("the extension an agent installed is %v (%v), want its directory left in place", info, err)
+		}
+	})
+	t.Run("nothing to link", func(t *testing.T) {
+		dir := t.TempDir()
+		shipped := shippedExtensions(t, dir)
+		for name, tc := range map[string]struct {
+			environ []string
+			shipped string
+		}{
+			"no shipped directory": {[]string{"XDG_DATA_HOME=" + filepath.Join(dir, "a")}, filepath.Join(dir, "none")},
+			"no data home":         {nil, shipped},
+			"an empty data home":   {[]string{"XDG_DATA_HOME="}, shipped},
+			"a relative data home": {[]string{"XDG_DATA_HOME=relative/data"}, shipped},
+		} {
+			if err := EnsureGhExtensions(tc.environ, tc.shipped); err != nil {
+				t.Errorf("%s: %v, want nothing linked and no refusal", name, err)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(dir, "a")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("an image that ships no extension made %s (%v), want nothing", filepath.Join(dir, "a"), err)
+		}
+		if _, err := os.Stat("relative"); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("a relative data home made ./relative (%v), want nothing", err)
+		}
+	})
+	t.Run("a link that cannot be made", func(t *testing.T) {
+		dir := t.TempDir()
+		shipped := shippedExtensions(t, dir)
+		data := filepath.Join(dir, "data")
+		if err := os.MkdirAll(filepath.Join(data, "gh"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(data, "gh", "extensions"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := EnsureGhExtensions([]string{"XDG_DATA_HOME=" + data}, shipped)
+		if err == nil || !strings.Contains(err.Error(), filepath.Join(data, "gh", "extensions")) {
+			t.Errorf("EnsureGhExtensions over a file where gh's extension directory goes = %v, want a refusal naming it", err)
+		}
+	})
+}
+
+// The link is what the real gh reads as an extension: with the data home EnsureGhExtensions
+// linked into, `gh hello` runs the shipped executable with its arguments; with an empty data home
+// gh knows no such command. It runs LEGION_GH_PATH, the real gh behind a pane's or pod's wrapper,
+// or the gh on PATH, and skips where there is neither.
+func TestTheRealGhRunsALinkedExtension(t *testing.T) {
+	gh := os.Getenv("LEGION_GH_PATH")
+	if gh == "" {
+		found, err := exec.LookPath("gh")
+		if err != nil {
+			t.Skip("no real gh on this machine: the test proves the link against one")
+		}
+		gh = found
+	}
+	dir := t.TempDir()
+	shipped := shippedExtensions(t, dir)
+	data := filepath.Join(dir, "data")
+	if err := EnsureGhExtensions([]string{"XDG_DATA_HOME=" + data}, shipped); err != nil {
+		t.Fatal(err)
+	}
+	run := func(data string) (string, error) {
+		cmd := exec.Command(gh, "hello", "stacked")
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + dir, "XDG_DATA_HOME=" + data, "XDG_CONFIG_HOME=" + filepath.Join(dir, "config"),
+			"XDG_STATE_HOME=" + filepath.Join(dir, "state"), "XDG_CACHE_HOME=" + filepath.Join(dir, "cache"),
+			"GH_CONFIG_DIR=" + filepath.Join(dir, "gh-config"), "GH_NO_UPDATE_NOTIFIER=1", "GH_PROMPT_DISABLED=1", "GH_TELEMETRY=0"}
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	if out, err := run(data); err != nil || out != "hello stacked" {
+		t.Errorf("gh hello with the linked data home printed %q (%v), want \"hello stacked\"", out, err)
+	}
+	if out, err := run(filepath.Join(dir, "empty")); err == nil || strings.Contains(out, "hello stacked") {
+		t.Errorf("gh hello with an empty data home printed %q (%v), want gh to know no such command", out, err)
+	}
+}
+
+// The worker image installs its gh extensions at GhExtensionsDir, the one directory the shim
+// links from, so a move of either is a move of both.
+func TestTheWorkerImageShipsItsGhExtensionsWhereTheShimLinksFrom(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "COPY --from=tools /opt/tools/gh-extensions " + GhExtensionsDir + "\n"
+	if got := strings.Count(string(dockerfile), want); got != 1 {
+		t.Errorf("worker.Dockerfile holds %q %d times, want once", strings.TrimSpace(want), got)
+	}
+}

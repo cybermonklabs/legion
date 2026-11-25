@@ -61,7 +61,7 @@ const CLAIM = "[A-Za-z0-9_.:-]{1,64}";
 const URI = "[A-Za-z0-9:/._-]{1,200}";
 /** The exchange policy's one sentence of what a session name may be (Go's `sessionRule`). */
 const SESSION_RULE =
-  "a session name is printable, carries no whitespace, and is at most [0-9]{1,4} bytes";
+  "a session name is printable, carries no whitespace, '\\*' or '>', and is at most [0-9]{1,4} bytes";
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

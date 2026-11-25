@@ -23,11 +23,12 @@ export type IssuePriority = z.output<typeof IssuePrioritySchema>;
 export type IssueComponentsMode = (typeof ISSUE_COMPONENTS_MODES)[number];
 
 /**
- * An issue's effective component attachment, resolved on read: the nearest issue on its
- * parent chain (itself first) with its own attachment decides, and `inherited_from` names it
- * when that is an ancestor. Mode `inherit` with `inherited_from` null means no ancestor chose
- * (unassigned). `ids` is the effective set of live component ids; `unknown` the effective ids
- * a re-import has since retired; `reason` is set for mode `none`.
+ * An issue's effective component attachment, resolved on read: the nearest issue of its own
+ * project on its parent chain (itself first) with its own attachment decides, and
+ * `inherited_from` names it when that is an ancestor. Mode `inherit` with `inherited_from` null
+ * means no ancestor of its project chose (unassigned). `ids` is the effective set of live
+ * component ids; `unknown` the effective ids a re-import has since retired; `reason` is set for
+ * mode `none`.
  */
 export const IssueComponentsSchema = z
   .strictObject({
@@ -130,11 +131,12 @@ export const issueFields = {
   components: IssueComponentsSchema,
   external_links: z.array(ExternalLinkSchema),
   route: z.string().nullable(),
-  /** The issue's own repository, owner/name: any repository GitHub could hold, whether or not a
-   *  project maps it; null when it inherits. */
+  /** The issue's own repository, owner/name: any repository GitHub could hold. Null when the
+   *  issue names none of its own. */
   repo: z.string().nullable(),
-  /** The repository Dispatch resolves for the issue: its own, else its nearest ancestor's, else the
-   *  project's default mapping, else null. Legion records it when it first records the issue. */
+  /** The repository Dispatch resolves for the issue: its own, else its nearest ancestor's in its
+   *  own project, else the project's default repository (`Project.default_repo`), else null.
+   *  Legion records it when it first records the issue. */
   resolved_repo: z.string().nullable(),
   /** Null for issues created before Dispatch recorded their creator. */
   created_by: ActorSchema.nullable(),

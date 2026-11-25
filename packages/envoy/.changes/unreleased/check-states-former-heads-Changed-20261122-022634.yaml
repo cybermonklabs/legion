@@ -10,7 +10,7 @@ body: |-
     `pull_request_former_heads` keeps each head an open pull request left. Each write of
     `pull_request_heads` that can move a pull request's history appends a record of it, by a
     trigger, in the transaction of the write, whichever build wrote it
-    (`pull_request_former_heads_moves`, migration `20261122071001`, one transaction with the tables
+    (`pull_request_former_heads_moves`, migration `20261124122830`, one transaction with the tables
     and the seed), and the settler applies a pull request's records, under that pull request's lock,
     before it reads its former heads (`pull_request_former_heads_fold`), and each pass applies the
     records no settle reached, so a head is kept whether or not a settle ran while the pull request
@@ -23,44 +23,59 @@ body: |-
     unverified candidates, the commits of the results the settle of each open pull request's issue
     reads, recorded on any issue against a check of that issue's Verification document, other than
     its head, and marks those issues owed; the settler asks GitHub once which candidates are each
-    such pull request's own commits and keeps those: a commit its list of commits names, and where
-    GitHub's cap of 250 leaves that list short, a commit the head holds and the base branch does not,
-    by two comparisons (only an answer about a commit drops it; any failed read keeps the commits it
-    would have decided, and the settle keeps every obligation it read that asked for the read, each
-    mark with `check_states_owed.reads_from`, due after the backoff, which the `test` handoff's
-    fence waits for, so the backoff never releases the fence while a commit that may be a former
-    head is undecided, and a mark that commits after a handoff began, with a lower id than those it
-    waits for, never stands in for them; a claim another settle holds and an answer whose claim,
-    lifecycle or snapshot moved since the read keep them the same way, due a second on, an answer
-    about a head or a base revision no write has stored yet after the backoff, and any settle of
-    the issue that resolves the read deletes them), one read for
-    a pull request whichever issue it moves to, since a settle claims the read by the pull
-    request's identity
+    such pull request's own commits and keeps those: a commit GitHub's comparison of the head and
+    the base revision Dispatch stores for the pull request lists (`compare/{base}...{head}`, five
+    pages of 100), and, past those pages, a commit the head holds and the base revision does not,
+    by two comparisons at those two commits, so every answer is about the two revisions Dispatch
+    stores whatever GitHub's pull request stands at while it is read, and no read by the pull
+    request's number or a branch's name decides a commit; a read of the pull request first only
+    tells whether GitHub has moved it on from those revisions, and then decides nothing (only an
+    answer about a commit drops it; any failed read keeps the commits it would have decided, and
+    the settle keeps every obligation it read that asked for the read, each mark with
+    `check_states_owed.reads_from`, due after the backoff, which the `test` handoff's fence waits
+    for, so the backoff never releases the fence while a commit that may be a former head is
+    undecided, and a mark that commits after a handoff began, with a lower id than those it waits
+    for, never stands in for them; a claim another settle holds and an answer whose claim,
+    lifecycle or snapshot moved since the read keep them the same way, due a second on, a pull
+    request GitHub moved to a head or a base revision no write has stored yet and a row that stores
+    no base revision after the backoff, and any settle of the issue that resolves the read deletes
+    them), one read for a pull request whichever issue it moves to, since a settle claims the read
+    by the pull request's identity
     (`pull_request_former_heads_claim`, `pull_request_former_heads_reads`) and a settle of another
     issue leaves it to that claim; the answer, positive or negative, is applied by one statement
     and no other path (`pull_request_former_heads_answer`), which under the pull request's lock
     gives the claim back by its token and applies only where the claim is still live, the pull
     request's generation and its snapshot of heads, base branches and base revisions are as the
-    claim read them, the head and base revision GitHub's answer is about are the ones Dispatch
-    stores for the row the read went by (any base revision where the row stores none), and each
+    claim read them, so the row the read went by still stores the two commits compared, and each
     candidate keeps the incarnation read
     (`pull_request_former_heads.incarnation`, drawn anew at each change of the row), so an answer
     about a claim that ran out or was taken over, an ended lifecycle, a moved head, a base revision
-    stored anew, a head or a base revision GitHub moved to that no write has stored yet, or a
-    replaced candidate applies nothing and the candidates are read again, with
-    the obligation that asked for the read kept; the verification reads the pull request after its
-    list of commits, whose `head.sha` and `base.sha` are the revisions its answer is about, and a
-    whole list that does not name that head was read at another head and is about none; the base
-    revision is the commit the base branch
+    stored anew or a replaced candidate applies nothing and the candidates are read again, with the
+    obligation that asked for the read kept; the base revision is the commit the base branch
     was at when the pull request was last read, which every writer of `pull_request_heads` now
     stores beside the branch's name (`pull_request_heads.base_sha`, migration `20261122071000`,
     from GitHub's `base.sha` in a read of the pull request and from the listener's new `base_sha`
     field of the `pull_request` envelope), since a base branch moves with no change of its name;
-    a row with none, written before this release or by an envelope without the field, names it
-    unknown, so an answer claimed then applies while it stays unknown and a write that stores one
-    refuses it; and where GitHub's list of the commits is capped, each comparison of a verification
-    is made against the head and base revisions its one read of the pull request names, never
-    against the base branch's name; a verification's log line counts its HTTP requests apart from
+    a row with none, written before this release or by an envelope without the field, is not read
+    until a write stores one, which the reconcile's read of each open pull request does: of n rows
+    due in its first selection, the open rows due and the merged rows no read has reached (the
+    merged rows of an older attribution rule take only the room those leave, at most 50 a pass),
+    it tries each within ceil(n/200) passes that try their whole batch, each stamp acknowledged,
+    whatever their reads answer, a row never tried first, and a pass a rate limit stops leaves the
+    rows it did not try in their places, so the next pass takes them first
+    (`pull_request_heads.attempted_at`, migration `20261123124956`, which the reconcile stamps
+    just before each row's read, and orders its batch by with `checked_at`, so a row whose reads
+    fail no longer holds the front of every batch; a stamp whose call times out or loses its
+    connection may still commit with no read, at a moment the reconcile never learns, so the bound
+    counts no pass with such a stamp and holds again only once the stamp has settled, with no bound
+    while such stamps recur, and the stamp stores no base revision); only
+    a candidate a `before_merge` check needs is read,
+    a commit a result of such a check of the issue's Verification document was recorded at, so a
+    candidate whose results are
+    all of a check of another `when` holds no obligation and no `test` handoff, and an issue with
+    no `before_merge` check is not held by its candidates; it is read once a check with a result
+    there becomes `before_merge`, whose change owes the issue a settle; a verification's log line
+    counts its HTTP requests apart from
     its pages (`requests`), and each settle's line its verifications and their requests; so
     a head left before the release where a result was recorded publishes its states,
     and one with no result is not known and needs none. A result recorded later at a commit that is
@@ -88,7 +103,17 @@ body: |-
     before Dispatch learned of a rename reaches the same history as every record after, and two
     histories applied apart before the rename was known are joined into one
     (`pull_request_former_heads_resolve`); there is no partition by name and no copying of history
-    on a rename. A close or a merge under any name ends the lifecycle and starts the next
+    on a rename; the database names a repository by the rename rule every reader of Dispatch holds
+    (`pull_request_canonical_repo`, migration `20261122070959`, as `store.ReadRepoRenames` and
+    `refs.Renames.Canonical` read the pairs: both names of a `repo_projects` row in lower case, a
+    row that renames nothing dropped, the greatest new name of one old name, and no pair once
+    `repo_projects` is gone), so a name finds the row a writer keyed under the canonical name. The
+    boot's rename pass writes no column of `check_states` or of these tables: its write of a pull
+    request's row records that row's move to the new name and owes its issue a settle, which
+    publishes each state under the new name, with an event, and deletes the state under the old
+    one, so a reader that keys a state by its repository learns it under the new name; and the
+    settler keeps each name it met a pull request under. A
+    close or a merge under any name ends the lifecycle and starts the next
     generation, while a rename and a move to another issue keep it: applying the records drops
     each head the pull request reached before the last close (`pull_request_former_heads_pulls.ended`,
     `generation`, `pull_request_former_heads_rows`), so no history of a closed lifecycle reaches a
@@ -96,12 +121,28 @@ body: |-
     close no update of an open row shows ends it too: a row written closed or merged, by its insert
     or its re-key, such as the canonical-name writer's first write of a pull request it finds
     closed, which then deletes the open row of its old name, is recorded as a close where the pull
-    request is open under another name or no close of it is known, and the install records each
-    pull request closed or merged when it runs (by its canonical name's row, so an open pull request
-    whose old name's row reads closed keeps its results) at the time GitHub dated that row's last
-    write (`pull_request_heads.event_at`), among the results recorded before it, each placed at the
-    time it was recorded, so a result recorded while the pull request was closed counts after it
-    reopens whether it was recorded before the install or after it; and
+    request is open under another name or no close of it is known, and the install records where
+    the last closed period of each pull request before it began, whether the pull request is closed
+    when the install runs or was reopened since, among the results recorded before it by one clock,
+    the database's: Dispatch's record of each write that opens or closes a row
+    (`pull_request_heads_lifecycle`, a new table two triggers append to on each insert, each update
+    that closes an open row or opens a closed one, and each re-key of an open row, which no reopen,
+    re-key or delete of the row removes, which migration `20261122070959` seeds, undated, with
+    each pull request closed when it runs, by its canonical name's row, so an open pull request
+    whose old name's row reads closed from before keeps its results, and which the install alone
+    reads, so migration `20261124122831` drops it, its triggers and its function after the install)
+    shows the period begin at the first close after the last write that opened a row of any name of
+    it, or at a later close in it of a row that was open, the latest such, so a second closed row of
+    the closed pull request, as the canonical-name writer writes, and a write that leaves a closed
+    row closed or merged move it
+    nowhere, and a close, a reopen and a second close begin it at the second; each result goes at
+    the time it was recorded, a result first at an equal time; so a close and a reopen that a writer
+    of the release before makes between the two migrations end the lifecycle as a close after them
+    does; no time GitHub gave (`pull_request_heads.event_at`) orders anything, so a result from
+    before the close never crosses a reopen, and a result recorded while the pull request was
+    closed counts after it reopens where it was recorded after the install or after a close
+    Dispatch recorded, while where the period began undated every result recorded before the
+    install stays out, and its head waits for a new result; and
     ended provenance stays ended: the drain keeps the place of each result
     (`pull_request_former_heads_results`), the install gives each result recorded before it its
     place in that order, and a result's commit becomes a candidate only where a

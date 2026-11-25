@@ -77,12 +77,6 @@
 #                         (title.txt, messages.md, asks.json, and old-spec.md for an issue);
 #                         --agent-texts --since <t> --until <t> --out <dir> writes
 #                         <dir>/agent-texts.json
-#   rule-search.ts <checkout> <base|head> <label>...
-#                         classifies each sentence of each label's rule in each text the label's
-#                         role reads: cut, kept with a reason, or a FAULT (exit 1)
-#   rule-search.ts <checkout> texts <reviewer|architect>
-#                         lists each text the role reads, with its depth and the chain of links
-#                         that reaches it first
 # label-comments.ts and fetch-spec-sources.ts read production Dispatch with the operator's own
 # credentials, which this script unsets, so the operator runs them before a batch. Each refuses an
 # --out inside a git or jj checkout (exit 2). Nothing they write is committed.
@@ -194,8 +188,8 @@
 # ask-on-message and tester-proof are controls: their rules also live in dispatch-first and
 # `dispatch ask --help`, and in the tester role prompt, so ablate scores as the head does
 # and they cannot detect a lost skill rule. A new scenario is an instrument only once an ablate
-# arm has scored lower on it. A label's cuts come from rule-search.ts, which classifies each
-# sentence of the label's rule in each text that its role reads, to the closure of their links.
+# arm has scored lower on it. A label's cuts are its patch's (label-checkouts.sh), and its runs
+# show that the patch cuts the rule: the label scores below the head.
 #
 # A batch's services are a Postgres container, a NATS container, and the Envoy listener built from
 # this checkout. Each run gets a Dispatch of its own (own_dispatch): a database named after the
@@ -1063,7 +1057,7 @@ listener_answers() {
 # harness's fake Envoy, which run-server.sh names and this rig does not run, is port 1, where
 # nothing listens, and so is its fake GitHub, with no NATS, unless own_github gave the run a GitHub
 # stand-in and a NATS of its own: then the server reads that GitHub and its delivery intake reads
-# that NATS (DISPATCH_E2E_NATS_URL). Its broker switch is empty, so the server has no secrets
+# that NATS (DISPATCH_E2E_NATS_URLS). Its broker switch is empty, so the server has no secrets
 # broker. With no DISPATCH_E2E_PORT, run-server.sh serves Dispatch on a port the kernel chose, held
 # until the server serves on it, and the server reports it (`msg="dispatch: listening"
 # addr=127.0.0.1:<port>`), which sets dispatch_port. Each run has an evidence directory of its own,
@@ -1073,7 +1067,7 @@ listener_answers() {
 start_dispatch() {
   local url=$1 log=$evidence/logs/dispatch.log
   : >"$log"
-  DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=${github_port:-1} DISPATCH_E2E_NATS_URL=${run_nats_url:-} \
+  DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=${github_port:-1} DISPATCH_E2E_NATS_URLS=${run_nats_url:-} \
     DISPATCH_TEST_HIDE_STATE_FILE=$hide_state_file \
     DISPATCH_E2E_AGENT_SECRETS_URL='' start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
   await_start dispatch "$dispatch_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "Dispatch to report its port" \
@@ -1373,7 +1367,7 @@ MDEOF
 # failure is the rig's, never the run's.
 seed_ts() {
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port FAKE_GITHUB_PORT=${github_port:-} \
-    DISPATCH_E2E_NATS_URL=${run_nats_url:-} bun "$here/seed.ts" "$@") \
+    DISPATCH_E2E_NATS_URLS=${run_nats_url:-} bun "$here/seed.ts" "$@") \
     >>"$R/fixture.log" 2>&1 || fail "seed.ts $1 failed; see $R/fixture.log"
 }
 
@@ -1485,10 +1479,15 @@ run_spec() {
   seed_ts capture-spec "$R/fixture.json" "$R"
 }
 
-# The judge's two profiles, under $work/judge-profiles/<kind>, each its own HOME made by
-# make_omp_home with the model route install_model_route installs and no plugin. `ste` holds one
-# user skill, this checkout's skills/asd-ste100. `bare` holds none. The first judge-omp call builds
-# both, and every other call waits on the same lock, so parallel calls are safe.
+# The judge's two profiles, under $work/judge-profiles/<kind>, each under a HOME of its own with the
+# model route install_model_route installs and no plugin. `ste` holds one user skill, this
+# checkout's skills/asd-ste100. `bare` holds none. The first judge-omp call builds both, and every
+# other call waits on the same lock, so parallel calls are safe.
+# A judge's HOME is only the .omp directory the route installers require, not make_omp_home's: no
+# Oh My Pi and no jj runs under it on this host. cmd_judge_omp copies the profile's agent directory
+# into the container's own HOME and mounts no native cache, so make_omp_home's natives link and jj
+# overlay would reach no judge, while its read of the operator's jj config would make judge-omp
+# fail on a machine with no jj on PATH.
 judge_profiles() {
   local dir=$work/judge-profiles kind P commit
   mkdir -p "$dir"
@@ -1501,13 +1500,8 @@ judge_profiles() {
     for kind in ste bare; do
       P=$dir/$kind
       rm -rf "$P"
-      mkdir -p "$P"
-      (
-        # shellcheck source=/dev/null
-        source "$root/scripts/e2e/lib/omp-home.sh"
-        make_omp_home "$P/home"
-      ) >"$P/install.log" 2>&1 || fail "make_omp_home failed for the judge's $kind profile; see $P/install.log"
-      install_model_route "$root" "judge-$kind" "$P" >>"$P/install.log" 2>&1 ||
+      mkdir -p "$P/home/.omp"
+      install_model_route "$root" "judge-$kind" "$P" >"$P/install.log" 2>&1 ||
         fail "the judge's model route (${LEGION_E2E_MODEL_ROUTE:-gateway}) could not be installed; see $P/install.log"
     done
     mkdir -p "$dir/ste/home/.omp/profiles/judge-ste/agent/skills"
@@ -2236,11 +2230,11 @@ ${line:-- Check k1 (before_merge): not yet run}
 # reviewer_prompt writes $R/prompt.txt: the task the daemon gives a reviewer it starts once testing
 # has passed (`task`, packages/daemon/internal/workflow/effects.go), word for word, naming the test
 # record seed.ts heads-events wrote, so the record it names exists. That task names no verdict of
-# the tester; a label whose rule (label-rules.ts) carries task words has them before the task's
-# `Pull request:` sentence, where the daemon of the release before wrote the tester's verdict
-# (task_words). The words are read in a command of their own, checked, before the task is written: a
-# substitution inside printf's arguments would end only its own subshell on a failed read, and the
-# run would launch its role with a task that lacks the label's words.
+# the tester; a label whose checkout carries task words has them before the task's `Pull request:`
+# sentence, where the daemon of the release before wrote the tester's verdict (task_words). The
+# words are read in a command of their own, checked, before the task is written: a substitution
+# inside printf's arguments would end only its own subshell on a failed read, and the run would
+# launch its role with a task that lacks the label's words.
 reviewer_prompt() {
   local title version words
   title=$(jq -r .title "$R/fixture.json")
@@ -2250,14 +2244,22 @@ reviewer_prompt() {
     "$title" "$worker_key" "$version" "$worker_key" "$version" "$words" >"$R/prompt.txt"
 }
 
-# task_words prints the words the run's label writes into its role's task, each after one space:
-# the `taskWords` of the label's rule in label-rules.ts (a -hidden label's source's), or nothing for
-# a label with none. Its agent sees only the task, never the label's name.
+# task_words prints the words the run's label writes into its role's task, after one space: the
+# words of task-words.txt in the label's checkout ($co, load_label), whitespace runs read as one
+# space, or nothing where that checkout holds no such file. Only a label's patch adds the file
+# (label-checkouts.sh), so the head's checkout holds none, and a -hidden label's checkout holds its
+# source's. A file that is there but cannot be read, such as a link to nothing, or that holds no
+# words fails, naming the label: a patch that adds it means its role's task to carry words. Its
+# agent sees only the task, never the label's name.
 task_words() {
-  local words
-  words=$(SKILL_SCENARIOS_TASK_LABEL=${label:-} bun -e "import { RULES } from '$here/label-rules.ts'; const label = (process.env.SKILL_SCENARIOS_TASK_LABEL ?? '').replace(/-hidden\$/, ''); process.stdout.write(RULES[label]?.taskWords ?? '');") ||
-    fail "label-rules.ts did not answer the task words of label '${label:-}'"
-  [ -z "$words" ] || printf ' %s' "$words"
+  local file=$co/packages/pi-legion/scripts/skill-scenarios/task-words.txt words
+  [ -e "$file" ] || [ -L "$file" ] || return 0
+  words=$(tr -s '[:space:]' ' ' <"$file") ||
+    fail "the task words of label '${label:-}' could not be read from $file"
+  words=${words# }
+  words=${words% }
+  [ -n "$words" ] || fail "the task words file of label '${label:-}' holds no words: $file"
+  printf ' %s' "$words"
 }
 
 # A run of a -hidden label (cmd_run sets hide_state_file, a file in the map that no agent sees):

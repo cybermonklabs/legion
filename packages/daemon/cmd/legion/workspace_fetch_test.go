@@ -801,7 +801,9 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			return failing("fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111\nerror: file://"+v.env["WINIT_REMOTE"]+" did not send all necessary objects\n", 1)(t, v, clock)
 		}, code: 1, says: "fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111"},
 		{name: "an attempt that runs out of its time", fetch: func(t *testing.T, v *issueVolume, _ *instantClock) []string {
-			v.env["WINIT_FETCH_SLEEP"] = "30"
+			// The fetch from GitHub sleeps past any test binary's deadline, so only the bound's stop
+			// ends it: a stop a loaded machine makes late still comes before the sleep ends.
+			v.env["WINIT_FETCH_SLEEP"] = "86400"
 			args := v.refetchArgs(t)
 			saved := fetchBound
 			fetchBound = time.Second
@@ -857,7 +859,7 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			clock := useInstantClock(t)
 			v := newIssueVolume(t).withRemote(t, "main")
 			args := tc.fetch(t, v, clock)
-			code, stdout, stderr := runWorkspaceInitHere(args)
+			code, stdout, stderr := workspaceInitAnswered(t, "workspace-init fetch ("+tc.name+")", args)
 			if code != tc.code || !strings.Contains(stderr, tc.says) {
 				t.Fatalf("exit %d, stderr %q, stdout %q; want %d naming %q", code, stderr, stdout, tc.code, tc.says)
 			}

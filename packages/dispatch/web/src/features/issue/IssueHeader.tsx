@@ -73,7 +73,7 @@ import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
 import { GitHubLink } from "./GitHubLink";
-import { gatedStepEntries } from "./gated-steps";
+import { gatedStepEntries, isProjectRoot } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { PriorityEditor } from "./PriorityControl";
@@ -265,10 +265,11 @@ export function IssueHeader({
   // palette already hold, so the daemon's `project.updated` publish refreshes these steps with
   // no reload and the header makes no second, per-issue read. While that read is pending or
   // failed there is no row, so the steps are empty and the header draws its one chip below
-  // rather than claiming a gate it has not read. Only a root issue has steps at all
-  // (`gatedStepEntries`), so a child issue does not ask for the list: a disabled query still
-  // reads whatever the shared cache holds, and a child draws the single chip either way.
-  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  // rather than claiming a gate it has not read. Only a root of the issue's project has steps at
+  // all (`isProjectRoot`: no parent, or a parent of another project), so a child issue does not
+  // ask for the list: a disabled query still reads whatever the shared cache holds, and a child
+  // draws the single chip either way.
+  const projects = useQuery({ ...projectsQuery(), enabled: isProjectRoot(issue) });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
   // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
@@ -702,7 +703,8 @@ export function IssueHeader({
           {/* The repository is where the work goes, like the parent, so it sits in this rail,
               which scrolls rather than wrapping: a repository name can be long, and the state
               row above must keep every control on one row at a phone width. Every issue has an
-              item here, since every issue takes a repository whatever its project maps. */}
+              item here: an issue resolves to its own repository, an ancestor's, or its
+              project's default repository, and any issue can take a repository of its own. */}
           <RepoControl
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
@@ -822,7 +824,8 @@ export function IssueHeader({
             Cancel
           </button>
           <span className="sr-only" id="issue-parent-help">
-            Parent issue key in {issue.project}; leave empty to clear the parent.
+            Parent issue key, in {issue.project} or another project; leave empty to clear the
+            parent.
           </span>
         </form>
       ) : null}

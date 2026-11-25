@@ -401,17 +401,17 @@ func TestLoadReadsTrustedProxyHeaderOptionally(t *testing.T) {
 	}
 }
 
-// TestLoadReadsTheAirlockRulesFileOptionally pins that BROKER_AIRLOCK_RULES_FILE is optional —
-// unset is "", a deployment with no airlock — and that a path given is read as written. Load
-// opens nothing: the broker reads the file itself at start, where a file it cannot read refuses
-// the boot.
-func TestLoadReadsTheAirlockRulesFileOptionally(t *testing.T) {
+// TestLoadReadsTheProfilesFileOptionally pins that BROKER_PROFILES_FILE is optional — unset is
+// "", a deployment with no profiles and so no proxy — and that a path given is read as written.
+// Load opens nothing: the broker reads the file itself at start, where a file it cannot read
+// refuses the boot.
+func TestLoadReadsTheProfilesFileOptionally(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AirlockRulesFile != "" {
-		t.Fatalf("AirlockRulesFile = %q, want empty when BROKER_AIRLOCK_RULES_FILE is unset", cfg.AirlockRulesFile)
+	if cfg.ProfilesFile != "" {
+		t.Fatalf("ProfilesFile = %q, want empty when BROKER_PROFILES_FILE is unset", cfg.ProfilesFile)
 	}
 
 	e := airlockEnv()
@@ -419,50 +419,86 @@ func TestLoadReadsTheAirlockRulesFileOptionally(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AirlockRulesFile != "/etc/broker/airlock.json" {
-		t.Fatalf("AirlockRulesFile = %q, want /etc/broker/airlock.json", cfg.AirlockRulesFile)
+	if cfg.ProfilesFile != "/etc/broker/profiles.json" {
+		t.Fatalf("ProfilesFile = %q, want /etc/broker/profiles.json", cfg.ProfilesFile)
 	}
 }
 
-// airlockEnv is validEnv with the airlock in force: a rules file and the three settings its
-// proxy cannot run without.
+// TestLoadRefusesTheAirlockRulesFileSetting: the airlock's rules are the proxy blocks of the
+// profiles file now, so a deployment still setting BROKER_AIRLOCK_RULES_FILE is refused naming
+// the setting that replaces it, rather than started with no proxy and every name the old file
+// held back released as its value. It is refused beside the new setting too.
+func TestLoadRefusesTheAirlockRulesFileSetting(t *testing.T) {
+	for name, e := range map[string]map[string]string{"alone": validEnv(), "beside BROKER_PROFILES_FILE": airlockEnv()} {
+		e["BROKER_AIRLOCK_RULES_FILE"] = "/etc/broker/airlock.json"
+		_, err := Load(env(e))
+		if err == nil || err.Error() != "BROKER_AIRLOCK_RULES_FILE is removed; replaced by BROKER_PROFILES_FILE" {
+			t.Errorf("Load with BROKER_AIRLOCK_RULES_FILE set %s = %v; want it refused, naming BROKER_PROFILES_FILE", name, err)
+		}
+	}
+}
+
+// airlockEnv is validEnv with the airlock in force: a profiles file and the three settings the
+// proxy of its proxy blocks cannot run without.
 func airlockEnv() map[string]string {
 	e := validEnv()
-	e["BROKER_AIRLOCK_RULES_FILE"] = "/etc/broker/airlock.json"
+	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
 	e["BROKER_AIRLOCK_PROXY_URL"] = "http://broker.legion.svc:13381"
 	e["BROKER_AIRLOCK_CA_CERT_FILE"] = "/etc/broker/airlock-ca/tls.crt"
 	e["BROKER_AIRLOCK_CA_KEY_FILE"] = "/etc/broker/airlock-ca/tls.key"
 	return e
 }
 
-// TestTheAirlocksProxySettingsAreRequiredWithItsRulesFile: a broker that reads the rules but
-// cannot proxy would hold back every name the file names and release nothing in their place, so
-// each missing setting refuses the boot by name. With no rules file there is no proxy and the
-// four are ignored, whatever they say.
-func TestTheAirlocksProxySettingsAreRequiredWithItsRulesFile(t *testing.T) {
-	if _, err := Load(env(airlockEnv())); err != nil {
+// TestTheAirlocksProxySettingsAreRequiredForAProxyBlock: a broker whose profiles hold a proxy
+// block but that cannot proxy would hold back every name such a block names and release nothing
+// in its place, so each missing setting refuses the boot by name, beside the profiles whose proxy
+// blocks need it. A profiles file is not a proxy block: Load takes one with none of the settings,
+// and RequireAirlock of profiles with no proxy block - a deployment that serves GitHub Apps and
+// runs no airlock - asks for none of them. With no profiles file there is no proxy and the four
+// are ignored, whatever they say.
+func TestTheAirlocksProxySettingsAreRequiredForAProxyBlock(t *testing.T) {
+	proxied := []string{"DEEL_API_KEY", "STORED_TOKEN_READ"}
+	cfg, err := Load(env(airlockEnv()))
+	if err != nil {
 		t.Fatalf("Load with the airlock fully configured: %v", err)
+	}
+	if err := cfg.RequireAirlock(proxied); err != nil {
+		t.Fatalf("RequireAirlock with the airlock fully configured: %v", err)
 	}
 	for _, missing := range []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"} {
 		e := airlockEnv()
 		delete(e, missing)
-		_, err := Load(env(e))
-		if err == nil || !strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") || !strings.Contains(err.Error(), "missing "+missing) {
-			t.Errorf("Load without %s = %v; want a refusal naming the rules file and the missing setting", missing, err)
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load without %s = %v; want it taken, since a profiles file need not hold a proxy block", missing, err)
+		}
+		err = cfg.RequireAirlock(proxied)
+		if err == nil || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || !strings.Contains(err.Error(), "DEEL_API_KEY, STORED_TOKEN_READ") || !strings.Contains(err.Error(), "missing "+missing) {
+			t.Errorf("RequireAirlock without %s = %v; want a refusal naming the profiles file, the profiles with a proxy block and the missing setting", missing, err)
 		}
 	}
 
-	// No rules file: the same configuration minus the file, and minus every proxy setting, is
-	// accepted, and so is one that still names the listen address and the idle bound.
+	// A profiles file whose profiles hold no proxy block, with none of the proxy's settings.
 	e := validEnv()
+	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatalf("Load with a profiles file and none of the proxy's settings: %v", err)
+	}
+	if err := cfg.RequireAirlock(nil); err != nil {
+		t.Fatalf("RequireAirlock of profiles with no proxy block and none of the proxy's settings: %v; want nil", err)
+	}
+
+	// No profiles file: the same configuration minus the file, and minus every proxy setting, is
+	// accepted, and so is one that still names the listen address and the idle bound.
+	e = validEnv()
 	e["BROKER_AIRLOCK_LISTEN_ADDR"] = "127.0.0.1:13999"
 	e["BROKER_AIRLOCK_IDLE_SECONDS"] = "60"
-	cfg, err := Load(env(e))
+	cfg, err = Load(env(e))
 	if err != nil {
-		t.Fatalf("Load with no rules file: %v", err)
+		t.Fatalf("Load with no profiles file: %v", err)
 	}
 	if cfg.AirlockProxyURL != "" || cfg.AirlockCACertFile != "" || cfg.AirlockCAKeyFile != "" {
-		t.Errorf("with no rules file the proxy settings read %q, %q, %q; want none", cfg.AirlockProxyURL, cfg.AirlockCACertFile, cfg.AirlockCAKeyFile)
+		t.Errorf("with no profiles file the proxy settings read %q, %q, %q; want none", cfg.AirlockProxyURL, cfg.AirlockCACertFile, cfg.AirlockCAKeyFile)
 	}
 	if cfg.AirlockListenAddr != "127.0.0.1:13999" || cfg.AirlockIdleSeconds != 60 {
 		t.Errorf("airlock listen addr = %q and idle = %d; want 127.0.0.1:13999 and 60", cfg.AirlockListenAddr, cfg.AirlockIdleSeconds)
@@ -593,12 +629,22 @@ func TestLoadRefusesAClusterRangeItCannotRead(t *testing.T) {
 }
 
 // TestTheClusterRangesMustHoldTheKubernetesServiceAddress: in a cluster, which Kubernetes says by
-// setting KUBERNETES_SERVICE_HOST in every container, a broker with the airlock on refuses to start
-// unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address, the kubernetes Service's ClusterIP, so a
-// deployment that forgot the setting or gave the wrong range cannot pass silently. Each refusal
-// names both variables. Outside a cluster, and in a cluster with no airlock, the setting is
-// optional.
+// setting KUBERNETES_SERVICE_HOST in every container, a broker whose profiles hold a proxy block
+// refuses to start unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address, the kubernetes
+// Service's ClusterIP, so a deployment that forgot the setting or gave the wrong range cannot pass
+// silently. Each refusal names both variables. Outside a cluster, and in a cluster with no proxy
+// block, whether or not there is a profiles file, the setting is optional.
 func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
+	// requireAirlock loads e, which must load, and answers RequireAirlock of proxied over it.
+	requireAirlock := func(t *testing.T, e map[string]string, proxied []string) error {
+		t.Helper()
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v; want it taken, since the ranges are required by the profiles the boot reads", e["KUBERNETES_SERVICE_HOST"], e["BROKER_AIRLOCK_CLUSTER_RANGES"], err)
+		}
+		return cfg.RequireAirlock(proxied)
+	}
+	proxied := []string{"DEEL_API_KEY"}
 	for _, row := range []struct{ name, host, ranges, want string }{
 		{"the setting missing", "34.118.224.1", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
 		{"a KUBERNETES_SERVICE_HOST that is not an address", "kubernetes.default.svc", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST is not an IP address"},
@@ -614,9 +660,9 @@ func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 			e := airlockEnv()
 			e["KUBERNETES_SERVICE_HOST"] = row.host
 			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
-			_, err := Load(env(e))
+			err := requireAirlock(t, e, proxied)
 			if err == nil {
-				t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q) = nil; want a refusal", row.host, row.ranges)
+				t.Fatalf("RequireAirlock(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q) = nil; want a refusal", row.host, row.ranges)
 			}
 			for _, want := range []string{"BROKER_AIRLOCK_CLUSTER_RANGES", "KUBERNETES_SERVICE_HOST", row.want} {
 				if !strings.Contains(err.Error(), want) {
@@ -643,16 +689,23 @@ func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 			e := airlockEnv()
 			e["KUBERNETES_SERVICE_HOST"] = row.host
 			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
-			if _, err := Load(env(e)); err != nil {
-				t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", row.host, row.ranges, err)
+			if err := requireAirlock(t, e, proxied); err != nil {
+				t.Fatalf("RequireAirlock(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", row.host, row.ranges, err)
 			}
 		})
 	}
 	t.Run("starts in a cluster with no airlock and no ranges", func(t *testing.T) {
 		e := validEnv()
 		e["KUBERNETES_SERVICE_HOST"] = "34.118.224.1"
-		if _, err := Load(env(e)); err != nil {
-			t.Fatalf("Load with no rules file in a cluster: %v", err)
+		if err := requireAirlock(t, e, nil); err != nil {
+			t.Fatalf("RequireAirlock with no profiles file in a cluster: %v", err)
+		}
+	})
+	t.Run("starts in a cluster with a profiles file that holds no proxy block and no ranges", func(t *testing.T) {
+		e := airlockEnv()
+		e["KUBERNETES_SERVICE_HOST"] = "34.118.224.1"
+		if err := requireAirlock(t, e, nil); err != nil {
+			t.Fatalf("RequireAirlock of profiles with no proxy block in a cluster: %v", err)
 		}
 	})
 }
@@ -733,40 +786,49 @@ func TestTheResolveSettingMayNameThePortItsDialReaches(t *testing.T) {
 
 // TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne: BROKER_AIRLOCK_PRIVATE_UPSTREAM is one
 // <host>=<url> entry, read as that host and that URL, and unset is none. Two entries, the setting
-// with no rules file, an entry not of that form, a host that is not one lower-case host name, and a
+// with no profiles file, an entry not of that form, a host that is not one lower-case host name, and a
 // URL that does not parse, is not http or https, names no host or a port outside 1 to 65535, carries
-// a user, a path, a query or a fragment, or names a host every dial of the proxy refuses (localhost,
-// a name under .localhost, a loopback, link-local, unspecified or multicast address, a cloud
-// metadata server's IPv6 address) each refuse the start, naming the setting and the fault. No
-// refusal quotes the URL's user, path, query or fragment, where a credential can sit. A loopback
-// URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with its port, the local stack's stand-in of
-// Dispatch, is read.
+// a user, a path, a query or a fragment, or names a host every dial of the proxy refuses (localhost
+// or a name under .localhost, with or without the root's trailing dot; a loopback, link-local,
+// unspecified, multicast or the IPv4 broadcast address; a cloud metadata server's IPv6 address; an
+// address the proxy would tunnel to, public and outside BROKER_AIRLOCK_CLUSTER_RANGES) each refuse
+// the start, naming the setting and the fault. No refusal quotes the URL's user, path, query or
+// fragment, where a credential can sit, nor a URL written with no <host>= before it, whose user
+// and path then sit before the first =. A private address, one in 100.64.0.0/10, one inside the
+// cluster ranges though public, and a loopback URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with
+// its port, the local stack's stand-in of Dispatch, are read: each is an address the dial opens.
 func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	const setting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
 	if cfg, err := Load(env(airlockEnv())); err != nil || cfg.AirlockPrivateUpstream.Host != "" || cfg.AirlockPrivateUpstream.URL != nil {
 		t.Fatalf("Load with %s unset = %+v, %v; want none", setting, cfg.AirlockPrivateUpstream, err)
 	}
-	for _, row := range []struct{ value, dialAllow, wantURL string }{
-		{"dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766", "", "http://dispatch.dispatch.svc.cluster.local:8766"},
-		{" dispatch.test=https://10.0.0.5/ ", "", "https://10.0.0.5/"},
-		{"dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8766", "http://127.0.0.1:8766"},
-		{"dispatch.test=http://localhost", "localhost:80", "http://localhost"},
+	for _, row := range []struct{ value, dialAllow, ranges, wantURL string }{
+		{"dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766", "", "", "http://dispatch.dispatch.svc.cluster.local:8766"},
+		{" dispatch.test=https://10.0.0.5/ ", "", "", "https://10.0.0.5/"},
+		{"dispatch.test=http://10.0.0.5:8766", "", "", "http://10.0.0.5:8766"},
+		{"dispatch.test=http://[fd12:3456::5]:8766", "", "", "http://[fd12:3456::5]:8766"},
+		{"dispatch.test=http://100.64.1.1:8766", "", "", "http://100.64.1.1:8766"},
+		{"dispatch.test=http://34.118.224.10:8766", "", "34.118.224.0/20", "http://34.118.224.10:8766"},
+		{"dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8766", "", "http://127.0.0.1:8766"},
+		{"dispatch.test=http://localhost", "localhost:80", "", "http://localhost"},
 	} {
 		e := airlockEnv()
 		e[setting] = row.value
 		if row.dialAllow != "" {
 			e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = row.dialAllow
 		}
+		e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
 		cfg, err := Load(env(e))
 		if err != nil {
-			t.Fatalf("Load(%s=%q, BROKER_AIRLOCK_TEST_DIAL_ALLOW=%q): %v", setting, row.value, row.dialAllow, err)
+			t.Fatalf("Load(%s=%q, BROKER_AIRLOCK_TEST_DIAL_ALLOW=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", setting, row.value, row.dialAllow, row.ranges, err)
 		}
 		if got := cfg.AirlockPrivateUpstream; got.Host != "dispatch.test" || got.URL == nil || got.URL.String() != row.wantURL {
 			t.Fatalf("Load(%s=%q) read %+v; want the host dispatch.test and the URL %s", setting, row.value, got, row.wantURL)
 		}
 	}
 	// The URL's user, path, query and fragment carry a word a refusal must not quote; each URL is
-	// put together here, so the word is one constant the check below reads too.
+	// put together here, so the word is one constant the check below reads too. A URL written with
+	// no <host>= before it puts its user, and its path up to a query's =, before the first =.
 	const userWord = "secret-word"
 	for _, row := range []struct{ name, value, dialAllow, want string }{
 		{"two entries", "dispatch.test=http://10.0.0.5:8766 other.test=http://10.0.0.6:8766", "", "names 2 entries"},
@@ -774,22 +836,32 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 		{"an entry with no URL", "dispatch.test=", "", "must be one <host>=<url> entry"},
 		{"a host that is a pattern", "*.test=http://10.0.0.5:8766", "", "in lower case, with no"},
 		{"a host with a capital letter", "Dispatch.test=http://10.0.0.5:8766", "", "in lower case, with no"},
-		{"a URL that does not parse", "dispatch.test=http://[10.0.0.5", "", "does not parse"},
+		{"a URL that does not parse", "dispatch.test=http://u:" + userWord + "@[10.0.0.5", "", "does not parse"},
 		{"an ftp URL", "dispatch.test=ftp://10.0.0.5:21/" + userWord, "", "must be http or https"},
 		{"a URL with no host", "dispatch.test=http://:8766/" + userWord, "", "names no host"},
 		{"a URL with port 0", "dispatch.test=http://10.0.0.5:0/" + userWord, "", "port outside 1 to 65535"},
 		{"a URL with port 65536", "dispatch.test=http://10.0.0.5:65536", "", "port outside 1 to 65535"},
 		{"a URL with a user", "dispatch.test=http://u:" + userWord + "@10.0.0.5:8766", "", "carries a user"},
 		{"a URL with a path", "dispatch.test=http://10.0.0.5:8766/" + userWord, "", "has a path"},
+		{"a loopback URL with a path", "dispatch.test=http://127.0.0.1:8766/" + userWord, "", "has a path"},
 		{"a URL with a query", "dispatch.test=http://10.0.0.5:8766?q=" + userWord, "", "has a query"},
 		{"a URL with a fragment", "dispatch.test=http://10.0.0.5:8766#" + userWord, "", "has a fragment"},
 		{"a URL with an empty fragment", "dispatch.test=http://10.0.0.5:8766#", "", "has a fragment"},
+		{"a URL with no <host>=, a user and a query", "http://u:" + userWord + "@10.0.0.5:8766/?a=b", "", "holds a URL's scheme, user or path"},
+		{"a URL with no <host>= and no scheme, a user and a query", "u:" + userWord + "@10.0.0.5:8766/?a=b", "", "holds a URL's scheme, user or path"},
+		{"a URL with no <host>=, a path and a query", "10.0.0.5:8766/" + userWord + "?a=b", "", "holds a URL's scheme, user or path"},
 		{"localhost", "dispatch.test=http://localhost:8766", "", "resolves to loopback"},
+		{"localhost with the root's trailing dot", "dispatch.test=http://localhost.:8766", "", "resolves to loopback"},
 		{"a name under .localhost", "dispatch.test=http://dispatch.localhost:8766", "", "resolves to loopback"},
+		{"a name under .localhost with the root's trailing dot", "dispatch.test=http://dispatch.localhost.:8766", "", "resolves to loopback"},
+		{"a public address", "dispatch.test=http://8.8.8.8:8766", "", "which this proxy would also tunnel to"},
+		{"a documentation address, which the proxy reads as public", "dispatch.test=http://203.0.113.5:8766", "", "which this proxy would also tunnel to"},
+		{"a public IPv6 address", "dispatch.test=http://[2001:4860:4860::8888]:8766", "", "which this proxy would also tunnel to"},
 		{"a loopback address", "dispatch.test=http://127.0.0.1:8766", "", "a loopback or link-local address"},
 		{"a loopback IPv6 address", "dispatch.test=http://[::1]:8766", "", "a loopback or link-local address"},
 		{"the IPv4 metadata server", "dispatch.test=http://169.254.169.254", "", "a loopback or link-local address"},
 		{"an unspecified address", "dispatch.test=http://0.0.0.0:8766", "", "an unspecified or multicast address"},
+		{"the IPv4 broadcast address", "dispatch.test=http://255.255.255.255:8766", "", "the IPv4 broadcast address"},
 		{"Google's IPv6 metadata server", "dispatch.test=http://[fd20:ce::254]", "", "a cloud metadata server's address"},
 		{"Amazon's IPv6 metadata server", "dispatch.test=http://[fd00:ec2::254]", "", "a cloud metadata server's address"},
 		{"a loopback address the dial allow names on another port", "dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8767", "a loopback or link-local address"},
@@ -810,26 +882,35 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	}
 	e := validEnv()
 	e[setting] = "dispatch.test=http://10.0.0.5:8766"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "needs BROKER_AIRLOCK_RULES_FILE") {
-		t.Errorf("Load(%s with no rules file) = %v; want a refusal naming the setting and BROKER_AIRLOCK_RULES_FILE", setting, err)
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "needs BROKER_PROFILES_FILE") {
+		t.Errorf("Load(%s with no profiles file) = %v; want a refusal naming the setting and BROKER_PROFILES_FILE", setting, err)
+	}
+	// The cluster ranges are the dial's: a public address the rows above take inside
+	// 34.118.224.0/20 is refused just outside it, naming both settings.
+	ranged := airlockEnv()
+	ranged["BROKER_AIRLOCK_CLUSTER_RANGES"] = "34.118.224.0/20"
+	ranged[setting] = "dispatch.test=http://34.118.240.1:8766"
+	if _, err := Load(env(ranged)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES") {
+		t.Errorf("Load(%s=%q, BROKER_AIRLOCK_CLUSTER_RANGES=34.118.224.0/20) = %v; want a refusal naming the setting and the address the proxy would tunnel to", setting, ranged[setting], err)
 	}
 }
 
-// privateEntry is the rules entry the private destination's host is bound by: DISPATCH_RESULTS_TOKEN
-// (resultsEntry), bound to dispatch.test.
+// privateEntry is the proxy block the private destination's host is bound by: the profile
+// DISPATCH_RESULTS_TOKEN's (resultsEntry), bound to dispatch.test.
 func privateEntry() proxyrules.SecretRule {
 	entry := resultsEntry()
 	entry.Hosts = []string{"dispatch.test"}
 	return entry
 }
 
-// TestAPrivateUpstreamNeedsOneBindingEntry: AirlockResultRules takes rules in which the one entry
-// that binds the destination's host is DISPATCH_RESULTS_TOKEN, bound to that host alone, of kind
-// dpop, with a non-empty allow list, carried in Authorization alone (an entry naming no headers
-// carries the default, Authorization). No entry for the host, a second entry over it
-// (proxyrules.HostBound, so a "*." entry over the host binds it too), an entry of no kind, no allow
-// list, an empty one and another header are each refused, naming the setting or the entry and what
-// is wrong. With no destination, no result entries and no dpop entry, any rules are taken.
+// TestAPrivateUpstreamNeedsOneBindingEntry: AirlockResultRules takes the profiles' proxy blocks
+// when the one block that binds the destination's host is the profile DISPATCH_RESULTS_TOKEN's,
+// bound to that host alone, of kind dpop, with a non-empty allow list, carried in Authorization
+// alone (a block naming no headers carries the default, Authorization). No profile for the host, a
+// second profile over it (proxyrules.HostBound, so a "*." block over the host binds it too, and the
+// refusal names that host), a profile of no kind, no allow list, an empty one and another header
+// are each refused, naming BROKER_PROFILES_FILE, the setting or the profile, and what is wrong.
+// With no destination, no result entries and no dpop block, any profiles are taken.
 func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 	const setting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
 	e := airlockEnv()
@@ -855,9 +936,9 @@ func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 		name, says string
 		spoil      func(*proxyrules.Rules)
 	}{
-		{"no entry for the host", "names the host dispatch.test", func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"other.test"} }},
-		{"a second entry *.test", "WILDCARD_TOKEN", func(r *proxyrules.Rules) { r.Secrets = append(r.Secrets, pattern) }},
-		{"an entry of no kind", "kind dpop", func(r *proxyrules.Rules) { r.Secrets[0].Kind = "" }},
+		{"no profile for the host", "names the host dispatch.test", func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"other.test"} }},
+		{"a second profile *.test", "the profile WILDCARD_TOKEN of BROKER_PROFILES_FILE binds the host dispatch.test", func(r *proxyrules.Rules) { r.Secrets = append(r.Secrets, pattern) }},
+		{"a profile of no kind", "kind dpop", func(r *proxyrules.Rules) { r.Secrets[0].Kind = "" }},
 		{"no allow list", "allow list", func(r *proxyrules.Rules) { r.Secrets[0].Allow = nil }},
 		{"an empty allow list", "allow list", func(r *proxyrules.Rules) { r.Secrets[0].Allow = []proxyrules.Allow{} }},
 		{"a header X-Token", "Authorization header alone", func(r *proxyrules.Rules) { r.Secrets[0].Headers = []string{"X-Token"} }},
@@ -867,6 +948,10 @@ func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 		err := AirlockResultRules(rules, upstream, false)
 		if err == nil || !strings.Contains(err.Error(), c.says) || (!strings.Contains(err.Error(), setting) && !strings.Contains(err.Error(), "DISPATCH_RESULTS_TOKEN")) {
 			t.Errorf("%s: err = %v, want a refusal naming %s or DISPATCH_RESULTS_TOKEN and %q", c.name, err, setting, c.says)
+			continue
+		}
+		if !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
+			t.Errorf("%s: err = %v, want a refusal naming BROKER_PROFILES_FILE, whose proxy blocks are the rules, and not the removed BROKER_AIRLOCK_RULES_FILE", c.name, err)
 		}
 	}
 }
@@ -1809,7 +1894,7 @@ func TestSessionAccountPairsRefuseABadEntry(t *testing.T) {
 // TestLoadRefusesTheRulesFileVariables pins that a deployment still configured for the rules file
 // refuses to start naming the variable, rather than running with its rules silently ignored. The
 // reason names both halves of what replaced it: the tags each secret's owner and tier come from,
-// and BROKER_AIRLOCK_RULES_FILE, the file the broker does read, for the other question.
+// and BROKER_PROFILES_FILE, the file the broker does read, for the other question.
 func TestLoadRefusesTheRulesFileVariables(t *testing.T) {
 	for name, value := range map[string]string{
 		"BROKER_RULES_FILE":           "/r.yaml",
@@ -1819,8 +1904,8 @@ func TestLoadRefusesTheRulesFileVariables(t *testing.T) {
 		e := validEnv()
 		e[name] = value
 		_, err := Load(env(e))
-		if err == nil || !strings.HasPrefix(err.Error(), name+" is removed; ") || !strings.Contains(err.Error(), "tags") || !strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
-			t.Fatalf("Load(%s set) = %v, want a refusal naming it, the tags that replace it and BROKER_AIRLOCK_RULES_FILE", name, err)
+		if err == nil || !strings.HasPrefix(err.Error(), name+" is removed; ") || !strings.Contains(err.Error(), "tags") || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") {
+			t.Fatalf("Load(%s set) = %v, want a refusal naming it, the tags that replace it and BROKER_PROFILES_FILE", name, err)
 		}
 	}
 }

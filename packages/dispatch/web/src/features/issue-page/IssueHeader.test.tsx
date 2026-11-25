@@ -463,6 +463,36 @@ test("the header draws a gated root issue's steps where the header's one chip sa
   }
 });
 
+test("the header draws the steps of a root whose parent is in another project", async () => {
+  // CORE-1 under OTHR-6 is a root of CORE: a parent of another project passes nothing on, so the
+  // issue stands in CORE's gate and the header reads the projects to draw it.
+  const restore = stubHeader({ ...issue, parent: "OTHR-6" });
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["decisions", "criteria", "spec"],
+    open_asks: 0,
+    key: "CORE",
+    name: "Core",
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderHeader("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["decisions", "criteria", "spec"]);
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
 test("the header keeps the primary document's chip when no gated step reviews it", async () => {
   const restore = stubHeader({
     ...issue,

@@ -151,11 +151,13 @@ export const ARTIFACT_NAME_EXISTS_RULE =
  * What `dispatch artifact` says of inline text the store would change. The command renders the
  * text as Dispatch renders a document it stores and compares the two, so a text stored under
  * another spelling (a `*` list stored with `-`, an ordered list renumbered, a CR LF stored as a
- * line feed) is refused before the upload rather than stored changed. The rule holds for both
- * kinds of name: `--path` keeps the bytes of a name that is not Markdown, and a Markdown name is
- * parsed and rendered whichever flag sends it, so its one way out is to send the stored text.
+ * line feed) is refused before the upload rather than stored changed. A typed block's attributes
+ * in another order are the one spelling it stores rather than refuses, since an attribute's
+ * position carries no meaning. The rule holds for both kinds of name: `--path` keeps the bytes of
+ * a name that is not Markdown, and a Markdown name is parsed and rendered whichever flag sends
+ * it, so its one way out is to send the stored text.
  */
-export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
+export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. A typed block whose attributes differ from Dispatch's only in their order is not refused: the command uploads it with them in Dispatch's order and names each such block. A refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
 
 /** A name's extension, or undefined for a name with none: what follows its last dot when that
  *  holds no blank. Digits count, so "rows.jsonl.1" has one, and so does a title such as
@@ -499,7 +501,7 @@ function componentsArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
       mode: z
         .enum(ISSUE_COMPONENTS_MODES)
         .describe(
-          "inherit: take the parent chain's attachment (the default; deletes this issue's own). explicit: attach to ids. none: not architectural work, with reason."
+          "inherit: take the parent chain's attachment within the issue's own project (the default; deletes this issue's own). explicit: attach to ids. none: not architectural work, with reason."
         ),
       ids: z
         .array(z.string({ min: 1 }), { min: 1, max: 50 })
@@ -942,18 +944,22 @@ export const dispatchToolSpecs = [
     example: { project: "DSP", title: "Native workspace" },
     description:
       "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them, or, when the refusal cannot be recorded, creates the issue and names the near copy to read in the result. " +
-      "When passing a spec, before calling, have a fresh read-only reader check it against the code and the human's words, then resolve every finding; a Legion architect uses `plan-gap-analyst`. " +
+      "Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. " +
       "A spec holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK. " +
       `${CI_CHECK_RULE} ` +
       "Create a project only when a person asks for one; work that spans projects goes in the project that owns most of it. " +
       `${RELATED_CHECK_RESULT} With --force, the result also names each issue whose title you forced past. ` +
       `Do not use it when an existing issue already covers the work; read or update that issue instead. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
-      project: z.string().describe("Project key for the new issue."),
+      project: z
+        .string({ min: 1 })
+        .describe(
+          "Project key for the new issue. Every create needs one, also a create that names external."
+        ),
       title: z
         .string({ max: ISSUE_TITLE_MAX })
         .describe("Concise issue title, at most 1,000 characters."),
-      parent: z.string().describe("Optional parent issue.").optional(),
+      parent: z.string().describe("Optional parent issue, in any project.").optional(),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
@@ -988,14 +994,14 @@ export const dispatchToolSpecs = [
       assignee: z
         .string()
         .describe(
-          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); defaults to your owner when you act for a person, else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one. A question on it reaches the person it was handed to, else the issue's assignee, else the project's default assignee. Set it only when a person said who owns the issue."
+          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); defaults to your owner when you act for a person, else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one. A parent in another project passes on no assignee. A question on it reaches the person it was handed to, else the issue's assignee, else the project's default assignee. Set it only when a person said who owns the issue."
         )
         .optional(),
       components: componentsArgument(z).optional(),
       repo: z
         .string()
         .describe(
-          "The repository the issue targets, owner/name. A child inherits its parent's when unset, and an issue with none on its parent chain takes the project's default."
+          "The repository the issue targets, owner/name. When unset, the issue takes the nearest ancestor's in its own project, and an issue with none above it in its own project takes the project's default."
         )
         .optional(),
     }),
@@ -1091,7 +1097,9 @@ export const dispatchToolSpecs = [
         .optional(),
       parent: z
         .string()
-        .describe("Parent issue key in the same project; an empty string clears the parent.")
+        .describe(
+          "Parent issue key, in any project; an empty string clears the parent. A parent in another project passes on no repository, components or legion label."
+        )
         .optional(),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
@@ -1115,7 +1123,7 @@ export const dispatchToolSpecs = [
       repo: z
         .string()
         .describe(
-          "The repository the issue targets, owner/name. An empty string clears it, so the issue inherits its parent's or the project's default again."
+          "The repository the issue targets, owner/name. An empty string clears it, so the issue takes the nearest ancestor's in its own project, or the project's default, again."
         )
         .optional(),
       before: z
@@ -1615,7 +1623,7 @@ export const dispatchToolSpecs = [
       "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again. " +
       "Each decision block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Decision block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
       "A block id written as {#id} longer than 256 bytes is stored, but its block is no graph node, so no reference reaches it. " +
-      `The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
+      `The spec holds requirements, design, and decisions - never progress, status, or timestamps. Work still to do is a task in the issue's plan, an issue, or an ask, never a separate document that lists it. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),
@@ -1738,7 +1746,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_request_approval",
     example: { issue: "DSP-1", summary: "A live sync replaces the nightly export." },
     description:
-      "Ask a human to approve a document at its current version. Before calling, have a fresh read-only reader check the spec against the code and the human's words, then resolve every finding; a Legion architect runs `plan-gap-analyst` and `plan-reviewer`. Opens an approval ask (Approve / " +
+      "Ask a human to approve a document at its current version. Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. Opens an approval ask (Approve / " +
       "Request changes) in the human's Inbox whose question names the document and version, " +
       "followed by the summary; the answer pins a review to that version and arrives as " +
       "artifact.approved or artifact.changes_requested. " +
@@ -1791,7 +1799,7 @@ export const dispatchToolSpecs = [
       summary: z
         .string({ min: 1 })
         .describe(
-          `What the human is approving, in one to three sentences, and nothing else: no commentary on itself or the conversation, and no question; after an earlier approval, one sentence naming what changed since it, since the card shows that approval and a diff. A Legion architect adds one last sentence with its two spec reviews' results. Request approval only once ${HUMAN_AGREED_TO_DOCUMENT}.`
+          `What the human is approving, in one to three sentences, and nothing else: no commentary on itself or the conversation, and no question; after an earlier approval, one sentence naming what changed since it, since the card shows that approval and a diff. Request approval only once ${HUMAN_AGREED_TO_DOCUMENT}.`
         ),
       include_verification: z
         .boolean()
@@ -1917,7 +1925,7 @@ export const dispatchToolSpecs = [
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
-      "every other record with 409 ISSUE_CLOSED, as it refuses every other write. " +
+      "every other record with 409 ISSUE_CLOSED. " +
       RESULT_RETRACT_RULE +
       " The retraction keeps both records: the result stays readable, and it proves nothing " +
       "from then on. Record a new result where the check still needs one. A retraction is " +
@@ -2094,6 +2102,9 @@ export const dispatchToolSpecs = [
       "job recorded, prints after these lines as a " +
       "recorded result prints, with `on branch <branch>` after `by ci` for the job's, in the " +
       "order Dispatch serves them. " +
+      "A pull-request line writes `CI run <name>` only when it keeps every word of the name, " +
+      "and `the CI run the check names` in its place where it drops one: a word the line drops, " +
+      "such as an issue key or a word holding `_`. " +
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
       "no write of anyone's: record the check again at the new head. A check CI proves is read " +
       "again at the new head by itself. " +
@@ -2172,7 +2183,7 @@ export const dispatchToolSpecs = [
       content: z
         .string()
         .describe(
-          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. The refusal prints the text Dispatch stores, which is the text to send."
+          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. Nor is a typed block whose attributes differ only in their order: the upload puts them in Dispatch's order. The refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. It prints the text Dispatch stores, which is the text to send."
         )
         .optional(),
       force: z
@@ -2566,7 +2577,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_whoami",
     example: {},
     description:
-      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the fleet a broker token naming no person belongs to, or null. A broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
+      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the fleet a broker token naming no person belongs to, or null. A broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
     arguments: () => ({}),
     strict: true,
   },

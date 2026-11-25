@@ -134,7 +134,7 @@ test("a record naming no head, or one of another shape, leaves the planner and t
   }
 });
 
-test("a test record naming no readable head is refused naming the record to write, in testing and in a phase the tester left", async () => {
+test("a test record naming no readable head is refused, in testing and in a phase the tester left", async () => {
   // The testing move reads the check states at the head the test record names and at no other,
   // and the daemon refuses a tester's completion naming no commit (TESTED_HEAD_REQUIRED), so the
   // tool refuses it first, before anything is posted, and reads nothing of the workspace.
@@ -144,11 +144,7 @@ test("a test record naming no readable head is refused naming the record to writ
       const { latestHandoff } = recordingDispatch({ ...RECORD, body: text });
       await expect(
         findHandoffReport({ phase, role: "tester", env, jj, latestHandoff })
-      ).rejects.toThrow(
-        new Error(
-          "the newest test handoff of LEGION-208 (version 3) names no head, and the testing move reads the check states at the head your test record names: write a new handoff with `head` set to the 40-character lower-case commit you tested (`dispatch handoff-write --issue LEGION-208 --phase test --body-file <file>`), then complete again"
-        )
-      );
+      ).rejects.toThrow();
       expect(calls).toEqual([]);
     }
   }
@@ -176,9 +172,10 @@ test("every other completion reports the commit the workspace stands on, and rea
 });
 
 test("a reviewer whose review moved its issue on reports its own newest review record and the head it names", async () => {
-  // A request for changes moves the issue to implementing at once, an approval to accepting once
-  // the pull request is mergeable, and the reviewer completes after it: the daemon records that
-  // completion on reviewing, the phase the reviewer left, and reads its review record back.
+  // A request for changes moves the issue to implementing at once, an approval to its task's next
+  // step once the pull request is mergeable (accepting, in the default steps, which this test
+  // reads), and the reviewer completes after it: the daemon records that completion on reviewing,
+  // the phase the reviewer left, and reads its review record back.
   for (const phase of ["implementing", "accepting"] as const) {
     const { jj, calls } = fakeJj();
     const { latestHandoff, reads } = recordingDispatch();
@@ -756,7 +753,7 @@ test("the branch head is the issue bookmark at origin, and empty when the remote
   };
   await expect(answer(TIP)).resolves.toBe(TIP);
   expect(calls).toEqual([["log", "-r", REMOTE, "--no-graph", "-T", "commit_id"]]);
-  // A planner before its first push: no branch at the remote, and no error.
+  // A planner step that runs before the branch's first push: no branch at the remote, and no error.
   await expect(answer("")).resolves.toBe("");
 
   // The issue key names the branch, and a worker sets its own environment.

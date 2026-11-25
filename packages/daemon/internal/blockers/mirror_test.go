@@ -90,8 +90,10 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.PullRequestMergeability{}, intake.PullRequestMerged{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.MergeQueueReadDone{}, intake.ConflictConfirmDone{}, intake.PullRequestMissing{}, intake.Push{}, intake.BasePush{},
 		intake.HandoffComplete{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
-		intake.GateRegistered{}, intake.CloseRoot{}, intake.ClaimFailed{}, intake.SessionLost{}, intake.SessionStoreFault{},
-		intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{}, intake.GateRequestFound{},
+		intake.GateRegistered{}, intake.PlanGiven{}, intake.TaskStopped{}, intake.CloseRoot{}, intake.ClaimFailed{},
+		intake.SessionLost{}, intake.SessionStoreFault{},
+		intake.MemoryGuardKill{}, intake.ControllerMemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{},
+		intake.GateRequestFound{},
 		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
 		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
 		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.DispatchCheckState{},
@@ -150,6 +152,9 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 // issue and a listing (the boot's, the repository recovery's, the turn's above its single-read
 // bound) each carry all five. The release's read of a child it adopts carries the status, the
 // parent and the blockers, and leaves the labels and the rank as the reading at 10 wrote them.
+// The two issue facts alone, the event and the Observed fact, are facts the daemon applies, so
+// they alone raise the row's applied sequence to 20; the turn's re-read, a listing and the
+// release's read leave it at 0.
 func TestAReadingLeavesTheValuesItDoesNotCarry(t *testing.T) {
 	pool := migratedPool(t)
 	records := record.NewStore()
@@ -159,8 +164,10 @@ func TestAReadingLeavesTheValuesItDoesNotCarry(t *testing.T) {
 	a := copyRow{Status: "backlog", StatusSeq: 10, Parent: "LEGION-800", ParentSeq: 10, Blockers: []string{"LEGION-901"}, BlockersSeq: 10,
 		Labels: []string{"design"}, LabelsSeq: 10, Rank: "a0", RankSeq: 10, Seq: 10}
 	b := copyRow{Status: "todo", StatusSeq: 20, Parent: parent, ParentSeq: 20, Blockers: blockedBy, BlockersSeq: 20,
-		Labels: labels, LabelsSeq: 20, Rank: "UUU", RankSeq: 20, Seq: 20}
-	released := b
+		Labels: labels, LabelsSeq: 20, Rank: "UUU", RankSeq: 20, Seq: 20, AppliedSeq: 20}
+	read := b
+	read.AppliedSeq = 0
+	released := read
 	released.Labels, released.LabelsSeq, released.Rank, released.RankSeq = a.Labels, a.LabelsSeq, a.Rank, a.RankSeq
 	apply := func(fact intake.Fact) func(pgx.Tx) error {
 		return func(tx pgx.Tx) error {
@@ -180,11 +187,11 @@ func TestAReadingLeavesTheValuesItDoesNotCarry(t *testing.T) {
 		{name: "an Observed fact", key: "LEGION-911", read: apply(intake.ObservedIssue(dispatch.Issue{Key: "LEGION-911", Project: testProject,
 			Status: "todo", Parent: &parent, Rank: "UUU", Labels: labels, BlockedBy: blockedBy, LastSeq: 20})), want: b},
 		{name: "the turn's re-read", key: "LEGION-912", read: apply(intake.ControllerTick{Observed: []intake.IssueStatus{{Key: "LEGION-912",
-			Project: testProject, Status: "todo", Blockers: blockedBy, Seq: 20, Parent: parent, Labels: labels, Rank: "UUU"}}}), want: b},
+			Project: testProject, Status: "todo", Blockers: blockedBy, Seq: 20, Parent: parent, Labels: labels, Rank: "UUU"}}}), want: read},
 		{name: "a listing", key: "LEGION-913", read: func(tx pgx.Tx) error {
 			return Reconcile(context.Background(), tx, records, testProject, []dispatch.IssueSummary{{Key: "LEGION-913", Status: "todo",
 				Parent: &parent, Rank: "UUU", Labels: labels, LastSeq: 20, BlockedBy: blockedBy}})
-		}, want: b},
+		}, want: read},
 		{name: "the release's read", key: "LEGION-914", read: apply(intake.ChildAdoption{Tree: parent, Children: []intake.AdoptedChild{
 			{Issue: "LEGION-914", Parent: parent, Status: "todo", BlockedBy: blockedBy, Seq: 20}}}), want: released},
 	} {
@@ -338,6 +345,7 @@ type copyRow struct {
 	Rank        string
 	RankSeq     int64
 	Seq         int64
+	AppliedSeq  int64
 }
 
 // copiedRow is key's row of the copy, read by SQL.
@@ -345,8 +353,9 @@ func copiedRow(t *testing.T, pool *pgxpool.Pool, key string) copyRow {
 	t.Helper()
 	var row copyRow
 	if err := pool.QueryRow(context.Background(), `select status, status_seq, coalesce(parent, ''), parent_seq, blockers, blockers_seq,
-		labels, labels_seq, rank, rank_seq, dispatch_seq from dispatch_issues where key = $1`, key).Scan(&row.Status, &row.StatusSeq,
-		&row.Parent, &row.ParentSeq, &row.Blockers, &row.BlockersSeq, &row.Labels, &row.LabelsSeq, &row.Rank, &row.RankSeq, &row.Seq); err != nil {
+		labels, labels_seq, rank, rank_seq, dispatch_seq, applied_seq from dispatch_issues where key = $1`, key).Scan(&row.Status, &row.StatusSeq,
+		&row.Parent, &row.ParentSeq, &row.Blockers, &row.BlockersSeq, &row.Labels, &row.LabelsSeq, &row.Rank, &row.RankSeq, &row.Seq,
+		&row.AppliedSeq); err != nil {
 		t.Fatalf("read the row of %s: %v", key, err)
 	}
 	return row

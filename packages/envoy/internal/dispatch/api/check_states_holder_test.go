@@ -4,9 +4,23 @@
 package api
 
 import (
-	"net/http"
 	"testing"
 )
+
+// learnRename records that oldRepo was renamed to newRepo where the rename pairs are stored
+// (repo_projects.renamed_to), which is where pull_request_canonical_repo reads them. No route
+// writes a pair since a project's default repository replaced the repository mappings, so the
+// row is written by SQL, as the delivery tests' seedRenamedGadgets writes one.
+func learnRename(t *testing.T, rig *checkStatesRig, oldRepo, newRepo string) {
+	t.Helper()
+	if _, err := rig.database.Pool.Exec(t.Context(), `
+		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
+		values ($1, $2, '{"kind":"system","id":"check-states-test"}'::jsonb, false, $3)
+		on conflict (repo) do update set renamed_to = excluded.renamed_to
+	`, oldRepo, ciJobProject, newRepo); err != nil {
+		t.Fatalf("record %s as renamed to %s: %v", oldRepo, newRepo, err)
+	}
+}
 
 // TestAppliedHistoryOwesTheIssueThatHoldsThePullRequestWhenItIsApplied: #70 arrived under its
 // repository's old name, credited to no issue, and left H1 for H2 there, and arrived under the
@@ -18,10 +32,7 @@ import (
 func TestAppliedHistoryOwesTheIssueThatHoldsThePullRequestWhenItIsApplied(t *testing.T) {
 	const oldRepo = "oldorg/example-repo"
 	rig := newCheckStatesRig(t, checkStatesTwoChecks)
-	if response := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/settings/repo-projects/"+oldRepo,
-		map[string]any{"project": ciJobProject, "renamed_to": ciJobRepository}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map %s, renamed to %s: status=%d body=%s", oldRepo, ciJobRepository, response.Code, response.Body.String())
-	}
+	learnRename(t, rig, oldRepo, ciJobRepository)
 	other := rig.fileIssue(t, "Where the pull request moves")
 	uploadDocument(t, rig.handler, "/api/v1/issues/"+other, "verification.md", checkStatesTwoChecks)
 	writeHead(t, rig.database, oldRepo, 70, eachHeadH1, "open", "")
@@ -79,10 +90,7 @@ func TestAJoinOfTwoNamesOwesEachIssueThatHoldsThePullRequest(t *testing.T) {
 		t.Fatalf("%s published states at H1 before the rename is known, want none: this test holds nothing to join", other)
 	}
 
-	if response := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/settings/repo-projects/"+oldRepo,
-		map[string]any{"project": ciJobProject, "renamed_to": ciJobRepository}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map %s, renamed to %s: status=%d body=%s", oldRepo, ciJobRepository, response.Code, response.Body.String())
-	}
+	learnRename(t, rig, oldRepo, ciJobRepository)
 	var rows, identities, moves, pending int
 	if err := rig.database.Pool.QueryRow(t.Context(), `
 		select (select count(*) from pull_request_heads where number = 70 and state = 'open'),

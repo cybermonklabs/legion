@@ -19,10 +19,7 @@ const deliveryDeployedEventVersion = 114
 // a shipping run arrives.
 func TestMigrationStampsThePullRequestsAlreadyShipped(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, deliveryDeployedEventVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", deliveryDeployedEventVersion-1, err)
-	}
+	store := openMigratedTestStore(t, deliveryDeployedEventVersion-1)
 	merged := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	// One statement per Exec: pgx's extended protocol refuses several statements in one
 	// parameterised Exec (SQLSTATE 42601), and each statement here binds the merge instant.

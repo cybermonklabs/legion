@@ -9,7 +9,11 @@ import {
 } from "@legion/contracts";
 import type { LegionIssue } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
-import { EnvoyApiError, type PublishResult } from "@legion/envoy-client/transport";
+import {
+  EnvoyApiError,
+  type KeyTakenResult,
+  type PublishResult,
+} from "@legion/envoy-client/transport";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import {
   architectLive,
@@ -581,7 +585,7 @@ export interface StallTellerDeps {
 const STALL_NOTICE_SENDS = 4;
 
 /** One publish of a notice, with every field of the first publish: a resend is the same call. */
-type SendNotice = () => Promise<Pick<PublishResult, "kept">>;
+type SendNotice = () => Promise<Pick<PublishResult, "kept"> | KeyTakenResult>;
 
 /** The listener's refusal of a publish for this session's send rate, with the whole seconds it
  * names until it takes the next message. */
@@ -684,6 +688,16 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
   const attempt = async (send: SendNotice): Promise<NoticeAttempt> => {
     try {
       const answer = await send();
+      // Another sender's message already holds the notice's key, so the listener stored nothing
+      // and told no owner: the notice was not delivered, which is a refusal.
+      if ("keyTaken" in answer) {
+        return {
+          kind: "refused",
+          error: new Error(
+            `another sender's message (${answer.keyTaken.eventId}) already holds the notice's idempotency key`
+          ),
+        };
+      }
       // A kept answer (202, `PublishResult.kept`) means that no live session holds the owner's
       // role: the listener kept the notice on the role's kept lane for the next session that holds
       // it live within the hour. That has told no owner yet, and the teller does not send a kept

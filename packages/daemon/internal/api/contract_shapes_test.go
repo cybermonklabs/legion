@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -200,8 +201,8 @@ projects:
         unit: issue
         roles: [planner, implementer]
         variants:
-          - {name: short, weight: 2, config_files: [/etc/legion/short-plan.yml], instructions: /etc/legion/short-plan.md}
-          - {name: long}
+          - {name: short, weight: 2, config_files: [/etc/legion/short-plan.yml], instructions: /etc/legion/short-plan.md, plan: owner}
+          - {name: long, plan: default}
 github_apps:
   implement:
     app_id: "1001"
@@ -393,7 +394,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	modeWords := []config.ExperimentMode{config.ExperimentOff, config.ExperimentOn, config.ExperimentRandom}
 	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
 		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldDesignGate, record.HeldDispatchBlocker,
-		record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldAtWork, record.HeldUnclassified}
+		record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldChildrenBeforeRetro, record.HeldTaskStopped,
+		record.HeldAtWork, record.HeldUnclassified}
+	holdWords := []record.HoldReason{record.HoldEscalated, record.HoldTaskStopped, record.HoldForChildren}
 	roleWords := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger}
 	stallWords := []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable,
@@ -442,6 +445,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			Repo:          "acme/widgets",
 			DefaultBranch: "main",
 			HeldFrom:      string(heldFrom),
+			HoldReason:    string(holdWords[i%len(holdWords)]),
 			Architect:     &architect,
 			Workers: map[claim.Role]PhaseView{
 				claim.RoleImplementer: {Claim: claimView("ses_implementer_"+key, updateWords[(i+1)%len(updateWords)], i+3, heldFrom)},
@@ -475,9 +479,10 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 				Claim: claim.Token("legion-values-" + key + "-" + string(roleWords[i])), Issue: key, Role: roleWords[i], AskedAt: at})
 		}
 	}
+	// The thirteen held words over the twelve issues, the last word on the first issue again.
 	held := make([]HeldIssue, 0, len(heldWords))
 	for i, reason := range heldWords {
-		held = append(held, HeldIssue{Issue: keys[i], Reason: reason})
+		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})
 	}
 	both := AppInstallationsView{Implement: true, Review: true}
 	live := make([]LiveRepositoryView, 0, len(cacheWords))
@@ -635,17 +640,20 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Started:  []string{"LEGION-209"},
 			Held:     []HeldChild{{Issue: "LEGION-211", BlockedBy: []string{"LEGION-210"}}},
 		}}},
-		// The refusal has three Go shapes: claim.Refusal, one sentence under `error`, which the
+		// The refusal has four Go shapes: claim.Refusal, one sentence under `error`, which the
 		// claim routes answer; api.Failure, which adds the stable `code` the credential and
-		// workflow routes carry; and api.PauseFailure, the Failure with what a refusal of the
-		// pause names beside it (contract 178). A client parses any of them on every answer that
-		// is not a success, so the fixture holds each and the record is the keys of the three read
-		// as one set. The pause refusals are the three the goldens hold (TestPauseRouteGoldens):
-		// the setting that turns the pause off, the pause that stands, and the last pause, ended,
-		// which between them carry every key of a PauseFailure. Their pause is the controller's,
-		// richer than the goldens' operator's (controllerPause).
+		// workflow routes carry; api.PauseFailure, the Failure with what a refusal of the pause
+		// names beside it (contract 178); and api.PlanRefusal, the Failure with one reason for
+		// each cause of a refused plan beside it (contract 219). A client parses any of them on
+		// every answer that is not a success, so the fixture holds each and the record is the keys
+		// of the four read as one set. The pause refusals are the three the goldens hold
+		// (TestPauseRouteGoldens): the setting that turns the pause off, the pause that stands,
+		// and the last pause, ended, which between them carry every key of a PauseFailure. Their
+		// pause is the controller's, richer than the goldens' operator's (controllerPause). The
+		// plan refusal names a cause of the whole plan and a cause of one task, the two kinds a
+		// reason takes.
 		AnswerRefusal: {
-			roots: typesOf(claim.Refusal{}, Failure{}, PauseFailure{}),
+			roots: typesOf(claim.Refusal{}, Failure{}, PauseFailure{}, PlanRefusal{}),
 			bodies: []any{
 				claim.SameAgentRefusal,
 				Failure{Code: "GRANT_NOT_FOUND", Error: "no grant for this command"},
@@ -664,6 +672,13 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 						Error: "the project is not paused: its last pause (" + describePause(controllerPause(true)) + ") ended 2026-11-15T09:41:30Z by the controller (session ses_controller); this resume changed nothing"},
 					LastPause: &ended,
 				},
+				PlanRefusal{
+					Failure: Failure{Code: "PLAN_REFUSED", Error: "Legion does not take this plan: each reason below names its cause."},
+					Reasons: []PlanReason{
+						{Task: "", Reason: "The plan holds two tasks. This release of Legion does not carry it out yet."},
+						{Task: "a", Reason: "Task a names no implementer. This release of Legion does not carry it out yet."},
+					},
+				},
 			},
 		},
 		// The pause the controller began, richer than the golden, which is the operator's pause
@@ -676,6 +691,13 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
+		// The plan-register golden's own value (TestOwnerPlanRouteGoldens): one task with the
+		// steps its block names.
+		AnswerPlanRegister: {roots: typesOf(PlanRegisterResponse{}), bodies: []any{PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
+			ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+			Version:    4,
+			Tasks:      []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}}},
+		})}}},
 	}
 }
 

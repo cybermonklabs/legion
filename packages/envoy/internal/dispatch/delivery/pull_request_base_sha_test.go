@@ -52,7 +52,7 @@ func TestEachWriterStoresTheBaseRevisionGitHubSent(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil)
+	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil, unrenamed())
 	envelope := func(baseSHA, updatedAt string) {
 		t.Helper()
 		payload := map[string]string{
@@ -81,7 +81,7 @@ func TestEachWriterStoresTheBaseRevisionGitHubSent(t *testing.T) {
 		t.Fatalf("an envelope that names no base revision leaves %q on #31, want none: the base branch may have moved since %s", got, baseLater)
 	}
 
-	if _, _, err := ReadThroughCommitPulls(ctx, pool, client, nil, "acme/gadgets", sha, time.Now()); err != nil {
+	if _, _, err := unrenamed().ReadThroughCommitPulls(ctx, pool, client, nil, "acme/gadgets", sha, time.Now()); err != nil {
 		t.Fatalf("read through the commit's pull requests: %v", err)
 	}
 	if got := baseSHAOf(t, ctx, pool, "acme/gadgets", 32); got != baseFirst {

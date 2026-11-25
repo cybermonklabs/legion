@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Opening a document socket is what every browser tab does on every load and every reconnect, and
@@ -697,5 +698,45 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	}
 	if _, kept := service.preloads.Load(artifactID); kept {
 		t.Error("a preload offered while the room loaded is still held after that load, want none: no load of this room will ever read it")
+	}
+}
+
+// A socket's upgrade made through processHeaderWriter, as ServeHTTP makes it in a process that
+// knows its host name, answers with the process's line among the upgrade's headers, and the
+// frames after that answer pass through the connection unchanged.
+func TestTheUpgradeThroughTheProcessHeaderWriterNamesTheProcess(t *testing.T) {
+	listener, err := testport.ListenLoopback()
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w = &processHeaderWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": task-a\r\n")}
+		connection, err := (&gws.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		if kind, message, err := connection.ReadMessage(); err == nil {
+			_ = connection.WriteMessage(kind, message)
+		}
+	}))
+	_ = server.Listener.Close()
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+	connection, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws/doc/room", nil)
+	if err != nil {
+		t.Fatalf("dial the socket: %v", err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	if served := response.Header.Values(ProcessHeader); !slices.Equal(served, []string{"task-a"}) {
+		t.Fatalf("the upgrade names %q as its process, want exactly [task-a]; header %v", served, response.Header)
+	}
+	if err := connection.WriteMessage(gws.BinaryMessage, []byte("frame")); err != nil {
+		t.Fatalf("write a frame: %v", err)
+	}
+	_ = connection.SetReadDeadline(time.Now().Add(roomWait(t)))
+	if _, message, err := connection.ReadMessage(); err != nil || string(message) != "frame" {
+		t.Fatalf("the echoed frame = %q (%v), want %q", message, err, "frame")
 	}
 }

@@ -558,9 +558,10 @@ func versionsNotIn(a, b []int) []int {
 // One architect-stalled wake stands unsent before the ways back, as a rollback can find one: the
 // release before this one refuses its kind and would retry it for ever, so the block drops it and
 // none stands after the two blocks. The store between the blocks and the roll-forward holds no
-// marks' table, no handshake column and no column of the mark, and records every embedded
-// version but those the blocks delete (leftStanding); a migration above them stays recorded, since
-// Migrate applies each migration the table has not recorded, whatever version stands highest.
+// marks' table, no handshake column and no column of the mark, records every embedded version but
+// the five the blocks delete (leftStanding, against wayBackVersions), and reports the highest of
+// them; a migration above them stays recorded, since Migrate applies each migration the table has
+// not recorded, whatever version stands highest.
 //
 // The record is the one the older release leaves after the rollback, written with that release's
 // own statements: two roots at admitted with no design gate registered, each holding an architect
@@ -659,6 +660,8 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 						"migrations but those the blocks delete, and the highest of them, %d: recorded and not wanted %v, wanted "+
 						"and not recorded %v", len(recorded), version, len(standing), standing[len(standing)-1], extra, missing)
 				}
+				t.Logf("after the two ways back the store records %d versions and reports %d, the highest embedded migration "+
+					"neither block deletes", len(recorded), version)
 				var marksTable, handshakeColumn, markColumn bool
 				if err := pool.QueryRow(ctx, `select to_regclass('architect_stalled_notices') is not null`).Scan(&marksTable); err != nil {
 					t.Fatalf("look for the marks' table after the way back: %v", err)

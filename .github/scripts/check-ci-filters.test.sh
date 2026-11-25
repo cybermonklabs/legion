@@ -23,7 +23,8 @@
 # it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
 # cache family must carry
 # the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
-# its own restores being lookups,
+# or that key followed by the commit, its own restores being lookups but those of a family it
+# saves under the commit, which download the newest entry,
 # ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
@@ -35,8 +36,9 @@
 # hand the action exactly .github/ci-filters.yaml as its `filters` input, every output of the
 # changes job must name that step and a filter that file holds, that file must be there and open,
 # and a listed block's patterns are passed over by rule 9 only while its marker names a check a
-# job of CI runs. A script's go command is read under every step of each job that may run it, and
-# the header's run recipe runs the check, or says why it stops.
+# job of CI runs. A script's go command is read under every step of each job that may run it, a
+# workflow several jobs of ci.yaml call runs each job of it named for a caller under that caller
+# alone, and the header's run recipe runs the check, or says why it stops.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a .github/ci-filters.yaml holding the
@@ -58,6 +60,99 @@ trap 'rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+
+# Importing ci_job_reads.py walks the repository and runs go list. The cases at the end of this
+# file that read its race walk and its files_but_tests ask it fourteen questions, and as fourteen
+# fresh python3 processes, each importing it, they took 66 s of this harness's 115 s in CI's job
+# 137302423430: 28.8 s for the first import and about 2.8 s for each later one. So one python3,
+# started here, imports it once, from the repository's root as the check runs, while the cases
+# before those run, and answers each question in a child it forks: the child starts from the
+# module as the import left it, as a fresh python3 started from there would, and whatever the
+# question changes (the race lane, the working directory, REPO, a cache) ends with the child.
+coproc READS {
+  cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
+import os
+import sys
+import traceback
+from pathlib import Path
+
+import ci_filter_coverage
+import ci_job_reads as reads
+
+
+def derived(root, lane):
+    reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
+        reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane.split())),)
+    try:
+        return reads.race_impossible_script(reads.race_impossible_tests(root))
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+
+
+def from_root(root):
+    os.chdir(root)
+    ci_filter_coverage.REPO = Path.cwd()
+    reads.repository_files.cache_clear()
+
+
+def listed(root, suffix, shape):
+    from_root(root)
+    return " ".join(reads.files_but_tests("pkg", suffix=suffix, tree=shape == "tree", skip=("testdata",)))
+
+
+def refused(root, spelling):
+    from_root(root)
+    try:
+        reads.files_but_tests(spelling)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+questions = {"derived": derived, "listed": listed, "refused": refused}
+
+
+def field():
+    """One NUL-ended field of the question; None at the end of the input."""
+    data = bytearray()
+    while (byte := sys.stdin.buffer.read(1)) != b"\0":
+        if not byte:
+            return None
+        data += byte
+    return data.decode()
+
+
+while (count := field()) is not None:
+    question, *args = [field() for _ in range(int(count))]
+    child = os.fork()
+    if child == 0:
+        try:
+            answer = questions[question](*args)
+        except BaseException:
+            traceback.print_exc()
+            os._exit(1)
+        sys.stdout.write(f"{answer}\0")
+        sys.stdout.flush()
+        os._exit(0)
+    # A question that raised, or a child that died before it answered, ends this python3 too: its
+    # stdout closes, and ask fails rather than read an empty answer.
+    if os.waitpid(child, 0)[1] != 0:
+        sys.exit(1)
+'
+}
+
+# ask <question> <arg>...: the answer of that python3 to one question, as a fresh python3 would
+# print it. A question that raises ends that python3, its traceback on stderr, and ask then fails
+# with no answer, as a fresh python3 that raised failed.
+ask() {
+  local answer
+  printf '%s\0' "$#" "$@" >&"${READS[1]}"
+  if ! IFS= read -r -d '' answer <&"${READS[0]}"; then
+    echo "the python3 that answers for ci_job_reads.py ended without answering '$1'" >&2
+    return 1
+  fi
+  printf '%s\n' "$answer"
+}
 
 # fixture <name>: a tree that passes. The app job runs `go test ./cmd/app ./lib`, whose closure is
 # cmd/app and lib (cmd/app imports lib); lib's test reads fixtures/data.json through `..`, which
@@ -206,7 +301,7 @@ jobs:
       - name: Judge every job of this run
         run: echo verdict
       - name: Set every other ci-ok on this head to this job's conclusion
-        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') && !(steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1') }}
         run: echo reconcile
 YAML
   cat > "$root/.github/ci-filters.yaml" <<'YAML'
@@ -733,18 +828,18 @@ check "with the gate's own refusal, not the with: value's" \
 check "and says nothing about resolving the value" \
   "$(is "$(contains "$out" 'a value naming the changes job must be')" false)"
 
-# The `lane` shape: a job of the called file gated on an input the caller builds from the event,
-# with no gate declared on it. The suite runs behind the caller job's own `if:`, and the lane
-# input only chooses what it runs, so this rule reads it as no gate and nothing else fires.
+# A job of the called file gated on an input the caller builds from the event, with no gate
+# declared on it. The suite runs behind the caller job's own `if:`, and the input only chooses
+# what it runs, so this rule reads it as no gate and nothing else fires.
 echo "case: a called job gated on an input the caller builds from the event"
 root=$(fixture called-input-event)
 called_input_gate "$root"
 replace "$root/.github/workflows/called.yaml" "      ci-ok-changes:" \
-  $'      lane:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
+  $'      mode:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
 replace "$root/.github/workflows/called.yaml" "  called:" \
-  $'  lane-only:\n    if: inputs.lane == \'full\'\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo the full lane\n  called:'
+  $'  mode-only:\n    if: inputs.mode == \'full\'\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo the full mode\n  called:'
 replace "$root/.github/workflows/ci.yaml" "      app: \${{ needs.changes.outputs.app }}" \
-  $'      app: ${{ needs.changes.outputs.app }}\n      lane: ${{ github.event_name == \'pull_request\' && \'pull-request\' || \'full\' }}'
+  $'      app: ${{ needs.changes.outputs.app }}\n      mode: ${{ github.event_name == \'pull_request\' && \'pull-request\' || \'full\' }}'
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 
@@ -1065,7 +1160,7 @@ check "names the job and the check" \
 # check_ci_ok holds them and prints them.
 ciok_name="\${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}"
 prtitle_name="\${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}"
-reconcile_if="\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}"
+reconcile_if="\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') && !(steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1') }}"
 ref_run='if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"'
 # has <text> <string>: true/false for check, a fixed-string match: these strings hold [ and $,
 # which contains would read as a regex.
@@ -1138,12 +1233,15 @@ replace "$root/.github/workflows/ci.yaml" $'\n  image:\n' \
 run_check "$root"
 check "a name expression that names no required check passes" "$(is "$status" 0)"
 
-echo "case: the verdict job's reconcile step runs on a dispatch of another ref"
-# On such a run every other ci-ok of the head is a pull request's or the queue's, and the step
-# would set each posted one to that run's verdict; `if: always()` alone was the shape before, and
-# the expression's comparison of github.ref read refs/heads/Main as main.
+echo "case: the verdict job's reconcile step runs on a dispatch of another ref, or after the hold"
+# On a dispatch of another ref every other ci-ok of the head is a pull request's or the queue's,
+# and the step would set each posted one to that run's verdict; `if: always()` alone was the shape
+# before, and the expression's comparison of github.ref read refs/heads/Main as main. The third
+# shape runs the step on a merge group's first attempt whose verdict failed too, after the hold
+# step, which must end the job so its check run concludes the moment the group is the front.
 n=0
-for given in "always()" "\${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}"; do
+for given in "always()" "\${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}" \
+  "\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}"; do
   n=$((n + 1))
   root=$(fixture "ci-ok-reconcile-if-$n")
   replace "$root/.github/workflows/ci.yaml" "        if: $reconcile_if" "        if: $given"
@@ -1267,7 +1365,7 @@ echo "case: the file has no ci-ok job"
 # The job is the last of the fixture, and `replace` reads the file without its trailing newline,
 # so the block to cut starts at the newline before it and ends at its last line.
 root=$(fixture ci-ok-absent)
-replace "$root/.github/workflows/ci.yaml" $'\n  ci-ok:\n    name: ${{ github.event_name == \'workflow_dispatch\' && needs.changes.outputs.ref_is_main != \'true\' && \'ci-ok (dispatch)\' || \'ci-ok\' }}\n    needs: [changes, app, image, lint]\n    if: ${{ always() }}\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Judge every job of this run\n        run: echo verdict\n      - name: Set every other ci-ok on this head to this job\'s conclusion\n        if: ${{ always() && (github.event_name != \'workflow_dispatch\' || needs.changes.outputs.ref_is_main == \'true\') }}\n        run: echo reconcile' ""
+replace "$root/.github/workflows/ci.yaml" $'\n  ci-ok:\n    name: ${{ github.event_name == \'workflow_dispatch\' && needs.changes.outputs.ref_is_main != \'true\' && \'ci-ok (dispatch)\' || \'ci-ok\' }}\n    needs: [changes, app, image, lint]\n    if: ${{ always() }}\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Judge every job of this run\n        run: echo verdict\n      - name: Set every other ci-ok on this head to this job\'s conclusion\n        if: ${{ always() && (github.event_name != \'workflow_dispatch\' || needs.changes.outputs.ref_is_main == \'true\') && !(steps.verdict.outcome == \'failure\' && github.event_name == \'merge_group\' && github.run_attempt == \'1\') }}\n        run: echo reconcile' ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the check nothing would carry" \
@@ -1624,6 +1722,226 @@ replace "$root/.github/workflows/suite.yaml" "        run: go build ./cmd/app" \
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+# A workflow two jobs of ci.yaml call holds a job named for each (ci-job-test.yaml holds test and
+# tooling-checks), and the check reads each such job as its own caller's alone, holding its go
+# commands, its env and its gated steps to that caller's filter. That reading holds only while the
+# job runs under that caller alone: each caller has a job of the file named for it, that job's
+# `if:` is exactly `inputs.job == '<its id>'`, and the caller passes `job: <its own id>`.
+# check_called_jobs holds all three, and each case below up to the report steps' one breaks one.
+
+# shared_file <root> <slow> <fast>: jobs <slow> and <fast> of ci.yaml both call
+# .github/workflows/shared.yaml, as test and tooling-checks call ci-job-test.yaml, each passing its
+# own id as `job`. The file holds a job of each id, whose `if:` admits that id alone and whose last
+# step reports ci-ok under it. Both callers are gated on the app filter and no step runs a go
+# command, so the split is all a case can break.
+shared_file() {
+  local root=$1 slow=$2 fast=$3 job
+  {
+    cat <<'YAML'
+name: Shared
+on:
+  workflow_call:
+    inputs:
+      job:
+        type: string
+        required: true
+      ci-ok-changes:
+        type: string
+        required: false
+        default: ""
+jobs:
+YAML
+    for job in "$slow" "$fast"; do
+      cat <<YAML
+  $job:
+    if: inputs.job == '$job'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the $job steps
+        run: echo $job
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: $job
+          changes: \${{ inputs.ci-ok-changes }}
+          job-status: \${{ job.status }}
+YAML
+    done
+  } > "$root/.github/workflows/shared.yaml"
+  for job in "$slow" "$fast"; do
+    cat >> "$root/.github/workflows/ci.yaml" <<YAML
+  $job:
+    needs: changes
+    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/shared.yaml
+    with:
+      job: $job
+      ci-ok-changes: \${{ toJSON(needs.changes) }}
+YAML
+  done
+  replace "$root/.github/workflows/ci.yaml" '{"app": "app", "image": "image"}' \
+    "{\"app\": \"app\", \"image\": \"image\", \"$slow\": \"app\", \"$fast\": \"app\"}"
+  replace "$root/.github/workflows/ci.yaml" "    needs: [changes, app, image, lint]" \
+    "    needs: [changes, app, image, lint, $slow, $fast]"
+}
+
+echo "case: a workflow two jobs call, each running the job of it named for itself"
+root=$(fixture shared-file-green)
+shared_file "$root" test tooling-checks
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a job of a shared workflow whose if: admits another caller"
+root=$(fixture shared-file-other-if)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/shared.yaml" "    if: inputs.job == 'tooling-checks'" "    if: inputs.job == 'test'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the if: it carries and the one it must carry" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks of .github/workflows/shared.yaml, which jobs test, tooling-checks of .github/workflows/ci.yaml all call, carries \`if: inputs.job == 'test'\`: give it \`if: inputs.job == 'tooling-checks'\`")"
+
+echo "case: a caller of a shared workflow that passes another caller's id"
+root=$(fixture shared-file-other-id)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/ci.yaml" "      job: tooling-checks" "      job: test"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the caller, the id it passes and its own" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job tooling-checks calls .github/workflows/shared.yaml, which other jobs of this file call too, and passes \`job: test\`: pass \`job: tooling-checks\`")"
+
+echo "case: a caller of a shared workflow that passes no id"
+root=$(fixture shared-file-no-id)
+shared_file "$root" pi-legion pi-legion-build
+replace "$root/.github/workflows/ci.yaml" $'      job: pi-legion-build\n' ""
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the caller and the id it must pass" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job pi-legion-build calls .github/workflows/shared.yaml, which other jobs of this file call too, and passes \`job: \`: pass \`job: pi-legion-build\`")"
+
+# A caller with no job of its own in the file runs none of the jobs named for the others, whose
+# `if:` admits only their own ids, so no step of the file is held to its gate: the check names
+# that caller rather than reading the file as if it ran something.
+echo "case: a workflow two jobs call that holds a job named for one of them and none for the other"
+root=$(fixture shared-file-none-named)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/shared.yaml" $'  tooling-checks:\n    if:' $'  tooling:\n    if:'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the caller with no job of its own there, and the job it must have" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job tooling-checks calls .github/workflows/shared.yaml, which holds jobs named for its other callers (test) and none named tooling-checks, so no job of it runs under tooling-checks that this check can hold to tooling-checks's gate; give the file a job named tooling-checks, or call another file")"
+
+# GitHub reads `${{ inputs.job == 'x' }}` as the bare comparison, and `&& true` adds nothing, yet
+# the check proves the one form and refuses every other rather than reasoning about it: a term
+# beside the comparison, such as an `||`, could admit another caller.
+for written in "expression:\${{ inputs.job == 'tooling-checks' }}" "conjunction:inputs.job == 'tooling-checks' && true"; do
+  echo "case: a job of a shared workflow whose if: is ${written#*:}, not the bare comparison"
+  root=$(fixture "shared-file-if-${written%%:*}")
+  shared_file "$root" test tooling-checks
+  replace "$root/.github/workflows/shared.yaml" "    if: inputs.job == 'tooling-checks'" "    if: ${written#*:}"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the job, the if: it carries and the one it must carry" \
+    "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks of .github/workflows/shared.yaml, which jobs test, tooling-checks of .github/workflows/ci.yaml all call, carries \`if: ${written#*:}\`: give it \`if: inputs.job == 'tooling-checks'\`")"
+done
+
+# dispatch-browser.yaml's merge job reports under whichever of its two callers ran it by reading
+# `job:` from the input, and a shared file's jobs may do the same, since each caller passes its
+# own id there.
+echo "case: a shared workflow's report steps that read the caller's id from the input"
+root=$(fixture shared-file-report-input)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/shared.yaml" "          job: test" "          job: \${{ inputs.job }}"
+replace "$root/.github/workflows/shared.yaml" "          job: tooling-checks" "          job: \${{ inputs.job }}"
+run_check "$root"
+check "passes while each caller passes its own id" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci.yaml" "      job: tooling-checks" "      job: test"
+run_check "$root"
+check "fails once a caller passes another's" "$(is "$status" 1)"
+check "names the caller and the id it passes" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job tooling-checks calls .github/workflows/shared.yaml, which other jobs of this file call too, and passes \`job: test\`: pass \`job: tooling-checks\`")"
+check "and says no report goes out under the caller's own id" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::./.github/workflows/shared.yaml, which job tooling-checks calls, has no job whose last step is")"
+
+# The fixture above puts both callers on one filter, so it cannot tell a job held to its own
+# caller's filter from one held to the other's. split_callers <root> puts shared_file's two
+# callers on two filters, as test and tooling-checks are in ci.yaml: the slow caller stays on app,
+# which names fixtures/**, and the fast one gets a filter of its own, fast, which does not. The
+# fast caller's job of shared.yaml runs `go test ./cmd/app ./lib`, whose test reads
+# fixtures/data.json (RULES), and its gate pins that step there.
+split_callers() {
+  local root=$1
+  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+    $'      image: ${{ steps.filter.outputs.image }}\n      fast: ${{ steps.filter.outputs.fast }}'
+  replace "$root/.github/workflows/ci.yaml" $'  tooling-checks:\n    needs: changes\n    if: needs.changes.outputs.app ' \
+    $'  tooling-checks:\n    needs: changes\n    if: needs.changes.outputs.fast '
+  replace "$root/.github/workflows/ci.yaml" '"tooling-checks": "app"' '"tooling-checks": "fast"'
+  replace "$root/.github/ci-filters.yaml" $'\nimage:' \
+    $'\nfast:\n  - \'.github/workflows/shared.yaml\'\n  - *workspace\n  - \'mod/cmd/app/*\'\n  - \'mod/lib/*\'\nimage:'
+  replace "$root/.github/workflows/shared.yaml" "        run: echo tooling-checks" \
+    $'        run: go test ./cmd/app ./lib\n        working-directory: mod'
+  cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+GATES.append(gate("fast", "tooling-checks", runs=[
+    run("mod", ["./cmd/app", "./lib"],
+        at("tooling-checks", "Run the tooling-checks steps", ".github/workflows/shared.yaml") + ": go test ./cmd/app ./lib",
+        step="Run the tooling-checks steps", text="go test ./cmd/app ./lib"),
+], reads=[Read(".github/workflows/shared.yaml", "the job reads the definition of the steps it runs")],
+    workflow=".github/workflows/shared.yaml"))
+PY
+}
+
+# fast_names_fixtures <root>: the fast filter names fixtures/** too, so it covers what its job reads.
+fast_names_fixtures() {
+  replace "$1/.github/ci-filters.yaml" $'  - \'mod/lib/*\'\nimage:' $'  - \'mod/lib/*\'\n  - \'fixtures/**\'\nimage:'
+}
+
+echo "case: a job of a shared workflow is held to its own caller's filter, not the other caller's"
+root=$(fixture shared-file-two-filters)
+shared_file "$root" test tooling-checks
+split_callers "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses the file the fast job reads under the fast job's gate" \
+  "$(has "$out" "::error file=fixtures/data.json::tooling-checks reads fixtures/data.json, which its filter fast does not match, so a change to it skips the job: lib_test.go reads ../../fixtures/data.json")"
+check "and is that one problem: no gate of the slow caller's is held to the fast job's step" \
+  "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+fast_names_fixtures "$root"
+run_check "$root"
+check "passes once the fast job's own filter names it" "$(is "$status" 0)"
+check "and counts the step's files under the fast filter" \
+  "$(contains "$out" '^report: tooling-checks: [0-9][0-9]* files, 0 uncovered (filter fast)$')"
+
+# A step of a shared workflow gated on an input is read through the value the caller that runs
+# its job passes. Both callers pass `tests` here, each its own filter's output, so a reading
+# through the other caller's value would find the other filter.
+echo "case: a step of a shared workflow gated on an input both callers pass, read through its own caller's value"
+root=$(fixture shared-file-step-input)
+shared_file "$root" test tooling-checks
+split_callers "$root"
+fast_names_fixtures "$root"
+replace "$root/.github/workflows/shared.yaml" $'      ci-ok-changes:\n' \
+  $'      tests:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:\n'
+replace "$root/.github/workflows/shared.yaml" $'      - name: Run the tooling-checks steps\n' \
+  $'      - name: Run the tooling-checks steps\n        if: inputs.tests == \'true\'\n'
+replace "$root/.github/workflows/ci.yaml" $'      job: test\n' $'      job: test\n      tests: ${{ needs.changes.outputs.app }}\n'
+replace "$root/.github/workflows/ci.yaml" $'      job: tooling-checks\n' \
+  $'      job: tooling-checks\n      tests: ${{ needs.changes.outputs.fast }}\n'
+replace "$root/.github/scripts/ci_job_reads.py" '    workflow=".github/workflows/shared.yaml"))' \
+  '    step="Run the tooling-checks steps", workflow=".github/workflows/shared.yaml"))'
+run_check "$root"
+check "passes while the fast caller passes the fast output" "$(is "$status" 0)"
+check "and reads the step as the gate on fast" \
+  "$(contains "$out" '^report: tooling-checks step "Run the tooling-checks steps": [0-9][0-9]* files, 0 uncovered (filter fast)$')"
+replace "$root/.github/workflows/ci.yaml" $'      job: tooling-checks\n      tests: ${{ needs.changes.outputs.fast }}' \
+  $'      job: tooling-checks\n      tests: ${{ needs.changes.outputs.app }}'
+replace "$root/.github/workflows/ci.yaml" $'      job: test\n      tests: ${{ needs.changes.outputs.app }}' \
+  $'      job: test\n      tests: ${{ needs.changes.outputs.fast }}'
+run_check "$root"
+check "fails once only the slow caller passes the fast output" "$(is "$status" 1)"
+check "names the gate and the step" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::gate fast names step \"Run the tooling-checks steps\" of tooling-checks, but no single step of that name has an if: on needs.changes.outputs.fast")"
+check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+
 echo "case: a package added to a go command the table claims, outside the job's filter"
 root=$(fixture appended-package)
 replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: go test ./cmd/app ./lib ./other"
@@ -1872,6 +2190,18 @@ replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: G
 run_check "$root"
 check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
 check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+
+# GOCACHE names where go keeps what it compiled, keyed on the inputs, so a step that sets it in
+# its env - as envoy-go-build's darwin vet does, for a build cache of its own - still compiles
+# what the bare command compiles.
+echo "case: a GOCACHE in a claimed simple go command's step env"
+root=$(fixture gocache-env)
+replace "$root/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
+  $'        env:\n          GOCACHE: ${{ runner.temp }}/go-build-app\n        run: go test ./cmd/app ./lib'
+run_check "$root"
+check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
+check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+check "and the step does carry the env" "$(contains "$(<"$root/.github/workflows/ci.yaml")" 'GOCACHE: \${{ runner.temp }}/go-build-app')"
 
 echo "case: an assignment outside ENV_ALLOWED in front of a claimed simple go command"
 root=$(fixture goos-assignment)
@@ -2593,6 +2923,138 @@ check "fails" "$(is "$status" 1)"
 check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
+# refill_workflow <root>: cache_workflow's shape with the fill made again on every push, as
+# ci-caches.yaml's Go families but go-envoy-infra are filled: the fill's restore
+# downloads the family's newest entry (no lookup-only, and its key and a `-` as restore-keys), its
+# builds and its save run on every push, and its save names the commit after the key ci.yaml
+# restores.
+refill_workflow() {
+  local caches="$1/.github/workflows/ci-caches.yaml" gate=$'      - if: steps.go-app.outputs.cache-hit != \'true\'\n'
+  cache_workflow "$1"
+  replace "$caches" $'          key: go-app-${{ runner.os }}\n          lookup-only: true' \
+    $'          key: go-app-${{ runner.os }}\n          restore-keys: go-app-${{ runner.os }}-'
+  replace "$caches" "${gate}        run: go test -count" '      - run: go test -count'
+  replace "$caches" "${gate}        run: go test -c" '      - run: go test -c'
+  replace "$caches" "${gate}        uses: actions/cache/save" '      - uses: actions/cache/save'
+  replace "$caches" \
+    $'cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-app-${{ runner.os }}' \
+    $'cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-app-${{ runner.os }}-${{ github.sha }}'
+}
+
+echo "case: a family ci-caches.yaml fills again on every push, under the key ci.yaml restores and the commit"
+root=$(fixture cache-refill)
+refill_workflow "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and the save does name the commit" \
+  "$(contains "$(<"$root/.github/workflows/ci-caches.yaml")" 'key: go-app-\${{ runner.os }}-\${{ github.sha }}')"
+
+echo "case: a family saved under the commit whose ci-caches.yaml restore is a lookup"
+root=$(fixture cache-refill-lookup)
+refill_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" '          restore-keys: go-app-${{ runner.os }}-' '          lookup-only: true'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the family and what the fill then builds" \
+  "$(contains "$out" "job fill's actions/cache/restore of family go-app is \`lookup-only: true\`, but this workflow saves the family under \`-\\\${{ github.sha }}\`.* or each fill compiles everything from nothing")"
+
+# An expression can evaluate to true, and the check does not evaluate it, so the fill's restore of
+# a family saved under the commit may set no lookup-only at all.
+echo "case: a family saved under the commit whose ci-caches.yaml restore is a lookup by expression"
+root=$(fixture cache-refill-lookup-expression)
+refill_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" '          restore-keys: go-app-${{ runner.os }}-' $'          restore-keys: go-app-${{ runner.os }}-\n          lookup-only: ${{ true }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the family and the expression" \
+  "$(contains "$out" "job fill's actions/cache/restore of family go-app is \`lookup-only: \\\${{ true }}\`, but this workflow saves the family under")"
+
+echo "case: a family saved under the commit whose ci-caches.yaml restore takes a shorter prefix"
+root=$(fixture cache-refill-prefix)
+refill_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" '          restore-keys: go-app-${{ runner.os }}-' '          restore-keys: go-app-'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the family, its restore-keys and the one it may take" \
+  "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys go-app-, but a family this workflow saves under .* takes exactly \`go-app-\\\${{ runner.os }}-\`")"
+
+echo "case: a family saved under the commit whose ci-caches.yaml restore has no restore-keys"
+root=$(fixture cache-refill-no-prefix)
+refill_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" $'          restore-keys: go-app-${{ runner.os }}-\n' ''
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the family and the restore-keys it must take" \
+  "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys (none), but a family this workflow saves under .* takes exactly \`go-app-\\\${{ runner.os }}-\`")"
+
+# The entry under the restores' own key wins every restore as an exact match, so a family saved
+# both under the commit and without it fills nobody with its commit entries.
+echo "case: a family ci-caches.yaml saves both under the commit and without it"
+root=$(fixture cache-refill-both)
+refill_workflow "$root"
+cat >> "$root/.github/workflows/ci-caches.yaml" <<'YAML'
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-app-${{ runner.os }}
+YAML
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family and what the bare entry does" \
+  "$(contains "$out" "this workflow saves family go-app both under \`-\\\${{ github.sha }}\` and without it: the entry under the restores' own key wins every restore")"
+
+echo "case: a save of ci-caches.yaml under the key ci.yaml restores and another suffix"
+root=$(fixture cache-refill-other-suffix)
+refill_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" 'key: go-app-${{ runner.os }}-${{ github.sha }}' 'key: go-app-${{ runner.os }}-${{ github.run_id }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family and both keys" \
+  "$(contains "$out" 'job fill saves family go-app under key .*github.run_id.*, but job app of .github/workflows/ci.yaml restores it under ')"
+check "and says which keys a save may carry, and what another suffix does" \
+  "$(contains "$out" "a save's key must be the restore's, or the restore's followed by .*; that restore takes it only by prefix, .* so under any other suffix each fill's entry piles up beside the last")"
+
+# save_key <root> <key>: ci-caches.yaml's lookup fill saving under <key> instead of the key its
+# lookup names.
+save_key() {
+  replace "$1/.github/workflows/ci-caches.yaml" \
+    $'cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-app-${{ runner.os }}' \
+    $'cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: '"$2"
+}
+
+# A save under the key its lookup computed lands where the lookup and every reader look: the
+# rule reads that restore step's key text in its place.
+echo "case: a lookup fill of ci-caches.yaml that saves under the key its lookup computed"
+root=$(fixture cache-computed-key)
+cache_workflow "$root"
+save_key "$root" '${{ steps.go-app.outputs.cache-primary-key }}'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and the save does name the lookup's output" \
+  "$(contains "$(<"$root/.github/workflows/ci-caches.yaml")" 'key: \${{ steps.go-app.outputs.cache-primary-key }}')"
+
+echo "case: a save of ci-caches.yaml under the computed key of a step that is no restore of its job"
+root=$(fixture cache-computed-key-unknown)
+cache_workflow "$root"
+save_key "$root" '${{ steps.go-other.outputs.cache-primary-key }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job and the step id it cannot find" \
+  "$(contains "$out" "job fill saves under .*, but no actions/cache/restore of that job has the id go-other")"
+
+# A save evaluates its own hashFiles() after the build, which can change a file it hashes:
+# go-envoy-infra's save did, and every push missed its lookup (run 45088325195).
+echo "case: a save of ci-caches.yaml whose own key holds hashFiles()"
+root=$(fixture cache-save-hashfiles)
+cache_workflow "$root"
+save_key "$root" "go-app-\${{ runner.os }}-\${{ hashFiles('mod/go.mod') }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the key and what to save under instead" \
+  "$(contains "$out" "job fill saves under .*hashFiles('mod/go.mod').*, which holds hashFiles(): the save evaluates it after the build.*save under the key the lookup computed")"
+
 # A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
 # real dispatch-browser job restores go-envoy and go-envoy-test in the binaries, multiprocess,
 # embedder and visual jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it
@@ -2797,12 +3259,14 @@ check "and reports what it judged" \
 echo "case: a darwin vet whose tag set leaves out a tag a file of its module is built under"
 root=$(fixture vet-tags-missing)
 darwin_vet "$root" ""
+# A file under odatrace, which only forced-order.sh's build against its patched nats-server sets.
+printf '//go:build odatrace\n\npackage lib\n\nconst Hooked = true\n' > "$root/mod/lib/hooked.go"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file and the tags that would compile it" \
   "$(contains "$out" '::error file=mod/lib/probe.go::job app step "Vet the library for darwin" vets mod for darwin/arm64 under -tags (none), and none of them compiles mod/lib/probe.go, which go builds for darwin/arm64 with -tags probe')"
-check "and passes over the platform's, the toolchain's and the feature's files" \
-  "$(is "$(contains "$out" 'compiles mod/lib/linux_only.go\|compiles mod/lib/race_on.go\|compiles mod/lib/feature.go')" false)"
+check "and passes over the platform's, the toolchain's, the feature's and the patched build's files" \
+  "$(is "$(contains "$out" 'compiles mod/lib/linux_only.go\|compiles mod/lib/race_on.go\|compiles mod/lib/feature.go\|compiles mod/lib/hooked.go')" false)"
 
 echo "case: one tag set beside a file under the negated tag"
 root=$(fixture vet-tags-negated)
@@ -2850,7 +3314,8 @@ check "names the file whose constraint follows a byte-order mark" \
 # go_build_tags.py, the script the vet steps take their sets from, over a module holding each
 # shape above: the first set is every tag, and the file under the negated tag adds a set
 # without it, which also builds the file whose +build line wants legacy and not probe. No set
-# names the platform's, the toolchain's or the feature's names. go list decides every answer,
+# names the platform's, the toolchain's or the feature's names, or odatrace, which only
+# forced-order.sh's build sets, against a nats-server it patches. go list decides every answer,
 # so a go command that fails fails the script, and the step that takes its sets stops there.
 echo "case: go_build_tags.py's sets for a module with a negated tag, a tag-only package and +build lines"
 root=$(fixture vet-tags-sets)
@@ -2860,6 +3325,7 @@ printf '//go:build hidden\n\npackage only\n' > "$root/mod/only/only.go"
 printf '//go:build probe_\xce\xb2\n\npackage lib\n\nfunc Beta() {}\n' > "$root/mod/lib/beta.go"
 printf '// +build legacy,!probe\n\npackage lib\n\nfunc Legacy() {}\n' > "$root/mod/lib/legacy.go"
 printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+printf '//go:build odatrace\n\npackage lib\n\nconst Hooked = true\n' > "$root/mod/lib/hooked.go"
 sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)
 check "prints every tag, then the set without probe, each as a whole -tags= flag" \
   "$(is "$sets" $'-tags=hidden,legacy,probe,probe_\xce\xb2\n-tags=hidden,legacy,probe_\xce\xb2')"
@@ -2867,6 +3333,24 @@ status=0
 sets=$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
 check "and fails when go list fails" "$(is "$status" 1)"
 check "naming the go command" "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed')"
+
+# odatrace is the one name go_build_tags.py leaves out of every vet that the toolchain does not
+# set or that marks a file no build compiles: only forced-order.sh's build passes it, against a
+# nats-server it patches, so its files compile nowhere else. A name added beside it, or a
+# forced-order.sh that stops passing it, fails here, so the exclusion cannot come to hide a tag a
+# plain build compiles.
+echo "case: go_build_tags.py leaves out only the toolchain's names and forced-order.sh's odatrace"
+patched=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from go_build_tags import NOT_TAGS
+toolchain = {"unix", "cgo", "gc", "gccgo", "race", "msan", "asan", "ignore", "boringcrypto"}
+print(",".join(sorted(NOT_TAGS - toolchain)))
+PY
+)
+check "the one name beyond the toolchain's is odatrace" "$(is "$patched" odatrace)"
+check "and forced-order.sh passes -tags odatrace to go" \
+  "$(contains "$(<"$script_dir/../../packages/envoy/scripts/forced-order.sh")" '^flags=(.* -tags odatrace .*)$')"
 
 # The typecheck step's own run text, taken from its workflow, over a module with one tag and a
 # file under its negation that does not compile: the script's last set is the one with no tag,
@@ -3159,21 +3643,7 @@ check "and reads the .yml spelling GitHub reads too" \
 # lane replaced by <lane>, a space-separated list of package paths under <root> ("pkg" for the
 # package alone, "pkg/..." for the tree). Echoes "RAISED: <what it refused>" when the walk
 # refuses what it reads.
-derived() {
-  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-import sys
-
-import ci_job_reads as reads
-
-root, lane = sys.argv[1], sys.argv[2].split()
-reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
-    reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane)),)
-try:
-    print(reads.race_impossible_script(reads.race_impossible_tests(root)))
-except ValueError as refusal:
-    print("RAISED:", refusal)
-' "$1" "$2")
-}
+derived() { ask derived "$1" "$2"; }
 
 # race_tree: a lane of two packages, one of them a tree, holding every form the walk reads. Echoes
 # its root.
@@ -3616,21 +4086,7 @@ git -C "$root" add .gitignore pkg/a.go pkg/a_test.go pkg/z.go pkg/notes.txt pkg/
 rm "$root/pkg/gone.go"
 # listed_files <root> <suffix> <tree|flat>: files_but_tests("pkg") run from <root>, as the check
 # runs from the repository's, skipping testdata.
-listed_files() {
-  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-import os
-import sys
-from pathlib import Path
-
-import ci_filter_coverage
-import ci_job_reads as reads
-
-os.chdir(sys.argv[1])
-ci_filter_coverage.REPO = Path.cwd()
-reads.repository_files.cache_clear()
-print(" ".join(reads.files_but_tests("pkg", suffix=sys.argv[2], tree=sys.argv[3] == "tree", skip=("testdata",))))
-' "$@")
-}
+listed_files() { ask listed "$@"; }
 check "lists the tracked and the new files, a directory's own before its subdirectory's" \
   "$(is "$(listed_files "$root" .go tree)" "pkg/a.go pkg/new.go pkg/z.go pkg/sub/b.go")"
 check "and no ignored build output, test file, deleted file or skipped directory for any suffix" \
@@ -3640,22 +4096,7 @@ check "and without the tree, the directory's own files" \
 # ./pkg, pkg/ or an absolute path would match no path of repo_files(), which spells each relative
 # and in normal form, so the reads would go missing with nothing failing: each is refused.
 for spelling in ./pkg pkg/ "$root/pkg"; do
-  refusal=$( (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-import os
-import sys
-from pathlib import Path
-
-import ci_filter_coverage
-import ci_job_reads as reads
-
-os.chdir(sys.argv[1])
-ci_filter_coverage.REPO = Path.cwd()
-reads.repository_files.cache_clear()
-try:
-    reads.files_but_tests(sys.argv[2])
-except ValueError as exc:
-    print(exc)
-' "$root" "$spelling") )
+  refusal=$(ask refused "$root" "$spelling")
   check "refuses the directory spelled $spelling, naming the spelling" \
     "$(contains "$refusal" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
 done

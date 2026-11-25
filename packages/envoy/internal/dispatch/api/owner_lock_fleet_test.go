@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A writer of this build beside a writer of an earlier build. That build serialises an owner's
@@ -105,7 +106,7 @@ func runEarlierBuildRace(t *testing.T, fixture itemRowFixture, race earlierBuild
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- race.send(handler) }()
-	if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered, 10*time.Second); early {
+	if answer, early := queuedBehindOrAnswered(t, holder, pid, answered); early {
 		t.Fatalf("the request answered status=%d body=%s while the earlier build's writer held the issue's row; want it to wait for that row",
 			answer.Code, answer.Body.String())
 	}
@@ -117,13 +118,31 @@ func runEarlierBuildRace(t *testing.T, fixture itemRowFixture, race earlierBuild
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the earlier build's write: %v", err)
 	}
-	var answer *httptest.ResponseRecorder
-	select {
-	case answer = <-answered:
-	case <-time.After(itemRowOwnerLockFinish):
-		t.Fatalf("the request never answered within %s of the earlier build's commit", itemRowOwnerLockFinish)
-	}
+	answer := testwait.Receive(t, "the request's answer once the earlier build's write committed", answered)
 	return earlierBuildOutcome{answer: answer, waitingOn: waitingOn}
+}
+
+// queuedBehindOrAnswered is storetest.WaitForQueuedBehind with the test binary's deadline as its
+// only bound (testwait.UntilPolling): it waits until backend pid queues behind a lock holder's
+// transaction owns and answers false, or answers the call's answer and true if the call answers
+// first. A backend that never queues fails the row by name at that deadline, never sooner, so a
+// loaded runner's slow start of the call is not taken for a call that does not wait.
+func queuedBehindOrAnswered(t *testing.T, holder pgx.Tx, pid uint32, answered <-chan *httptest.ResponseRecorder) (*httptest.ResponseRecorder, bool) {
+	t.Helper()
+	answer := testwait.UntilPolling(t, 2*time.Millisecond, fmt.Sprintf("backend %d to queue behind the lock, or its call to answer", pid),
+		func() (*httptest.ResponseRecorder, bool) {
+			select {
+			case answer := <-answered:
+				return answer, true
+			default:
+			}
+			queued, err := storetest.QueuedBehind(context.Background(), holder, pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return nil, queued
+		})
+	return answer, answer != nil
 }
 
 // fleetRaceCase is the registry a race runs beside.
@@ -148,6 +167,7 @@ var fleetRaceCases = []fleetRaceCase{
 // the row only in its write phase), which is what the control row checks; what it answers then is
 // logged, not judged.
 func TestACommentResolveIsRefusedOnAnIssueAnEarlierBuildClosesWhileItIsUnderWay(t *testing.T) {
+	t.Parallel()
 	for _, fleet := range fleetRaceCases {
 		t.Run(fleet.name, func(t *testing.T) {
 			fixture := newFleetRaceFixture(t, fleet, "Closed meanwhile")
@@ -192,6 +212,7 @@ func TestACommentResolveIsRefusedOnAnIssueAnEarlierBuildClosesWhileItIsUnderWay(
 // the PATCH takes first, so without the row the PATCH would read the labels before that writer's
 // commit and write its own over them: the earlier build's label lost.
 func TestALabelAddedBesideAnEarlierBuildsLabelKeepsBoth(t *testing.T) {
+	t.Parallel()
 	for _, fleet := range fleetRaceCases {
 		t.Run(fleet.name, func(t *testing.T) {
 			fixture := newFleetRaceFixture(t, fleet, "Labelled meanwhile")
@@ -300,14 +321,26 @@ func pauseLabelWrite(t *testing.T, database *store.Store, pid uint32) pgx.Tx {
 // earlier build's label is written while the PATCH waits, and the PATCH then writes the labels it
 // read over it. A write of this build after the arrival takes the issue's row in its read phase.
 // The race starts once the seeded spec owes no settlement and no backend holds the gate
-// (awaitTheGateFree): the arrival's insert waits for the gate at most 5 s, and that wait must be
-// the PATCH's alone, not a settlement of the spec the fixture seeded.
+// (awaitTheGateFree), so the arrival's wait for the gate is the PATCH's alone, not a settlement
+// of the spec the fixture seeded.
+//
+// The registration's wait for the gate is bounded at 5 seconds (owner_lock_legacy_registration's
+// lock_timeout, migration 20261115200014_owner_lock_legacy_gate), and that bound is a row of its
+// own (store's TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound). Here the
+// subject is the order: the arrival waits on the gate for as long as the PATCH holds it, however
+// long the test takes to observe that wait and let the PATCH go. So this database's copy of the
+// function waits without a bound, and no wait of this row ends on a clock: each ends on the fact
+// it waits for, bounded only by the test binary's deadline (testwait).
 func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing.T) {
+	t.Parallel()
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			fixture := newItemRowFixture(t, testServerOptions{}, "Arrived meanwhile", "A spec.\n")
 			awaitTheGateFree(t, fixture.database, fixture.artifactID)
 			ctx := context.Background()
+			if _, err := fixture.database.Pool.Exec(ctx, `alter function public.owner_lock_legacy_registration() set lock_timeout = 0`); err != nil {
+				t.Fatalf("lift the registration's bound on its wait for the gate in this test's database: %v", err)
+			}
 			handler, pid := oneConnectionHandler(t, fixture.deps)
 			pause := pauseLabelWrite(t, fixture.database, pid)
 			defer pause.Rollback(ctx)
@@ -316,7 +349,7 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				answered <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
 					map[string]any{"labels_add": []string{"this-build"}}, "alice")
 			}()
-			if answer, early := storetest.WaitForQueuedBehind(t, pause, pid, answered, 10*time.Second); early {
+			if answer, early := queuedBehindOrAnswered(t, pause, pid, answered); early {
 				t.Fatalf("the PATCH answered status=%d body=%s before it reached its write phase; want it to wait at its update of the labels there",
 					answer.Code, answer.Body.String())
 			}
@@ -336,28 +369,32 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				_, err := arrivalConn.Exec(ctx, arrival.insert)
 				arrived <- err
 			}()
-			waited := false
-			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-				select {
-				case err := <-arrived:
-					if err != nil {
-						t.Fatalf("%s: %v", arrival.name, err)
+			// The arrival either goes through, which it must not, or waits on the PATCH's backend.
+			type arrivalSeen struct {
+				through bool
+				err     error
+			}
+			seen := testwait.UntilPolling(t, 5*time.Millisecond, arrival.name+" to go through or wait for the PATCH",
+				func() (arrivalSeen, bool) {
+					select {
+					case err := <-arrived:
+						return arrivalSeen{through: true, err: err}, true
+					default:
 					}
-					t.Errorf("%s went through in %s while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want it to wait for that PATCH (the owner lock gate)",
-						arrival.name, time.Since(began).Round(time.Millisecond))
-				default:
-					if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&waited); err != nil {
+					var blocked bool
+					if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&blocked); err != nil {
 						t.Fatal(err)
 					}
-					if !waited {
-						if time.Now().After(deadline) {
-							t.Fatalf("%s neither went through nor waited for the PATCH within 10s", arrival.name)
-						}
-						continue
-					}
-				}
-				break
+					return arrivalSeen{}, blocked
+				})
+			if seen.err != nil {
+				t.Fatalf("%s: %v", arrival.name, seen.err)
 			}
+			if seen.through {
+				t.Errorf("%s went through in %s while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want it to wait for that PATCH (the owner lock gate)",
+					arrival.name, time.Since(began).Round(time.Millisecond))
+			}
+			waited := !seen.through
 			earlierWrite := func() {
 				tx, err := fixture.database.Pool.Begin(ctx)
 				if err != nil {
@@ -375,21 +412,24 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				}
 			}
 			if waited {
+				// The arrival is still waiting on the PATCH as the PATCH is let go: it has not
+				// ended, and the PATCH's backend still blocks it.
 				select {
 				case err := <-arrived:
 					t.Fatalf("%s ended (%v) while the PATCH it waited for was still under way", arrival.name, err)
-				case <-time.After(300 * time.Millisecond):
+				default:
+				}
+				if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&waited); err != nil {
+					t.Fatal(err)
+				}
+				if !waited {
+					t.Fatalf("%s stopped waiting on the PATCH while the PATCH was still under way", arrival.name)
 				}
 				if err := pause.Rollback(ctx); err != nil {
 					t.Fatal(err)
 				}
-				select {
-				case err := <-arrived:
-					if err != nil {
-						t.Fatalf("%s: %v", arrival.name, err)
-					}
-				case <-time.After(10 * time.Second):
-					t.Fatalf("%s did not go through within 10s of the PATCH's write phase", arrival.name)
+				if err := testwait.Receive(t, arrival.name+" to go through once the PATCH's write phase was let go", arrived); err != nil {
+					t.Fatalf("%s: %v", arrival.name, err)
 				}
 				t.Logf("%s waited %s, until the PATCH committed", arrival.name, time.Since(began).Round(time.Millisecond))
 				earlierWrite()
@@ -399,13 +439,8 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 					t.Fatal(err)
 				}
 			}
-			select {
-			case answer := <-answered:
-				if answer.Code != http.StatusOK {
-					t.Fatalf("the PATCH answered status=%d body=%s", answer.Code, answer.Body.String())
-				}
-			case <-time.After(itemRowOwnerLockFinish):
-				t.Fatalf("the PATCH never answered within %s of its update of the labels being let go", itemRowOwnerLockFinish)
+			if answer := testwait.Receive(t, "the PATCH's answer once its update of the labels was let go", answered); answer.Code != http.StatusOK {
+				t.Fatalf("the PATCH answered status=%d body=%s", answer.Code, answer.Body.String())
 			}
 			if labels := issueLabels(t, fixture.database, fixture.issueKey); !slices.Contains(labels, "earlier-build") || !slices.Contains(labels, "this-build") {
 				t.Errorf("the issue's labels are %v, want both this build's and the earlier build's: the label the earlier build added once it had arrived was lost under the PATCH that read the labels before it", labels)
@@ -434,29 +469,23 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 
 // awaitTheGateFree waits until document owes no settlement and no backend holds or waits for the
 // owner lock gate: an earlier build's arrival made then waits on the gate for nothing the test did
-// not start itself. It waits until the test binary's deadline less throughputWaitMargin, for the
-// failed test's cleanups, or without end when the binary has no deadline.
+// not start itself. Its one bound is the test binary's deadline (testwait.UntilPolling), which
+// names what was still owed or held if it comes first.
 func awaitTheGateFree(t *testing.T, database *store.Store, document string) {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	for {
-		var owed, held bool
-		if err := database.Pool.QueryRow(context.Background(), `
-			select exists (select from doc_settlements_pending where artifact_id = $1::uuid),
-			       exists (select from pg_locks
-			               where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
-			                 and classid::bigint = $2 and objid::bigint = $3 and objsubid = 2)`,
-			document, store.OwnerLockGateNamespace, store.OwnerLockGateKey).Scan(&owed, &held); err != nil {
-			t.Fatalf("read the document's settlement and the owner lock gate: %v", err)
-		}
-		if !owed && !held {
-			return
-		}
-		if bounded && time.Now().After(deadline.Add(-throughputWaitMargin)) {
-			t.Fatalf("by the test binary's deadline the document still owed a settlement (%t) or a backend still held the owner lock gate (%t)", owed, held)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, 10*time.Millisecond, "the seeded document to owe no settlement and the owner lock gate to be free",
+		func() (string, bool) {
+			var owed, held bool
+			if err := database.Pool.QueryRow(context.Background(), `
+				select exists (select from doc_settlements_pending where artifact_id = $1::uuid),
+				       exists (select from pg_locks
+				               where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
+				                 and classid::bigint = $2 and objid::bigint = $3 and objsubid = 2)`,
+				document, store.OwnerLockGateNamespace, store.OwnerLockGateKey).Scan(&owed, &held); err != nil {
+				t.Fatalf("read the document's settlement and the owner lock gate: %v", err)
+			}
+			return fmt.Sprintf("settlement owed %t, gate held or waited for %t", owed, held), !owed && !held
+		})
 }
 
 // gateHeldBy is the owner lock gate as backend pid holds or waits for it, by pg_locks: its mode

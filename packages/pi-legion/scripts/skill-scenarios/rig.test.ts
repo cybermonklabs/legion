@@ -16,7 +16,7 @@ import {
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { fileLimit, spawnWithin } from "@legion/test-fixtures/row-clock";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
@@ -55,7 +55,27 @@ const withoutDocker = skipWithout("docker");
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
 const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
-const work = temporaryDirectory("skill-scenarios-rig");
+/**
+ * The directory this file's work directory goes in: memoryRoot, so /dev/shm where the machine has
+ * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, and
+ * then /tmp. A plain path, because the model route installers and judge-omp write the path of each
+ * key command, and of the key file, into a profile as one plain `!command` word, and refuse any
+ * other character in it (install-model-gateway.sh and install-key-file-model-route.sh at `--dest`,
+ * rig.sh's judge_keys at the key file): under a TMPDIR with a space or a quote in its name, every
+ * row that installs a route failed on that refusal. A tmpfs, because the file's afterAll removes
+ * the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of about 1,600
+ * entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file with "a
+ * beforeEach/afterEach hook timed out" after every row had passed. `need` is about sixteen times
+ * the 1.8 MiB a run held there at its largest (1,392 entries).
+ */
+const memory = memoryRoot({ need: 32 * 1024 * 1024 });
+const workRoot = /^[A-Za-z0-9/._-]+$/.test(realpathSync(memory)) ? memory : "/tmp";
+if (workRoot !== memory) {
+  console.error(
+    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, so the work directory is under /tmp`
+  );
+}
+const work = temporaryDirectory("skill-scenarios-rig", { root: workRoot });
 const operatorHome = path.join(work, "operator-home");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
 // read it would list this directory. It is staged in a hook, below the one the reservation
@@ -351,32 +371,74 @@ describe("a setup that fails after install_model_route", () => {
     expect(existsSync(path.join(keptProfile, "ready"))).toBe(true);
   });
 
+  /** judge_profiles and its helpers, called on the checkout $1 and the work directory $2. A row
+   * puts an install_model_route definition before it. */
+  const judgeProfiles = [
+    "set -euo pipefail",
+    ...["fail", "on_exit", "drop_unready_keys", "judge_profiles"].map(fn),
+    "checkout_commit() { printf 'fixture parents=base\\n'; }",
+    "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
+  ].join("\n");
+
   // Catches: a judge-profile build that fails at its second profile and keeps the first one's key
   // command.
   test("judge_profiles removes both profiles' model-key and marks nothing ready", () => {
     const work = freshDir("judge-route-work");
-    const co = checkout();
+    // The bare profile's route cannot be installed, after the ste profile's is.
     const script = [
-      "set -euo pipefail",
-      ...["fail", "on_exit", "drop_unready_keys", "install_model_route", "judge_profiles"].map(fn),
-      "checkout_commit() { printf 'fixture parents=base\\n'; }",
-      "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
+      fn("install_model_route").replace("install_model_route()", "installed_route()"),
+      'install_model_route() { [ "$2" != judge-bare ] || { echo "no route for bare" >&2; return 1; }; installed_route "$@"; }',
+      judgeProfiles,
     ].join("\n");
-    // The bare profile's home cannot be made, after the ste profile's route is installed.
-    appendFileSync(
-      path.join(co, "scripts/e2e/lib/omp-home.sh"),
-      'make_omp_home() { [ "$(basename "$(dirname "$1")")" != bare ] || { echo "no home for bare" >&2; return 1; }; mkdir -p "$1/.omp"; }\n'
-    );
-    const failed = bash(script, [co, work], routeEnv());
+    const failed = bash(script, [checkout(), work], routeEnv());
     expect(failed.code).toBe(1);
-    expect(failed.stderr).toContain("make_omp_home failed for the judge's bare profile");
+    expect(failed.stderr).toContain("the judge's model route (key-file) could not be installed");
     const dir = path.join(work, "judge-profiles");
+    expect(readFileSync(path.join(dir, "bare/install.log"), "utf8")).toBe("no route for bare\n");
     expect(existsSync(path.join(dir, "ste/home/.omp/profiles/judge-ste/agent/models.yml"))).toBe(
       true
     );
     expect(existsSync(path.join(dir, "ste/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "bare/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "ready"))).toBe(false);
+  });
+
+  // Catches: a judge profile that needs jj. No Oh My Pi and no jj runs under a judge's HOME on this
+  // host, yet a home made by make_omp_home read the operator's jj config, so judge-omp failed on a
+  // machine with no jj on PATH ("make_omp_home failed for the judge's ste profile"). Here the
+  // checkout's omp-home.sh is the real one, and the only jj on PATH records its call and fails.
+  test("judge_profiles builds both profiles and runs no jj", () => {
+    const work = freshDir("judge-nojj-work");
+    const co = checkout();
+    cpSync(
+      path.join(root, "scripts/e2e/lib/omp-home.sh"),
+      path.join(co, "scripts/e2e/lib/omp-home.sh")
+    );
+    const bin = freshDir("judge-nojj-bin");
+    const calls = path.join(bin, "jj-calls");
+    writeFileSync(
+      path.join(bin, "jj"),
+      `#!/bin/sh\necho "$*" >>'${calls}'\necho "jj: not on this machine" >&2\nexit 127\n`,
+      { mode: 0o755 }
+    );
+    const built = bash(`${fn("install_model_route")}\n${judgeProfiles}`, [co, work], {
+      ...routeEnv(),
+      PATH: `${bin}:${childEnv.PATH}`,
+    });
+    expect({ code: built.code, stderr: built.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(existsSync(calls)).toBe(false);
+    const dir = path.join(work, "judge-profiles");
+    for (const kind of ["ste", "bare"]) {
+      expect(
+        existsSync(path.join(dir, `${kind}/home/.omp/profiles/judge-${kind}/agent/models.yml`))
+      ).toBe(true);
+    }
+    expect(
+      existsSync(
+        path.join(dir, "ste/home/.omp/profiles/judge-ste/agent/skills/asd-ste100/SKILL.md")
+      )
+    ).toBe(true);
+    expect(existsSync(path.join(dir, "ready"))).toBe(true);
   });
 });
 
@@ -2349,74 +2411,71 @@ describe("cmd_batch", () => {
     );
   });
 
-  // Catches: a task that still names the tester's verdict for a label of today, where the daemon
-  // writes none, and an ablate label whose rule carries task words that never reach its task
-  // (ablate-states-read writes `Tester's verdict: pass.` back, and its -hidden copy too).
-  test("the reviewer's and the architect's tasks carry a label's task words and no verdict otherwise", () => {
-    const run = freshDir("task-words-run");
-    writeFileSync(
-      path.join(run, "fixture.json"),
-      JSON.stringify({ title: "A usage page", test: { version: 3 }, review: { version: 4 } })
-    );
-    const prompt = (fnName: string, label: string) => {
-      const result = bash(
-        [
-          fn("fail"),
-          fn("task_words"),
-          fn(fnName),
-          `R=$1 here=${path.join(root, "packages/pi-legion/scripts/skill-scenarios")} worker_key=LWEVAL-9 label=$2`,
-          fnName,
-        ].join("\n"),
-        [run, label]
-      );
-      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
-      return readFileSync(path.join(run, "prompt.txt"), "utf8");
-    };
-    expect(prompt("reviewer_prompt", "head")).toBe(
-      "Continue A usage page. Issue: LWEVAL-9. Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LWEVAL-9 --phase test --version 3). Pull request: #702.\n"
-    );
-    expect(prompt("reviewer_prompt", "restore-two-roles")).not.toContain("verdict");
-    for (const label of ["ablate-states-read", "ablate-states-read-hidden"]) {
-      expect(prompt("reviewer_prompt", label)).toBe(
-        "Continue A usage page. Issue: LWEVAL-9. Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LWEVAL-9 --phase test --version 3). Tester's verdict: pass. Pull request: #702.\n"
-      );
-      expect(prompt("architect_prompt", label)).toContain(
-        "(dispatch handoff-read --issue LWEVAL-9 --phase review --version 4). Tester's verdict: pass. Pull request: #702.\n"
-      );
-    }
-    expect(prompt("architect_prompt", "head")).toContain(
-      "(dispatch handoff-read --issue LWEVAL-9 --phase review --version 4). Pull request: #702.\n"
-    );
-  });
-
   // Catches: a writer of a task that reads the task words inside another command's argument, where
   // a failure of that read ends only its own subshell, so the run writes the task without the words
-  // and launches its role as if the label had none. A bun that exits 37 stands for any failure of
-  // the read: each writer then fails, names the label, and writes no task.
-  test("a failure to read a label's task words fails the reviewer's and the architect's task writers", () => {
+  // and launches its role as if the label had none; a reader that takes a words file it cannot
+  // read, or one that holds no words, for a label with none; and a writer that answers success with
+  // a task no agent could work from, an empty file or one naming no issue, or with the label's
+  // words left out. The label's checkout holds the file (task-words.txt) only where the label's
+  // patch adds it: a link to nothing and a file of blanks each fail both writers, naming the label,
+  // with no task written; a checkout with no file and one whose file holds words each give a task
+  // that carries the issue key the run passes in, a value of this run's own, and the task given the
+  // words is longer than the one given none. The test reads none of the task's words.
+  test("a label's task words that cannot be read fail the reviewer's and the architect's task writers", () => {
     const run = freshDir("task-words-fail-run");
     writeFileSync(
       path.join(run, "fixture.json"),
       JSON.stringify({ title: "A usage page", test: { version: 3 }, review: { version: 4 } })
     );
-    for (const fnName of ["reviewer_prompt", "architect_prompt"]) {
-      rmSync(path.join(run, "prompt.txt"), { force: true });
-      const result = bash(
+    const key = `LWEVAL-${process.pid}`;
+    const prompt = path.join(run, "prompt.txt");
+    const checkout = (name: string, words?: (file: string) => void) => {
+      const co = freshDir(`task-words-${name}`);
+      const dir = path.join(co, "packages/pi-legion/scripts/skill-scenarios");
+      mkdirSync(dir, { recursive: true });
+      words?.(path.join(dir, "task-words.txt"));
+      return co;
+    };
+    const write = (fnName: string, co: string) => {
+      rmSync(prompt, { force: true });
+      return bash(
         [
           fn("fail"),
           fn("task_words"),
           fn(fnName),
-          "bun() { return 37; }",
-          `R=$1 here=${path.join(root, "packages/pi-legion/scripts/skill-scenarios")} worker_key=LWEVAL-9 label=ablate-states-read`,
+          `R=$1 co=$2 worker_key=$3 label=ablate-states-read`,
           fnName,
           `echo "${fnName} returned"`,
         ].join("\n"),
-        [run]
+        [run, co, key]
       );
-      expect(result.code).toBe(1);
-      expect(result.stdout).not.toContain(`${fnName} returned`);
-      expect(result.stderr).toContain("ablate-states-read");
-      expect(existsSync(path.join(run, "prompt.txt"))).toBe(false);
+    };
+    // written is the task fnName writes for co, which must answer success and leave a task that
+    // carries the issue key this run passed in.
+    const written = (fnName: string, co: string) => {
+      expect(write(fnName, co)).toMatchObject({ code: 0, stderr: "" });
+      const task = readFileSync(prompt, "utf8");
+      expect(task).toContain(key);
+      return task;
+    };
+    const unreadable = [
+      checkout("dangling", (file) => symlinkSync(path.join(path.dirname(file), "gone.txt"), file)),
+      checkout("blank", (file) => writeFileSync(file, " \n\t\n")),
+    ];
+    const none = checkout("none");
+    const worded = checkout("worded", (file) =>
+      writeFileSync(file, "Tester's verdict:\n  pass.\n")
+    );
+    for (const fnName of ["reviewer_prompt", "architect_prompt"]) {
+      for (const co of unreadable) {
+        const result = write(fnName, co);
+        expect(result.code).toBe(1);
+        expect(result.stdout).not.toContain(`${fnName} returned`);
+        expect(result.stderr).toContain("ablate-states-read");
+        expect(existsSync(prompt)).toBe(false);
+      }
+      const bare = written(fnName, none);
+      expect(written(fnName, worded).length).toBeGreaterThan(bare.length);
     }
   });
 

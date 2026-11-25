@@ -10,11 +10,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
+	t.Parallel()
 	t.Run("different sessions", func(t *testing.T) {
 		const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]},` +
 			`{"session_id":"s2","title":"reviewer","capabilities":["steer"]}]`
@@ -87,6 +91,7 @@ func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 }
 
 func TestInitialMentionDeliveryDoesNotAppendAfterReplyConsumesPending(t *testing.T) {
+	t.Parallel()
 	sent := []map[string]any{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +170,7 @@ func TestInitialMentionDeliveryDoesNotAppendAfterReplyConsumesPending(t *testing
 }
 
 func TestInitialMentionDeliveryReturnsFailedAttemptAfterErrorReplyConsumesPending(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -241,6 +247,7 @@ func TestInitialMentionDeliveryReturnsFailedAttemptAfterErrorReplyConsumesPendin
 // the answered row owes belongs to the sender the claim names: the one whose claim lapsed pays
 // nothing, or the attempt carries two receipts saying the same thing.
 func TestASenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	answerTheSend := false
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
@@ -361,6 +368,7 @@ func TestASenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testing.T) {
 // attempt the comment's creation opened; an attempt row that named nobody would refuse its own
 // recipient's reply, and the attempt would carry no receipt at all.
 func TestReplyDuringAMentionRetrySendStillRecordsTheDeliveryReceipt(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	answerTheSend := false
 	replies := []int{}
@@ -441,6 +449,7 @@ func TestReplyDuringAMentionRetrySendStillRecordsTheDeliveryReceipt(t *testing.T
 // A client that gives up no longer strands the attempt - a request's own send outlives its
 // connection - so the row a dead sender leaves is written here directly.
 func TestASessionAnswersAnAttemptStrandedBetweenItsSendAndItsSettle(t *testing.T) {
+	t.Parallel()
 	var listenerState struct {
 		sync.Mutex
 		sends int
@@ -497,6 +506,106 @@ func TestASessionAnswersAnAttemptStrandedBetweenItsSendAndItsSettle(t *testing.T
 	}
 	if row := commentAttemptRow(t, database, comment.ID, "session:s1", 2); !strings.HasPrefix(row, "sent//") || strings.HasPrefix(row, "sent///") {
 		t.Fatalf("attempt 2 = %q, want the answer recorded against it", row)
+	}
+}
+
+// A settle that reaches a session the store holds no node of makes that node, in the batch that
+// appends its receipt and under that receipt (graphstore.QueueReached over graphstore.LatestEvent,
+// completeCommentDelivery and completeMessageDelivery): the node row's source_event is the
+// receipt's id, and so is that of each of its two base attribute tuples, since no tuple may be
+// updated to learn its cause afterwards. The receipt is read off the event log, never off the node
+// row, so each comparison is with the event the settle appended and not with the write itself, and
+// this server runs no outbox, whose record of the same receipt would state the node too.
+func TestASettledDeliveryStatesTheSessionNodeUnderItsReceipt(t *testing.T) {
+	t.Parallel()
+	const mentioned, targeted = "settle-states-a-mentioned-session", "settle-states-a-targeted-session"
+	listener := newQueueingListener(t, map[string]fakeSession{
+		mentioned: {title: "a mentioned session", capabilities: queuedModes},
+		targeted:  {title: "a targeted session", capabilities: queuedModes},
+	})
+	handler, database := newTargetedMessageHandler(t, listener.url)
+	issue := createInteractionIssue(t, handler, "SETTLE", "A settle states its session", "before")
+
+	t.Run("comment mention", func(t *testing.T) {
+		requireNoSessionNode(t, database, mentioned, "a session no write has reached")
+		comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+			"body":     "Look at this when you can.",
+			"mentions": []map[string]string{{"target": "session:" + mentioned}},
+		}))
+		attempts := settledCommentDeliveries(t, database, comment.ID)
+		if len(attempts) != 1 || attempts[0].State != model.DeliveryStateSent ||
+			attempts[0].SessionID == nil || *attempts[0].SessionID != mentioned {
+			t.Fatalf("the mention's settled attempts = %#v, want one sent attempt pinned to %s", attempts, mentioned)
+		}
+		receipt := settleReceipt(t, database, "comment.delivery", "comment_id", comment.ID)
+		requireSessionStatedUnder(t, database, mentioned, receipt)
+	})
+
+	t.Run("targeted message", func(t *testing.T) {
+		requireNoSessionNode(t, database, targeted, "a session no write has reached")
+		created := postAgentMessage(t, handler, targeted, map[string]any{"body": "Status?", "delivery": "aside"}, "alice")
+		if created.Code != http.StatusCreated {
+			t.Fatalf("direct message to %s: status=%d body=%s", targeted, created.Code, created.Body.String())
+		}
+		message := decodeBody[model.Message](t, created)
+		if attempts := messageAttempts(t, database, message.ID); len(attempts) != 1 ||
+			attempts[0].State != model.DeliveryStateSent || attempts[0].SessionID != targeted {
+			t.Fatalf("the message's attempts = %#v, want one sent attempt pinned to %s", attempts, targeted)
+		}
+		receipt := settleReceipt(t, database, "message.delivery", "message_id", message.ID)
+		requireSessionStatedUnder(t, database, targeted, receipt)
+	})
+}
+
+// settleReceipt is the id of the one receipt of kind eventType whose payload names id under
+// field: the event a delivery's settle appended for its one attempt.
+func settleReceipt(t *testing.T, database *store.Store, eventType, field, id string) int64 {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(),
+		`select id from events where type = $1 and payload ->> $2 = $3 order by id`, eventType, field, id)
+	if err != nil {
+		t.Fatalf("read the %s receipts of %s: %v", eventType, id, err)
+	}
+	receipts, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		t.Fatalf("read the %s receipts of %s: %v", eventType, id, err)
+	}
+	if len(receipts) != 1 {
+		t.Fatalf("the log holds the %s receipts %v of %s, want the one its settle appended", eventType, receipts, id)
+	}
+	return receipts[0]
+}
+
+// requireSessionStatedUnder holds the node of session to the receipt that caused it: its node
+// row's source_event is receipt, and each base attribute is stated by exactly one tuple, whose
+// source_event is receipt too.
+func requireSessionStatedUnder(t *testing.T, database *store.Store, session string, receipt int64) {
+	t.Helper()
+	ctx := context.Background()
+	node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindSession, session)
+	if err != nil || !held {
+		t.Fatalf("the store holds a node of %s after the settle: %t (err %v), want the one the settle made", session, held, err)
+	}
+	if node.SourceEvent != receipt {
+		t.Errorf("the node row of %s names source_event %d, want the settle's receipt %d", session, node.SourceEvent, receipt)
+	}
+	for _, attribute := range []string{graphstore.AttributeVisibility, graphstore.AttributeState} {
+		rows, err := database.Pool.Query(ctx, `
+			select source_event from graph_tuples
+			where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $4
+			order by seq
+		`, graphstore.KindSession, session, attribute, graphstore.KindValue)
+		if err != nil {
+			t.Fatalf("read the %s tuples of %s: %v", attribute, session, err)
+		}
+		causes, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			t.Fatalf("read the %s tuples of %s: %v", attribute, session, err)
+		}
+		if len(causes) != 1 || causes[0] != receipt {
+			t.Errorf("%s states %s under the source_event %v, want exactly one tuple under the settle's receipt %d",
+				session, attribute, causes, receipt)
+		}
 	}
 }
 

@@ -534,10 +534,15 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	rows := []model.MyReplyRow{}
 	// How many rows a paged read asks each kind for: a row past offset+limit of its own order
 	// cannot be inside the merged page, so neither half reads one. An unpaged read asks for every
-	// row (null).
+	// row (null). The offset is the caller's, up to math.MaxInt (parseMyRepliesPage), so the sum
+	// stops at math.MaxInt rather than wrapping to a negative LIMIT: each half then reads every
+	// row, and the offset cut below answers an empty page, with the total counted as for any page.
 	var reach *int
 	if limit != nil {
-		through := offset + *limit
+		through := math.MaxInt
+		if offset <= math.MaxInt-*limit {
+			through = offset + *limit
+		}
 		reach = &through
 	}
 	// Every state but the Dismissed view counts its rows when the read is paged, since the page it

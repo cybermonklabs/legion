@@ -1,8 +1,8 @@
-// label-checkouts.sh's hidden labels, on a repository of its own: one ablate label, ablate-x, whose
-// patch deletes the one line of docs/rule.md, and a rule-search.ts stand-in that passes every
-// search, so each row reads the script's own steps and no text search. A `--hidden <label>` gives
-// `<label>-hidden` a checkout of its own with <label>'s content; the control is the script with its
-// hidden copy of ablate-x made from head's content, which step 5 must catch.
+// label-checkouts.sh's labels and hidden labels, on a repository of its own: one ablate label,
+// ablate-x, whose patch deletes the one line of docs/rule.md. The labels are the patches' names. A
+// `--hidden <label>` gives `<label>-hidden` a checkout of its own with <label>'s content; the
+// control is the script with its hidden copy of ablate-x made from head's content, which step 4
+// must catch.
 //
 //   bun test label-checkouts.test.ts
 
@@ -43,22 +43,9 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 beforeAll(() => {
-  const scenarios = path.join(repo, "packages/pi-legion/scripts/skill-scenarios");
-  mkdirSync(scenarios, { recursive: true });
-  mkdirSync(path.join(repo, "docs"));
+  mkdirSync(path.join(repo, "docs"), { recursive: true });
   writeFileSync(path.join(repo, "package.json"), '{"name":"fixture","private":true}\n');
   writeFileSync(path.join(repo, "docs/rule.md"), "The rule.\n");
-  writeFileSync(
-    path.join(scenarios, "label-rules.ts"),
-    'export const RULES = { "ablate-x": {} };\n'
-  );
-  writeFileSync(
-    path.join(scenarios, "rule-search.ts"),
-    `const [checkout, mode, label, head] = Bun.argv.slice(2);
-if (mode === "cut") console.log(\`\${label} at the label's cuts of \${head}: 0 faults\`);
-else console.log(\`\${mode} \${checkout}: 0 faults\`);
-`
-  );
   git(scratch, "init", "-q", "-b", "main", repo);
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "fixture");
@@ -71,6 +58,17 @@ else console.log(\`\${mode} \${checkout}: 0 faults\`);
       "+++ b/docs/rule.md",
       "@@ -1 +0,0 @@",
       "-The rule.",
+      "",
+    ].join("\n")
+  );
+  writeFileSync(
+    path.join(scratch, "ablate-z.patch"),
+    [
+      "diff --git a/docs/other.md b/docs/other.md",
+      "--- a/docs/other.md",
+      "+++ b/docs/other.md",
+      "@@ -1 +0,0 @@",
+      "-A line the commit does not hold.",
       "",
     ].join("\n")
   );
@@ -120,8 +118,6 @@ test("each hidden label gets a checkout of its own, with its source's content", 
   expect(out).toContain(
     "label-checkouts: ablate-x-hidden: the same commit, diff and status as ablate-x's checkout"
   );
-  expect(out).toContain("label-checkouts: head-hidden: rule-search.ts head ablate-x: 0 faults");
-  expect(out).toContain("label-checkouts: ablate-x-hidden: ablate-x at the label's cuts of");
 });
 
 // The control of step 5: the script with ablate-x-hidden made from head's content, a copy that
@@ -143,18 +139,26 @@ test("a hidden label whose checkout holds other content than its source's is a F
   );
 });
 
-test("a --hidden that names no label of label-rules.ts, or one label twice, is refused", () => {
+test("a --hidden that names no label of the patches, or one label twice, is refused", () => {
   const patch = path.join(scratch, "ablate-x.patch");
   const none = run("none", ["--hidden", "ablate-y", patch]);
   expect(none.code).toBe(2);
-  expect(none.err).toContain("--hidden ablate-y names neither head nor a label of label-rules.ts");
+  expect(none.err).toContain("--hidden ablate-y names neither head nor a label of the patches");
   const twice = run("twice", ["--hidden", "ablate-x", "--hidden", "ablate-x", patch]);
   expect(twice.code).toBe(2);
   expect(twice.err).toContain("--hidden ablate-x is named twice");
 });
 
-test("with no --hidden, labels.tsv lists each label of label-rules.ts alone", () => {
+test("with no --hidden, labels.tsv lists each patch's label alone", () => {
   const { code, checkouts } = run("plain", [path.join(scratch, "ablate-x.patch")]);
   expect(code).toBe(0);
   expect([...checkouts.keys()]).toEqual(["ablate-x"]);
+});
+
+// Catches: a label's checkout made from a patch that does not apply to the commit, which would
+// measure the head's words under the label's name.
+test("a patch that does not apply at the commit is refused", () => {
+  const { code, err } = run("unapplied", [path.join(scratch, "ablate-z.patch")]);
+  expect(code).toBe(2);
+  expect(err).toContain("the patch of ablate-z does not apply at");
 });

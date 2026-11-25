@@ -200,8 +200,8 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //   - the relay subjects (bus.DeliverSubjectPrefix): a frame to a session whose consumer it holds;
 //   - every edge machine's relay receipts (bus.RelayReplyPrefix), which the listener serving a
 //     session's relay socket publishes a frame's receipt on, on the family of the machine that
-//     holds the session's consumer (EdgeRelayReplyPrefix): the relay socket of #4819
-//     (cmd/listener's relay_socket.go). No program at this head publishes one;
+//     holds the session's consumer (EdgeRelayReplyPrefix): cmd/listener's relay socket
+//     (relay_socket.go) publishes the receipt its client sends there;
 //   - the resume lane (bus.SessionResumeSubjectPrefix): where a deleted session consumer stopped;
 //   - the exception lanes (bus.ExceptionTopicPrefix) of the agent subjects and of each project's
 //     role subjects: a failed delivery's report, and an unheld role's refusal.
@@ -251,10 +251,10 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // the server delivers it no other client's replies; every session's relay subject
 // (bus.DeliverSubject), which the listener serving a session's relay socket subscribes for that
 // session; and its own machine's relay receipts (EdgeRelayReplyPrefix), which its session relay
-// takes its receipts under once #4819 names them there. Both subscriptions are #4819's: at this
-// head no program makes either, and the edge's session relay names its receipts under its inbox
-// prefix, which no session's grant publishes (Session publishes _INBOX.>), so at this head alone
-// no session answers an edge listener's relay frame over NATS. It subscribes no role lane, so it
+// names its frames' receipts under (cmd/listener's startSessionRelays), so a receipt a relay socket
+// publishes for a frame reaches the machine that relayed it, whichever replica serves the socket.
+// Neither is a reply inbox, which no session's grant reaches at the edge: an edge session answers
+// its frames over its relay socket. It subscribes no role lane, so it
 // takes no share of any project's role messages: a shared listener resolves a role's holder and
 // forwards the message to the holder's agent subject, which the holder's session consumer
 // delivers. Its lists name no agent stream subject. nats-server (2.15.1) admits a subscription to
@@ -430,14 +430,15 @@ func Dispatch(machineID string) Permissions {
 }
 
 // session is the grant of the session sessionID names, which SessionPattern fills with * and
-// Session with one session's id. Publish: reply inboxes (the receipt of each relay frame), then the
-// session's agent stream frames (contracts.AgentStreamFramesSubject). Subscribe: its relay subject
-// (bus.DeliverSubject), the subject the listener that owns the session publishes every message of
-// the session's consumer (bus.SessionConsumerName) on, then its agent stream's control subject
-// (contracts.AgentStreamControlSubject), and no other subject.
-func session(sessionID string) Permissions {
+// Session with one session's id. Publish: replies (the receipt of each relay frame, the answer to
+// the listener's connection probe and to Dispatch's agent stream replay), on the subjects replies
+// names, then the session's agent stream frames (contracts.AgentStreamFramesSubject). Subscribe:
+// its relay subject (bus.DeliverSubject), the subject the listener that owns the session publishes
+// every message of the session's consumer (bus.SessionConsumerName) on, then its agent stream's
+// control subject (contracts.AgentStreamControlSubject), and no other subject.
+func session(sessionID, replies string) Permissions {
 	return Permissions{
-		Publish: []string{inboxes, contracts.AgentStreamFramesSubject(sessionID)},
+		Publish: []string{replies, contracts.AgentStreamFramesSubject(sessionID)},
 		Subscribe: []string{
 			bus.DeliverSubject(sessionID),
 			contracts.AgentStreamControlSubject(sessionID),
@@ -449,8 +450,9 @@ func session(sessionID string) Permissions {
 // renders for the sessions that share it. A session subscribes to no notification topic that
 // carries a message: it receives what its consumer delivers, on the relay subject, and nothing
 // else. The listener's connection probe (cmd/listener) asks on that same relay subject and is
-// answered on a reply inbox, so it needs no rule of its own; the README names the entries that
-// carry it (packages/envoy/infra/README.md, "Permission sets").
+// answered on a reply subject under _INBOX. that names the session (bus.SessionReplySubject),
+// which this set's _INBOX.> publish admits, so it needs no rule of its own; the README names the
+// entries that carry it (packages/envoy/infra/README.md, "Permission sets").
 //
 // A Legion controller session needs nothing added for its project's notice lane
 // (notifications.legion.<project>.controller, the daemon's notify.ControllerTopic): it registers
@@ -460,21 +462,27 @@ func session(sessionID string) Permissions {
 // this set rightly refuses.
 //
 // What this set does not solve: every session on a shared user holds the same set, so the relay
-// subject carries * and one session can read another's relay frames. A session the auth service
-// admits holds Session instead, which names its own id alone.
+// subject carries * and one session can read another's relay frames and answer them. A session the
+// auth service admits holds Session instead, which names its own id alone.
 func SessionPattern() Permissions {
-	return session("*")
+	return session("*", inboxes)
 }
 
 // Session is the grant of one session, sessionID: SessionPattern's entries with that id in place
 // of *, so the session subscribes its own relay subject and control subject and publishes its own
-// frames, and no other session's. An id that is not one subject token (SessionToken) is refused
-// naming it, because a dot, a wildcard or a space in it would reach other sessions' subjects.
+// frames, and no other session's. It publishes replies under its own id alone
+// (bus.SessionReplies, _INBOX.*.<session id>.>), where SessionPattern publishes to every _INBOX.
+// subject: every request a session answers - each relay frame, the listener's connection probe,
+// Dispatch's agent stream replay - asks on a reply subject naming the session it asks
+// (bus.SessionReplySubject), so the session answers all of them and can answer no other session's
+// request, nor publish into a requester's own inbox. An id that is not one
+// subject token (SessionToken) is refused naming it, because a dot, a wildcard or a space in it
+// would reach other sessions' subjects.
 func Session(sessionID string) (Permissions, error) {
 	if !SessionToken(sessionID) {
 		return Permissions{}, fmt.Errorf("session id %q is not one subject token", sessionID)
 	}
-	return session(sessionID), nil
+	return session(sessionID, bus.SessionReplies(sessionID)), nil
 }
 
 // SessionToken reports whether id is one NATS subject token that names nothing but itself:
@@ -549,9 +557,14 @@ func Host(machineID string) Permissions {
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
 // static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
 // reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
-// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
-// _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push consumer
-// deliveries and request replies arrive, so it reads no message of another client.
+// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefixes,
+// never _INBOX.>, where the listener's and Dispatch's push consumer deliveries and request replies
+// arrive, so no subscription of its own receives another client's replies or deliveries. That alone
+// does not keep every other client's message from it: it still holds ENVOY_MEASURE's stream create
+// and update, whose configuration can source another stream and republish what it holds onto the
+// job's own inbox, until #4679 removes those calls. Its inbox prefixes are two while the job moves
+// under ReplyRoot: legacyMeasureInbox, which the deployed job sets today, and MeasureInbox, which
+// it sets once it moves. The legacy one goes when no measurement job sets it.
 func Measure() Permissions {
 	return Permissions{
 		Publish: []string{
@@ -568,9 +581,32 @@ func Measure() Permissions {
 			jsAPI + "STREAM.DELETE.ENVOY_MEASURE",
 			"envoy-measure.>",
 		},
-		Subscribe: []string{"_INBOX_envoy_measure.>"},
+		Subscribe: []string{legacyMeasureInbox + ".>", MeasureInbox + ".>"},
 	}
 }
+
+// ReplyRoot is the subject token Envoy's reply prefixes move under, so that a render that moves
+// JetStream into an account of its own exports one reply root to the clients' account rather than
+// a prefix for each client: a push or ordered consumer's deliveries and a stream's republish are
+// published inside JetStream's account and reach a client only through a subject that account
+// exports. A request's reply needs no export, since it comes back through the service import's
+// response mapping. The listener, Dispatch and the Legion daemon still use nats.go's _INBOX.
+// (Listener, ListenerHost, Host, Dispatch and Daemon subscribe _INBOX.>), and the edge listener its
+// own machine's prefix, _INBOX_envoy_edge_<machine id> (EdgeInboxPrefix, #4807); until each moves
+// under the root, such a render exports those prefixes as well: _INBOX.> once, and
+// _INBOX_envoy_edge_<machine id>.> once per edge machine, since that prefix shares the root's
+// characters but not its token, so the root's export does not reach it, and a wildcard matches
+// whole tokens, so no one export reaches every edge machine's prefix. The measurement job's prefix
+// before its move (legacyMeasureInbox) is outside the root too, and goes once no job sets it.
+const ReplyRoot = "_INBOX_envoy"
+
+// MeasureInbox is the measurement job's inbox prefix (nats.js's inboxPrefix) under ReplyRoot.
+const MeasureInbox = ReplyRoot + "._measure"
+
+// legacyMeasureInbox is the measurement job's inbox prefix before it moved under ReplyRoot, which
+// the deployed job still sets. It shares the root's characters but not its token, so ReplyRoot's
+// export does not reach it.
+const legacyMeasureInbox = "_INBOX_envoy_measure"
 
 // systemAccountPrefix is the first token of every subject of nats-server's own, the auth
 // service's authorization requests ($SYS.REQ.USER.AUTH) among them.

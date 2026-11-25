@@ -310,10 +310,11 @@ export async function setStatus(issue: Tracked, status: string): Promise<void> {
   await api.patchIssue(issue.key, { status }, DAEMON);
 }
 
-/** The reviewer approved, so the issue is in accepting: the architect reads the state of each
- *  `before_merge` check at the reviewed head in `dispatch results`, posts its acceptance of that
- *  head and signs off, and the daemon moves the issue to retro. The example records no check
- *  result, so it shows the acceptance alone. */
+/** The reviewer approved, so on the default steps the issue is in accepting: the architect reads
+ *  the state of each `before_merge` check at the reviewed head in `dispatch results`, posts its
+ *  acceptance of that head and signs off, and, the acceptance being the task's last step, the
+ *  daemon moves the issue to retro. The example records no check result, so it shows the
+ *  acceptance alone. */
 export async function accept(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   await api.createComment(issue.key, { body: example.acceptance }, agent(issue.key, "architect"));

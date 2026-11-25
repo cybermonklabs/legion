@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -96,6 +97,7 @@ type admissionIssuesArchitect struct {
 // architect's backlog of the two children, which frees the rows that return and that parent's
 // first phase then take.
 func TestTheCapCountsIssuesAndAParentWaitsForItsChildrenLive(t *testing.T) {
+	t.Parallel()
 	r := newAdmissionIssuesLive(t)
 	r.step("step1-two-live-trees-hold-no-slot", r.liveTreesHoldNoSlot)
 	r.step("step2-the-released-children-hold-both-slots-and-their-parent-waits", r.childrenHoldTheSlots)
@@ -257,7 +259,9 @@ func (r *admissionIssuesLive) seedTrees() {
 // it was seeding on an error.
 func (r *admissionIssuesLive) write(what string, body func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := r.st.Tx(context.Background(), body); err != nil {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return body(tx)
+	}); err != nil {
 		r.t.Fatalf("seed %s: %v", what, err)
 	}
 }

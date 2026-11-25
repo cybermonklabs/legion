@@ -481,8 +481,7 @@ func waitForRunningStatement(t *testing.T, store *Store, substring string) {
 }
 
 func TestWindowOwnerMigrationKeepsAnExistingValidPartialIndex(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261102233625)
+	store := openMigratedTestStore(t, 20261102233625)
 	ctx := context.Background()
 	// This is the index already present where the original form of 20261102233625 ran.
 	if _, err := store.Pool.Exec(ctx, `create index embeddings_window_owner on embeddings
@@ -493,7 +492,7 @@ func TestWindowOwnerMigrationKeepsAnExistingValidPartialIndex(t *testing.T) {
 	if err := store.Pool.QueryRow(ctx, "select 'embeddings_window_owner'::regclass::oid").Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	migrateThrough(t, store, 20261102233630)
+	migrateAbove(t, store, 20261102233625, 20261102233630)
 	var after uint32
 	var valid, partial bool
 	if err := store.Pool.QueryRow(ctx, `select indexrelid, indisvalid, indpred is not null
@@ -506,8 +505,7 @@ func TestWindowOwnerMigrationKeepsAnExistingValidPartialIndex(t *testing.T) {
 }
 
 func TestWindowOwnerMigrationBuildsAValidPartialIndex(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261102233630)
+	store := openMigratedTestStore(t, 20261102233630)
 	var valid, partial bool
 	if err := store.Pool.QueryRow(context.Background(), `select indisvalid, indpred is not null
 		from pg_index where indexrelid = 'embeddings_window_owner'::regclass`).Scan(&valid, &partial); err != nil {
@@ -627,10 +625,9 @@ func checkRebuiltWindowOwner(t *testing.T, store *Store, leftover uint32) {
 // INVALID embeddings_window_owner behind, and 20261102233630 must drop it, build the index again
 // and record its version instead of refusing on every later boot.
 func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261102233625)
+	store := openMigratedTestStore(t, 20261102233625)
 	leftover := leaveInvalidWindowOwner(t, store)
-	migrateThrough(t, store, 20261102233630)
+	migrateAbove(t, store, 20261102233625, 20261102233630)
 	checkRebuiltWindowOwner(t, store, leftover)
 	if got := schemaVersion(t, store); got != 20261102233630 {
 		t.Errorf("schema version = %d, want 20261102233630", got)
@@ -673,8 +670,7 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 	for attempt := 1; attempt <= bootRaces; attempt++ {
 		t.Run(fmt.Sprintf("boot-race-%d", attempt), func(t *testing.T) {
 			ctx := context.Background()
-			first := openEmptyTestStore(t)
-			migrateThrough(t, first, 20261102233625)
+			first := openMigratedTestStore(t, 20261102233625)
 			leftover := leaveInvalidWindowOwner(t, first)
 			second, err := Open(ctx, first.Pool.Config().ConnString())
 			if err != nil {

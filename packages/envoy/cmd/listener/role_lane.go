@@ -150,7 +150,10 @@ func (f *roleForwarder) publish(sessionID string) {
 			f.finish(forward, err)
 			continue
 		}
-		go func() { f.finish(forward, wait()) }()
+		go func() {
+			_, err := wait()
+			f.finish(forward, err)
+		}()
 	}
 }
 
@@ -211,17 +214,17 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // sends the forward again until the stream acknowledges it as that earlier forward's duplicate,
 // so every caller - a role send, a role-lane delivery and a kept-lane walk - takes that refusal
 // one way, as one forward, and none counts it a forward that failed.
-func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		deadline := time.Now().Add(timeout)
 		forward, err := client.StartRequestStoredTo(subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}
-		return func() error {
+		return func() (bus.StoredAck, error) {
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
-			_, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+			return publishPastInProcess(ctx, func() (bus.StoredAck, error) {
 				if forward == nil {
 					var err error
 					if forward, err = client.StartRequestStoredTo(subject, item, msgID, time.Until(deadline)); err != nil {
@@ -230,11 +233,10 @@ func startRoleForward(client *bus.Client) func(subject string, item contracts.En
 				}
 				// Every forward StartRequestStoredTo returned is waited for, which releases its
 				// reply subscription, and the next send is a forward of its own.
-				err := forward.Wait()
+				ack, err := forward.Wait()
 				forward = nil
-				return bus.StoredAck{}, err
+				return ack, err
 			})
-			return err
 		}, nil
 	}
 }

@@ -55,7 +55,9 @@ type ciJobResultInput struct {
 // refusalFor is every refusal a result's own fields earn before anything is read, for the
 // credential that sends them and body, the bytes they were decoded from. A CI job's results
 // token (model.Credential.ResultsOnly) is held to its run (ciJobRefusal); every other credential
-// records a role's result, held to the rules below.
+// records a role's result, held to the rules below. The three counts are each a non-negative
+// number check_results keeps in an integer column, so a count past that column
+// (fitsIntegerColumn) is refused here, before the query that would fail to encode it.
 func (input checkResultInput) refusalFor(credential *model.Credential, body []byte) error {
 	if credential != nil && credential.ResultsOnly {
 		return input.ciJobRefusal(credential.CI, body)
@@ -73,9 +75,12 @@ func (input checkResultInput) refusalFor(credential *model.Credential, body []by
 	if !resultCommitSHA.MatchString(input.Commit) {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "commit is the 40-character lowercase hex commit the check ran at")
 	}
-	for name, count := range map[string]int{"failed": input.Failed, "skipped": input.Skipped, "excluded": input.Excluded} {
-		if count < 0 {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases and cannot be negative", name)
+	for _, count := range []struct {
+		name  string
+		cases int
+	}{{"failed", input.Failed}, {"skipped", input.Skipped}, {"excluded", input.Excluded}} {
+		if count.cases < 0 || !fitsIntegerColumn(count.cases) {
+			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases, from 0 to %d", count.name, maxIntegerColumn)
 		}
 	}
 	if input.Verdict == "pass" && (input.Failed > 0 || input.Skipped > 0 || input.Excluded > 0) {

@@ -199,11 +199,22 @@ jobs:
         working-directory: packages/contracts
       # The archive holds envoy-listener and THIRD_PARTY_NOTICES, the license of every Go module the
       # binary compiles in (scripts/go-third-party-notices.sh, run with the build's own GOOS and
-      # GOARCH), which fails the build when one cannot be determined.
+      # GOARCH), which fails the build when one cannot be determined. The binary is stamped with
+      # this run's commit (internal/buildversion's commit), as the image's binaries are
+      # (packages/envoy/docker/Dockerfile's LEGION_COMMIT), so every NATS connection of a listener
+      # run from the archive names its build (legion@<commit>), which legacy-subjects-gate.sh's
+      # census of connections reads; -buildvcs=false records no other commit. The step reads the
+      # stamp back from the binary and fails without it.
       - name: Build envoy binary
+        env:
+          SHA: ${{ github.sha }}
         run: |
           mkdir -p out
-          GOOS=linux GOARCH=${{ matrix.arch }} go build -buildvcs=false -o out/envoy-listener ./cmd/listener
+          GOOS=linux GOARCH=${{ matrix.arch }} go build -buildvcs=false \
+            -ldflags "-X github.com/sjawhar/envoy/internal/buildversion.commit=$SHA" \
+            -o out/envoy-listener ./cmd/listener
+          go version -m out/envoy-listener | grep -F -- "buildversion.commit=$SHA" >/dev/null \
+            || { echo "::error::out/envoy-listener was not built with buildversion.commit=$SHA"; exit 1; }
           GOOS=linux GOARCH=${{ matrix.arch }} ../../scripts/go-third-party-notices.sh out/THIRD_PARTY_NOTICES ./cmd/listener
           tar czf legion-envoy-${{ matrix.arch }}.tar.gz -C out envoy-listener THIRD_PARTY_NOTICES
         working-directory: packages/envoy

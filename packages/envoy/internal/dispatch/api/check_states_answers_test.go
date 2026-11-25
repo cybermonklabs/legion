@@ -189,25 +189,26 @@ func TestAPositiveAnswerAboutAnEarlierHeadAppliesNothing(t *testing.T) {
 	}
 }
 
-// TestAVerificationIsCountedApartFromTheRequestsItSent: #70 holds 252 commits and stands at the
-// last; the install left the 251st, where the tester recorded k1 passing, as its candidate. GitHub
-// lists 250 commits, in pages of 100, 100 and 50, and answers the second page 502 once, so it is
-// asked again; the 251st is then decided by two comparisons after one read of #70. That is one
-// verification and seven requests: four of the commits' pages, one of #70, two comparisons. The
-// verification's log line names the requests apart from the three pages it read, and the settle's
+// TestAVerificationIsCountedApartFromTheRequestsItSent: #70 holds 502 commits and stands at the
+// last; the install left the 501st, where the tester recorded k1 passing, as its candidate. GitHub
+// compares #70's base revision and head in pages of 100, five of them, past which the settle reads
+// no page, and answers the second page 502 once, so it is asked again; the 501st, which no page
+// names, is then decided by two comparisons of its own after one read of #70. That is one
+// verification and nine requests: six of the comparison's pages, one of #70, two comparisons. The
+// verification's log line names the requests apart from the five pages it read, and the settle's
 // line names the one verification.
 func TestAVerificationIsCountedApartFromTheRequestsItSent(t *testing.T) {
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
 	rig := newCheckStatesRig(t, checkStatesTwoChecks)
-	commits := make([]string, 252)
+	commits := make([]string, 502)
 	for index := range commits {
 		commits[index] = fmt.Sprintf("%040x", 0xc0000+index)
 	}
-	h1, h2 := commits[250], commits[251]
+	h1, h2 := commits[500], commits[501]
 	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", h1)
-	// A first verification of another pull request, at a commit its list names, so the read under
-	// test finds the installation's token held and sends no request for it.
+	// A first verification of another pull request, at a commit its comparison names, so the read
+	// under test finds the installation's token held and sends no request for it.
 	eachHeadResult(t, rig.handler, rig.issue, "k2", "tester", "pass", eachHeadH1)
 	upsertHead(t, rig, 71, eachHeadH2, rig.issue, "Another change")
 	rig.github.setPullCommits(71, eachHeadH1, eachHeadH2)
@@ -227,11 +228,11 @@ func TestAVerificationIsCountedApartFromTheRequestsItSent(t *testing.T) {
 	before := len(records.Records())
 	settleOwed(t, rig)
 	if got := stateAt(t, rig, rig.issue, h1, "k1"); got != model.PassStandsYes {
-		t.Fatalf("k1 at the 251st commit is published %q, want yes: this test holds nothing", got)
+		t.Fatalf("k1 at the 501st commit is published %q, want yes: this test holds nothing", got)
 	}
 	sent := rig.github.pullCommitReadsOf(70) + rig.github.pullReadsOf(70) + rig.github.compareReadsOf(h2, h1) + rig.github.compareReadsOf(ciJobBaseSHA, h1)
-	if sent != 7 {
-		t.Fatalf("GitHub was asked %d times about #70's commits, want 7: four pages, one of them twice, #70 itself and two comparisons", sent)
+	if sent != 9 {
+		t.Fatalf("GitHub was asked %d times about #70's commits, want 9: six pages of the comparison, one of them twice, #70 itself and two comparisons", sent)
 	}
 	attrs := func(record slog.Record) map[string]any {
 		held := map[string]any{}
@@ -254,8 +255,8 @@ func TestAVerificationIsCountedApartFromTheRequestsItSent(t *testing.T) {
 	if verified == nil || settled == nil {
 		t.Fatalf("no log line of #70's verification and its settle was written: verification %v, settle %v", verified, settled)
 	}
-	if verified["pages"] != int64(3) || verified["requests"] != int64(sent) {
-		t.Fatalf("the verification's line names pages=%v requests=%v, want pages=3, the logical pages of the list, and requests=%d, what GitHub was asked", verified["pages"], verified["requests"], sent)
+	if verified["pages"] != int64(5) || verified["requests"] != int64(sent) {
+		t.Fatalf("the verification's line names pages=%v requests=%v, want pages=5, the logical pages of the comparison, and requests=%d, what GitHub was asked", verified["pages"], verified["requests"], sent)
 	}
 	if settled["verifications"] != int64(1) || settled["requests"] != int64(sent) {
 		t.Fatalf("the settle's line names verifications=%v requests=%v, want one verification and its %d requests", settled["verifications"], settled["requests"], sent)

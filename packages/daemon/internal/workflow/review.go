@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
@@ -136,7 +137,7 @@ func (e *Engine) logUnappliedSettlement(ctx context.Context, fact intake.PullReq
 func (e *Engine) logDroppedSettlement(ctx context.Context, fact intake.PullRequestChecks, msg string, args ...any) {
 	identity := fact.Identity()
 	args = append(identity.Attributes(), args...)
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		if e.droppedSettlements.Add(identity) {
 			e.log.Info(msg, args...)
 		}
@@ -155,8 +156,8 @@ const conflictConfirmWait = time.Minute
 
 // mergeability records what GitHub's last read found for whether the pull request's head can be
 // merged into its base (intake.PullRequestMergeability, readPullRequest's own GitHub answer), and
-// acts on a conflict only once a second read has confirmed it and the issue's next step needs a
-// head that merges.
+// acts on a conflict only once a second read has confirmed it and R0's decision says the head
+// must be merged forward now (classify.ConflictNeedsMerge).
 //
 // A head that conflicts with its base is judged in two reads (dispatch://INFRA-4374 R2). GitHub
 // computes mergeability in a background job and can answer CONFLICTING about a base it has not
@@ -177,18 +178,20 @@ const conflictConfirmWait = time.Minute
 //
 // The decision is R0's (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge), read on the
 // base's rules for its required checks, which the confirming read carries
-// (intake.PullRequestMergeability.Rules). A reason to act asks the implementer to merge the base
-// forward, and the issue keeps its phase (mergeForward, R1); no reason leaves the conflict
-// recorded and logged with the checks the base requires and those green on the head, and the
-// tester and the reviewer go on at that head. A CONFLICTING read of a head the record already
-// holds conflicting decides again in the same way, since the phase the issue has reached since can
-// need what the phase before did not, and mergeForward asks nothing twice for one head.
+// (intake.PullRequestMergeability.Rules). A reason to act asks the implementer, or in merging the
+// merger, to merge the base forward, and the issue keeps its phase (mergeForward, R1); no reason
+// leaves the conflict recorded and logged with the checks the base requires and those green on
+// the head, and the task's steps go on at that head. A CONFLICTING read of a head the
+// record already holds conflicting decides again in the same way, since the phase the issue has
+// reached since can need what the phase before did not, and mergeForward asks nothing twice for
+// one head.
 //
 // GitHub's own merge state for the head rides along on the same fact: it is what says whether
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
 // approval standing on the head waits for (reviewRound). So in reviewing the round is asked again
 // once the state is recorded, whatever the read decided - this read is the one that moves an
-// approved issue to accepting, as often as not. The base the read names is recorded with
+// approved issue on to its task's next step (accepting, in the default steps), as often as not.
+// The base the read names is recorded with
 // them, since that read is the only one that names the base of a pull request opened before the
 // record kept one: it is what a push onto that branch finds the pull request by (basePush), and a
 // read that answers for a base push already recorded clears the push's mark, the two having been
@@ -302,15 +305,26 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		return intake.Result{}, err
 	}
 	if decide {
+		w, err := e.walk(ctx, tx, *issue)
+		if err != nil {
+			return intake.Result{}, err
+		}
 		green := classify.GreenContexts(*pr)
-		if why := classify.ConflictNeedsMerge(*issue, fact.Rules, green); why != "" {
-			if err := e.mergeForward(ctx, tx, *issue, pr, why); err != nil {
+		if why := classify.ConflictNeedsMerge(*issue, w.Line, fact.Rules, green); why != "" {
+			if err := e.mergeForward(ctx, tx, *issue, w.Line, pr, why); err != nil {
 				return intake.Result{}, err
 			}
 		} else {
+			// Rules is nil for a read that carried none, which a place where the merge comes next
+			// before merging decides on too: the conflict waits there for merging whatever the rules
+			// (classify.ConflictNeedsMerge, classify.MergeComesNext).
+			var required []string
+			if fact.Rules != nil {
+				required = fact.Rules.Required
+			}
 			e.logOnCommit(ctx, "workflow: a confirmed conflict needs no merge yet",
 				"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", base, "phase", issue.Phase,
-				"required", fact.Rules.Required, "green", green)
+				"required", required, "green", green)
 		}
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
@@ -509,8 +523,11 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
 // phase, the implementer, whose code the checks ran on, and the architect that owns the issue
 // (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
-// a role holder with a message. A role named twice, the implementer holding the phase, is told
-// once, and a phase no worker holds names none (addressRoles). told is what the settlement
+// a role holder with a message. In merging the implementer is not told: the merge and what breaks
+// it are the merger's to decide, and the merger asks the implementer when it needs it
+// (cybermonklabs/legion#4979). A held issue keeps the worker of Hold.From (record.StandsAt).
+// A role named twice, the implementer holding the phase, is told once, and a phase no worker holds
+// names none (addressRoles). told is what the settlement
 // standing for the head said before this one, so a second settlement of the same head that leaves
 // the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
 // holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
@@ -550,7 +567,11 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
-	for _, role := range []claim.Role{RoleFor(issue.Phase), claim.RoleImplementer} {
+	roles := []claim.Role{RoleFor(record.StandsAt(*issue))}
+	if !record.StandsIn(*issue, phase.Merging) {
+		roles = append(roles, claim.RoleImplementer)
+	}
+	for _, role := range roles {
 		if role == claim.RoleArchitect || role == woken {
 			continue
 		}
@@ -1086,10 +1107,12 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // never reads its state again (askMergeStateFor), so nothing it could wait on would ever come.
 // An approval of a head the record holds in a confirmed conflict with its base
 // (classify.ConflictRound) ends the round too, whatever GitHub's merge state for it
-// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the
-// implementer merges the base forward, and the merge is what the issue needs next once its review
-// is over, so the move into accepting asks for it (transition, mergeForwardOnEntry,
-// record.ConflictMergeNext). While the first conflicting read of the head waits for its second
+// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the base is
+// merged forward, and that merge is the merger's once the issue reaches merging, so the move into
+// merging asks the merger for it (transition, mergeForwardOnEntry, record.ConflictMergeNext,
+// cybermonklabs/legion#4979). A step of the task that follows the review goes on at that head
+// first, as the conflict's confirmed read decided (classify.ConflictNeedsMerge). While the first
+// conflicting read of the head waits for its second
 // (record.PullRequest.ConflictRead), the approval waits where it stands and is never reported
 // stuck: GitHub's `dirty` is not yet a conflict the daemon holds, and the second read decides it.
 // An approval that stands on the head of a pull request closed without merging keeps the round
@@ -1199,14 +1222,15 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 	return reason
 }
 
-// implementationReady moves issue from implementing to testing on the implementer's completion of
+// implementationReady moves issue from implementing to its task's next step (testing, in the
+// default steps) on the implementer's completion of
 // the round that row records, once the pull request pr is recorded open or merged
 // (TriggerImplementationReady: a record closed without merging, or none, moves nothing). It
 // reads no CI result: a settlement that arrived while the implementer worked moved nothing and
 // moves nothing now, since the roles were told what it said when it arrived (checks,
 // dispatch://INFRA-714/spec R1).
 func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest) error {
-	return e.transition(ctx, tx, issue, TriggerImplementationReady, "", row, pr, "")
+	return e.transition(ctx, tx, issue, TriggerImplementationReady, "", row, pr, moveWhy{})
 }
 
 // settleRound acts on what issue's review round comes to (reviewRound, with row its reviewer's and
@@ -1231,9 +1255,9 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
+		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, moveWhy{Reason: row.Decision.Body})
 	case roundApproved:
-		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, "")
+		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, moveWhy{})
 	case roundStuck:
 		if r.cause == stuckMergeState {
 			return false, e.tellStuckMergeState(ctx, tx, issue, row, r, by)
@@ -1380,8 +1404,9 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 }
 
 // askMergeStateFor queues the read for one pull request when a fact of kind fact asks for it, by
-// one of the gate's two reasons (classify.MergeStateReadOwed: a head move of an issue in
-// implementing through merging, a base push of an issue in testing through merging) or by the
+// one of the gate's two reasons (classify.MergeStateReadOwed, on the walk's line: a head move of
+// an issue in implementing or a phase after it, a base push of an issue in a phase after it) or by
+// the
 // third, which the gate does not hold: the issue's review round waiting on GitHub's answer for the
 // head (reviewRound's waitsOnMergeState), worked out here only for a fact the gate owes no read
 // for. The guard on a daemon with no reader is here as well as in askMergeState, because a base
@@ -1398,7 +1423,11 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if err != nil || issue == nil {
 		return err
 	}
-	owed := classify.MergeStateReadOwed(*issue, fact)
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
+	owed := classify.MergeStateReadOwed(*issue, w.Line, fact)
 	if !owed {
 		// The round's own answer matters only where the fact and the phase owe no read: every
 		// phase a round can wait on GitHub in already owes one on a head move or a base push.
@@ -1412,18 +1441,21 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 		return nil
 	}
 	key := issue.Key
-	intake.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
+	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
 	return nil
 }
 
-// recordPass counts the implementer one more pass through the implementing, testing and reviewing
-// stretch, which every move back into an earlier phase opens, counts the move itself under its
-// own pair, and fires the deployment's hooks that stand on the move (fireWorkBackHooks).
+// recordPass counts task one more pass through its steps from the one a move back goes to, which
+// every move back to an earlier step of the task opens (Walk.MovesBack), counts the move itself
+// under its own pair,
+// and fires the deployment's hooks that stand on the move (fireWorkBackHooks). The counts are the
+// task's (record.Store.ReturnCounts): on its plan_tasks row for an issue with plan rows, and on the
+// implementer's phases row for an issue with none, where they lived before plans.
 //
 // The pass bounds nothing: it is the counter the handoff completion key carries
 // (api/handoff.go), and its whole job is to make a completion at a commit an earlier pass
 // reported a fact of its own. BackwardMoves is what a hook counts, under the move's own
-// "<from>-<to>" pair, spelled as phase.BackwardPairs() spells the pairs (phase.Pair): a review
+// "<from>-<to>" pair, spelled as phase.MovePairs() spells the pairs (phase.Pair): a review
 // that sends the work back and a test that sends it back are two counts and never one. Both rise
 // here, where every backward move passes, rather than beside the review round, which only a
 // review requesting changes opens (recordRound): a hook standing on that count would never see a
@@ -1434,35 +1466,35 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 // raises is the completion key's alone. Everything is written in the move's own transaction, so
 // a move the record holds and a prompt nobody wrote cannot happen, and nothing here holds the
 // move back: the transition starts the next role whatever a hook said.
-func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string, from, to phase.Phase, pr *record.PullRequest) error {
-	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
+func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, from, to phase.Phase, pr *record.PullRequest) error {
+	counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
 		return err
 	}
-	row.Pass++
+	counts.Pass++
 	if pr != nil && classify.ConflictRound(*pr) {
-		return e.store.PutPhase(ctx, tx, row)
+		return e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts)
 	}
-	if row.BackwardMoves == nil {
-		row.BackwardMoves = make(map[string]int, 1)
+	if counts.BackwardMoves == nil {
+		counts.BackwardMoves = make(map[string]int, 1)
 	}
-	row.BackwardMoves[phase.Pair(from, to)]++
-	if err := e.store.PutPhase(ctx, tx, row); err != nil {
+	counts.BackwardMoves[phase.Pair(from, to)]++
+	if err := e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts); err != nil {
 		return err
 	}
-	return e.fireWorkBackHooks(ctx, tx, issue, from, to, row.BackwardMoves, pr)
+	return e.fireWorkBackHooks(ctx, tx, issue.Key, from, to, counts.BackwardMoves, pr)
 }
 
-// recordRound counts the implementer one more review round, which only a review that requested
-// changes ends, and tells the architect once for each value review_round_cap holds. The move's
-// own pair and the deployment's hooks are counted where every backward move passes (recordPass),
-// so a round and a move are counted apart: this one is the cap's, and everything it writes it
-// writes in the move's own transaction.
+// recordRound counts task one more review round, which only a review that requested changes
+// ends, and tells the architect once for each value review_round_cap holds. The counts are the
+// task's, where recordPass keeps them. The move's own pair and the deployment's hooks are counted
+// where every backward move passes (recordPass), so a round and a move are counted apart: this
+// one is the cap's, and everything it writes it writes in the move's own transaction.
 //
 // What the cap reads is Rounds less the rounds a conflict with the base caused
-// (classify.ConflictRound, record.PhaseRow.ConflictRounds). A round opened while the record holds
-// the pull request's own head as conflicting is answered by the implementer's forward merge,
-// whatever else was asked of it, so it costs the issue nothing - which is what
+// (classify.ConflictRound, record.ReturnCounts.ConflictRounds). A round opened while the record
+// holds the pull request's own head as conflicting is answered by the implementer's forward
+// merge, whatever else was asked of it, so it costs the issue nothing - which is what
 // dispatch://INFRA-1442 asked for, on a tree that reached the cap on three rounds of which two
 // were conflicts. Rounds rises for both kinds, so the record keeps what the issue spent beside
 // what it was excused, and the message names both numbers: an architect woken by it reads how
@@ -1474,40 +1506,40 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string, from, 
 //
 // The cap's message and its pr-blocked notice go once for each value the cap holds, and not on
 // every counted round at or above it: the round that tells writes the cap it read into
-// record.PhaseRow.CapTold, and a later round compares the two. The comparison is != and never <,
-// because a cap lowered under a row that already told a higher value must tell once at the new
+// record.ReturnCounts.CapTold, and a later round compares the two. The comparison is != and never
+// <, because a cap lowered under a row that already told a higher value must tell once at the new
 // value, which < would never do. A raised cap tells again at its new number, and a new
 // generation tells again from its own first crossing, because clearGeneration clears the mark.
 //
 // Nothing here holds the move back: the transition starts the next role whatever the counts read. A write that fails is still an error of the move's transaction, as
 // every other write of that transaction is, and is returned rather than swallowed.
-func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest) error {
-	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
+func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, pr *record.PullRequest) error {
+	counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
 		return err
 	}
-	row.Rounds++
+	counts.Rounds++
 	if pr != nil && classify.ConflictRound(*pr) {
 		// A conflict round ends here: it tells nobody, so the write of the two counts is all it
 		// has to do.
-		row.ConflictRounds++
-		return e.store.PutPhase(ctx, tx, row)
+		counts.ConflictRounds++
+		return e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts)
 	}
-	counted := row.Rounds - row.ConflictRounds
-	tell := counted >= e.cfg.ReviewRoundCap && row.CapTold != e.cfg.ReviewRoundCap
+	counted := counts.Rounds - counts.ConflictRounds
+	tell := counted >= e.cfg.ReviewRoundCap && counts.CapTold != e.cfg.ReviewRoundCap
 	if tell {
-		row.CapTold = e.cfg.ReviewRoundCap
+		counts.CapTold = e.cfg.ReviewRoundCap
 	}
-	if err := e.store.PutPhase(ctx, tx, row); err != nil {
+	if err := e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts); err != nil {
 		return err
 	}
 	if tell {
 		message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
-			e.cfg.ReviewRoundCap, counted, row.ConflictRounds)
-		if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
+			e.cfg.ReviewRoundCap, counted, counts.ConflictRounds)
+		if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: message}); err != nil {
 			return err
 		}
-		if err := e.notice(ctx, tx, issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message}); err != nil {
+		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message}); err != nil {
 			return err
 		}
 	}

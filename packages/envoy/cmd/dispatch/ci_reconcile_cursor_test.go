@@ -243,13 +243,13 @@ func requireCIReconcileRecordedRun(t *testing.T, natsURL string, process *dispat
 }
 
 // startCIReconcileCursorProcess starts the envoy-dispatch process the cursor tests read: one
-// mapped repository whose GitHub is github, a NATS server holding the CI state bucket, and the
-// reconcile loop on a one-second interval, which is each pass's bound as well. It answers the
-// process and that NATS server's URL.
+// project whose default repository's GitHub is github (seedCIReconcileDefault), a NATS server
+// holding the CI state bucket, and the reconcile loop on a one-second interval, which is each
+// pass's bound as well. It answers the process and that NATS server's URL.
 func startCIReconcileCursorProcess(t *testing.T, github *cursorGitHub) (*dispatchProcess, string) {
 	t.Helper()
 	database := storetest.Open(t)
-	mapCIReconcileRepository(t, database)
+	seedCIReconcileDefault(t, database)
 	_, natsURL := testnats.Start(t)
 	makeCIStateBucket(t, natsURL)
 	_, pemText := githubapptest.Key(t)

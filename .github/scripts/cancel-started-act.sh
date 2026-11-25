@@ -24,8 +24,8 @@ set -euo pipefail
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
-# The `--limit` is 100 because the queue builds up to 20 groups at once and this pull
-# request's own groups are among them: gh's default of 20 runs could leave an older
+# The `--limit` is 100, well above the number of groups main's merge queue builds at once, and
+# this pull request's own groups are among those: gh's default of 20 runs could leave an older
 # group of it out of the list, and so out of the act.
 RUNS=$(gh_wait_reset gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml \
   --event merge_group --limit 100 --json databaseId,headBranch,status,createdAt)

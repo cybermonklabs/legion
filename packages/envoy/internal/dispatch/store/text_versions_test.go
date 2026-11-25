@@ -55,10 +55,7 @@ func TestTheKeywordTableHasNoForeignKey(t *testing.T) {
 // holds no row in either table once the table's migration has run over it.
 func TestNoMigrationWritesAKeywordVersion(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, searchTextVersionsVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", searchTextVersionsVersion-1, err)
-	}
+	store := openMigratedTestStore(t, searchTextVersionsVersion-1)
 	seedCoreWithADefaultAssignee(t, store)
 	if _, err := store.Pool.Exec(ctx, `
 		with issue as (insert into issues (key, project_key, number, title, created_by, rank)

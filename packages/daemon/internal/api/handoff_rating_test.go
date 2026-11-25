@@ -307,7 +307,9 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 			seedIssueAt(t, h, "LEGION-208", phase.Retro)
 			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 			// A stale claim is served in its turn (staleClaim), and its grants are minted first, as
-			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one. A live claim declares
+			// the daemon's own contract, so a band below it, PlanRatingContract once a later contract
+			// came, declares its own.
 			grants := []string{implementer.grant(t), implementer.grant(t), implementer.grant(t)}
 			if band.contract != DaemonAPIVersion {
 				h.makeStale(t, implementer.token, implementer.session, implementer.secret, band.contract)
@@ -778,7 +780,9 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 			seedIssueAt(t, h, key, row.at)
 			implementer := newLiveClaim(t, h, key, claim.RoleImplementer)
 			// A stale claim is served in its turn (staleClaim), and its grant is minted first, as
-			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one. A live claim declares
+			// the daemon's own contract, so a row below it, PlanRatingContract once a later contract
+			// came, declares its own.
 			req := row.request(implementer)
 			req.GrantID = implementer.grant(t)
 			if row.contract != DaemonAPIVersion {
@@ -834,11 +838,13 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 
 // A completion ends the retro only while its role works the retro. The reviewer's own approval
 // moves the issue on before the reviewer's completion lands (the review event takes reviewing to
-// accepting), and the architect's sign-off takes it on to retro, so the reviewer's late completion
-// of reviewing finds the issue in retro and is recorded on its own row (workflow's leftItsPhase),
-// ending nothing. From a plugin that must rate, it is not asked for a rating; carrying one, it is
-// refused PLAN_RATING_UNEXPECTED, naming reviewing, with nothing recorded. The same completion
-// without the rating is then taken on the reviewer's row, and the issue stays in retro unrated.
+// its task's next step, accepting in the default steps this issue walks), and the architect's
+// sign-off takes it on to retro, since the acceptance is the task's last step there, so the
+// reviewer's late completion of reviewing finds the issue in retro and is recorded on its own row
+// (workflow's leftItsPhase), ending nothing. From a plugin that must rate, it is not asked for a
+// rating; carrying one, it is refused PLAN_RATING_UNEXPECTED, naming reviewing, with nothing
+// recorded. The same completion without the rating is then taken on the reviewer's row, and the
+// issue stays in retro unrated.
 func TestALateCompletionWhileTheIssueStandsInRetroEndsNoRetro(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)

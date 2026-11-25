@@ -4,11 +4,11 @@ import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
 import { RIG_OWNER } from "./rig-world";
 
-// Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
-// and runs, so a host with no go runs none of them.
+// Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
+// `go run` compiles and runs, so a host with no go runs none of them.
 const skip = skipWithout("go");
 
 // The run directory: the daemon's pane environment makes the pane's home and the claim's gh
@@ -216,6 +216,39 @@ test.skipIf(skip)(
       ghPath: path.join(scriptBin, "gh"),
     }).env;
     expect(named.LEGION_GH_PATH).toBe(path.join(scriptBin, "gh"));
+  },
+  600_000
+);
+
+// A part of the daemon module's own role prompts, as the composition holds it: each part's text in
+// order, so every part but the last ends with its own newline, which this drops.
+const promptPart = (name: string) =>
+  readFileSync(path.join(DAEMON_MODULE, "internal", "prompts", name), "utf8").trimEnd();
+
+// The prompt a launch of a role starts with is the daemon's composition of that role's parts and
+// its addressing, and a tree's root architect is told the design gate steps after its addressing;
+// the text starts with the role's first part and ends with the addressing's last sentence.
+test.skipIf(skip)(
+  "composes the prompt a launch of a role starts with: its parts, its addressing, and a root architect's design gate",
+  () => {
+    const root = composeRolePrompt(DAEMON_MODULE, "architect", true);
+    expect(root.startsWith(promptPart("roles/architect-root.md"))).toBe(true);
+    expect(root).toContain(promptPart("go/architect-root.md"));
+    expect(root).toMatch(
+      /\n\nLegion addressing: your role topic is [^\n]* Design gate steps: [^\n]+\.$/
+    );
+
+    const child = composeRolePrompt(DAEMON_MODULE, "architect", false);
+    expect(child.startsWith(promptPart("roles/architect.md"))).toBe(true);
+    expect(child).toContain(promptPart("go/architect.md"));
+    expect(child).not.toContain(promptPart("roles/architect-root.md"));
+    expect(child).not.toContain("Design gate steps: ");
+
+    const reviewer = composeRolePrompt(DAEMON_MODULE, "reviewer", false);
+    expect(reviewer).toContain(promptPart("go/reviewer.md"));
+    for (const prompt of [child, reviewer]) {
+      expect(prompt).toMatch(/\n\nLegion addressing: your role topic is [^\n]*\.$/);
+    }
   },
   600_000
 );

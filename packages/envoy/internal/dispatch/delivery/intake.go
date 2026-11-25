@@ -2,9 +2,10 @@
 // NATS (`notifications.github.>`), for live updates between the five-minute reconcile's passes.
 // Every write here goes through the same upsert functions reconcile uses (store.go), so a NATS
 // redelivery or a reconcile re-reading the same fact is a no-op, not a duplicate. A GitHub call
-// that fails here is logged and the message is still acked, because the reconcile that runs
-// every five minutes is the actual catch-up mechanism ("a missed event appears by the next
-// five-minute reconcile", LEGION-567). The one failure that mechanism does not cover is a pull
+// that fails here is logged and the message is still acked, because the reconcile is the actual
+// catch-up mechanism: what a missed event carried lands when a later pass reads that pull
+// request, an open one's head once its row is due and that pass's stamp of its try succeeds
+// (PullRequestHeadStaleAfter). The one failure that mechanism does not cover is a pull
 // request's write that nothing else makes: its head row, which no pass can offer because the
 // passes read the rows that exist (ErrHeadNotStored), or the mark a settled CI run owes its
 // issue's check states, since no table stores a run (errCheckStatesNotMarked). That envelope is
@@ -62,17 +63,20 @@ type Intake struct {
 	// settings is the delivery settings every message is routed by, shared with the job intake
 	// (StartIntakes).
 	settings *SettingsCache
+	// attributor attributes each pull request an envelope reports and keys its head row, by the
+	// rename pairs the process read at boot.
+	attributor *Attributor
 	// heldDurable is this intake's delivery from bus.DispatchDeliveryDurable under the durable's
 	// hold: the subscription, StopDelivering and the take-over.
 	heldDurable
 }
 
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
-// holding its durable and taking it over under a hold and a lease it takes on leases, and routing
-// by settings. Each take-over first marks every issue with an open head owed
-// (markOpenHeadsOwed).
-func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
-	in := &Intake{pool: pool, github: github, events: broker, settings: settings}
+// holding its durable and taking it over under a hold and a lease it takes on leases, routing by
+// settings, and attributing each pull request by attributor. Each take-over first marks every
+// issue with an open head owed (markOpenHeadsOwed).
+func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
+	in := &Intake{pool: pool, github: github, events: broker, settings: settings, attributor: attributor}
 	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	in.heldDurable.beforeTakeOver = in.markOpenHeadsOwed
 	return in
@@ -635,7 +639,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 		return false, DeletePullRequest(ctx, in.pool, repoFull, number)
 	}
 
-	if err := completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
+	if err := in.attributor.completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -658,21 +662,18 @@ var errCheckStatesNotMarked = errors.New("the check states of the settled pull r
 // publish route can put an envelope here, and a mark only asks for a computation Dispatch makes
 // from GitHub's answer.
 //
-// The head is read under the repository's canonical name (refs.CanonicalRepo), the name its row
-// is keyed by. A pull request that is not open, or that no issue holds, has no published state
-// to change, and nothing is marked. A failure of the canonical read, the head's read or the mark
-// is errCheckStatesNotMarked, which deliver hands back; a number that does not parse is not, since
-// every delivery of the envelope carries it. It writes no row the issue.deployed rule reads, so it
-// reports wrote false.
+// The head is read under the repository's canonical name (Attributor.canonical, over the rename
+// pairs the boot read), the name its row is keyed by. A pull request that is not open, or that no
+// issue holds, has no published state to change, and nothing is marked. A failure of the head's
+// read or the mark is errCheckStatesNotMarked, which deliver hands back; a number that does not
+// parse is not, since every delivery of the envelope carries it. It writes no row the
+// issue.deployed rule reads, so it reports wrote false.
 func (in *Intake) handleChecksEnvelope(ctx context.Context, _ DeliverySettings, payload map[string]string) (wrote bool, err error) {
 	number, err := strconv.Atoi(payload["number"])
 	if err != nil {
 		return false, fmt.Errorf("checks envelope: malformed number %q: %w", payload["number"], err)
 	}
-	repoFull, err := refs.CanonicalRepo(ctx, in.pool, payload["repo"])
-	if err != nil {
-		return false, fmt.Errorf("%w: read the canonical name of %s: %w", errCheckStatesNotMarked, payload["repo"], err)
-	}
+	repoFull := in.attributor.canonical(payload["repo"])
 	var issue *string
 	err = in.pool.QueryRow(ctx, `
 		select issue_key from pull_request_heads where repo = $1 and number = $2 and state = 'open'
@@ -725,7 +726,7 @@ func (in *Intake) markOpenHeadsOwed(ctx context.Context) error {
 // head write does, for a pull request its title, body and branch left unattributed — and nil
 // when it has not, which is reconcile's case and intake's commoner one; a non-nil read spares
 // this the same paginated call a second time.
-func completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
+func (a *Attributor) completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
 	messages := read
 	if messages == nil {
 		paged, err := fetchCommitMessages(ctx, github, owner, repo, number)
@@ -737,11 +738,11 @@ func completePullRequest(ctx context.Context, pool *store.Pool, github *githubap
 		}
 		messages = paged
 	}
-	inputs := attributionInputsFrom(attributionFacts{
+	inputs := a.attributionInputsFrom(attributionFacts{
 		Repo: repoFull, URL: fetched.URL, Title: fetched.Title, Body: fetched.Body,
 		HeadRef: fetched.HeadRef, CommitMessages: messages,
 	})
-	issueKey, _, err := resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
+	issueKey, _, err := a.resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
 	if err != nil {
 		return err
 	}
@@ -808,29 +809,31 @@ func (in *Intake) handleWorkflowEnvelope(ctx context.Context, settings DeliveryS
 	return true, UpsertRunJobs(ctx, in.pool, repoFull, runID, jobs, JobsComplete(jobs))
 }
 
-// pullRequestCommitPayload is one element of GET /repos/{owner}/{repo}/pulls/{number}/commits,
-// limited to the two fields its readers read: the commit's sha (PullRequestMembership) and its
-// message (fetchCommitMessages). github_prs.go's commitPayload reads the same endpoint's dates.
-type pullRequestCommitPayload struct {
-	SHA    string `json:"sha"`
+// commitMessagePayload is one element of GET /repos/{owner}/{repo}/pulls/{number}/commits,
+// limited to the message field fetchCommitMessages reads (distinct from github_prs.go's
+// commitPayload, which reads the same endpoint's dates instead).
+type commitMessagePayload struct {
 	Commit struct {
 		Message string `json:"message"`
 	} `json:"commit"`
 }
 
-// maxCommitPages bounds the pagination of a pull request's commits: 500 commits is already an
-// enormous pull request, and a PR beyond that is not worth the API cost of chasing its full
-// history. GitHub itself lists at most pullRequestCommitsListed commits of a pull request.
+// maxCommitPages bounds fetchCommitMessages' pagination, and fetchComparison's: 500 commits is
+// already an enormous pull request, and a PR beyond that is not worth the API cost of chasing its
+// full history.
 const maxCommitPages = 5
 
-// pullRequestCommitsPage is how many commits fetchPullRequestCommits asks GitHub for on each page
-// of a pull request's commits, GitHub's own maximum: a page that holds fewer is the last.
-const pullRequestCommitsPage = 100
+// comparisonPage is how many commits fetchComparison asks GitHub for on each page of a comparison,
+// GitHub's own maximum: a page that holds fewer is the last.
+const comparisonPage = 100
 
-// pullRequestCommitsListed is the most commits GitHub lists for one pull request, however many it
-// holds (https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request): a list of
-// that many says nothing about a commit it leaves out.
-const pullRequestCommitsListed = 250
+// comparisonPageLimit bounds the body of one page of a comparison of two commits, in place of the
+// client's generic megabyte: GitHub sends the comparison's changed files, up to 300 with their
+// patches, on its first page, so the first page of a pull request that changes many files is far
+// past a megabyte. Sixteen MiB is the bound githubapp gives the polled reads of a head's check
+// runs, whose full page is about 13 MB. A page past it fails the read, which leaves its commits
+// unknown.
+const comparisonPageLimit = 16 << 20
 
 // fetchCommitMessages reads a pull request's commit messages, in commit order: what its session
 // trailers (sessionTrailers) and its commit-message issue keys (AttributionInputs.CommitKeys) are
@@ -849,98 +852,121 @@ func fetchCommitMessages(ctx context.Context, client *githubapp.Client, owner, r
 // failed one included, so a caller can count what a read cost (reconcileAttributionInputs' call
 // budget).
 func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number int) ([]string, int, error) {
-	commits, pages, err := fetchPullRequestCommits(ctx, client, token, owner, repo, number)
 	var messages []string
-	for _, c := range commits {
-		messages = append(messages, c.Commit.Message)
+	for page := 1; page <= maxCommitPages; page++ {
+		current, err := token()
+		if err != nil {
+			return messages, page - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
+		}
+		commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", url.PathEscape(owner), url.PathEscape(repo), number, page)
+		body, status, header, err := readGitHubPage(ctx, client, current, commitsPath)
+		if err != nil {
+			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+		}
+		if err := githubapp.CheckResponse(status, header, body); err != nil {
+			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+		}
+		var commits []commitMessagePayload
+		if err := json.Unmarshal(body, &commits); err != nil {
+			return messages, page, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
+		}
+		for _, c := range commits {
+			messages = append(messages, c.Commit.Message)
+		}
+		if len(commits) < 100 {
+			return messages, page, nil
+		}
 	}
-	return messages, pages, err
+	return messages, maxCommitPages, nil
 }
 
 // CommitMembership is what PullRequestMembership could tell about each commit it was asked about:
-// Members are the pull request's own commits, Outside the commits that are not, and Unknown each
-// commit whose answer a read that failed withheld. Head and Base are the head and the base
-// revision the answer is about, which the read of the pull request after its list named, and Head
-// is "" where the answer is about no one head: a whole list that does not name the head that read
-// names was read at another head. Complete is whether GitHub's list of the pull request's commits
-// was whole; Pages, PullReads, Compares and CommitReads count the reads the answer cost: the pages
-// of that list, the read of the pull request, the comparisons and the reads of a commit.
+// Members are the commits of the pull request at the two revisions it was asked about, Outside the
+// commits that are not, and Unknown each commit whose answer a read that failed withheld. Stale is
+// whether GitHub's read of the pull request names another head or base revision than those two:
+// GitHub has moved the pull request on where no write has stored it yet, and every commit is then
+// unknown. Complete is whether GitHub's comparison of the two revisions listed every commit
+// between them; Pages, PullReads, Compares and CommitReads count the reads the answer cost: the
+// pages of that comparison, the read of the pull request, the comparisons of one commit and the
+// reads of a commit.
 type CommitMembership struct {
 	Members, Outside, Unknown               []string
-	Head, Base                              string
-	Complete                                bool
+	Stale, Complete                         bool
 	Pages, PullReads, Compares, CommitReads int
 }
 
 // PullRequestMembership tells, for each of candidates, whether it is a commit of pull request
-// number of repoFull: a commit of the set `git log base..head`, which the head holds and the base
-// branch does not. The check states settler asks it about the candidate former heads of an open
-// pull request (api/check_states.go, verifyFormerHeads), and applies its answer only where the
-// head and base revisions it reports are the ones Dispatch stores for that pull request.
+// number of repoFull standing at head onto the base revision base, the two revisions Dispatch
+// stores for it: a commit head holds and base does not, the set `git log base..head`. The check
+// states settler asks it about the candidate former heads of an open pull request
+// (api/check_states.go, verifyFormerHeads).
 //
-// It reads the pull request's list of commits first, pages of pullRequestCommitsPage, and then the
-// pull request itself (GET /repos/{owner}/{repo}/pulls/{number}), whose head.sha and base.sha are
-// the revisions the answer is about. GitHub reads no list at a revision, and a pull request can
-// move between two reads; read after the list, the pull request names where it stood once the list
-// was read, so a move during the list's read shows as revisions Dispatch does not store, and a
-// whole list must name that head, or it was read at another head and the answer is about none.
-// A commit the list names is a member. The list is whole only where it ended on a page that was
-// not full and names fewer than pullRequestCommitsListed commits, GitHub's cap; then a commit it
-// does not name is outside. Where the list is not whole, a commit it does not name is decided by
-// GitHub's comparisons, which have no such cap, against the head and the base revision the read
-// of the pull request named, each comparison against those two commits and never against the
-// base branch's name, which can move between two comparisons: the comparison with the head says
-// whether the head holds the commit (githubapp.Client.CommitOnBranch); a commit the head does not
-// hold is outside, and else the comparison with the base revision decides: held there, outside,
-// since the head holds every commit of its base, such as an earlier merged pull request's head;
-// not held there, a member. A comparison GitHub answers 403 or 404 for says nothing alone, since
-// 404 is also its answer for a commit the repository does not have: the commit is then read
-// (githubapp.Client.HasCommit), and only GitHub's `No commit found for SHA` puts it outside.
-// Each read costs one request but the list's pages, and a commit the list names costs none.
+// Every answer comes of reads that name those two commits, so it is about them by construction,
+// whatever the pull request stands at while it is read: GitHub's comparison of base and head
+// (GET /repos/{owner}/{repo}/compare/{base}...{head}, fetchComparison), which lists the commits
+// head holds and base does not, oldest first, in pages of comparisonPage, at most
+// maxCommitPages of them, and names how many it holds in all. A commit the comparison lists is a
+// member. Where the pages list every commit it holds, a commit they do not name is outside, and so
+// is every commit where the comparison of the two holds none. Where they list fewer, a commit they
+// do not name is decided by two comparisons of its own, with head and then with base
+// (githubapp.Client.CommitOnBranch, at the two commits): a commit head does not hold is outside,
+// and one head holds is outside where base holds it too and a member where it does not. A
+// comparison GitHub answers 403 or 404 for says nothing alone, since 404 is also its answer for a
+// commit the repository does not have: the commit is then read (githubapp.Client.HasCommit), and
+// only GitHub's `No commit found for SHA` puts it outside. No read by the pull request's number or
+// by a branch's name decides a commit.
+//
+// The read of the pull request (GET /repos/{owner}/{repo}/pulls/{number}) comes first and only
+// tells whether GitHub has moved the pull request on from those two revisions: where its head.sha
+// or base.sha is another, the answer is Stale and every commit unknown, so the settler keeps the
+// obligation that asked for the read and reads again once a write stores where the pull request
+// went. A read of the pull request that fails or names no head or base revision, and a head or base
+// Dispatch stores none of, leave every commit unknown too. A move after that read changes no
+// answer, since the comparisons name their commits.
 //
 // Every other failure of a read leaves each commit that read would have decided in Unknown, and
 // the first such failure is the error; the commits other reads decided keep their answers. A
-// failed read of the list or of the pull request, or a read of the pull request that names no
-// head or base revision, leaves every commit unknown: each answer is about the revisions that
-// read names.
-func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFull string, number int, candidates []string) (CommitMembership, error) {
+// failed page of the comparison of base and head leaves every commit unknown.
+func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFull string, number int, head, base string, candidates []string) (CommitMembership, error) {
 	var answer CommitMembership
+	unknown := func(err error) (CommitMembership, error) {
+		answer.Unknown = append([]string(nil), candidates...)
+		return answer, err
+	}
 	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
-		answer.Unknown = append(answer.Unknown, candidates...)
-		return answer, err
+		return unknown(err)
+	}
+	if head == "" || base == "" {
+		return unknown(fmt.Errorf("%s#%d names no stored head or base revision to compare", repoFull, number))
 	}
 	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
-	commits, pages, err := fetchPullRequestCommits(ctx, client, token, owner, repo, number)
-	answer.Pages = pages
-	if err != nil {
-		answer.Unknown = append(answer.Unknown, candidates...)
-		return answer, err
-	}
 	current, err := token()
 	if err != nil {
-		answer.Unknown = append(answer.Unknown, candidates...)
-		return answer, fmt.Errorf("%w for %s: %w", ErrTokenMint, repoFull, err)
+		return unknown(fmt.Errorf("%w for %s: %w", ErrTokenMint, repoFull, err))
 	}
 	answer.PullReads++
 	pull, err := fetchPullRequestPayload(ctx, client, current, owner, repo, number)
 	if err != nil {
-		answer.Unknown = append(answer.Unknown, candidates...)
-		return answer, err
+		return unknown(err)
 	}
 	if pull.Head.SHA == "" || pull.Base.SHA == "" {
-		answer.Unknown = append(answer.Unknown, candidates...)
-		return answer, fmt.Errorf("the read of %s#%d names no head or base revision its commits are of", repoFull, number)
+		return unknown(fmt.Errorf("the read of %s#%d names no head or base revision", repoFull, number))
+	}
+	if pull.Head.SHA != head || pull.Base.SHA != base {
+		answer.Stale = true
+		return unknown(nil)
+	}
+	commits, total, pages, err := fetchComparison(ctx, client, token, owner, repo, base, head)
+	answer.Pages = pages
+	if err != nil {
+		return unknown(err)
 	}
 	listed := make(map[string]bool, len(commits))
-	for _, commit := range commits {
-		listed[commit.SHA] = true
+	for _, sha := range commits {
+		listed[sha] = true
 	}
-	answer.Complete = len(commits) < pullRequestCommitsListed && len(commits) < pages*pullRequestCommitsPage
-	answer.Head, answer.Base = pull.Head.SHA, pull.Base.SHA
-	if answer.Complete && len(commits) > 0 && !listed[pull.Head.SHA] {
-		answer.Head = ""
-	}
+	answer.Complete = len(commits) >= total
 	var unlisted []string
 	for _, sha := range candidates {
 		switch {
@@ -955,7 +981,7 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 	var failed error
 	for _, sha := range unlisted {
 		answer.Compares++
-		onHead, err := client.CommitOnBranch(ctx, current, owner, repo, pull.Head.SHA, sha)
+		onHead, err := client.CommitOnBranch(ctx, current, owner, repo, head, sha)
 		if err != nil && errors.Is(err, githubapp.ErrRepositoryUnreadable) {
 			answer.CommitReads++
 			if held, heldErr := client.HasCommit(ctx, current, owner, repo, sha); heldErr == nil && !held {
@@ -965,7 +991,7 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 		}
 		if err != nil {
 			answer.Unknown = append(answer.Unknown, sha)
-			failed = cmp.Or(failed, fmt.Errorf("compare %s with the head of %s#%d: %w", sha, repoFull, number, err))
+			failed = cmp.Or(failed, fmt.Errorf("compare %s with the head %s of %s#%d: %w", sha, head, repoFull, number, err))
 			continue
 		}
 		if !onHead {
@@ -973,11 +999,11 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 			continue
 		}
 		answer.Compares++
-		onBase, err := client.CommitOnBranch(ctx, current, owner, repo, pull.Base.SHA, sha)
+		onBase, err := client.CommitOnBranch(ctx, current, owner, repo, base, sha)
 		switch {
 		case err != nil:
 			answer.Unknown = append(answer.Unknown, sha)
-			failed = cmp.Or(failed, fmt.Errorf("compare %s with the base revision %s of %s#%d: %w", sha, pull.Base.SHA, repoFull, number, err))
+			failed = cmp.Or(failed, fmt.Errorf("compare %s with the base revision %s of %s#%d: %w", sha, base, repoFull, number, err))
 		case onBase:
 			answer.Outside = append(answer.Outside, sha)
 		default:
@@ -987,35 +1013,57 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 	return answer, failed
 }
 
-// fetchPullRequestCommits reads a pull request's commits, pages of pullRequestCommitsPage until
-// the first that is not full, at most maxCommitPages, asking token for each page's installation
-// token. It answers the commits of the pages it read and how many pages it asked for, the failed
-// one included.
-func fetchPullRequestCommits(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number int) ([]pullRequestCommitPayload, int, error) {
-	var commits []pullRequestCommitPayload
+// comparisonPayload is one page of GET /repos/{owner}/{repo}/compare/{base}...{head}, limited to
+// the fields fetchComparison reads: how many commits the comparison holds in all (total_commits),
+// which GitHub names on every page, and the sha of each commit of the page.
+type comparisonPayload struct {
+	TotalCommits *int `json:"total_commits"`
+	Commits      []struct {
+		SHA string `json:"sha"`
+	} `json:"commits"`
+}
+
+// fetchComparison reads GitHub's comparison of the commits base and head: the commits head holds
+// and base does not, oldest first, pages of comparisonPage until it has read as many as the
+// comparison holds or a page that is not full, at most maxCommitPages, asking token for each page's
+// installation token. Each page is read within comparisonPageLimit and asked again as
+// readGitHubPage asks a page again. It answers the commits of the pages it read, how many the
+// comparison holds in all, and how many pages it asked for, the failed one included. A page that
+// names no total, or another total than the page before, fails the read: every page is of the same
+// two commits.
+func fetchComparison(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo, base, head string) ([]string, int, int, error) {
+	var commits []string
+	total := -1
 	for page := 1; page <= maxCommitPages; page++ {
 		current, err := token()
 		if err != nil {
-			return commits, page - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
+			return commits, total, page - 1, fmt.Errorf("mint installation token for %s/%s compare %s...%s page %d: %w", owner, repo, base, head, page, err)
 		}
-		commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=%d&page=%d", url.PathEscape(owner), url.PathEscape(repo), number, pullRequestCommitsPage, page)
-		body, status, header, err := readGitHubPage(ctx, client, current, commitsPath)
+		comparePath := fmt.Sprintf("/repos/%s/%s/compare/%s...%s?per_page=%d&page=%d", url.PathEscape(owner), url.PathEscape(repo),
+			url.PathEscape(base), url.PathEscape(head), comparisonPage, page)
+		body, status, header, err := readGitHubPageWithin(ctx, client, current, comparePath, comparisonPageLimit)
 		if err != nil {
-			return commits, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+			return commits, total, page, fmt.Errorf("compare %s...%s of %s/%s page %d: %w", base, head, owner, repo, page, err)
 		}
 		if err := githubapp.CheckResponse(status, header, body); err != nil {
-			return commits, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+			return commits, total, page, fmt.Errorf("compare %s...%s of %s/%s page %d: %w", base, head, owner, repo, page, err)
 		}
-		var read []pullRequestCommitPayload
+		var read comparisonPayload
 		if err := json.Unmarshal(body, &read); err != nil {
-			return commits, page, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
+			return commits, total, page, fmt.Errorf("decode the comparison %s...%s of %s/%s page %d: %w", base, head, owner, repo, page, err)
 		}
-		commits = append(commits, read...)
-		if len(read) < pullRequestCommitsPage {
-			return commits, page, nil
+		if read.TotalCommits == nil || (total >= 0 && *read.TotalCommits != total) {
+			return commits, total, page, fmt.Errorf("the comparison %s...%s of %s/%s names no total of its commits, or another total, on page %d", base, head, owner, repo, page)
+		}
+		total = *read.TotalCommits
+		for _, commit := range read.Commits {
+			commits = append(commits, commit.SHA)
+		}
+		if len(commits) >= total || len(read.Commits) < comparisonPage {
+			return commits, total, page, nil
 		}
 	}
-	return commits, maxCommitPages, nil
+	return commits, total, maxCommitPages, nil
 }
 
 // sessionTrailers is every `Omp-Session:` commit trailer across messages (LEGION-294's rule,

@@ -23,7 +23,13 @@ var stepClock = time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
 // stepEngine is the engine the step record tests drive: testEngine with no design gate, the fixed
 // clock stepClock, and agent as the daemon's read of a step's agent (nil reads none).
 func stepEngine(agent func(claim.Token) StepAgent) *Engine {
-	engine := testEngine(config.DesignGateOff, nil)
+	return gatedStepEngine(config.DesignGateOff, agent)
+}
+
+// gatedStepEngine is stepEngine on a deployment whose design gate is policy, as the daemon builds
+// its engine at boot.
+func gatedStepEngine(policy config.DesignGate, agent func(claim.Token) StepAgent) *Engine {
+	engine := testEngine(policy, nil)
 	engine.cfg.Clock = func() time.Time { return stepClock }
 	if agent != nil {
 		engine.cfg.StepAgent = func(_ context.Context, _ pgx.Tx, token claim.Token) StepAgent { return agent(token) }
@@ -111,7 +117,7 @@ func move(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger 
 		}
 		// A move no completion records (a backward move) says why, as the engine
 		// requires of its notice; the other moves carry the reason unread.
-		return engine.transition(ctx, tx, issue, trigger, target, handoff, pr, "the step test's move")
+		return engine.transition(ctx, tx, issue, trigger, target, handoff, pr, moveWhy{Reason: "the step test's move"})
 	})
 }
 
@@ -328,10 +334,14 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	engine := stepEngine(nil)
 	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
 	endTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		if err := engine.endStep(ctx, tx, issue, stepStopped); err != nil {
+		w, err := engine.walk(ctx, tx, issue)
+		if err != nil {
 			return err
 		}
-		return engine.endStep(ctx, tx, issue, stepStopped)
+		if err := engine.endStep(ctx, tx, issue, w, stepStopped); err != nil {
+			return err
+		}
+		return engine.endStep(ctx, tx, issue, w, stepStopped)
 	}
 	for _, key := range []string{"LEGION-208", "LEGION-209"} {
 		onStored(t, pool, engine, key, endTwice)
@@ -516,7 +526,7 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 				if tc.want != phase.Accepting {
 					return
 				}
-				apply("sign-off", intake.SignOff{Issue: "LEGION-208"})
+				apply("sign-off", rootsSignOff(t, pool, engine, "LEGION-208"))
 				var ended bool
 				for _, w := range writesAt(stepWrites(t, pool, "LEGION-208"), "step", 5) {
 					if w.Report != nil {
@@ -622,11 +632,11 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 				stepChild(t, pool, "LEGION-209", at, nil)
 				seedChildPR(t, pool, record.PullRequestOpen)
 				if tc.state != "" {
-					seedArchitectClaimIn(t, pool, "LEGION-209", tc.state, tc.by)
+					seedArchitectClaimIn(t, pool, "LEGION-1", "LEGION-209", 1, tc.state, tc.by)
 				}
 				engine := stepEngine(agent)
 				enter(pool, engine)
-				applyFacts(t, pool, engine)("sign-off", intake.SignOff{Issue: "LEGION-209"})
+				applyFacts(t, pool, engine)("sign-off", rootsSignOff(t, pool, engine, "LEGION-209"))
 				if got := issueAt(t, pool, "LEGION-209"); got != phase.Retro {
 					t.Fatalf("LEGION-209 stands at %s after the sign-off, want retro", got)
 				}
@@ -743,16 +753,20 @@ func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 
 // An issue at admitted runs no step: the architect works that phase (phase.RoleFor), and the
 // task's first step is planning. So an end and a start of the step an issue at admitted stands in
-// write nothing, and the move out of admitted writes the start of planning and no end, the
-// architect's own completion beside it or not. It is what the three readers of phase.RoleFor in
-// steps.go answer for admitted (internal/textcheck's roleForReaders): startAgent and upgradedStart
-// are never asked there, and endOfTransition's answer is read by no end.
+// write nothing, and the opening of its gate (StartFirstPhase) writes the start of planning and no
+// end. It is what the three readers of phase.RoleFor in steps.go answer for admitted
+// (internal/textcheck's roleForReaders): startAgent and upgradedStart are never asked there, and
+// endOfTransition's answer is read by no end.
 func TestAnIssueAtAdmittedRunsNoStep(t *testing.T) {
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)
 	engine := stepEngine(nil)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		if err := engine.endStep(ctx, tx, root, stepStopped); err != nil {
+		w, err := engine.walk(ctx, tx, root)
+		if err != nil {
+			return err
+		}
+		if err := engine.endStep(ctx, tx, root, w, stepStopped); err != nil {
 			return err
 		}
 		return engine.StartStepRecord(ctx, tx, root)
@@ -760,7 +774,7 @@ func TestAnIssueAtAdmittedRunsNoStep(t *testing.T) {
 	if writes := stepWrites(t, pool, root.Key); len(writes) != 0 {
 		t.Fatalf("an end and a start at admitted wrote %+v, want nothing", writes)
 	}
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect, HandoffRecord: "architect-handoff"})
+	firstStep(t, pool, engine, root.Key)
 	writes := stepWrites(t, pool, root.Key)
 	if len(writes) != 1 || !isStart(writes[0]) || writes[0].Kind != "step" || writes[0].Step != 1 || writes[0].Role != "planner" {
 		t.Fatalf("the move out of admitted wrote %+v, want the start of step 1 alone", writes)

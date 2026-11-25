@@ -457,12 +457,7 @@ func TestEdgeRefusesToStartBesideSharedCredentials(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
 	listener := startListenerProcess(t, binary, testnats.URL(t), "edge-refused",
 		"ENVOY_EDGE_PROJECTS="+strings.Join(projects, ","))
-	select {
-	case <-listener.Exited:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the listener with ENVOY_EDGE_PROJECTS=%s beside ENVOY_API_TOKEN is still running after 30 s, want a refusal to start:\n%s",
-			strings.Join(projects, ","), listener.Output.String())
-	}
+	listener.WaitExit(t, "it was started with ENVOY_EDGE_PROJECTS="+strings.Join(projects, ",")+" beside ENVOY_API_TOKEN, which it must refuse")
 	if out := listener.Output.String(); listener.Cmd.ProcessState.Success() || !strings.Contains(out, "ENVOY_API_TOKEN") || !strings.Contains(out, "ENVOY_EDGE_PROJECTS") {
 		t.Fatalf("the listener with ENVOY_EDGE_PROJECTS beside ENVOY_API_TOKEN exited %v, want a refusal naming both:\n%s", listener.Cmd.ProcessState, out)
 	}

@@ -33,7 +33,7 @@ const discoveryRetryWindow = 45 * time.Second
 func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLater(t *testing.T) {
 	database := storetest.Open(t)
 	signInIssuer := oidctest.New(t)
-	signInIssuer.EnableCodeFlow(signInIssuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	signInIssuer.EnableCodeFlow(signInIssuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	signInIssuer.FailDiscovery(http.StatusServiceUnavailable)
 	podIssuer := oidctest.New(t)
 	podKey := podIssuer.PublishKey(t, "pod-key")
@@ -144,12 +144,16 @@ func errorCodeOf(body string) string {
 
 // ───── shared with multiprocess_test.go ─────────────────────────────────────
 
-// The sign-in client the fake issuer serves, and the group it admits.
+// The sign-in client the fake issuer serves, the group it admits, and the callback the client
+// registers there for a process with no DISPATCH_SERVER_URL: such a process builds its callback
+// from the request's Host, the loopback address and port it serves on, and the issuer takes a
+// loopback IP literal callback at any port.
 const (
 	cookieClientID     = "dispatch-multiprocess-client"
 	cookieClientSecret = "dispatch-multiprocess-secret"
 	cookieGroup        = "dispatch-members"
 	cookiePerson       = "alice@example.test"
+	loopbackCallback   = "http://127.0.0.1/auth/callback"
 )
 
 // signInThrough signs cookiePerson in on the process, the whole code flow a browser walks:

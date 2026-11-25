@@ -7,6 +7,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/checkstatetest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -24,7 +25,7 @@ const entryRigHead = "0000000000000000000000000000000000c0ffee"
 // (checkstatetest.Tested): k1, the head's one check, yes from the tester where passes, and no for a
 // fail where not, at head, the commit the completion names, on acme/widgets where issue has no
 // pull request.
-func testedFact(t *testing.T, pool intake.Pool, issue, head string, passes bool) (intake.DispatchCheckState, string) {
+func testedFact(t *testing.T, pool store.TxPool, issue, head string, passes bool) (intake.DispatchCheckState, string) {
 	t.Helper()
 	return checkstatetest.Tested(t, pool, issue, "acme/widgets", head, passes)
 }
@@ -34,7 +35,7 @@ func testedFact(t *testing.T, pool intake.Pool, issue, head string, passes bool)
 // through a workflow of its own over pool, which holds the state as the daemon's own workflow
 // does: a live proof's daemon runs no consumer of Dispatch's events, and the completion that
 // follows is the daemon's own to decide on what the store then holds.
-func testedAs(t *testing.T, pool intake.Pool, issue, head string, passes bool, handlers ...intake.Handler) {
+func testedAs(t *testing.T, pool store.TxPool, issue, head string, passes bool, handlers ...intake.Handler) {
 	t.Helper()
 	if len(handlers) == 0 {
 		handlers = []intake.Handler{workflow.New(record.NewStore(), workflow.Config{Project: "LEGION"}, quietLogger())}

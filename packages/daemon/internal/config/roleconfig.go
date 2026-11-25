@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// RoleConfigRoles are the roles `role_config_files` may name, in the order the workflow reaches
-// them: every issue role, then the controller, which only `controller: daemon` launches.
+// RoleConfigRoles are the roles `role_config_files` may name, in claim.Roles' order (the default
+// steps' order): every issue role, then the controller, which only `controller: daemon` launches.
 var RoleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
 
 // readRoleConfigFiles is `role_config_files`: a mapping of a Legion role (RoleConfigRoles) to the

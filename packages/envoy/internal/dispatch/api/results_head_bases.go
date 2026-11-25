@@ -57,7 +57,7 @@ type branchHeadAnswer struct {
 // an issue resolving to no repository is never read, and a resolve that did not answer leaves
 // every branch unread for model.ReasonReadFailed.
 func (c *comparisonReader) headBases(ctx context.Context, issueKey string) comparison {
-	heads, err := delivery.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
+	heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
 		return noBases(model.ReasonReadFailed)
@@ -85,10 +85,10 @@ func (c *comparisonReader) headBases(ctx context.Context, issueKey string) compa
 }
 
 // pullRequestBases is the basis of each of heads, the pull request heads of one issue in the order
-// delivery.HeadsAttributedTo lists them (headBasis), and among them the subjects, each with the
-// repository of its row: where open, some pull request of heads is open, the head of each open
-// one; otherwise the final head of the merged one of the highest number, the first of them where
-// two share it.
+// delivery.Attributor.HeadsAttributedTo lists them (headBasis), and among them the subjects, each
+// with the repository of its row: where open, some pull request of heads is open, the head of each
+// open one; otherwise the final head of the merged one of the highest number, the first of them
+// where two share it.
 func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open bool) ([]model.CheckBasis, []headSubject) {
 	bases := make([]model.CheckBasis, 0, len(heads))
 	var subjects []headSubject

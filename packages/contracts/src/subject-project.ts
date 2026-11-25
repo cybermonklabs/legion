@@ -67,8 +67,8 @@ function roleLaneProject(rest: readonly string[]): string {
 }
 
 export interface SubjectProject {
-  /** The project, `NO_PROJECT` for a name of none, and "" for a GitHub name, whose project is the
-   * one its repository is mapped to. */
+  /** The project, `NO_PROJECT` for a name of none, and "" for a GitHub name, which names a
+   * repository and no project. */
   readonly project: string;
   /** A GitHub name's repository, `owner/name` as the name writes both (sanitized), else "". */
   readonly repo: string;
@@ -121,7 +121,7 @@ const SUBJECT_PROJECT_ROWS: readonly SubjectProjectRow[] = [
     family: "notifications.legion.>",
     read: (rest) => ({ project: rest.length >= 2 ? legionTokenProject(rest[0]) : NO_PROJECT }),
   },
-  // A repository's events: the project is the one Dispatch maps the repository to.
+  // A repository's events: the name holds no project, so the reader gets the repository alone.
   {
     family: "notifications.github.>",
     read: (rest) => ({

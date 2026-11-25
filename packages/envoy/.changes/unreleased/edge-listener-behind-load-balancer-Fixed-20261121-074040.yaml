@@ -1,0 +1,23 @@
+kind: Fixed
+body: |-
+  An edge listener (`ENVOY_EDGE_PROJECTS` set) keys the broker token's introspection bucket on its
+  caller and not on Google's load balancer. A request from the balancer's proxies
+  (`35.191.0.0/16`, `130.211.0.0/22`, and `2600:2d00:1:1::/64` over IPv6) is keyed on the
+  second-to-last entry of its one `X-Forwarded-For` line, an IPv6 caller on its `/64`, and one with
+  no line, two lines, one entry or an entry that is no IP address is refused `400` before the
+  broker is asked anything. Before, every request was keyed on the proxy's address, so a
+  stranger's junk tokens through one proxy refused every caller behind it `429`. A request from
+  any other address is keyed on its connection as before, and its `X-Forwarded-For` chooses
+  nothing.
+
+  The closed `/v1` gate answers `503` before any credential is read, on every listener, so it
+  spends no request's DPoP proof. An edge listener also gives a body-less request its proof back
+  on a `503` a route answers after the proof was recorded: it deletes the spent-proof record that
+  request wrote before the answer goes out, so the one retry Google's load balancer sends of it,
+  with the same proof, is served rather than refused `401` as a replay. Every other listener keeps
+  that proof spent, since no such balancer stands in front of it. A proof presented after a
+  request it served is still refused, and a request with a body keeps its proof spent.
+  `envoy_listener_requests_total` no longer counts a request the closed gate refuses.
+time: 2026-11-21T07:40:40Z
+custom:
+    Issue: edge-listener-behind-load-balancer

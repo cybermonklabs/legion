@@ -47,9 +47,25 @@ var githubPageRetryWait = time.Second
 // try's notes are kept. A page GitHub answers 502 once and then reads is no failure of the pass,
 // and one it answers 502 every try is the last try's 502.
 func readGitHubPage(ctx context.Context, client *githubapp.Client, token, path string) ([]byte, int, http.Header, error) {
+	return retryGitHubRead(ctx, func(asked context.Context) ([]byte, int, http.Header, error) {
+		return client.Read(asked, token, path)
+	})
+}
+
+// readGitHubPageWithin is readGitHubPage with the caller's own body limit
+// (githubapp.Client.ReadWithin), for a page whose answer can be past the client's generic one.
+func readGitHubPageWithin(ctx context.Context, client *githubapp.Client, token, path string, limit int64) ([]byte, int, http.Header, error) {
+	return retryGitHubRead(ctx, func(asked context.Context) ([]byte, int, http.Header, error) {
+		return client.ReadWithin(asked, token, path, limit)
+	})
+}
+
+// retryGitHubRead is readGitHubPage's bounded retry around read, each try held as that comment
+// says.
+func retryGitHubRead(ctx context.Context, read func(context.Context) ([]byte, int, http.Header, error)) ([]byte, int, http.Header, error) {
 	for attempt := 1; ; attempt++ {
 		asked, held := githubreads.Hold(ctx)
-		body, status, header, err := client.Read(asked, token, path)
+		body, status, header, err := read(asked)
 		if retryGitHubPage(ctx, attempt, status, err) && waitBeforeRetry(ctx, attempt) == nil {
 			held.Drop()
 			continue

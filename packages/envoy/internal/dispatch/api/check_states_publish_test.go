@@ -257,13 +257,13 @@ func TestEachKindOfChangePublishesTheNewState(t *testing.T) {
 	})
 }
 
-// upsertHead writes #number of the rig's repository at sha, open and attributed to issue, through
-// the writer every intake and reconcile write goes through.
+// upsertHead writes #number of the rig's repository at sha, open and attributed to issue, onto
+// main at ciJobBaseSHA, through the writer every intake and reconcile write goes through.
 func upsertHead(t *testing.T, rig *checkStatesRig, number int, sha, issue, title string) {
 	t.Helper()
 	attributed := issue
-	if err := delivery.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
-		Repo: ciJobRepository, Number: number, HeadSHA: sha, HeadRef: "legion/work", BaseRef: "main", State: "open",
+	if err := rig.served.deps.Attributor.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
+		Repo: ciJobRepository, Number: number, HeadSHA: sha, HeadRef: "legion/work", BaseRef: "main", BaseSHA: ciJobBaseSHA, State: "open",
 		IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true, Title: title,
 		URL: fmt.Sprintf("https://github.com/%s/pull/%d", ciJobRepository, number),
 	}); err != nil {

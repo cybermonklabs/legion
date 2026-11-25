@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  The tester's `phase-finished` notice of the testing move carries what its `reason` names as
+  fields: `head`, the tested head; `waits_for` (`tested_head`, `fence`, `set` or `checks`) and
+  `waiting`, the checks a wait waits for; and `failing`, each check that does not pass at a move
+  back, with its `check`, `state` and `reason`. No other notice carries them. The move writes the
+  reason, the implementer's task and these fields from one value. The way back of migration
+  `20261121074614_phase_verdict_gone` deletes the four keys from each queued notice, since the
+  release before decodes a notice strictly. No test reads the words of a daemon text an agent
+  reads: the tests of the testing move read these fields, the moves and the starts. The
+  comparisons of the move's reason and of the implementer's and the reviewer's task, the words of
+  the `VERDICT_NOT_TAKEN`, `TESTED_HEAD_REQUIRED` and `BACKWARD_REFUSED` refusals, the
+  `HANDOFF_STALE_ENTRY` instruction this change rewrote (from the stale-entry golden, which now
+  holds the code alone), the whole task of a later review round and of a review round's
+  transition start, and the live case's notice text are gone.
+time: 2026-11-24T03:34:14Z
+custom:
+  Issue: testing-move-fields

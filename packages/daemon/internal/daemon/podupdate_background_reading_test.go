@@ -67,6 +67,7 @@ func reportedAt(c supervise.Claim, at time.Time) supervise.Claim {
 // that runs, which alone stops the read of the workspace (roundEnd.settled, dispatch://INFRA-4109
 // R1): a running report the bound stepped over does not stop it.
 func TestPodUpdateBackgroundReadingOfEachClaimOfTheRound(t *testing.T) {
+	t.Parallel()
 	before := podUpdateStart.Add(time.Minute)
 	tests := []struct {
 		name       string

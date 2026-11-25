@@ -13,10 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -115,7 +118,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		delivered:    delivered,
 	}
 	want := newWanted()
-	_, _, _ = eventDestinations(ctx, deps, single, want)
+	_, _ = eventDestinations(ctx, deps, single, want)
 	found, err := loadLookups(ctx, deps.Store.Pool, want)
 	if err != nil {
 		return err
@@ -123,8 +126,8 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	// As a batch does before it reads any destination, and the roles it resolved there are the
 	// ones its own role routes read (resolveDestinations, resolveRoleHolders).
 	resolvedRoles := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
-	list, mentionPending, resolveErr := eventDestinations(ctx, deps, single, found)
-	single.destinationsOf, single.mentionPending = list, mentionPending
+	to, resolveErr := eventDestinations(ctx, deps, single, found)
+	single.destinationsOf, single.mentionPending = to.list, to.mentionPending
 	resolveRoleHolders(ctx, deps, []*batchEvent{single}, resolvedRoles)
 	sender := deps.Publisher.WindowUntil(nil)
 	var failures []error
@@ -1851,24 +1854,20 @@ func TestRunSettlesAPriorityEventPublishedWithoutASend(t *testing.T) {
 // run runs an outbox on database, publishing through publisher, until the returned func stops it.
 func run(t *testing.T, database *store.Store, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
-	return runDeps(t, withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}), time.Second)
+	return runDeps(t, withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
 }
 
-// runDeps runs New(deps) until the returned func stops it, which fails t unless Run returns within
-// stopWithin. A test that needs more of Deps than run's store, publisher and broker - a metrics
-// counter among them - builds it itself and calls this.
-func runDeps(t *testing.T, deps Deps, stopWithin time.Duration) func() {
+// runDeps runs New(deps) until the returned func stops it, which waits for Run to return through
+// the shared wait, with no span of its own. A test that needs more of Deps than run's store,
+// publisher and broker - a metrics counter among them - builds it itself and calls this.
+func runDeps(t *testing.T, deps Deps) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { New(deps).Run(ctx); close(done) }()
 	return func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(stopWithin):
-			t.Fatal("outbox did not stop")
-		}
+		testwait.Receive(t, "the outbox's Run to return once its context ended", done)
 	}
 }
 
@@ -1916,16 +1915,40 @@ func seedAsk(t *testing.T, database *store.Store, issueKey string, author model.
 	`, issueKey, authorJSON, question).Scan(&id); err != nil {
 		t.Fatalf("create ask: %v", err)
 	}
-	if err := asks.FollowAuthor(context.Background(), database.Pool, id, author); err != nil {
-		t.Fatalf("follow ask: %v", err)
+	if author.Kind != "session" || author.ID == "" {
+		return id
 	}
+	inFollowTransaction(t, database, func(tx pgx.Tx) error {
+		_, err := asks.Follow(context.Background(), tx, id, author.ID, author, time.Now(), graphstore.NoEvent)
+		return err
+	})
 	return id
 }
 
 func seedFollower(t *testing.T, database *store.Store, askID, sessionID string) {
 	t.Helper()
-	if _, err := asks.Follow(context.Background(), database.Pool, askID, sessionID); err != nil {
+	inFollowTransaction(t, database, func(tx pgx.Tx) error {
+		_, err := asks.Follow(context.Background(), tx, askID, sessionID,
+			model.Actor{Kind: "session", ID: sessionID}, time.Now(), graphstore.NoEvent)
+		return err
+	})
+}
+
+// inFollowTransaction runs follow in a transaction of its own and commits it: a follow writes
+// its session's node beside the follower row, and the store writes only inside a transaction.
+func inFollowTransaction(t *testing.T, database *store.Store, follow func(pgx.Tx) error) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the follow: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := follow(tx); err != nil {
 		t.Fatalf("follow ask: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the follow: %v", err)
 	}
 }
 

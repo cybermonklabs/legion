@@ -41,8 +41,8 @@ const blockRefsReaderHold = 30 * time.Second
 // Migrate's error. The test does not hold the reader for the drop's whole 120 s: that nothing ends
 // the wait between 30 s and 120 s is read from the code. The boot's context is the one main
 // (cmd/dispatch/main.go) makes with signal.NotifyContext, which carries no deadline, and main
-// hands it to database.Migrate(ctx) with none added. Migrate and migrate (store.go lines 132-156)
-// add none. The one context.WithTimeout in store.go, closeBounded's (line 297), bounds only the
+// hands it to database.Migrate(ctx) with none added. Migrate and migrate (store.go) add none. The
+// one context.WithTimeout in store.go, closeBounded's, bounds only the
 // close of a connection. pgmigrate's bound only a diagnosis of the holders after a lock timeout
 // (lock.go line 394, diagnoseHolders) and the rollback and close after it (line 405), the close of
 // the lock watch's own connection (line 611), and the restore of a non-transactional migration's
@@ -54,8 +54,7 @@ func TestTheBlockRefsTargetIndexDropWaitsOutAReaderPastTheRunnersAttempts(t *tes
 		t.Fatalf("the reader's hold of %s does not outlast the runner's %s of attempts and pauses, so a drop with no bound of its own would pass", blockRefsReaderHold, attempts)
 	}
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, blockRefsSourceIndex)
+	store := openMigratedTestStore(t, blockRefsSourceIndex)
 	reader, err := pgx.Connect(ctx, store.Pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("connect the reader: %v", err)

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -37,7 +38,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: headSHA, CheckedHead: headSHA, Failing: []string{}})
 	}); err != nil {
@@ -188,7 +189,6 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
 		"nothing was recorded",
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session",
-		"complete it with a handoff of its own, never this completion's record or commit",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the refusal = %q, want it to say %q", message, want)
@@ -202,13 +202,10 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 	}
 }
 
-// What a worker refused HANDOFF_STALE_ENTRY is told to do is one text in two languages: the
-// daemon ends every staleEntry refusal with staleEntryInstruction, and the legion tool's
-// description (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`) carries
-// it after the code. This golden is where the two meet, as version.json is for the contract
-// number: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description to the file,
-// so a word changed on the Go side fails here until the fixture is written again
-// (`go test ./internal/api/ -update`), and then fails there until the plugin's text says it too.
+// A worker refused HANDOFF_STALE_ENTRY is told what to do by the words staleEntryInstruction holds,
+// and every staleEntry refusal ends with that constant, whichever clause decided it. The golden
+// writes the wire code alone, which `packages/pi-shared/src/legion-phase-ops.test.ts` reads; no
+// test holds the instruction's words, which an agent reads as a prompt.
 //
 // The code is written out here beside it, so a rename of the constant's value — which would
 // otherwise rewrite the fixture with nobody reading the diff — fails here by its own name.
@@ -228,7 +225,7 @@ func TestStaleEntryInstructionGolden(t *testing.T) {
 			t.Fatalf("staleEntry with pending %+v = %q, want %q and then exactly %q", pending, refusal, clause, staleEntryInstruction)
 		}
 	}
-	golden(t, "stale-entry.json", map[string]string{"code": staleEntryCode, "instruction": staleEntryInstruction})
+	golden(t, "stale-entry.json", map[string]string{"code": staleEntryCode})
 }
 
 // The comparison is made only when both sides name an entry, which is what carries a daemon
@@ -306,7 +303,7 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: headSHA, CheckedHead: headSHA, Failing: []string{}})
 	}); err != nil {
@@ -739,7 +736,7 @@ func seedMovedBackEntry(t *testing.T, h *harness, issue string, role claim.Role,
 func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64, movedBack bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role,
 			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryMovedBack: movedBack})
 	}); err != nil {
@@ -831,7 +828,7 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 func holdPhases(h *harness) {
 	h.supervisor.deps.PhaseHolds = func(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
 		var issue *record.Issue
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			issue, err = record.NewStore().Issue(ctx, tx, key)
 			return err

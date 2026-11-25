@@ -8,7 +8,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,12 +17,13 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
-// Delete deletes sessionID's entry at the revision it reads (bus.KeyValue.DeleteAtRead), each
+// Delete deletes sessionID's entry at the revision it reads (bus.KeyValue.DeleteAtRead, which
+// reads a value that is no record of sessionID again from the stream's leader: recordOf), each
 // bucket call waiting no longer than ctx (bus.Bounded): DELETE /v1/sessions/<session_id> passes its
-// request's own context. A delete ctx abandoned may still land after this answer, and that is safe:
-// it deletes only the revision it read, so a registration that landed since is kept, and an entry
-// the read found absent is left alone rather than deleted at no revision, which would take the
-// entry a registration wrote between that read and the delete.
+// request's own context. A delete ctx abandoned may still land after this answer, and that is
+// safe: it deletes only the revision it read, so a registration that landed since is kept, and an
+// entry the read found absent is left alone rather than deleted at no revision, which would take
+// the entry a registration wrote between that read and the delete.
 func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	// The fence read before the delete is the bucket's this handle reaches only when the read under
 	// way began in its epoch (kvwatch.Copy.FenceFor).
@@ -31,7 +31,7 @@ func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
+	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(ctx, sessionID, r.recordOf(sessionID)) })
 	if !answered {
 		return fmt.Errorf("delete session %s from the bucket: %w", sessionID, err)
 	}
@@ -40,6 +40,16 @@ func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	}
 	r.reconcileDeleted(ctx, kv, epoch, sessionID, max(revision, read))
 	return nil
+}
+
+// recordOf is whether a value is a record of sessionID (DecodeEntry), the test a read fenced on a
+// revision takes (bus.KeyValue.ReadStored): a value it refuses is read again from the stream's
+// leader, whose revision is the one the value is stored at.
+func (r *SessionRegistry) recordOf(sessionID string) func(value []byte) bool {
+	return func(value []byte) bool {
+		_, err := DecodeEntry(sessionID, value)
+		return err == nil
+	}
 }
 
 // DeleteOutcome is what a conditional delete (DeleteIf) did with the entry it was asked to
@@ -129,12 +139,13 @@ func (c DeleteConditions) keeps(stored SessionEntry) DeleteOutcome {
 // Every comparison holds at the revision it deletes: the entry is read for its value and its
 // revision together, and the delete names that revision (nats.LastRevision), so a registration
 // that landed in between is kept rather than deleted on the strength of a value that is no longer
-// stored. JetStream refuses that delete with wrong last sequence (10071, which nats.go names
-// nats.ErrKeyExists), and the whole sequence runs once more: the common cause is the deleting
-// instance's own heartbeat landing between the read and the delete, and answering "kept" for it
-// would leave the predecessor's entry alive and turn the role claim that follows into a 409 for
-// no reason. A second lost compare-and-swap answers EntryKeptAfterLostRace and no error, the
-// outcome that says the entry stayed without claiming whose registration it is now.
+// stored. JetStream refuses that delete with wrong last sequence (bus.IsCASConflict: 10071, or
+// 10164 from a replicated bucket whose winning write is still being replicated), and the whole
+// sequence runs once more: the common cause is the deleting instance's own heartbeat landing
+// between the read and the delete, and answering "kept" for it would leave the predecessor's entry
+// alive and turn the role claim that follows into a 409 for no reason. A second lost
+// compare-and-swap answers EntryKeptAfterLostRace and no error, the outcome that says the entry
+// stayed without claiming whose registration it is now.
 //
 // EntryDeleted and no error means the entry is gone; any kept outcome and no error means the
 // entry stayed, and the caller keeps whatever it names; an error means the bucket did not answer,
@@ -150,7 +161,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 	fence := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	for attempt := 0; ; attempt++ {
-		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.ReadStored(ctx, sessionID, r.recordOf(sessionID)) })
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 		}
@@ -161,16 +172,29 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			return EntryUnanswered, err
 		}
 		revision := entry.Revision()
-		var stored SessionEntry
-		if err := json.Unmarshal(entry.Value(), &stored); err != nil {
+		// A server-written record that does not decode as sessionID's registration is read as no
+		// record here (DecodeEntry refuses it) and, where the delete runs, deleted at the fenced
+		// delete's leader read (DeleteAt below). One that does decode as the registration
+		// is read like the registration it looks like - a leader read would be needed to tell it
+		// from one, which this delete does not make - and no reader trusts it: every reader confirms
+		// a session by the leader read (StoredByWriter), which reads such a record as absent.
+		stored, err := DecodeEntry(sessionID, entry.Value())
+		if err != nil {
 			// A value this build cannot read names no instance and no moment, so it belongs
 			// to nobody and is older than every stop: it is deleted as an entry that meets
 			// every condition is, and the delete is not blocked by a record no reader can act
-			// on. What json.Unmarshal decoded before the error is dropped for that reason: on
-			// a type error it still fills every field it could read, wherever the bad field
-			// sits, so a value carrying a client instance id or a heartbeat would otherwise be
-			// compared against the caller's and kept — the opposite of what this branch
-			// decides.
+			// on. A value that is not this session's registration (DecodeEntry: another
+			// session's record copied here, a JetStream answer, a message the server wrote)
+			// is the same: every reader reads it as no record, and the instance and moment it
+			// names are another session's, a writer's choice or none. What json.Unmarshal
+			// decoded before an error is dropped for that reason: on a type error it still
+			// fills every field it could read, wherever the bad field sits, so a value
+			// carrying a client instance id or a heartbeat would otherwise be compared against
+			// the caller's and kept — the opposite of what this branch decides. Its revision
+			// is the one the stream's leader reports (ReadStored), the sequence the value is
+			// stored at: a copy the server stored carries its source's Nats-Sequence header
+			// ahead of its own, and a delete fenced on the revision a direct get reports for it
+			// is refused at every attempt.
 			stored = SessionEntry{}
 			r.logger().Warn("session registry deleting a malformed value under a conditional delete",
 				slog.String("key", entry.Key()),
@@ -181,23 +205,28 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 		if kept := conditions.keeps(stored); kept != EntryDeleted {
 			return kept, nil
 		}
-		_, answered, err = bus.Bounded(ctx, func() (struct{}, error) {
-			return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
+		deletedAt, answered, err := bus.Bounded(ctx, func() (uint64, error) {
+			return kv.DeleteAt(ctx, sessionID, revision)
 		})
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("delete session %s from the bucket at revision %d: %w", sessionID, revision, err)
 		}
-		if errors.Is(err, nats.ErrKeyExists) {
+		switch {
+		case err == nil:
+			// DeleteAt landed the fenced delete, or deleted a record the server wrote at the
+			// sequence it is stored at (bus.KeyValue.DeleteAt's leader read): the entry is gone.
+			r.reconcileDeleted(ctx, kv, epoch, sessionID, max(fence, deletedAt))
+			return EntryDeleted, nil
+		case bus.IsCASConflict(err):
+			// A write landed between the read and the delete: the sequence runs once more for
+			// it, and after a retry the row is reported kept to that write.
 			if attempt == 0 {
 				continue
 			}
 			return EntryKeptAfterLostRace, nil
-		}
-		if err != nil {
+		default:
 			return EntryUnanswered, err
 		}
-		r.reconcileDeleted(ctx, kv, epoch, sessionID, max(fence, revision))
-		return EntryDeleted, nil
 	}
 }
 

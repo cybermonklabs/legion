@@ -14,10 +14,7 @@ const deliveryRunsChangesVersion = 102
 // a concluded run, and a run inserted after it reads false.
 func TestARunWrittenAfterTheMigrationStartsIncomplete(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, deliveryRunsChangesVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", deliveryRunsChangesVersion-1, err)
-	}
+	store := openMigratedTestStore(t, deliveryRunsChangesVersion-1)
 	insert := `
 		insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, url)
 		values ('acme/widgets', $1, 'deploy', 'abc', now(), now(), 'https://github.com/acme/widgets/actions/runs/1')`

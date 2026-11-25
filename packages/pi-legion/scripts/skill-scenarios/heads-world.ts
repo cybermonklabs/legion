@@ -124,17 +124,14 @@ async function agentPut(route: string, input: Record<string, unknown>): Promise<
 /** `heads-issue <file> <scenario> [<case>]`: the run's issue, before rig.sh's heads_fixture makes
  * branches named after it. First the GitHub stand-in holds the run's repository and no pull
  * request, since the delivery settings read GitHub before Dispatch stores them
- * (settings_delivery.go); then the run's project LWEVAL is mapped to the repository and the
+ * (settings_delivery.go); then the run's project LWEVAL takes the repository as its default and the
  * delivery settings are written, as scripts/e2e/verification-results.ts writes them, since the
  * intake takes an event only while a settings row exists; then the issue, its spec, and its
  * Verification document, whose one check k1 carries `ci_check` in the case ci-only and in
  * ci-pass-and-fail. The fixture names that document, whose block k1 rig.sh's ci_job_results reads. */
 export async function headsIssue(file: string, world: string): Promise<void> {
   await seedGithub({});
-  await agentPut(`/api/v1/settings/repo-projects/${HEADS_REPO}`, {
-    default: true,
-    project: "LWEVAL",
-  });
+  await agentPut("/api/v1/projects/LWEVAL/default-repository", { repo: HEADS_REPO });
   await agentPut("/api/v1/settings/delivery", {
     deploy_repo: HEADS_REPO,
     deploy_workflow_path: ".github/workflows/deploy.yml",
@@ -247,7 +244,7 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  * tester-reads-no-ci k3's job at #702's head `in_progress` (ci-late) or `failure` (ci-red). It serves
  * no `commit_pulls`, so an event is the one thing that teaches
  * Dispatch a head. One `opened` envelope of each pull request goes out on the NATS
- * DISPATCH_E2E_NATS_URL names, with the subject and the body of `publishPullRequest`
+ * DISPATCH_E2E_NATS_URLS names, with the subject and the body of `publishPullRequest`
  * (scripts/e2e/verification-results.ts). Then the case's results, each as the role it names, and
  * the handoff records, in this order:
  *   - sibling-fails: a pass of the implementer and one of the tester at #702's head, a fail of the
@@ -277,9 +274,10 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  *     head, then the `implement` record for the tester. k3 holds no result of a role: its state is
  *     its job's.
  * Each record is written as its role's session (IMPLEMENTER, TESTER, REVIEWER), with the fields its
- * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's
- * `implementerProof` is `{how}` alone, since no phase completion or record carries its verdict. It
- * adds each record's `{id, version}` and each pull request body's line of k1 to <file>. */
+ * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's holds no
+ * `implementerProof`, `failures` or `failed`, since each failure is a fail result on its check and
+ * no phase completion or record carries a verdict. It adds each record's `{id, version}` and each
+ * pull request body's line of k1 to <file>. */
 export async function headsEvents(file: string, headsFile: string, world: string): Promise<void> {
   const fixture = HeadsFixture.parse(JSON.parse(readFileSync(file, "utf8")));
   const heads = z
@@ -402,9 +400,13 @@ export async function headsEvents(file: string, headsFile: string, world: string
           : {}),
   });
 
-  const natsUrl = process.env.DISPATCH_E2E_NATS_URL ?? "";
-  if (natsUrl === "") throw new Error("DISPATCH_E2E_NATS_URL names no NATS (rig.sh own_github)");
-  const nats = await connect({ name: "skill-scenarios-seed", servers: natsUrl });
+  const natsServers = (process.env.DISPATCH_E2E_NATS_URLS ?? "")
+    .split(",")
+    .map((server) => server.trim())
+    .filter((server) => server !== "");
+  if (natsServers.length === 0)
+    throw new Error("DISPATCH_E2E_NATS_URLS names no NATS (rig.sh own_github)");
+  const nats = await connect({ name: "skill-scenarios-seed", servers: natsServers });
   const codec = StringCodec();
   const [owner, name] = HEADS_REPO.split("/");
   for (const pr of prs) {
@@ -486,9 +488,6 @@ export async function headsEvents(file: string, headsFile: string, world: string
               phase,
               issue: fixture.issue,
               head,
-              implementerProof: { how: `read k1 at ${head} with dispatch results` },
-              failures: [],
-              failed: 0,
               classSearch: [],
             }
           : {

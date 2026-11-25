@@ -327,7 +327,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 
 // v1RoutePatterns is how many patterns registerV1Routes registers today, each of which the walk
 // below must visit at least once.
-const v1RoutePatterns = 15
+const v1RoutePatterns = 16
 
 // R4 on a real bus, with no change to the listener's own code: a read-only token — the project
 // scope none beside the one scope read, which a read entry mints for Dispatch's read list — is
@@ -405,6 +405,7 @@ func walkV1RoutesRefusing(t *testing.T, rig *brokerRig, session string, refused 
 		{http.MethodPost, "/v1/messages/publish", "/v1/messages/publish",
 			`{"topic":"notifications.github.rig","source_session":"<session>","message":"a message of the walk"}`},
 		{http.MethodDelete, "/v1/sessions/<session>", "/v1/sessions/", ""},
+		{http.MethodGet, "/v1/sessions/<session>/relay", relaySocketPattern, ""},
 		{http.MethodGet, "/v1", "/v1", ""},
 		{http.MethodGet, "/v1/no-such-route", "/v1/", ""},
 	}

@@ -99,6 +99,8 @@ evidence=''
 timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 
 # DISPATCH_BIN is this script's input, read before the sweep below drops every DISPATCH_* variable.
 # VERIFICATION_RESULTS_E2E_DISPATCH_CLI, its other input, is read beside it; the sweep leaves it.
@@ -128,8 +130,10 @@ fake_envoy_pid=''
 fake_github_pid=''
 dispatch_pid=''
 
-# cleanup stops what the run started and exits with rc: the script's own status for EXIT, 128 plus
-# the signal's number for INT and TERM, so an interrupted run never reports success.
+# cleanup stops what the run started and prints the run's last line through lib/run-verdict.sh,
+# which exits with rc: the script's own status for EXIT, 128 plus the signal's number for INT and
+# TERM. PASS needs rc 0 and run_end, the script's last statement, so a run that a HUP ended, whose
+# EXIT trap reads 0, reads FAIL as an interrupted run does. The work directory goes with a pass.
 cleanup() {
   local rc=$1
   trap - EXIT INT TERM
@@ -138,16 +142,16 @@ cleanup() {
   stop_pid "$fake_github_pid"
   stop_pid "$fake_envoy_pid"
   stop_pid "$nats_pid"
-  if [ -z "$work" ]; then
-    echo "verification results e2e: FAIL at $check after $((SECONDS - started))s" >&2
-  elif [ "$rc" -eq 0 ]; then
-    rm -rf "$work"
-    echo "verification results e2e: PASS in $((SECONDS - started))s"
-  else
-    rm -rf "${work:?}/bin" "${work:?}/nats-store"
-    echo "verification results e2e: FAIL at $check after $((SECONDS - started))s (logs: $work)" >&2
+  if [ -n "$work" ]; then
+    if run_passed "$rc"; then
+      rm -rf "$work"
+    else
+      rm -rf "${work:?}/bin" "${work:?}/nats-store"
+    fi
   fi
-  exit "$rc"
+  run_verdict "$rc" \
+    "verification results e2e: PASS in $((SECONDS - started))s" \
+    "verification results e2e: FAIL at $check after $((SECONDS - started))s${work:+ (logs: $work)}"
 }
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
@@ -304,3 +308,4 @@ case "$status" in
     exit 2
     ;;
 esac
+run_end

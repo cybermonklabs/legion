@@ -722,17 +722,16 @@ async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise
 
 await seedRepositories({});
 
-for (const [key, name, mapped] of [
+for (const [key, name, defaultRepo] of [
   ["VRF", "Verification results", repo],
   ["VRH", "Verification results, unreadable repository", hiddenRepo],
 ] as const) {
   await asPerson("POST", "/api/v1/projects", { key, name }).catch((error: unknown) =>
     setupFailed(`project ${key}`, error)
   );
-  await asSession("PUT", `/api/v1/settings/repo-projects/${mapped}`, {
-    default: true,
-    project: key,
-  }).catch((error: unknown) => setupFailed(`repository mapping ${mapped}`, error));
+  await asSession("PUT", `/api/v1/projects/${key}/default-repository`, {
+    repo: defaultRepo,
+  }).catch((error: unknown) => setupFailed(`default repository ${defaultRepo} of ${key}`, error));
 }
 
 // The delivery intake handles an envelope only while the settings cache holds a row, so the proof

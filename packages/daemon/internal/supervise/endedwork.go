@@ -15,10 +15,10 @@ import (
 // speaks of its last turn at all, and whether the record has been told. The next process is told
 // it in a prompt: the sentence RelaunchSentence composes from it, in front of the task the claim
 // holds or as a delivery of the daemon's own when it holds none (Delivery.message,
-// queueRelaunch), and marked told at the confirmation of the prompt that carried it (confirm).
-// This is the record that sentence is built from, written where the machine lets the process go
-// (letGo, recordEnd) and persisted on the claim's row (store's ended_work), since that prompt can
-// be a relaunch, a wake and a daemon restart away.
+// queueRelaunch), and marked told at the confirmation of the prompt that carried it
+// (confirmCarrying). This is the record that sentence is built from, written where the machine
+// lets the process go (letGo, recordEnd) and persisted on the claim's row (store's ended_work),
+// since that prompt can be a relaunch, a wake and a daemon restart away.
 //
 // The zero value is a claim whose let-go ended nothing worth telling, or that has been let go of
 // none: Cause is empty.
@@ -71,10 +71,10 @@ type EndedWork struct {
 	// (dispatch://INFRA-3276 R3, "unknown is not silence").
 	Reported bool `json:"reported"`
 	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
-	// confirmation told it, as confirm states, or "" for an old session's record the abandonment
-	// of that session ended (forgetSession). A record not yet told is replaced by a newer one only
-	// as the union of the two (joined), so what the earlier let-go ended is not lost before anyone
-	// reads it.
+	// confirmation told it, as confirmCarrying states, or "" for an old session's record the
+	// abandonment of that session ended (forgetSession). A record not yet told is replaced by a
+	// newer one only as the union of the two (joined), so what the earlier let-go ended is not
+	// lost before anyone reads it.
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
 }
@@ -209,7 +209,7 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 //
 // A record written here is new words, so a prompt that carried the sentence of the record it
 // replaces carried none of this one: the mark of such a prompt goes (Machine.carried), and only a
-// prompt sent from here on tells this record when its turn begins (confirm).
+// prompt sent from here on tells this record when its turn begins (confirmCarrying).
 //
 // Before anything else it takes back a telling the let-go cannot vouch for, that of a confirmation
 // a turn took while the send of its prompt was in flight or a prompt of the task still waited on

@@ -14,8 +14,7 @@ import (
 // lexemes are those of the opening its bounded vector indexes.
 func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 87)
+	store := openMigratedTestStore(t, 87)
 	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name) values ('CORE', 'Core')`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -113,8 +112,7 @@ func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
 // locks below stand for that release's.)
 func TestMigrate0089WaitsForAReparentWithoutDeadlockingIt(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 88)
+	store := openMigratedTestStore(t, 88)
 	// The issues name a person as their assignee, and that person has signed in, so the
 	// backfill the migrate below ends at (20261111210103) reads CORE's default from them.
 	if _, err := store.Pool.Exec(ctx, `

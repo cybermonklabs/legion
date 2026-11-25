@@ -17,8 +17,7 @@ const beforeDocCompactionOwed = 157
 // a compaction could fold.
 func TestTheCompactionOwedMigrationNamesEveryDocumentOfMoreThanOneRow(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeDocCompactionOwed)
+	store := openMigratedTestStore(t, beforeDocCompactionOwed)
 	documents := map[string]int{"none": 0, "one": 1, "two": 2, "three": 3}
 	ids := map[string]string{}
 	if _, err := store.Pool.Exec(ctx, `

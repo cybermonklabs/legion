@@ -204,12 +204,14 @@ func ConsumerLagViewsOf(lags []intake.ConsumerLag) []ConsumerLagView {
 // body without the key, as a daemon before contract 43 serves, decodes nil.
 //
 // narrowed is set on the copy the state route serves a caller below shaping.go's
-// repositoriesLiveContract (api's withoutRepositoriesLive): that caller's plugin reads the block
-// with the schema of contract 152, which requires `owners`, `mapped`, `refused` and
-// `withoutWebhookApp` beside `caches` and knows no `live`, so it would refuse the whole state for
-// the block this contract writes, which lacks the first three. MarshalJSON writes that one body in
-// the shape contract 152 gave the block, from these same entries (at152), rather than this block
-// with keys taken out, since no part of it is a block that schema parses.
+// repositoriesLiveContract (api's withoutRepositoriesLive). A plugin from 152 to 189 reads the
+// block with the schema of contract 152, which requires `owners`, `mapped`, `refused` and
+// `withoutWebhookApp` beside `caches` and knows no `live`, and one below 152 with an earlier schema
+// that requires them too, so it would refuse the whole state for the block this contract writes,
+// which lacks the first three. A plugin from 193 on reads every key of the block as optional
+// (main's #3659), and it is served the older block all the same. MarshalJSON writes that one body
+// in the shape contract 152 gave the block, from these same entries (at152), rather than this
+// block with keys taken out, since no part of it is a block that schema parses.
 //
 // appsHidden is set on the copy the route serves a caller below shaping.go's
 // repositoryAppsContract (api's withoutRepositoryApps): the strict reader at 46 and 48 knows no
@@ -332,32 +334,13 @@ type repositoriesAt152 struct {
 
 // servedRepositoryAt152 is an entry of contract 152's `mapped`: a repository both role Apps are
 // installed on, under the name it is served under, with `default`, which that contract's schema
-// requires and which the daemon no longer knows, so it is false on every entry.
+// requires and which the daemon no longer knows, so it is false on every entry, and Apps, absent
+// only on a block served a caller below repositoryAppsContract (at152).
 type servedRepositoryAt152 struct {
-	Repo    string               `json:"repo"`
-	Default bool                 `json:"default"`
-	Apps    AppInstallationsView `json:"apps"`
-	Cache   *CacheView           `json:"cache,omitempty"`
-	// appsHidden is the block's RepositoriesView.appsHidden, set on every entry of a block served
-	// a caller below repositoryAppsContract, whose strict reader knows no `apps`: MarshalJSON
-	// leaves the key off that entry rather than writing both Apps false.
-	appsHidden bool
-}
-
-// MarshalJSON leaves `apps` off the one entry whose reader knows no such key, and writes it on
-// every other, exactly as CheckView.MarshalJSON leaves off `role`: that entry is marshalled
-// through a value whose own nil `apps` field, being `omitempty`, shadows the embedded one and so
-// is written by nothing. The shadowing field is the whole mechanism.
-func (m servedRepositoryAt152) MarshalJSON() ([]byte, error) {
-	type wire servedRepositoryAt152
-	out := wire(m)
-	if m.appsHidden {
-		return json.Marshal(struct {
-			wire
-			Apps *AppInstallationsView `json:"apps,omitempty"`
-		}{wire: out})
-	}
-	return json.Marshal(out)
+	Repo    string                `json:"repo"`
+	Default bool                  `json:"default"`
+	Apps    *AppInstallationsView `json:"apps,omitempty"`
+	Cache   *CacheView            `json:"cache,omitempty"`
 }
 
 // refusedRepositoryAt152 is an entry of contract 152's `refused`: a repository a role App is not
@@ -400,18 +383,18 @@ func (r RepositoriesView) at152() repositoriesAt152 {
 		block.Caches = []CacheView{}
 	}
 	for _, repo := range r.Live {
-		if repo.Apps != nil && repo.Apps.Implement && repo.Apps.Review {
-			served := repo.servedName()
-			owner, _, _ := strings.Cut(served, "/")
-			block.Owners = append(block.Owners, strings.ToLower(owner))
-			block.Mapped = append(block.Mapped, servedRepositoryAt152{Repo: served, Apps: *repo.Apps, Cache: repo.Cache, appsHidden: r.appsHidden})
-			continue
-		}
-		reason := cmp.Or(repo.ReadError, repo.NotInstalled(), notAnsweredAt152)
 		apps := repo.Apps
 		if r.appsHidden {
 			apps = nil
 		}
+		if repo.Apps != nil && repo.Apps.Implement && repo.Apps.Review {
+			served := repo.servedName()
+			owner, _, _ := strings.Cut(served, "/")
+			block.Owners = append(block.Owners, strings.ToLower(owner))
+			block.Mapped = append(block.Mapped, servedRepositoryAt152{Repo: served, Apps: apps, Cache: repo.Cache})
+			continue
+		}
+		reason := cmp.Or(repo.ReadError, repo.NotInstalled(), notAnsweredAt152)
 		block.Refused = append(block.Refused, refusedRepositoryAt152{Repo: repo.Repo, Reason: reason, Apps: apps})
 	}
 	slices.Sort(block.Owners)
@@ -589,17 +572,17 @@ type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
-	// past its review — accepting, retro and merging hold none — or until it is done or
-	// Dispatch takes it out of the workflow, except while it waits on another issue before that
-	// point (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
+	// issue holds one of the cap's slots while it stands in a phase that keeps one, from the moment
+	// the daemon starts it until it is done or Dispatch takes it out of the workflow — accepting,
+	// retro and merging hold none, and a step after accepting whose phase keeps one waits for one
+	// again — except while it waits on another issue (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
 	// three of these, and an issue at work, one held and one waiting on a person are each here,
-	// while one past its review — a merger at work in merging, one in merging whose start a
+	// while one in accepting, retro or merging — a merger at work in merging, one in merging whose start a
 	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
 	// standing in merging while the rest of its tree runs — and one whose phase has left the
 	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
-	// An issue the daemon has started that waits on another issue before its review is missing
-	// from here too, other than the three roots that keep their slot through such a wait
+	// An issue the daemon has started that waits on another issue in a phase that keeps a slot is
+	// missing from here too, other than the three roots that keep their slot through such a wait
 	// (blockers.waitsOf): it holds no slot while it waits (record.Issue.ReleasedForWaitAt,
 	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
 	// tells it from an issue a person parked, which stands in none of the three.
@@ -630,10 +613,10 @@ type Admission struct {
 	// issue key. It is the other half of the three lists above — a reader that has `active`,
 	// `waiting` and this one has every issue of the workflow and what each is doing — so the
 	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
-	// the one that waits: a root whose Legion label is off, an issue none of the other words
-	// is true of, or an issue past its review under `at_work`, which no other issue holds
-	// (record.HeldAtWork says which issues read it). Never null; empty when every issue of the
-	// workflow runs or waits in the line.
+	// the one that waits: a root whose Legion label is off, a task that was stopped
+	// (`task_stopped`), an issue none of the other words is true of, or an issue in accepting, retro or merging
+	// under `at_work`, which no other issue holds (record.HeldAtWork says which issues read it).
+	// Never null; empty when every issue of the workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below shaping.go's treeContract): that
@@ -718,8 +701,15 @@ type Issue struct {
 	Repo          string `json:"repo,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
-	// sent it to the controller. Absent otherwise, and absent while the issue's tree lingers or is
-	// closed: the record keeps the reason, and the view shows it again once the tree is re-admitted.
+	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
+	// it ran (record.HoldTaskStopped), and `children` while a parent whose task's last step is not
+	// the owner's acceptance waits, before its retro, for the issues beneath it
+	// (record.HoldForChildren). A hold of either of the last two is no architect's to retry or
+	// escalate: a later version of the plan
+	// starts a stopped task again, and the last issue beneath a parent to leave starts its retro. A
+	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
+	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
+	// reason, and the view shows it again once the tree is re-admitted.
 	HoldReason string `json:"holdReason,omitempty"`
 	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
 	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:
@@ -749,12 +739,13 @@ type Issue struct {
 	Workers     map[claim.Role]PhaseView `json:"workers"`
 	PullRequest *PullRequestView         `json:"pullRequest,omitempty"`
 	DesignGate  *GateView                `json:"designGate,omitempty"`
-	// GatedSteps is the deployment's design gate as this issue stands in it: one entry for each
-	// step the deployment gates, in the order it gates them (contract 55). It is absent, as the
-	// gate itself is, for an issue that is not its tree's root, for a deployment that gates no
-	// step and for an issue the workflow does not record, so the wire never carries an empty
-	// list. DesignGate is unchanged beside it: it is the spec step's row, which every reader that
-	// asks one question of one gate still takes.
+	// GatedSteps is the tree's design gate as this issue stands in it: one entry for each step
+	// the tree is gated on (record.TreeSteps), in the order the deployment gates them with a
+	// criteria row the root's architect registered beside a deployment that gates spec and not
+	// criteria after them (contract 55). It is absent, as the gate itself is, for an issue that
+	// is not its tree's root, for a deployment that gates no step and for an issue the workflow
+	// does not record, so the wire never carries an empty list. DesignGate is unchanged beside it:
+	// it is the spec step's row, which every reader that asks one question of one gate still takes.
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
 	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present
@@ -853,7 +844,7 @@ type Issue struct {
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
 	// is how long that tree has been still at this read, in hours (contract 111). The two are one
 	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every
-	// issue of one tree carries the same pair: an issue past its review, which holds no slot, and
+	// issue of one tree carries the same pair: an issue in accepting, retro or merging, which holds no slot, and
 	// a done child recorded under a live tree each answer their tree's quiet time, because what
 	// has stopped is the tree and not the issue a reader happens to hold. Both are absent
 	// together for an issue whose tree is not live — one whose tree has left the workflow, and
@@ -880,7 +871,8 @@ type Issue struct {
 
 // AssignmentView is one experiment's answer for an issue as the state shows it
 // (record.Assignment): the name the project declares the experiment under, the arm the draw gave
-// the unit, the mode in force at that draw and the instant of it.
+// the unit, the mode in force at that draw, the instant of it, and the group the arm set (Plan,
+// `owner` or `default`), as the draw recorded it.
 //
 // Variant and Mode ride the wire whatever they hold, the empty string included, and DrawnAt is
 // absent where the row holds none: a hand-over settles a child at no arm for an experiment the
@@ -888,11 +880,15 @@ type Issue struct {
 // is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
 // Carried, the record's mark of such a row, is no part of the view: what a reader of the state
 // measures is the arm the unit ran under, and a carried row names the arm as a drawn one does.
+// Plan is absent where the arm named none. It is the group the issue runs on for its whole life,
+// read from the record rather than from the settings, which can change an arm's plan or rename
+// the arm after the draw.
 type AssignmentView struct {
 	Experiment string     `json:"experiment"`
 	Variant    string     `json:"variant"`
 	Mode       string     `json:"mode"`
 	DrawnAt    *time.Time `json:"drawnAt,omitempty"`
+	Plan       string     `json:"plan,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -985,8 +981,9 @@ type ClaimView struct {
 	// start did not produce a running agent — a launcher that refused it, a failed init container,
 	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
 	// Each is absent until it happens. The two causes are separate because they answer separate
-	// questions, and LastReady is what dates them: a cause older than it is one the agent running
-	// now has already survived.
+	// questions. LastReady dates the death's cause: a death older than it is one the agent running
+	// now has already survived. The claim drops its start failure when its agent says it is ready
+	// (supervise.Claim.LastStartFailure says which older claims can still hold one from before).
 	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
 	LastStartFailure string     `json:"lastStartFailure,omitempty"`
 	LastReady        *time.Time `json:"lastReady,omitempty"`
@@ -1126,7 +1123,7 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		Step: StepViewOf(c.Step),
 		// When the agent last began and last ended a turn, and when it last said it could be
 		// prompted, each absent until it happens: they are what tells a worker still making
-		// progress from one wedged in a turn, and what dates the two causes below.
+		// progress from one wedged in a turn, and the ready is what dates the death's cause below.
 		LastTurnStart:    instant(c.LastTurnStart),
 		LastTurnEnd:      instant(c.LastTurnEnd),
 		LastReady:        instant(c.LastReady),
@@ -1222,7 +1219,7 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 // completion reported, the Dispatch handoff record it named — and the three counts the phase
 // carries: the passes it has made through its stretch of the workflow, which every backward move
 // counts one of, the review rounds, which only a review that requested changes counts, and the
-// counts of the moves back, by kind, that made those rounds.
+// counts of the moves back, by kind, that made those passes.
 type PhaseView struct {
 	Claim         ClaimView          `json:"claim"`
 	HandoffCommit string             `json:"handoffCommit,omitempty"`
@@ -1230,14 +1227,14 @@ type PhaseView struct {
 	Pass          int                `json:"pass"`
 	Rounds        int                `json:"rounds"`
 	// BackwardMoves is how many times the issue's work has gone back by each kind of move, keyed
-	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "<from>-<to>" as phase.MovePairs() writes the pairs: "testing-implementing",
 	// "reviewing-implementing", "merging-implementing" and the rest. It is absent, and never
 	// `{}`, for an issue that has had no move back, so a reader tells an issue that carries no
-	// counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
-	// exactly: it rises on every move back, a conflict round included, where no pair counts a
-	// conflict round, since nobody sent the work back. The counts start empty at the migration
-	// that added them and are never filled in from the past, so an issue already in flight reads
-	// counts that add up to less than its `rounds`.
+	// counts at all from one whose counts the daemon holds. Rounds beside it counts review rounds
+	// alone, a conflict round included, and Pass counts every move back, where no pair counts a
+	// move made at a conflicting head, since nobody sent the work back. The counts start empty at
+	// the migration that added them and are never filled in from the past, so an issue already in
+	// flight reads counts that add up to less than its `pass`.
 	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
 	// passHidden is set on the copy the state route serves a caller below the contract that added
 	// Pass (api's withoutStateMachineFields, below shaping.go's stateMachineContract): that reader
@@ -1334,8 +1331,8 @@ type GateView struct {
 	ApprovedVersion *int   `json:"approvedVersion"`
 }
 
-// GatedStepStatus is where one gated step of a deployment stands, as the issue's gate records say
-// it: the four answers a record can give.
+// GatedStepStatus is where one step of a tree's design gate (record.TreeSteps) stands, as the
+// issue's gate records say it: the four answers a record can give.
 type GatedStepStatus string
 
 const (
@@ -1355,9 +1352,9 @@ const (
 	GatedStepChangesRequested GatedStepStatus = "changes_requested"
 )
 
-// GatedStepView is one step of the deployment's design gate as one issue stands in it: the step,
-// the document its architect registered for the step, that document's current version, the
-// version a person approved, where the step stands and, for a step whose reviewer asked for
+// GatedStepView is one step of a tree's design gate (record.TreeSteps) as its root stands in it:
+// the step, the document its architect registered for the step, that document's current version,
+// the version a person approved, where the step stands and, for a step whose reviewer asked for
 // changes, the reason they gave. A step nobody has registered carries no document, no version and
 // no approval.
 type GatedStepView struct {
@@ -1369,15 +1366,18 @@ type GatedStepView struct {
 	ChangesReason   string            `json:"changesReason,omitempty"`
 }
 
-// GatedStepViewsOf is steps, the design-gate steps a deployment gates, as one issue stands in
-// them: gates are that issue's gate rows by step (record.Store.GatesOf), and the answer is one
-// entry for each step, in the order the deployment gates them, never nil.
+// GatedStepViewsOf is steps, the design-gate steps one tree is gated on (record.TreeSteps), as
+// its root stands in them: gates are that issue's gate rows by step (record.Store.GatesOf), and
+// the answer is one entry for each step, in the order steps names them, never nil.
 //
-// The entries are the deployment's steps and not the issue's rows. A row of a step the deployment
-// no longer gates stays in the record — a deployment that gates that step again reads its true
+// The entries are the tree's steps and not the issue's rows. A row of a step the deployment no
+// longer gates stays in the record — a deployment that gates that step again reads its true
 // state — and appears in no entry here, because it holds no work: every reader of the gate asks
-// the configured steps (classify.DesignGatesOpen). A configured step with no row is the other
-// direction, and is answered unregistered: it holds the tree's work, so a reader must see it.
+// the tree's steps (classify.DesignGatesOpen). A criteria row the architect registered beside a
+// deployment that gates spec and not criteria is one of the tree's steps, because it holds the
+// work, so the caller passes record.TreeSteps' answer and the row is an entry. A step with no row
+// is the other direction, and is answered unregistered: it holds the tree's work, so a reader must
+// see it.
 func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []GatedStepView {
 	views := make([]GatedStepView, 0, len(steps))
 	for _, step := range steps {
@@ -1873,9 +1873,4 @@ func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
 // table a second time at another moment.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
-}
-
-// StateTransactions begins the one snapshot transaction every state response reads through.
-type StateTransactions interface {
-	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }

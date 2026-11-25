@@ -74,9 +74,12 @@ type grantValues struct {
 //
 // The policy version is what carries a change the broker took by its periodic reload - a retag
 // a console or an infra-applier made, a raised tier, a disabled version - to the values a pod
-// already holds: a name's reread drops that one name (DropName), and nothing else did. The
-// values are read again, which runs the release checks again, and a grant those checks now
-// refuse ends there.
+// already holds: a name's reread drops the names served from the value it read where it moved
+// that value (DropName), and nothing else did. It holds each profile's digest too
+// (policy.NewSet), so a broker serving an edited profile answers another version, and a token
+// minted under the profile as it was is not spent again. The values are read again, which runs
+// the release checks again, and a grant those checks now refuse ends there: one whose profile is
+// not the one its request was decided under among them.
 //
 // keep is Options.KeepValues: it holds the answer across all three, the reread, the moved
 // version and the margin alike, which is the negative control of the checks they belong to and
@@ -141,7 +144,7 @@ func (g *grantValues) drop(name string) {
 // read, or a minted value coming within mintAgainBefore of its expiry.
 //
 // The map holds one entry per grant this pod has served. A grant's values are a handful of
-// strings and a pod is rolled by every deployment and by every change to the rules file, so
+// strings and a pod is rolled by every deployment and by every change to the profiles file, so
 // nothing evicts them; what ends a grant's reach is the connection check, which refuses a
 // placeholder whose grant has ended whatever this map still holds.
 func (s *Server) valuesFor(ctx context.Context, grantID string) (map[string]requests.AirlockSecret, error) {
@@ -186,8 +189,12 @@ func (s *Server) valuesFor(ctx context.Context, grantID string) (map[string]requ
 
 // DropName drops name's value from every grant this pod holds values for, leaving the rest of
 // each grant's names in place: a later request of such a grant reads its values again, and mints
-// again what the new version of name needs minting from. The broker calls it wherever one
-// secret's name is reread, since the reread is the only signal a stored value has a new version.
+// again what the new version of name needs minting from. The broker calls it for every name whose
+// value a reread moved (policy.Lookup.Moved): each name served from a stored value at every
+// reread of it, since the reread is the only signal a stored value has a new version, and each
+// name served from a type secret at a reread that moved its value version. A grant's values
+// are held by the name it was released under, which for a profile of another name is the
+// profile's and not its source's.
 //
 // Options.KeepValues turns it off altogether, because the drop is what a reread does to a stored
 // value: held's keep makes a stale answer usable, but a name this has taken out of the map is

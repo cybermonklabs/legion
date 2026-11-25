@@ -13,8 +13,7 @@ import (
 // afterwards still count. The mark is keyed on the canonical login, as the unread count reads it.
 func TestUserAgentReadBackfillMarksEveryExistingDirectConversationRead(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 50)
+	store := openMigratedTestStore(t, 50)
 
 	if _, err := store.Pool.Exec(ctx, `
 		insert into messages (id, author, body, target, in_reply_to) values
@@ -29,7 +28,7 @@ func TestUserAgentReadBackfillMarksEveryExistingDirectConversationRead(t *testin
 		t.Fatalf("seed messages: %v", err)
 	}
 	before := time.Now().Add(-time.Minute)
-	migrateThrough(t, store, 51)
+	migrateAbove(t, store, 50, 51)
 
 	rows, err := store.Pool.Query(ctx, `select login, session_id, read_through from user_agent_read order by 1, 2`)
 	if err != nil {

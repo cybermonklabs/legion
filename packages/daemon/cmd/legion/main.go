@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
@@ -188,8 +189,8 @@ func pluginsLine(cfg config.Config) string {
 		line = fmt.Sprintf("plugins: @sjawhar/pi-legion %s @sjawhar/pi-envoy %s (from %s)",
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
-	// The roles Claude Code may run at all (runtime.Backends), in the order the workflow reaches
-	// them: a role worker_backends puts on it is always one of them, since the loader refuses any
+	// The roles Claude Code may run at all (runtime.Backends), in claim.Roles' order, the default
+	// steps' order: a role worker_backends puts on it is always one of them, since the loader refuses any
 	// other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
@@ -221,9 +222,11 @@ func pluginsLine(cfg config.Config) string {
 // top level — in the words boot logs it with: what the key would have been refused for, and what
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
 // since such a key is ignored and never refused.
-// Then one line per project, in key order, naming its `production_check` and what the word
+// Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
-// check at a merge. After them, one line per configured repository rename
+// check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
+// back the steps an issue runs when its owner gives no plan. After them, one line per configured
+// repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
 // such line. Then one line per deployment capability the file alone leaves open, in the words
@@ -278,6 +281,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
+		fmt.Fprintln(stdout, defaultStepsLine(key, cfg.Projects[key]))
 	}
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
@@ -330,6 +334,15 @@ func productionCheckLine(key string, project config.Project) string {
 	}
 	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
 		key, project.ProductionCheckWord(), effect)
+}
+
+// defaultStepsLine is `legion config check`'s line for one project's `default_steps`: the steps
+// the project runs by default (config.Project.RunsByDefault, today's line up to the owner's
+// acceptance for a project that names none), as the file would write the list (plan.Words), and
+// what they decide.
+func defaultStepsLine(key string, project config.Project) string {
+	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge",
+		key, strings.Join(plan.Words(project.RunsByDefault()), ", "))
 }
 
 // reservedUnder is a cpu or memory reservation as `legion config check` names it: the one quantity when
@@ -392,6 +405,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		}
 	}
 	applyLinkedPlugins(&cfg)
+	cfg.Revision = revision
 	absoluteConfig, err := filepath.Abs(configPath)
 	if err != nil {
 		printRefusal(stderr, "legion start: resolve "+configPath, err)
@@ -445,13 +459,11 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 }
 
 // printRefusal writes prefix, ": ", err's text through the URL rule (redact.URLCredentials) and a
-// newline to stderr. The daemon's own commands (start, probe-boot, config check) and the commands
-// podLogs names write their refusals through here or through the same rule, so each passes the
-// rule the daemon's log handler applies to every record: an error can wrap a *url.Error, which
-// keeps the URL's query and its user name (Go's client masks only a password), and pgx's
-// ParseConfigError of a postgres_dsn it cannot parse quotes the DSN with its user name and its
-// query (pgx masks only the password). The operator's own commands (state, stop, status) print
-// theirs on the operator's terminal without it.
+// newline to stderr. Every command's stderr passes the rule already (newRoot) but the three that
+// hand it to a child, `legion claude-bridge` among them, which writes its refusals through here:
+// an error can wrap a *url.Error, which keeps the URL's query and its user name (Go's client masks
+// only a password), and pgx's ParseConfigError of a postgres_dsn it cannot parse quotes the DSN
+// with its user name and its query (pgx masks only the password).
 func printRefusal(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }

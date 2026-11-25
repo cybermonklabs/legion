@@ -13,6 +13,7 @@ import { z } from "zod";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
 import {
   type ConnectionState,
+  type KeyTakenResult,
   type MessageMetadataInput,
   type PublishResult,
   type SessionInfo,
@@ -320,9 +321,11 @@ const STORED_ONCE =
  * silent is what an agent judges the wait by.
  *
  * A `duplicate` answer is a resend of a message the listener already stored under the same
- * idempotency key. It stored nothing this time, so this answer's event id names no stored copy
- * and the line leaves the id out; the target's state still chooses the verb, because a stopped
- * target's one stored copy is waiting rather than delivered.
+ * idempotency key. It stored nothing this time. A current listener answers the stored copy, whose
+ * event id is the first send's, but an older one answers the event id it minted for the resend,
+ * which names no stored copy, and the answer does not say which listener wrote it, so the line
+ * leaves the id out; the target's state still chooses the verb, because a stopped target's one
+ * stored copy is waiting rather than delivered.
  *
  * `confirmed` is false only for a listener too old to echo the recipient, which is also too old
  * to answer a state, so the unconfirmed note belongs to the connected line alone.
@@ -355,6 +358,38 @@ export function sendConfirmationText(result: {
       ? `unresponsive${since}, so it is stored until that session answers; ${UNRESPONSIVE_RULE}`
       : result.recipientState;
   return `sent ${result.envelope.event_id} to ${result.recipient} (${state})${result.confirmed ? "" : " (recipient unconfirmed by listener)"}`;
+}
+
+/**
+ * How the line for a taken key says to deliver the message after all, for each tool that can get
+ * one: `envoy_send` mints a new idempotency_key when the call names none (its idempotency_key is
+ * only for a send that was not confirmed), and `envoy_publish` takes none and mints one for every
+ * publish.
+ */
+const KEY_TAKEN_AGAIN = {
+  envoy_send: "send it again without an idempotency_key; Envoy gives it a new one",
+  envoy_publish: "publish it again; Envoy gives every publish a new idempotency_key",
+} as const;
+
+/**
+ * The line both hosts show the model for a send or a publish whose idempotency key another
+ * sender's message already holds ({@link KeyTakenResult}): nothing was delivered for this caller,
+ * and the line names that message's event id so the model does not read the key as its own, and
+ * says how `tool` delivers the message after all.
+ */
+export function keyTakenText(result: KeyTakenResult, tool: keyof typeof KEY_TAKEN_AGAIN): string {
+  return `not delivered: another sender's message (${result.keyTaken.eventId}) already holds this idempotency_key, so Envoy stored nothing for you; ${KEY_TAKEN_AGAIN[tool]}`;
+}
+
+/** The fields of a key-taken result both hosts hand the model beside {@link keyTakenText}, under
+ *  the listener's own snake_case names. */
+export function keyTakenDetails(result: KeyTakenResult) {
+  return {
+    event_id: result.keyTaken.eventId,
+    topic: result.keyTaken.topic,
+    delivered: false,
+    key_taken: true,
+  } as const;
 }
 
 /**

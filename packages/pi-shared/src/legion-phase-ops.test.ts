@@ -20,7 +20,6 @@ import {
   PhaseOpArguments,
   type PhaseOpRuntime,
   phaseOpParameters,
-  STALE_ENTRY_INSTRUCTION,
 } from "./legion-phase-ops";
 
 /** The contract the build under test speaks, which its client states on every request. */
@@ -153,6 +152,7 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       wake_at: { type: "string" },
       plan_rating: { type: "integer", minimum: 1, maximum: 5 },
       plan_reason: { type: "string" },
+      return_to: { type: "integer", minimum: 1 },
       to: { enum: [...LEGION_PHASE_BACKWARD_TARGETS] },
       reason: { type: "string" },
       round: { type: "string" },
@@ -178,36 +178,18 @@ test("the description sets the host's sentences before and after handoff_complet
   expect(bare).not.toContain("request_backward_move");
   expect(bare.endsWith("role topic with envoy_publish.")).toBe(true);
   expect(placed).toContain(
-    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. handoff_complete (phase workers"
-  );
-  // Every host states `ready_for_update`, so its sentences are the template's own, between
-  // handoff_complete's contract and the host's `after`.
-  expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
+    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}handoff_complete (phase workers`
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
 
-// The daemon ends its HANDOFF_STALE_ENTRY refusal with the words that tell the worker what to do,
-// and the description must give the code those same words, so a worker reads one instruction in
-// its tool and in the refusal. The daemon's golden test
-// (`packages/daemon/internal/api`, TestStaleEntryInstructionGolden) writes its code and its
-// constant to `stale-entry.json`; this case holds the description's sentence for that code to the
-// file, so a word changed on either side alone fails one test or the other.
-test("the description gives HANDOFF_STALE_ENTRY the instruction the daemon's refusal ends with, word for word", () => {
-  const { code, instruction } = daemonFixture("stale-entry.json") as {
-    readonly code: string;
-    readonly instruction: string;
-  };
+// The daemon's golden test (`packages/daemon/internal/api`, TestStaleEntryInstructionGolden)
+// writes the code of a completion refused for its phase entry to `stale-entry.json`; the tool
+// reads the daemon's own code there. No test holds the words of that refusal or of the tool's
+// description, which an agent reads as a prompt.
+test("the daemon's code of a completion refused for its phase entry is HANDOFF_STALE_ENTRY", () => {
+  const { code } = daemonFixture("stale-entry.json") as { readonly code: string };
   expect(code).toBe("HANDOFF_STALE_ENTRY");
-  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  const opens = description.indexOf(`${code} (`);
-  expect(opens, `the description names no ${code} (`).toBeGreaterThan(-1);
-  const sentence = description.slice(opens, description.indexOf("), ", opens));
-  expect(sentence).toEndWith(`nothing was recorded. ${instruction}`);
-  expect(STALE_ENTRY_INSTRUCTION).toBe(instruction);
-  // A phase completion carries no verdict, so the instruction names what one does carry alone.
-  expect(instruction).toEndWith("never this completion's record or commit");
 });
 
 test("each op refuses its arguments whole before any daemon request, naming every problem", async () => {
@@ -273,6 +255,16 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", plan_reason: "The plan fit the work." },
       "handoff_complete names plan_reason without plan_rating",
     ],
+    // A tester's completion names the step its task returns to by its place, 1 for its first,
+    // and only a tester's completion names one (INVALID_RETURN_TO, RETURN_TO_NEEDS_FAIL): this
+    // session is the implementer's.
+    ...[0, -1, 1.5, "2"].map(
+      (returnTo) =>
+        [
+          { op: "handoff_complete", summary: "x", return_to: returnTo },
+          "handoff_complete's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first",
+        ] as const
+    ),
     // The pair is the schema's own rule, so it is named with the call's other problems at once.
     [
       { op: "handoff_complete", summary: " ", plan_rating: 4 },
@@ -316,6 +308,13 @@ test("each op refuses its arguments whole before any daemon request, naming ever
   ] as const;
   for (const [input, message] of refusals) {
     await expect(executePhaseOp(ops, input)).rejects.toThrow(message);
+  }
+  // Only a tester's completion names the step its task returns to (RETURN_TO_NEEDS_FAIL), and this
+  // session is the implementer's: return_to is refused beside a verdict and beside none.
+  for (const verdict of [{ verdict: "pass" }, {}]) {
+    await expect(
+      executePhaseOp(ops, { op: "handoff_complete", summary: "x", ...verdict, return_to: 1 })
+    ).rejects.toThrow();
   }
   expect(routes).toEqual([]);
 });
@@ -522,6 +521,42 @@ test("the description names the retro's rating fields, its scale, its skill and 
   }
 });
 
+// Contract 219: a tester's completion names the step its task returns to, `return_to`, which goes
+// on the wire as the daemon's `returnTo`. It carries no verdict, since the check states decide
+// whether the testing step failed, and one naming a verdict beside it is refused before it is
+// sent; a completion that names none sends none.
+test("a tester's completion sends return_to as returnTo, with no verdict", async () => {
+  const tester = { ...implementer, role: "tester" as const };
+  const { ops, routes, posted, lookups } = runtime(tester, stateAtPhase("testing"));
+  await expect(
+    executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "The proof is thin.",
+      return_to: 1,
+    })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(lookups).toEqual(["testing tester"]);
+  expect(routes).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "The proof is thin.",
+    verdict: "",
+    ...REPORT,
+    returnTo: 1,
+  });
+  const sent = posted.length;
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Red.", verdict: "fail", return_to: 1 })
+  ).rejects.toThrow();
+  expect(posted).toHaveLength(sent);
+  await executePhaseOp(ops, { op: "handoff_complete", summary: "Red." });
+  expect(posted.at(-1)).not.toHaveProperty("returnTo");
+});
+
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
 // refused: 1,515 failed calls in the 48 h to 2026-11-10 17:40Z in INFRA's sessions alone
 // (dispatch://INFRA-2824). A read that names no issue now reads the claim's own, a read that names
@@ -637,7 +672,7 @@ test("a root architect's handoff_complete is refused as unavailable before its o
   }
   await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
     new Error(
-      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason; ${refusal}`
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to; ${refusal}`
     )
   );
   expect(root.routes).toEqual([]);
@@ -660,7 +695,7 @@ test("a field an op does not take is refused naming the fields the op takes", as
     ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
-      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason',
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to',
     ],
   ] as const;
   for (const [input, message] of refusals) {
@@ -861,6 +896,10 @@ test("a report by a role the check does not record is refused before any call, n
 test("each wrong shape of a check report is refused before any call, nothing minted or posted", async () => {
   const check = closedRuntime(implementer, checkRecord());
   const lastLook = closedRuntime(implementer, checkRecord({ last: true }));
+  const testersCheck = closedRuntime(
+    { ...implementer, role: "tester" },
+    checkRecord({ role: "tester" })
+  );
   for (const [ops, input, message] of [
     [
       check.ops,
@@ -889,11 +928,19 @@ test("each wrong shape of a check report is refused before any call, nothing min
       { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: "tomorrow" },
       "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
     ],
+    // A report on a production check names no step to return to, whatever its verdict, even the
+    // tester's, as the daemon refuses it (RETURN_TO_NEEDS_FAIL).
+    [
+      testersCheck.ops,
+      { op: "handoff_complete", summary: "Looked.", verdict: "fail", return_to: 1 },
+      "handoff_complete's return_to names the step a failed step's task returns to, and a report on a production check names none; send it again without return_to",
+    ],
   ] as const) {
     await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(message));
   }
   expect(check.posted).toEqual([]);
   expect(lastLook.posted).toEqual([]);
+  expect(testersCheck.posted).toEqual([]);
 });
 
 test("the check's last look asks for no wake: a pending there is posted without one", async () => {
@@ -918,15 +965,12 @@ test("the check's last look asks for no wake: a pending there is posted without 
 // names and whichever role sends it, and mints and posts nothing; a report on a production check
 // still carries its verdict.
 test("a phase completion naming a verdict is refused once the record says so, nothing minted or posted, and a check report keeps its verdict", async () => {
-  const refusal = new Error(
-    "handoff_complete carries no verdict on a phase completion: Dispatch's check states decide the testing phase"
-  );
   const tester = { ...implementer, role: "tester" } as const;
   for (const verdict of ["pass", "fail", "pending"]) {
     const { ops, routes, posted, lookups } = runtime(tester, stateAtPhase("testing"));
     await expect(
       executePhaseOp(ops, { op: "handoff_complete", summary: "x", verdict })
-    ).rejects.toThrow(refusal);
+    ).rejects.toThrow();
     expect(routes).toEqual(["/legion/v1/issues/LEGION-208/record"]);
     expect(posted).toEqual([]);
     expect(lookups).toEqual([]);
@@ -934,7 +978,7 @@ test("a phase completion naming a verdict is refused once the record says so, no
   const other = runtime();
   await expect(
     executePhaseOp(other.ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
-  ).rejects.toThrow(refusal);
+  ).rejects.toThrow();
   expect(other.routes).toEqual(["/legion/v1/issues/LEGION-208/record"]);
   expect(other.posted).toEqual([]);
 

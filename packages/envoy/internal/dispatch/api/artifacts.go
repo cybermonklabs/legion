@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -767,6 +769,10 @@ func (s *server) storeArtifact(
 	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
 	var documentReadBack *pmdoc.Node
 	var documentChanges model.ReferenceChanges
+	// indexedBlocks is what the block index stated in the node and tuple store, which waits for
+	// the event this upload queues below: that event is the cause every node and tuple of the
+	// pass carries, and no tuple may be updated once appended.
+	var indexedBlocks graphstore.Uncaused
 	if kind == "doc" {
 		if created {
 			// A first upload under a name the owner holds nothing under replaces nothing, so a
@@ -813,7 +819,7 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		documentChanges, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
+		documentChanges, indexedBlocks, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -866,6 +872,10 @@ func (s *server) storeArtifact(
 		payload = artifactCreatedEventPayload(artifact, documentChanges)
 	}
 	var published []*model.Event
+	// The cause the block index's facts carry: the event this upload queues, named as the id
+	// sequence left it right after its insert, or the sentinel where its owner records none of
+	// its own (an agent's workspace document).
+	blockCause := graphstore.NoEvent
 	if target.ownsEvents() {
 		stampKind := ""
 		if kind == "doc" {
@@ -876,7 +886,15 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		blockCause = graphstore.LatestEvent
 		published = append(published, event)
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// The approval this upload's own version superseded, read in its read phase as the edit route
 	// reads it: an upload to an existing document always writes a version, so a replacement of an
@@ -1167,13 +1185,59 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 }
 
 // artifactVersionText is the body the document arm of GET …/artifacts/…/versions/{number}
-// answers without `download=true`, on all three artifact patterns.
+// answers without `download=true`, on all three artifact patterns. Blocks is absent unless the
+// request asked for it with ?blocks=true: then it lists the version's typed blocks
+// (docs.VersionBlocks), and Markdown, with the version's sha256 and size, is the rendering their
+// byte ranges index.
 type artifactVersionText struct {
 	Markdown string `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
 	// sent `Dispatch-Trees: 1`.
 	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
 	model.Version
+	Blocks *[]model.ArtifactBlock `json:"blocks,omitempty"`
+}
+
+// maxIntegerColumn is the largest number a Postgres integer column holds. A number the caller
+// names that such a column keys or stores is no row and no value at all past it:
+// artifact_versions.number and every column that names one of a document's versions
+// (user_document_reads.version among them), message_deliveries.attempt and
+// comment_deliveries.attempt, events.seq, the position an issue's or a document's event list
+// pages by, going_events.sequence, check_results' failed, skipped and excluded counts, and
+// user_issue_state.last_read_seq. pgx refuses to encode a larger number against such a column,
+// which a route would answer 500 as its own fault.
+const maxIntegerColumn = math.MaxInt32
+
+// fitsIntegerColumn reports whether a number the caller named is no greater than
+// maxIntegerColumn. Each handler that takes such a number for an integer column holds it to this
+// bound before any query is made with it, each with its own lower bound and its own refusal: the
+// two of this file that read a version number from a path or a query (parseVersionNumber), the
+// read mark's body (putDocumentRead), the delivery accept's attempt in its path (acceptDelivery,
+// which answers it as the attempt it is not, 404 MESSAGE_NOT_FOUND), the attempt a reply names
+// in its body (replyComment and replyMessage, each answering it as the delivery it is not, 404),
+// an event list's after and before (parseEventPosition), a result's three counts
+// (checkResultInput.refusal, 400 RESULT_INPUT), the issue read position's last_read_seq
+// (putUserState, 400 INVALID_STATE), and a going stream's Last-Event-ID header
+// (goingResumeFrom, which reads it as no point to resume from). The plan review's body needs no
+// check of its own, since it refuses every version above the plan's latest, which is within the
+// bound (createArtifactPlanReview). A reference's `@v<n>` pin is held to the same bound by its own
+// checks in refs (BlockTextAt, blockPrefixCandidates), which answer a version past it as one the
+// document does not have.
+func fitsIntegerColumn[N int | int64](number N) bool {
+	return number <= maxIntegerColumn
+}
+
+// parseVersionNumber reads a version number the caller named in a path or a query: a positive
+// integer that fits the column (fitsIntegerColumn), and false for anything else, which is the
+// caller's input refused, 400 INVALID_VERSION, with no query made with it. Both routes that read
+// a version number from a path or a query read it here: GET …/versions/{number} and the change
+// set (getArtifactChanges), each answering the refusal in its own words.
+func parseVersionNumber(text string) (int, bool) {
+	number, err := strconv.Atoi(text)
+	if err != nil || number < 1 || !fitsIntegerColumn(number) {
+		return 0, false
+	}
+	return number, true
 }
 
 // getArtifactVersion answers one version of an artifact on all four version routes: a document's
@@ -1183,14 +1247,16 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	number, err := strconv.Atoi(r.PathValue("number"))
-	if err != nil || number < 1 {
-		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "version number must be positive")
+	number, valid := parseVersionNumber(r.PathValue("number"))
+	if !valid {
+		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("version number must be from 1 to %d", maxIntegerColumn))
 		return
 	}
 	// Exactly `true` asks for the download, as `blocks=true` asks for the blocks of the /text
-	// routes; any other value, `1` included, answers as without the parameter.
+	// routes; any other value, `1` included, answers as without the parameter. `blocks` reads the
+	// same way here.
 	download := r.URL.Query().Get("download") == "true"
+	withBlocks := r.URL.Query().Get("blocks") == "true"
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1222,6 +1288,24 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, markdown)
 			return
 		}
+		var blocks *[]model.ArtifactBlock
+		if withBlocks {
+			// The version's own blocks, never the live tree's, and none of what describeBlocks adds
+			// from the live document's rows: a comment count or an embedding state is the live
+			// document's, not this version's. A block's range indexes the rendering it was read
+			// from, so the answer carries that text, its digest and its size.
+			rendered, listed, err := docs.VersionBlocks(markdown)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if listed == nil {
+				listed = []model.ArtifactBlock{}
+			}
+			markdown, blocks = rendered, &listed
+			size := len(markdown)
+			version.Size = &size
+		}
 		hash := sha256.Sum256([]byte(markdown))
 		sha := hex.EncodeToString(hash[:])
 		version.SHA256 = &sha
@@ -1235,7 +1319,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		// more often than it is written, which is what makes the first read's store worth its
 		// one statement.
 		reader := s.readVersionDisplayTrees(r.Context(), wantsDisplayTrees(r))
-		answer := artifactVersionText{Markdown: markdown, Version: version}
+		answer := artifactVersionText{Markdown: markdown, Version: version, Blocks: blocks}
 		reader.text(&answer.MarkdownTree, markdown)
 		reader.resolve()
 		WriteJSON(w, http.StatusOK, answer)
@@ -1253,6 +1337,34 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	s.serveFileVersion(w, r, artifact.ID, filename, number, download, content, contentType, sha, size)
 }
 
+// versionsMarkdown is the stored markdown of each of numbers that the document has, by number, in
+// one read; a number the document has no version of has no entry. Both readers of named versions'
+// own text read it here: the change set (twoVersionsMarkdown) and the decisions of each named
+// version (decisionSumsAt).
+func (s *server) versionsMarkdown(ctx context.Context, artifactID string, numbers []int) (map[int]string, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select number, coalesce(markdown, '') from artifact_versions
+		where artifact_id = $1::uuid and number = any($2::int[])
+	`, artifactID, numbers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	markdown := make(map[int]string, len(numbers))
+	for rows.Next() {
+		var number int
+		var text string
+		if err := rows.Scan(&number, &text); err != nil {
+			return nil, err
+		}
+		markdown[number] = text
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return markdown, nil
+}
+
 // deref is the string a nullable column holds, or "".
 func deref(value *string) string {
 	if value == nil {
@@ -1264,7 +1376,9 @@ func deref(value *string) string {
 // commitArtifactVersionEvent queues the artifact.version event of a version the transaction wrote
 // and the stamp of the document's new mention edges with it (refs.QueueStamp), after the append so
 // stamping never touches sequence allocation. The event is filled in once Commit has run the write
-// phase (queueStampedEvent).
+// phase (queueStampedEvent). Right after it, it queues what that version's block index stated in
+// the node and tuple store (written.Blocks), which waited for this event: the pass ran before the
+// event existed, and no tuple may be updated once it is appended.
 func (s *server) commitArtifactVersionEvent(
 	ledger *docs.Ledger,
 	eventOwner owner,
@@ -1273,11 +1387,21 @@ func (s *server) commitArtifactVersionEvent(
 	written docs.VersionResult,
 	diff *string,
 ) (*model.Event, error) {
-	return s.queueStampedEvent(ledger, eventOwner.event(
+	event, err := s.queueStampedEvent(ledger, eventOwner.event(
 		"artifact.version",
 		actor,
 		docs.ArtifactVersionEventPayload(artifactID, name, written.Version, diff, written.Changes),
 	), "artifact", artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return event, nil
 }
 
 // createVersionInput is the body of POST /api/v1/artifacts/{id}/versions and its issue and

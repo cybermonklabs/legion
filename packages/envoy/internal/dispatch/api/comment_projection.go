@@ -76,9 +76,10 @@ type commentWriteResponse struct {
 // in the reference graph — an empty ReferenceChanges on a transition that writes no body — so a
 // producer whose comment text can cite something cannot append an event that stays silent. It
 // reads the block the comment answers (reply_block) as the transaction sees it into comment
-// itself, so a route that answers with the comment answers that block too.
+// itself, so a route that answers with the comment answers that block too. The payload reaches
+// every subscriber, so the block is read as everyReader.
 func (s *server) commentEventPayload(ctx context.Context, tx pgx.Tx, comment *model.Comment, artifactName string, thread commentEventThread, changes model.ReferenceChanges) (model.CommentEventPayload, error) {
-	if err := hydrateCommentReplyBlocks(ctx, tx, comment); err != nil {
+	if err := hydrateCommentReplyBlocks(ctx, tx, everyReader, comment); err != nil {
 		return model.CommentEventPayload{}, fmt.Errorf("load the block comment %s answers: %w", comment.ID, err)
 	}
 	payload := model.CommentEventPayload{
@@ -149,7 +150,7 @@ func (s *server) commentAnchorRefreshEvent(ctx context.Context, tx pgx.Tx, comme
 	row := comment
 	row.Mentions, row.Deliveries = []model.Mention{}, []model.CommentDelivery{}
 	if stored {
-		hydrated, err := s.hydrateCommentSideTables(ctx, tx, []model.Comment{row})
+		hydrated, err := s.hydrateCommentSideTables(ctx, tx, everyReader, []model.Comment{row})
 		if err != nil {
 			return nil, fmt.Errorf("load refreshed comment %q: %w", comment.ID, err)
 		}

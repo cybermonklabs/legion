@@ -1,5 +1,5 @@
 // check_states_install_test.go holds the settler to the former heads the install of
-// pull_request_former_heads seeded (migration 20261122071001), and to the candidates a result
+// pull_request_former_heads seeded (migration 20261124122830), and to the candidates a result
 // recorded since leaves: the commits of results the settle of an open pull request's issue reads,
 // unverified until the settler has read that pull request's commits (verifyFormerHeads). The rig
 // is check_states_test.go's.
@@ -159,6 +159,7 @@ func TestAFormerHeadTheInstallSeededWaitsForAReadOfItsPullRequestThatFailed(t *t
 		t.Fatalf("k1 at H1 once #70's commits are read is published as %s, want yes", publishedLine(row))
 	}
 
+	eachHeadResult(t, rig.handler, rig.issue, "k2", "tester", "pass", eachHeadH3)
 	seedInstallCandidates(t, rig, eachHeadH3)
 	rig.github.mu.Lock()
 	delete(rig.github.pullCommits, 70)
@@ -169,25 +170,28 @@ func TestAFormerHeadTheInstallSeededWaitsForAReadOfItsPullRequestThatFailed(t *t
 	}
 }
 
-// TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons: #70 holds 252 commits and is at
-// the last of them, H2; GitHub lists the first 250 of a pull request's commits and no more. The
-// install seeded H1, the 251st, where the tester recorded k1 passing; a commit of the base branch,
-// which the head holds too; a commit the head does not hold; a commit the repository does not
-// hold; and a commit whose comparison GitHub fails. The list leaves out what it cannot hold, so
-// what it does not list is decided by comparisons with the head and with the commit #70's own
-// read names its base branch at (base.sha, never the branch's name, which can move): H1 is kept
-// and k1 is published yes there, the three commits outside #70 are dropped, and the one GitHub did
-// not answer for stays a candidate, unverified, with a mark that reads it again after the backoff.
+// TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons: #70 holds 502 commits and is at
+// the last of them, H2; the settle reads five pages of 100 of GitHub's comparison of #70's base
+// revision and head, and no more. The install seeded H1, the 501st, where the tester recorded k1
+// passing; a commit of the base branch, which the head holds too; a commit the head does not hold;
+// a commit the repository does not hold; and a commit whose comparison GitHub fails. The pages
+// leave out what they cannot hold, so what they do not list is decided by comparisons with the
+// head and the base revision Dispatch stores (base.sha, never the branch's name, which can move):
+// H1 is kept and k1 is published yes there, the three commits outside #70 are dropped, and the one
+// GitHub did not answer for stays a candidate, unverified, with a mark that reads it again after
+// the backoff.
 func TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons(t *testing.T) {
 	rig := newCheckStatesRig(t, checkStatesTwoChecks)
-	commits := make([]string, 252)
+	commits := make([]string, 502)
 	for index := range commits {
 		commits[index] = fmt.Sprintf("%040x", 0xc0000+index)
 	}
-	h1, h2 := commits[250], commits[251]
+	h1, h2 := commits[500], commits[501]
 	onBase, apart, absent, unanswered := fmt.Sprintf("%040x", 0xb0001), fmt.Sprintf("%040x", 0xa0001),
 		fmt.Sprintf("%040x", 0xd0001), fmt.Sprintf("%040x", 0xe0001)
-	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", h1)
+	for _, sha := range []string{h1, onBase, apart, absent, unanswered} {
+		eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", sha)
+	}
 	upsertHead(t, rig, 70, h2, rig.issue, "A change")
 	forgetCandidates(t, rig)
 	settleOwed(t, rig)
@@ -204,15 +208,15 @@ func TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons(t *testing.T
 
 	settleOwed(t, rig)
 	if got, want := candidatesOf(t, rig), map[string]bool{h1: true, unanswered: false}; !maps.Equal(got, want) {
-		t.Fatalf("#70 holds the former heads %v after the settle, want %v: H1, the 251st of its 252 commits, kept though GitHub's list of 250 leaves it out; the commits of the base branch, apart from the head and absent from the repository dropped; the one GitHub did not answer for still a candidate", got, want)
+		t.Fatalf("#70 holds the former heads %v after the settle, want %v: H1, the 501st of its 502 commits, kept though the five pages of the comparison leave it out; the commits of the base branch, apart from the head and absent from the repository dropped; the one GitHub did not answer for still a candidate", got, want)
 	}
 	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, h1, "k1"); !held || row.state == nil ||
 		*row.state != model.PassStandsYes {
-		t.Fatalf("k1 at H1, a head #70 left past the commits GitHub lists, is published as %s, want yes", publishedLine(row))
+		t.Fatalf("k1 at H1, a head #70 left past the pages of the comparison, is published as %s, want yes", publishedLine(row))
 	}
 	pages, pulls := rig.github.pullCommitReadsOf(70), rig.github.pullReadsOf(70)
-	if pages != 3 || pulls != 1 {
-		t.Fatalf("the settle read %d pages of #70's commits and #70 itself %d times, want 3 pages (100, 100 and 50) and #70 once", pages, pulls)
+	if pages != 5 || pulls != 1 {
+		t.Fatalf("the settle read %d pages of the comparison of #70's base revision and head and #70 itself %d times, want 5 pages and #70 once", pages, pulls)
 	}
 	for _, pair := range [][2]string{{h2, h1}, {ciJobBaseSHA, h1}, {h2, onBase}, {ciJobBaseSHA, onBase}, {h2, apart}, {h2, absent}, {h2, unanswered}} {
 		if reads := rig.github.compareReadsOf(pair[0], pair[1]); reads != 1 {
@@ -232,7 +236,7 @@ func TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons(t *testing.T
 	if later != 1 {
 		t.Fatalf("%s holds %d marks due after the backoff, want one: the candidate GitHub did not answer for owes another settle", rig.issue, later)
 	}
-	t.Logf("the settle read 3 pages of #70's commits, #70 itself once and 7 comparisons")
+	t.Logf("the settle read 5 pages of the comparison of #70's base revision and head, #70 itself once and 7 comparisons")
 }
 
 // TestAResultAfterTheInstallAtAHeadLeftBeforeItIsPublishedOnceItsPullRequestListsIt: #70 left H1
@@ -280,14 +284,17 @@ func TestAResultAfterTheInstallAtAHeadLeftBeforeItIsPublishedOnceItsPullRequestL
 	}
 }
 
-// TestOnePullRequestsCommitsAreReadOnceWhileItMovesToAnotherIssue: the install seeded H1 for #70
-// of ACME-1, and ACME-1's settle starts its read of #70's commits, which GitHub holds open. #70
-// then moves to another issue, whose settle runs while that read is open: it reads #70's commits
-// no second time. Once the first read answers, H1 is verified and the other issue owed, and its
-// settle publishes at H1 with no further read.
+// TestOnePullRequestsCommitsAreReadOnceWhileItMovesToAnotherIssue: the tester recorded k1 passing
+// at H1 before the install, which seeded H1 for #70 of ACME-1, and ACME-1's settle starts its
+// read of #70's commits, which GitHub holds open. #70 then moves to another issue, whose settle
+// runs while that read is open: it reads #70's commits no second time. Once the first read
+// answers, H1 is verified and the other issue owed, and its settle publishes at H1 with no further
+// read.
 func TestOnePullRequestsCommitsAreReadOnceWhileItMovesToAnotherIssue(t *testing.T) {
 	rig := newCheckStatesRig(t, checkStatesTwoChecks)
+	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
 	upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+	forgetCandidates(t, rig)
 	settleOwed(t, rig)
 	other := rig.fileIssue(t, "Where the pull request moves")
 	rig.github.setPullCommits(70, eachHeadH1, eachHeadH2)

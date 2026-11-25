@@ -321,8 +321,8 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 // A root's merge while a child runs records the merge and waits: the root stays in merging
 // with nothing written to Dispatch, no linger deadline and no member suspended, and its architect
 // is told once, by name, which issue the close waits for. The merged root holds no slot while it
-// waits, since merging stands past its review (record.KeepsSlot), and the merge takes none from
-// the running child.
+// waits, since merging keeps none (record.KeepsSlot), and the merge takes none from the running
+// child.
 func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	assertPhase(t, rig.pool, phase.Merging)
@@ -476,7 +476,7 @@ func TestAnIssueReachingMergingOnAMergedPullRequestWaitsForItsTree(t *testing.T)
 //
 // A released child that has not started a phase holds it no longer. It stands at admitted
 // beneath a root in merging, a root the daemon has already accepted, so the daemon itself
-// pins the child there until that root closes (record.AcceptedAncestor), and a child the daemon
+// pins the child there while that root stands in merging (record.AcceptedAncestor), and a child the daemon
 // pins is left out of the set the close waits on (record.OpenBeneath). Counting it would
 // deadlock the pair. This is the one recorded departure from the spec of dispatch://INFRA-980,
 // decided on dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.

@@ -15,11 +15,11 @@
 // server, emptied for each test exactly as the container is, starts no container, and Main removes
 // nothing; one set without the other fails the test, since a half-named server is a mistake rather
 // than a reason to fall back to Docker. The reset holds the server for one test of one test binary
-// at a time, waits for every client connection to it to end, and empties each stream before it
-// deletes it, so the server is the tests' alone and the packages using it run one after another
-// (go test -p 1). The leak check at the end of each test depends on that rule too: with one
-// binary on the server, every connection it holds is this binary's, so one that appeared while a
-// test held the server is that test's own.
+// at a time, waits for every client connection to it to end, and deletes each stream's consumers
+// and empties the stream before it deletes it, so the server is the tests' alone and the packages
+// using it run one after another (go test -p 1). The leak check at the end of each test depends
+// on that rule too: with one binary on the server, every connection it holds is this binary's, so
+// one that appeared while a test held the server is that test's own.
 package testnats
 
 import (
@@ -116,11 +116,13 @@ func Main(m *testing.M) int {
 // otherwise the package's container, started on first use. The reset waits for the server
 // to report no client connection first: a previous test that published without waiting for acks
 // leaves messages the server still routes after the test ends, into a stream this test recreates.
-// The reset then purges each stream and deletes it, so a test creates its own there and finds it
-// empty with CreateStream: a deleted stream's store can outlive the delete that answered, and a
-// purged one carries no message into the next test, though it does carry its sequence. The purge,
-// below, states the mechanism and names the source lines; the comments elsewhere in this package
-// point to it rather than stating it again. Last, the reset arms the leak check (leakcheck.go),
+// The reset then deletes each stream's consumers, purges it and deletes it, so a test creates its
+// own there and finds it empty with CreateStream, and a durable it creates there starts where its
+// own configuration says. A deleted stream's store can outlive the delete that answered; a purged
+// one carries no message into the next test, though it does carry its sequence, and one whose
+// consumers were deleted first carries no consumer's position. The purge and the consumer deletes,
+// below, state the mechanism and name the source lines; the comments elsewhere in this package
+// point to them rather than stating it again. Last, the reset arms the leak check (leakcheck.go),
 // which fails t at its end for a client connection t left open on the server.
 func URL(t testing.TB) string {
 	t.Helper()
@@ -195,6 +197,47 @@ func URL(t testing.TB) string {
 		stream, err := js.Stream(t.Context(), name)
 		if err != nil {
 			t.Fatalf("take the NATS server's stream %s to empty it: %v", name, err)
+		}
+		// Delete the stream's consumers before the purge and the delete, so the store the delete
+		// can leave behind (the purge, above, says how) holds no consumer's state either.
+		//
+		// A durable on this one server writes its position to a state file in the stream's
+		// directory when it is created, unless it or its stream asks for memory storage (v2.15.1:
+		// consumer.go:6481-6488, SetStarting, under selectStartingSeqNo, for a consumer on one
+		// replica; filestore.go:13513-13521), and a consumer deleted with its stream leaves that
+		// file for the stream's own removal (filestore.go:14607-14612). When the rename that
+		// removal starts with fails, the file stays in streams/<name>/obs/<consumer>, and a
+		// durable of the same name created on the next stream of that name finds it: a consumer
+		// whose store has a state file restores it rather than selecting its start
+		// (consumer.go:1350-1353, the else of :1399-1402; filestore.go:13819-13828). It starts
+		// where the earlier test's durable stood, which for one created on a stream that never
+		// held a message is sequence 1, whatever deliver policy the test gave it, and delivers
+		// every message the test published before creating it: the "1 messages of history
+		// pending, want 0" of intake's TestAFreshConsumerStartsAtTheNextMessage, run after a test
+		// that made the same durables. nats-server 2.10.29 does the same (consumer.go:962-965,
+		// 4945-4947, 5280-5281).
+		//
+		// A consumer delete removes the consumer's directory before it answers (jetstream_api.go:
+		// 5835 answers after obs.delete(), which reaches consumer.go:6887's store.Delete(),
+		// filestore.go:14582-14583, whose removal at :14607-14611 runs inline), so once these
+		// deletes have answered, nothing of a consumer is left for the stream's delete to leave.
+		// They come before the purge because a purge updates each consumer's position
+		// (consumer.go:6691), which starts a write of its state file the delete would then race.
+		// A consumer the server removed itself after the list, an ephemeral one past its
+		// inactivity threshold, is gone or going already, and its generated name is not one a
+		// later test's durable takes.
+		var consumers []string
+		listed := stream.ConsumerNames(t.Context())
+		for consumer := range listed.Name() {
+			consumers = append(consumers, consumer)
+		}
+		if err := listed.Err(); err != nil {
+			t.Fatalf("list the consumers of the NATS server's stream %s: %v", name, err)
+		}
+		for _, consumer := range consumers {
+			if err := stream.DeleteConsumer(t.Context(), consumer); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
+				t.Fatalf("delete consumer %s of the NATS server's stream %s: %v", consumer, name, err)
+			}
 		}
 		if err := stream.Purge(t.Context()); err != nil {
 			t.Fatalf("purge the NATS server's stream %s: %v", name, err)

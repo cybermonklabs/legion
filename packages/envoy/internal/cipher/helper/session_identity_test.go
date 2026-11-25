@@ -346,8 +346,8 @@ func TestASessionNamedAfterItStartedEnrolsUnderThatName(t *testing.T) {
 	}
 	id := testSessionID
 	// No WaitSeconds: naming the session revokes its old enrollment before it enrols under the
-	// new name, two broker round trips, and Call's own read deadline is 10 s — a register that
-	// waits that long server-side races it and times out under load. Poll instead.
+	// new name, two broker round trips, and a register's wait is a span the helper ends by its own
+	// timer, which a loaded host can outlast. Poll instead.
 	named := r.call(t, Request{Op: "register", SessionID: &id})
 	if !named.OK || named.RuntimeID != SessionRuntimeID(testSessionID) {
 		t.Fatalf("naming the session: %+v", named)

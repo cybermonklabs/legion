@@ -19,10 +19,10 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # so silently selecting a shared default would make the destructive write
 # target ambiguous. FAKE_ENVOY_PORT and FAKE_GITHUB_PORT (and FAKE_BROKER_PORT
 # for the default broker switch below) name the fakes the caller started, whose
-# ports e2e/harness-start.ts reads from their reports. DISPATCH_E2E_NATS_URL,
-# optional, names a NATS server the caller started: set, the server's delivery
-# intake reads it (NATS_URLS); unset or empty, the server runs with NATS off
-# (DISPATCH_NATS_DISABLED=1), as it always did.
+# ports e2e/harness-start.ts reads from their reports. DISPATCH_E2E_NATS_URLS,
+# optional, names a NATS server the caller started: set, the server publishes
+# through it and its delivery intake reads it (NATS_URLS); unset or empty, the
+# server runs with NATS off (DISPATCH_NATS_DISABLED=1), as it always did.
 #
 # One server (DISPATCH_E2E_PROCESSES unset or 1): DISPATCH_E2E_PORT unset (or
 # empty), the server serves on a port the kernel chooses, held from that moment
@@ -305,15 +305,6 @@ if [ -n "${DISPATCH_TEST_HIDE_STATE_FILE:-}" ]; then
   hide_state_env=(DISPATCH_TEST_HIDE_STATE_FILE="$DISPATCH_TEST_HIDE_STATE_FILE")
 fi
 
-# The NATS server, read before the sweep below: DISPATCH_E2E_NATS_URL names one the caller started
-# (the skill-scenario rig starts one for each run of its heads scenarios), and the server gets it
-# as NATS_URLS, NATS on, so its delivery intake reads the `pull_request` envelopes the caller
-# publishes there. Unset or empty, the server gets DISPATCH_NATS_DISABLED=1, as it always did.
-nats_env=(DISPATCH_NATS_DISABLED=1)
-if [ -n "${DISPATCH_E2E_NATS_URL:-}" ]; then
-  nats_env=(NATS_URLS="$DISPATCH_E2E_NATS_URL")
-fi
-
 # Meaning search's embedder, read before the sweep below. The file-store block above gives this
 # process the AWS SDK's own variables so it can reach the stack's S3 server, and Bedrock - the
 # default place DISPATCH_EMBEDDER names - takes those same static keys as its credentials and the
@@ -363,6 +354,28 @@ if [ "$stacks" -gt 1 ]; then
   gomaxprocs=$(( $(nproc) / stacks ))
   [ "$gomaxprocs" -ge 1 ] || gomaxprocs=1
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
+fi
+
+# The events outbox publishes through NATS, and this rig has none, so the server runs with
+# DISPATCH_NATS_DISABLED=1 by default: no spec here wants a bus, and a server that kept trying to
+# reach one would log a reconnect loop for every run. The publisher is the only writer of what a
+# delivery states in the node and tuple store - `delivered_to`, a role's `held_by`, a session's
+# and a page's `part_of`, and the role, session and page nodes themselves (outbox.recordBatch) -
+# so a driver that proves those writes starts a NATS of its own (`go build
+# github.com/nats-io/nats-server/v2`, a direct dependency of packages/envoy) and names it in
+# DISPATCH_E2E_NATS_URLS, which this script hands the server as its NATS_URLS and which turns the
+# publisher on. It is a variable of this rig's own rather than NATS_URLS itself because a
+# developer's shell exports NATS_URLS for the Envoy listener, and a server that took it would
+# publish test notifications to the bus that listener delivers to real sessions. Every NATS_*
+# variable a shell exported is still swept below, and a caller that names none gets exactly the
+# server every spec has always run against. The skill-scenario rig names one for each run of its
+# heads scenarios, so the server's delivery intake reads the `pull_request` envelopes the rig
+# publishes there.
+nats_urls="${DISPATCH_E2E_NATS_URLS:-}"
+if [ -n "$nats_urls" ]; then
+  nats_env=(NATS_URLS="$nats_urls")
+else
+  nats_env=(DISPATCH_NATS_DISABLED=1)
 fi
 
 mapfile -t inherited < <(compgen -e)

@@ -99,6 +99,12 @@ jobs:
       - name: Test the document service under the cleanup detector
         run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/
         working-directory: packages/envoy
+        # This step judges the document service's xid window gaps (storetest.XidJudgesGaps). With
+        # this set, a runner whose kernel stops showing a thread's scheduler clocks, or refuses to
+        # hold a thread out of NUMA balancing, fails those tests naming why, rather than passing
+        # them on the window's shape alone (storetest.XidRequireGapsEnv).
+        env:
+          DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

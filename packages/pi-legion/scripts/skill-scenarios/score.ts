@@ -126,13 +126,16 @@ const DaemonLine = z.looseObject({
   handoffVersion: z.number().optional(),
 });
 const nonEmpty = z.string().min(1);
+/** The keys a test handoff no longer holds: no completion or record carries a verdict on the
+ * implementer's results, and each failure is a fail result on its check (`dispatch result
+ * --verdict fail`), never a field of the handoff. TestHandoff refuses a body that holds one. */
+const TEST_HANDOFF_REFUSES = ["implementerProof", "failures", "failed"] as const;
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
  * daemon holds it to one), as far as the score reads it: the stamps the tester writes itself
- * (`schemaVersion` 1, `phase` test and its `issue`), the verdict on the implementer's recorded
- * results, and the failures, each naming the check it is against. What the tester ran is no part
- * of the handoff: it is a result recorded against a `check` block of the issue's Verification
- * document (`dispatch result`), which the pull request body carries one line of per check. The
- * body carries
+ * (`schemaVersion` 1, `phase` test and its `issue`), and none of TEST_HANDOFF_REFUSES, each of
+ * which it refuses by name. What the tester ran is no part of the handoff: it is a result recorded
+ * against a `check` block of the issue's Verification document (`dispatch result`), which the pull
+ * request body carries one line of per check. The body carries
  * neither a time nor a `previousHandoff`, since Dispatch records when each handoff was written and
  * versions it; the object is loose, so a body from a checkout whose prompt still asks for
  * `previousHandoff` (main's, since sjawhar/legion#2585) or for a `completed` time (the prompt
@@ -140,15 +143,21 @@ const nonEmpty = z.string().min(1);
  * fields the labels' prompts vary.
  * Nothing stamps a handoff for the tester: it writes the whole body and records it with
  * `dispatch handoff-write`. */
-export const TestHandoff = z.looseObject({
-  schemaVersion: z.literal(1),
-  phase: z.literal("test"),
-  issue: nonEmpty,
-  // `{how}` alone at the tester's prompt of today; a body that still carries the verdict an older
-  // prompt asked for parses, so the score can name that verdict as the run's fault.
-  implementerProof: z.looseObject({ how: nonEmpty }),
-  failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
-});
+export const TestHandoff = z
+  .looseObject({
+    schemaVersion: z.literal(1),
+    phase: z.literal("test"),
+    issue: nonEmpty,
+  })
+  .superRefine((body, context) => {
+    for (const key of TEST_HANDOFF_REFUSES)
+      if (Object.hasOwn(body, key))
+        context.addIssue({
+          code: "custom",
+          path: [key],
+          message: `a test handoff holds no ${key}`,
+        });
+  });
 
 function lines(file: string): string[] {
   if (!existsSync(file)) return [];
@@ -669,8 +678,9 @@ function instant(text: string, what: string): bigint {
  *      the phase's newest record and refuses when there is none;
  *   3. that record is a `test` record this run's own session wrote (the transcript header's id, the
  *      session `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) of this
- *      issue with no `implementerProof.verdict`, since no phase completion carries one and the
- *      check states move the issue, and no failures; and the branch as the tester
+ *      issue, which holds no verdict on the implementer's results and no field for a failure,
+ *      since no phase completion carries a verdict, the check states move the issue, and each
+ *      failure is a fail result on its check; and the branch as the tester
  *      completed it (its last push before the completion, if it pushed) changes nothing under the
  *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
  *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
@@ -766,15 +776,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     }
     const read = TestHandoff.safeParse(body);
     if (!read.success) problems.push(`not a test handoff: ${z.prettifyError(read.error)}`);
-    else {
-      const { issue, implementerProof, failures = [] } = read.data;
-      if (issue !== world.key) problems.push(`issue is ${issue}, not ${world.key}`);
-      if ("verdict" in implementerProof)
-        problems.push(
-          `implementerProof carries the verdict ${JSON.stringify(implementerProof.verdict)}`
-        );
-      if (failures.length > 0) problems.push(`${failures.length} failures`);
-    }
+    else if (read.data.issue !== world.key)
+      problems.push(`issue is ${read.data.issue}, not ${world.key}`);
   }
   const tip = pushes.filter((p) => completedAt === undefined || p.at < completedAt).at(-1);
   if (tip !== undefined) {
@@ -1013,13 +1016,16 @@ function headsReview(
 /** ci-pass-and-fail's tester: a tester, started on the implementer's completion, tests #702, at
  * whose head k1, a check CI proves, holds the CI job's pass and later fail while the job's run is
  * still going, so #702's line reads not known. R15 and R16 and the spec's Design make that no
- * reason to wait for any role, and the tester's texts make it a test failure at once
- * (skills/legion-worker/references/ci-checks.md, "A run that is still going"; pr-body.md). The
- * record is the run's own newest test record on its issue (handoffs.json, seed.ts
- * capture-handoffs, newest first: the first one this run's session wrote, as testerProof reads it).
- * A pass: that record's body is a test handoff (TestHandoff) whose `failures` name k1, and no reply
- * of the run starts WAITING before Dispatch recorded it (with no such record, no reply at all): a
- * WAITING line after the record waits for the next phase. `ref` is never counted. */
+ * reason to wait for any role, and k1 carries `ci_check`, so the tester runs and records nothing
+ * for it (roles/tester.md). The record is the run's own newest test record on its issue
+ * (handoffs.json, seed.ts capture-handoffs, newest first: the first one this run's session wrote,
+ * as testerProof reads it). A pass: that record exists and is a test handoff (TestHandoff), no
+ * reply of the run starts WAITING before Dispatch recorded it (with no such record, no reply at
+ * all), and the run's transcript holds no `dispatch result` call on k1, through the CLI or a
+ * host's Dispatch tool, taken or refused (operationsOf). A WAITING line after the record waits for
+ * the next phase. The rule says nothing of whether k1's state ends the testing step. The notes name
+ * the record, whether TestHandoff read it, the WAITING lines and the count of results on k1.
+ * `ref` is never counted. */
 function headsTester(runDir: string, run: string, label: string): Row {
   const records = json(path.join(runDir, "handoffs.json"), Handoffs);
   const entries = session(runDir);
@@ -1035,21 +1041,26 @@ function headsTester(runDir: string, run: string, label: string): Row {
     body = undefined;
   }
   const handoff = TestHandoff.safeParse(body);
-  const failures = handoff.success ? (handoff.data.failures ?? []) : [];
-  const listsK1 = failures.some((failure) => /\bk1\b/.test(failure.check));
+  const read = record === undefined ? "none" : handoff.success ? "read" : "refused";
   const waiting = waitingLines(entries, record?.created_at);
+  const resultsOnK1 = operations(entries).filter(
+    (operation) =>
+      operation.kind === "dispatch" &&
+      operation.call.command === "result" &&
+      operation.call.flag("check") === "k1"
+  ).length;
   const notes = [
-    `record=${record === undefined ? "none" : `${record.id} v${record.version}`} handoff=${handoff.success ? `verdict=${"verdict" in handoff.data.implementerProof ? JSON.stringify(handoff.data.implementerProof.verdict) : "none"} failures=[${failures.map((failure) => failure.check).join(",")}]` : "unreadable"} listsK1=${listsK1} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
-    ...failures.map(
-      (failure) => `  failure ${failure.check}: ${JSON.stringify(failure.evidence.slice(0, 200))}`
-    ),
+    `record=${record === undefined ? "none" : `${record.id} v${record.version}`} handoff=${read} waiting=${waiting.length} resultsOnK1=${resultsOnK1} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    ...(read === "refused" && !handoff.success
+      ? [`  not a test handoff: ${handoff.error.issues.map((issue) => issue.message).join("; ")}`]
+      : []),
     ...waiting.map((line) => `  ${line.trim().slice(0, 200)}`),
   ];
   return {
     run,
     scenario: "ci-pass-and-fail:tester",
     label,
-    pass: record !== undefined && listsK1 && waiting.length === 0,
+    pass: read === "read" && waiting.length === 0 && resultsOnK1 === 0,
     ref: false,
     notes: notes.join("\n"),
   };
@@ -3906,11 +3917,11 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           reviewer-own-head (per case), reviewer-pass-and-fail: the review the reviewer",
       "           submitted on #702 (headsReview); architect-pass-and-fail: the architect sent the",
       "           issue back naming k1 and signed nothing off (headsArchitect); ci-pass-and-fail",
-      "           (per role): the reviewer's refusal naming k1, the tester's test record listing k1",
-      "           in its failures (headsTester) and the architect's move back naming k1, each with",
-      "           no WAITING line before it; tester-reads-no-ci (per case): the tester's own test",
-      "           record and result of k1, with no read of CI and no WAITING line before the record",
-      "           (headsTesterReadsNoCI)",
+      "           (per role): the reviewer's refusal naming k1, the tester's own test record that",
+      "           TestHandoff reads with no result of its own on k1 (headsTester), and the",
+      "           architect's move back naming k1, each with no WAITING line before it;",
+      "           tester-reads-no-ci (per case): the tester's own test record and result of k1, with",
+      "           no read of CI and no WAITING line before the record (headsTesterReadsNoCI)",
       "pass+ref   passed, and the agent read the file the rule is in (askgate and the heads",
       "           scenarios: never counted)",
       "rig errors runs the rig could not score (unscored), left out of both counts",

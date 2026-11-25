@@ -28,7 +28,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -333,7 +332,7 @@ func publishedRow(t *testing.T, database *store.Store, issue, repo, head, check 
 func computedSubject(t *testing.T, rig *checkStatesRig, check, head string) model.PassStandsSubject {
 	t.Helper()
 	ctx := store.WithTransactionTracking(t.Context())
-	heads, err := delivery.HeadsAttributedTo(ctx, rig.database.Pool, rig.issue)
+	heads, err := rig.served.deps.Attributor.HeadsAttributedTo(ctx, rig.database.Pool, rig.issue)
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", rig.issue, err)
 	}

@@ -64,6 +64,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -156,7 +157,7 @@ func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsL
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": name}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	return r
 }
 
@@ -241,7 +242,7 @@ func (r *handoffRecordsLive) seedIssues(issues []dispatchSeed) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, s := range issues {
 			listed := r.dispatch.issue(s.key)
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
@@ -558,9 +559,8 @@ func (r *handoffRecordsLive) completionHead() {
 				filepath.Join(r.root, "scripts", "e2e", "completion-head.ts"), each.phase, each.role)
 			refusal := strings.TrimSpace(string(out.stderr))
 			r.note("control: findHandoffReport as the tester of %s in %s exited %d: %s", r.headNone, each.phase, code, refusal)
-			if code != 1 || strings.TrimSpace(string(out.stdout)) != "" || !strings.Contains(refusal, "names no head") ||
-				!strings.Contains(refusal, "write a new handoff with `head` set to the 40-character lower-case commit you tested") {
-				t.Fatalf("the tester's completion of %s, whose test record names no head, = exit %d, stdout %q, stderr %q; want it refused before it is sent, naming the record to write",
+			if code != 1 || strings.TrimSpace(string(out.stdout)) != "" || refusal == "" {
+				t.Fatalf("the tester's completion of %s, whose test record names no head, = exit %d, stdout %q, stderr %q; want it refused before it is sent",
 					r.headNone, code, out.stdout, refusal)
 			}
 			continue
@@ -1113,12 +1113,7 @@ func startHandoffDispatch(t *testing.T, root string) *handoffDispatch {
 	t.Helper()
 	options := scratchDispatchOptions{root: root}
 	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
-		file, err := os.OpenFile(filepath.Join(filepath.Dir(daemonLog), "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			t.Fatalf("open Dispatch's log: %v", err)
-		}
-		t.Cleanup(func() { file.Close() })
-		options.log = file
+		options.log = evidenceFile(t, filepath.Join(filepath.Dir(daemonLog), "dispatch.log"))
 	}
 	return &handoffDispatch{scratchDispatch: startScratchDispatchOn(t, options), client: &http.Client{Timeout: 10 * time.Second}}
 }

@@ -177,12 +177,11 @@ func TestARestrictedMembersMachineLoginEnrollsNothing(t *testing.T) {
 		// The control: once Dispatch answers, the same release and the same enrollment go
 		// through, so each refusal above was the outage's and nothing else's. The broker keeps a
 		// person's failed read 2 s before it asks Dispatch again, so the release is asked until
-		// it is no longer refused 503; the minute bounds a broker that never asks again, and can
-		// only fail the test.
+		// it is no longer refused 503.
 		dispatch.SetDown(false)
-		testwait.WithinPolling(t, time.Minute, 250*time.Millisecond, "the release of "+unaskedMember+"'s grant to stop being refused 503 once Dispatch answers", func() bool {
+		testwait.UntilPolling(t, 250*time.Millisecond, "the release of "+unaskedMember+"'s grant to stop being refused 503 once Dispatch answers", func() (int, bool) {
 			status, _ := after.Session(t, sessionKey, enrollment, http.MethodPost, "/v1/grants/"+grant+"/values", nil)
-			return status != http.StatusServiceUnavailable
+			return status, status != http.StatusServiceUnavailable
 		})
 		if got := after.GrantValues(t, sessionKey, enrollment, grant)[sharedSecret]; got != sharedSecretValue {
 			t.Fatalf("%s's session was released %s = %q once Dispatch answered, want %q", unaskedMember, sharedSecret, got, sharedSecretValue)

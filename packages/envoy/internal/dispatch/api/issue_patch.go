@@ -160,13 +160,41 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	repo, repoProvided, err := parseIssueRepo(input.Repo)
+	repo, repoProvided, err := parseIssueRepo(input.Repo, "INVALID_ISSUE")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	repo = s.renamedRepo(repo)
+	// Each link URL is stored under its repository's new name where a rename pair renames it
+	// away (refs.Renames.CanonicalURL), as every write of a stored URL is. It is rewritten here,
+	// before the closed-issue gate compares the links with the stored ones, so a link resent
+	// under the old name is the link the issue already has.
+	if input.ExternalLinks != nil {
+		for i := range *input.ExternalLinks {
+			(*input.ExternalLinks)[i].URL = s.deps.Renames.CanonicalURL((*input.ExternalLinks)[i].URL)
+		}
+	}
 
 	key := r.PathValue("key")
+	parentKey := ""
+	if parent != nil {
+		parentKey = *parent
+	}
+	// A credential that names one project is refused a target or a parent outside it where its
+	// project is read, since this route's own address names neither (project_scope.go). It is read
+	// first here, with no lock held and before a close settles the issue's documents or the
+	// transaction begins, so a write the credential may not make settles nothing; the
+	// pre-handler check already held the issue to the credential's project, which is therefore
+	// the issue's own. The lock step refuses it again before any lock, and writeBlockedBy or
+	// validateIssueParent under them.
+	callerProject, scoped := s.callerProject(r)
+	if scoped && (parentKey != "" || len(blockers) > 0) {
+		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, callerProject, callerProject, blockers, parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// Whether the write closes the issue (closing) waits for the issue's owner lock; whether it
 	// asks to is known now.
 	closes := input.Status != nil && status == "done"
@@ -194,10 +222,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// check and the status it guards run under the deployment dependency lock that every create
 	// with a parent and every reparent takes, so no child is filed between the two.
 	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
-	// A credential that names one project is refused a target outside it where a target's
-	// project is read, since this route's own address names no target (project_scope.go): the
-	// lock step refuses it before any lock, and writeBlockedBy again under them.
-	callerProject, _ := s.callerProject(r)
+	// The lock step below reads each target's project again and refuses a scoped caller one
+	// outside it before any lock is taken (lockIssueDependencyWrite).
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
@@ -205,7 +231,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if dependencyWrite {
-			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers); err != nil {
+			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers, parentKey); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -257,7 +283,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if parentProvided && parent != nil {
-		if err := validateIssueParent(r.Context(), tx, key, before.Project, *parent); err != nil {
+		if err := validateIssueParent(r.Context(), tx, key, callerProject, *parent); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -418,7 +444,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// and its parent (writeAdviceBefore), and the open asks the close withdraws or the reopen
 	// restores, whose rows the patch writes afterwards (adviceAsks). Nothing else the patch writes
 	// changes what it reads.
-	afterRow := adviceIssueRow{parent: before.Parent, labels: before.Labels}
+	afterRow := adviceIssueRow{project: before.Project, parent: before.Parent, labels: before.Labels}
 	afterStatus := before.Status
 	if input.Status != nil {
 		afterStatus = status
@@ -475,8 +501,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 
 	// The pull requests this change of the links decides the issue of: a pull request is the
 	// issue's while the issue links it (R19 of the spec of several open pull requests), so each is
-	// judged again in this transaction from what Dispatch stored of it (delivery.LinksChanged),
-	// with no read of GitHub: a link a person makes by hand is answered from what Dispatch holds.
+	// judged again in this transaction from what Dispatch stored of it
+	// (delivery.Attributor.LinksChanged), with no read of GitHub: a link a person makes by hand is
+	// answered from what Dispatch holds.
 	var changedHeads []delivery.HeadOfChangedLink
 	if input.ExternalLinks != nil {
 		deleted, err := tx.Query(r.Context(), `delete from issue_external_links where issue_key = $1 returning url`, key)
@@ -520,7 +547,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		changedHeads, err = delivery.LinksChanged(r.Context(), tx, key, changedLinkURLs(removed, *input.ExternalLinks))
+		changedHeads, err = s.deps.Attributor.LinksChanged(r.Context(), tx, key, changedLinkURLs(removed, *input.ExternalLinks))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

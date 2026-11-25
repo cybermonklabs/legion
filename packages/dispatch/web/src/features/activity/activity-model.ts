@@ -50,6 +50,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `created project ${event.payload.key}`;
     case "project.updated":
       return `updated project ${event.payload.key}`;
+    // No build writes this event now: a project's default repository is on the project. An event
+    // retained from an earlier build keeps its wording.
     case "settings.repo_project.updated":
       return `${event.payload.deleted ? "removed" : "updated"} repository mapping ${event.payload.mapping.repo}`;
     // No write clears a default now: a project always names the person its unowned work lands

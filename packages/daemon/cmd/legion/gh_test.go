@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/testfifo"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -1278,13 +1279,14 @@ func ghWrapperDir(t *testing.T) string {
 // legionCommand is the one environment a `legion` command of these tests is given: this test
 // binary as `legion args…` in the working directory dir, with env and nothing of this process's
 // own but PATH, whose head is a pane's `gh` wrapper (ghWrapperDir) unless env names a PATH of its
-// own. A test that drives the run itself — one that signals it, or starts it under a shell of its
-// own — takes the command and runs it, so that base environment is built in one place.
+// own, and this binary's deadline (testDeadlineEnviron), which bounds what the run waits for. A test
+// that drives the run itself — one that signals it, or starts it under a shell of its own — takes
+// the command and runs it, so that base environment is built in one place.
 func legionCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], args...)
 	cmd.Dir = dir
-	cmd.Env = []string{testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
+	cmd.Env = append([]string{testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}, testDeadlineEnviron()...)
 	for name, value := range env {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
@@ -1293,13 +1295,14 @@ func legionCommand(t *testing.T, dir string, env map[string]string, args ...stri
 
 // testGhChildEnviron is what this package's test binary, run as `legion`, hands gh beside the
 // allowlist (ghChildTestEnviron): testMainEnv, so the `gh` wrapper gh's git runs as its credential
-// helper runs this binary as `legion` again; every variable of environ the stand-in real gh of
-// these tests reads (GH_STANDIN_*); and the pairs testGhChildEnv names. None of these is one
-// ghChildEnviron keeps, which is the point of naming them here and nowhere in the binary. The
-// stand-ins tell the guard's visibility read by its argv, as the real gh would have to
-// (ghStandInPrefix), so no Legion variable naming that read is handed on.
+// helper runs this binary as `legion` again, with this binary's deadline (testDeadlineEnviron);
+// every variable of environ the stand-in real gh of these tests reads (GH_STANDIN_*); and the
+// pairs testGhChildEnv names. None of these is one ghChildEnviron keeps, which is the point of
+// naming them here and nowhere in the binary. The stand-ins tell the guard's visibility read by
+// its argv, as the real gh would have to (ghStandInPrefix), so no Legion variable naming that read
+// is handed on.
 func testGhChildEnviron(environ []string) []string {
-	out := []string{testMainEnv + "=1"}
+	out := append([]string{testMainEnv + "=1"}, testDeadlineEnviron()...)
 	for _, pair := range environ {
 		if name, _, _ := strings.Cut(pair, "="); strings.HasPrefix(name, "GH_STANDIN_") {
 			out = append(out, pair)
@@ -2302,7 +2305,10 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 // read answers, nothing on standard output and exit 1, which the check reads as an unknown
 // visibility and refuses. The guard's reads come back through `legion gh` to the stand-in gh: the
 // REST read, then, with the installation's REST limit spent, the GraphQL read, then a stand-in
-// git's ls-remote, which can answer only public. Neither stream carries the shared check's own
+// git's ls-remote, which can answer only public. Where gh's REST read fails on its connection to
+// GitHub, the read through curl comes next, and it is a stand-in curl's (testCurlEnv) that records
+// itself beside them: the system's curl would carry a token of the bundle to api.github.com, and
+// the row's verdict would be the network's. Neither stream carries the shared check's own
 // refusal, which only the check prints.
 //
 // The read is fresh: the check reads another remote of a push with it, and counts the commits of
@@ -2322,6 +2328,9 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	rest := func(visibility string) string {
 		return "printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' " + visibility + "\nexit 0\n"
 	}
+	// A spent core limit whose reset is half an hour away, past the longest the guard waits for a
+	// reset (Guard.waitFits, rateLimitWaitBound), so the guard does not wait for it whatever bound
+	// the answer has.
 	restSpent := fmt.Sprintf("printf '%%s\\r\\n' 'HTTP/2.0 403 Forbidden' 'X-Ratelimit-Remaining: 0' 'X-Ratelimit-Reset: %d' ''\n", time.Now().Add(30*time.Minute).Unix()) +
 		`printf '%s\n' '{"message":"API rate limit exceeded for installation ID 1."}'` + "\n" +
 		"echo 'gh: API rate limit exceeded for installation ID 1. (HTTP 403)' >&2\nexit 1\n"
@@ -2338,6 +2347,17 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	graphQLNotFound := graphQL(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`, 1)
 	lists := "printf '%s\\tHEAD\\n' " + strings.Repeat("1", 40) + "\nexit 0\n"
 	refused := "echo 'fatal: could not read Username for '\\''https://github.com'\\'': terminal prompts disabled' >&2\nexit 128\n"
+	// tlsTimeout is gh's REST read failing on its connection before GitHub answered anything, in the
+	// one line gh 2.98.0 printed for a TLS handshake that never finished (leakguard's
+	// ghTransportFailure), so the guard reads through curl next.
+	tlsTimeout := "echo 'Get \"https://api.github.com/repos/" + slug + "\": net/http: TLS handshake timeout' >&2\nexit 1\n"
+	// curlAnswers is the read through curl answered by GitHub with visibility; curlUnreached is a curl
+	// that could not connect, exit 7, which the guard reads as no answer from GitHub and follows
+	// with ls-remote. A case that names no curl answer gets curlUnreached.
+	curlAnswers := func(visibility string) string {
+		return "printf '%s\\r\\n' 'HTTP/2 200' ''\nprintf '%s\\n' '{\"visibility\":\"" + visibility + "\"}'\nexit 0\n"
+	}
+	curlUnreached := "echo 'curl: (7) Failed to connect to api.github.com port 443 after 0 ms: Could not connect to server' >&2\nexit 7\n"
 	// keptFiles is each file of the guard's kept visibility answers under state, with its content.
 	keptFiles := func(t *testing.T, state string) map[string]string {
 		t.Helper()
@@ -2388,6 +2408,8 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		slug          string
 		rest, graphql string
 		git           string
+		// curl is the stand-in curl's answer, curlUnreached where it is empty.
+		curl string
 		// kept is whether the guard holds a kept public answer for the repository when the read
 		// is made.
 		kept bool
@@ -2410,6 +2432,8 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		{name: "REST and GraphQL are limited and ls-remote is refused", rest: restSpent, graphql: graphQLLimited, git: refused, reads: "rest\ngraphql\ngit\n"},
 		{name: "REST is limited and GraphQL could not resolve the repository", rest: restSpent, graphql: graphQLNotFound, git: lists, reads: "rest\ngraphql\n"},
 		{name: "REST fails another way", rest: restFails, graphql: answers("PRIVATE"), git: lists, reads: "rest\n"},
+		{name: "gh cannot finish its TLS handshake and curl answers private", rest: tlsTimeout, curl: curlAnswers("private"), git: lists, want: "private\n", reads: "rest\ncurl\n"},
+		{name: "gh and curl cannot reach GitHub and ls-remote answers", rest: tlsTimeout, git: lists, want: "public\n", reads: "rest\ncurl\ngit\n"},
 		{name: "an unserved owner's repository ls-remote lists", slug: "other-owner/invented-repo", rest: rest("private"), git: lists, want: "public\n", reads: "git\n"},
 		{name: "an unserved owner's repository GitHub asks ls-remote a credential for", slug: "other-owner/invented-repo", rest: rest("private"), git: refused, reads: "git\n"},
 	} {
@@ -2433,10 +2457,17 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
 				t.Fatal(err)
 			}
+			// The stand-in curl runs with only the names leakguard.TokenChildKeeps keeps, which hold
+			// no GH_STANDIN_RECORD, so its record's path is written into it. It reads the token the
+			// guard hands it on its standard input, as curl does, and keeps none of it.
+			curl := filepath.Join(t.TempDir(), "curl")
+			if err := os.WriteFile(curl, []byte("#!/bin/sh\ncat >/dev/null\necho curl >> '"+record+"'\n"+cmp.Or(tc.curl, curlUnreached)), 0o700); err != nil {
+				t.Fatal(err)
+			}
 			code, stdout, stderr := legionGh(t, map[string]string{
 				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 				"PATH": wrappers + ":" + bin + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
-				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: repo,
+				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: repo, testCurlEnv: curl,
 			}, leakguard.VisibilityReadArgs(repo)...)
 			switch {
 			case tc.want != "" && (code != 0 || stdout != tc.want):
@@ -2520,6 +2551,13 @@ func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
 
 // Concurrent processes share one log and rotate it as one operation, so no appended line that
 // fits after the oversized prior content is lost.
+//
+// The 128 processes are copies of this test binary, each run on one P (GOMAXPROCS=1). A copy left
+// to size GOMAXPROCS to the host starts a thread for each P its garbage collector's idle mark
+// workers take: about 80 threads a copy on a 288-CPU host against 5 on one P, so on such a host
+// the 128 together held up to 6,800 tasks and fork failed under a 4096-task cgroup limit. Each copy
+// appends one line, which one P does as well as many. Every copy is waited for before the test
+// reports, so a failure leaves none running into the next test.
 func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
 	if repository := os.Getenv("LEGION_TEST_GH_CALL_LOG_REPOSITORY"); repository != "" {
 		appendGhCallLog(map[string]string{"XDG_STATE_HOME": os.Getenv("LEGION_TEST_GH_CALL_LOG_STATE")}, repository, "api", "", 0)
@@ -2542,6 +2580,7 @@ func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
 		go func() {
 			command := exec.Command(os.Args[0], "-test.run=^TestAppendGhCallLogKeepsConcurrentLinesThatFit$")
 			command.Env = append(os.Environ(),
+				"GOMAXPROCS=1",
 				"LEGION_TEST_GH_CALL_LOG_REPOSITORY="+repository,
 				"LEGION_TEST_GH_CALL_LOG_STATE="+state,
 			)
@@ -2550,8 +2589,11 @@ func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
 	}
 	for range calls {
 		if err := <-errs; err != nil {
-			t.Fatal(err)
+			t.Error(err)
 		}
+	}
+	if t.Failed() {
+		return
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -2722,16 +2764,23 @@ func TestLegionGhForwardsATerminatingSignalToGh(t *testing.T) {
 // default action, so gh would start with the hangup set to kill and die of the first one, which
 // is the whole of what nohup was asked to prevent.
 //
-// The run is under a shell that ignores the signal, as nohup does. What decides the row is each
-// process's own disposition of SIGHUP, which the kernel reports in /proc/<pid>/status, and no
-// clock. A process that ignores a signal has it discarded as it is sent, so a hangup sent to such
-// a `legion gh` can never end it, or reach gh, later; one with a handler for it (a signal.Notify)
-// takes the hangup, and may end on it or forward it to gh at any later moment, which no wait of
-// this row could outlast. So the row reads that gh was started ignoring SIGHUP, and that `legion
-// gh` ignores it and has no handler for it, before the hangup and after it; then it releases gh
-// and reads that gh ended on its own and `legion gh` came back with gh's status. The stand-in gh
-// sets a trap of its own, which a shell started ignoring the signal cannot set, so a gh that
-// records catching the hangup is one whose hangup the arming un-ignored.
+// The run is under a shell that ignores the signal, as nohup does, and no clock decides the row.
+// gh's own disposition is read by behaviour, which every kernel shows: before it traps the hangup,
+// the stand-in gh starts a child shell, which inherits gh's disposition of SIGHUP, and the child
+// sends itself the hangup; it survives only if gh was started ignoring it, and dies of it
+// otherwise (requireGhStartedIgnoringHangup). `legion gh`'s own disposition is read from
+// /proc/<pid>/status, the only place a kernel reports another process's: a process that ignores a
+// signal has it discarded as it is sent, so a hangup sent to such a `legion gh` can never end it,
+// or reach gh, later; one with a handler for it (a signal.Notify) takes the hangup, and may end on
+// it or forward it to gh at any later moment, which no wait of this row could outlast. So the row
+// reads that gh was started ignoring SIGHUP, and that `legion gh` ignores it and has no handler
+// for it, before the hangup and after it; then it releases gh and reads that gh ended on its own
+// and `legion gh` came back with gh's status. A gVisor may report no signal masks in
+// /proc/<pid>/status (release-20260803.0 reports none, release-20261116.0 does), and its
+// /proc/<pid>/stat gives 0 for them even for a signal ignored, so there `legion gh`'s two reads
+// have no source (requireHangupIgnored). The stand-in gh sets a trap of its own, which a shell
+// started ignoring the signal cannot set, so a gh that records catching the hangup is one whose
+// hangup the arming un-ignored.
 func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -2740,16 +2789,23 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	}
 	records := t.TempDir()
 	ghRecord, running := filepath.Join(records, "gh"), filepath.Join(records, "running")
-	ghIgnored, release := filepath.Join(records, "ignored"), filepath.Join(records, "release")
+	ghProbe, release := filepath.Join(records, "probe"), filepath.Join(records, "release")
 	ghPid := filepath.Join(records, "pid")
-	// The stand-in writes its pid, whole, and the signals it was started ignoring (its own
-	// status's SigIgn), traps the hangup, says it is running, and then waits for the test's
-	// release, or for this test binary to be gone, in ticks short enough that a trap runs within
-	// one of them: a shell runs no trap while a foreground command of its own is still going.
+	// The probe reads by behaviour, so the row first reads that it can fail: run with SIGHUP at
+	// its default (env --default-signal sets that whatever this test binary inherited), it must
+	// die of the hangup it sends itself.
+	t.Run("the probe dies of a hangup at its default", func(t *testing.T) {
+		requireProbeDiesAtDefault(t)
+	})
+	// The stand-in writes its pid, whole, and the status of its probe of its own disposition of
+	// SIGHUP (ghHangupProbe, run in a child shell, which inherits that disposition). Then the
+	// stand-in traps the hangup, says it is running, and waits for the test's release, or for this
+	// test binary to be gone, in ticks short enough that a trap runs within one of them: a shell
+	// runs no trap while a foreground command of its own is still going.
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
 		"echo $$ >\"$GH_STANDIN_PID.new\" && mv \"$GH_STANDIN_PID.new\" \"$GH_STANDIN_PID\"\n" +
-		"sed -n 's/^SigIgn:[[:space:]]*//p' /proc/$$/status >\"$GH_STANDIN_IGNORED\"\n" +
+		"sh -c '" + ghHangupProbe + "'; echo $? >\"$GH_STANDIN_PROBE\"\n" +
 		"trap 'printf \"gh caught the hangup\\n\" >>\"$GH_STANDIN_RECORD\"; exit 44' HUP\n" +
 		": >\"$GH_STANDIN_RUNNING\"\n" +
 		"while [ ! -f \"$GH_STANDIN_RELEASE\" ] && kill -0 \"$GH_STANDIN_TEST_PID\" 2>/dev/null; do sleep 0.05; done\n" +
@@ -2761,7 +2817,7 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
 		"GH_STANDIN_RECORD": ghRecord, "GH_STANDIN_RUNNING": running, "GH_STANDIN_RELEASE": release,
-		"GH_STANDIN_IGNORED": ghIgnored, "GH_STANDIN_PID": ghPid, "GH_STANDIN_TEST_PID": strconv.Itoa(os.Getpid()),
+		"GH_STANDIN_PROBE": ghProbe, "GH_STANDIN_PID": ghPid, "GH_STANDIN_TEST_PID": strconv.Itoa(os.Getpid()),
 	}, "pr", "list")
 	// `sh -c 'trap "" HUP; exec …'` is what nohup does to the command it runs, and the exec is
 	// the wrapper's: `legion gh` starts here with the hangup ignored and no handler of its own,
@@ -2813,17 +2869,21 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 		_, err := os.Stat(running)
 		return err == nil
 	})
-	if ignored := readSignalMask(t, ghIgnored); ignored&hangupBit == 0 {
-		t.Fatalf("gh was started with SIGHUP not ignored (its SigIgn %#x): `legion gh` handed a nohuped gh a hangup that ends it", ignored)
-	}
+	t.Run("gh starts with the hangup ignored", func(t *testing.T) {
+		requireGhStartedIgnoringHangup(t, ghProbe)
+	})
 	legion := command.Process.Pid
-	requireHangupIgnored(t, legion, "before the hangup")
+	t.Run("legion gh ignores the hangup and holds no handler for it before the hangup", func(t *testing.T) {
+		requireHangupIgnored(t, legion, "before the hangup")
+	})
 	// The hangup goes to this one pid, never to the group: gh shares this test binary's own
 	// group, and a group signal would end the test run with it.
 	if err := command.Process.Signal(syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}
-	requireHangupIgnored(t, legion, "after the hangup")
+	t.Run("legion gh ignores the hangup and holds no handler for it after the hangup", func(t *testing.T) {
+		requireHangupIgnored(t, legion, "after the hangup")
+	})
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2845,20 +2905,85 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	}
 }
 
+// ghHangupProbe is the shell text that reads, by behaviour, a shell's disposition of SIGHUP as its
+// parent left it: run as `sh -c`, it sends itself the hangup, and exits 0 if it survived it, which
+// it does only if the hangup is ignored, or 3 if the kill could not send it, so a kill that fails
+// never reads as ignored. A shell that dies of the hangup ends with status 129 as its parent shell
+// reads it.
+const ghHangupProbe = `kill -HUP $$ || exit 3; exit 0`
+
+// requireProbeDiesAtDefault fails the row unless ghHangupProbe dies of the hangup it sends itself
+// when its SIGHUP is at the default: env --default-signal sets that before it runs the probe,
+// whatever this test binary inherited, so a probe that survives there could not tell an ignored
+// hangup from one that kills.
+func requireProbeDiesAtDefault(t *testing.T) {
+	t.Helper()
+	err := exec.Command("env", "--default-signal=HUP", "sh", "-c", ghHangupProbe).Run()
+	var exited *exec.ExitError
+	if !errors.As(err, &exited) {
+		t.Fatalf("the probe with SIGHUP at its default answered %v, want a death by the hangup it sent itself: the probe cannot tell an ignored hangup from one that kills", err)
+	}
+	switch status := exited.Sys().(syscall.WaitStatus); {
+	case status.Signaled() && status.Signal() == syscall.SIGHUP:
+	case status.Exited() && status.ExitStatus() == 3:
+		t.Fatal("the probe with SIGHUP at its default could not send itself the hangup, so it read nothing")
+	default:
+		t.Fatalf("the probe with SIGHUP at its default ended with %v, want a death by the hangup it sent itself", err)
+	}
+}
+
+// requireGhStartedIgnoringHangup fails the row unless the stand-in gh's probe (ghHangupProbe),
+// whose status it wrote at path, survived the hangup it sent itself: the probe is a child of gh,
+// so it inherits gh's disposition of SIGHUP, which every kernel acts on, and it survives the
+// signal only if gh was started ignoring it. A probe that wrote no status, or could not send the
+// hangup, fails the row too: the row then has no answer, not a clean one.
+func requireGhStartedIgnoringHangup(t *testing.T, path string) {
+	t.Helper()
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the status the stand-in gh's probe wrote: %v", err)
+	}
+	switch status := strings.TrimSpace(string(written)); status {
+	case "0":
+	case "":
+		t.Fatal("the stand-in gh's probe wrote no status")
+	case "3":
+		t.Fatal("the stand-in gh's probe could not send itself the hangup, so it read nothing of gh's disposition")
+	default:
+		t.Fatalf("gh was started with SIGHUP not ignored: a child of gh, which inherits its disposition, ended with status %s when it sent itself the hangup (129 is a death by it): `legion gh` handed a nohuped gh a hangup that ends it", status)
+	}
+}
+
 // hangupBit is SIGHUP's bit in a /proc status's signal masks.
 const hangupBit = uint64(1) << (syscall.SIGHUP - 1)
 
 // requireHangupIgnored fails the row unless process pid ignores SIGHUP and has no handler for it,
-// as /proc/<pid>/status reports; when names the moment. A process whose masks cannot be read fails
-// the row too: the row then has no answer, not a clean one.
+// as /proc/<pid>/status reports; when names the moment. A process whose status cannot be read, or
+// whose masks do not parse, fails the row too: the row then has no answer, not a clean one.
+//
+// A kernel that reports neither mask line has no source of the answer: gVisor's
+// release-20260803.0 is one, whose /proc/<pid>/stat also gives 0 for the masks of a process that
+// ignores a signal, and no other interface reports another process's disposition. There the row
+// follows the daemon's rule for a test this machine cannot run (internal/launcher's
+// skipOutsideCI): under GITHUB_ACTIONS it fails, since CI's runners report the masks and a runner
+// that reports none is broken; anywhere else it skips, naming why.
 func requireHangupIgnored(t *testing.T, pid int, when string) {
 	t.Helper()
 	status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
 	if err != nil {
 		t.Fatalf("read the signal masks of `legion gh` (pid %d) %s: %v", pid, when, err)
 	}
-	ignored, caught := statusSignalMask(t, status, "SigIgn"), statusSignalMask(t, status, "SigCgt")
+	ignored, ignoredOK := statusSignalMask(t, status, "SigIgn")
+	caught, caughtOK := statusSignalMask(t, status, "SigCgt")
 	switch {
+	case !ignoredOK && !caughtOK:
+		reason := "this kernel's /proc/<pid>/status reports no signal masks (gVisor's release-20260803.0 is one), so nothing reports whether `legion gh` ignores SIGHUP or holds a handler for it"
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatalf("%s: CI's runners report them, so this runner is broken", reason)
+		}
+		t.Skip(reason)
+	case !ignoredOK || !caughtOK:
+		t.Fatalf("the status of `legion gh` (pid %d) %s holds one of SigIgn and SigCgt and not the other:\n%s", pid, when, status)
 	case caught&hangupBit != 0:
 		t.Fatalf("`legion gh` has a handler for SIGHUP %s (SigCgt %#x): the handler takes the hangup, and may end `legion gh` or forward it to gh at any later moment", when, caught)
 	case ignored&hangupBit == 0:
@@ -2866,9 +2991,9 @@ func requireHangupIgnored(t *testing.T, pid int, when string) {
 	}
 }
 
-// statusSignalMask is the mask a /proc status's line name holds, failing the row where it holds
-// no such line or one that does not parse.
-func statusSignalMask(t *testing.T, status []byte, name string) uint64 {
+// statusSignalMask is the mask a /proc status's line name holds, and whether the status holds
+// that line; it fails the row where the line does not parse.
+func statusSignalMask(t *testing.T, status []byte, name string) (uint64, bool) {
 	t.Helper()
 	for line := range strings.SplitSeq(string(status), "\n") {
 		if value, ok := strings.CutPrefix(line, name+":"); ok {
@@ -2876,25 +3001,10 @@ func statusSignalMask(t *testing.T, status []byte, name string) uint64 {
 			if err != nil {
 				t.Fatalf("parse the %s mask %q: %v", name, value, err)
 			}
-			return mask
+			return mask, true
 		}
 	}
-	t.Fatalf("the process status holds no %s line:\n%s", name, status)
-	return 0
-}
-
-// readSignalMask is the mask a stand-in wrote into path as hex, failing the row where it wrote none.
-func readSignalMask(t *testing.T, path string) uint64 {
-	t.Helper()
-	written, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read the mask the stand-in gh wrote: %v", err)
-	}
-	mask, err := strconv.ParseUint(strings.TrimSpace(string(written)), 16, 64)
-	if err != nil {
-		t.Fatalf("parse the mask the stand-in gh wrote, %q: %v", written, err)
-	}
-	return mask
+	return 0, false
 }
 
 // A signal that reaches `legion gh` before it has armed its own forwarding ends the command
@@ -3206,11 +3316,36 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// A check that opened a named pipe would wait on it, and fails the row by name before
-			// the test binary's deadline (testwait.Receive), the only bound on the wait.
+			// A check that opened a planted named pipe plainly would wait there for a writer. Its
+			// answer is waited for with testwait.Receive, as main waits for it, the only bound on the
+			// wait. Beside that wait, the fifo watch reads from the kernel whether the check opens a
+			// planted pipe plainly (testfifo.WatchBeside), and its own open for writing is the
+			// writer that open needed, so the check then answers and the case fails naming the pipe
+			// at once. The correct check opens each file with O_NONBLOCK and holds it for a moment,
+			// which is no such wait. Only a case that planted a pipe needs the kernel's record, and
+			// where the kernel keeps none, as gVisor keeps none, such a case fails under CI and skips
+			// elsewhere (testfifo.RequireWatch).
+			var pipes []string
+			for _, name := range []string{ghconfig.HostsFile, ghconfig.ConfigFile} {
+				path := filepath.Join(dir, name)
+				if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeNamedPipe != 0 {
+					pipes = append(pipes, path)
+				}
+			}
+			stopWatch := func() (string, error) { return "", nil }
+			if len(pipes) > 0 {
+				testfifo.RequireWatch(t)
+				stopWatch = testfifo.WatchBeside(nil, pipes...)
+			}
+			defer func() { _, _ = stopWatch() }()
 			done := make(chan error, 1)
 			go func() { done <- ghConfigShape(dir) }()
 			err := testwait.Receive(t, "ghConfigShape with "+tc.name, done)
+			if opened, watchErr := stopWatch(); watchErr != nil {
+				t.Fatalf("cannot tell whether ghConfigShape waits in a plain open of a planted pipe: %v", watchErr)
+			} else if opened != "" {
+				t.Fatalf("ghConfigShape opened the named pipe at %s plainly and waited there for a writer", filepath.Base(opened))
+			}
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("ghConfigShape = %v, want none", err)

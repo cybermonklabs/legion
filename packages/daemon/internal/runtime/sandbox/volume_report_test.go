@@ -55,11 +55,12 @@ func (v *volumeSeam) took(t *testing.T, what string) volumeReport {
 }
 
 // volumeLaunchers is a launchers whose volume seam is the test's, with the leak-check reader, the
-// saved bundle's take, confirmation and drop, and the memory guard's receiver, which no test of
-// the launcher protocol here drives, left nil. It is the one constructor these tests build a
-// launchers with: testLaunchers (rig_test.go) is this one with no seam behind it.
+// saved bundle's take, confirmation and drop, and the memory guard's two receivers, an issue
+// pod's and the controller pod's, which no test of the launcher protocol here drives, left nil.
+// It is the one constructor these tests build a launchers with: testLaunchers (rig_test.go) is
+// this one with no seam behind it.
 func volumeLaunchers(seam runtime.VolumeReported) *launchers {
-	return newLaunchers(testLeakCheck, nil, nil, nil, nil, nil, seam, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newLaunchers(testLeakCheck, nil, nil, nil, nil, nil, nil, seam, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // The frame the daemon had no case for closed the connection: ServeLauncher's switch ends in
@@ -211,7 +212,7 @@ func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *testing.T) {
 	logs := &bytes.Buffer{}
 	seam := newVolumeSeam()
-	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, nil, seam.reported, slog.New(slog.NewTextHandler(logs, nil)))
+	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, nil, nil, seam.reported, slog.New(slog.NewTextHandler(logs, nil)))
 	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })

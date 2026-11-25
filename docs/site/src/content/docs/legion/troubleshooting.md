@@ -50,6 +50,7 @@ legion config check --config legion.yaml
 | `projects.<KEY>.memory and projects.<KEY>.experiments.memory are one experiment written twice: the memory block is the experiment named memory, so write the block or the key, not both` | The `memory` block **is** the experiment named `memory`, so the file declares it twice. Keep one spelling: the block, or `experiments.memory`. The block is accepted and refused in no other new way. |
 | `projects.<KEY>.experiments.memory names the variants …: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse` | Name that experiment's two arms `memory` and `none`, or declare your own experiment under another name, which may name whatever arms it likes. |
 | `projects.<KEY>.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it` | The experiment named `memory` is drawn once for a whole tree, as the `memory` block always has been: take `unit` out, or set `unit: tree`. To draw something for each issue on its own, declare it under another name. |
+| `projects.<KEY>.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own` | A draw of the experiment named `memory` is the tree's memory group and never says how an issue is done: take `plan` out of its arms, and declare an experiment of your own name, `unit: issue`, whose arms name `plan`. |
 | `projects.<KEY>.experiments must be a mapping of an experiment's name to its block` (or `projects.<KEY>.experiments.<NAME> must be a mapping`, `projects.<KEY>.experiments.<NAME>.variants must be a sequence of variant blocks`, or `projects.<KEY>.experiments.<NAME>.variants[<n>] names no name: a draw records the variant it drew by name`) | The shape: `experiments` is a mapping of a name to a block, a block is a mapping, its `variants` is a sequence of mappings, and each arm names a `name`. |
 | `projects.<KEY>.experiments key "…" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes` (or `projects.<KEY>.experiments.<NAME>.variants[<n>] name "…" must match ^[a-z0-9-]{1,32}$: a draw records the variant it drew by name`, or `projects.<KEY>.experiments.<NAME>.variants names <name> twice`) | An experiment's name and an arm's name are 1 to 32 characters of `a-z`, `0-9` and `-`, and each is named once, because every draw records both. |
 | `projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")` | The mode is one of three words: `off` (the default, and what a block that names no mode gets), `on`, or `random`. |
@@ -62,6 +63,11 @@ legion config check --config legion.yaml
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | As for a role's overlay: under Kubernetes an arm's overlay must be a file the operator's mounts carry, so mount the ConfigMap holding it, or add the item. It is refused at `mode: off` too, since a unit already drawn into the arm still names it. Mounting it replaces every live issue pod of the deployment, so add it when no role of an affected issue is mid-turn. |
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files …` or `projects.<KEY>.experiments.<NAME>.variants.<ARM>.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, a path named twice, or, under tmux, an overlay no role drawn into the arm could read. |
 | `instructions file <path> of experiment <experiment> variant <variant> could not be read: …` or `instructions file <path> of experiment <experiment> variant <variant> is empty` | Boot reads every declared arm's `instructions` from the daemon's own disk and puts its text in the prompt of every role of a unit drawn into that arm, so give it a readable file with text in it, or take the key out, which appends nothing. Boot reads it whatever the experiment's mode is, since a unit already drawn into the arm is given it. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner or default (got "…")` | An arm's `plan` says how the issues drawn into it are done: `owner`, whose issues take the plan their owner gives with `register_plan`, or `default`, whose issues run the project's `default_steps` and take no plan from their owner: once the daemon records such an issue, its owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.` | This release takes `owner` and `default` alone: write one of them, or take `plan` out of every arm of the experiment. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM> names no plan: each variant of an experiment that sets plan names how its issues are done` | An experiment that names `plan` in one arm names it in every arm, so that each issue it draws is in a group: write `plan` in each arm, or in none. |
+| `projects.<KEY>.experiments.<NAME> sets plan and is unit <unit>: an experiment that sets how an issue is done draws for each issue, so write unit: issue` | Each issue keeps the group of its own draw for its whole life, so an experiment that sets `plan` draws for each issue: write `unit: issue`. |
+| `projects.<KEY>.experiments.<NAME> and projects.<KEY>.experiments.<NAME> both set plan: one experiment sets how an issue is done` | Each issue would hold two words on how it is done, which may disagree, and one experiment would be measured under the other's arms: keep `plan` in one experiment of the project. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
@@ -105,11 +111,11 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
 - **A launch on an issue that names no repository.** `<KEY> names no repository: set the
   repository of <KEY>, or the default repository of project <PROJECT>, in Dispatch`. A claim an
   operator starts on an issue the workflow does not record works the repository Dispatch resolves
-  for that issue (its own, else its nearest ancestor's, else the project's default), and this issue
-  resolves to none. Set the issue's repository, or the project's default repository, in Dispatch,
-  and start the claim again. The daemon refuses that launch alone and stays up. The same launch is
-  refused, naming the cause, when Dispatch does not answer, when a role App is not installed on the
-  repository, or when GitHub does not answer its read.
+  for that issue (its own, else its nearest ancestor's in its own project, else the project's
+  default), and this issue resolves to none. Set the issue's repository, or the project's default
+  repository, in Dispatch, and start the claim again. The daemon refuses that launch alone and
+  stays up. The same launch is refused, naming the cause, when Dispatch does not answer, when a
+  role App is not installed on the repository, or when GitHub does not answer its read.
 - **A stamped repository.** The daemon compares `projects.<KEY>.commit_issue_trailer_repos` with
   nothing at boot: the loader checks each name's shape and two names of one repository (the table
   above), and a pane stamps a commit when the repository it works is on the list. A misspelled name
@@ -124,9 +130,9 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
 - **A record whose work is elsewhere.** The same log line with the cause `Dispatch resolves it to
   <owner/name>, but its pull request #<n> is on <owner/name>` (or `its workspace <dir> is in
   <owner/name>`) `: set the issue's repository in Dispatch to …`: the issue worked in that
-  repository, but its own repository or an ancestor's, set in Dispatch since, resolves it
-  elsewhere. Set the issue's repository in Dispatch to the one the cause names, with the command it
-  names; the daemon fills the record at its next try.
+  repository, but its own repository or an ancestor's in its own project, set in Dispatch since,
+  resolves it elsewhere. Set the issue's repository in Dispatch to the one the cause names, with
+  the command it names; the daemon fills the record at its next try.
 - **Agent Sandbox is missing.** The refusal names `the Sandbox CRD sandboxes.agents.x-k8s.io` or
   `the Agent Sandbox controller Deployment agent-sandbox-system/agent-sandbox-controller`, and
   whether the API answered 404 or 403. A 403 means the daemon's identity lacks the get the
@@ -195,6 +201,34 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
 
   A model key that fails at boot refuses the boot even when the cause is a passing network blip,
   since the probe cannot tell the two apart. Start the daemon again once the cause is gone.
+
+## An edited instructions file does not reach the workers
+
+A running daemon reads the deployment's `instructions` file, and each declared arm's, again before
+every launch, so an edit reaches each role at its next launch. A role that is running keeps the
+prompt it launched with until then.
+
+- **The daemon logs `legion daemon launches with the instructions it last read: the file no longer
+  reads` at WARN.** The file `file` names was missing, unreadable or blank when a launch read it
+  (`error` says which). Launches go on carrying the text the daemon read last. Fix the file: the
+  next launch reads it again and logs `legion daemon read an edited instructions file`, or
+  `legion daemon reads an instructions file again` when it holds the text the daemon kept.
+- **The daemon logs `legion daemon launches with the instructions it last read: its copy could not
+  be replaced` at ERROR.** The daemon read the edit but could not write its own copy under the state
+  directory, which the prompt is composed from (`error` names the path and the cause). Launches go
+  on carrying the old text. Never delete the copy itself: while the write still fails, every launch
+  that reads it, the controller's included, then fails to compose its prompt. Fix what `error`
+  names: `permission denied`, give the daemon's user write access to the copy's directory; `is a
+  directory` or `file exists`, remove the directory that stands at the copy's path; `no space left
+  on device` or `read-only file system`, free space on, or remount, the state directory's volume.
+  The next launch writes the copy and logs the edit.
+- **The daemon logs none of these lines, and the edit is still not in a new launch's prompt.**
+  Under Kubernetes, check how the daemon's pod mounts the file: the kubelet updates a ConfigMap
+  mounted as a directory, but never a file mounted by `subPath`, so the daemon goes on reading the
+  text of its pod's start. The kubelet also takes up to its sync period, about a minute, to update
+  a mounted ConfigMap.
+
+The daemon logs each refusal once, so a launch with no new line carries the same text as the last.
 
 ## The daemon stops
 
@@ -352,13 +386,13 @@ Check, in order:
 
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
-   branch, as the implement App, and again before each tree member's planner starts, so no agent's
-   push is the one that creates it (GitHub can refuse that push on a large repository). A branch
-   GitHub already has is kept as it is. While GitHub refuses the read of the base branch's ref or
-   the create, the architect or planner waiting for it does not start. The daemon retries, backing
-   off to about a minute, and logs each refusal as an error whose `msg` is `outbox row failed`, with
-   `kind` `issue_branch` and an `error` naming the repository, the ref, GitHub's status and its
-   body:
+   branch, as the implement App, and again before the worker of each tree member's first step
+   starts, so no agent's push is the one that creates it (GitHub can refuse that push on a large
+   repository). A branch GitHub already has is kept as it is. While GitHub refuses the read of the
+   base branch's ref or the create, the architect or the worker waiting for it does not start. The
+   daemon retries, backing off to about a minute, and logs each refusal as an error whose `msg` is
+   `outbox row failed`, with `kind` `issue_branch` and an `error` naming the repository, the ref,
+   GitHub's status and its body:
 
    ```text
    {"level":"ERROR","msg":"outbox row failed","row":81,"kind":"issue_branch","error":"create the branch of WIDGETS-12, which its roles' starts wait for: create refs/heads/legion/WIDGETS-12 on acme/widgets at <default branch's commit>: GitHub answered POST /git/refs with 403: {\"message\":\"Resource not accessible by integration\",…}"}
@@ -445,11 +479,13 @@ A root waiting on its gate at a daemon's deploy
 is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
-earlier version does not count: the spec changed since. The gate holds the tree's start, not its merge.
-Where `gates.design` lists more than one step, `gatedSteps` carries one entry per step, each with
-its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
-`approved` or `changes_requested`): the tree waits until every entry reads `approved`, and
-`designGate` beside it is the `spec` step's record alone.
+earlier version does not count: the spec changed since. The gate holds the tree's start and its
+merger's start. `gatedSteps` carries one entry for each step that holds the tree, each with its own
+`artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
+`approved` or `changes_requested`): one per step `gates.design` lists, then `criteria` where the
+deployment's list names `spec` and not `criteria` and the root registered its Verification
+document. The tree waits until every entry reads `approved`, and `designGate` beside it is the
+`spec` step's record alone.
 
 ## A parked tree did not come back after a decision
 
@@ -552,6 +588,17 @@ recorded session is forgotten, by `legion claims retry --fresh-session`, the con
 go. The notice is the claim's own — the issue and the role that names it — so
 two claims of one issue each get a notice of their own, and in a provider outage every claim that
 reaches six is told.
+
+**When the memory guard of the controller's own pod ends one of the controller's programs**, the
+controller is told of that kill, as `memory-guard-kill on <PROJECT>`, under the project key as a
+`tick` is (`workflow: the controller whose program the memory guard ended is told why`). The
+notice names the program by its executable, with none of its arguments, and its pid, the memory
+it held, the pod's reading and the pod's limit. The controller's session and the pod's other
+processes go on; nothing is held. Each kill is a notice of its own, and a report the launcher
+sends twice is still one notice. The notice's own reason tells the controller what to do: not to
+run the same program again unchanged, but to bound its output or send heavy work where the
+deployment's instructions say. An `eval` cell of the controller that answered
+`Kernel died during execution; completion is uncertain` at that moment is that kill.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON
@@ -664,8 +711,12 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdRe
 ```
 
 `phase` is `held`, `heldFrom` names the phase the hold took the issue out of, and the failed
-claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
-to retry or escalate, and `holdReason: "escalated"` means it went to the controller. A root's
+claim's `state` is `failed` with its `failure` beside it. A phase worker held for its failure is
+its architect's to retry or escalate, and `holdReason: "escalated"` means it went to the
+controller. A hold whose `holdReason` is `task-stopped` (its owner stopped its task, or a step
+failed with no earlier step of the type implementation to take its work back, which stops the
+task) or `children` (a parent waits, before its retro, for the issues beneath it) is no failure,
+and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
 restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park
@@ -931,8 +982,8 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 
   - **`suspendedBy: unknown`** (suspended before this release recorded who did): let the
     workflow start it. Stop the project's daemon, mark the claim as the daemon's, and start the
-    daemon again; at boot it queues the workflow's own start for the worker's phase, with the
-    right run, phase and, for a merger, approved head:
+    daemon again. At boot it queues the workflow's own start for the worker's phase, with the
+    right run and phase:
 
     ```sql
     update claims set suspended_by = 'daemon' where token = 'legion-widgets-widgets-12-implementer' and state = 'suspended';
@@ -952,8 +1003,7 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
     phase twice.
   - **`suspendedBy: operator`, otherwise:** deliver its phase's resume task. An operator's
     delivery resumes the claim and hands it the task. The task is the one the workflow gives a
-    worker resuming its phase, with the issue's title, key and phase as `legion state` shows them
-    (a merger told no approved head sends the round back for review):
+    worker resuming its phase, with the issue's title, key and phase as `legion state` shows them:
 
     ```sh
     legion claims deliver --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-12-implementer \
@@ -964,9 +1014,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   a new one once supervise's `forgetSession` has dropped that, with fresh budgets, and sends it a
   catch-up of its tree once it is ready, so the tree carries on at the generation and phase it
   stands at. The daemon drops every notice it could
-  not deliver to the failed architect, the reviewer's approval that moved an issue into `accepting`
-  among them, so the catch-up's reason names each issue of the tree waiting in `accepting` for the
-  architect's acceptance; no worker runs there, and nothing else would wake the architect for it:
+  not deliver to the failed architect, the one that moved an issue into `accepting` among them (in
+  the default steps, the reviewer's approval), so the catch-up's reason names each issue of the tree
+  waiting in `accepting` for the architect's acceptance. No worker holds that phase, and nothing
+  else would wake the architect for it:
 
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
@@ -1046,7 +1097,7 @@ A jj commit gets them from the role's jj overlay: the `omp-attribution-<session 
 The overlay sets `templates.commit_trailers`, `templates.revert_description` and `templates.duplicate_description`, so a `jj revert` and a `jj duplicate` get the two lines too.
 A `git commit` gets them from the git wrapper first on the role's `PATH`, which hands the commit to `legion git`: the image's `/opt/legion/bin/git` in a pod, and under tmux the `git` in the state directory's `bin/`, or the image's wrapper where that is the first git on the daemon's `PATH`.
 `Omp-Session` holds the role's session id, and `Legion-Role` holds the role process's `LEGION_ROLE`.
-Read the two lines of each commit on a branch with the template of `skills/legion-worker/references/default-branch-check.md`:
+Read the two lines of each commit on a branch with this template:
 
 ```sh
 jj log --no-graph -r 'trunk()..<branch>@origin' -T '
@@ -1173,7 +1224,7 @@ On such a daemon, an update round or a message wake can take the author of the c
 
 - `JJ_USER` and `JJ_EMAIL` rank above every jj configuration file, and only `--config` and `--config-file` on the command line rank above them.
 
-So a role sets no `user.name`, no `user.email`, none of the overlay's three templates and no `trailer.*` key in any jj or git scope (`skills/legion-worker/references/default-branch-check.md`).
+So a role sets no `user.name`, no `user.email`, none of the overlay's three templates and no `trailer.*` key in any jj or git scope.
 
 ## A pod does not come up
 
@@ -1182,7 +1233,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
   reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
-  issue can keep its pod where it holds no slot — past its review, or while it waits on another
+  issue can keep its pod where it holds no slot — in `accepting`, `retro` or `merging`, or while it waits on another
   issue — so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
@@ -1426,8 +1477,8 @@ These arrive as messages on the Dispatch issue:
 
 - **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
   implementer's counted rounds reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)): every move back to an earlier
-  phase raises the count, and a move made while the head conflicts with its base is a conflict
+  ([what counts a round](/legion/legion/concepts/#review-signalling)): only a review that requests
+  changes raises the count, and one made while the head conflicts with its base is a conflict
   round, which the cap leaves out and the message's second number names. The daemon posts it and
   tells the architect once for each value the cap holds, so the rounds after it say nothing again
   until you change `review_round_cap` or the issue runs again as a new generation. The work goes
@@ -1526,29 +1577,32 @@ These arrive as messages on the Dispatch issue:
   the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
   holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
-  GitHub can neither merge nor start pull-request CI for: the daemon asks the implementer to merge
-  the base forward while the issue stays in `merging`, and the merger merges the new head once the
-  reviewer's approval of it is on the pull request. And it enqueues nothing on a merge-queue base whose
+  GitHub can neither merge nor start pull-request CI for: the merger merges the base forward itself
+  while the issue stays in `merging`. Where the task's reviewer step ran, the daemon asks the
+  reviewer to read that merge, and the merger merges the new head once the reviewer's approval of
+  it is on the pull request; where the task has no reviewer step, the merger goes on at the new
+  head. And it enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
   on, quoting GitHub's own answer: wait for what GitHub waits for, merge again at the head it
-  re-reads, send the issue back, or tell the architect what only a person can change. A pull
+  re-reads, fix in its merge of the base what the base's newer code breaks, send the issue back
+  only for a change to the change's own logic, or tell the architect what only a person can change. A pull
   request a person already merged needs nothing: the daemon reads that merge and closes the
   issue — or, for a root whose tree still runs, once the last other issue of that tree is done or
   parked.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's
-  branch, `legion/<KEY>`: the issue moves to testing only on an open pull request, or one the
-  daemon recorded merged. One the daemon has not recorded yet (its opened webhook lost or still
+  branch, `legion/<KEY>`. The issue moves on only on an open pull request, or one the daemon
+  recorded merged. One the daemon has not recorded yet (its opened webhook lost or still
   waiting) is recorded there and the issue moves on. A pull request merged while the issue was in
   `implementing` already told the architect (`pr-merged`), and the completion is applied and moves
-  the issue to testing. With none, the completion is refused and nothing is recorded: `no open pull
+  the issue on. With none, the completion is refused and nothing is recorded: `no open pull
   request on <owner>/<repo> legion/<KEY>; nothing was recorded. Open the pull request and complete
   again.` The implementer opens it and completes again at the same commit. When the record holds
   the issue's pull request closed without merging, the refusal adds `pull request #<n> is closed;
   your architect was told and decides this issue's phase.`: the close already told the architect,
-  and a pull request closed without merging never moves an issue to testing. When
+  and a pull request closed without merging never moves an issue on. When
   GitHub cannot be read (the token mint or the read fails), the completion is applied unread and
   the daemon logs a warning, `api: read the open pull request on a completing implementer's
   branch; …`; the issue moves on once a pull request is recorded open, and when the daemon's next read of
@@ -1605,11 +1659,13 @@ These arrive as messages on the Dispatch issue:
   issue goes back to `implementing` with a task naming each check that does not pass.
 
 An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
-conflicts with its base is waiting on the daemon's merge forward or on nothing at all. The daemon
+conflicts with its base is waiting on a merge forward or on nothing at all. The daemon
 reads the pull request's mergeability twice, at least a minute apart, and acts only on a conflict
-both reads report, and only when the next step needs a mergeable head: the issue stands past its
-review, a check the base requires has no green result on the head, the base requires a current
-branch, or the daemon could not read the base's rules. Its log says which: `workflow: a conflict
+both reads report, and only when the next step needs a mergeable head. That is so in four cases.
+The issue stands in `merging`. A check the base requires has no green result on the head. The
+base requires a current branch. The daemon could not read the base's rules. Where every step of
+the task has run, in `retro` or in `accepting` with no step of its task after the acceptance, the
+conflict waits for the merger. Its log says which: `workflow: a conflict
 read waits for a second read` for a first read, `workflow: a second read did not confirm the
 conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
 merge-state reads then follow the head), `workflow: a confirmed conflict needs no merge yet` with the
@@ -1617,15 +1673,16 @@ required contexts and the green ones, and `workflow: merge forward asked` with t
 GitHub answered before the newest read the record holds of the same head is dropped whole, with
 `workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
 so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
-forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
-and no completion, the phase's worker is told to stop writing the workspace and not to complete
-its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
+forward keeps the phase: the role asked — the implementer, or in `merging` the merger — merges in
+the issue workspace and pushes with no handoff and no completion, the phase's worker, when that is
+the tester or the reviewer, is told to stop writing the workspace and not to complete its phase at
+the old head, and is then told the new head, and `workflow: the merge forward landed`
 names both heads. A completion of the phase the issue stands in that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Past review the reviewer is asked to read the merge and approve the new head. A red check
-sends nothing back from anywhere.
+before. Where the task's reviewer step already ran, the reviewer is asked to read the merge and
+approve the new head. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 
@@ -1643,9 +1700,9 @@ GitHub for it.
 The issue says `Legion keeps <owner/name> as this issue's repository; the change to <other> in
 Dispatch is not applied`. An issue's repository is fixed when Legion first records it: its branch,
 workspace and pull request live there, so a later change of the issue's own repository, or its
-parent's or the project's default it inherited, does not move it. Create a new issue on the other
-repository for the work that belongs there. The daemon says it once for each repository the issue
-is changed to.
+parent's in its own project or the project's default it inherited, does not move it. Create a new
+issue on the other repository for the work that belongs there. The daemon says it once for each
+repository the issue is changed to.
 
 ## A status change did not stick
 
@@ -1755,9 +1812,9 @@ open or merged pull request recorded and none GitHub lists open on its branch. T
 when the implementer's completion was applied without GitHub's answer (the read failed), or when
 the pull request was closed without merging since. A pull request merged since tells the architect
 `pr-merged` instead, and the implementer's completion moves the issue on it. The issue stays in
-`implementing` until a pull request
-is open on the branch: the implementer opens it, and the daemon records it from its webhook or
-from its next read of the issue, and moves the issue to `testing`. When the work should not
+`implementing` until a pull request is open on the branch. The implementer opens it, and the
+daemon records it from its webhook or its next read of the issue. The daemon then moves the issue
+to its task's next step, or toward its retro where implementing is the last step. When the work should not
 go on, the architect decides the issue's phase as for a pull request closed without merging. The
 notice comes once per handoff commit, from whichever read finds it first.
 
