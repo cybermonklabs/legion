@@ -166,8 +166,9 @@ export function queryTyped(query: string): boolean {
  *
  * An address that names a row the tree draws puts the focus on that row, once per following of
  * the address and once every read the page's tree is built from has settled, as the Spec view's
- * address does (`SpecFilterBody`), and that row holds the tab stop until the reader's key moves
- * it. A reader who acted since they followed the address keeps the focus where they put it.
+ * address does (`SpecFilterBody`), and that row takes the tab stop as the focus does, from where
+ * the reader may move it on. A reader who acted since they followed the address keeps the focus
+ * where they put it.
  */
 export function VerificationFilterBody({
   addressActs,
@@ -280,20 +281,29 @@ export function VerificationFilterBody({
   // The row that holds the tree's one tab stop, by its id in `rows`: the issue's at first. A
   // row the reader's narrowing took out hands it back to the issue's row, in this render rather
   // than in an effect after it, so the tree is never drawn without its stop.
-  const [moved, setRovingId] = useState<string | undefined>(undefined);
-  if (moved !== undefined && !rows.includes(moved)) setRovingId(undefined);
-  // The row the reader's key gave the stop (`moved`) holds it while it is drawn; else the row the
-  // address names holds it, once every read the page's tree is built from has settled and while
-  // the tree draws that row, as the Spec view's does (`SpecFilterBody`); else the issue's row.
+  // Once every read the page's tree is built from has settled, the row the address names takes
+  // the stop, once per following of the address and only while the tree draws that row, as the
+  // Spec view's does (`SpecFilterBody`); a key the reader presses moves it on from there, Home to
+  // the issue's row included, as from any row, and a narrowing that takes the row out hands it
+  // back to the issue's row as above. With no address naming a row the stop is as it was.
+  const [rovingId, setRovingId] = useState(view.id);
+  if (rovingId !== view.id && !rows.includes(rovingId)) setRovingId(view.id);
   // The address's row is the stop from the render that lands on it: the stage gives a focus that
   // rests on nothing to the tab-stop row as that render is drawn (`slots/stage.tsx`), before the
   // landing's frame, and a landing whose row lost the focus to another row by then leaves the
-  // focus there (`landOnRow`). It is the stop where the reader has acted since the following as
+  // focus there (`landOnRow`). So the stop is given in this render, as the line above hands it
+  // back, under the key the landing takes (the following and the row, `stopGiven`), and not
+  // again in that following. It is the stop where the reader has acted since the following as
   // well, and moves no focus then: no render reads whether they have acted, so a stop that read
   // it would move at whatever render came next.
+  const following = useFollowing();
   const addressRow =
     readsSettled && reveal !== undefined && rows.includes(reveal) ? reveal : undefined;
-  const rovingId = moved ?? addressRow ?? view.id;
+  const [stopGiven, setStopGiven] = useState<string | undefined>(undefined);
+  if (addressRow !== undefined && stopGiven !== `${following}:${addressRow}`) {
+    setStopGiven(`${following}:${addressRow}`);
+    setRovingId(addressRow);
+  }
   const tabIndexFor = (id: string): 0 | -1 => (id === rovingId ? 0 : -1);
   // An address that names a row puts the focus on it, once per following of the address, as the
   // outline and the Spec view land on one (`IssueTree.tsx`'s `landOnRow`): the focus comes in the
@@ -310,7 +320,6 @@ export function VerificationFilterBody({
   const tree = useRef<HTMLDivElement>(null);
   const landingHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landingHold.current?.abort(), []);
-  const following = useFollowing();
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (addressRow === undefined) return;
