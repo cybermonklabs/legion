@@ -19,7 +19,7 @@ export const LEGION_ROLES = [
 export type LegionRole = (typeof LEGION_ROLES)[number];
 
 /** The role of a phase worker's claim: one of Legion's six, or a role the deployment defines in its
- * settings' `roles` (contract 258), a name of the step grammar (`isStepRole`). */
+ * settings' `roles` (contract 297), a name of the step grammar (`isStepRole`). */
 export type LegionStepRole = LegionRole | string;
 
 /** The design-gate steps a Legion deployment can gate, each naming one document of a root issue

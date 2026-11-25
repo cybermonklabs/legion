@@ -434,7 +434,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 // completed, and how many bytes of unpushed work it saved as a bundle (zero when the workspace
 // held none). Two claims of one issue can hold one role, so `claims` names what `roles` cannot.
 // `claims` is absent on a release that suspended no claim, on a record the release before
-// 20261124213823 wrote, and below contract 259 (withoutRecordClaims).
+// 20261124213823 wrote, and below contract 298 (withoutRecordClaims).
 type ReleaseRecord struct {
 	ID          int64    `json:"id"`
 	Issue       string   `json:"issue"`
@@ -452,7 +452,7 @@ type ReleaseRecord struct {
 // minutes with no turn. Claim is the claim's token (store.PodResume.Claim): two claims of one
 // issue can hold one role, and each can be woken, so the role does not say which came back. It is
 // absent on a wake recorded before 20261124213821, which stands for each claim of its role, and
-// below contract 259 (withoutRecordClaims). Pause is the project pause that held the wake
+// below contract 298 (withoutRecordClaims). Pause is the project pause that held the wake
 // (store.PodResume.Pause), absent for a wake no pause held: a held wake pairs with no release, and
 // its wait to the first turn measures the pause, so a reader of the release measurements counts it
 // apart (decision 15 of dispatch://INFRA-3759).

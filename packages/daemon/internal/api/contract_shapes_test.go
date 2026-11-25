@@ -366,9 +366,9 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // issue's architect carries a failure, a pending cause and a held task, as a worker does. No
 // other body carries them on an architect, so without this body no record describes those keys
 // at their architect paths, and the value comparison reads no value there. Each issue also lists
-// one other claim (`otherClaims`, contract 259) with a failure, a pending cause and a held task,
+// one other claim (`otherClaims`, contract 298) with a failure, a pending cause and a held task,
 // in state i of a claim view's states, so the thirteen carry every value of the five fields at
-// their `otherClaims` paths, every one of which arrived at 259 with the key. Each issue also carries
+// their `otherClaims` paths, every one of which arrived at 298 with the key. Each issue also carries
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
 // merge states, so the thirteen issues carry all eight words at both key paths. The project's
 // pause waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
@@ -621,7 +621,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// through releaseRecordsBody from the store's rows as the route builds it. Its third
 		// resume is a wake a project pause held, the one resume that carries `pause` (contract
 		// 178), which the record of every contract below 178 describes no key of. Its first
-		// release names the claims it suspended (`claims`, contract 259).
+		// release names the claims it suspended (`claims`, contract 298).
 		AnswerReleaseRecords: {roots: typesOf(ReleaseRecordsResponse{}), bodies: []any{releaseRecordsBody(store.PodReleaseRecords{
 			Releases: []store.PodRelease{
 				{ID: 101, Issue: "LEGION-208", Generation: 3, Roles: []string{"implementer", "tester"},

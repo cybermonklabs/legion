@@ -261,9 +261,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * which is the daemon's own word that this process is finished. Two claims of one issue can hold
    * one role — the agent of a key on a step of another role, beside that role's own claim of an
    * earlier version of the plan — and only the worker on the step, the claim the record names by
-   * its token under `workers` (contract 259), works the phase: the other claim is not reminded, so
+   * its token under `workers` (contract 298), works the phase: the other claim is not reminded, so
    * it never reaches the architect as that role's worker. A record that names no token, from a
-   * daemon below 259, keeps the role's rule. A claim the daemon failed runs no further turn in
+   * daemon below 298, keeps the role's rule. A claim the daemon failed runs no further turn in
    * this process — its retry relaunches this session in a new process, or starts a new session
    * once the daemon's `forgetSession` (its supervise package) has dropped this one — and a
    * reminder written now reaches nobody who can act on it. That is what stops Claude Code's
