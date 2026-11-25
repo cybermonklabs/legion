@@ -17,6 +17,7 @@
       "!!packages/daemon/internal/runtime/sandbox/testdata/golden",
       "!!packages/envoy/internal/dispatch/pmdoc/testdata",
       "!!packages/envoy/internal/dispatch/text/testdata",
+      "!!packages/contracts/src/dashboard-pages.json",
       "!!packages/envoy/internal/dispatch/text/dashboard-pages.json",
       "!!packages/envoy/internal/dispatch/textversions/testdata",
       "!!packages/envoy/internal/cipher/approval/templates",

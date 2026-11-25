@@ -6,7 +6,7 @@ import { DASHBOARD_PAGES_FILE, renderDashboardPages } from "./dashboard-pages-fi
 // segment added to `ISSUE_DOCUMENT_SEGMENTS`, or a page that comes to draw another document
 // (`issueDocuments`, the choice `IssuePage.tsx` draws each tab from) changes the render, and this
 // fails until `bun web/src/features/refs/dashboard-pages-file.ts --write` (from packages/dispatch)
-// writes the file again for the server and the agent client.
+// writes the file again in @legion/contracts; `bun run gen:go` there writes the server's copy.
 test("the committed pages file is the route table's render", async () => {
   expect(await Bun.file(DASHBOARD_PAGES_FILE).text()).toBe(renderDashboardPages());
 });

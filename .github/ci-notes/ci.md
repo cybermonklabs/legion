@@ -369,9 +369,10 @@ reader's table is the same table" and src/dispatch-text-references.test.ts's "th
 reader's text table is the same table" read the Go reader's JSON tables,
 src/dispatch-block-ref.test.ts reads pmdoc's block pointer and typed block id
 tables, scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
-Go contract, the Go copy of the tool specs, pmdoc's generated block schema and contracts'
-own generated TypeScript - is current, and src/dispatch-tools.test.ts reads that Go copy
-of the tool specs for the rule and the bounds each tool states. Not pmdoc/schema, the
+Go contract, the Go copy of the tool specs, pmdoc's generated block schema, the server's copy
+of the dashboard's pages file and contracts' own generated TypeScript - is current, and
+src/dispatch-tools.test.ts reads that Go copy of the tool specs for the rule and the bounds
+each tool states. Not pmdoc/schema, the
 block schema those generated types are the shape of: this job generates that Go from
 packages/contracts/schemas, and reads no file of pmdoc/schema itself.
 

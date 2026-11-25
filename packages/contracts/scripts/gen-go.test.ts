@@ -15,6 +15,11 @@ const blockSchemaOutput = resolve(
   "../../envoy/internal/dispatch/pmdoc/schema_generated.go"
 );
 const blockSchemaTypes = resolve(import.meta.dir, "../src/block-schema.generated.ts");
+// The Go copy of the dashboard's pages file, which the server's reader embeds.
+const dashboardPagesCopy = resolve(
+  import.meta.dir,
+  "../../envoy/internal/dispatch/text/dashboard-pages.json"
+);
 // Every file the generator writes, so a copy of the whole set is checked and only the hand-edit
 // below is stale.
 const generated = [
@@ -23,6 +28,7 @@ const generated = [
   dispatchToolsOutput,
   blockSchemaOutput,
   blockSchemaTypes,
+  dashboardPagesCopy,
 ];
 const questionSchema = resolve(import.meta.dir, "../schemas/dispatch-question.schema.json");
 const generator = resolve(import.meta.dir, "gen-go.ts");

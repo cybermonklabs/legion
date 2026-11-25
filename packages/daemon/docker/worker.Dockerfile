@@ -366,10 +366,6 @@ RUN mkdir -p /out \
 FROM plugin-deps AS plugin
 WORKDIR /repo
 COPY packages/contracts packages/contracts
-# contracts/src/dispatch-href.ts imports the dashboard's generated pages file from packages/envoy,
-# and every bundle below reaches the contracts. .github/scripts/check-image-build-inputs.sh holds
-# this stage's COPY lines to every file its builds read.
-COPY packages/envoy/internal/dispatch/text/dashboard-pages.json packages/envoy/internal/dispatch/text/dashboard-pages.json
 COPY packages/cipher-client packages/cipher-client
 COPY packages/envoy-client packages/envoy-client
 COPY packages/pi-shared packages/pi-shared

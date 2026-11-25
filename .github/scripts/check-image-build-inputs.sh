@@ -2,9 +2,9 @@
 # An image stage that runs a Bun build copies the repository into itself a piece at a time, so a
 # build that starts to import a file outside the pieces it copies fails only when the image is
 # built - and the worker image is built on a pull request only once it leaves draft, and the
-# release image after the merge. The worker image's plugin stage stopped building that way once
-# the contracts began to import the dashboard's pages file from packages/envoy, which that stage
-# never copies. So every file such a build reads must be put in place by a COPY of its own stage,
+# release image after the merge. The worker image's plugin stage once stopped building that way,
+# when the contracts imported the dashboard's pages file from packages/envoy, which that stage
+# never copied. So every file such a build reads must be put in place by a COPY of its own stage,
 # above the RUN that runs it.
 #
 # What a build reads is derived, never listed: for each row of image_build_entries.py's STAGES,

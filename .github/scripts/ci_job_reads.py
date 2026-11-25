@@ -75,17 +75,11 @@ from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact,
 from ci_filter_coverage import at as at_in, gate as gate_in
 from ci_filter_sources import excluded, load_directives, load_gate_files
 from go_build_tags import go_skips_dir, tag_sets
-from workflow_paths import glob_regex
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
 INFRA = "packages/envoy/infra"
 FIX = "packages/contracts/fixtures"
-CONTRACTS_SRC = "packages/contracts/src/**"
-# The dashboard's pages file, which CONTRACTS_PAGES_IMPORTER imports at its line 8 (reads adds it to
-# every read set with a glob that matches that module).
-CONTRACTS_PAGES_FILE = f"{ENVOY}/internal/dispatch/text/dashboard-pages.json"
-CONTRACTS_PAGES_IMPORTER = "packages/contracts/src/dispatch-href.ts"
 GO_TARGETS = ".github/go-release-targets.json"
 CLIENT_TARGETS = ".github/agent-secrets-client-targets.json"
 INFRA_TARGETS = ".github/envoy-infra-targets.json"
@@ -215,17 +209,7 @@ INFRA_DARWIN_VET = "Vet envoy-infra for darwin, its live-test tags included"
 
 
 def reads(*entries):
-    """The reads of entries, each a (glob, why). A program that compiles the contracts'
-    dispatch-href.ts reads the dashboard's pages file with it: CONTRACTS_PAGES_IMPORTER:8 imports
-    it, so every read set with a glob that matches that module (CONTRACTS_SRC, packages/contracts/**)
-    names that file too, in this one place, as envoy_client_dep does for the next workspace
-    envoy-client reaches. A gate that compiles the module through a listed block of its filter, and
-    so reads none of packages/contracts/src here (dispatch_ui), names the file itself."""
-    out = [Read(glob, why) for glob, why in entries]
-    globs = {glob for glob, _ in entries}
-    if CONTRACTS_PAGES_FILE not in globs and any(glob_regex(glob).fullmatch(CONTRACTS_PAGES_IMPORTER) for glob in globs):
-        out.append(Read(CONTRACTS_PAGES_FILE, f"{CONTRACTS_PAGES_IMPORTER}:8 imports it, beside the contracts' sources this job compiles"))
-    return out
+    return [Read(glob, why) for glob, why in entries]
 
 
 def envoy_go_files_but_infra():
@@ -464,6 +448,7 @@ def at_browser(step, job=BROWSER_SHARD):
     return at(job, step, BROWSER_SITE)
 
 
+CONTRACTS_SRC = "packages/contracts/src/**"
 ENVOY_CLIENT_SRC = "packages/envoy-client/src/**"
 BROKER_CLIENT_SRC = "packages/cipher-client/**"
 # The shared test fixtures every other Bun package's tests import.

@@ -7,10 +7,12 @@ import (
 	"strings"
 )
 
-// dashboardPagesFile is the dashboard's pages file, dashboard-pages.json, which the dashboard's
-// route table generates (packages/dispatch/web/src/features/refs/dashboard-pages-file.ts) and the
-// agent client and `DISPATCH_HREF_REFERENCES` in @legion/contracts read too, so every reader of a
-// dashboard address reads the same tabs and document segments.
+// dashboardPagesFile is the dashboard's pages file, which the dashboard's route table generates
+// (packages/dispatch/web/src/features/refs/dashboard-pages-file.ts) into @legion/contracts
+// (packages/contracts/src/dashboard-pages.json), where the agent client and
+// `DISPATCH_HREF_REFERENCES` read it too, so every reader of a dashboard address reads the same
+// tabs and document segments. dashboard-pages.json here is the copy that
+// packages/contracts/scripts/gen-go.ts writes, and its `check:go` fails when the copy differs.
 //
 //go:embed dashboard-pages.json
 var dashboardPagesFile []byte

@@ -31,9 +31,12 @@ Change the source and regenerate; never edit these by hand.
 
 - `scripts/gen-go.ts` writes, in `packages/envoy`, `listenerwire/envelope_generated.go` (the
   envelope), `internal/contracts/generated.go` (its aliases and every shared constant),
-  `internal/contracts/dispatch_tools_generated.go` (from `src/dispatch-tools.ts`) and
-  `internal/dispatch/pmdoc/schema_generated.go` (from `schemas/block-schema.schema.json`), and
-  here `src/block-schema.generated.ts`.
+  `internal/contracts/dispatch_tools_generated.go` (from `src/dispatch-tools.ts`),
+  `internal/dispatch/pmdoc/schema_generated.go` (from `schemas/block-schema.schema.json`) and
+  `internal/dispatch/text/dashboard-pages.json` (a copy of `src/dashboard-pages.json`, which the
+  server embeds), and here `src/block-schema.generated.ts`.
+- `src/dashboard-pages.json`, the dashboard's pages file, is written from the dashboard's route
+  table by `bun web/src/features/refs/dashboard-pages-file.ts --write` in `packages/dispatch`.
 - `schemas/dispatch-openapi.json` is reflected from Dispatch's Go route table. In
   `packages/envoy`, `go run ./cmd/dispatch openapi --check` compares it with a fresh render and
   prints the command that rewrites it.
