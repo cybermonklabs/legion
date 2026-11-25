@@ -41,7 +41,7 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 	// read the issue after the fact was published, so it is fenced apart from them. The where clause
 	// skips a reading that would replace no value and raise no applied sequence, so the project and
 	// the row's sequence move only with one of those.
-	if _, err := tx.Exec(ctx, `insert into dispatch_issues as held (key, project, dispatch_seq,
+	tag, err := tx.Exec(ctx, `insert into dispatch_issues as held (key, project, dispatch_seq,
 			status, status_seq, parent, parent_seq, blockers, blockers_seq, labels, labels_seq, rank, rank_seq, applied_seq)
 		values ($1, $2, $3::bigint,
 			$4, case when $5 then $3 else 0 end,
@@ -75,8 +75,13 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 		blockers, reading.Blockers.Carried,
 		labels, reading.Labels.Carried,
 		rank, reading.Rank.Carried,
-		reading.Applied); err != nil {
+		reading.Applied)
+	if err != nil {
 		return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
+	}
+	// A reading the fences refuse whole writes no row, so it changes nothing a pass reads.
+	if tag.RowsAffected() > 0 {
+		noteRecordWrite(ctx)
 	}
 	return s.PutDispatchClaim(ctx, tx, reading.Key, reading.ClaimedBy, reading.ClaimSeq)
 }
@@ -114,11 +119,15 @@ func (s *Postgres) PutDispatchClaim(ctx context.Context, tx pgx.Tx, key, holder 
 	if seq <= 0 {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `insert into dispatch_claims (key, claimed_by, claim_seq) values ($1, $2, $3)
+	tag, err := tx.Exec(ctx, `insert into dispatch_claims (key, claimed_by, claim_seq) values ($1, $2, $3)
 		on conflict (key) do update set claimed_by = excluded.claimed_by, claim_seq = excluded.claim_seq
 		where dispatch_claims.claim_seq < excluded.claim_seq`,
-		key, holder, seq); err != nil {
+		key, holder, seq)
+	if err != nil {
 		return fmt.Errorf("put the Dispatch claim of %s: %w", key, err)
+	}
+	if tag.RowsAffected() > 0 {
+		noteRecordWrite(ctx)
 	}
 	return nil
 }

@@ -1684,6 +1684,9 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
+	if len(emptied) > 0 {
+		noteRecordWrite(ctx)
+	}
 	slices.Sort(emptied)
 	for _, issue := range slices.Compact(emptied) {
 		if err := s.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: GateDocuments(nil, nil)}, now); err != nil {
@@ -2006,6 +2009,7 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	if err != nil {
 		return fmt.Errorf("put design gate for %s: %w", gate.Issue, err)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -2044,7 +2048,7 @@ func (s *Postgres) PutRootAsk(ctx context.Context, tx pgx.Tx, ask RootAsk) error
 	if ask.Decline != nil {
 		declined, note, words = true, ask.Decline.Note, ask.Decline.Words
 	}
-	if _, err := tx.Exec(ctx, `insert into root_asks (issue, ask, kind, artifact, open, seq, waiting_on, waiting_on_seq, closed_by, closed_seq,
+	tag, err := tx.Exec(ctx, `insert into root_asks (issue, ask, kind, artifact, open, seq, waiting_on, waiting_on_seq, closed_by, closed_seq,
 		by_tree, person_seq, person_answer_seq, declined, declined_note, declined_words)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		on conflict (issue, ask) do update set kind = excluded.kind, artifact = excluded.artifact, open = excluded.open, seq = excluded.seq,
@@ -2057,8 +2061,12 @@ func (s *Postgres) PutRootAsk(ctx context.Context, tx pgx.Tx, ask RootAsk) error
 		and root_asks.person_answer_seq <= excluded.person_answer_seq`,
 		ask.Issue, ask.Ask, nullableText(ask.Kind), nullableText(ask.Artifact), ask.Open, ask.Seq, nullableText(ask.WaitingOn), ask.WaitingOnSeq,
 		nullableText(ask.ClosedBy), ask.ClosedSeq, ask.ByTree, ask.PersonSeq, ask.PersonAnswerSeq,
-		declined, nullableText(note), nullableText(words)); err != nil {
+		declined, nullableText(note), nullableText(words))
+	if err != nil {
 		return fmt.Errorf("put ask %s of %s: %w", ask.Ask, ask.Issue, err)
+	}
+	if tag.RowsAffected() > 0 {
+		noteRecordWrite(ctx)
 	}
 	return nil
 }

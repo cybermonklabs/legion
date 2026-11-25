@@ -50,13 +50,15 @@ func countedPool(t *testing.T, pool *pgxpool.Pool, counter *statementCounter) *p
 
 func slottedKey(i int) string { return fmt.Sprintf("LEGION-%d", 1000+i) }
 
-// Every fact runs admission under the one fact lock (intake.ApplyFact), the facts of the Dispatch
-// and GitHub consumers, the API and the boot's replay alike, so what admission asks the database
-// is paid by every fact. It asks the same number of statements however many slots the project
-// holds: a statement per slotted issue cost a project running hundreds of trees hundreds of round
-// trips on each fact, and the Dispatch consumer, whose events are mostly facts of recorded
-// issues, fell behind. Finished trees' slots are still released in slot order, whatever order the
-// records come in, and another project's slot in the shared table is neither released nor counted.
+// Every fact that writes a record of the project runs admission under the one fact lock
+// (intake.ApplyFact), the facts of the Dispatch and GitHub consumers, the API and the boot's
+// replay alike, so what admission asks the database is paid by each of them. It asks the same
+// number of statements however many slots the project holds: a statement per slotted issue cost a
+// project running hundreds of trees hundreds of round trips on each fact, and the Dispatch
+// consumer, whose events are mostly facts of recorded issues, fell behind. Finished trees' slots
+// are still released in slot order, by the next pass — the tick's here, since the records below
+// are seeded without a fact — whatever order the records come in, and another project's slot in
+// the shared table is neither released nor counted.
 //
 // The count holds as well where every slotted root is stalled: each has stood at admitted past
 // the gate arm's bound with no step of its design gate registered, and an earlier fact has told
@@ -146,9 +148,9 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 	})
 	var logged bytes.Buffer
 	admission := newAdmission(t, 2*slotsHeld+2, slog.New(slog.NewTextHandler(&logged, nil)))
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "after-the-close", facts[0].fact,
+	if _, err := intake.ApplyFact(context.Background(), pool, "controller", "after-the-close", intake.ControllerTick{},
 		blockers.NewMirror(record.NewStore(), testProject), admission.engine, admission); err != nil {
-		t.Fatalf("apply a fact after %s and LEGION-100 finished: %v", slottedKey(7), err)
+		t.Fatalf("apply the tick after %s and LEGION-100 finished: %v", slottedKey(7), err)
 	}
 	var want []record.Slot
 	for i := range slotsHeld {

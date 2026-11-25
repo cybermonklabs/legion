@@ -14,16 +14,21 @@ import (
 type issueWritesKey struct{}
 
 // issueWrites is each issue one transaction's writes touched, in the order of the first write of
-// each.
+// each, and whether a write changed a record of the project beside an issue's own (RecordsWritten).
 type issueWrites struct {
 	order []string
 	seen  map[string]bool
+	// records is whether a write changed a row the admission pass reads beside an issue's record,
+	// pull request and hand-over fence: the copy of Dispatch's issue or of its claim, a root's ask,
+	// a design gate or an issue's plan.
+	records bool
 }
 
 // WithIssueWrites answers ctx in which the store keeps each issue a write touches — its record
 // (PutIssue), its pull request (PutPullRequest) or its hand-over fence (PutHandover,
 // DeleteHandover, DeleteHandoverAt), the inputs of the end of a step's run the store writes —
-// which IssuesWritten answers. A ctx that keeps them already is answered as it is, so the writes of
+// which IssuesWritten answers, and whether a write changed any record of the project, which
+// RecordsWritten answers. A ctx that keeps them already is answered as it is, so the writes of
 // one transaction are kept once whoever asks for them.
 func WithIssueWrites(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(issueWritesKey{}).(*issueWrites); ok {
@@ -40,6 +45,27 @@ func IssuesWritten(ctx context.Context) []string {
 		return nil
 	}
 	return slices.Clone(writes.order)
+}
+
+// RecordsWritten says whether a write in ctx changed a record of the project, which is what a
+// fact runs the admission pass for (admit's Admission.Apply): an issue's record, pull request or
+// hand-over fence (IssuesWritten), or a row the pass reads beside them — the copy of what
+// Dispatch says of an issue and of its claim (PutDispatchIssue, PutDispatchClaim), a root's ask
+// (PutRootAsk), a design gate (PutGate, and a clear that deletes one) and an issue's plan, whose
+// first step the pass starts (PutPlan, CarryPlan, DeletePlan, DeleteTasks, MoveTask, StopTask,
+// PutReturnCounts). A write the row's own fence refuses changes nothing and is not kept. False
+// for a ctx that keeps no writes (WithIssueWrites).
+func RecordsWritten(ctx context.Context) bool {
+	writes, ok := ctx.Value(issueWritesKey{}).(*issueWrites)
+	return ok && (len(writes.order) > 0 || writes.records)
+}
+
+// noteRecordWrite keeps that a write in ctx changed a record of the project beside an issue's own
+// (RecordsWritten). A ctx that keeps no writes keeps nothing.
+func noteRecordWrite(ctx context.Context) {
+	if writes, ok := ctx.Value(issueWritesKey{}).(*issueWrites); ok {
+		writes.records = true
+	}
 }
 
 // noteIssueWrite keeps key among the issues the writes of ctx touched, once per key, in the order
