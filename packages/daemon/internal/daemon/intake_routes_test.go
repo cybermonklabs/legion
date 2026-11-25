@@ -23,6 +23,7 @@ import (
 // id, rather than the 503 of a daemon that runs no intake, and the replay of another answers how
 // it ended, closing it as the operator's.
 func TestTheBootedDaemonsIntakeRoutesReachItsGiveUps(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}

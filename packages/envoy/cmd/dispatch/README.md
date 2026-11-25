@@ -5477,19 +5477,20 @@ Each item below names a path with its method and identity, then its purpose.
     Only these checks judge a move out of every tree Legion runs.
     The `parent` write that takes the issue out of Legion, above, is a write of `parent: null`.
 
-  A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
-  decision blocks in its documents, plain asks and requests to approve one of its documents.
-  Each is recorded `resolved` with resolution kind `withdrawn`, naming the closer as the request's actor, with the reason `Withdrawn by the close of <KEY>.`, and gets one `ask.resolved` before `issue.closed`;
-  its block is written `state="resolved"` in the live document.
-  The document's next settlement saves that write, and it writes a version when its rendering differs from the latest version.
-  That settlement runs while the issue is closed too, but it opens no ask and wakes nobody:
-  it changes no ask, records no edit notice, carries no approval, and its repair events carry the settlement's own actor.
-  An ask block that has no ask row gets no ask: the settlement saves it `state="resolved"` and records its author.
-  An ask answered or resolved before the close is left as it was, and the close records no answer and no approval.
-  A reopening `status` (any but `done`) opens again exactly the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
-  The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
-  For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version and carries an approval to that version, as that version's own write does on an open issue, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
-  A document with stored edits that its latest version does not hold, the reopen's own block writes among them, is left to the settlement that saves them, and that settlement's version moves the request and carries the approval.
+  - A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
+    decision blocks in its documents, plain asks and requests to approve one of its documents.
+    Each is recorded `resolved` with resolution kind `withdrawn`, naming the closer as the request's actor, with the reason `Withdrawn by the close of <KEY>.`, and gets one `ask.resolved` before `issue.closed`;
+    its block is written `state="resolved"` in the live document.
+    The document's next settlement saves that write, and it writes a version when its rendering differs from the latest version.
+    That settlement runs while the issue is closed too, but it opens no ask and wakes nobody:
+    it changes no ask, records no edit notice, carries no approval, and its repair events carry the settlement's own actor.
+    An ask block that has no ask row gets no ask: the settlement saves it `state="resolved"` and records its author.
+    An ask answered or resolved before the close is left as it was, and the close records no answer and no approval.
+
+  - A reopening `status` (any but `done`) opens again exactly the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
+    The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
+    For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version and carries an approval to that version, as that version's own write does on an open issue, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
+    A document with stored edits that its latest version does not hold, the reopen's own block writes among them, is left to the settlement that saves them, and that settlement's version moves the request and carries the approval.
 
 - `/api/v1/issues/{key}/status-change` (POST; cookie, trusted header, or bearer)
 
