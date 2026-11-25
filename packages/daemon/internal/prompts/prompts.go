@@ -1,5 +1,5 @@
 // Package prompts composes the role instructions the daemon gives an OMP pane, from the role
-// prompts it embeds.
+// prompts it embeds, and says which launches read each of them (PartReaders).
 package prompts
 
 import (
@@ -7,6 +7,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,16 +15,25 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// roleParts are the shared role prompts: each role's own part, the phase workers' cores and the
-// mechanics fragments (Compose), and the controller's prompt (ControllerPromptPaths).
+// texts are Legion's role-prompt texts, its two trees side by side at one root: roles/, the shared
+// role prompts (each role's own part, the phase workers' cores and the mechanics fragments that
+// Compose lists, and the controller's prompt, ControllerPromptPaths), and go/, the daemon's own
+// parts.
 //
-//go:embed roles
-var roleParts embed.FS
+//go:embed roles go/*.md
+var texts embed.FS
 
-//go:embed go/*.md
-var goParts embed.FS
+// roleParts and goParts are texts by the tree each reader walks (eachPart): roleParts below roles/
+// and goParts below go/. They are texts itself, so the binary holds each part once.
+var roleParts, goParts = texts, texts
+
+// Texts is Legion's role-prompt texts as a folder of texts an experiment arm names mirrors them:
+// "roles/<path>" is the shared prompt internal/prompts/roles/<path>, and "go/<path>" the daemon's
+// part internal/prompts/go/<path>. Its root holds those two trees and nothing else.
+func Texts() fs.FS { return texts }
 
 // Parts is the ordered role-prompt files a launch concatenates before its addressing and
 // deployment-instruction fragments (runtime.ComposePrompt). The whole text rides one file that one
@@ -106,18 +116,18 @@ func syncPrompt(path string, body []byte, kind string) error {
 	return nil
 }
 
-// ControllerPromptPaths are the controller's prompt files, in order: its shared role part, then the
-// daemon's part for how it was launched — headless in a pod the daemon supervises (`controller:
-// daemon`), or in the operator's terminal by `legion controller start`.
+// ControllerPromptPaths are the snapshots of the controller's prompt parts, in order
+// (controllerPartNames).
 func (c *Composer) ControllerPromptPaths(headless bool) ([]string, error) {
 	if c == nil {
 		return nil, fmt.Errorf("controller role prompt: nil composer")
 	}
-	launch := "controller-interactive.md"
-	if headless {
-		launch = "controller-headless.md"
+	names := controllerPartNames(headless)
+	paths := make([]string, 0, len(names))
+	for _, name := range names {
+		paths = append(paths, c.snapshot(name))
 	}
-	return []string{filepath.Join(c.sharedDir, "controller-root.md"), filepath.Join(c.goDir, launch)}, nil
+	return paths, nil
 }
 
 // Part is the daemon's prompt part name, as boot snapshotted it: what a backend's launch is told
@@ -126,37 +136,134 @@ func (c *Composer) Part(name string) string {
 	return filepath.Join(c.goDir, name)
 }
 
-// Compose returns the shared role parts followed by this daemon's parts: the role's own, then the
-// text every architect (architect-common.md) or every phase worker (worker-common.md) shares. The
-// runtime appends addressing and deployment instructions after these paths.
-func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
-	if c == nil {
-		return Parts{}, fmt.Errorf("compose role prompt: nil composer")
-	}
-	var shared, daemonParts []string
+// PartNames are the parts Compose lists for role, in the order a launch reads them, each named as
+// Texts names it: the shared role parts ("roles/<path>"), then this daemon's own ("go/<path>"):
+// the role's own, then the text every architect (architect-common.md) or every phase worker
+// (worker-common.md) shares. Compose's RolePromptPaths are their snapshots, one for each name in
+// the same order, and PartReaders reads the same list.
+func PartNames(role claim.Role, isRoot bool) ([]string, error) {
 	switch role {
 	case claim.RoleArchitect:
 		name := "architect.md"
 		if isRoot {
 			name = "architect-root.md"
 		}
-		shared, daemonParts = []string{name}, []string{name, "architect-common.md"}
+		return []string{"roles/" + name, "go/" + name, "go/architect-common.md"}, nil
 	case claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer:
-		name := string(role)
-		shared = []string{"core/common.md", filepath.Join("core", name+".md"), "mechanics/headless.md", name + ".md"}
-		daemonParts = []string{name + ".md", "worker-common.md"}
+		name := string(role) + ".md"
+		return []string{
+			"roles/core/common.md", "roles/core/" + name, "roles/mechanics/headless.md", "roles/" + name,
+			"go/" + name, "go/worker-common.md",
+		}, nil
 	case claim.RoleMerger:
-		shared, daemonParts = []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}
+		return []string{"roles/mechanics/headless.md", "roles/merger.md", "go/merger.md", "go/worker-common.md"}, nil
 	default:
-		return Parts{}, fmt.Errorf("compose role prompt: unsupported role %q", role)
+		return nil, fmt.Errorf("compose role prompt: unsupported role %q", role)
 	}
+}
 
-	paths := make([]string, 0, len(shared)+len(daemonParts))
-	for _, part := range shared {
-		paths = append(paths, filepath.Join(c.sharedDir, part))
+// controllerPartNames are the controller's prompt parts, named as Texts names them: its shared role
+// part, then the daemon's part for how it was launched — headless in a pod the daemon supervises
+// (`controller: daemon`), or in the operator's terminal by `legion controller start`.
+func controllerPartNames(headless bool) []string {
+	launch := "go/controller-interactive.md"
+	if headless {
+		launch = "go/controller-headless.md"
 	}
-	for _, part := range daemonParts {
-		paths = append(paths, filepath.Join(c.goDir, part))
+	return []string{"roles/controller-root.md", launch}
+}
+
+// snapshot is the state-local copy New made of the part Texts names name.
+func (c *Composer) snapshot(name string) string {
+	if rest, ok := strings.CutPrefix(name, "roles/"); ok {
+		return filepath.Join(c.sharedDir, rest)
 	}
-	return Parts{RolePromptPaths: slices.Clone(paths)}, nil
+	return filepath.Join(c.goDir, strings.TrimPrefix(name, "go/"))
+}
+
+// Compose returns the snapshots of the parts PartNames lists for role, in its order. The runtime
+// appends addressing and deployment instructions after these paths.
+func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
+	if c == nil {
+		return Parts{}, fmt.Errorf("compose role prompt: nil composer")
+	}
+	names, err := PartNames(role, isRoot)
+	if err != nil {
+		return Parts{}, err
+	}
+	paths := make([]string, 0, len(names))
+	for _, name := range names {
+		paths = append(paths, c.snapshot(name))
+	}
+	return Parts{RolePromptPaths: paths}, nil
+}
+
+// Readers are the launches whose prompt holds one part of Texts.
+type Readers struct {
+	// Roles are the issue roles whose launch composes the part, in either of a role's shapes (a
+	// root and a child architect compose different parts).
+	Roles []claim.Role
+	// Controller is whether either of the controller's launches holds it (ControllerPromptPaths).
+	Controller bool
+	// Backends, when there are any, are the only harnesses whose launches of Roles are told the
+	// part: it is what a launch on them is told after its role's parts (runtime.BackendInfo's
+	// PromptPart). With none, a launch of Roles on any harness reads it.
+	Backends []runtime.Backend
+}
+
+// PartReaders answers, for every file of Texts by its path there ("roles/<path>", "go/<path>"),
+// the launches that read it: the roles whose parts Compose lists (PartNames), the controller's
+// launches (ControllerPromptPaths), and the roles each harness runs that its launch tells its own
+// part. A file no launch reads has an entry too, with no reader.
+func PartReaders() map[string]Readers {
+	readers := map[string]Readers{}
+	if err := fs.WalkDir(texts, ".", func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() {
+			readers[path] = Readers{}
+		}
+		return err
+	}); err != nil {
+		panic(fmt.Sprintf("prompts: read the embedded role prompts: %v", err))
+	}
+	readBy := func(name string, role claim.Role) {
+		r := readers[name]
+		if !slices.Contains(r.Roles, role) {
+			r.Roles = append(r.Roles, role)
+		}
+		readers[name] = r
+	}
+	for _, role := range claim.Roles {
+		for _, isRoot := range []bool{true, false} {
+			names, err := PartNames(role, isRoot)
+			if err != nil {
+				panic(fmt.Sprintf("prompts: %v", err))
+			}
+			for _, name := range names {
+				readBy(name, role)
+			}
+		}
+	}
+	for _, headless := range []bool{true, false} {
+		for _, name := range controllerPartNames(headless) {
+			r := readers[name]
+			r.Controller = true
+			readers[name] = r
+		}
+	}
+	for _, backend := range slices.Sorted(maps.Keys(runtime.Backends)) {
+		info := runtime.Backends[backend]
+		if info.PromptPart == "" {
+			continue
+		}
+		name := "go/" + info.PromptPart
+		for _, role := range claim.Roles {
+			if info.Runs(role) {
+				readBy(name, role)
+			}
+		}
+		r := readers[name]
+		r.Backends = append(r.Backends, backend)
+		readers[name] = r
+	}
+	return readers
 }

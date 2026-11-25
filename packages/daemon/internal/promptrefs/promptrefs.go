@@ -22,10 +22,13 @@ import (
 type Kind int
 
 const (
-	// TaskAgents are the agents a prompt dispatches as `task(agent="<name>")`.
+	// TaskAgents are the agents a prompt dispatches: `task(agent="<name>")`, with the name in
+	// double, escaped double or single quotes, `agent: "<name>"` and `"agent": "<name>"` as a code
+	// sample writes the call, and Claude Code's `subagent_type: "legion:<name>"`, the plugin's
+	// namespace optional.
 	TaskAgents Kind = iota
-	// Skills are the skills a prompt loads as `skill://<name>`, whose name ends on a letter or
-	// digit, so a sentence's closing period is not read as part of it.
+	// Skills are the skills a prompt loads, as `skill://<name>` or `/skill:<name>`, whose name ends
+	// on a letter or digit, so a sentence's closing period is not read as part of it.
 	Skills
 	kinds
 )
@@ -39,11 +42,21 @@ var namePattern = [kinds]string{
 	Skills:     `[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?`,
 }
 
-// reference finds each kind's names in a prompt, and whole is a kind's name alone.
+// quoted captures name in a group of its own, between double quotes, double quotes escaped inside
+// a string, or single quotes, written after prefix (the namespace a name may carry).
+func quoted(prefix, name string) string {
+	return `(?:"` + prefix + `(` + name + `)"|\\"` + prefix + `(` + name + `)\\"|'` + prefix + `(` + name + `)')`
+}
+
+// reference finds each kind's names in a prompt, each in one of its expression's groups, and
+// whole is a kind's name alone. An agent's key may be quoted itself (`"agent": …`), and its `=` or
+// `:` may stand between spaces; an address such as `agent://…` and a placeholder such as
+// `agent="<name>"` name nothing.
 var (
 	reference = [kinds]*regexp.Regexp{
-		TaskAgents: regexp.MustCompile(`agent="(` + namePattern[TaskAgents] + `)"`),
-		Skills:     regexp.MustCompile(`skill://(` + namePattern[Skills] + `)`),
+		TaskAgents: regexp.MustCompile(`agent["']?\s*[=:]\s*` + quoted("", namePattern[TaskAgents]) +
+			`|subagent_type["']?\s*[=:]\s*` + quoted("(?:legion:)?", namePattern[TaskAgents])),
+		Skills: regexp.MustCompile(`skill://(` + namePattern[Skills] + `)|/skill:(` + namePattern[Skills] + `)`),
 	}
 	whole = [kinds]*regexp.Regexp{
 		TaskAgents: regexp.MustCompile(`^` + namePattern[TaskAgents] + `$`),
@@ -81,7 +94,12 @@ func (names Names) add(kind Kind, name, file string) {
 func (names Names) Text(file string, body []byte) {
 	for _, kind := range Kinds {
 		for _, match := range reference[kind].FindAllSubmatch(body, -1) {
-			names.add(kind, string(match[1]), file)
+			for _, name := range match[1:] {
+				if len(name) > 0 {
+					names.add(kind, string(name), file)
+					break
+				}
+			}
 		}
 	}
 }
