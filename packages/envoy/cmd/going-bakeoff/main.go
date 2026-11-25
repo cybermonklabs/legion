@@ -1,4 +1,4 @@
-// Command going-bakeoff measures the decision models of the command bar (R7). It puts every
+// Command going-bakeoff measures the decision models of the command bar (R13). It puts every
 // committed case of going/bakeoff/cases.json to every model named, through the same three
 // questions and the same state the server asks (going.DecisionQuestions, going.DecisionState)
 // over the catalogue the server serves (api.BuildGoingCatalogue), one agentloop.Decide call per
@@ -17,7 +17,7 @@
 // other, but the table and the rule leave it out, the report gives it a line of its own with what
 // each model chose for it, and each model's record keeps that apart (going.Record.OutsideCases).
 //
-// R7's rule names the chosen model (going.Choose). Every model that meets R7's three floors is a
+// R13's rule names the chosen model (going.Choose). Every model that meets R13's three floors is a
 // candidate, and the candidates are ranked by their right choices pooled over every repeat; the
 // candidate ranked first alone is named, and nothing else decides. Where several candidates rank
 // first, level on right choices, the run is a full tie and the rule names none: the run writes
@@ -32,7 +32,7 @@
 //	going-bakeoff --from-record going/decision_models.json [--tie-break <model> --tie-chooser <who> --tie-reason <why>]
 //	going-bakeoff --score <answers file> --out <file> [--cases <file>]
 //
-// --from-record measures nothing: it puts R7's rule to a record a run wrote, its entries
+// --from-record measures nothing: it puts R13's rule to a record a run wrote, its entries
 // measured on the same cases the same number of times, prints the run's table with what the
 // rule names, and writes the record to --out, which is how an architect's tie-break reaches the
 // run that tied. A tie-break the record already holds is put to the rule again with its own
@@ -144,7 +144,7 @@ func run() error {
 		casesArg   = flag.String("cases", filepath.Join(root, "going", "bakeoff", "cases.json"), "the case set")
 		outArg     = flag.String("out", filepath.Join(root, "going", "decision_models.json"), "the record to write")
 		repeats    = flag.Int("repeats", 1, "how many times each model is asked every case; the accuracies and the choice pool every repeat")
-		fromRecord = flag.String("from-record", "", "a record a run wrote: put R7's rule to it, print its table and write it to --out, measuring nothing")
+		fromRecord = flag.String("from-record", "", "a record a run wrote: put R13's rule to it, print its table and write it to --out, measuring nothing")
 		tieModel   = flag.String("tie-break", "", "the model the architect names where the run is level on right choices; refused on any other run")
 		tieChooser = flag.String("tie-chooser", "", "who broke the tie, such as 'architect of INFRA-1588', which the record keeps")
 		tieReason  = flag.String("tie-reason", "", "why the --tie-chooser named the --tie-break model, which the record keeps")
@@ -310,13 +310,13 @@ func caseSet(path string) ([]testCase, []going.Action, error) {
 		}
 	}
 	if measured < going.LeastCases || worthy < going.LeastChartCases {
-		return nil, nil, fmt.Errorf("%w: the cases R13 names are %d, %d chart-worthy, under R7's %d and %d, so nothing is measured or written",
+		return nil, nil, fmt.Errorf("%w: the cases R13 names are %d, %d chart-worthy, under R13's %d and %d, so nothing is measured or written",
 			errVoid, measured, worthy, going.LeastCases, going.LeastChartCases)
 	}
 	return cases, actions, nil
 }
 
-// finish scores each model's answers, pairs each two models, prints the table and what R7's rule
+// finish scores each model's answers, pairs each two models, prints the table and what R13's rule
 // names on it, writes the record to out, and names each case a model missed.
 func finish(results []*measured, source string, tie tieBreak, out string) error {
 	for _, m := range results {
@@ -439,7 +439,7 @@ func loadAnswers(path string, cases []testCase) ([]*measured, error) {
 
 // readRecords is the record a run wrote, its entries measured on the same cases, as many naming
 // their action and as many not, the same number of times, each entry holding one count of right
-// choices for each repeat, and each saying it was chosen by a way R7 knows or by none. Right
+// choices for each repeat, and each saying it was chosen by a way R13 knows or by none. Right
 // choices out of other cases or other repeats compare nothing, so a record whose entries differ in
 // any of those is refused, and so is one whose chosen_by is neither right_choices nor tie_break:
 // read as either, it would be written back as a choice nobody made.
@@ -472,7 +472,7 @@ func readRecords(path string) ([]going.Record, error) {
 	return records, nil
 }
 
-// conclude puts R7's rule to the run's records, with the architect's tie-break where one is
+// conclude puts R13's rule to the run's records, with the architect's tie-break where one is
 // given, or else with the tie-break the records already hold, put to the rule again with its own
 // model, chooser and reason. It prints the run's table and what the rule names to w, and writes
 // the record to out. It writes nothing where a tie-break is refused or no model meets the floors,
@@ -522,7 +522,7 @@ func conclude(w io.Writer, records []going.Record, source string, tie tieBreak, 
 	case going.FullTie:
 		return fmt.Errorf("wrote %s with no model chosen: %s: going-bakeoff --from-record %s --tie-break <model> --tie-chooser <who> --tie-reason <why>", out, choice.Why, out)
 	default:
-		return fmt.Errorf("wrote %s with no model chosen: R7's rule came to %q, an outcome this tool does not know", out, choice.Outcome)
+		return fmt.Errorf("wrote %s with no model chosen: R13's rule came to %q, an outcome this tool does not know", out, choice.Outcome)
 	}
 }
 
@@ -841,12 +841,12 @@ func paired(a, b *measured) going.PairedTest {
 }
 
 // render is the markdown table of the run over the cases R13 names, a line for each case outside
-// them, and what R7's rule names on it, or says' refusal of a choice it does not know.
+// them, and what R13's rule names on it, or says' refusal of a choice it does not know.
 func render(records []going.Record, choice going.Choice, source string) (string, error) {
 	var b strings.Builder
 	first := records[0]
 	fmt.Fprintf(&b, "## Decision model bake-off\n\n")
-	fmt.Fprintf(&b, "%d of the cases R13 names per model, each asked %d time(s), one `systemone` call each time, run one at a time. %s. Floors (R7): at least %.0f%% on the cases that name their action, at least %.0f%% on the rest, p95 under %.0f ms. Every accuracy, latency and display rate pools every answer of every repeat.",
+	fmt.Fprintf(&b, "%d of the cases R13 names per model, each asked %d time(s), one `systemone` call each time, run one at a time. %s. Floors (R13): at least %.0f%% on the cases that name their action, at least %.0f%% on the rest, p95 under %.0f ms. Every accuracy, latency and display rate pools every answer of every repeat.",
 		first.Cases, first.Repeats, source, going.NamedFloor*100, going.OtherFloor*100, going.P95CeilingMS)
 	if n := len(first.OutsideCases); n > 0 {
 		fmt.Fprintf(&b, " %d case(s) outside R13's set are asked too and have a line of their own below; no count, rate or floor here includes them.", n)
@@ -902,7 +902,7 @@ func render(records []going.Record, choice going.Choice, source string) (string,
 		}
 	}
 	if len(records) > 1 {
-		b.WriteString("\n### Paired test\n\nMcNemar's exact test, two-sided, on the (case, repeat) pairs: each case's answer from one model in one repeat against the same case's answer from the other in the same repeat. Only the discordant pairs, one model right and the other wrong, tell the two apart, and p is the chance that two models answering equally well split them at least as unevenly. The test names no model: it says how far a lead in right choices can be trusted, and R7's rule does not read it. The mean difference is the first model's right choices less the second's in one repeat, averaged over the repeats, with its 95% interval by Student's t over the repeats, which leans on a normal approximation that a handful of repeats that differ at all does not bear out.\n\n")
+		b.WriteString("\n### Paired test\n\nMcNemar's exact test, two-sided, on the (case, repeat) pairs: each case's answer from one model in one repeat against the same case's answer from the other in the same repeat. Only the discordant pairs, one model right and the other wrong, tell the two apart, and p is the chance that two models answering equally well split them at least as unevenly. The test names no model: it says how far a lead in right choices can be trusted, and R13's rule does not read it. The mean difference is the first model's right choices less the second's in one repeat, averaged over the repeats, with its 95% interval by Student's t over the repeats, which leans on a normal approximation that a handful of repeats that differ at all does not bear out.\n\n")
 		fmt.Fprintf(&b, "| First | Second | Pairs | First right, second wrong | First wrong, second right | p | p under %.2f | Mean difference per repeat | 95%% interval |\n", going.PairedAlpha)
 		b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
 		for i := range records {
@@ -965,7 +965,7 @@ func choseText(c going.OutsideCase) string {
 	return strings.Join(parts, ", ")
 }
 
-// says is what R7's rule came to on the run (choice.Outcome): the model it names, or the
+// says is what R13's rule came to on the run (choice.Outcome): the model it names, or the
 // tie-break's where the rule names none, with the right choices the rule ranked the candidates by
 // (choice.Ranked), or why no model is named; and beside a named model its paired tests against
 // the other models that meet the floors. It ranks nothing again: of records it reads only how
@@ -980,7 +980,7 @@ func says(records []going.Record, choice going.Choice) (string, error) {
 		return fmt.Sprintf("**Choice:** none: %s. Name it with `--tie-break <model> --tie-chooser <who> --tie-reason <why>`.\n", choice.Why), nil
 	case going.Named:
 	default:
-		return "", fmt.Errorf("R7's rule came to %q, an outcome this tool does not know", choice.Outcome)
+		return "", fmt.Errorf("R13's rule came to %q, an outcome this tool does not know", choice.Outcome)
 	}
 	var b strings.Builder
 	switch choice.By {
@@ -996,9 +996,9 @@ func says(records []going.Record, choice going.Choice) (string, error) {
 		case len(others) > 0:
 			fmt.Fprintf(&b, ", against %s.", strings.Join(others, ", "))
 		case len(records) == 1:
-			b.WriteString(". It is the one model measured, and it meets R7's floors.")
+			b.WriteString(". It is the one model measured, and it meets R13's floors.")
 		default:
-			b.WriteString(". It is the one model that meets R7's floors.")
+			b.WriteString(". It is the one model that meets R13's floors.")
 		}
 	case going.ChosenByTieBreak:
 		fmt.Fprintf(&b, "**Choice:** `%s`, named by a tie-break of the %s: %s. The reason recorded: %s", choice.Model, choice.Chooser, choice.Why, choice.Reason)

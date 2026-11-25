@@ -26,7 +26,7 @@ type bakeoffCase struct {
 }
 
 // r13Cases is how many cases of cases.json spec v61's R13 names: every case but those marked
-// outside_r13, which were added after it and which no count of R7's or check c14's includes.
+// outside_r13, which were added after it and which no count of R13's or check c14's includes.
 const r13Cases = 117
 
 func committedCases(t *testing.T) []bakeoffCase {
@@ -42,7 +42,7 @@ func committedCases(t *testing.T) []bakeoffCase {
 	return cases
 }
 
-// The committed set is what R7 measures on: the 117 cases R13 names, 20 or more of them
+// The committed set is what R13 measures on: the 117 cases R13 names, 20 or more of them
 // chart-worthy, every label an action of the catalogue or none, no request for a change labelled
 // chart-worthy, and every catalogue action asked for both in words that name it and in words that
 // do not. Each case outside R13's set says why it was added.
@@ -77,7 +77,7 @@ func TestTheCaseSetCoversTheCatalogue(t *testing.T) {
 		}
 	}
 	if measured != r13Cases || worthy < going.LeastChartCases {
-		t.Errorf("R13's set holds %d cases, %d chart-worthy; spec v61's R13 names %d, and R7 needs %d chart-worthy", measured, worthy, r13Cases, going.LeastChartCases)
+		t.Errorf("R13's set holds %d cases, %d chart-worthy; spec v61's R13 names %d, and R13 needs %d chart-worthy", measured, worthy, r13Cases, going.LeastChartCases)
 	}
 	for _, action := range catalogue.Actions() {
 		if named[action.Action] < 2 || unnamed[action.Action] < 1 {

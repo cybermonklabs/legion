@@ -19,7 +19,7 @@ import (
 	"github.com/sjawhar/envoy/going"
 )
 
-// score pools every repeat: each repeat's right choices add up to the count R7's rule ranks by,
+// score pools every repeat: each repeat's right choices add up to the count R13's rule ranks by,
 // each case is counted once however many times it was asked, the accuracies divide by every
 // answer, and the latencies and the display rates take every answer of every repeat, not the
 // last repeat's alone.
@@ -84,7 +84,7 @@ func TestScorePoolsEveryRepeat(t *testing.T) {
 		}
 	}
 	if r.MeetsFloors() {
-		t.Error("a model right on half the named answers meets R7's floors")
+		t.Error("a model right on half the named answers meets R13's floors")
 	}
 }
 
@@ -220,7 +220,7 @@ func TestAFullTieWaitsForTheArchitect(t *testing.T) {
 	}
 }
 
-// The choice line says what R7's rule came to on the run (going.Choice.Outcome), from the choice
+// The choice line says what R13's rule came to on the run (going.Choice.Outcome), from the choice
 // alone: the model it names, with the right choices of the candidates in the order they rank, or
 // none, offering the tie-break only on a full tie. It ranks nothing again: beside records whose
 // right choices rank otherwise, it prints the same.
@@ -310,7 +310,7 @@ func TestARecordOfOtherCasesIsRefused(t *testing.T) {
 	}
 }
 
-// A record whose entry is chosen by a way R7 does not know - the "person" of an earlier record,
+// A record whose entry is chosen by a way R13 does not know - the "person" of an earlier record,
 // or any other word - is refused, naming the entry and the word, rather than read as a tie-break
 // or the rule's choice and written back as a choice nobody made.
 func TestARecordOfAnUnknownChosenByIsRefused(t *testing.T) {
@@ -337,7 +337,7 @@ func TestARecordOfAnUnknownChosenByIsRefused(t *testing.T) {
 	}
 }
 
-// The choice line has a case for each outcome of R7's rule and each way a model is named, and
+// The choice line has a case for each outcome of R13's rule and each way a model is named, and
 // refuses an outcome or a way it does not know rather than print it as one it does; the rule's
 // own choice of the same records prints.
 func TestTheChoiceLineRefusesWhatItDoesNotKnow(t *testing.T) {
@@ -440,7 +440,7 @@ func TestARunWithNoChoiceToRecordWritesNothing(t *testing.T) {
 	}
 }
 
-// floored is a measured model that meets R7's floors, measured on 117 cases, 45 naming their
+// floored is a measured model that meets R13's floors, measured on 117 cases, 45 naming their
 // action, with its right choices in each repeat.
 func floored(model string, rights ...int) going.Record {
 	r := going.Record{Model: model, Cases: 117, NamedCases: 45, OtherCases: 72, NamedAccuracy: 0.95, OtherAccuracy: 0.9, P95MS: 150, Repeats: len(rights)}

@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/going"
 )
 
-// goingDecisionTime bounds one decision call. R7 holds the measured model's p95 under 500 ms, so
+// goingDecisionTime bounds one decision call. R13 holds the measured model's p95 under 500 ms, so
 // a call still running at twice that is an endpoint in trouble rather than a slow answer, and the
 // bar answers without a decision rather than keep the person waiting on it.
 const goingDecisionTime = time.Second

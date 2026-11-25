@@ -15,7 +15,7 @@ import (
 )
 
 // TestTheRecordReadsBack reads each entry the bake-off wrote back through DecisionRecord, by its
-// model's name, as the file holds it, and holds the chosen entry to R7: one model is chosen, it
+// model's name, as the file holds it, and holds the chosen entry to R13: one model is chosen, it
 // was measured on at least 80 cases and 20 chart-worthy ones, it reaches 90% on the cases that
 // name their action and 70% on the rest at a p95 under 500 ms, and a model a tie-break named
 // names who broke the tie and why.
@@ -47,10 +47,10 @@ func TestTheRecordReadsBack(t *testing.T) {
 		chosen++
 		switch {
 		case record.Cases < going.LeastCases || record.ChartWorthyCases < going.LeastChartCases:
-			t.Errorf("the chosen %s was measured on %d cases, %d chart-worthy; R7 needs %d and %d",
+			t.Errorf("the chosen %s was measured on %d cases, %d chart-worthy; R13 needs %d and %d",
 				record.Model, record.Cases, record.ChartWorthyCases, going.LeastCases, going.LeastChartCases)
 		case record.NamedAccuracy < going.NamedFloor || record.OtherAccuracy < going.OtherFloor || record.P95MS >= going.P95CeilingMS:
-			t.Errorf("the chosen %s reaches %.3f named, %.3f on the rest at p95 %.0f ms; R7 needs %v, %v and under %v",
+			t.Errorf("the chosen %s reaches %.3f named, %.3f on the rest at p95 %.0f ms; R13 needs %v, %v and under %v",
 				record.Model, record.NamedAccuracy, record.OtherAccuracy, record.P95MS, going.NamedFloor, going.OtherFloor, going.P95CeilingMS)
 		case record.ChosenBy == going.ChosenByTieBreak && (strings.TrimSpace(record.Chooser) == "" || strings.TrimSpace(record.ChosenReason) == ""):
 			t.Errorf("the chosen %s was named by a tie-break that names chooser %q and reason %q, want both", record.Model, record.Chooser, record.ChosenReason)
@@ -65,7 +65,7 @@ func TestTheRecordReadsBack(t *testing.T) {
 }
 
 // Each entry's repeats agree with its pooled numbers, each paired test is the mirror of the
-// other model's, and the chosen entry is the one R7's rule names (ruleFault).
+// other model's, and the chosen entry is the one R13's rule names (ruleFault).
 func TestTheRecordHoldsItsRepeatsAndTheRuleThatChose(t *testing.T) {
 	records := committedRecords(t)
 	entries := make(map[string]*going.Record, len(records))
@@ -123,7 +123,7 @@ func TestTheRecordHoldsItsRepeatsAndTheRuleThatChose(t *testing.T) {
 		t.Error(err)
 	}
 	rule := going.Choose(records)
-	t.Logf("R7's rule on the committed record comes to %q, naming %q by %q; level: %v", rule.Outcome, rule.Model, rule.By, rule.Level)
+	t.Logf("R13's rule on the committed record comes to %q, naming %q by %q; level: %v", rule.Outcome, rule.Model, rule.By, rule.Level)
 	for i := range records {
 		t.Logf("%s: %d right choices of %d, meets the floors %t", records[i].Model, records[i].Right(), records[i].Cases*records[i].Repeats, records[i].MeetsFloors())
 	}
@@ -210,7 +210,7 @@ func TestTheRuleRanksByRightChoices(t *testing.T) {
 	}
 }
 
-// Only a model that meets R7's three floors is a candidate: one that misses any of them is never
+// Only a model that meets R13's three floors is a candidate: one that misses any of them is never
 // ranked or named, however many right choices it made.
 func TestOnlyAModelThatMeetsTheFloorsIsACandidate(t *testing.T) {
 	for name, miss := range map[string]func(*going.Record){
@@ -272,8 +272,8 @@ func TestABreakRefusalSaysWhatTheRuleCameTo(t *testing.T) {
 		says    string
 		notSays string
 	}{
-		{"a run the rule decides", going.Choose([]going.Record{candidate("model-a", 102), candidate("model-b", 101)}), "R7's rule names model-a", "floors, so"},
-		{"no model meeting the floors", going.Choose(nil), "no model meets R7's floors", "R7's rule names"},
+		{"a run the rule decides", going.Choose([]going.Record{candidate("model-a", 102), candidate("model-b", 101)}), "R13's rule names model-a", "floors, so"},
+		{"no model meeting the floors", going.Choose(nil), "no model meets R13's floors", "R13's rule names"},
 		{"an outcome Break does not know", going.Choice{Outcome: "made_up"}, `"made_up"`, "floors"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -285,7 +285,7 @@ func TestABreakRefusalSaysWhatTheRuleCameTo(t *testing.T) {
 	}
 }
 
-// A record whose chosen model is not the one R7's rule names fails the check the committed
+// A record whose chosen model is not the one R13's rule names fails the check the committed
 // record is held to, however it says the model was chosen; a tie-break passes only where the
 // record itself shows the full tie and keeps who broke it and why.
 func TestARecordTheRuleDidNotNameFails(t *testing.T) {
@@ -382,7 +382,7 @@ func committedRecords(t *testing.T) []going.Record {
 }
 
 // ruleFault is what is wrong with a record's choice, nil where nothing is: one entry is chosen,
-// and it is the model R7's rule names (going.Choose) by the key that named it, or, where the
+// and it is the model R13's rule names (going.Choose) by the key that named it, or, where the
 // rule names none, the model a tie-break named among the level ones with its chooser and reason
 // kept (going.Choice.Break). An entry not chosen holds no way it was chosen, no chooser and no
 // reason.
@@ -411,13 +411,13 @@ func ruleFault(records []going.Record) error {
 		want = broken
 	}
 	if chosen.Model != want.Model || chosen.ChosenBy != want.By || chosen.Chooser != want.Chooser || chosen.ChosenReason != want.Reason {
-		return fmt.Errorf("%s is chosen by %q (chooser %q) with the reason %q, but R7's rule names %q by %q (level: %v)",
+		return fmt.Errorf("%s is chosen by %q (chooser %q) with the reason %q, but R13's rule names %q by %q (level: %v)",
 			chosen.Model, chosen.ChosenBy, chosen.Chooser, chosen.ChosenReason, want.Model, want.By, want.Level)
 	}
 	return nil
 }
 
-// candidate is a record of a model that meets R7's floors, measured on 117 cases, with its right
+// candidate is a record of a model that meets R13's floors, measured on 117 cases, with its right
 // choices in each repeat.
 func candidate(model string, rights ...int) going.Record {
 	r := going.Record{Model: model, Cases: 117, NamedAccuracy: 0.95, OtherAccuracy: 0.9, P95MS: 150, Repeats: len(rights)}

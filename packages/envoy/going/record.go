@@ -2,7 +2,7 @@ package going
 
 // record.go reads the record the bake-off (cmd/going-bakeoff) writes: one entry for each
 // decision model it measured, with that model's measurement. A deployment names a model and
-// nothing else, and a model with no entry here is no decision model (R11). It also holds R7's
+// nothing else, and a model with no entry here is no decision model (R13). It also holds R13's
 // choice rule (Choose), which the bake-off names the chosen model by and the record's own test
 // holds the committed choice to, and the writer of the record's bytes (EncodeRecords).
 
@@ -19,7 +19,7 @@ import (
 //go:embed decision_models.json
 var decisionModelsJSON []byte
 
-// R7's floors and its least case counts: a model is a candidate only where it reaches NamedFloor
+// R13's floors and its least case counts: a model is a candidate only where it reaches NamedFloor
 // on the cases that name their action and OtherFloor on the rest at a p95 under P95CeilingMS
 // (MeetsFloors), measured on at least LeastCases cases of which at least LeastChartCases are
 // chart-worthy. The floors admit a model and rank nothing: a p95 well under the ceiling counts
@@ -32,10 +32,10 @@ const (
 	LeastChartCases = 20
 )
 
-// Record is one measured model and its measurement. Chosen marks the model R7's rule named
+// Record is one measured model and its measurement. Chosen marks the model R13's rule named
 // (Choose), or the one a tie-break named where it named none. A run may ask every case more than
 // once (Repeats); every accuracy, latency and display rate here then pools every answer of every
-// repeat. Every count and rate is of the cases R13 names, the cases R7's rule and check c14 are
+// repeat. Every count and rate is of the cases R13 names, the cases R13's rule and check c14 are
 // measured on; a case of the case set outside them is kept apart in OutsideCases, which the rule
 // and its floors never read.
 type Record struct {
@@ -106,7 +106,7 @@ type ChoiceCount struct {
 	Count  int    `json:"count"`
 }
 
-// How the chosen Record was named, which its ChosenBy holds: by the key of R7's rule that named
+// How the chosen Record was named, which its ChosenBy holds: by the key of R13's rule that named
 // it, or by a tie-break where the rule names none. Who broke a tie is the entry's Chooser, apart
 // from ChosenBy, which says only how the model was named, so every reader of ChosenBy compares it
 // with these two keys.
@@ -116,7 +116,7 @@ const (
 	ChosenByRightChoices = "right_choices"
 	// ChosenByTieBreak is the candidate a tie-break named where the rule names none, the leading
 	// candidates being level on right choices (going-bakeoff --tie-break): the entry's Chooser
-	// says who broke the tie, as R7 gives it to the issue's architect, and its ChosenReason why.
+	// says who broke the tie, as R13 gives it to the issue's architect, and its ChosenReason why.
 	ChosenByTieBreak = "tie_break"
 )
 
@@ -180,7 +180,7 @@ func DecisionRecord(model string) (Record, bool) {
 	return Record{}, false
 }
 
-// Right is the model's right choices pooled over every repeat: the count R7's rule ranks by.
+// Right is the model's right choices pooled over every repeat: the count R13's rule ranks by.
 func (r *Record) Right() int {
 	right := 0
 	for _, counted := range r.RepeatRights {
@@ -189,7 +189,7 @@ func (r *Record) Right() int {
 	return right
 }
 
-// MeetsFloors is whether the model is a candidate of R7's rule: it reaches NamedFloor on the
+// MeetsFloors is whether the model is a candidate of R13's rule: it reaches NamedFloor on the
 // cases that name their action and OtherFloor on the rest at a p95 under P95CeilingMS. Its
 // action fit is no floor, and a candidate without one is ranked as any other (Choose).
 func (r *Record) MeetsFloors() bool {
@@ -206,11 +206,11 @@ func (r *Record) PairedAgainst(model string) (PairedTest, bool) {
 	return PairedTest{}, false
 }
 
-// ChoiceOutcome is what R7's rule came to on one run's records (Choose).
+// ChoiceOutcome is what R13's rule came to on one run's records (Choose).
 type ChoiceOutcome string
 
 const (
-	// NoCandidate is a run none of whose models meets R7's floors: nothing is ranked, and no
+	// NoCandidate is a run none of whose models meets R13's floors: nothing is ranked, and no
 	// model is named.
 	NoCandidate ChoiceOutcome = "no_candidate"
 	// Named is a run whose one candidate ranked first the rule names (ChosenByRightChoices), or
@@ -221,14 +221,14 @@ const (
 	FullTie ChoiceOutcome = "full_tie"
 )
 
-// Candidate is a model that meets R7's floors, with the count the rule ranks it by: its right
+// Candidate is a model that meets R13's floors, with the count the rule ranks it by: its right
 // choices pooled over every repeat.
 type Candidate struct {
 	Model string
 	Right int
 }
 
-// Choice is what R7's rule came to over one run's records (Choose), or a tie-break's choice
+// Choice is what R13's rule came to over one run's records (Choose), or a tie-break's choice
 // where the rule names none (Break), with the counts the rule ranked by, so a reader says what
 // the rule came to and ranks nothing again.
 type Choice struct {
@@ -252,8 +252,8 @@ type Choice struct {
 	Why string
 }
 
-// Choose is R7's choice rule over one run's records, and what it came to (Outcome) with the
-// right choices it ranked the candidates by (Ranked). Every model that meets R7's three floors
+// Choose is R13's choice rule over one run's records, and what it came to (Outcome) with the
+// right choices it ranked the candidates by (Ranked). Every model that meets R13's three floors
 // is a candidate (MeetsFloors), ranked by its right choices pooled over every repeat. Where one
 // candidate ranks first, it is named (ChosenByRightChoices). Where several rank first, level on
 // right choices, the run is a full tie and the rule names none: the architect names one of Level
@@ -272,7 +272,7 @@ func Choose(records []Record) Choice {
 		}
 	}
 	if len(ranked) == 0 {
-		return Choice{Outcome: NoCandidate, Why: "no model meets R7's floors"}
+		return Choice{Outcome: NoCandidate, Why: "no model meets R13's floors"}
 	}
 	slices.SortStableFunc(ranked, func(a, b ranking) int { return b.right - a.right })
 	first, most := ranked[0].record, ranked[0].right
@@ -288,7 +288,7 @@ func Choose(records []Record) Choice {
 		return choice
 	}
 	choice.Outcome = FullTie
-	choice.Why = fmt.Sprintf("%s are level at %d of %d right choices pooled over every repeat, so R7's rule names none and the architect names one of them",
+	choice.Why = fmt.Sprintf("%s are level at %d of %d right choices pooled over every repeat, so R13's rule names none and the architect names one of them",
 		nameList(choice.Level), most, choice.Of)
 	return choice
 }
@@ -301,12 +301,12 @@ func Choose(records []Record) Choice {
 func (c Choice) Break(model, chooser, reason string) (Choice, error) {
 	switch c.Outcome {
 	case Named:
-		return c, fmt.Errorf("R7's rule names %s (%s), and a tie-break names a model only where the leading candidates are level on right choices", c.Model, c.By)
+		return c, fmt.Errorf("R13's rule names %s (%s), and a tie-break names a model only where the leading candidates are level on right choices", c.Model, c.By)
 	case NoCandidate:
-		return c, errors.New("no model meets R7's floors, so there is no tie to break")
+		return c, errors.New("no model meets R13's floors, so there is no tie to break")
 	case FullTie:
 	default:
-		return c, fmt.Errorf("R7's rule came to %q, an outcome a tie-break cannot break", c.Outcome)
+		return c, fmt.Errorf("R13's rule came to %q, an outcome a tie-break cannot break", c.Outcome)
 	}
 	switch {
 	case !slices.Contains(c.Level, model):
