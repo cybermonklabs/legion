@@ -1,4 +1,5 @@
 import { beforeEach, expect, spyOn, test } from "bun:test";
+import type { IssueTreeRead } from "@legion/contracts";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
@@ -19,6 +20,7 @@ import {
   artifact as spec,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
+import { issueViewOfQuery } from "../../api/queries";
 import type {
   Artifact,
   ArtifactText,
@@ -31,6 +33,7 @@ import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
+import { compiledBlockSchema, viewBlockSchema } from "./schema";
 
 answerTextReadsWithTheSeededText();
 
@@ -265,6 +268,232 @@ test("ProofDocument shows a failed artifact read as its load failure and opens n
     expect(fake.editors).toEqual([]);
   } finally {
     view.unmount();
+  }
+});
+
+/** The tree read of `key` as Dispatch answers it, `view_of` naming `viewOf` or null. */
+function treeRead(key: string, viewOf: string | null): IssueTreeRead {
+  return {
+    converted: true,
+    cursor: null,
+    documents: null,
+    issue: key,
+    nodes: [],
+    tree: null,
+    tuples: [],
+    version: null,
+    view: "spec",
+    view_of: viewOf,
+  };
+}
+
+/** The issue's tree read, answered with `view_of` naming `viewOf` once `release` is called;
+ *  `requests` lists each read the page made, by its path and query. */
+function heldTreeRead(viewOf: string | null): { release(): void; requests(): string[] } {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const requests: string[] = [];
+  answerRequests(
+    http.get("/api/v1/issues/:key/tree", async ({ params, request }) => {
+      const url = new URL(request.url);
+      requests.push(`${url.pathname}${url.search}`);
+      await promise;
+      return Response.json(treeRead(String(params.key), viewOf));
+    })
+  );
+  return { release: resolve, requests: () => [...requests] };
+}
+
+/** The document's text read, answered with the live document's text once `release` is called;
+ *  `requested` once the page made it. The harness's spy of the read takes this answer for this
+ *  row (`answerTextReadsWithTheSeededText`). */
+function heldTextRead(): { release(): void; requested(): boolean } {
+  const { promise, resolve } = Promise.withResolvers<ArtifactText>();
+  const getArtifactText = spyOn(api, "getArtifactText").mockImplementation(() => promise);
+  return {
+    release: () =>
+      resolve({ markdown: "The live document", token: "sha256:spec-text", version: null }),
+    requested: () => getArtifactText.mock.calls.length > 0,
+  };
+}
+
+/** The issue's own tree read, as the page asks it of this file's spec. */
+const SPEC_TREE_READ = "/api/v1/issues/CORE-1/tree?view=spec";
+
+// The admission waits on two replies, the text read and the tree read of `view_of`, and makes the
+// editor only once both have answered, so no editor of a view is ever made with the full schema.
+// Here the text read answers first.
+test("a view's document makes its editor only after its tree read answers view_of, with the view's schema, when the text read answers first", async () => {
+  const text = heldTextRead();
+  const tree = heldTreeRead("CORE-0");
+  const queryClient = createQueryClient();
+  const { callbacks, editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await waitFor(() => expect(tree.requests()).toEqual([SPEC_TREE_READ]));
+    await waitFor(() => expect(text.requested()).toBe(true));
+    text.release();
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["artifact", artifact.id, "text"])?.status).toBe("success")
+    );
+    await act(async () => {});
+    // The text has answered and the tree read has not, so nothing is connected and no editor is
+    // made under any schema.
+    expect(callbacks).toEqual([]);
+    expect(editors).toEqual([]);
+
+    tree.release();
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.blockSchema).toBe(viewBlockSchema);
+    expect(tree.requests()).toEqual([SPEC_TREE_READ]);
+  } finally {
+    text.release();
+    tree.release();
+    view.unmount();
+  }
+});
+
+// The same where the tree read answers first and the text read later.
+test("a view's document makes its editor only after its text read answers, with the view's schema, when the tree read answers first", async () => {
+  const text = heldTextRead();
+  const tree = heldTreeRead("CORE-0");
+  const queryClient = createQueryClient();
+  const { callbacks, editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await waitFor(() => expect(tree.requests()).toEqual([SPEC_TREE_READ]));
+    await waitFor(() => expect(text.requested()).toBe(true));
+    tree.release();
+    await waitFor(() =>
+      expect(queryClient.getQueryState(issueViewOfQuery("CORE-1").queryKey)?.status).toBe("success")
+    );
+    await act(async () => {});
+    // The tree read has answered that the issue is a view and the text read has not, so nothing
+    // is connected and no editor is made.
+    expect(callbacks).toEqual([]);
+    expect(editors).toEqual([]);
+
+    text.release();
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.blockSchema).toBe(viewBlockSchema);
+  } finally {
+    text.release();
+    tree.release();
+    view.unmount();
+  }
+});
+
+// A tree read that fails leaves the page unable to say which schema the editor may have, so the
+// load fails as a failed text read fails it: the reason in place of the editor, and no editor.
+// Its text read has answered, and that answer does not admit the document again, so the tree is
+// read once.
+test("a failed tree read fails the document's load as a failed text read does, and makes no editor", async () => {
+  const requests: string[] = [];
+  answerRequests(
+    http.get("/api/v1/issues/:key/tree", ({ request }) => {
+      const url = new URL(request.url);
+      requests.push(`${url.pathname}${url.search}`);
+      return Response.json({ code: "INTERNAL", error: "the tree read is down" }, { status: 500 });
+    })
+  );
+  const queryClient = createQueryClient();
+  const { callbacks, editors, toolbar, view } = renderProofDocument({ queryClient });
+
+  try {
+    const alert = await within(view.container).findByRole("alert");
+    expect(alert.textContent).toBe("This document could not load: the tree read is down");
+    await waitFor(() => expect(toolbar.current?.connection).toBe("failed"));
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["artifact", artifact.id, "text"])?.status).toBe("success")
+    );
+    await act(async () => {});
+    expect(callbacks).toEqual([]);
+    expect(editors).toEqual([]);
+    expect(requests).toEqual([SPEC_TREE_READ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A project document names no issue, so it has no tree to read and is edited under the compiled
+// manifest.
+test("a document that names no issue makes no tree read, and its editor gets the compiled schema", async () => {
+  const tree = heldTreeRead(null);
+  tree.release();
+  const notes: Artifact = {
+    ...artifact,
+    id: "artifact-notes",
+    issue_key: null,
+    name: "notes.md",
+    primary: false,
+    ref_key: "CORE/notes",
+    slug: "notes",
+  };
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(["artifact", notes.id], notes);
+  queryClient.setQueryData(["artifact", notes.id, "asks"], []);
+  const { editors, sync, view } = renderProofDocument({
+    document: notes,
+    owner: { artifactId: notes.id, kind: "document", project: "CORE", slug: "notes" },
+    queryClient,
+  });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.blockSchema).toBe(compiledBlockSchema);
+    expect(tree.requests()).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a document whose tree read answers view_of null gets the compiled schema", async () => {
+  const tree = heldTreeRead(null);
+  tree.release();
+  const { editors, sync, view } = renderProofDocument();
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.blockSchema).toBe(compiledBlockSchema);
+    expect(tree.requests()).toEqual([SPEC_TREE_READ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The reader leaves the document while both reads are out: no editor is made, and the replies
+// that land after it change nothing.
+test("a document left before either read answers makes no editor, and its late replies change nothing", async () => {
+  const text = heldTextRead();
+  const tree = heldTreeRead("CORE-0");
+  const queryClient = createQueryClient();
+  const { callbacks, editors, view } = renderProofDocument({ queryClient });
+  let left = false;
+
+  try {
+    await waitFor(() => expect(tree.requests()).toEqual([SPEC_TREE_READ]));
+    await waitFor(() => expect(text.requested()).toBe(true));
+    view.unmount();
+    left = true;
+
+    text.release();
+    tree.release();
+    await waitFor(() =>
+      expect(queryClient.getQueryState(issueViewOfQuery("CORE-1").queryKey)?.status).toBe("success")
+    );
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["artifact", artifact.id, "text"])?.status).toBe("success")
+    );
+    await act(async () => {});
+    expect(callbacks).toEqual([]);
+    expect(editors).toEqual([]);
+  } finally {
+    text.release();
+    tree.release();
+    if (!left) view.unmount();
   }
 });
 

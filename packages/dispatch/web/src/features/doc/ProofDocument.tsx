@@ -18,9 +18,9 @@ import {
   isDocumentSchemaError,
   isDocumentUnloadable,
 } from "../../api/client";
-import { artifactBlocksQuery } from "../../api/queries";
+import { artifactBlocksQuery, issueViewOfQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { Artifact, Ask, AuthenticatedUser, Version } from "../../api/types";
+import type { Artifact, Ask, AuthenticatedUser, BlockSchema, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
@@ -87,7 +87,7 @@ import { quoteAnchor } from "./quote-anchor";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { carriesFragment, fragmentOf } from "./roots";
 import { DocumentRuntime } from "./runtime";
-import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
+import { compiledBlockSchema, compiledSchemaCreatable, editorBlockSchema } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
 import { type AskBlockHost, type ServedAsk, servedAskOfBlock } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
@@ -152,6 +152,12 @@ function admissionBlock(error: unknown): AdmissionBlock {
   }
   return { kind: "failed", message };
 }
+
+/** What an admission's read of the document's issue gives it: the schema its editor is made with,
+ * or, where that read failed, the block that fails the load. */
+type EditorSchemaRead =
+  | { readonly block?: undefined; readonly blockSchema: BlockSchema }
+  | { readonly block: AdmissionBlock; readonly blockSchema?: undefined };
 
 /** How long a socket the server refused as outside the Proof schema, or a read that found content
  * this build cannot read, waits before its admission reads `/text` again, by how many refusals in
@@ -900,7 +906,8 @@ export function ProofDocument({
     };
     // Each admission - this mount, a socket the server refused as outside the Proof schema, and a
     // blocked admission's re-admission - opens a connection only once its own fresh `/text` read
-    // succeeds, and that read alone decides: a browser editor normalizes a tree it cannot
+    // and its read of the document's issue (`schemaRead`) succeed. The text read alone decides
+    // whether the stored tree can be opened: a browser editor normalizes a tree it cannot
     // represent and writes the result back. A read that fails closes nothing already open, since
     // only an admission opens anything, so a later refetch that fails - an outage during an
     // artifact event's invalidation, say - leaves a connected editor and its unsent edits alone.
@@ -929,8 +936,27 @@ export function ProofDocument({
             return admissionBlock(error);
           }
         );
-      void Promise.all([textRead, loadTransport()])
-        .then(([block, connect]) => {
+      // The schema the editor is made with. An issue whose tree read answers `view_of` is a view
+      // on its ancestor's spec, and each editor of its documents gets a schema that creates no
+      // requirement (`editorBlockSchema`); every other editor gets the compiled manifest. The
+      // admission waits for this read beside the text read, so no editor of a view is ever made
+      // with the full schema. A document that names no issue reads nothing. A failed read fails
+      // the load, as a failed text read does.
+      const issueKey = artifact.issue_key;
+      const schemaRead: Promise<EditorSchemaRead> =
+        issueKey === null
+          ? Promise.resolve({ blockSchema: compiledBlockSchema })
+          : queryClient.fetchQuery(issueViewOfQuery(issueKey)).then(
+              (viewOf): EditorSchemaRead => ({ blockSchema: editorBlockSchema(viewOf) }),
+              (error: unknown): EditorSchemaRead => ({
+                block: {
+                  kind: "failed",
+                  message: error instanceof Error ? error.message : String(error),
+                },
+              })
+            );
+      void Promise.all([textRead, schemaRead, loadTransport()])
+        .then(([block, schema, connect]) => {
           if (!mounted) {
             return;
           }
@@ -961,6 +987,16 @@ export function ProofDocument({
             };
             return;
           }
+          // A failed read of the issue fails the load as a failed text read does. It does not
+          // wait for the next successful text read (`readmitRef`), as a blocked text read does:
+          // this admission's own text read succeeded, and its answer would admit the document
+          // again at once, and every admission after it the same, in a loop.
+          if (schema.block !== undefined) {
+            setConnection("failed");
+            setAdmission(schema.block);
+            return;
+          }
+          const { blockSchema } = schema;
           newerReads = 0;
           setAdmission(undefined);
           const connection = connect(artifact.id, {
@@ -1069,7 +1105,7 @@ export function ProofDocument({
                   color: colorForLogin(userRef.current.login),
                   name: userRef.current.login,
                 },
-                blockSchema: compiledBlockSchema,
+                blockSchema,
                 watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
                 // The block the pane's thread hangs under: the node view it names publishes the
                 // host slot this page portals the thread into. A document's own page anchors no
@@ -1117,6 +1153,7 @@ export function ProofDocument({
   }, [
     anchoredBlockId,
     artifact.id,
+    artifact.issue_key,
     createEditor,
     documentRef,
     focusInEditor,
