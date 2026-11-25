@@ -702,6 +702,9 @@ func controllerLiveBandStart(limit uint64, act int) uint64 {
 // (controllerLiveWatch), and keeps the guard's trace in a scenario that prints it
 // (controllerLiveTraced).
 func (r *controllerLiveRun) startGeneration() string {
+	if err := helperCopyRefusal(); err != nil {
+		return err.Error()
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return err.Error()

@@ -794,6 +794,9 @@ type peerGeneration struct {
 // startPeerGeneration starts the generation and returns once the agent stand-in has reported.
 func startPeerGeneration(t *testing.T) *peerGeneration {
 	t.Helper()
+	if err := helperCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
 	requireRoleNamespaces(t)
 	useTraceScope(t, "1\n")
 	scratch := namespaceScratch(t, "")
