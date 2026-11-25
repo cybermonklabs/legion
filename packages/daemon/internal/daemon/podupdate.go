@@ -1305,11 +1305,12 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 // yield is a round's call that answered nil without asking its last word (asked false): it found
 // the pod taken already, and took nothing. Where the record of a launch's delete of the issue's
 // Sandbox and its kept volume over that pod stands (runtime.TakenPod.WithPod), that launch took
-// the pod, so the finish yields to it (store.Store.FinishPodReplacement): the round's record is
-// forgotten, the round queues no notice and ends, and the launch's record tells the architect
-// once its act is confirmed. The end is the round's end all the same, so no later walk reads the
-// round's pod as one that went without its round (the Legion reviewer's Important on #5285 at
-// 69e00593, path a).
+// the pod, so the finish yields to it (store.Store.FinishPodReplacement): the round queues no
+// notice and ends, and the round's record stands beside the launch's, holding nothing (roundOver),
+// until the launch's finish takes it once that act is confirmed and tells the architect from the
+// read of the two that tells most (the Legion reviewer's Medium 1 on #5285 at 4b123279). The end
+// is the round's end all the same, so no later walk reads the round's pod as one that went without
+// its round (the Legion reviewer's Important on #5285 at 69e00593, path a).
 //
 // read is what the read of the workspace before the replacement found (workspaceRead), and read.by
 // is who made the replacement (roundReplacer). The line of a replacement of a pod no role process
@@ -1358,7 +1359,7 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 			"issue", issue, "round", round, "pod", pod)
 		return finish, false
 	case finish.Yielded:
-		s.log.Info("supervise: a launch's delete of the issue's Sandbox and its kept volume took the pod of this update round before the round's call; the call took nothing, and the round is over with no notice of its own, since the launch's record tells the architect",
+		s.log.Info("supervise: a launch's delete of the issue's Sandbox and its kept volume took the pod of this update round before the round's call; the call took nothing, and the round is over with no notice of its own, since the launch's finish tells the architect from the read of this record and its own",
 			"issue", issue, "round", round, "pod", pod)
 	default:
 		s.log.Info("supervise: the pod of this update round is replaced and the round is over", append(line, read.attrs()...)...)
@@ -3030,6 +3031,19 @@ func (s *supervision) endedRounds(byIssue map[string][]supervise.Claim) map[stri
 		}
 	}
 	return maps.Clone(s.podUpdateEnded)
+}
+
+// roundOver is whether round, a round of the issue, is over as group, the issue's claims, and the
+// sweep's ends read it: no claim of group records it, or the sweep has ended it and a member's
+// machine has not taken the end yet (keepEndedRound). A round's record of a replacement whose round
+// is over holds nothing of the issue (finishReplacements).
+func (s *supervision) roundOver(issue string, group []supervise.Claim, round string) bool {
+	if !recordsRound(group, round) {
+		return true
+	}
+	s.podUpdateEndedMu.Lock()
+	defer s.podUpdateEndedMu.Unlock()
+	return s.podUpdateEnded[issue] == round
 }
 
 // podReading is what one sweep could read of the pod the group's claims record, and the one

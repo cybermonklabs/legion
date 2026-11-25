@@ -110,7 +110,8 @@ type PodReplacementFinish struct {
 	// the same act took before, is not found, and nothing is queued for it.
 	Found bool
 	// Yielded is whether the finish yielded to the record of another act that took the target: it
-	// deleted the record alone, as the record of an act not made, and queued nothing.
+	// took nothing and queued nothing, and the record stands for the finish of that act, which
+	// takes it (PodReplacement.Targets) and weighs its read.
 	Yielded bool
 	// Took is every record the finish took, oldest first: the finished record and each record its
 	// act took with it (takenWith). It is empty where the record was not found or the finish
@@ -150,10 +151,13 @@ type PodReplacementFinish struct {
 // the target taken already, and answered without asking the act's last word. Where a standing
 // record of another act names that target beside its own (Targets: a launch's delete of the
 // issue's Sandbox and its kept volume over the pod, WithPod), that act took it, and the finish
-// yields to it: it deletes the finished record alone, as the record of an act not made, and asks
-// for no notice, and the other record tells the architect once its own act is confirmed (the
-// Legion reviewer's Important on #5285 at 69e00593, path a). Where no such record stands, the
-// finish takes what the act took, as every other finish does.
+// yields to it: it takes nothing, asks for no notice, and leaves the finished record standing, and
+// the other record tells the architect once its own act is confirmed, in a finish that takes the
+// yielding record through the targets it names (the Legion reviewer's Important on #5285 at
+// 69e00593, path a). The yielding record's read is then one of the reads that notice weighs, so a
+// read that found work before the call is told though the other act's own read failed (the Legion
+// reviewer's Medium 1 on #5285 at 4b123279). Where no such record stands, the finish takes what the
+// act took, as every other finish does.
 func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operation string, yield bool,
 	notice func(took []PodReplacement) (*IdleReleaseRow, error)) (PodReplacementFinish, error) {
 	var finish PodReplacementFinish
@@ -174,12 +178,11 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 		}
 		finish.Found = true
 		finished := standing[at]
-		took := []PodReplacement{finished}
 		if yield && yieldsTo(finished, standing) {
 			finish.Yielded = true
-		} else {
-			took = takenWith(finished, standing)
+			return nil
 		}
+		took := takenWith(finished, standing)
 		operations := make([]string, 0, len(took))
 		for _, r := range took {
 			operations = append(operations, r.Operation)
@@ -187,9 +190,6 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 		if _, err := tx.Exec(ctx, `delete from pod_replacements where project = $1 and issue = $2 and operation = any($3)`,
 			project, issue, operations); err != nil {
 			return err
-		}
-		if finish.Yielded {
-			return nil
 		}
 		finish.Took = took
 		if notice == nil {

@@ -237,12 +237,13 @@ func (s *supervision) forgetReplacement(ctx context.Context, recorded store.PodR
 // the read of every record the finish took that tells most (tellingRead), so one act is told from
 // the one read that says most of what it took, whichever of its records the caller finishes. yield
 // is a round's call that took nothing, which yields to the record of a launch's act that took the
-// pod with its Sandbox's volume: that record tells the architect, and this one goes alone, with
-// nothing queued (roundReplaced). It answers what the finish did, and false where the store
-// refused: the records then stand for a later sweep (finishReplacements). A record that the finish
-// of another act took, or another finish of the same act, is finished already, and nothing is
-// queued for it here (the Legion reviewer's Important 1 on #5285 at 7da847c0). attrs name the
-// replacement on its lines.
+// pod with its Sandbox's volume: that record tells the architect, and this one stands, with
+// nothing queued, for that record's finish, which takes it and weighs its read (roundReplaced; the
+// Legion reviewer's Medium 1 on #5285 at 4b123279). It answers what the finish did, and false
+// where the store refused: the records then stand for a later sweep (finishReplacements). A record
+// that the finish of another act took, or another finish of the same act, is finished already,
+// and nothing is queued for it here (the Legion reviewer's Important 1 on #5285 at 7da847c0).
+// attrs name the replacement on its lines.
 func (s *supervision) finishReplacement(ctx context.Context, operation, issue, pod string, yield bool, message func(recordedRead) string,
 	attrs ...any) (store.PodReplacementFinish, bool) {
 	attrs = append([]any{"issue", issue, "pod", pod, "operation", operation}, attrs...)
@@ -271,7 +272,7 @@ func (s *supervision) finishReplacement(ctx context.Context, operation, issue, p
 		s.log.Info("supervise: the record of this replacement of the issue's pod is finished already, with the record of another act it took or by another finish of it; nothing is queued for it",
 			attrs...)
 	case finish.Yielded:
-		s.log.Info("supervise: the record of this replacement of the issue's pod yields to the record of a launch's act that took the pod with its Sandbox's volume; it is forgotten, nothing is queued for it, and the launch's record tells the architect",
+		s.log.Info("supervise: the record of this replacement of the issue's pod yields to the record of a launch's act that took the pod with its Sandbox's volume; nothing is queued for it, and it stands for the launch's finish, which takes it and tells the architect from the read of the two that tells most",
 			attrs...)
 	case !noticed:
 	case !finish.Told:
@@ -326,7 +327,10 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 // (runtime.ActReader), and answers the issues whose round's record still stands, which the walk
 // decides nothing of at this sweep: a round there must neither read a pod its replacement took
 // again, nor keep it, nor end as a pod that went without its round (GPT-6.1 Sol's point 1 at
-// 0259f8af). claims is the sweep's snapshot.
+// 0259f8af). A round's record whose round is over holds nothing (roundOver): its round's call
+// yielded to a launch's delete of the issue's Sandbox over the pod and the round ended, and the
+// record stands only for the read that launch's finish weighs (the Legion reviewer's Medium 1 on
+// #5285 at 4b123279). claims is the sweep's snapshot.
 //
 // The runtime reads each act under the pod's launch turn, from the cluster's API (GPT-6.1 Sol's
 // point 2 on #5285 at fa9deb04, the Legion reviewer's point A). Every act a record names is made
@@ -401,6 +405,9 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			continue
 		}
 		ofRound := rec.Round != ""
+		// holds is whether the record holds its issue's rounds at this sweep while it stands: a
+		// record whose round is over holds nothing, since no round is left to decide (roundOver).
+		holds := ofRound && !s.roundOver(r.Issue, claimsOf(claims, r.Issue), rec.Round)
 		attrs := []any{"issue", r.Issue, "pod", r.PodUID, "operation", r.Operation, "round", rec.Round}
 		if by, took := went[r.Operation]; took {
 			if !ofRound || rec.Round == by.round {
@@ -411,7 +418,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			s.log.Info("supervise: the finish of a launch's act decided at this sweep took this record of the round's replacement of the issue's pod with it; the round ends as that act, with no notice of its own",
 				attrs...)
 			if _, ended := s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, roundEnd{}, lostClaims(told, rec.Round), rec.read(r.PodUID), told, r, false); !ended {
-				held[r.Issue] = true
+				held[r.Issue] = held[r.Issue] || holds
 			}
 			continue
 		}
@@ -423,7 +430,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 				continue
 			case !was.finished:
 				s.log.Info("supervise: a record of the same target decided at this sweep stands; this record of a replacement of the issue's pod stands with it", attrs...)
-				held[r.Issue] = held[r.Issue] || ofRound
+				held[r.Issue] = held[r.Issue] || holds
 				continue
 			}
 		}
@@ -437,18 +444,18 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 		switch {
 		case errors.Is(err, runtime.ErrTurnBusy):
 			s.log.Info("supervise: an act on the issue's pod holds its launch turn; the record of a replacement of the pod stands for a later sweep", attrs...)
-			held[r.Issue] = held[r.Issue] || ofRound
+			held[r.Issue] = held[r.Issue] || holds
 			decide(decided, keys, targetDecided{})
 		case err != nil:
 			if ctx.Err() == nil {
 				s.log.Error("supervise: read whether a recorded replacement took the issue's pod, or forget the record of one that took nothing; its record stands",
 					append(attrs, "error", err)...)
 			}
-			held[r.Issue] = held[r.Issue] || ofRound
+			held[r.Issue] = held[r.Issue] || holds
 			decide(decided, keys, targetDecided{})
 		case state == runtime.ActUncertain:
 			s.log.Info("supervise: the runtime cannot say whether a recorded replacement took the issue's pod; its record stands", attrs...)
-			held[r.Issue] = held[r.Issue] || ofRound
+			held[r.Issue] = held[r.Issue] || holds
 			decide(decided, keys, targetDecided{})
 		case state == runtime.ActNotMade:
 			s.log.Info("supervise: a recorded replacement of the issue's pod took nothing: its target is still in use, the pod running as the issue's own or the Sandbox of the volume running a pod on it; its record is forgotten", attrs...)
@@ -462,7 +469,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 				attrs...)
 			finish, finished := s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, roundEnd{}, lostClaims(told, rec.Round), rec.read(r.PodUID), told, r, false)
 			if !finished {
-				held[r.Issue] = true
+				held[r.Issue] = held[r.Issue] || holds
 			}
 			decideFinish(decided, went, keys, targetDecided{round: rec.Round, finished: finished}, finish)
 		}
