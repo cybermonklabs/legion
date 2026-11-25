@@ -203,22 +203,55 @@ func socketRoom(r *http.Request) string {
 	return path.Base(r.URL.Path)
 }
 
-// ServeHTTP serves the Hocuspocus-framed document websocket endpoint. A caller that does not
-// resolve is refused 401, except a person whose lapsed confirmation the sign-in issuer could not
-// renew (identity.ErrSignInUnavailable), who is still signed in and is refused 503
-// SIGNIN_UNAVAILABLE as every other route refuses them (identity.WriteError). A socket's admission
-// resolves the caller and reads the document's issue once each, here, and hands both to ygo's
-// authorization of the same request (authorize) on the connection's state; a warm room's schema
-// verdict is the one its update observer recorded (residentVerdict), so admitting a socket to a
-// warm room walks no rooms and renders nothing, and a cold one renders its document once
-// (admitDocument).
+// SocketCaller is the caller of a document socket as the api package decided it before the request
+// reached the document service: who the connection is, and whether the credential that admitted it
+// may write the document. The api package resolves the request's credential - a person's sign-in,
+// or an access token the secrets broker issued under DPoP, whose proof is spent once it is read and
+// so cannot be read a second time here - and hands the answer on the request's context
+// (WithSocketCaller), and the document service takes it as it is (requestCaller).
+type SocketCaller struct {
+	// Actor is who the connection is: the room registers the connection as it and credits it with
+	// the edits made while it is connected. A person's sign-in is the person (kind "user",
+	// Proven); a broker-issued token is the session it names, with the owner, Proven and Act an
+	// API write with the same token records.
+	Actor model.Actor
+	// MayWrite is whether the credential may write this document. False makes the connection
+	// read-only for its whole life, its token message included (authorizeSchemaVersion); true
+	// leaves the decision to the document service's own conditions, the issue open and the live
+	// fleet admitting the page (authorize).
+	MayWrite bool
+	// Admitted, when set, is called once by authorize with whether it admitted the socket
+	// writable: MayWrite and the document service's own conditions together, which the api package
+	// cannot read itself. It is nil for a person's sign-in, whose socket the api package follows no
+	// further than its admission.
+	Admitted func(writable bool)
+}
+
+type socketCallerContextKey struct{}
+
+// WithSocketCaller is ctx carrying caller, the caller the api package decided for the document
+// socket a request opens, for ServeHTTP to take in place of resolving one itself.
+func WithSocketCaller(ctx context.Context, caller SocketCaller) context.Context {
+	return context.WithValue(ctx, socketCallerContextKey{}, caller)
+}
+
+// ServeHTTP serves the Hocuspocus-framed document websocket endpoint. Its caller is the one the
+// api package decided and handed on the request (SocketCaller), and with none handed the person
+// the identity service resolves (requestCaller). A request the identity service resolves to nobody
+// is refused 401, except a person whose lapsed confirmation the sign-in issuer could not renew
+// (identity.ErrSignInUnavailable), who is still signed in and is refused 503 SIGNIN_UNAVAILABLE as
+// every other route refuses them (identity.WriteError). A socket's admission takes the caller and
+// reads the document's issue once each, here, and hands both to ygo's authorization of the same
+// request (authorize) on the connection's state; a warm room's schema verdict is the one its
+// update observer recorded (residentVerdict), so admitting a socket to a warm room walks no rooms
+// and renders nothing, and a cold one renders its document once (admitDocument).
 //
 // Before it loads anything the socket takes its places under the caps, a connection's
 // (reserveConnection) and its room's (reserveRoom), and a socket that cannot take either is
 // refused 503 before the upgrade. Each place is taken in the same step that checks the cap, so
 // sockets that open at once never pass it, and each is a count, so the check walks no rooms. The
 // socket holds both until it ends. The connection's place is the connection's count once
-// authorize registers it, and removeConnection, which forgets the browser as the socket closes,
+// authorize registers it, and removeConnection, which forgets the connection as the socket closes,
 // ends it; a socket that ends unregistered - its admission or its authorization refused, its room's
 // load failed or panicked - gives it back. The room's place the socket gives back however it ends,
 // and a room ygo loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
@@ -241,12 +274,12 @@ func socketRoom(r *http.Request) string {
 // alone - another transport, or another handler that reaches a room name by a path of its own,
 // opens a room under whatever name it passes, and no code here can stop that.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.hostname != "" {
-		w.Header().Set(ProcessHeader, s.hostname)
-		w = &processHeaderWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": " + s.hostname + "\r\n")}
+	if name := s.ProcessName(); name != "" {
+		w.Header().Set(ProcessHeader, name)
+		w = &processHeaderWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": " + name + "\r\n")}
 	}
 	room := socketRoom(r)
-	actor, err := s.requestActor(r)
+	caller, err := s.requestCaller(r)
 	if err != nil {
 		if errors.Is(err, identity.ErrSignInUnavailable) {
 			identity.WriteError(w, err)
@@ -292,7 +325,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// is how a re-check closes the socket (RunSchemaAdmission).
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
-	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel}}
+	connection := &connectionState{actor: caller.Actor, mayWrite: caller.MayWrite, admitted: caller.Admitted, issue: issue, admission: &schemaAdmission{cancel: cancel}}
 	defer func() {
 		s.schemaAdmissions.remove(connection.admission)
 		s.releaseRoom(room)
@@ -348,6 +381,14 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // all, the host name of the process serving it - the pod's name in production - so a check that
 // opens sockets through a load balancer can record which process each one reached (plan D10).
 const ProcessHeader = "X-Dispatch-Process"
+
+// ProcessName is the host name ServeHTTP writes in ProcessHeader on its answers, "" when it writes
+// none: the host would not say, or its name holds bytes a header cannot carry (New). The api
+// package writes the same name on the answers it gives a document socket's request before the
+// request reaches ServeHTTP, so one rule decides a name that cannot be used.
+func (s *Service) ProcessName() string {
+	return s.hostname
+}
 
 // processHeaderWriter puts its line, ProcessHeader's, on a websocket upgrade made through it. The
 // upgrader (gorilla/websocket, which ygo's ServeHTTP and refuseOutsideSchema both use) takes the
@@ -487,21 +528,24 @@ func (s *Service) offerPreload(room string, loaded *persistence.LoadResult, rend
 }
 
 // authorize is ygo's authorization of a document socket ServeHTTP admitted, read-only unless its
-// page may write (schemaFleet.admits). It registers the browser as the caller ServeHTTP resolved,
-// and takes the issue read ServeHTTP made, so it resolves and reads neither again. The connection
-// is counted already: ServeHTTP took its place under the connection cap (reserveConnection)
-// before it loaded anything, so registering it counts nothing more, and no cap refuses it here,
-// where a refusal would reach the browser as ygo's 401, which says it is not signed in. The issue
-// is closed for the socket when that read says so or the room's state records it closed:
-// ServeHTTP's hold on the state (holdForAdmission) is where a close made while the socket loaded
-// its document is recorded (setRoomIssueOpen), so such a socket is admitted read-only, as one
-// opened after the close is. A closed issue, or a page the live fleet does not admit, admits the
-// socket read-only; a request no admission read the issue for is refused, as is a socket to a
-// failed room.
+// caller may write (SocketCaller.MayWrite) and its page may write (schemaFleet.admits). It
+// registers the connection as the caller ServeHTTP took (requestCaller) - a person, or the session
+// a broker-issued token names - and takes the issue read ServeHTTP made, so it resolves and reads
+// neither again. The connection is counted already: ServeHTTP took its place under the connection
+// cap (reserveConnection) before it loaded anything, so registering it counts nothing more, and no
+// cap refuses it here, where a refusal would reach the client as ygo's 401, which says it is not
+// signed in. The issue is closed for the socket when that read says so or the room's state records
+// it closed: ServeHTTP's hold on the state (holdForAdmission) is where a close made while the
+// socket loaded its document is recorded (setRoomIssueOpen), so such a socket is admitted
+// read-only, as one opened after the close is. A caller that may not write, a closed issue, or a
+// page the live fleet does not admit, admits the socket read-only; a request no admission read the
+// issue for is refused, as is a socket to a failed room.
 //
 // It decides the admission ServeHTTP put on the socket's context and records it with the service,
 // so a re-check can close the socket again (schemaAdmissions); the answer to the socket's token
-// is that same admission (authorizeSchemaVersion).
+// is that same admission (authorizeSchemaVersion), so a token message never makes writable a
+// socket its caller may not write through. It tells the caller's Admitted, when set, whether it
+// admitted the socket writable, once.
 func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) {
 	connection, _ := r.Context().Value(connectionContextKey{}).(*connectionState)
 	if connection == nil {
@@ -529,8 +573,11 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	admission := connection.admission
 	admission.key = schemaAdmissionKey{room: room, token: query.Get("schema_version")}
 	admission.page = schemaPageOf(query)
-	admission.writable = open && fleet.admits(admission.page, admission.documentSince)
+	admission.writable = connection.mayWrite && open && fleet.admits(admission.page, admission.documentSince)
 	s.schemaAdmissions.admit(admission)
+	if connection.admitted != nil {
+		connection.admitted(admission.writable)
+	}
 	// A reader joining a room already resident here asks the other processes for their readers'
 	// awareness, so their cursors reach it at once; a room this join has yet to load asks once its
 	// load finishes (awarenessRelay.RoomActivated), and the connection registered above is what
@@ -548,9 +595,10 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 // no other's: the page's token is its schema_version alone - a server that predates the fleet
 // columns compares the whole token with its own version - so two sockets of one room can send one
 // token, and neither the key nor the order they arrive in tells them apart. It is read-write only
-// when this socket was admitted writable, no re-check has revoked it, and the room and token are
-// the ones it was admitted with (schemaAdmissions.writable); read-only in every other case. It
-// never refuses: a refusal closes the socket with 4401, after which the provider never reconnects.
+// when this socket was admitted writable - its caller may write, its issue is open and the fleet
+// admits its page (authorize) - no re-check has revoked it, and the room and token are the ones it
+// was admitted with (schemaAdmissions.writable); read-only in every other case. It never refuses:
+// a refusal closes the socket with 4401, after which the provider never reconnects.
 func (s *Service) authorizeSchemaVersion(ctx context.Context, room, token string) (websocket.ConnectionConfig, error) {
 	var admission *schemaAdmission
 	if connection, ok := ctx.Value(connectionContextKey{}).(*connectionState); ok {
@@ -559,19 +607,30 @@ func (s *Service) authorizeSchemaVersion(ctx context.Context, room, token string
 	return websocket.ConnectionConfig{ReadOnly: !s.schemaAdmissions.writable(admission, room, token)}, nil
 }
 
-// requestActor is the person a document connection is: the identity service's answer, and nothing
-// else. The socket once took the shared agent token too, with the session named in a header the
-// caller wrote; that was a second, weaker door into Dispatch, and only the browser - a same-origin
-// cookie - ever connected through it (INFRA-264). The cookie proved the login, so the person is
-// Proven, as the API's cookie caller is.
-func (s *Service) requestActor(r *http.Request) (model.Actor, error) {
+// requestCaller is who a document connection is and whether it may write. The api package decides
+// that for every request it serves - a person's sign-in cookie, or an access token the secrets
+// broker issued under DPoP - and hands the answer on the request's context (WithSocketCaller); a
+// handed caller is taken as it is, with no identity lookup and no access-log note, since the api
+// package already noted the caller it decided, and a DPoP proof cannot be read twice. With no
+// caller handed, as on a server that serves the document service with no api package in front of
+// it, the identity service decides: the person it resolves, Proven as the API's cookie caller is,
+// since the credential proved the login, and noted on the access log as a person. Such a person may
+// write wherever the document service's own conditions let the socket write (authorize).
+//
+// The socket no longer takes the deployment's shared agent token with a session named in a header
+// the caller wrote (INFRA-264): the api package refuses that token, and the identity service reads
+// no bearer.
+func (s *Service) requestCaller(r *http.Request) (SocketCaller, error) {
+	if caller, handed := r.Context().Value(socketCallerContextKey{}).(SocketCaller); handed {
+		return caller, nil
+	}
 	if s.identity == nil {
-		return model.Actor{}, errors.New("document identity required")
+		return SocketCaller{}, errors.New("document identity required")
 	}
 	login, err := s.identity.Login(r)
 	if err != nil {
-		return model.Actor{}, err
+		return SocketCaller{}, err
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
-	return model.Actor{Kind: "user", ID: login, Proven: true}, nil
+	return SocketCaller{Actor: model.Actor{Kind: "user", ID: login, Proven: true}, MayWrite: true}, nil
 }

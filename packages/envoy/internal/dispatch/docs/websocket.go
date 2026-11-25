@@ -16,19 +16,26 @@ import (
 )
 
 // connectionState is one document socket as its admission (ServeHTTP) found it and ygo's
-// authorization of the same request (authorize) registered it: the caller, resolved once
-// (requestActor), and the admission's one read of the document's issue, which authorize takes
-// rather than resolving or reading either again; then the room, the connection id the service gave
-// the browser, and whether authorize registered it, which tells the socket's end whether its place
-// under the connection cap is the connection's count to forget (removeConnection) or a reservation
-// to give back (releaseConnection). What else a socket's admission reads off its request goes here
-// too.
+// authorization of the same request (authorize) registered it: the caller and whether it may
+// write, taken once (requestCaller), and the admission's one read of the document's issue, which
+// authorize takes rather than resolving or reading either again; then the room, the connection id
+// the service gave the connection, and whether authorize registered it, which tells the socket's
+// end whether its place under the connection cap is the connection's count to forget
+// (removeConnection) or a reservation to give back (releaseConnection). What else a socket's
+// admission reads off its request goes here too.
 type connectionState struct {
 	room  string
 	id    uint64
 	actor model.Actor
-	issue issueRead
-	added bool
+	// mayWrite is whether the caller's credential may write the document (SocketCaller.MayWrite).
+	// authorize admits the socket writable only when it holds, so a connection that may not write
+	// stays read-only for its life, its token message included.
+	mayWrite bool
+	// admitted is the caller's SocketCaller.Admitted, nil when it set none: authorize calls it
+	// once with whether it admitted the socket writable.
+	admitted func(writable bool)
+	issue    issueRead
+	added    bool
 	// admission is this socket's schema admission: ServeHTTP makes it with the document's
 	// documentSince and the cancel of the socket's own request context, authorize decides and
 	// records it, the answer to the socket's token reads it (authorizeSchemaVersion), a re-check
@@ -1130,12 +1137,13 @@ func connectedCreditLocked(state *roomState) *inflightCredit {
 	return record
 }
 
-// registerConnectionLocked registers a browser connected to the room whose state is state, which
-// the caller holds locked. It is credited only with browser edits observed while it is connected
-// (creditContentChange), never for connecting or for an agent's edit. It counts nothing: the
-// browser's count (connections) is the place under the connection cap reserveConnection took for
-// it before, which removeConnection gives back as it forgets the browser. authorize registers each
-// document socket's browser through it.
+// registerConnectionLocked registers a connection to the room whose state is state, which the
+// caller holds locked, as actor: a person's browser, or the session a broker-issued token names
+// (SocketCaller.Actor). It is credited only with the socket edits observed while it is connected
+// (creditContentChange), never for connecting or for an agent's API edit. It counts nothing: the
+// connection's count (connections) is the place under the connection cap reserveConnection took
+// for it before, which removeConnection gives back as it forgets the connection. authorize
+// registers each document socket through it.
 func (s *Service) registerConnectionLocked(state *roomState, id uint64, actor model.Actor) {
 	state.connected[id] = actor
 	forgetMarkAuthorDeparture(state, actor)
