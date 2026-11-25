@@ -207,6 +207,7 @@ export function AnchoredPanel({
   id,
   label,
   onDismiss,
+  overflowAnchor,
   returnFocus,
   role,
 }: {
@@ -221,6 +222,8 @@ export function AnchoredPanel({
   /** The panel's accessible name, for a panel that names itself. */
   label?: string;
   onDismiss: (how: PanelDismissal) => void;
+  /** The browser's scroll anchoring of the panel box itself. Defaults to the browser's own. */
+  overflowAnchor?: CSSProperties["overflowAnchor"];
   /** Where Escape and Tab out of the panel put the focus, read as they do: the anchor where
    *  this answers null or is not given. A menu answers the element that had the focus before
    *  it opened (`ChoiceMenu`, and a single pick in a menu's place, `MultiSelect`'s `menu`). */
@@ -475,7 +478,7 @@ export function AnchoredPanel({
         className={className}
         id={id}
         ref={panelRef}
-        style={{ position: "fixed", zIndex: PANEL_LAYER, ...position }}
+        style={{ overflowAnchor, position: "fixed", zIndex: PANEL_LAYER, ...position }}
         tabIndex={-1}
         {...named}
         {...PANEL_MARK}

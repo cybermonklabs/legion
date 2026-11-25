@@ -1169,13 +1169,14 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         // place, and a pointer's tick scrolls nothing (`awaiting`).
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`${menu === undefined ? "max-h-72" : bare ? "max-h-none" : "max-h-96"} w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${single ? "" : "[overflow-anchor:none]"} ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
+          className={`${menu === undefined ? "max-h-72" : bare ? "max-h-none" : "max-h-96"} w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
           focusOnOpen={focusOnOpen && !bare}
           id={panelId}
           onDismiss={(how) => {
             if (menu !== undefined && how === "press") handBackOverPress();
             onOpenChange(false, how);
           }}
+          overflowAnchor={single ? undefined : "none"}
           returnFocus={menu === undefined ? undefined : returnTarget}
         >
           <div
