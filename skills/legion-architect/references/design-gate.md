@@ -33,7 +33,7 @@ request already makes a check's proof, write that check as `ci_check` rather tha
    never `ci-ok`, which passes when the jobs it did not select were skipped
    (`.github/scripts/ci-ok.sh`).
 2. A job held back from ordinary pull requests needs its label on the pull request for as long as
-   a check names it (on cybermonklabs/legion, `full-ci`, or the job's own `lane:<output>` label); without it the job reads `skipped`.
+   a check names it (on cybermonklabs/legion, `full-ci`, or the job's `lane:` label that `.github/workflows/ci.yaml` names beside it); without it the job reads `skipped`.
 3. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
 
