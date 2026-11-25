@@ -3354,9 +3354,10 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 // It is the body of every raw write of the stored path: the subject check, the acknowledgement
 // bound, the connect and the send (sendStored). Its callers name their own failures, since what
 // a refusal means is theirs: PublishCursorAt and Client.WriteTakeoverRecordAt, which write under a
-// precondition and read a lost one by preconditionLost; SessionConsumers.recordResumeFloorAt,
-// which writes a record whose one writer keeps no sequence to write against, so the newest write
-// stands; and Client.WriteTakeoverRecord, which writes a subject no other writer has.
+// precondition and read a lost one by preconditionLost; Client.WriteTakeoverRecord, which writes
+// only while its subject holds nothing and reads the subject back after a resend's refusal, to
+// tell its own claim's record from another's; and SessionConsumers.recordResumeFloorAt, which
+// writes a record whose one writer keeps no sequence to write against, so the newest write stands.
 //
 // extra is one option rather than a variadic list because each caller has exactly one or none:
 // a list would have the caller build a slice and this method append to it, where the two sends
@@ -3392,8 +3393,11 @@ func cursorMoved(err error) error {
 // copy a write that meets another writer's write still being replicated is answered 10164, not
 // 10071, and has lost all the same. A refusal that wraps ErrUnacknowledged is no such proof: it
 // refused a resend after a send that went unanswered (sendStored), and that first send may have
-// stored this write and moved the subject itself. It is the one test both conditional writes read
-// a refusal by: PublishCursorAt (cursorMoved) and Client.WriteTakeoverRecordAt.
+// stored this write and moved the subject itself. It is the one test the two writes that name the
+// sequence they read take a refusal by: PublishCursorAt (cursorMoved) and
+// Client.WriteTakeoverRecordAt. Client.WriteTakeoverRecord, whose precondition is an empty subject,
+// takes a refusal by the same rule: one that wraps no ErrUnacknowledged is another writer's record,
+// and one that wraps it counts as stored only when a read of the subject finds this write's claim.
 func preconditionLost(err error) bool {
 	return IsCASConflict(err) && !errors.Is(err, ErrUnacknowledged)
 }

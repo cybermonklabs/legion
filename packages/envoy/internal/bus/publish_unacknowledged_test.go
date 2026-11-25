@@ -246,12 +246,12 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		}
 	})
 
-	// The claim route's write of a takeover record takes no precondition (WriteTakeoverRecord): it
-	// writes a subject of its own, a fresh attempt id's, which no other writer has. So the resend
-	// after a reconnect cut the first send's answer is stored too, and the write returns nil, as it
-	// must for a claim whose record stored. Under a precondition the stream would refuse that
-	// resend, which meets the first send's own copy, and the claim route would answer the claim as
-	// one whose record did not store.
+	// The claim route's write of a takeover record stores only while its subject holds nothing
+	// (WriteTakeoverRecord, nats.ExpectLastSequencePerSubject(0)), so the resend after a reconnect
+	// cut the first send's answer meets the first send's own copy and is refused, a refusal that
+	// wraps ErrUnacknowledged. The write then reads the subject's newest record, finds this same
+	// claim there (its Role, Previous and ClaimedAt), and returns nil, as it must for a claim whose
+	// record stored; the record read back is the first send's.
 	t.Run("a takeover record stored before a reconnect cut its answer is written", func(t *testing.T) {
 		const role, previous = "unacknowledged-claim", "ses_unacknowledged_previous"
 		subject := bus.TakeoverSubject(role, previous, id.New())

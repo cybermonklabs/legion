@@ -92,19 +92,50 @@ var ErrTakeoverRecordMoved = errors.New("bus: the takeover record changed under 
 var ErrTakeoverRecordFinished = errors.New("bus: the takeover record is finished")
 
 // WriteTakeoverRecord publishes record on subject, a takeover record's own subject
-// (TakeoverSubject), with no precondition: the claim route's write under a fresh attempt id,
-// which no other writer has. It takes none because a resend after a send nothing answered
-// (ErrUnacknowledged) would meet the first send's own copy and be refused, and the claim route
-// would answer a claim whose record stored as one whose record did not.
+// (TakeoverSubject), only while that subject holds nothing (nats.ExpectLastSequencePerSubject(0)):
+// the claim route's first write of the record, under a fresh attempt id. So no send of it lands
+// over a record the subject holds, a finish a pass wrote there (WriteTakeoverRecordAt) among them,
+// and the finish stays terminal, as TakeoverRecords' rule of finishedTakeovers needs.
+//
+// Every failure is the write's error, wrapping the publish's own, with one exception: a refusal of
+// that precondition that wraps ErrUnacknowledged. Such a refusal answered a resend after a send
+// nothing answered (sendStored), and the copy the resend met may be that first send's own, stored
+// with its answer lost and perhaps since moved on by a pass. For it alone the subject's newest
+// message is read once (heldTakeoverClaim), and the write returns nil when that message is a
+// record of this same claim: the Role, Previous and ClaimedAt of record, which a pass writes back
+// as it read them while it changes Next, FloorMissed, Finished and HolderSeenAt. A read that
+// fails, a body that does not decode, or a record of another claim leaves the refusal as the
+// error. A refusal that wraps no ErrUnacknowledged (preconditionLost) is another writer's record on
+// the subject, and is the error too.
 func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record TakeoverRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
-	if _, err := c.publishStoredRaw(ctx, subject, data, nil); err != nil {
-		return fmt.Errorf("bus: write the takeover record %s: %w", subject, err)
+	_, err = c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(0))
+	if err == nil {
+		return nil
 	}
-	return nil
+	if IsCASConflict(err) && errors.Is(err, ErrUnacknowledged) && c.heldTakeoverClaim(ctx, subject, record) {
+		return nil
+	}
+	return fmt.Errorf("bus: write the takeover record %s: %w", subject, err)
+}
+
+// heldTakeoverClaim reports whether subject's newest message is a takeover record of record's
+// claim, one with its Role, Previous and ClaimedAt, read with one LastStoredMessage: the read
+// TakeoverRecords makes of each subject, over the stored-message API subject the listener's grant
+// allows (storedMessageAPI). A read that fails and a body that does not decode hold no claim.
+func (c *Client) heldTakeoverClaim(ctx context.Context, subject string, record TakeoverRecord) bool {
+	stored, err := c.LastStoredMessage(ctx, subject)
+	if err != nil {
+		return false
+	}
+	var held TakeoverRecord
+	if err := json.Unmarshal(stored.Data, &held); err != nil {
+		return false
+	}
+	return held.Role == record.Role && held.Previous == record.Previous && held.ClaimedAt == record.ClaimedAt
 }
 
 // WriteTakeoverRecordAt publishes record on stored's subject while that subject's newest message
