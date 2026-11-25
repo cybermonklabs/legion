@@ -6351,6 +6351,27 @@ describe("executeDispatchTool", () => {
         "version 1 and ref dispatch://DSP-42/artifact/notes-md@v2 name two versions; name the version once",
       ]);
     });
+
+    // A tab of an issue's page that is a view of the issue (Verification, Plan, Steps, Artifacts,
+    // Collaborators) names no document. doc-read and doc-edit act on the issue's primary document,
+    // the spec, so a tab's link or reference would read or write the spec in the tab's place: each
+    // is refused before any request, the dashboard's URL as its reference.
+    test("doc-read and doc-edit refuse a view tab of an issue, by its link and by its reference", async () => {
+      const ops = [{ op: "replace", find: "old line", with: "new line" }];
+      for (const tab of ["verification", "plan", "steps", "artifacts", "collaborators"]) {
+        const refused = (tool: string) =>
+          `ref dispatch://DSP-42/${tab} names the ${tab} tab on DSP-42; dispatch ${tool} would act on DSP-42 and drop the tab: read it with dispatch read, or name DSP-42 with issue DSP-42 and artifact <the document's slug>`;
+        for (const ref of [
+          `dispatch://DSP-42/${tab}`,
+          `http://dispatch.test/issues/DSP-42/${tab}`,
+        ]) {
+          expect(await problemsOf("dispatch_doc_read", { ref })).toEqual([refused("doc-read")]);
+          expect(await problemsOf("dispatch_doc_edit", { ref, ops })).toEqual([
+            refused("doc-edit"),
+          ]);
+        }
+      }
+    });
   });
 
   test("an ask on one owner cites another issue's comment or an issue, as a citation only", async () => {

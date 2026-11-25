@@ -150,8 +150,9 @@ test.each([
 });
 
 // A tab of the issue is a view of the issue, as the server reads it (text/refs.go,
-// issueTabReferences): its reference names the issue, and the Conversation's and Activity's name
-// the issue's events, as `log` always has.
+// issueTabReferences): its reference's owner is the issue, the Conversation's and Activity's name
+// the issue's events, as `log` always has, and every other view tab is a `tab` of the issue, which
+// no tool that acts on a document takes as the issue's spec.
 test.each(
   DISPATCH_DASHBOARD_PAGES.tabs.map(({ reference }) => reference)
 )("the tab reference dispatch://CORE-1/%s names the issue", (reference) => {
@@ -162,6 +163,6 @@ test.each(
       ? "log"
       : reference === "children"
         ? "children"
-        : "issue"
+        : "tab"
   );
 });
