@@ -33,12 +33,17 @@
  * the run's Dispatch (`--dispatch`), its latest version and the blocks of the version given, as the
  * label's Dispatch client reads them (`dispatch.Client.PlanDocument`), and runs
  * `bash <label>/packages/pi-legion/scripts/skill-scenarios/label-texts.sh plan-check <request>
- * <answer>` with that version as C2's plan request. It answers the entry's answer, its status and
- * its body. An entry that exits non-zero is answered 500, naming its exit and the last line of its
- * stderr; so is an entry that leaves no answer, an answer whose status no response carries (below
- * 200, or a body on a status that has none), and a stand-in started without `--label` or
- * `--dispatch`: it never answers a plan on its own. A read of the run's Dispatch that fails, and a
- * version whose blocks cannot be read, are answered 502.
+ * <answer>` with that version as C2's plan request, in the stand-in's own environment, so the
+ * entry finds the binaries its RIG_TEXTS_BIN names. It answers the entry's answer, its status and
+ * its body. Before it reads a block it refuses what the label's route refuses before it reads one
+ * (`api/plan.go`, planOwner and documentOfIssue): 403 `ISSUE_OUTSIDE_TREE` for an issue outside the
+ * claim's tree (the claim's issue, and each issue of `--issues` in its tree), and 404
+ * `ARTIFACT_NOT_ON_ISSUE` for a document Dispatch does not hold, or holds on another issue than the
+ * request's. Neither runs the entry. An entry that exits non-zero is answered 500, naming its exit
+ * and the last line of its stderr; so is an entry that leaves no answer, an answer whose status no
+ * response carries (below 200, or a body on a status that has none), and a stand-in started
+ * without `--label` or `--dispatch`: it never answers a plan on its own. A read of the run's
+ * Dispatch that fails, and a version whose blocks cannot be read, are answered 502.
  *
  * Every request appends one JSON line to the log file: `{at, path, status, grantId?, sessionId?,
  * mintedGrantId?, handoffId?, handoffVersion?, body?}` (C3's `StandinLogLine`), the run's record of
@@ -62,7 +67,7 @@
  *   phase than the command line does is refused.
  * - `--label` is the run's label checkout: the `Legion-Daemon-Contract` header states its plugin's
  *   `legion.daemonApiVersion`, the contract that label's plugin speaks, and `register_plan` runs its
- *   entry. Without it the header states this checkout's own, as before the option.
+ *   entry. Without it the header states this checkout's own.
  * - `--dispatch` is the run's Dispatch and the file of its bearer token, which `register_plan`
  *   reads the plan from.
  *
@@ -243,6 +248,12 @@ const RECORDED = [
   ),
 ];
 
+/** The issues of the claim's tree: the claim's own, and each issue of the world in that tree. */
+const TREE_ISSUES: ReadonlySet<string> = new Set([
+  issue,
+  ...WORLD.filter((each) => each.tree === TREE).map((each) => each.key),
+]);
+
 /** `GET /legion/v1/state`: the issues the daemon records, each admitted in its phase, in its tree,
  * on the repository and default branch the command line names; the claim's in PHASE (the phase
  * its role works, `workflow.RoleFor` through daemon-pane.go, or the ninth argument's).
@@ -361,8 +372,9 @@ function resolveGrant(grantId: string): Response | undefined {
 }
 
 /** What Dispatch's document read answers (`GET /api/v1/artifacts/{id}`), as far as the stand-in
- * reads it: the document's latest version. */
+ * reads it: the issue the document is on, and its latest version. */
 const DispatchDocument = z.object({
+  issue_key: z.string(),
   approval: z.object({ latest_version: z.number().int().positive() }),
 });
 
@@ -386,12 +398,12 @@ const DispatchVersion = z.object({
 });
 
 /** One read of the run's Dispatch with its bearer, parsed with `schema`, or the 502 naming what
- * Dispatch answered. */
+ * Dispatch answered, and whether Dispatch answered that it has no such thing (404). */
 async function dispatchRead<T>(
   dispatch: { readonly url: string; readonly token: string },
   route: string,
   schema: z.ZodType<T>
-): Promise<{ readonly data: T } | { readonly refusal: Response }> {
+): Promise<{ readonly data: T } | { readonly refusal: Response; readonly missing: boolean }> {
   let answered: Response;
   try {
     answered = await fetch(`${dispatch.url}${route}`, {
@@ -400,6 +412,7 @@ async function dispatchRead<T>(
   } catch (error) {
     return {
       refusal: failure(502, "DISPATCH_FAILED", `the read of GET ${route} failed: ${error}`),
+      missing: false,
     };
   }
   const text = await answered.text();
@@ -416,6 +429,7 @@ async function dispatchRead<T>(
         "DISPATCH_FAILED",
         `the run's Dispatch answered GET ${route} with ${answered.status} and a body the stand-in cannot read: ${text}`
       ),
+      missing: answered.status === 404,
     };
   }
   return { data: parsed.data };
@@ -456,8 +470,9 @@ function cutBlocks(
 }
 
 /** `register_plan`'s answer: the version from the run's Dispatch, given to the label's own route
- * through the entry. */
+ * through the entry, once the document is the request's issue's (documentOfIssue's rule). */
 async function planCheck(request: {
+  readonly issue: string;
   readonly artifactId: string;
   readonly version: number;
 }): Promise<Response> {
@@ -477,7 +492,13 @@ async function planCheck(request: {
   const artifactId = request.artifactId.toLowerCase();
   const documentRoute = `/api/v1/artifacts/${encodeURIComponent(artifactId)}`;
   const document = await dispatchRead(DISPATCH, documentRoute, DispatchDocument);
-  if ("refusal" in document) return document.refusal;
+  const notOnIssue = failure(
+    404,
+    "ARTIFACT_NOT_ON_ISSUE",
+    `${artifactId} is not a document of ${request.issue}`
+  );
+  if ("refusal" in document) return document.missing ? notOnIssue : document.refusal;
+  if (document.data.issue_key !== request.issue) return notOnIssue;
   const latestVersion = document.data.approval.latest_version;
   // The label's route refuses a version above the latest before it reads any block, so none is
   // read for one.
@@ -667,7 +688,16 @@ async function handle(route: string, body: unknown): Promise<Answer> {
         LegionPlanRegisterRequest.safeParse(body)
       );
       if ("refusal" in parsed) return { response: parsed.refusal };
-      const refused = resolveGrant(parsed.data.grantId);
+      // The route's order: the grant, the issue's tree (planOwner), then the document's issue.
+      const refused =
+        resolveGrant(parsed.data.grantId) ??
+        (TREE_ISSUES.has(parsed.data.issue)
+          ? undefined
+          : failure(
+              403,
+              "ISSUE_OUTSIDE_TREE",
+              `${parsed.data.issue} is outside the architect tree ${TREE}`
+            ));
       return { response: refused ?? (await planCheck(parsed.data)), logged: parsed.data };
     }
     default: {

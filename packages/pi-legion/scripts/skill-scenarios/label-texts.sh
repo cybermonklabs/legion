@@ -8,7 +8,7 @@
 #   label-texts.sh build
 #       Compiles the three test binaries with `go test -c`, once for each state of the label's tree
 #       (its commit, and the digest of its changes when it has any), into
-#       <label>/.rig-texts/<commit>[-<digest>]/, then runs each test's own case, with no request.
+#       $RIG_TEXTS_BIN/<commit>[-<digest>]/, then runs each test's own case, with no request.
 #       It prints the three `--- PASS:` lines.
 #   label-texts.sh world <request> <answer>        runs TestRigWorld      (internal/workflow)
 #   label-texts.sh launch <request> <answer>       runs TestRigLaunch     (internal/daemon)
@@ -19,11 +19,17 @@
 #       `--- PASS: <test>` line and an answer file the run wrote. Each test refuses a request field
 #       it does not handle, naming the field.
 #
+# RIG_TEXTS_BIN, which every verb needs, is the directory the binaries are built in: an absolute
+# path outside the label's checkout, so that the build leaves the checkout as it was (git lists
+# nothing new, and jj snapshots nothing). The rig gives each label a directory of its own under its
+# work directory (rig.sh load_label), as it builds every other output there.
+#
 # Exit codes:
 #   0  the verb did what it says.
 #   1  a run failed: the compile, a test that failed, a binary that printed no `--- PASS: <test>`
 #      line, a run that wrote no answer file, or a binary that build has not made.
-#   2  a usage error, or a label that lacks one of the three test files (each is named).
+#   2  a usage error, a label that lacks one of the three test files (each is named), or a
+#      RIG_TEXTS_BIN that is unset, not absolute, or inside the label's checkout.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -55,16 +61,42 @@ require_tests() {
   [ "$missing" -eq 0 ] || exit 2
 }
 
+# require_bin sets bin_root to RIG_TEXTS_BIN, and exits 2 unless it names an absolute path outside
+# the label's checkout.
+require_bin() {
+  local given=${RIG_TEXTS_BIN:-} real top
+  if [ -z "$given" ]; then
+    echo "label-texts: RIG_TEXTS_BIN is unset: name the directory, outside this label's checkout, that the three test binaries are built in" >&2
+    exit 2
+  fi
+  case $given in
+    /*) ;;
+    *)
+      echo "label-texts: RIG_TEXTS_BIN $given is not an absolute path" >&2
+      exit 2
+      ;;
+  esac
+  real=$(realpath -m -- "$given")
+  top=$(cd "$label" && pwd -P)
+  case "$real/" in
+    "$top"/*)
+      echo "label-texts: RIG_TEXTS_BIN $given is inside the label's checkout $label, where git would list the binaries and jj would snapshot them" >&2
+      exit 2
+      ;;
+  esac
+  bin_root=$real
+}
+
 # tree_key prints the state of the label's tree that its binaries are built from: its commit, and
 # when the tree has changes (a control's label tree has), a digest of them, untracked files
-# included. The binaries' own directory is not part of the state.
+# included.
 tree_key() {
   local commit changes
   if ! commit=$(git -C "$label" rev-parse --verify -q HEAD); then
     echo "label-texts: $label is not a git checkout with a commit" >&2
     exit 1
   fi
-  changes=$(git -C "$label" status --porcelain --untracked-files=all -- . ':(exclude).rig-texts')
+  changes=$(git -C "$label" status --porcelain --untracked-files=all)
   if [ -z "$changes" ]; then
     echo "$commit"
     return
@@ -72,8 +104,8 @@ tree_key() {
   local digest
   digest=$(
     cd "$label"
-    git diff HEAD --binary -- . ':(exclude).rig-texts'
-    git ls-files -z --others --exclude-standard -- . ':(exclude).rig-texts' | xargs -0 -r sha256sum --
+    git diff HEAD --binary
+    git ls-files -z --others --exclude-standard | xargs -0 -r sha256sum --
   )
   digest=$(printf '%s' "$digest" | sha256sum)
   echo "$commit-${digest:0:12}"
@@ -123,11 +155,11 @@ compile() {
 }
 
 build() {
-  mkdir -p "$label/.rig-texts"
-  out="$label/.rig-texts/$(tree_key)"
+  mkdir -p "$bin_root"
+  out="$bin_root/$(tree_key)"
   if [ ! -f "$out/built" ]; then
     local bin
-    bin=$(mktemp -d "$label/.rig-texts/build.XXXXXX")
+    bin=$(mktemp -d "$bin_root/build.XXXXXX")
     if ! (compile "$bin"); then
       rm -rf -- "$bin"
       echo "label-texts: go test -c of the three packages failed in $daemon" >&2
@@ -151,11 +183,13 @@ case $verb in
   build)
     [ "$#" -eq 0 ] || usage
     require_tests
+    require_bin
     build
     ;;
   world | launch | plan-check)
     [ "$#" -eq 2 ] || usage
     require_tests
+    require_bin
     if [ ! -f "$1" ]; then
       echo "label-texts: no request file $1" >&2
       exit 2
@@ -166,7 +200,7 @@ case $verb in
     fi
     request=$(realpath -- "$1")
     answer=$(realpath -m -- "$2")
-    out="$label/.rig-texts/$(tree_key)"
+    out="$bin_root/$(tree_key)"
     case $verb in
       world) run_test workflow TestRigWorld "$request" "$answer" ;;
       launch) run_test daemon TestRigLaunch "$request" "$answer" ;;

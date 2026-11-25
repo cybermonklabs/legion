@@ -68,7 +68,8 @@ test("world refuses a binary that ran no test, naming the missing PASS line", ()
   git("-c", "init.defaultBranch=main", "init", "-q");
   git("add", "-A");
   git("commit", "-qm", "label");
-  const bin = path.join(label, ".rig-texts", git("rev-parse", "HEAD"));
+  const texts = directory("texts");
+  const bin = path.join(texts, git("rev-parse", "HEAD"));
   mkdirSync(bin, { recursive: true });
   const binary = path.join(bin, "workflow.test");
   writeFileSync(binary, "#!/bin/sh\necho 'testing: warning: no tests to run'\necho PASS\nexit 0\n");
@@ -78,7 +79,15 @@ test("world refuses a binary that ran no test, naming the missing PASS line", ()
   const answer = path.join(work, "world-answer.json");
   writeFileSync(request, "{}\n");
 
-  const world = run(label, env, "bash", script, "world", request, answer);
+  const world = run(
+    label,
+    { ...env, RIG_TEXTS_BIN: texts },
+    "bash",
+    script,
+    "world",
+    request,
+    answer
+  );
 
   expect(world.stderr).toContain("testing: warning: no tests to run");
   expect(world.stderr).toContain("--- PASS: TestRigWorld");

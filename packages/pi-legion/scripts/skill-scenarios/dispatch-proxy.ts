@@ -14,20 +14,26 @@
  *
  * `<key map>` is the recording's `plans-answer.source` (`PlansAnswerSource`): the commit it was
  * captured at, the sha256 of the recorded body, and the map from its project key and issue keys to
- * the run's. The proxy refuses to start, exit 2 naming what is wrong, when the recording's sha256 is
- * not the source's, naming both sums, and when the map does not take the recording's project to
- * `<project>`. A key is whole when no letter, digit, `-` or `_` stands beside it, so a key that
- * begins another (`P-1` and `P-12`) replaces only itself. Only the strings that hold a key are
- * written again; every other byte of the recording is served as recorded.
+ * the run's. The proxy refuses to start, exit 2 naming what is wrong, unless the recording is held
+ * to its source as scored-runs-contracts.ts's readPlansAnswer holds it: its sha256 is the source's
+ * (both sums named), it is a plans answer in JSON, and the map takes the recording's project to
+ * `<project>` and each of its issues to a key of `<project>`. A key is replaced where it is whole
+ * (mapRecordedKeys: no letter, digit, `-` or `_` stands beside it), so a key that begins another
+ * (`P-1` and `P-12`) replaces only itself. Only the strings that hold a key are written again;
+ * every other byte of the recording is served as recorded.
  *
  * Usage: `bun dispatch-proxy.ts <port> <upstream> <log> [--plans <answer> <project> <key map>]`
  * Prints `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's
  * pick).
  */
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
-import { type DispatchProxyLine, PlansAnswerSource } from "./scored-runs-contracts";
+import {
+  type DispatchProxyLine,
+  mapRecordedKeys,
+  PlansAnswerSource,
+  readPlansAnswer,
+} from "./scored-runs-contracts";
 
 const USAGE =
   "usage: bun dispatch-proxy.ts <port> <upstream> <log> [--plans <answer> <project> <key map>]";
@@ -48,19 +54,15 @@ if (!URL.canParse(upstream)) refuse(`the upstream ${upstreamArg} is no URL; ${US
 const STRING_TOKEN = /"(?:[^"\\]|\\.)*"/g;
 
 /**
- * The recorded answer with every whole key of `keyMap` replaced by its value. Each JSON string of
- * `raw` that holds a key is decoded, its keys replaced, and encoded again; every other string, and
- * every byte between strings, stays as recorded.
+ * The recorded answer with every whole key of `keyMap` replaced by its value (mapRecordedKeys).
+ * Each JSON string of `raw` that holds a key is decoded, its keys replaced, and encoded again;
+ * every other string, and every byte between strings, stays as recorded.
  */
 function mapKeys(raw: string, keyMap: Readonly<Record<string, string>>): string {
-  const keys = Object.keys(keyMap).sort((a, b) => b.length - a.length);
-  if (keys.length === 0) return raw;
-  const alternatives = keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const whole = new RegExp(`(?<![A-Za-z0-9_-])(?:${alternatives})(?![A-Za-z0-9_-])`, "g");
   return raw.replace(STRING_TOKEN, (token) => {
     const text: unknown = JSON.parse(token);
     if (typeof text !== "string") return token;
-    const mapped = text.replace(whole, (key) => keyMap[key] ?? key);
+    const mapped = mapRecordedKeys(text, keyMap);
     return mapped === text ? token : JSON.stringify(mapped);
   });
 }
@@ -83,33 +85,16 @@ function recordedPlans(
   } catch (error) {
     refuse(`cannot read the recording ${answerFile} and its source ${sourceFile}: ${error}`);
   }
-  const sum = createHash("sha256").update(raw).digest("hex");
-  if (sum !== source.sha256) {
-    refuse(
-      `the recording ${answerFile} has sha256 ${sum}, and its source ${sourceFile} records ${source.sha256}`
-    );
-  }
-  const body = raw.toString("utf8");
-  let recorded: unknown;
   try {
-    recorded = JSON.parse(body);
+    readPlansAnswer(raw, source, project);
   } catch (error) {
-    refuse(`the recording ${answerFile} is no JSON: ${error}`);
-  }
-  const captured =
-    typeof recorded === "object" && recorded !== null && "project" in recorded
-      ? recorded.project
-      : undefined;
-  if (typeof captured !== "string" || source.keyMap[captured] !== project) {
     refuse(
-      `the key map of ${sourceFile} takes the recording's project ${String(captured)} to ${
-        typeof captured === "string" ? String(source.keyMap[captured]) : "nothing"
-      }, not to the run's project ${project}`
+      `the recording ${answerFile}, with its source ${sourceFile}: ${error instanceof Error ? error.message : String(error)}`
     );
   }
   return {
     path: `/api/v1/projects/${encodeURIComponent(project)}/plans`,
-    body: mapKeys(body, source.keyMap),
+    body: mapKeys(raw.toString("utf8"), source.keyMap),
   };
 }
 

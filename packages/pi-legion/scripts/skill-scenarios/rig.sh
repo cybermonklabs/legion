@@ -10,7 +10,8 @@
 #   rig.sh live-read <label> <skill>...            one session reads every file of each skill
 #   rig.sh batch     <scenario> <runs> <label>...  starts the scratch services, runs 1..<runs> per
 #                                                  label (SKILL_SCENARIOS_PARALLEL at once), and
-#                                                  stops the services
+#                                                  stops the services; a scored scenario
+#                                                  (owner-walk) runs with batch-scored instead
 #   rig.sh score     [<scenario>]                  one row per run, then counts per label; a scored
 #                                                  scenario's runs (owner-walk) are scored one by
 #                                                  one (`score.ts runs --run`), then their rows, a
@@ -33,8 +34,11 @@
 #   rig.sh rows      [<scenario>]                  each scored run's row.json, then each entry of
 #                                                  its reach, without scoring it again
 #   rig.sh cell      <scenario> <label> <case> <count>
-#                                                  the line of one case's cell: its runs, the
-#                                                  runs that passed each clause, and its verdict
+#                                                  the line of one case's cell (score.ts cell): a
+#                                                  case form's runs at <count>, the runs that
+#                                                  passed each clause, and its verdict; a control
+#                                                  form's case the control's own cell over every
+#                                                  owner of the form, with cells' verdict
 #   rig.sh evidence  [<scenario>]                  the cells, each label's built-from and each
 #                                                  run's row and model, as Markdown
 #   rig.sh judge     <run dir>...                  the judge's prompts on each spec-writing or
@@ -50,7 +54,8 @@
 #
 # A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start>`, which needs that
 # batch's services: <index> is the run's place in the batch and <start> the batch's start in epoch
-# seconds. One run on its own is `rig.sh batch <scenario> 1 <label>`.
+# seconds. One run on its own is `rig.sh batch <scenario> 1 <label>`, or `rig.sh batch-scored
+# owner-walk 1 <label>` for owner-walk.
 #
 # The tools of this directory (each one's header has its own usage):
 #   seed.ts               seeds a batch's scratch Dispatch and each run's issue, and reads back what
@@ -202,8 +207,10 @@
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
 #   SKILL_SCENARIOS_OMP           the Oh My Pi binary every command runs, <dir>/bin/omp, in place of
-#                                 the one mise installed for the label's .omp-pin; its --version
-#                                 must be the pin's release (rig_omp), as LEGION_TEST_OMP's is
+#                                 the one mise installed for the label's .omp-pin, and with no
+#                                 mise: the label's installers (omp_mise), the superpowers probe,
+#                                 launch and launch_rpc, each through rig_omp; its --version must
+#                                 be the pin's release (rig_omp), as LEGION_TEST_OMP's is
 #   SKILL_SCENARIOS_POSTGRES_URL  a Postgres the batch uses in place of the container it would
 #                                 start, as a postgres:// or postgresql:// URL
 #                                 (postgres://<user>:<password>@<host>:<port>/<database>), never
@@ -308,7 +315,8 @@
 # An owner's run (run_owner_walk, scored_session) starts from the label's own texts: every text
 # the agent starts from comes from the label's code, through the label's one entry,
 # packages/pi-legion/scripts/skill-scenarios/label-texts.sh (a label without it is refused by
-# name), built once per label (`label-texts.sh build`, at batch-scored's start):
+# name), built once per label (`label-texts.sh build`, at batch-scored's start) into the label's
+# own directory of the work directory, RIG_TEXTS_BIN (load_label), outside every checkout:
 #   1. The run's own Dispatch, from the label's run-server.sh, seeded with `seed.ts owner-walk`,
 #      and dispatch-proxy.ts in front of it, which answers the plans read with the recorded answer
 #      and logs each request of the agent's to dispatch-proxy.jsonl.
@@ -334,8 +342,8 @@
 #      writes `exit=bound`, and held.txt says what held the run: the turn, the background work, or
 #      the reminder and the count of reminders.
 #   6. `seed.ts capture-scored` reads back what the run left on Dispatch.
-# Two runs of one kind hold one role token (legion-lweval-<key>-architect) on one listener, so a
-# batch runs owner-walk one run at a time.
+# Two runs of one kind hold one role token (legion-lweval-<key>-architect) on one listener, so
+# batch-scored runs owner-walk one run at a time.
 set -euo pipefail
 # Nothing the rig starts inherits a service endpoint or credential from the caller: a Legion pane
 # exports ENVOY_URL, DISPATCH_URL and their token files, a developer's shell can hold NATS
@@ -407,16 +415,19 @@ judge_thinking=high
 judge_image=ghcr.io/cybermonklabs/legion/ci@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 # The superpowers skills a spec run's profile holds as its own user skills (cmd_profile).
 superpowers_skills=(writing-plans brainstorming)
-# The model stand-in's provider block and model (model-standin.ts MODEL_STANDIN_PROVIDER and
-# MODEL_STANDIN_MODEL), and the base its block names until a run routes it to the run's own
-# stand-in (route_model_standin): a name that resolves nowhere, so a run that was not routed
-# reaches no model at all.
+# The model stand-in's provider block and model, which install_standin_route writes into a
+# profile; model-standin.ts answers any model a request names, and the transcript of a run on it
+# names this one (rig.test.ts, "the model stand-in mode routes the provider to model-standin.ts").
+# The base its block names until a run routes it to the run's own stand-in (route_model_standin) is
+# a name that resolves nowhere, so a run that was not routed reaches no model at all.
 model_standin=standin/standin-model
 model_standin_unrouted=http://model-standin.invalid
 # The owner-walk world's repository, which the label's engine and launch record (TestRigWorld,
-# TestRigLaunch), and its Dispatch project (owner-walk.ts PROJECT).
+# TestRigLaunch), its Dispatch project (OWNER_WALK_PROJECT of scored-runs-contracts.ts), and the
+# stage of owner-walk.ts's OWNER_WALK_STAGES every run's world is of (run_owner_walk, cmd_cell).
 owner_walk_repo=example/csv-importer
 owner_walk_project=LWEVAL
+owner_walk_stage=guidance
 # launch_rpc's clock: seconds between two looks at a run's end, and the bound on the claim's
 # claims/ready.
 rpc_poll=10
@@ -453,13 +464,17 @@ label_dir() {
 }
 
 # The label's checkout, pin and profile name, recorded by `profile`, as the globals P (the label's
-# directory), co, pin and profile that every command and helper below reads.
+# directory), co, pin and profile that every command and helper below reads. RIG_TEXTS_BIN, the
+# directory label-texts.sh builds the label's test binaries in, is the label's own label-texts/,
+# which every process of the label inherits: label_texts's calls and the daemon stand-in's
+# register_plan.
 load_label() {
   P=$(label_dir "$1")
   [ -f "$P/ready" ] || fail "no profile for label $1: run \`rig.sh profile $1 <checkout>\` first"
   co=$(<"$P/checkout")
   pin=$(<"$P/pin")
   profile=$(<"$P/profile")
+  export RIG_TEXTS_BIN=$P/label-texts
   # AskGate holds its review's deadline 5 s under Oh My Pi's limit for one tool_call handler, and at
   # that limit's 30 s default a review of a long session often times out and its write posts
   # unreviewed (packages/pi-envoy/README.md, "The time limit"): an askgate run would then score the
@@ -812,8 +827,12 @@ omp_mise() {
 # pass. It records the plugin's version and each skill's digest in built-from. It marks the label
 # with a `superpowers` file, which a spec run needs.
 install_superpowers() {
-  local P=$1 profile=$2 pin=$3 src=$SKILL_SCENARIOS_SUPERPOWERS skill dest probe version omp
-  omp=$(pinned_omp "$pin") || exit 1
+  local P=$1 profile=$2 pin=$3 src=$SKILL_SCENARIOS_SUPERPOWERS skill dest probe version omp run
+  omp=$(rig_omp "$pin") || exit 1
+  # The pin's own install runs under `mise x`, which gives it the pin's tools; the binary
+  # SKILL_SCENARIOS_OMP names runs alone, as in a pod with no mise.
+  run=("$omp")
+  [ -n "${SKILL_SCENARIOS_OMP:-}" ] || run=(mise x "$pin" -- "$omp")
   dest=$P/home/.omp/profiles/$profile/agent/skills
   mkdir -p "$dest"
   for skill in "${superpowers_skills[@]}"; do
@@ -836,7 +855,7 @@ install_superpowers() {
       env -i HOME="$P/home" USER="$USER" TERM=xterm-256color TMPDIR="$probe/tmp" PATH="$PATH" \
         MISE_DATA_DIR="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}" OMP_PROFILE="$profile" \
         PI_NOTIFICATIONS=off PI_NO_TITLE=1 ENVOY_URL=http://127.0.0.1:1 timeout "${SKILL_SCENARIOS_TIMEOUT:-1500}" \
-        mise x "$pin" -- "$omp" -p 'Call the read tool once on the path skill://writing-plans, and nothing else. Then reply with the first line of what it returned.' \
+        "${run[@]}" -p 'Call the read tool once on the path skill://writing-plans, and nothing else. Then reply with the first line of what it returned.' \
         --session-dir "$probe/sessions" </dev/null
   ) >"$probe/out.txt" 2>&1 || fail "the read of skill://writing-plans under profile $profile failed; see $probe/out.txt"
   ! grep -q 'Unknown skill' "$probe/out.txt" "$probe"/sessions/*.jsonl 2>/dev/null ||
@@ -898,8 +917,12 @@ EOF
 # until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
 # wait reads only its own exit line.
 launch() {
-  local system='' extra='' omp
-  omp=$(pinned_omp "$pin") || exit 1
+  local system='' extra='' omp run
+  omp=$(rig_omp "$pin") || exit 1
+  # As install_superpowers runs it: the pin's own install under `mise x`, the binary
+  # SKILL_SCENARIOS_OMP names alone.
+  run=$(printf %q "$omp")
+  [ -n "${SKILL_SCENARIOS_OMP:-}" ] || run="mise x $(printf %q "$pin") -- $run"
   session=$tag-$1
   shift
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
@@ -908,7 +931,7 @@ launch() {
 #!/usr/bin/env bash
 cd $(printf %q "$R/cwd")
 mapfile -t vars <$(printf %q "$R/pane.env")
-exec env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
+exec env -i "\${vars[@]}" $run -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
 EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
@@ -2023,9 +2046,10 @@ require_label_texts() {
 }
 
 # label_texts VERB [REQUEST ANSWER] runs the label's entry (co, the label's checkout) with the
-# batch's Postgres as LEGION_TEST_PG_DSN, where its world walks, its output to
-# $R/texts/label-texts.log, or to the label's own log for `build`. A failure names the first failure
-# line of the label's test (`<file>_test.go:<line>: …`), or else the entry's own last line.
+# batch's Postgres as LEGION_TEST_PG_DSN, where its world walks, and the label's RIG_TEXTS_BIN
+# (load_label), where its binaries are, its output to $R/texts/label-texts.log, or to the label's
+# own log for `build`. A failure names the first failure line of the label's test
+# (`<file>_test.go:<line>: …`), or else the entry's own last line.
 label_texts() {
   local log=${R:+$R/texts/label-texts.log} why
   [ -n "$log" ] || log=$P/label-texts.log
@@ -2109,12 +2133,19 @@ launch_env() {
 }
 
 # pod_standins puts pod-standin.ts first on the run's PATH for each pod tool (POD_TOOLS of
-# scored-runs-contracts.ts): each call is recorded in $R/pod-calls.jsonl and refused.
+# scored-runs-contracts.ts, which bun prints after its own path): each call is recorded in
+# $R/pod-calls.jsonl and refused.
 pod_standins() {
-  local bun_real tool
-  bun_real=$(bun -e 'console.log(process.execPath)')
-  for tool in kubectl docker podman helm gcloud kind; do
-    printf '#!/bin/sh\nexec %q %q %s "$@"\n' "$bun_real" "$here/pod-standin.ts" "$tool" >"$R/bin/$tool"
+  local tool printed=()
+  # shellcheck disable=SC2016 # JavaScript for bun, not shell
+  mapfile -t printed < <(bun -e '
+    const { POD_TOOLS } = await import(process.argv[1]);
+    console.log(process.execPath);
+    for (const tool of POD_TOOLS) console.log(tool);
+  ' "$here/scored-runs-contracts.ts")
+  [ ${#printed[@]} -ge 2 ] || fail "bun printed no POD_TOOLS of $here/scored-runs-contracts.ts"
+  for tool in "${printed[@]:1}"; do
+    printf '#!/bin/sh\nexec %q %q %s "$@"\n' "${printed[0]}" "$here/pod-standin.ts" "$tool" >"$R/bin/$tool"
     chmod +x "$R/bin/$tool"
   done
 }
@@ -2441,7 +2472,7 @@ run_owner_walk() {
       fail "form $form's guidance names a Claude model and a GPT model: set SKILL_SCENARIOS_GUIDANCE_MODELS to \"<claude model> <gpt model>\" (got '${SKILL_SCENARIOS_GUIDANCE_MODELS:-}')"
     ;;
   esac
-  bun "$here/owner-walk.ts" world "$case" guidance "$R/plans-answer.source" "$R/world.json" "${models[@]}" ||
+  bun "$here/owner-walk.ts" world "$case" "$owner_walk_stage" "$R/plans-answer.json" "$R/world.json" "${models[@]}" ||
     fail "owner-walk.ts world $case failed"
   cp "$here/worlds/owner-walk/fixtures.json" "$R/fixtures.json"
   own_dispatch project "$co"
@@ -2472,7 +2503,7 @@ cmd_label_tree() {
     exit 3
   }
   dir=$work/label-trees/$name
-  [ ! -e "$dir" ] || fail "$dir exists; remove it to make the label tree $name again"
+  [ ! -e "$dir" ] || fail "$dir exists; remove it to make the label tree $name again: \`git -C $root worktree remove --force $dir/tree\`, then \`rm -rf $dir\`; a tree deleted by hand stays registered until \`git -C $root worktree prune\`"
   # shellcheck disable=SC2016 # JavaScript for bun, not shell
   lines=$(bun -e '
     const { parseManifest } = await import(process.argv[1]);
@@ -2481,8 +2512,10 @@ cmd_label_tree() {
   mkdir -p "$dir"
   tree=$dir/tree
   git -C "$root" worktree add -q --detach "$tree" "$commit" >"$dir/worktree.log" 2>&1 || {
+    local why
+    why=$(tail -n 3 "$dir/worktree.log" | paste -sd' ')
     rm -rf "$dir"
-    fail "git worktree add of $commit failed for the label tree $name"
+    fail "git worktree add of $commit failed for the label tree $name: ${why:-git printed nothing}; a tree deleted by hand stays registered until \`git -C $root worktree prune\`"
   }
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -2591,8 +2624,8 @@ plans_source() {
        keyMap: ({(.project): $project} + ([range(0; $keys | length) | {($keys[.]): "\($project)-\(. + 1)"}] | add // {}))}' "$1"
 }
 
-# cmd_plans_capture CHECKOUT OUT runs the capture of a real plans read (Task 6's
-# PLAN_RATINGS_PLANS_ANSWER of scripts/e2e/plan-ratings.sh, which needs LEGION_TEST_PG_DSN) at
+# cmd_plans_capture CHECKOUT OUT runs the capture of a real plans read (scripts/e2e/plan-ratings.sh
+# with PLAN_RATINGS_PLANS_ANSWER set, which needs LEGION_TEST_PG_DSN) at
 # CHECKOUT, its log in OUT/plans-capture.log, reads the answer's body from the markers in that
 # log (decode_plans_answer) and holds it to the file the driver wrote, then writes
 # OUT/plans-answer.json and OUT/plans-answer.source (plans_source).
@@ -2706,7 +2739,7 @@ batch_scored_cell() {
 cmd_batch_scored() {
   [ $# -ge 3 ] || fail "usage: rig.sh batch-scored owner-walk <count> <label>..."
   local scenario=$1 count=$2 label case
-  [ "$scenario" = owner-walk ] || fail "batch-scored runs owner-walk, the one scored scenario of this release, not '$scenario'"
+  [ "$scenario" = owner-walk ] || fail "batch-scored runs owner-walk, the one scored scenario, not '$scenario'"
   [[ $count =~ ^[1-9][0-9]*$ ]] || fail "the count '$count' is not a whole number above 0"
   case=$(owner_walk_case) || exit 1
   shift 2
@@ -2743,35 +2776,15 @@ cmd_rows() {
   jq -r '.run as $run | .reach[]? | "reach \($run): \(.tool) names \(.host) (session \(.session), message \(.message))"' "${rows[@]}"
 }
 
-# cmd_cell SCENARIO LABEL CASE COUNT prints the line of the cell of CASE under LABEL: its runs, its
-# scored runs (the first COUNT by number) and rig errors, for each clause how many scored runs
-# passed it, and the cell's verdict as C7 counts it: UNKNOWN with fewer scored runs than COUNT,
-# PENDING with a pending run, pass when every run passes, else fail.
+# cmd_cell SCENARIO LABEL CASE COUNT prints the line of the cell of CASE under LABEL (score.ts
+# cell, scored-runs.ts caseCell), in the stage every run's world is of: for a case form, its runs,
+# its scored runs (the first COUNT by number) and rig errors, for each clause how many scored runs
+# passed it, and the verdict of a case's cell (pass when each of its COUNT runs passes); for a
+# control form (D, E), the control's own cell over every owner of the form under LABEL, at the
+# control's count, with the verdict cells gives it (pass when fewer than its bound pass its clause).
 cmd_cell() {
   [ $# = 4 ] || fail "usage: rig.sh cell <scenario> <label> <case> <count>"
-  local dir files=()
-  for dir in "$work/runs/$1-$3-$2-"*; do
-    [[ ${dir##*/} =~ ^$1-$3-$2-[0-9]+$ ]] && [ -f "$dir/row.json" ] || continue
-    files+=("$dir/row.json")
-  done
-  if [ ${#files[@]} = 0 ]; then
-    printf 'cell %s %s %s: no run holds a row.json, so the cell is UNKNOWN\n' "$1" "$2" "$3"
-    return 0
-  fi
-  jq -rs --arg scenario "$1" --arg label "$2" --arg case "$3" --argjson count "$4" '
-    (map(select(.outcome == "scored")) | sort_by(.run | sub("^.*-"; "") | tonumber) | .[0:$count]) as $scored
-    | [$scored[].clauses[] | {id: ((.evidence | capture("^(?<id>[a-z][a-z-]*): ") | .id) // .clause), pass}] as $clauses
-    | ([$clauses[].id] | reduce .[] as $id ([]; if any(.[]; . == $id) then . else . + [$id] end)) as $ids
-    | ([$scored[] | select(.pass == true)] | length) as $passes
-    | ([$scored[] | select(.pass == "pending")] | length) as $pending
-    | "cell \($scenario) \($label) \($case): \(length) runs, \($scored | length) scored, \(map(select(.outcome == "rig-error")) | length) rig errors, count \($count); "
-      + "each clause: " + ([$ids[] as $id | [$clauses[] | select(.id == $id)] as $c
-          | "\($id) \([$c[] | select(.pass == true)] | length) of \($c | length)"
-            + (([$c[] | select(.pass == "pending")] | length) as $p | if $p > 0 then " (\($p) pending)" else "" end)]
-        | join(", "))
-      + "; runs passed \($passes) of \($scored | length); verdict "
-      + (if ($scored | length) < $count then "UNKNOWN" elif $pending > 0 then "PENDING" elif $passes == $count then "pass" else "fail" end)' \
-    "${files[@]}"
+  bun "$here/score.ts" cell "$work/runs" "$1" "$owner_walk_stage" "$2" "$3" "$4"
 }
 
 # cmd_evidence [SCENARIO] prints the evidence of a scenario's runs as Markdown: the rig's commit,
@@ -2820,7 +2833,7 @@ cmd_run() {
   load_label "$2"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
-  [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\`"
+  [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\` (\`rig.sh batch-scored $scenario 1 $2\` for a scored scenario)"
   # An askgate run's name carries its case, so the batches of the cases, each numbered from 1,
   # never remove each other's runs.
   if [ "$scenario" = askgate ]; then
@@ -2871,16 +2884,13 @@ stop_batch() {
 }
 
 cmd_batch() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|owner-walk> <runs> <label>..."
+  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite> <runs> <label>..."
   local runs=$2 label n index=0 start parallel=${SKILL_SCENARIOS_PARALLEL:-5}
   batch_scenario=$1
-  case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | owner-walk) ;; *) fail "unknown scenario $batch_scenario" ;; esac
-  # Two owner-walk runs of one kind hold one role token on the batch's listener (the header), so
-  # owner-walk's runs run one at a time.
-  if [ "$batch_scenario" = owner-walk ]; then
-    owner_walk_case >/dev/null || exit 1
-    parallel=1
-  fi
+  case $batch_scenario in
+  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite) ;;
+  *) fail "rig.sh batch runs ask-on-message, measure-before-ask, tester-proof, brainstorm, askgate, spec-writing or spec-rewrite, not $batch_scenario; a scored scenario runs with \`rig.sh batch-scored owner-walk <count> <label>...\`" ;;
+  esac
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried) ;;
     *) fail "an askgate batch needs SKILL_SCENARIOS_ASKGATE_CASE set to facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried (got '${SKILL_SCENARIOS_ASKGATE_CASE:-}')" ;;
@@ -2899,10 +2909,7 @@ cmd_batch() {
     ;;
   esac
   shift 2
-  for label in "$@"; do
-    load_label "$label"
-    [ "$batch_scenario" != owner-walk ] || require_label_texts "$co" "$label"
-  done
+  for label in "$@"; do load_label "$label"; done
   # A spec run reads its source and the label's superpowers skills: refused here, before any
   # service starts. Its number is one above the label's highest, so no batch removes an earlier run.
   local first=1
@@ -2915,12 +2922,6 @@ cmd_batch() {
   lock_services
   on_exit stop_batch
   services_up "$parallel"
-  if [ "$batch_scenario" = owner-walk ]; then
-    for label in "$@"; do
-      load_label "$label"
-      label_texts build
-    done
-  fi
   start=$(date +%s)
   for label in "$@"; do
     for n in $(seq "$first" $((first + runs - 1))); do

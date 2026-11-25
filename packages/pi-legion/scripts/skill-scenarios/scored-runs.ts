@@ -1,14 +1,16 @@
 /**
- * The scoring of the scored scenarios (owner-walk in this release): each run's clauses, its reach,
- * the judge's input, and the cells a scenario's runs make. score.ts runs it:
+ * The scoring of the scored scenarios (owner-walk): each run's clauses, its reach, the judge's
+ * input, and the cells a scenario's runs make. score.ts runs it:
  *
  *   score.ts runs <runs dir> --run <name>   unscored's rules, then ownerWalk, then row.json
  *   score.ts cells <runs dir> <scenario>    cells, one CellLine of JSON a line
+ *   score.ts cell <runs dir> <scenario> <stage> <label> <case> <count>
+ *                                           caseCell, the line of one case's cell (`rig.sh cell`)
  *
  * What ownerWalk(dir, run, label) reads in the run's directory `dir`:
  *   world.json            the world (OwnerWalkWorld, owner-walk.ts world)
- *   captured.json         the world's Dispatch records after the run (Captured, seed.ts
- *                         capture-scored), with the seed's fixture
+ *   captured.json         the world's Dispatch records after the run (Captured of
+ *                         scored-runs-contracts.ts, seed.ts capture-scored), with the seed's fixture
  *   dispatch-proxy.jsonl  each request of the run's agents to its Dispatch (dispatch-proxy.ts)
  *   plans-answer.json, plans-answer.source
  *                         the recorded plans answer the proxy served, and its source; rig.sh puts
@@ -21,88 +23,51 @@
  *   score.json            the run's clauses, what is reported beside them, and its reach (Score)
  *   judge-input.md        the texts the run's judged items need, naming no label and no form;
  *                         a run with no judged item gets none
- * cells(runsDir, scenario) reads row.json and world.json of each run directory of the scenario.
+ * cells(runsDir, scenario) reads row.json and world.json of each run directory of the scenario, and
+ * caseCell the runs of one case, or for a control form every run of the form, under one label.
  */
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { z } from "zod";
+import type { z } from "zod";
 import {
   caseName,
   filledGuidance,
-  KINDS,
+  type OwnerWalkCase,
   type OwnerWalkClause,
   type OwnerWalkEvidence,
-  OwnerWalkFixture,
+  type OwnerWalkStage,
   ownerWalkRun,
+  parseOwnerWalkCase,
   planWrites,
   stageOf,
 } from "./owner-walk";
 import { parseInstant } from "./production-dispatch";
 import {
+  Captured,
   CellLine,
   DispatchProxyLine,
   FAMILIES,
+  type HeldPlansAnswer,
   Judgment,
+  mapRecordedKeys,
+  OWNER_WALK_KINDS,
+  OwnerWalkFixture,
   OwnerWalkWorld,
   PlansAnswerSource,
   REACH_HOSTS,
   Reach,
   type Reported,
   RunRow,
+  readPlansAnswer,
   Score,
   type ScoreClause,
   type ScoredRow,
+  wholeKeys,
 } from "./scored-runs-contracts";
 import { SessionEntry, session, sessionId } from "./transcript";
 
 /** The scenarios whose runs score.ts scores through this module. */
 export const SCORED_SCENARIOS: readonly string[] = ["owner-walk"];
-
-const nonEmpty = z.string().min(1);
-const positive = z.number().int().positive();
-const jsonObject = z.record(z.string(), z.unknown());
-/** `captured.json`, which `seed.ts capture-scored` writes: the seed's fixture whole, and each issue
- * the fixture names as the run's Dispatch held it after the run: its status, every document with
- * every version (its authors and its markdown), and every handoff record with its author and
- * body. */
-export const Captured = z.strictObject({
-  fixture: jsonObject,
-  issues: z.array(
-    z.strictObject({
-      key: nonEmpty,
-      title: nonEmpty,
-      status: nonEmpty,
-      parent: nonEmpty.nullable(),
-      artifacts: z.array(
-        z.strictObject({
-          id: nonEmpty,
-          name: nonEmpty,
-          slug: nonEmpty,
-          primary: z.boolean(),
-          versions: z.array(
-            z.strictObject({
-              version: positive,
-              created_at: nonEmpty,
-              authors: z.array(jsonObject),
-              markdown: z.string(),
-            })
-          ),
-        })
-      ),
-      handoffs: z.array(
-        z.strictObject({
-          id: nonEmpty,
-          phase: nonEmpty,
-          version: positive,
-          author: jsonObject,
-          created_at: nonEmpty,
-          body: z.string(),
-        })
-      ),
-    })
-  ),
-});
-export type Captured = z.infer<typeof Captured>;
 
 function readJson(dir: string, file: string): unknown {
   const full = path.join(dir, file);
@@ -279,7 +244,6 @@ function sharedWords(text: string, source: string, n: number): string | undefine
   }
   return undefined;
 }
-const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** A block of text in a fence longer than any run of backticks in it. */
 function fenced(text: string, language = ""): string {
   const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
@@ -538,31 +502,26 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
     });
   }
 
-  // Reported beside the clauses.
+  // Reported beside the clauses. The recorded reasons are mapped as the proxy served them
+  // (mapRecordedKeys), so they are the text the agent read.
   const source = PlansAnswerSource.parse(readJson(dir, "plans-answer.source"));
-  const remap = (text: string) =>
-    Object.entries(source.keyMap)
-      .sort(([a], [b]) => b.length - a.length)
-      .reduce(
-        (mapped, [from, to]) =>
-          mapped.replace(new RegExp(`(?<![A-Za-z0-9-])${escaped(from)}(?![A-Za-z0-9])`, "g"), to),
-        text
-      );
-  const reasons = z
-    .looseObject({
-      issues: z.array(
-        z.looseObject({
-          ratings: z.array(z.looseObject({ reason: z.string().nullish() })).nullish(),
-        })
-      ),
-    })
-    .parse(readJson(dir, "plans-answer.json"))
-    .issues.flatMap((issue) => (issue.ratings ?? []).map((rating) => remap(rating.reason ?? "")))
+  const answerFile = path.join(dir, "plans-answer.json");
+  if (!existsSync(answerFile)) throw new Error("the run holds no plans-answer.json");
+  let recorded: HeldPlansAnswer;
+  try {
+    recorded = readPlansAnswer(readFileSync(answerFile), source, world.plansProject);
+  } catch (error) {
+    throw new Error(
+      `plans-answer.json, with plans-answer.source: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const reasons = recorded.answer.issues
+    .flatMap((issue) =>
+      (issue.ratings ?? []).map((rating) => mapRecordedKeys(rating.reason ?? "", source.keyMap))
+    )
     .filter((reason) => reason !== "");
   const planText = evidence.plan?.markdown ?? "";
-  const key = world.plansKeys.find((each) =>
-    new RegExp(`(?<![A-Za-z0-9-])${escaped(each)}(?![0-9])`).test(planText)
-  );
+  const key = world.plansKeys.find((each) => wholeKeys([each]).test(planText));
   const reason = reasons
     .map((each) => sharedWords(planText, each, 8))
     .find((run) => run !== undefined);
@@ -625,35 +584,111 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
   return score;
 }
 
+/** One cell of a scenario's runs under a label (C7): its name, its count, the control it is (none
+ * for a case's cell), and its runs with their numbers. */
+interface CellGroup {
+  label: string;
+  cell: string;
+  count: number;
+  control: { id: string; clause: string; fewerThan: number } | undefined;
+  rows: { n: number; row: RunRow }[];
+}
+
+/** The cell a run of `owner`'s case counts in, in `stage` under `label`, with no run in it yet: a
+ * form a control counts is one cell, `<stage>/<form>`, over all its owners, at the stage's runs of
+ * the form for each kind and each family; every other form's cell is its case's,
+ * `<stage>/<case>`, at the stage's runs of the form. */
+function cellOf(
+  label: string,
+  stageName: string,
+  stage: OwnerWalkStage,
+  owner: OwnerWalkCase
+): CellGroup {
+  const control = stage.controls.find((each) => each.form === owner.form);
+  return {
+    label,
+    cell: `${stageName}/${control === undefined ? caseName(owner) : owner.form}`,
+    count:
+      stage.runs[owner.form] *
+      (control === undefined ? 1 : OWNER_WALK_KINDS.length * FAMILIES.length),
+    control:
+      control === undefined
+        ? undefined
+        : {
+            id: control.clause,
+            clause: stage.clauses.find((clause) => clause.id === control.clause)?.sentence ?? "",
+            fewerThan: control.fewerThan,
+          },
+    rows: [],
+  };
+}
+
+/** A cell's first scored runs by their number, up to its count; a rig error counts none. */
+function scoredOf(group: CellGroup): ScoredRow[] {
+  return [...group.rows]
+    .sort((a, b) => a.n - b.n || (a.row.run < b.row.run ? -1 : 1))
+    .flatMap(({ row }) => (row.outcome === "scored" ? [row] : []))
+    .slice(0, group.count);
+}
+
 /**
- * The cells of a scenario's runs in `runsDir` (C7), sorted by label and cell. A run counts by its
- * row.json (score.ts runs --run) and its world.json; a run directory without both is in no cell,
- * and stderr names it. owner-walk's cells, per label:
- *   - a form a control counts (owner-walk.ts, the stage's controls: D and E) is one cell,
- *     `<stage>/<form>`, over all its owners: the stage's runs of the form for each kind and each
- *     family. `passes` counts the owners that pass the control's clause, and the control passes
- *     when they are fewer than its bound;
- *   - every other form's cell is one case, `<stage>/<case>`, of the stage's runs of the form, and it
- *     passes when each of them passes each of its clauses.
- * A cell counts its first scored runs by their number, up to its count; a rig error counts none. A
- * cell with fewer scored runs than its count is UNKNOWN, and one with a pending run (or a pending
- * clause of its control) is PENDING. Neither is ever a pass.
+ * A cell's line (C7), the one rule of a cell's verdict: a case's cell passes when each of its
+ * scored runs passes, and a control's when fewer than its bound pass the clause it counts. A cell
+ * with fewer scored runs than its count is UNKNOWN, and one with a pending run (or a pending clause
+ * of its control) is PENDING. Neither is ever a pass.
  */
-export function cells(runsDir: string, scenario: string): CellLine[] {
+function cellLine(scenario: string, group: CellGroup): CellLine {
+  const scored = scoredOf(group);
+  const verdicts = scored.map((row) => {
+    if (group.control === undefined) return row.pass;
+    const counted = row.clauses.find((clause) => clause.clause === group.control?.clause);
+    if (counted === undefined)
+      throw new Error(
+        `${row.run} holds no clause "${group.control.clause}", which its control counts`
+      );
+    return counted.pass;
+  });
+  const passes = verdicts.filter((verdict) => verdict === true).length;
+  const pending = verdicts.filter((verdict) => verdict === "pending").length;
+  const decided =
+    group.control === undefined ? passes === group.count : passes < group.control.fewerThan;
+  return CellLine.parse({
+    scenario,
+    label: group.label,
+    cell: group.cell,
+    count: group.count,
+    scored: scored.length,
+    passes,
+    pending,
+    verdict:
+      scored.length < group.count
+        ? "UNKNOWN"
+        : pending > 0
+          ? "PENDING"
+          : decided
+            ? "pass"
+            : "fail",
+  });
+}
+
+/** Refuses a scenario no run of which this module scores. */
+function requireScored(scenario: string): void {
   if (!SCORED_SCENARIOS.includes(scenario))
     throw new Error(
-      `${scenario} is no scored scenario of this release; the scored scenarios are ${SCORED_SCENARIOS.join(", ")}`
+      `${scenario} is no scored scenario; the scored scenarios are ${SCORED_SCENARIOS.join(", ")}`
     );
-  const groups = new Map<
-    string,
-    {
-      label: string;
-      cell: string;
-      count: number;
-      control: { clause: string; fewerThan: number } | undefined;
-      rows: { n: number; row: RunRow }[];
-    }
-  >();
+}
+
+/**
+ * The cells of a scenario's runs in `runsDir` (C7), sorted by label and cell, each with its
+ * verdict (cellLine). A run counts by its row.json (score.ts runs --run) and its world.json; a run
+ * directory without both is in no cell, and stderr names it. owner-walk's cells, per label, are
+ * cellOf's: a control form's one cell over all its owners, `passes` counting the owners that pass
+ * the control's clause, and every other form's cell one case.
+ */
+export function cells(runsDir: string, scenario: string): CellLine[] {
+  requireScored(scenario);
+  const groups = new Map<string, CellGroup>();
   for (const name of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
     const named = ownerWalkRun(name);
     if (named === undefined) continue;
@@ -675,64 +710,88 @@ export function cells(runsDir: string, scenario: string): CellLine[] {
       throw new Error(
         `${name}: its row names ${row.run}, label ${row.label} and case ${row.case}, and its world the case ${caseName(world)}`
       );
-    const stage = stageOf(world.stage);
-    const control = stage.controls.find((each) => each.form === world.form);
-    const cell = `${world.stage}/${control === undefined ? want : world.form}`;
-    const id = `${named.label}\t${cell}`;
-    const group = groups.get(id) ?? {
-      label: named.label,
-      cell,
-      count: stage.runs[world.form] * (control === undefined ? 1 : KINDS.length * FAMILIES.length),
-      control:
-        control === undefined
-          ? undefined
-          : {
-              clause: stage.clauses.find((clause) => clause.id === control.clause)?.sentence ?? "",
-              fewerThan: control.fewerThan,
-            },
-      rows: [],
-    };
+    const empty = cellOf(named.label, world.stage, stageOf(world.stage), world);
+    // A group's label and cell, a tab between them, are its own; a tab sorts before any character
+    // of a name, so `ctl-D` comes before `ctl-D-strict`.
+    const id = `${named.label}\t${empty.cell}`;
+    const group = groups.get(id) ?? empty;
     group.rows.push({ n: named.n, row });
     groups.set(id, group);
   }
-  // A group's label and cell, a tab between them, are its own; a tab sorts before any character
-  // of a name, so `ctl-D` comes before `ctl-D-strict`.
-  return [...groups.values()]
-    .sort((a, b) => (`${a.label}\t${a.cell}` < `${b.label}\t${b.cell}` ? -1 : 1))
-    .map((group) => {
-      const scored = group.rows
-        .sort((a, b) => a.n - b.n || (a.row.run < b.row.run ? -1 : 1))
-        .flatMap(({ row }) => (row.outcome === "scored" ? [row] : []))
-        .slice(0, group.count);
-      const verdicts = scored.map((row: ScoredRow) => {
-        if (group.control === undefined) return row.pass;
-        const counted = row.clauses.find((clause) => clause.clause === group.control?.clause);
-        if (counted === undefined)
-          throw new Error(
-            `${row.run} holds no clause "${group.control.clause}", which its control counts`
-          );
-        return counted.pass;
-      });
-      const passes = verdicts.filter((verdict) => verdict === true).length;
-      const pending = verdicts.filter((verdict) => verdict === "pending").length;
-      const decided =
-        group.control === undefined ? passes === group.count : passes < group.control.fewerThan;
-      return CellLine.parse({
-        scenario,
-        label: group.label,
-        cell: group.cell,
-        count: group.count,
-        scored: scored.length,
-        passes,
-        pending,
-        verdict:
-          scored.length < group.count
-            ? "UNKNOWN"
-            : pending > 0
-              ? "PENDING"
-              : decided
-                ? "pass"
-                : "fail",
-      });
-    });
+  return [...groups.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([, group]) => cellLine(scenario, group));
+}
+
+/**
+ * The line `rig.sh cell` prints for the case `caseText` under `label`, in `stageName`: the cell's
+ * runs, its scored runs and its rig errors, counted from the run directories that hold a
+ * row.json, and its verdict, cellLine's.
+ *   - A case form's cell is the case's runs at `count`, the count its batch ran to:
+ *     `cell <scenario> <label> <case>: <n> runs, <s> scored, <e> rig errors, count <count>; each
+ *     clause: <id> <passes> of <s>[ (<p> pending)], …; runs passed <passes> of <s>; verdict <v>`.
+ *   - A control form's cell is the control's own, as cells() gives it: every owner's runs of the
+ *     form under the label, at the control's count, whatever `count` is: `cell <scenario> <label>
+ *     <case>: the control <stage>/<form> over every owner: <n> runs, <s> scored, <e> rig errors,
+ *     count <c>; <clause id> <passes> of <s>[ (<p> pending)]; it passes when fewer than <bound>
+ *     pass <clause id>; verdict <v>`.
+ * A case with no run that holds a row.json prints `cell <scenario> <label> <case>: no run holds a
+ * row.json, so the cell is UNKNOWN`.
+ */
+export function caseCell(
+  runsDir: string,
+  scenario: string,
+  stageName: string,
+  label: string,
+  caseText: string,
+  count: number
+): string {
+  requireScored(scenario);
+  const stage = stageOf(stageName);
+  const want = parseOwnerWalkCase(caseText);
+  const head = `cell ${scenario} ${label} ${caseName(want)}`;
+  const group = cellOf(label, stageName, stage, want);
+  for (const name of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
+    const named = ownerWalkRun(name);
+    const file = path.join(runsDir, name, "row.json");
+    if (named === undefined || named.label !== label || !existsSync(file)) continue;
+    const mine =
+      group.control === undefined
+        ? caseName(named.case) === caseName(want)
+        : named.case.form === want.form;
+    if (!mine) continue;
+    group.rows.push({ n: named.n, row: RunRow.parse(JSON.parse(readFileSync(file, "utf8"))) });
+  }
+  const errors = group.rows.filter(({ row }) => row.outcome === "rig-error").length;
+  if (group.control !== undefined) {
+    const { id, fewerThan } = group.control;
+    const cell =
+      cells(runsDir, scenario).find((line) => line.label === label && line.cell === group.cell) ??
+      cellLine(scenario, { ...group, rows: [] });
+    const pending = cell.pending > 0 ? ` (${cell.pending} pending)` : "";
+    return `${head}: the control ${cell.cell} over every owner: ${group.rows.length} runs, ${cell.scored} scored, ${errors} rig errors, count ${cell.count}; ${id} ${cell.passes} of ${cell.scored}${pending}; it passes when fewer than ${fewerThan} pass ${id}; verdict ${cell.verdict}`;
+  }
+  if (group.rows.length === 0) return `${head}: no run holds a row.json, so the cell is UNKNOWN`;
+  const counted = { ...group, count };
+  const scored = scoredOf(counted);
+  const line = cellLine(scenario, counted);
+  // Each clause by its id, in the order the scored runs first name it; a clause of no stage id (the
+  // bound's) by its sentence.
+  const tallies = new Map<string, { passes: number; pending: number; of: number }>();
+  for (const row of scored)
+    for (const clause of row.clauses) {
+      const id = stage.clauses.find((each) => each.sentence === clause.clause)?.id ?? clause.clause;
+      const tally = tallies.get(id) ?? { passes: 0, pending: 0, of: 0 };
+      tally.of += 1;
+      if (clause.pass === true) tally.passes += 1;
+      if (clause.pass === "pending") tally.pending += 1;
+      tallies.set(id, tally);
+    }
+  const each = [...tallies]
+    .map(
+      ([id, tally]) =>
+        `${id} ${tally.passes} of ${tally.of}${tally.pending > 0 ? ` (${tally.pending} pending)` : ""}`
+    )
+    .join(", ");
+  return `${head}: ${group.rows.length} runs, ${scored.length} scored, ${errors} rig errors, count ${count}; each clause: ${each}; runs passed ${line.passes} of ${scored.length}; verdict ${line.verdict}`;
 }

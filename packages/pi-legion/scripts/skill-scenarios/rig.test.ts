@@ -1093,7 +1093,7 @@ echo done
     );
     const run = () =>
       bash(
-        `${fn("fail")}\n${fn("pinned_omp")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
+        `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
         [label],
         { PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
       );
@@ -1619,7 +1619,7 @@ describe("launch", () => {
 tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
 sleep() { command sleep 0.05; }`;
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
+      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
       [run],
       { PATH: `${bin}:${childEnv.PATH}` }
     );
@@ -1723,7 +1723,7 @@ describe("worker_routes", () => {
   });
 });
 
-// ---- Task 8: the rig runs an owner, and the owner-walk scenario ----
+// ---- The rig runs an owner: the scored scenario owner-walk ----
 //
 // Each row reads rig.sh's functions inside its own body: a rig that lacks one fails that row alone,
 // naming the function (scriptFunctions), and the rows above it still run.
@@ -1946,31 +1946,41 @@ describe("label_tree", () => {
     expect(existsSync(path.join(work, "label-trees/gone"))).toBe(false);
   });
 
-  /** #4902's head, fetched by its pull request's ref, once, at depth 1, into a repository of its
-   * own, so no ref of this checkout moves. It borrows no object of this checkout: CI's checkout is
-   * shallow, and a fetch that offered its commits as haves asked for parents no repository held.
-   * A fetch that fails is no pass: the row that needs it fails, naming the ref. */
-  let pr4902: { repo: string; head: string } | undefined;
-  function fetch4902(): { repo: string; head: string } {
-    if (pr4902 !== undefined) return pr4902;
+  const controls = path.join(scenarios, "controls");
+  /** The two files of #4902's head (6b0ece5c101b1d63bec807f90417a6c75bb0870f) that the control
+   * manifests change, committed as controls/pr-4902-head/ (controls/patches/README.md): each
+   * fixture, the path it has in the head, and its blob there. */
+  const PR_4902_FILES = [
+    [
+      "architect-common.md",
+      "packages/daemon/internal/prompts/go/architect-common.md",
+      "f77cd71515fd18717867424b23ab9994cd725504",
+    ],
+    [
+      "plan.md",
+      "skills/legion-architect/references/plan.md",
+      "15df444d14aa31cdfc192f83a047fc93164550d7",
+    ],
+  ] as const;
+  /** A repository of one commit that holds #4902's head's two files at their paths, built from the
+   * fixtures, each held to its blob at that head: no row reads the network or a ref that moves. */
+  function repo4902(): { repo: string; head: string } {
     const repo = freshDir("pr-4902");
     git(repo, "init", "-q");
-    try {
-      const origin = git(root, "remote", "get-url", "origin").trim();
-      git(repo, "fetch", "-q", "--depth=1", origin, "refs/pull/4902/head");
-    } catch (error) {
-      throw new Error(
-        `UNKNOWN: refs/pull/4902/head not in this checkout, and its fetch failed: ${error}`
-      );
+    for (const [fixture, file] of PR_4902_FILES) {
+      mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+      cpSync(path.join(controls, "pr-4902-head", fixture), path.join(repo, file));
     }
-    pr4902 = { repo, head: git(repo, "rev-parse", "FETCH_HEAD").trim() };
-    return pr4902;
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "the two files of #4902's head");
+    for (const [, file, blob] of PR_4902_FILES)
+      expect({ file, blob: git(repo, "rev-parse", `HEAD:${file}`).trim() }).toEqual({ file, blob });
+    return { repo, head: git(repo, "rev-parse", "HEAD").trim() };
   }
-  const controls = path.join(scenarios, "controls");
 
   // Catches: a control manifest that no longer applies to the head whose sentences it takes out,
   // and a label-tree that reads a ref the checkout lacks as a tree to build.
-  test("the owner-walk manifests apply at #4902's head", () => {
+  test("the owner-walk manifests apply to #4902's head's two files, committed as fixtures", () => {
     const absent = freshDir("no-4902");
     git(absent, "init", "-q");
     const none = freshDir("no-4902-work");
@@ -1985,7 +1995,7 @@ describe("label_tree", () => {
     expect(missing.code).toBe(3);
     expect(missing.stderr).toContain("UNKNOWN: refs/pull/4902/head not in this checkout");
     expect(existsSync(path.join(none, "label-trees/ctl-d"))).toBe(false);
-    const { repo, head } = fetch4902();
+    const { repo, head } = repo4902();
     for (const [name, manifest] of [
       ["ctl-d", "owner-walk-D.txt"],
       ["ctl-d-strict", "owner-walk-D-strict.txt"],
@@ -2005,12 +2015,12 @@ describe("label_tree", () => {
         stderr: "",
       });
     }
-  }, 300_000);
+  });
 
   // Catches: a D whose tree takes out more than #4902's own lines (a manifest line too many, a
   // patch of another file), which would make D's control a control of something else.
-  test("D's tree differs from its head in the patch's lines alone", () => {
-    const { repo, head } = fetch4902();
+  test("D's tree differs from its commit in the patch's lines alone, at #4902's head's two files", () => {
+    const { repo, head } = repo4902();
     const patch = path.join(controls, "patches/owner-walk-D.patch");
     const holds = (work: string, name: string) =>
       bash(`${defs("fail", "cmd_unpatch_holds")}\nwork=$1\ncmd_unpatch_holds "$2" "$3"`, [
@@ -2059,7 +2069,7 @@ describe("label_tree", () => {
     const strict = holds(strictWork, "ctl-d-strict");
     expect(strict.code).toBe(1);
     expect(strict.stderr).toContain("differs from its commit in more than the lines of");
-  }, 300_000);
+  });
 });
 
 describe("a label older than its entry", () => {

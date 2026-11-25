@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# scored-job.sh: one build-cluster Job of a scored scenario (the Job line of the plan's "The
-# Jobs"), run at the repository's root of a runner's pod by `legion-remote-test.sh --sh`. It runs
-# the rig (rig.sh) on its scenario's label group and prints, in the Job's log, each run's row, a
-# `reach` line for each entry of each run's reach, the last lines of each log of a run the rig
-# failed, and a line for each case's cell, the last line the last case's.
+# scored-job.sh: one build-cluster Job of a scored scenario, run at the repository's root of a
+# runner's pod by `legion-remote-test.sh --sh`. It runs the rig (rig.sh) on its scenario's label
+# group and prints, in the Job's log, each run's row, a `reach` line for each entry of each run's
+# reach, the last lines of each log of a run the rig failed, and a line for each case's cell
+# (rig.sh cell), the last line the last case's.
 #
 #   scored-job.sh <scenario> <label group> [--case <case>] [--count <n>]
 #
-# The scenario of this release is owner-walk. Its label groups, each on the commit of the label
+# Its one scenario is owner-walk. Its label groups, each on the commit of the label
 # checkout (SKILL_SCENARIOS_LABEL_CHECKOUT, default this checkout):
 #   head      the label `head`, the checkout itself: forms A, B and C
 #   controls  ctl-d, the tree of controls/owner-walk-D.txt, and ctl-e, of controls/owner-walk-E.txt
@@ -16,9 +16,11 @@
 #   strict    ctl-d-strict, the tree of controls/owner-walk-D-strict.txt: form D
 # --case <kind>-<form>-<family> runs one case, of a form of the group; without it, every case of
 # the group's forms of the family SKILL_SCENARIOS_FAMILY names (claude or gpt). --count is each
-# case's scored runs, by default its form's runs (owner-walk.ts cases). Each case's cell is
-# rig.sh batch-scored's: runs until that many score, at most three times as many launches, one at
-# a time.
+# case's scored runs, by default its form's runs (owner-walk.ts cases). Each case runs as rig.sh
+# batch-scored's cell: runs until that many score, at most three times as many launches, one at a
+# time. A case of form A, B or C ends on its case's cell; one of a control form, D or E, on the
+# control's own cell over every owner of the form, which one case's runs cannot fill: the Job
+# prints it UNKNOWN until each owner's runs are in.
 #
 # In order: `bun install --frozen-lockfile`; the pod's own Postgres and NATS (LEGION_TEST_PG_DSN,
 # LEGION_TEST_NATS_URL) as the rig's SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL, so
@@ -41,8 +43,7 @@
 # plain-text mention of one of the three hosts in a tool's arguments reaches it, and a host reached
 # through a variable, an encoding or a file is not listed.
 #
-# Without $RT_STORE, the Job prints each run's row in its log and keeps no run after the pod. The
-# store and the restart skip come with the second pull request.
+# The Job keeps no run after the pod: it prints each run's row in its log, and stores none.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
@@ -70,7 +71,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ "$scenario" = owner-walk ] ||
-  refuse "$scenario is no scenario of this release's Jobs: owner-walk is the one (separate-pod and step-order come with the second pull request)"
+  refuse "$scenario is no scenario a Job runs: owner-walk is the one"
 [ -z "$count" ] || [[ $count =~ ^[1-9][0-9]*$ ]] || refuse "--count '$count' is not a whole number above 0"
 case $group in
 head) labels=(head) forms=(A B C) ;;

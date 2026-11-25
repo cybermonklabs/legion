@@ -7,8 +7,8 @@ import { OWNER_WALK_STAGES, ownerWalkWorld, questionsOf } from "./owner-walk";
 import { cells, ownerWalk, reachOf } from "./scored-runs";
 import {
   type OwnerWalkWorld,
-  type PlansAnswerSource,
   RunRow,
+  readPlansAnswer,
   runPass,
   type ScoreClause,
 } from "./scored-runs-contracts";
@@ -90,9 +90,12 @@ const readFirst = [
 const planOf = (steps: string, text: string) =>
   `# Plan\n\n:::plan_task{#a steps="${steps}"}\n${text}\n:::\n`;
 
-/** The world of a planted run, through the world builder the rig runs. */
+/** The world of a planted run, through the world builder the rig runs, from the run's recorded
+ * plans answer held to its source. */
 function worldOf(planted: Planted): OwnerWalkWorld {
-  const source: PlansAnswerSource = { commit: "a".repeat(40), sha256: "b".repeat(64), keyMap };
+  const raw = Buffer.from(`${JSON.stringify(planted.recorded ?? recorded)}\n`);
+  const sha256 = createHash("sha256").update(raw).digest("hex");
+  const source = { commit: "a".repeat(40), sha256, keyMap };
   return ownerWalkWorld({
     case: {
       kind: planted.kind ?? "root",
@@ -100,7 +103,7 @@ function worldOf(planted: Planted): OwnerWalkWorld {
       family: planted.family ?? "claude",
     },
     stage: "guidance",
-    source,
+    plans: readPlansAnswer(raw, source, "LWEVAL").plans,
     models: planted.models ?? { claude: "anthropic/claude-opus-5-5", gpt: "openai/gpt-6.1-sol" },
   });
 }

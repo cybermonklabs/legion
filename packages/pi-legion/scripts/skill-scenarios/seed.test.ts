@@ -4,16 +4,19 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import type * as ownerWalkSeedModule from "./owner-walk-seed";
 import type * as seedModule from "./seed";
 
-// e2e/api.ts, which seed.ts calls, reads its port when it loads: set it as rig.sh's seed_ts does,
-// then load seed.ts. PLAYWRIGHT_BASE_URL would point api.ts somewhere else. Both go back to what
-// the caller held once this file ends: a plain `bun test` runs every file in one process. The
-// names are written, and the module loaded, in the `beforeAll` below: a `bun test -t <pattern>`
-// that selects no row of this file runs neither that hook nor the `afterEach` and `afterAll` the
-// capture registered, so a write at module scope would stay written for every later file.
+// e2e/api.ts, which seed.ts and owner-walk-seed.ts call, reads its port when it loads: set it as
+// rig.sh's seed_ts does, then load both. PLAYWRIGHT_BASE_URL would point api.ts somewhere else.
+// Both go back to what the caller held once this file ends: a plain `bun test` runs every file in
+// one process. The names are written, and the modules loaded, in the `beforeAll` below: a
+// `bun test -t <pattern>` that selects no row of this file runs neither that hook nor the
+// `afterEach` and `afterAll` the capture registered, so a write at module scope would stay written
+// for every later file.
 restoreEnvironment(["DISPATCH_E2E_PORT", "PLAYWRIGHT_BASE_URL"]);
 let seed: typeof seedModule;
+let ownerWalkSeed: typeof ownerWalkSeedModule;
 
 const origin = "http://127.0.0.1:18777";
 const work = temporaryDirectory("skill-scenarios-seed");
@@ -22,6 +25,7 @@ beforeAll(async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   delete process.env.PLAYWRIGHT_BASE_URL;
   seed = await import("./seed");
+  ownerWalkSeed = await import("./owner-walk-seed");
 });
 let dirs = 0;
 function freshDir(name: string): string {
@@ -1268,7 +1272,7 @@ describe("owner-walk", () => {
   test("owner-walk seeds the root's spec approved, G backlog, and E1 and the recorded plans' issues closed with their titles", async () => {
     const dir = freshDir("owner-walk");
     const file = path.join(dir, "fixture.json");
-    await seed.ownerWalkIssues(file, "root", plansAnswer(dir));
+    await ownerWalkSeed.ownerWalkIssues(file, "root", plansAnswer(dir));
     expect(dispatch.issues.get("LWEVAL-2")).toMatchObject({
       title: "One issue walks to done",
       status: "done",
@@ -1300,7 +1304,7 @@ describe("owner-walk", () => {
       expect.objectContaining({
         phase: "implement",
         version: 1,
-        author: seed.EARLIER_IMPLEMENTER,
+        author: ownerWalkSeed.EARLIER_IMPLEMENTER,
       }),
     ]);
     expect(JSON.parse(records[0]?.body ?? "{}")).toMatchObject({
@@ -1318,7 +1322,7 @@ describe("owner-walk", () => {
       earlier: {
         key: earlier,
         record: { id: records[0]?.id, version: 1 },
-        session: seed.EARLIER_IMPLEMENTER.id,
+        session: ownerWalkSeed.EARLIER_IMPLEMENTER.id,
       },
       plans: [
         { recorded: "SRX1-1", key: "LWEVAL-2", title: "One issue walks to done" },
@@ -1332,7 +1336,7 @@ describe("owner-walk", () => {
   test("owner-walk seeds, for a child owner, R and C in progress with their specs approved, and G a backlog child of C", async () => {
     const dir = freshDir("owner-walk");
     const file = path.join(dir, "fixture.json");
-    await seed.ownerWalkIssues(file, "child", plansAnswer(dir));
+    await ownerWalkSeed.ownerWalkIssues(file, "child", plansAnswer(dir));
     const fixture = fixtureOf(file);
     const root = keyOf(fixture, "root");
     const child = keyOf(fixture, "child");
@@ -1350,7 +1354,7 @@ describe("owner-walk", () => {
     const dir = freshDir("owner-walk");
     const answer = plansAnswer(dir, keyMap, "c".repeat(64));
     await expect(
-      seed.ownerWalkIssues(path.join(dir, "fixture.json"), "root", answer)
+      ownerWalkSeed.ownerWalkIssues(path.join(dir, "fixture.json"), "root", answer)
     ).rejects.toThrow("c".repeat(64));
     expect(dispatch.calls.filter((call) => call.method !== "GET")).toEqual([]);
   });
@@ -1360,7 +1364,7 @@ describe("owner-walk", () => {
     const dir = freshDir("owner-walk");
     const answer = plansAnswer(dir, { SRX1: "LWEVAL", "SRX1-1": "LWEVAL-2" });
     await expect(
-      seed.ownerWalkIssues(path.join(dir, "fixture.json"), "root", answer)
+      ownerWalkSeed.ownerWalkIssues(path.join(dir, "fixture.json"), "root", answer)
     ).rejects.toThrow("SRX1-2");
     expect(dispatch.calls.filter((call) => call.method !== "GET")).toEqual([]);
   });
@@ -1405,7 +1409,7 @@ describe("capture-scored", () => {
       file,
       `${JSON.stringify({ scenario: "owner-walk", issues: [{ key: "LWEVAL-6" }] })}\n`
     );
-    await seed.captureScored(file, dir);
+    await ownerWalkSeed.captureScored(file, dir);
     const captured = JSON.parse(readFileSync(path.join(dir, "captured.json"), "utf8"));
     expect(captured.fixture).toEqual({ scenario: "owner-walk", issues: [{ key: "LWEVAL-6" }] });
     expect(captured.issues).toHaveLength(1);

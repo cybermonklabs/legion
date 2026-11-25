@@ -31,11 +31,12 @@
  *   owner-walk.ts cases [<stage>]
  *     Prints each case of the stage (default guidance) and the scored runs it takes, `<case> <n>`,
  *     one a line: each form's runs for each kind of owner and each family.
- *   owner-walk.ts world <case> <stage> <plans-answer.source> <world.json> [<claude model> <gpt model>]
+ *   owner-walk.ts world <case> <stage> <plans-answer.json> <world.json> [<claude model> <gpt model>]
  *     Writes the run's world.json (OwnerWalkWorld): the case, the stage, its form's guidance and
- *     questions, and the plans read's project and keys as the run's Dispatch holds them (the key
- *     map's values). Forms A, C and D take the two model ids, which the guidance names; forms B
- *     and E take none and ignore them.
+ *     questions, and the plans read's project and keys as the run's Dispatch holds them: the run
+ *     keys of the recorded answer's issues, read with plans-answer.source beside the answer
+ *     (scored-runs-contracts.ts readPlansAnswer). Forms A, C and D take the two model ids, which
+ *     the guidance names; forms B and E take none and ignore them.
  *   owner-walk.ts guidance <world.json> <out>
  *     Writes the world's guidance file to <out>, its two model placeholders filled with the world's
  *     models: the owner's `planGuidanceFile`. A world with no guidance is refused.
@@ -45,26 +46,26 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { z } from "zod";
 import {
   type DispatchProxyLine,
   FAMILIES,
   OWNER_WALK_FORMS,
+  OWNER_WALK_KINDS,
+  OWNER_WALK_PROJECT,
   type OwnerWalkForm,
+  type OwnerWalkKind,
   OwnerWalkWorld,
   PlansAnswerSource,
+  type RecordedPlan,
+  readPlansAnswer,
 } from "./scored-runs-contracts";
 
 /** The world's files. */
 export const OWNER_WALK_DIR = path.join(import.meta.dir, "worlds", "owner-walk");
-export const KINDS = ["root", "child"] as const;
-export type OwnerWalkKind = (typeof KINDS)[number];
 /** The session that wrote E1's implement record: the earlier agent of G's first task. */
 export const EARLIER_SESSION = "rig-implementer-e1";
 /** E1's pull request on the gh stand-in (fixtures.json). */
 export const EARLIER_PR = 41;
-/** The run's project in its own Dispatch. */
-export const PROJECT = "LWEVAL";
 
 /** One case of owner-walk: the kind of owner, its form and the family of its model. */
 export interface OwnerWalkCase {
@@ -74,14 +75,14 @@ export interface OwnerWalkCase {
 }
 export const caseName = (c: OwnerWalkCase) => `${c.kind}-${c.form}-${c.family}`;
 const CASE = new RegExp(
-  `^(${KINDS.join("|")})-(${OWNER_WALK_FORMS.join("|")})-(${FAMILIES.join("|")})$`
+  `^(${OWNER_WALK_KINDS.join("|")})-(${OWNER_WALK_FORMS.join("|")})-(${FAMILIES.join("|")})$`
 );
 /** The case a name gives, or a refusal that names each value it takes. */
 export function parseOwnerWalkCase(name: string): OwnerWalkCase {
   const match = CASE.exec(name);
   if (match === null)
     throw new Error(
-      `${JSON.stringify(name)} is no case of owner-walk: a case is <kind>-<form>-<family>, kind ${KINDS.join(" or ")}, form ${OWNER_WALK_FORMS.join(", ")}, family ${FAMILIES.join(" or ")}`
+      `${JSON.stringify(name)} is no case of owner-walk: a case is <kind>-<form>-<family>, kind ${OWNER_WALK_KINDS.join(" or ")}, form ${OWNER_WALK_FORMS.join(", ")}, family ${FAMILIES.join(" or ")}`
     );
   return {
     kind: match[1] as OwnerWalkKind,
@@ -91,7 +92,7 @@ export function parseOwnerWalkCase(name: string): OwnerWalkCase {
 }
 /** An owner-walk run's directory name: `owner-walk-<case>-<label>-<n>`. A label may hold a hyphen. */
 const RUN = new RegExp(
-  `^owner-walk-((?:${KINDS.join("|")})-(?:${OWNER_WALK_FORMS.join("|")})-(?:${FAMILIES.join("|")}))-(.+)-(\\d+)$`
+  `^owner-walk-((?:${OWNER_WALK_KINDS.join("|")})-(?:${OWNER_WALK_FORMS.join("|")})-(?:${FAMILIES.join("|")}))-(.+)-(\\d+)$`
 );
 /** The case, the label and the number an owner-walk run's directory names, or undefined. */
 export function ownerWalkRun(
@@ -449,27 +450,16 @@ export function questionsOf(form: OwnerWalkForm): string[] {
 }
 
 /** The run's world: its case, its stage, its form's guidance with the two model ids, its form's
- * questions, and the plans read's project and keys, the key map's values for the recorded
- * project and issues. */
+ * questions, and the plans read's project and keys: the run keys of the recorded answer's issues,
+ * `plans` as readPlansAnswer answers them. */
 export function ownerWalkWorld(input: {
   case: OwnerWalkCase;
   stage: string;
-  source: PlansAnswerSource;
+  plans: readonly RecordedPlan[];
   models?: { claude: string; gpt: string };
 }): OwnerWalkWorld {
   stageOf(input.stage);
   const { kind, form, family } = input.case;
-  const entries = Object.entries(input.source.keyMap);
-  const projects = entries.filter(([key]) => /^[A-Z][A-Z0-9]*$/.test(key));
-  if (projects.length !== 1 || projects[0]?.[1] !== PROJECT)
-    throw new Error(
-      `the key map maps ${projects.length} project keys (${projects.map(([key, value]) => `${key} to ${value}`).join(", ") || "none"}); it must map the recorded project, one key, to ${PROJECT}`
-    );
-  const number = (key: string) => Number(key.slice(key.lastIndexOf("-") + 1));
-  const plansKeys = entries
-    .filter(([key]) => /-\d+$/.test(key))
-    .map(([, value]) => value)
-    .sort((a, b) => number(a) - number(b));
   const needModels = () => {
     if (input.models === undefined)
       throw new Error(`form ${form} has guidance, which names a Claude model and a GPT model`);
@@ -500,8 +490,8 @@ export function ownerWalkWorld(input: {
     form,
     family,
     issue: "issue.md",
-    plansProject: PROJECT,
-    plansKeys,
+    plansProject: OWNER_WALK_PROJECT,
+    plansKeys: input.plans.map((plan) => plan.key),
     guidance,
     questions: questionsOf(form),
   });
@@ -529,65 +519,34 @@ export function worldText(name: string): { title: string; spec: string } {
   return { title: first.slice(2).trim(), spec: rest.join("\n").replace(/^\n+/, "") };
 }
 
-// The fixture seed.ts writes, and capture-scored and the scorer read.
-
-const key = z.string().regex(/^[A-Z][A-Z0-9]*-[1-9]\d*$/);
-const nonEmpty = z.string().min(1);
-/** `seed.ts owner-walk`'s fixture: the world's issues as the run's Dispatch holds them, E1's
- * record, and the recorded plans' issues with their run keys. `owner` is the owner's own issue (R
- * for a root owner, C for a child owner) and `planned` is G. An issue's `spec.approvedVersion` is
- * the version of its spec the person approved, null where none was. */
-export const OwnerWalkFixture = z.strictObject({
-  scenario: z.literal("owner-walk"),
-  kind: z.enum(KINDS),
-  project: z.literal(PROJECT),
-  owner: key,
-  planned: key,
-  issues: z
-    .array(
-      z.strictObject({
-        key,
-        part: z.enum(["root", "child", "earlier", "planned"]),
-        title: nonEmpty,
-        parent: key.nullable(),
-        status: nonEmpty,
-        spec: z.strictObject({
-          artifact: nonEmpty,
-          approvedVersion: z.number().int().positive().nullable(),
-        }),
-      })
-    )
-    .min(1),
-  earlier: z.strictObject({
-    key,
-    record: z.strictObject({ id: nonEmpty, version: z.number().int().positive() }),
-    session: nonEmpty,
-    pr: z.number().int().positive(),
-    head: z.string().regex(/^[0-9a-f]{40}$/),
-  }),
-  plans: z.array(z.strictObject({ recorded: nonEmpty, key, title: nonEmpty })),
-});
-export type OwnerWalkFixture = z.infer<typeof OwnerWalkFixture>;
-
 const USAGE =
-  "usage: owner-walk.ts cases [<stage>] | world <case> <stage> <plans-answer.source> <world.json> [<claude model> <gpt model>] | guidance <world.json> <out> | questions <world.json>";
+  "usage: owner-walk.ts cases [<stage>] | world <case> <stage> <plans-answer.json> <world.json> [<claude model> <gpt model>] | guidance <world.json> <out> | questions <world.json>";
 
 function main(argv: string[]): void {
   const [command, ...rest] = argv;
   const readWorld = (file: string) => OwnerWalkWorld.parse(JSON.parse(readFileSync(file, "utf8")));
   if (command === "cases" && rest.length <= 1) {
     const stage = stageOf(rest[0] ?? "guidance");
-    for (const kind of KINDS)
+    for (const kind of OWNER_WALK_KINDS)
       for (const form of OWNER_WALK_FORMS)
         for (const family of FAMILIES)
           console.log(`${caseName({ kind, form, family })} ${stage.runs[form]}`);
   } else if (command === "world" && (rest.length === 4 || rest.length === 6)) {
-    const [name = "", stage = "", sourceFile = "", out = "", claude, gpt] = rest;
-    const source = PlansAnswerSource.parse(JSON.parse(readFileSync(sourceFile, "utf8")));
+    const [name = "", stage = "", answerFile = "", out = "", claude, gpt] = rest;
+    const sourceFile = path.join(path.dirname(answerFile), "plans-answer.source");
+    let plans: RecordedPlan[];
+    try {
+      const source = PlansAnswerSource.parse(JSON.parse(readFileSync(sourceFile, "utf8")));
+      plans = readPlansAnswer(readFileSync(answerFile), source, OWNER_WALK_PROJECT).plans;
+    } catch (error) {
+      throw new Error(
+        `the recorded plans answer ${answerFile}, with its source ${sourceFile}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
     const world = ownerWalkWorld({
       case: parseOwnerWalkCase(name),
       stage,
-      source,
+      plans,
       ...(claude === undefined || gpt === undefined ? {} : { models: { claude, gpt } }),
     });
     writeFileSync(out, `${JSON.stringify(world)}\n`);

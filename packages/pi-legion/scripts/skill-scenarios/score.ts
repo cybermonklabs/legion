@@ -26,6 +26,10 @@
 //   score.ts cells <runs dir> <scenario>
 //     Each cell of the scenario's runs (scored-runs.ts cells), one CellLine of JSON a line, from
 //     each run's row.json and world.json; stderr names each run that is in no cell.
+//   score.ts cell <runs dir> <scenario> <stage> <label> <case> <count>
+//     The one line of the cell of <case> under <label> (scored-runs.ts caseCell), which rig.sh cell
+//     prints: a case form's at <count>, and a control form's the control's own over every owner,
+//     with the verdict cells gives it. Exit 2 for a count that is no whole number above 0.
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
@@ -54,7 +58,14 @@ import {
 } from "./judge-prompts";
 import { caseName, ownerWalkRun } from "./owner-walk";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
-import { cells, modelProblem, ownerWalk, SCORED_SCENARIOS, transcriptModels } from "./scored-runs";
+import {
+  caseCell,
+  cells,
+  modelProblem,
+  ownerWalk,
+  SCORED_SCENARIOS,
+  transcriptModels,
+} from "./scored-runs";
 import { RunRow, runPass } from "./scored-runs-contracts";
 import {
   CREATED,
@@ -3622,9 +3633,17 @@ if (import.meta.main) {
       console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
     }
+  } else if (command === "cell" && rest.length === 6 && /^[1-9][0-9]*$/.test(rest[5] ?? "")) {
+    const [runsDir = "", scenario = "", stage = "", label = "", name = ""] = rest;
+    try {
+      console.log(caseCell(runsDir, scenario, stage, label, name, Number(rest[5])));
+    } catch (error) {
+      console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario>"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> | cell <runs dir> <scenario> <stage> <label> <case> <count>"
     );
     process.exit(2);
   }

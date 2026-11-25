@@ -30,8 +30,28 @@ with `unpatch`, so D's tree is the head with the owner's prompt part as it was b
 - `git apply --cached -R --check` of the patch passes on an index of #4902's head, and fails on an
   index of `main` (`patch does not apply`), which holds no such paragraph.
 
-After #4902 merges, the rig holds the patch against #4902's merge commit on `main` instead of its
-head ("D differs from the head in #4902's lines alone").
+The rig holds the patch against the label's own commit when it builds D's tree (scored-job.sh runs
+`rig.sh unpatch-holds` on it): D differs from that commit in #4902's lines alone.
+
+## #4902's head's two files (`controls/pr-4902-head/`)
+
+`architect-common.md` and `plan.md` are `packages/daemon/internal/prompts/go/architect-common.md`
+and `skills/legion-architect/references/plan.md` at #4902's head
+`6b0ece5c101b1d63bec807f90417a6c75bb0870f`, byte for byte: their blobs there are
+`f77cd71515fd18717867424b23ab9994cd725504` and `15df444d14aa31cdfc192f83a047fc93164550d7`, and
+their sha256 are `f3326fd35d71d2653b68c7c8ebb84dc06e4d0854506578db7989874b4a615c92` and
+`d8b2e5e0ef4eb9930dd263f8512ab9297b3145c37ae760e08ec3417d16d4c93a`. They are the only files the
+three control manifests change, and no manifest names a commit (no `file` or `reverse` line), so
+rig.test.ts's rows of the manifests ("the owner-walk manifests apply to #4902's head's two files,
+committed as fixtures", and the D row after it) build a repository of one commit from them and
+hold each to its blob: the rows read no network and no ref that moves. The command, in a checkout
+that holds the commit:
+
+```bash
+git archive --format=tar 6b0ece5c101b1d63bec807f90417a6c75bb0870f \
+  packages/daemon/internal/prompts/go/architect-common.md \
+  skills/legion-architect/references/plan.md | tar -x -C <dir>
+```
 
 ## The drop texts (`controls/drops/`)
 

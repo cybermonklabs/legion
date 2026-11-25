@@ -3,12 +3,15 @@
  * entry (`label-texts.sh` and its three tests), the stand-ins, the seed, the scorer and the
  * acceptance worker. The side that reads a file parses it with the schema here, so a file that one
  * side writes and the other reads in two shapes fails at the read, and the error names the field.
- * Every object is strict: a field this module does not name is refused.
+ * Every object is strict: a field this module does not name is refused. The one exception is the
+ * recorded plans answer, a Dispatch answer whose fields are Dispatch's: it is read as far as the
+ * rig needs it (`RecordedPlans`).
  *
  * A value that can be absent is `null`, never a missing key or an empty string. An instant is UTC
  * with `Z`, as Bun's `Date.toISOString()` and `date -u` write it. A path that a test binary of the
  * label reads is absolute, because that binary runs in its own package directory.
  */
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 const nonEmpty = z.string().min(1);
@@ -19,6 +22,8 @@ const positive = z.number().int().positive();
 const httpStatus = z.number().int().min(100).max(599);
 /** A whole git commit id, as `git rev-parse` prints it. */
 const commitId = z.string().regex(/^[0-9a-f]{40}$/);
+/** A Dispatch issue key, `<PROJECT>-<n>`. */
+const issueKey = z.string().regex(/^[A-Z][A-Z0-9]*-[1-9]\d*$/);
 /** A GitHub repository, `<owner>/<name>`. */
 const repository = z.string().regex(/^[^/\s]+\/[^/\s]+$/);
 /** A JSON object whose fields belong to another program: the label's, or a request's. */
@@ -275,8 +280,9 @@ export type PlanAnswer = z.infer<typeof PlanAnswer>;
 
 /** A line of the stand-in's log. Each optional field is copied from the request's body when the
  * body holds it, whatever the route answered, so a refused request is logged too. `body` is what
- * the line keeps of the request's body: a sign-off's or a move back's body, and an activity
- * report's `backgroundWork`. */
+ * the line keeps of the request's body: the whole parsed body of an owner's route (a sign-off, a
+ * move back, a task stop, a release, a gate's or a plan's registration), and the whole `activity`
+ * of an activity report (`backgroundWork` and `phase`, with its `nextReminderAt`). */
 export const StandinLogLine = z.strictObject({
   at: instant,
   path: absolutePath,
@@ -397,6 +403,11 @@ export function parseManifest(text: string): ManifestLine[] {
 
 export const OWNER_WALK_FORMS = ["A", "B", "C", "D", "E"] as const;
 export type OwnerWalkForm = (typeof OWNER_WALK_FORMS)[number];
+/** The kinds of owner: a root's architect, or a child's. */
+export const OWNER_WALK_KINDS = ["root", "child"] as const;
+export type OwnerWalkKind = (typeof OWNER_WALK_KINDS)[number];
+/** The run's project in its own Dispatch, which the recorded plans answer's keys are mapped to. */
+export const OWNER_WALK_PROJECT = "LWEVAL";
 /** The forms whose owner gets no guidance file. */
 const UNGUIDED_FORMS: readonly OwnerWalkForm[] = ["B", "E"];
 export const FAMILIES = ["claude", "gpt"] as const;
@@ -420,7 +431,7 @@ export const OwnerWalkWorld = z
   .strictObject({
     scenario: z.literal("owner-walk"),
     stage: nonEmpty,
-    kind: z.enum(["root", "child"]),
+    kind: z.enum(OWNER_WALK_KINDS),
     form: z.enum(OWNER_WALK_FORMS),
     family,
     issue: nonEmpty,
@@ -440,6 +451,86 @@ export const OwnerWalkWorld = z
     }
   });
 export type OwnerWalkWorld = z.infer<typeof OwnerWalkWorld>;
+
+/** A recorded issue of the plans answer with the run key the key map gives it, and its title. */
+export const RecordedPlan = z.strictObject({ recorded: nonEmpty, key: issueKey, title: nonEmpty });
+export type RecordedPlan = z.infer<typeof RecordedPlan>;
+
+/** `seed.ts owner-walk`'s fixture (`fixture.json`): the world's issues as the run's Dispatch
+ * holds them, E1's record, and the recorded plans' issues with their run keys. `owner` is the
+ * owner's own issue (R for a root owner, C for a child owner) and `planned` is G. An issue's
+ * `spec.approvedVersion` is the version of its spec the person approved, null where none was. */
+export const OwnerWalkFixture = z.strictObject({
+  scenario: z.literal("owner-walk"),
+  kind: z.enum(OWNER_WALK_KINDS),
+  project: z.literal(OWNER_WALK_PROJECT),
+  owner: issueKey,
+  planned: issueKey,
+  issues: z
+    .array(
+      z.strictObject({
+        key: issueKey,
+        part: z.enum(["root", "child", "earlier", "planned"]),
+        title: nonEmpty,
+        parent: issueKey.nullable(),
+        status: nonEmpty,
+        spec: z.strictObject({ artifact: nonEmpty, approvedVersion: positive.nullable() }),
+      })
+    )
+    .min(1),
+  earlier: z.strictObject({
+    key: issueKey,
+    record: z.strictObject({ id: nonEmpty, version: positive }),
+    session: nonEmpty,
+    pr: positive,
+    head: commitId,
+  }),
+  plans: z.array(RecordedPlan),
+});
+export type OwnerWalkFixture = z.infer<typeof OwnerWalkFixture>;
+
+/** `captured.json`, which `seed.ts capture-scored` writes: the seed's fixture whole, and each issue
+ * the fixture names as the run's Dispatch held it after the run: its status, every document with
+ * every version (its authors and its markdown), and every handoff record with its author and
+ * body. */
+export const Captured = z.strictObject({
+  fixture: jsonObject,
+  issues: z.array(
+    z.strictObject({
+      key: nonEmpty,
+      title: nonEmpty,
+      status: nonEmpty,
+      parent: nonEmpty.nullable(),
+      artifacts: z.array(
+        z.strictObject({
+          id: nonEmpty,
+          name: nonEmpty,
+          slug: nonEmpty,
+          primary: z.boolean(),
+          versions: z.array(
+            z.strictObject({
+              version: positive,
+              created_at: nonEmpty,
+              authors: z.array(jsonObject),
+              markdown: z.string(),
+            })
+          ),
+        })
+      ),
+      handoffs: z.array(
+        z.strictObject({
+          id: nonEmpty,
+          phase: nonEmpty,
+          version: positive,
+          author: jsonObject,
+          created_at: nonEmpty,
+          body: z.string(),
+        })
+      ),
+    })
+  ),
+});
+export type Captured = z.infer<typeof Captured>;
 
 // C6. A judgment.
 
@@ -503,3 +594,96 @@ export const PlansAnswerSource = z.strictObject({
   keyMap: z.record(nonEmpty, nonEmpty),
 });
 export type PlansAnswerSource = z.infer<typeof PlansAnswerSource>;
+
+/** The recorded plans answer (`GET /api/v1/projects/{key}/plans`) as far as the rig reads it: its
+ * project, and each issue with its title and each rating's reason. The rest is Dispatch's. */
+export const RecordedPlans = z.looseObject({
+  project: nonEmpty,
+  issues: z.array(
+    z.looseObject({
+      issue: nonEmpty,
+      title: nonEmpty,
+      ratings: z.array(z.looseObject({ reason: z.string().nullish() })).nullish(),
+    })
+  ),
+});
+export type RecordedPlans = z.infer<typeof RecordedPlans>;
+
+/** A recorded plans answer held to its source (readPlansAnswer): the answer, and each of its
+ * issues with its run key, in the order of those keys' numbers. */
+export interface HeldPlansAnswer {
+  answer: RecordedPlans;
+  plans: RecordedPlan[];
+}
+
+/**
+ * The recorded plans answer `raw`, held to its source: its sha256 is the source's, it is a plans
+ * answer, and the source's key map takes its project to `project`, each of its issues to a key of
+ * `project`, no two of them to one key, and nothing the answer does not hold. Anything else
+ * throws, naming each fault: the proxy, the seed, the world builder and the scorer read the
+ * recording only through this.
+ */
+export function readPlansAnswer(
+  raw: Uint8Array,
+  source: PlansAnswerSource,
+  project: string
+): HeldPlansAnswer {
+  const sum = createHash("sha256").update(raw).digest("hex");
+  if (sum !== source.sha256)
+    throw new Error(
+      `its sha256 is ${sum}, and its source records ${source.sha256}: it is not the answer the capture recorded`
+    );
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(raw).toString("utf8"));
+  } catch (error) {
+    throw new Error(`it is no JSON: ${error}`);
+  }
+  const read = RecordedPlans.safeParse(parsed);
+  if (!read.success) throw new Error(`it is no plans answer: ${read.error.message}`);
+  const answer = read.data;
+  const { keyMap } = source;
+  const problems: string[] = [];
+  if (keyMap[answer.project] !== project)
+    problems.push(
+      `it maps the recorded project ${answer.project} to ${keyMap[answer.project] ?? "nothing"}, not ${project}`
+    );
+  const runKey = new RegExp(`^${project}-[1-9]\\d*$`);
+  const plans = answer.issues.flatMap((issue) => {
+    const key = keyMap[issue.issue];
+    if (key !== undefined && runKey.test(key))
+      return [{ recorded: issue.issue, key, title: issue.title }];
+    problems.push(
+      `it maps the recorded issue ${issue.issue} to ${key ?? "nothing"}, which is no key of ${project}`
+    );
+    return [];
+  });
+  const held = new Set([answer.project, ...answer.issues.map((issue) => issue.issue)]);
+  for (const from of Object.keys(keyMap))
+    if (!held.has(from)) problems.push(`it maps ${from}, which the answer does not hold`);
+  const keys = plans.map((plan) => plan.key);
+  for (const key of new Set(keys.filter((key, at) => keys.indexOf(key) !== at)))
+    problems.push(`it maps two recorded issues to ${key}`);
+  if (problems.length > 0)
+    throw new Error(`the key map of its source does not fit it: ${problems.join("; ")}`);
+  const number = (key: string) => Number(key.slice(key.lastIndexOf("-") + 1));
+  return { answer, plans: plans.sort((a, b) => number(a.key) - number(b.key)) };
+}
+
+/** Every whole key of `keys` in a text, the longest tried first: a key no letter, digit, `-` or `_`
+ * stands beside, so a key that begins another (`P-1` and `P-12`) is only itself. Global. */
+export function wholeKeys(keys: Iterable<string>): RegExp {
+  const alternatives = [...keys]
+    .sort((a, b) => b.length - a.length)
+    .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return alternatives.length === 0
+    ? /(?!)/g
+    : new RegExp(`(?<![A-Za-z0-9_-])(?:${alternatives.join("|")})(?![A-Za-z0-9_-])`, "g");
+}
+
+/** `text` with each whole key of `keyMap` (wholeKeys) replaced by its value, in one pass, so no
+ * value is read again as a key: the text of the recorded plans answer as the proxy serves it, and
+ * so as the run's agents read it. */
+export function mapRecordedKeys(text: string, keyMap: Readonly<Record<string, string>>): string {
+  return text.replace(wholeKeys(Object.keys(keyMap)), (key) => keyMap[key] ?? key);
+}

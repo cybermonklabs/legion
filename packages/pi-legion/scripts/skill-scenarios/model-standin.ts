@@ -8,9 +8,10 @@
  * the model alone stood in. A run on it scores, and fails each clause by name: the model writes
  * no plan and reads nothing.
  *
- * The profile's provider block names it in place of the gateway (rig.sh install_standin_route):
- * the provider `standin`, its one model `standin-model`, the model id `messageStream` names, so
- * the transcript names `standin/standin-model`, the `model` line of the label's built-from.
+ * The profile's provider block names it in place of the gateway (rig.sh install_standin_route,
+ * with rig.sh's model_standin): the provider `standin` and its one model `standin-model`. The
+ * stand-in answers whatever model a request names, and the transcript names
+ * `standin/standin-model`, the `model` line of the label's built-from.
  *
  * Usage: `bun model-standin.ts <log file>`. Every request appends one JSON line to the log,
  * `{at, method, path, answered}`, `answered` the number of the Messages turn it answered or null.
@@ -25,9 +26,6 @@ import { type Cleanup, messageStream, serveStandin } from "@legion/pi-shared/tes
 /** The one message the stand-in answers every turn with. */
 export const MODEL_STANDIN_MESSAGE =
   "This is the model stand-in of the skill-scenario rig: it answers every turn with this one message and calls no tool.";
-/** The provider block and model the profile names (rig.sh install_standin_route). */
-export const MODEL_STANDIN_PROVIDER = "standin";
-export const MODEL_STANDIN_MODEL = "standin-model";
 /** The Messages route of the provider block's `baseUrl` (`<base>/anthropic`). */
 const MESSAGES = "/anthropic/v1/messages";
 

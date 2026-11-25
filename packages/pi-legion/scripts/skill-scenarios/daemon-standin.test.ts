@@ -270,6 +270,17 @@ function stubDispatch(document: {
   return { server, url: server.url.origin, seen };
 }
 
+/** `--issues` and the file of a world whose plan document's issue, LWEVAL-8, is a backlog issue of
+ *  the tree of LWEVAL-7, the claim of the register_plan rows. */
+function plannedIssue(dir: string): string[] {
+  const file = path.join(dir, "issues.json");
+  writeFileSync(
+    file,
+    JSON.stringify([{ key: "LWEVAL-8", tree: "LWEVAL-7", phase: null, status: "backlog" }])
+  );
+  return ["--issues", file];
+}
+
 // Catches: a register_plan that answers on its own (a 200, or a body of its own), that reads the
 // plan from anywhere but the run's Dispatch, that hands the entry a request in another shape than
 // C2's, or that cuts a block's text by character where Dispatch's range counts bytes.
@@ -318,6 +329,7 @@ test("register_plan reads the version from Dispatch and answers what the label's
         "architect",
         ...REPO,
         "admitted",
+        ...plannedIssue(dir),
         "--label",
         label,
         "--dispatch",
@@ -389,7 +401,7 @@ test("register_plan answers 500 naming the entry's exit and its stderr's last li
   const tokenFile = path.join(dir, "dispatch-token");
   writeFileSync(tokenFile, `${fixtureSecret("dsp")}\n`, { mode: 0o600 });
   try {
-    const flags = ["--label", label, "--dispatch", dispatch.url, tokenFile];
+    const flags = [...plannedIssue(dir), "--label", label, "--dispatch", dispatch.url, tokenFile];
     await withStandin(
       dir,
       [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted", ...flags],
@@ -415,7 +427,7 @@ test("register_plan answers 500 naming the entry's exit and its stderr's last li
     const bare = freshDir();
     await withStandin(
       bare,
-      [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted"],
+      [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted", ...plannedIssue(bare)],
       async (standin) => {
         const claim = await register(standin);
         const body = {
@@ -468,7 +480,7 @@ async function withPlanCheck(
   });
   const tokenFile = path.join(dir, "dispatch-token");
   writeFileSync(tokenFile, `${fixtureSecret("dsp")}\n`, { mode: 0o600 });
-  const flags = ["--label", label, "--dispatch", dispatch.url, tokenFile];
+  const flags = [...plannedIssue(dir), "--label", label, "--dispatch", dispatch.url, tokenFile];
   try {
     await withStandin(
       dir,
