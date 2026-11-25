@@ -1372,6 +1372,8 @@ test.each(
     await expand(user, planner, "Planner");
     const comment = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await type(user, comment, "Still composing");
+    // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
+    // 229), so the composition's Escape is sent as the event itself.
     fireEvent.keyDown(comment, { ...composing, key: "Escape" });
     expect(comment).toHaveFocus();
     expect(comment.value).toBe("Still composing");

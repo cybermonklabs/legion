@@ -220,12 +220,13 @@ export default defineConfig({
     // schema modules out of a page that reads neither - in the editor's chunks too, which import
     // that package by subpath alone (`packages/proof-editor/src/block-pointers.ts`).
     // This `chunkSizeWarningLimit` is Vite's own warning, and it is over the ECharts chunk alone.
-    // The sizes below were measured the same way at `53286717` on 2026-11-23: the largest chunk
-    // is ECharts (an `index-*.js` of 1,134,772 bytes raw), which only the Delivery page loads.
-    // beautiful-mermaid and ELK live only in the Mermaid worker's bundle
-    // (features/refs/mermaid-render.worker.ts, 1,565,608 bytes), fetched once a body or a
-    // document holds a mermaid block; Vite emits it as an asset and holds it to no chunk limit.
-    // The editor's lazy chunk (`lib-*.js`, 188,972 bytes) carries none of the renderer.
+    // ECharts and the Mermaid worker were measured the same way at `53286717` on 2026-11-23, and
+    // read the same on 2026-11-25: the largest chunk is ECharts (an `index-*.js` of 1,134,772
+    // bytes raw), which only the Delivery page loads. beautiful-mermaid and ELK live only in the
+    // Mermaid worker's bundle (features/refs/mermaid-render.worker.ts, 1,565,608 bytes), fetched
+    // once a body or a document holds a mermaid block; Vite emits it as an asset and holds it to
+    // no chunk limit. The editor's lazy chunk (`lib-*.js`, 189,012 bytes, measured the same way on
+    // 2026-11-25) carries none of the renderer.
     chunkSizeWarningLimit: 1200,
     // No modulepreload polyfill. Vite's copy of it is 710 bytes of the entry chunk, and it does
     // nothing in a browser that has `<link rel=modulepreload>`: Chrome 66+, Safari 17+ and

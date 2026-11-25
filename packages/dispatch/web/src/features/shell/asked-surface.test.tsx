@@ -133,6 +133,9 @@ test("Tab and Shift+Tab leave the focus in the box, and the open stands", async 
     expect(box, "Shift+Tab took the focus out of the box").toHaveFocus();
     await user.tab();
     expect(box, "Tab took the focus out of the box").toHaveFocus();
+    // fireEvent: the box's text is set with one change event, since `user.keyboard` into that
+    // uncontrolled box makes React print its unawaited-act message here; a browser's keys into it
+    // are `e2e/keyboard-issue.e2e.ts`'s.
     fireEvent.change(box, { target: { value: "1" } });
     await act(async () => resolve(Surface));
     expect(screen.getByText('Surface with "1"')).toBeDefined();
@@ -155,6 +158,9 @@ test.each(
   try {
     await user.click(screen.getByRole("button", { name: "Open" }));
     const box = screen.getByRole("textbox", { name: LOADING });
+    // fireEvent: an input method writes its text with no key of its own, so the text arrives as one
+    // change event and the composition's Escape as the event itself; user-event types no
+    // composition.
     fireEvent.change(box, { target: { value: "日本" } });
     fireEvent.keyDown(box, { ...marked, key: "Escape" });
     expect(box).toHaveFocus();

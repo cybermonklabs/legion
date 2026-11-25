@@ -282,6 +282,8 @@ test.each(
     await waitFor(() => expect(field).toHaveFocus());
     await view.user.clear(field);
     await view.user.type(field, "CORE-7");
+    // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
+    // 229), so the composition's Escape is sent as the event itself.
     fireEvent.keyDown(field, { ...marked, key: "Escape" });
     expect(field).toBeInTheDocument();
     expect(field).toHaveValue("CORE-7");
@@ -311,6 +313,8 @@ test("an Enter that ends an IME composition in the title's editor keeps the edit
     await view.user.clear(field);
     await view.user.type(field, typed);
     for (const [, marked] of COMPOSITION_MARKS) {
+      // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's
+      // keyCode 229), so the composition's Enter is sent as the event itself.
       fireEvent.keyDown(field, { ...marked, key: "Enter" });
       expect(field).toBeInTheDocument();
       expect(field).toHaveValue(typed);

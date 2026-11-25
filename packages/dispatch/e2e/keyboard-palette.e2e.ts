@@ -73,7 +73,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect(close).toBeVisible();
     // Both rows the bound is taken between are drawn, and the render that drew them drew every
     // row: the bar reads its recent items and its actions once, on the render that opens it
-    // (`SearchPalette.tsx:428-437`), and an empty box adds no project and no hit (`:505-532`).
+    // (`SearchPalette.tsx:437-446`), and an empty box adds no project and no hit (`:510-529`).
     const ids = await rows.evaluateAll((options) => options.map((option) => option.id));
     const closeIndex = ids.indexOf(closeId ?? "");
     expect(closeIndex).toBeGreaterThanOrEqual(0);
@@ -493,7 +493,7 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
     // instant after.
     const documentsId = await documents.getAttribute("id");
     // The bar filters the actions it read on the render that opened it by the words in the box,
-    // all in one render (`SearchPalette.tsx:437` and `:486-500`), so the render that drew the
+    // all in one render (`SearchPalette.tsx:446` and `:490-509`), so the render that drew the
     // rows waited for above drew every row `go to` leads to.
     const ids = await rows.evaluateAll((options) => options.map((option) => option.id));
     await expect(input).toHaveAttribute("aria-activedescendant", ids[0] ?? "");

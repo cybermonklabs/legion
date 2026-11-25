@@ -1482,6 +1482,8 @@ test("a preview layer whose chunk failed online asks for it again for a hover on
       expect.poll(() => counts.documents, "the hover's failed ask spent no reload").toBe(3),
     ]);
     await expect(page.getByText("Signed in as alice")).toBeVisible();
+    // One read is enough: the reload has landed and the page is signed in again, so the tab's
+    // record of its reloads no longer moves.
     const reloads = await tabReloads(page);
     expect(reloads, "the tab's record holds no reload for the hover").toHaveLength(3);
     expect(reloads?.slice(0, 2), "the hover's reload rewrote the reloads before it").toEqual(left);

@@ -1754,6 +1754,8 @@ test.each(
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("still composing");
+    // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
+    // 229), so the composition's Escape is sent as the event itself.
     fireEvent.keyDown(field, { ...composing, key: "Escape" });
     expect(cancelled).toBe(0);
     expect(field.value).toBe("still composing");

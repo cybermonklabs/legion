@@ -36,7 +36,8 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * as a chunk of its own (`features/shell/DeploymentResilience.tsx`), it took 13,554 bytes out,
  * and the commits and forward merges after it moved the entry by about a thousand bytes, most
  * of it down (the landing seed's query factories; 485,658 bytes at `61e5c402` on 2026-11-16).
- * This budget refused three forward merges since. The merge of `d079920d`, the default branch's
+ * This budget refused five forward merges since: the three below, and two more further on. The
+ * merge of `d079920d`, the default branch's
  * own frame for the new issue page (2026-11-19), wrote 508,066 bytes, and `b18ea8d5` the same day
  * answered it by loading that frame's shell and the pending-writes indicator as chunks; the merge
  * of `bafd3618`, which brought the default branch's draft-keeping (2026-11-20), wrote 519,305,
@@ -77,7 +78,8 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  *   (1,142 bytes).
  * With the correction's mark in the event map's chunk (`api/event-refresh-load.ts`) the entry read
  * 498,590 bytes with a 39-character build id. The forward merges of the default branch after it,
- * whose layers of the page's foot (#4631) added about 6,500 bytes, and the fixes after them wrote
+ * whose layers of the page's foot (#4631) added about 6,600 bytes (499,088 before the merge of
+ * `c227d046` and 505,685 after it), and the fixes after them wrote
  * 506,935, over this budget again. The page addresses the shell reads then left
  * `features/refs/routes.ts` for a module of their own (`features/refs/page-routes.ts`), with no
  * new lazy load, so the grammar of references and the modules only it imports left the entry as
