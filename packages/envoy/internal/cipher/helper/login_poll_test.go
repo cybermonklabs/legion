@@ -457,14 +457,18 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 			b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 			t.Cleanup(b.Close)
 			if c.trip > 0 {
-				// Not the time the runner took: the rows' lines name the round trip the row says.
-				// Login asks slack before the clock reads (at its first reading, so nothing Login
-				// does before it counts), so the code's end, which x/oauth2 dates from its own
-				// readings a little after, is never short of the broker's whole seconds by the gap
-				// between those readings; a row that read "less than 1 s" through a 2 ms shortfall
-				// would otherwise read "less than 0.998 s" on a loaded runner (checked by shifting
-				// the reading 2 and 100 ms later in Login: the rows pass; 300 ms: they fail). The
-				// lifetime still rounds to the broker's whole seconds.
+				// The rows' lines name the round trip the row says, not the time the runner took.
+				// Login's first reading (so nothing Login does before it counts) is dated slack
+				// early. That trades one window for another; it does not remove the real clock,
+				// since x/oauth2 still dates the code's end from its own two readings of it
+				// (deviceauth.go:73 and :162). A stall between those two readings shortens the
+				// code's end: with no slack, 2 ms of it made "less than 1 s" read "less than 0.998
+				// s"; with the slack, the rows fail only past about 250 ms (dating Login's reading
+				// 200 ms later passes, 300 ms fails). A pause between Login's first reading and
+				// x/oauth2's start lengthens it, and the lifetime rounds to whole seconds: with no
+				// slack, 400 ms passed; with the slack, the rows fail past about 250 ms (a sleep
+				// after that reading: 200 ms passes, 300 ms fails). Each window is microseconds of
+				// work, so neither stall is likely, but either still flips a row.
 				const slack = 250 * time.Millisecond
 				var t0 time.Time
 				reads := 0
