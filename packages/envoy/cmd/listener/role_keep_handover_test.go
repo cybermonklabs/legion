@@ -841,6 +841,141 @@ func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T)
 	}
 }
 
+// A handover that does not read again after a read that did not answer - a role no claim record
+// names, or a record that could not be read either - returns no error of that read's, and leaves
+// the lane to the role's next claim and to the sweep (handOverKeptRole). It used to say nothing
+// above Debug about why; it now says so at WARN, naming the read that did not answer, its bound
+// and its error, beside whether the claim record's own read failed. Two reads end a handover that
+// way: the lane head's, here a cursor no read can decode on a role no claim names, and the
+// holder's resolution, here on a claimed role whose claim reads all fail.
+func TestAHandoverThatLeavesTheLaneToTheNextClaimSaysAtWarnWhichReadDidNotAnswer(t *testing.T) {
+	t.Parallel()
+	const left = "listener kept role drain left the lane to the role's next claim"
+	requireLeftLine := func(t *testing.T, harness listenerDeliveryHarness, role, unanswered string, bound time.Duration, cause string, claimReadFailed bool) {
+		t.Helper()
+		lines := linesIn(harness.logs.String(), left, map[string]any{"role": role})
+		if len(lines) != 1 {
+			t.Fatalf("the handover logged %d lines %q for role %s, want 1:\n%s", len(lines), left, role, harness.logs.String())
+		}
+		line := lines[0]
+		message, _ := line["error"].(string)
+		if line["level"] != "WARN" || line["unanswered"] != unanswered || line["bound"] != float64(bound) ||
+			!strings.Contains(message, cause) || line["claim_read_failed"] != claimReadFailed {
+			t.Fatalf("the line is %v, want it at WARN naming the read %q, its bound %s (%d ns), an error carrying %q and claim_read_failed %v",
+				line, unanswered, bound, bound, cause, claimReadFailed)
+		}
+	}
+
+	t.Run("the lane head's read, for a role no claim names", func(t *testing.T) {
+		t.Parallel()
+		harness := newListenerDeliveryHarness(t)
+		const role = "kept-left-head-unread"
+		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
+		if _, err := keepRoleMessage(harness.config, role, item); err != nil {
+			t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
+		}
+		unreadableLaneHead(t, harness.client, role)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		// The error the handover's own read of the lane head meets, read the same way.
+		_, unread := harness.client.ReadKeptRoleCursor(ctx, role)
+		if unread == nil {
+			t.Fatalf("role %s's cursor reads, so no lane-head read below fails", role)
+		}
+
+		if _, err := handOverKeptRole(ctx, harness.config, role, time.Now); err != nil {
+			t.Fatalf("the handover of role %s, which no claim names, reported %v, want nothing: the lane is the role's next claim's:\n%s",
+				role, err, harness.logs.String())
+		}
+		requireLeftLine(t, harness, role, "listener kept role message could not read the role's kept lane", roleKeepDrainWindow, unread.Error(), false)
+	})
+
+	t.Run("the holder's resolution, where the claim record cannot be read either", func(t *testing.T) {
+		t.Parallel()
+		harness := newListenerDeliveryHarness(t)
+		const (
+			role   = "kept-left-holder-unread"
+			holder = "ses_kept_left_holder_unread"
+		)
+		claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
+		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
+		if _, err := keepRoleMessage(harness.config, role, item); err != nil {
+			t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
+		}
+		reads := failRoleClaimReads(t, harness.registry)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		if _, err := handOverKeptRole(ctx, harness.config, role, time.Now); err != nil {
+			t.Fatalf("the handover of role %s, whose claim record cannot be read, reported %v, want nothing: the lane is the role's next claim's:\n%s",
+				role, err, harness.logs.String())
+		}
+		if reads.Load() == 0 {
+			t.Fatalf("the handover of role %s read no claim record, so no read of one failed:\n%s", role, harness.logs.String())
+		}
+		requireLeftLine(t, harness, role, "listener kept role message could not resolve the role's holder", roleKeepHolderWindow, errRoleBucketReadFailed.Error(), true)
+	})
+}
+
+// A resolution of the role's holder that did not answer still walks the lane with no holder, and
+// where that walk drains the lane the handover ends there, with no read of the role's claim record
+// (handOverKeptRole). Here the copy's hour has ended, so the walk ends it with a dead letter that
+// says no session held the role, while the claim names a live holder. The handover used to end
+// with nothing logged above Debug, so a test that read that dead letter could print no cause; it
+// now says at WARN that it walked with no holder, naming the resolution that did not answer, its
+// bound and its error.
+func TestAHandoverWhoseHolderResolutionDidNotAnswerSaysSoWhereItsWalkDrainedTheLane(t *testing.T) {
+	t.Parallel()
+	harness := newListenerDeliveryHarness(t)
+	const (
+		role   = "kept-holder-unresolved-drained"
+		holder = "ses_kept_holder_unresolved_drained"
+		sender = "ses_kept_holder_unresolved_sender"
+		walked = "listener kept role drain walked the role's copies with no holder because the holder lookup did not answer"
+	)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
+	item.SourceSession = sender
+	held, err := keepRoleMessage(harness.config, role, item)
+	if err != nil {
+		t.Fatalf("keep the copy: %v; the listener log says why:\n%s", err, harness.logs.String())
+	}
+	claimRoleBeyondTheSessionCache(t, harness, holder, role)
+	// Every read of the session bucket fails from here, so the handover's own resolution of the
+	// holder does not answer whichever other reader of the registry reads the bucket first.
+	unanswered := errors.New("the session bucket's read did not answer")
+	swapSessionBucket(t, harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
+		return bucketThatFails{KeyValue: kv, err: unanswered}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// The copy's hour ended a minute ago and its sender is owed a dead letter for it.
+	pastItsHour := func() time.Time { return time.Now().Add(roleKeepWindow + time.Minute) }
+	if _, err := handOverKeptRole(ctx, harness.config, role, pastItsHour); err != nil {
+		t.Fatalf("hand over role %s's kept lane: %v\n%s", role, err, harness.logs.String())
+	}
+	stored, err := harness.client.ReadKeptRoleCursor(ctx, role)
+	if err != nil {
+		t.Fatalf("read role %s's drain cursor: %v", role, err)
+	}
+	if stored.Cursor.Kept < held.sequence {
+		t.Fatalf("role %s's drain cursor is at %d, want it past the copy at %d: the walk with no holder did not drain the lane:\n%s",
+			role, stored.Cursor.Kept, held.sequence, harness.logs.String())
+	}
+
+	lines := linesIn(harness.logs.String(), walked, map[string]any{"role": role})
+	if len(lines) != 1 {
+		t.Fatalf("the handover logged %d lines %q for role %s, want 1:\n%s", len(lines), walked, role, harness.logs.String())
+	}
+	line := lines[0]
+	message, _ := line["error"].(string)
+	if line["level"] != "WARN" || line["unanswered"] != "listener kept role message could not resolve the role's holder" ||
+		line["bound"] != float64(roleKeepHolderWindow) || !strings.Contains(message, unanswered.Error()) {
+		t.Fatalf("the line is %v, want it at WARN naming the resolution of the holder, its bound %s (%d ns) and its error %q",
+			line, roleKeepHolderWindow, roleKeepHolderWindow, unanswered)
+	}
+}
+
 // bucketThatFails is a bucket no read of which answers, a direct get (Get) or a read from the
 // stream's leader (NewestFromLeader, bus.LeaderReads): err is what each read answers with, and
 // before runs first, which is where a test ends the context of the handover making that read, or
