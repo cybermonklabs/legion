@@ -30,6 +30,8 @@
 #
 # The rows, each printed with its outcome:
 #
+#   clients   the clients' command channel the other rows drive every client through: an answer
+#             that is not ok ends the send that waited for it, naming the client's refusal.
 #   R8 row 1  a claim under the id that holds the role takes it once nobody has answered for
 #             that claim inside the live window — an Oh My Pi plugin reload, which claims after
 #             the window has passed, and a Claude Code channel server restart inside it, which
@@ -118,8 +120,15 @@ readonly omp_pass_deadline_ms=30000
 # ENVOY_SESSION_LIVE_WINDOW is how long a registration keeps a session live and, with it, how long
 # a claim stands renewed: the rows where a second process takes over wait it out, so it is seconds
 # rather than the five minutes a deployment runs. It is the whole budget between a holder's last
-# registration and a claimant's claim in the rows where the holder must still be answering, so it
-# is set well past what a Claude Code channel server costs to start.
+# registration and a claimant's claim in the rows where the holder must still be answering, and no
+# process start may sit inside it: a client's start on a loaded machine has taken 11 s and 26 s.
+# So the holder answers once the claimant's process is up and immediately before each claim the
+# row needs refused. Where the claimant claims as it boots, the holder answers once the
+# claimant's proxy is up and right before its process starts, and then on every pass until the
+# claimant has claimed, or, where the claimant must go on being refused as it asks again, until
+# its start has ended. Each such row reads how old that answer was when each of those claims was
+# weighed (`expect_renewed_inside`) before it reads the refusal, and fails naming the window where
+# a claim was not inside it.
 #
 # ENVOY_ROLE_CLAIM_REAP_INTERVAL is the role claim reaper's period, short so that every row is
 # swept several times. The one claim the reaper frees in this run is the one a hand-back marked:
@@ -131,12 +140,13 @@ readonly omp_pass_deadline_ms=30000
 #
 # The rows that wait a window out still prove what they claim, and the reaper is why they are
 # worth driving at all. A row where a claimant must be refused is decided inside the window: the
-# holder answers for its claim immediately before the claim is made, so no pass can have touched
-# it. A row where the role must move reads the listener's own word for the move — the lookup's
-# 404 (`role_unrenewed`), or a claim granted — and that word reads the same whether the standing
-# claim lapsed where it stood or a pass had already removed it. In both the role went to the
-# process that kept asking for it, and in neither did it go to a process while another was still
-# answering for the claim.
+# holder answers for its claim immediately before the claim is made, or on every pass while a
+# claimant that claims as it boots starts, so no pass can have touched it, and the row checks
+# that it did before it reads the refusal. A row where the role must move reads the listener's own
+# word for the move — the lookup's 404 (`role_unrenewed`), or a claim granted — and that word
+# reads the same whether the standing claim lapsed where it stood or a pass had already removed
+# it. In both the role went to the process that kept asking for it, and in neither did it go to a
+# process while another was still answering for the claim.
 readonly session_live_window=10s
 readonly live_window_seconds="${session_live_window%s}"
 readonly role_claim_reap_interval=2s
@@ -151,6 +161,11 @@ readonly takeover_timeout=90
 # restarted process's first registration, the role lookup and the session listing have one
 # deployment heartbeat, 90 s, to name the same holder.
 readonly live_restart_window=90
+# How long a Claude Code process is given, from its launch, to boot and make its first claim, or
+# to end its start, while the holder it is weighed against keeps answering for its claim: the
+# 120 s `claude_started` gives a boot, and the listener_wait_timeout a first claim was given after
+# it.
+readonly claude_first_claim_timeout=$((120 + listener_wait_timeout))
 
 refuse() {
   printf 'smoke-role-takeover: %s\n' "$1" >&2
@@ -315,6 +330,9 @@ wait_for() {
 # ---- the results -------------------------------------------------------------------------------
 # One row of R8's table (or one of A5's own claims), its outcome and the evidence for it. A failed
 # check never stops the run: every row is driven, so one run says which rows hold and which do not.
+# A row that starts from where an earlier row of its scenario left the role reads that first, so
+# where the earlier row failed, the later one fails naming where the role is, and not on a claim
+# that was never made.
 row_names=()
 row_outcomes=()
 row_details=()
@@ -349,6 +367,31 @@ expect_true() {
   fi
   note "   FAILED: ${what}"
   [[ -n "$current_failure" ]] || current_failure="$what"
+}
+
+# expect_renewed_inside WHAT CLAIMANT SESSION PREVIOUS HOLDER HOLDER_SESSION [BEFORE_MS]: the
+# row's own check that the claim it needs refused (given BEFORE_MS, each such claim made before
+# that moment) was weighed inside the live window of the holder's last answer (renewal_age in
+# clients.sh). A row runs it before it reads the refusal, so a holder that went unrenewed fails
+# the row by WHAT and not by a refusal the listener was right not to give. The age read is noted;
+# one nobody could read fails.
+expect_renewed_inside() {
+  local what="$1" age verdict
+  shift
+  # A claim the listener has not answered yet is not in the proxy's log, so the check first waits
+  # until every claim it reads has its answer (claims_answered); one that never gets one reads as
+  # unread below.
+  wait_for "$listener_wait_timeout" claims_answered "$1" "$2" "$3" "${6:-$(now_ms)}" || true
+  age="$(renewal_age "$@")"
+  if [[ -z "$age" ]]; then
+    verdict="unread: the proxy logs hold no such claim, one with no answer, or no registration of the holder before it"
+  elif ((age < live_window_seconds * 1000)); then
+    verdict="inside"
+    note "   the holder's last answer was at most ${age} ms old when the claim was answered"
+  else
+    verdict="past it: the holder's last answer was ${age} ms old when the claim was answered"
+  fi
+  expect "$what" "$verdict" "inside"
 }
 
 evidence() {
@@ -453,6 +496,29 @@ session_for() {
   printf 'ses_smoke_%s_%s' "$1" "$run_id"
 }
 
+# The clients' command channel itself (`send` in role-takeover/clients.sh), which every other row
+# drives its clients through: an answer that is not `ok` ends the send that waited for it, naming
+# the client's refusal, so no row reads its outcome off a command the client refused. No other row
+# is answered that way, so this one asks an Oh My Pi client for an op it does not have
+# (omp-client.ts answers it `{"ok":false,"error":"unknown op …"}`). send refuses by exiting, so
+# it runs in a subshell here and the row reads its exit status and what it printed; the command
+# id that subshell's post took is counted in this shell too, so no later command reuses it.
+row0_command_channel() {
+  local status=0 refusal="${work}/logs/send-refusal.err"
+  begin_row "the role takeover clients' command channel — an answer that is not ok ends the send that waited for it, naming the refusal"
+  start_omp omp-channel
+  (send omp-channel '{"op":"no-such-op"}') 2>"$refusal" || status=$?
+  next_command_id=$((next_command_id + 1))
+  expect "send ended as a refusal" "$status" "2"
+  expect "it named the client's refusal of that command" \
+    "$(grep -c -F 'smoke-role-takeover: the omp-channel client refused {"op":"no-such-op"}: ' "$refusal")" "1"
+  expect "the refusal carries the client's own answer" \
+    "$(grep -c -F '"ok":false,"error":"unknown op no-such-op"' "$refusal")" "1"
+  evidence "send refused the omp-channel client's answer to an op it does not have: $(head -c 300 "$refusal" | tr -d '\n')"
+  end_row
+  end_scenario
+}
+
 # R8 row 1, Oh My Pi: the extension instance goes away without deregistering (a plugin reload
 # leaves the session's registration standing) and a new instance comes up on the same session id,
 # whose transcript records the claim. Its claim is under the id that holds the role, and the
@@ -501,6 +567,15 @@ row1_omp() {
 # the row proves is that it keeps asking — each heartbeat presses the record again — and is
 # granted the role one window later, rather than being left roleless for the life of the
 # process (dispatch://INFRA-783).
+#
+# The first server is killed once the restarted one has claimed, not before it boots: it answers
+# for its claim once the restarted server's proxy is up, right before that server's process
+# starts, and on every pass while it boots, so that first claim is weighed inside the window
+# however long the proxy's start and the boot took. The listener sees the same restart either way
+# — a last renewal from the first process, then a claim from the second — except that a start in
+# between, which a loaded machine stretches past the run's ten seconds, would hand the claim a
+# window already spent. The first server's answers stop at that first claim, since what the row
+# reads after it is the window running out.
 row1_claude() {
   local role session state first second
   role="$(role_for r1cc)"
@@ -512,20 +587,23 @@ row1_claude() {
   send cc-restart-1 "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
   expect "the first channel server holds the role" "$(role_holder "$role")" "$session"
   first="$(instance_id cc-restart-1 "$session")"
-  # The claim is renewed at the last moment this server has: the window the restarted server
-  # must make its first claim inside starts here, and this row is about a claim made inside it.
-  renew_claude cc-restart-1
-  send cc-restart-1 '{"op":"kill"}'
-  expect_true "the session is still registered after the server is gone" registered "$session"
 
   # On the short heartbeat: the row turns on the claim being pressed again, which is what each
-  # heartbeat does. Nothing renews the gone server's claim meanwhile — a registration renews
-  # only a claim its own process holds — so the window runs out under the restarted server's own
-  # registrations.
-  start_claude cc-restart-2 "$session" "$state" "$claude_heartbeat_ms"
+  # heartbeat does. Nothing renews the gone server's claim once it is killed — a registration
+  # renews only a claim its own process holds — so the window runs out under the restarted
+  # server's own registrations.
+  launch_claude cc-restart-2 "$session" "$state" "$claude_heartbeat_ms" cc-restart-1
+  renew_claude_until_claimed "$claude_first_claim_timeout" cc-restart-1 cc-restart-2 "$session" "$session" || true
+  send cc-restart-1 '{"op":"kill"}'
+  claude_started cc-restart-2
   # A listener that grants the claim and one that refuses it both answer it; a listener that
-  # never sees one leaves the status below empty, which is the row's failure to report.
-  wait_for "$listener_wait_timeout" made_claim cc-restart-2 "$session" "$session" || true
+  # never sees one leaves the claim unmade, which is the row's failure to report.
+  expect_true "the restarted server made its first claim within ${claude_first_claim_timeout}s of its launch, while the first one answered for its claim" \
+    made_claim cc-restart-2 "$session" "$session"
+  expect "the killed server sent no deregistration, as a crash sends none" \
+    "$(delete_answer cc-restart-1 "$session" deleted)" ""
+  expect_renewed_inside "the restarted server's first claim was weighed inside the live window of the first one's last answer" \
+    cc-restart-2 "$session" "$session" cc-restart-1 "$session"
   second="$(instance_id cc-restart-2 "$session")"
   expect "the restarted server is another client instance" \
     "$([[ -n "$second" && "$second" != "$first" ]] && echo different || echo same)" "different"
@@ -627,7 +705,7 @@ row4_handoff() {
 # resumes X and is held off, A then stops answering and B takes the role, and A's release on its
 # way out frees nothing of B's.
 row5_omp() {
-  local role x left topic instance_a instance_b
+  local role x left topic instance_a instance_b holder holder_instance
   role="$(role_for r5omp)"
   x="$(session_for r5x)"
   left="$(session_for r5left)"
@@ -648,6 +726,8 @@ row5_omp() {
     "$([[ -n "$instance_b" && "$instance_b" != "$instance_a" ]] && echo different || echo same)" "different"
   expect "process B registered X last" \
     "$([[ "$(registered_at omp-b "$x")" -gt "$(registered_at omp-a "$x")" ]] && echo later || echo earlier)" "later"
+  expect_renewed_inside "B's claim under X was weighed inside the live window of A's last answer" \
+    omp-b "$x" "" omp-a "$x" "$(now_ms)"
   expect "process B's claim under X is refused" "$(claim_status omp-b "$x" "")" "409"
   expect "the refusal names X as the holder" "$(claim_holder omp-b "$x" "")" "$x"
   expect "process A keeps the role" "$(role_holder "$role")" "$x"
@@ -675,6 +755,14 @@ row5_omp() {
   end_row
 
   begin_row "INFRA-783 — a release from the process that no longer holds the claim frees nothing"
+  # The row before gave B the role, and A's release is weighed against B's claim only where it
+  # did. So the row reads that first: where that row failed, this one fails naming B's missing
+  # hold, and not on a release that freed A's own claim. The session and the process are read
+  # apart, so a role with no holder prints as <empty>.
+  holder="$(role_holder "$role")"
+  holder_instance="$(role_instance "$role")"
+  expect "the role is held under X, as the row before left it" "$holder" "$x"
+  expect "process B holds it, as the row before left it" "$holder_instance" "$instance_b"
   # A's branch records a release, so A ends its hold and hands the role topic back naming its own
   # process. A is the second process in X now — the standing claim is B's — and a release frees
   # the claims of the process that asks and no others, so B keeps the role. This is the incident
@@ -702,7 +790,7 @@ row5_omp() {
 # that second process is refused under that id now, and the claim it makes is decided on the
 # standing claim rather than on the predecessor it names.
 row6_predecessor() {
-  local role q p z z2 instance_c instance_d
+  local role q p z z2 instance_c instance_d holder holder_instance
   role="$(role_for r6)"
   q="$(session_for r6q)"
   p="$(session_for r6p)"
@@ -717,14 +805,28 @@ row6_predecessor() {
   instance_d="$(instance_id omp-d "$p")"
 
   start_omp omp-c
+  # D answers for its claim now that C is up and before C's first claim: C's start of P reads P's
+  # registry entry, which names the role, and claims it under P (`desiredRole` in
+  # extensions/envoy.ts) — a second process under the holder's own id, weighed on D's renewal
+  # alone. Answered before C's process started, that renewal was as old as the start when C
+  # claimed, and starts of 11 s and 26 s on a loaded machine handed C the role.
+  renew_omp omp-d "$p"
   send omp-c "$(jq -nc --arg s "$p" '{op:"start",session:$s,roles:[]}')"
   instance_c="$(instance_id omp-c "$p")"
   expect "process C is another client instance" \
     "$([[ -n "$instance_c" && "$instance_c" != "$instance_d" ]] && echo different || echo same)" "different"
+  wait_for "$listener_wait_timeout" made_claim omp-c "$p" "" || true
+  expect_renewed_inside "C's resume claim was weighed inside the live window of D's last answer" \
+    omp-c "$p" "" omp-d "$p" "$(now_ms)"
+  expect "process C's resume of P claims the role under P and is refused" "$(claim_status omp-c "$p" "")" "409"
   # C registered P last, which is what a predecessor read would find; D answers again here, so
   # the predecessor C is about to name is live and is D's.
   renew_omp omp-d "$p"
   send omp-c "$(jq -nc --arg s "$z" --arg r "$role" '{op:"switch",session:$s,reason:"fork",roles:[$r]}')"
+  # C names P only while it reads P as live, and claims naming nothing once D's answer has lapsed,
+  # so the window is read at C's claims under Z whatever predecessor they name.
+  expect_renewed_inside "C's fork claims under Z were weighed inside the live window of D's last answer" \
+    omp-c "$z" "*" omp-d "$p" "$(now_ms)"
   expect "process C's fork claim naming P is refused" "$(claim_status omp-c "$z" "$p")" "409"
   expect "the refusal names P as the holder" "$(claim_holder omp-c "$z" "$p")" "$p"
   expect "process D keeps the role" "$(role_holder "$role")" "$p"
@@ -743,7 +845,22 @@ row6_predecessor() {
   end_row
 
   begin_row "R8 row 5 — an Oh My Pi move in the refused process is refused too"
+  # The rows before left the role under P with D's process, and this move's claim names P only
+  # while D holds it there: where one of them failed and C took the role, under Z or under P, the
+  # move is weighed on C's own claim. So the row reads that first, the session and the process, and
+  # fails naming where the role is rather than on a claim C never made. C is an Oh My Pi process
+  # whose heartbeat only this script ticks, so it has made no claim since the fork's, which the
+  # row before weighed, and there is no window to weigh before this read.
+  holder="$(role_holder "$role")"
+  holder_instance="$(role_instance "$role")"
+  expect "the role is still held under P, the predecessor this move's claim names" "$holder" "$p"
+  expect "process D still holds it" "$holder_instance" "$instance_d"
+  # D answers again right before the move, as it did before the fork: the move's claim names P,
+  # which is live only while D has registered it inside the window.
+  renew_omp omp-d "$p"
   send omp-c "$(jq -nc --arg s "$z2" --arg r "$role" '{op:"tree",session:$s,roles:[$r]}')"
+  expect_renewed_inside "C's move claims under Z2 were weighed inside the live window of D's last answer" \
+    omp-c "$z2" "*" omp-d "$p" "$(now_ms)"
   expect "process C's move claim naming P is refused" "$(claim_status omp-c "$z2" "$p")" "409"
   expect "the refusal names P as the holder" "$(claim_holder omp-c "$z2" "$p")" "$p"
   expect "process D keeps the role" "$(role_holder "$role")" "$p"
@@ -751,6 +868,12 @@ row6_predecessor() {
   end_row
 
   begin_row "A5 — after the holder exits, the refused Oh My Pi process takes the role on its next session event"
+  # As in the move row: the holder whose exit this row turns on holds the role under P only where
+  # the rows before left it there with D's process, so the row reads that first.
+  holder="$(role_holder "$role")"
+  holder_instance="$(role_instance "$role")"
+  expect "the role is still held under P when its holder exits" "$holder" "$p"
+  expect "process D still holds it when it exits" "$holder_instance" "$instance_d"
   send omp-d '{"op":"shutdown"}'
   expect_true "process D's session left the registry when it shut down" \
     wait_for "$listener_wait_timeout" unregistered "$p"
@@ -768,7 +891,7 @@ row6_predecessor() {
 # is refused the role under that id; A then runs a `/clear` handoff whose claim names X, which B
 # registers now, and that claim is refused by the predecessor rule.
 row5_claude() {
-  local role x x2 state record instance_a instance_b
+  local role x x2 state record instance_a instance_b holder holder_instance read_at clear_at handoff_at started
   role="$(role_for r5cc)"
   x="$(session_for r5ccx)"
   x2="$(session_for r5ccx2)"
@@ -780,18 +903,31 @@ row5_claude() {
   send cc-a "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
   expect "process A holds the role under X" "$(role_holder "$role")" "$x"
   instance_a="$(instance_id cc-a "$x")"
-  # A answers for its claim here rather than on a timer of its own: this row needs A's claim to
-  # be inside the live window when B claims, and the row below needs B to have registered X
-  # last, which two servers heartbeating against each other would settle by coin toss.
-  renew_claude cc-a
   # B shares A's plugin data directory, as two `claude` processes of one user do, so it reads the
-  # role record A wrote for X and claims it back under that same id as it boots.
-  start_claude cc-b "$x" "$state" "$claude_heartbeat_ms"
-  wait_for "$listener_wait_timeout" made_claim cc-b "$x" "$x" || true
-  # A answers for its claim again, now that B has made its first: B asks again on each heartbeat
-  # from here, and this row is what happens while the holder is still answering — the role stays
-  # with A's process, and B's asking changes nothing.
+  # role record A wrote for X and claims it back under that same id as it boots, and, refused,
+  # asks again on every heartbeat. A answers for its claim here rather than on a timer of its own:
+  # once B's proxy is up and right before B's process starts, and then on every pass until B's
+  # start has ended, which comes after its first claim. This row needs A's claim to be inside the
+  # live window at every claim B makes before the row reads the role, however long B's start
+  # took, and the row below needs B to have registered X last, which two servers heartbeating
+  # against each other would settle by coin toss.
+  launch_claude cc-b "$x" "$state" "$claude_heartbeat_ms" cc-a
+  # A start that has not ended by the loop's deadline fails this row by name, and the run goes on.
+  started=ended
+  renew_claude_until_started "$claude_first_claim_timeout" cc-a cc-b || started="not ended"
+  expect "process B ended its start within ${claude_first_claim_timeout}s of its launch (its ready line, then a tool it answered as a started server), while A answered for its claim" \
+    "$started" "ended"
+  expect_true "process B made its first claim within ${claude_first_claim_timeout}s of its launch, while A answered for its claim" \
+    made_claim cc-b "$x" "$x"
+  # A answers once more, and the row reads the role at once: this row is what happens while the
+  # holder is still answering — the role stays with A's process, and B's asking changes nothing.
   renew_claude cc-a
+  holder="$(role_holder "$role")"
+  holder_instance="$(role_instance "$role")"
+  read_at="$(now_ms)"
+  # (expect_renewed_inside waits for a claim of B's still in flight at the read to be answered.)
+  expect_renewed_inside "every claim B made before the role was read was weighed inside the live window of A's last answer" \
+    cc-b "$x" "$x" cc-a "$x" "$read_at"
   instance_b="$(instance_id cc-b "$x")"
   expect "process B is another client instance" \
     "$([[ -n "$instance_b" && "$instance_b" != "$instance_a" ]] && echo different || echo same)" "different"
@@ -799,23 +935,75 @@ row5_claude() {
   # same way, and the row is about the first.
   expect "process B's claim under X is refused" "$(first_claim_status cc-b "$x" "$x")" "409"
   expect "the refusal names X as the holder" "$(first_claim_holder cc-b "$x" "$x")" "$x"
-  expect "process A keeps the role" "$(role_holder "$role")" "$x"
-  expect "the listener names A's process as the one holding it" "$(role_instance "$role")" "$instance_a"
+  expect "process A keeps the role" "$holder" "$x"
+  expect "the listener names A's process as the one holding it" "$holder_instance" "$instance_a"
   expect_true "the refused server kept the role record of X, which is the live holder's" test -f "$record"
   evidence "${x} kept ${role} with client instance ${instance_a}; ${instance_b}, which resumed ${x}, was refused 409 naming ${x} and left the record of ${x} where its writer can still use it"
   end_row
 
   begin_row "R8 row 5 (A5 scenario 2) — a Claude Code /clear handoff naming a predecessor live inside another client instance is refused"
+  # A's handoff claims only while A's process holds the role, which the row before left with it.
+  # So the row reads that first: where that row failed and B took the role, this one fails naming
+  # B's hold, and not on a handoff claim A never made. B asks for the role on every heartbeat of
+  # its own, between the two rows too, and nothing renews A there. So the row reads the role,
+  # then weighs every claim of B up to that read against A's last answer, and only then reads who
+  # holds it: a lapse of A's window between the rows fails the row naming the window, not B's hold.
+  holder="$(role_holder "$role")"
+  holder_instance="$(role_instance "$role")"
+  read_at="$(now_ms)"
+  expect_renewed_inside "every claim B made before this row read the role was weighed inside the live window of A's last answer" \
+    cc-b "$x" "$x" cc-a "$x" "$read_at"
+  expect "the role is still held under X, as the row before left it" "$holder" "$x"
+  expect "process A still holds it, as the row before left it" "$holder_instance" "$instance_a"
   registered_last() {
     [[ "$(registered_at cc-b "$x")" -gt "$(registered_at cc-a "$x")" ]]
   }
-  expect_true "process B registered X last" wait_for "$listener_wait_timeout" registered_last
+  # A's handoff claims only while A still holds the role, and B asks for it on every heartbeat.
+  # The row needs B to register X after A's last answer, and B's heartbeat is B's own, which a
+  # loaded machine or a slow answer to B stretches. So A answers on every pass, one every 2 s,
+  # until B has registered X after A's latest answer. Nothing renews A's claim after that answer:
+  # the /clear deregisters X, and A registers only X2 from then on. So the window this row needs
+  # runs from that answer to A's handoff claim: at most 2 s, and then the whole handoff — the
+  # deregistration, and the file work and NATS flushes before A's first registration of X2,
+  # after which A reads the role record of X and claims.
+  answer_until_registered_last() {
+    local deadline=$((SECONDS + listener_wait_timeout))
+    while ((SECONDS < deadline)); do
+      renew_claude cc-a
+      wait_for 2 registered_last && return 0
+    done
+    return 1
+  }
+  expect_true "process B registered X last, while A answered for its claim" answer_until_registered_last
+  clear_at="$(now_ms)"
   send cc-a "$(jq -nc --arg s "$x2" '{op:"clear",session:$s}')"
   # A listener that refuses the handoff's claim leaves the process holding a role it no longer
   # has, which its re-assertion then asks about; one that grants it makes no re-assertion at all,
   # and the empty status below is this row's failure to report.
   wait_for "$listener_wait_timeout" made_claim cc-a "$x2" "$x" || true
   wait_for 15 made_claim cc-a "$x2" "" || true
+  # The claims of B's that A's role must outlast are those B made before A read the role record
+  # of X. That read is not on the wire, so the row bounds it by the first request A sends once the
+  # read is done: A's first claim under X2, whatever it names, as it reached A's proxy. A makes
+  # that claim only after the read, in packages/claude-envoy/src/envoy-channel-server.ts:
+  # `restoreRole` reads the record (:1517) before it sends the handoff claim naming X (:1528),
+  # and `adoptHandoff` runs it, through `transferRole` (:1726), after the first registration of
+  # X2 (:1725); `reassertRole`, whose claim under X2 names none (:1618), runs on the heartbeat
+  # only once `adoptHandoff` has returned (:1842, :1856). Where A made no claim under X2, the
+  # bound is A's second registration of X2, that heartbeat's `register` (:1847); where A sent only
+  # one, the listener's answer to it; and the /clear the row sent where A registered no X2 at all.
+  # A claim of B's granted before the bound took the role while A's handoff was still on its way
+  # to that read, and A then makes no handoff claim, so the refusal below would read <empty>: the
+  # row fails naming the window first. Never up to the moment the row reads this: a client whose
+  # handoff never claims would then be weighed on every claim B made while the row waited for that
+  # claim, and the window would take the blame for the client. The row's limit is that order: a
+  # client that claimed under X2 before its read and then stalled past the window before reading
+  # is read as inside the window, and the row fails at its refusal.
+  handoff_at="$(first_claim_arrived_at cc-a "$x2" "*")"
+  [[ -n "$handoff_at" ]] || handoff_at="$(second_registration_arrived_at cc-a "$x2")"
+  [[ -n "$handoff_at" ]] || handoff_at="$(first_registration_answered_at cc-a "$x2")"
+  expect_renewed_inside "every claim B made before A's first request after its read of the role record of X was weighed inside the live window of A's last answer" \
+    cc-b "$x" "$x" cc-a "$x" "${handoff_at:-$clear_at}"
   expect "process B's entry stayed: A's deregistration of X removed nothing" "$(delete_answer cc-a "$x" deleted)" "false"
   expect "the listener said why it stayed" "$(delete_answer cc-a "$x" reason)" "the registration belongs to another client instance"
   expect "process A registered its new id" \
@@ -1092,6 +1280,7 @@ row10_live_restart() {
 
 # ---- the run ---------------------------------------------------------------------------------
 started_at=$SECONDS
+row0_command_channel
 row1_omp
 row1_claude
 row2_fork
