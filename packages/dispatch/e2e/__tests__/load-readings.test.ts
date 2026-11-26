@@ -808,6 +808,7 @@ function standInBrowser(world: {
   const fontListeners: (() => void)[] = [];
   const pressed: string[] = [];
   const playwright = {
+    evaluate: async (read: () => unknown) => read(),
     keyboard: {
       press: async (key: string) => {
         const target = world.active?.() ?? null;
@@ -1240,20 +1241,20 @@ test("the frame whose callback first counts the typeface's face loaded, and the 
   expect((await swapLoad({ done: 9, loaded: 1, relayout: 4 })).moved).toEqual([4, 8]);
 });
 
-// CI run 45883270814 at badfd0b3, `chromium-load`: the presses on Plan, Decisions and Graph during
-// the load read no result in any load. Each is made at its control's centre as the first drawing
-// of the view row drew it, and the typeface's swap then widens every text control of the row and
-// slides the later ones right (CI run 45850876213: Plan from 41x33 at (559, 97) to 43x33 at
-// (600, 97), Verification's count label from 144x33 at (413, 97) to 162x33 at (436, 97)), so a
-// press the page takes once the row is laid out again lands on the count label of the view before
-// it. The stand-in page is that row at 1440 px.
-test("a press made at its control's first-drawn centre that the page takes after the control has moved names what it landed on, and reads no result", async () => {
+// A typeface swap can move the right-hand view controls between arming and dispatch. Using
+// Plan's first-drawn centre here would click Verification's count label.
+test("a control that widens and slides right after arming is pressed at its current centre and shows its result", async () => {
   const plan = LOAD_ACTS[1440].find((act) => act.name === "a press on Plan");
   const step = plan?.steps[0];
-  if (step?.input.kind !== "press" || step.input.target.kind !== "control") {
+  if (
+    step?.input.kind !== "press" ||
+    step.input.target.kind !== "control" ||
+    step.result.kind !== "view"
+  ) {
     throw new Error("the acts at 1440 px hold no press on Plan's own control");
   }
   let swapped = false;
+  let planOpen = false;
   const name = standInElement("Plan's name", () => boxAt(571, 104, 26, 20), { words: "Plan" });
   const button: StandInElement = standInElement(
     "Plan's control",
@@ -1274,25 +1275,36 @@ test("a press made at its control's first-drawn centre that the page takes after
       words: "49",
     }
   );
+  const planRow = standInElement("Plan's row", () => boxAt(100, 200, 300, 30));
   const browser = standInBrowser({
     drawn: () => [button, label],
     height: 900,
-    press: () => {},
-    selected: { [step.input.target.selector]: () => [button] },
+    press: (hit) => {
+      if (hit === button) planOpen = true;
+    },
+    selected: {
+      [PAGE_CONFIG.viewRow]: () => [button],
+      [step.input.target.selector]: () => [button],
+      [step.result.current.selector]: () => (planOpen ? [button] : []),
+      [VIEW_ROW_SELECTOR]: () => (planOpen ? [planRow] : []),
+    },
   });
   await withStandIns(browser.globals, async (instruments) => {
-    const point = await armStep(browser.page, 0, step, "now");
-    expect(point).toEqual({ x: 579.5, y: 113.5 });
+    await armStep(browser.page, 0, step, "view row");
+    expect(browser.pressed).toEqual([]);
     // The swap lays the row out again before the page takes the press.
     swapped = true;
-    await makeInput(browser.page, step, point);
+    expect(browser.elementFromPoint(579.5, 113.5)).toBe(label);
+    await makeInput(browser.page, step);
     await browser.page.waitForFunction(
       (at) => (window.__loadInstruments?.record().frames.length ?? 0) >= at,
       instruments.record().frames.length + 5
     );
-    expect(browser.pressed).toEqual(["Verification's count label"]);
-    expect(instruments.shown(0)).toBe(false);
-    expect(instruments.record().acts[0]?.event?.target).toBe('label "49"');
+    expect(browser.pressed).toEqual(["Plan's control"]);
+    expect(instruments.shown(0)).toBe(true);
+    const record = instruments.record();
+    expect(record.acts[0]?.event?.target).toBe('button "Plan"');
+    expect(actReading(record, 0).shown).not.toBeNull();
   });
 });
 
@@ -1348,7 +1360,8 @@ test("Enter shows its result at the first frame whose caret is in the focused ro
       );
     await makeSteps(browser.page, 0, [forward], "now");
     expect(instruments.shown(0)).toBe(true);
-    await makeInput(browser.page, enterStep, await armStep(browser.page, 1, enterStep, "now"));
+    await armStep(browser.page, 1, enterStep, "now");
+    await makeInput(browser.page, enterStep);
     const at = instruments.record().frames.length;
     // The focus goes to an editor outside the row first, then to the row's editable with words
     // selected in it, and the caret is one point in it only from frame `at + 4` on.
@@ -1370,8 +1383,11 @@ test("Enter shows its result at the first frame whose caret is in the focused ro
   });
 });
 
-test("Enter on a row of the second page presses the paging control, then the words of the first row it drew where no link stands, then Enter, and leaves the row's text with Escape", async () => {
-  const name = "Enter in Conversation on a row of the second page";
+test.each([
+  "Conversation",
+  "Graph",
+])("Enter on a later page in %s uses the view's paging control and focuses a row it drew", async (view) => {
+  const name = `Enter in ${view} on a row of a later page`;
   const act = AFTER_LOAD_ENTERS.find((each) => each.name === name);
   if (act === undefined) throw new Error(`Row 5 makes no act named ${name}`);
   let paged = false;

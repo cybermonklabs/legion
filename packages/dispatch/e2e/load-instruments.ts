@@ -757,16 +757,12 @@ export interface PageConfig extends InstrumentConfig {
 
 /** What the init script puts on the page. */
 interface LoadInstruments {
-  /** Arms the page for step `index` once `when` has come and its target is drawn: answers the
-   *  point a press lands at (a control's centre, a row's words), `{ x: -1, y: -1 }` for a key,
-   *  and null until then. */
-  arm(
-    index: number,
-    step: ActStep,
-    when: ArmWhen
-  ): { readonly x: number; readonly y: number } | null;
+  /** Arms step `index` once `when` has come and its target is drawn. */
+  arm(index: number, step: ActStep, when: ArmWhen): boolean;
   /** The rows in the viewport under the header now, with their paints. */
   firstScreen(): FirstScreenRow[];
+  /** The armed press's point in the current layout, or null if its target is no longer drawn. */
+  pressPoint(): { readonly x: number; readonly y: number } | null;
   /** The time now and the long tasks so far, every task the observer has queued included, which
    *  say whether the load has ended. */
   probe(): { readonly now: number; readonly tasks: readonly TaskEntry[] };
@@ -822,8 +818,8 @@ export function instrumentPage(config: PageConfig): void {
     before: WeakSet<Element>;
     focused: { readonly label: string; readonly row: Element } | null;
     readonly index: number;
-    readonly point: { readonly x: number; readonly y: number };
-    readonly row: { readonly label: string; readonly row: Element } | null;
+    readonly pressSince: WeakSet<Element> | undefined;
+    row: { readonly label: string; readonly row: Element } | null;
     readonly step: ActStep;
   }
 
@@ -1068,17 +1064,12 @@ export function instrumentPage(config: PageConfig): void {
   const PRESSABLE =
     'a, button, input, select, textarea, summary, [role="button"], [role="link"], [contenteditable="true"]';
   type RowAim = Extract<ActTarget, { readonly kind: "row" }>;
-  // The first drawn row `aim` finds, in the document's order: with `drawn: "since"`, the first the
-  // document did not hold at the event of the step before, which is the step armed until this
-  // one is.
-  const aimedRow = (aim: RowAim): Element | null => {
-    const since = aim.drawn === "since" ? armed : null;
-    return (
-      [...document.querySelectorAll(aim.row)].find(
-        (row) => row.getClientRects().length > 0 && (since === null || !since.before.has(row))
-      ) ?? null
-    );
-  };
+  // With `drawn: "since"`, choose a row that wasn't drawn at the preceding step's input (for
+  // example, a paging press). Keep that baseline through arming and dispatch.
+  const aimedRow = (aim: RowAim, before: WeakSet<Element> | undefined): Element | null =>
+    [...document.querySelectorAll(aim.row)].find(
+      (row) => row.getClientRects().length > 0 && !(aim.drawn === "since" && before?.has(row))
+    ) ?? null;
   // Where a press on `row`'s first line lands on its words: a point of the line under the header
   // and in the viewport whose topmost element is the row's own and inside nothing in it that
   // takes a press of its own. Null where the line has no such point on screen.
@@ -1102,7 +1093,8 @@ export function instrumentPage(config: PageConfig): void {
   };
   const target = (
     aim: ActTarget,
-    top: number
+    top: number,
+    before?: WeakSet<Element>
   ): {
     readonly control: Element;
     readonly point?: { readonly x: number; readonly y: number };
@@ -1118,7 +1110,7 @@ export function instrumentPage(config: PageConfig): void {
       return row === null || found === null ? null : { control: found, row };
     }
     if (aim.kind === "row") {
-      const row = aimedRow(aim);
+      const row = aimedRow(aim, before);
       const point = row === null ? null : wordsPoint(row, aim, top);
       return row === null || point === null ? null : { control: row, point, row };
     }
@@ -1128,6 +1120,16 @@ export function instrumentPage(config: PageConfig): void {
       if (found !== null) return { control: found, row };
     }
     return null;
+  };
+  const pressTarget = (aim: ActTarget, before: WeakSet<Element> | undefined) => {
+    const found = target(aim, foot(), before);
+    if (found === null) return null;
+    const box = found.control.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) return null;
+    return {
+      point: found.point ?? { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+      row: found.row,
+    };
   };
   const ringHolds = (on: Armed, step: -1 | 1, top: number): boolean => {
     const now = document.activeElement?.closest(config.viewRows) ?? null;
@@ -1269,21 +1271,12 @@ export function instrumentPage(config: PageConfig): void {
 
   window.__loadInstruments = {
     arm: (index, step, when) => {
-      if (armed?.index === index) return armed.point;
-      if (when === "view row" && !drawnViewRow) return null;
-      if (when === "rows" && !drawnRows) return null;
-      let point = { x: -1, y: -1 };
-      let row: { readonly label: string; readonly row: Element } | null = null;
-      if (step.input.kind === "press") {
-        const found = target(step.input.target, foot());
-        if (found === null) return null;
-        const box = found.control.getBoundingClientRect();
-        if (box.width === 0 || box.height === 0) return null;
-        point = found.point ?? { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-        row = found.row === null ? null : { label: rowLabel(found.row), row: found.row };
-      }
-      if (row !== null && step.result.kind === "expanded" && step.result.value === "false") {
-        folded = row;
+      if (armed?.index === index) return true;
+      if (when === "view row" && !drawnViewRow) return false;
+      if (when === "rows" && !drawnRows) return false;
+      const pressSince = armed?.before;
+      if (step.input.kind === "press" && pressTarget(step.input.target, pressSince) === null) {
+        return false;
       }
       const act: OpenAct = {
         event: null,
@@ -1293,8 +1286,8 @@ export function instrumentPage(config: PageConfig): void {
         result: null,
       };
       acts[index] = act;
-      armed = { act, before: new WeakSet(), focused: null, index, point, row, step };
-      return point;
+      armed = { act, before: new WeakSet(), focused: null, index, pressSince, row: null, step };
+      return true;
     },
     firstScreen: () => {
       for (const flush of flushes) flush();
@@ -1304,6 +1297,21 @@ export function instrumentPage(config: PageConfig): void {
           ? [{ id: idOf(row), label: rowLabel(row), paint: rowPaints.get(row) ?? null }]
           : []
       );
+    },
+    pressPoint: () => {
+      const on = armed;
+      if (on === null || on.step.input.kind !== "press" || on.act.event !== null) return null;
+      const found = pressTarget(on.step.input.target, on.pressSince);
+      if (found === null) return null;
+      on.row = found.row === null ? null : { label: rowLabel(found.row), row: found.row };
+      if (
+        on.row !== null &&
+        on.step.result.kind === "expanded" &&
+        on.step.result.value === "false"
+      ) {
+        folded = on.row;
+      }
+      return found.point;
     },
     probe: () => {
       flushTasks();
@@ -1332,7 +1340,7 @@ export function instrumentPage(config: PageConfig): void {
       const aim = step.input.target;
       if (aim.kind === "folded" || (aim.kind === "fold" && aim.within === "viewport")) return true;
       if (aim.kind === "row") {
-        const row = aimedRow(aim);
+        const row = aimedRow(aim, armed?.before);
         if (row === null) return false;
         if (wordsPoint(row, aim, foot()) !== null) return true;
         row.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
@@ -1532,22 +1540,19 @@ export function pageShape(
 const ARM_MS = 60_000;
 
 /** Arms `page` for `step` under `index` once `when` has come and its target is drawn, polled at
- *  each frame so a step made at a first drawing is made at the frame that drew it. Answers where
- *  a press lands: the target's centre, or the words of a row's first line, as that frame drew
- *  it. */
+ *  each frame. Arming keeps no coordinates: `makeInput` reads them before sending the press. */
 export async function armStep(
   page: Page,
   index: number,
   step: ActStep,
   when: ArmWhen
-): Promise<{ readonly x: number; readonly y: number }> {
+): Promise<void> {
   try {
-    const point = await page.waitForFunction(
-      (arming) => window.__loadInstruments?.arm(arming.index, arming.step, arming.when) ?? null,
+    await page.waitForFunction(
+      (arming) => window.__loadInstruments?.arm(arming.index, arming.step, arming.when) === true,
       { index, step, when },
       { polling: "raf", timeout: ARM_MS }
     );
-    return (await point.jsonValue()) ?? { x: -1, y: -1 };
   } catch (error) {
     if (!(error instanceof errors.TimeoutError)) throw error;
     throw new Error(
@@ -1567,8 +1572,8 @@ export async function armStep(
  * reader has moved the page - after `j` brought a lower row on screen, at 1440 px the view row
  * scrolls under the band that stays at the top, and at 390 px the header scrolls away - is made
  * where a reader makes it, at a control they can press; and at 390 px the fold's row, which the
- * first screen does not hold, is scrolled to first. Any other press at a first drawing is made
- * where its target was first drawn and never waits for this (`makeSteps`).
+ * first screen does not hold, is scrolled to first. Other presses at the first drawing do not
+ * wait for this (`makeSteps`).
  */
 export async function revealStep(page: Page, step: ActStep): Promise<void> {
   try {
@@ -1586,16 +1591,16 @@ export async function revealStep(page: Page, step: ActStep): Promise<void> {
   }
 }
 
-/** Makes `step`'s input: the mouse at `point`, where its target was drawn, or its key. */
-export async function makeInput(
-  page: Page,
-  step: ActStep,
-  point: { readonly x: number; readonly y: number }
-): Promise<void> {
+/** Sends the key or a trusted mouse press. Read the target's current point immediately before
+ *  sending the press, with no wait for stability. The native click still crosses the browser
+ *  protocol; a DOM `.click()` would lose the trusted event and its Event Timing entry. */
+export async function makeInput(page: Page, step: ActStep): Promise<void> {
   if (step.input.kind === "key") {
     await page.keyboard.press(step.input.key);
   } else {
-    await page.mouse.click(point.x, point.y);
+    // The press uses the current layout, not a point the page reaches after settling.
+    const point = await page.evaluate(() => window.__loadInstruments?.pressPoint() ?? null);
+    if (point !== null) await page.mouse.click(point.x, point.y);
   }
 }
 

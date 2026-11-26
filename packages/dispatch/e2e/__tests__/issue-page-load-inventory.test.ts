@@ -80,17 +80,16 @@ test("the act rows make every act at each width, and no Keys act at 390 px", () 
   ]);
   expect(LOAD_ACTS[390].filter((act) => act.kind === "keys")).toEqual([]);
 
-  // After the load, `Enter` is made four times in each load: in Conversation and in Graph, on a
-  // row of the tree read's first page and on one of its second page, each in its view, so Graph's
-  // follow the press on Graph. Every other act is made once, the presses on the views last, each
-  // from the view before it, Conversation's after every other.
+  // After the load, `Enter` is made four times in each load: in Conversation and Graph, on a
+  // row already drawn and on a row drawn by the view's paging control. Graph's two presses
+  // follow the switch to Graph; the last view press returns to Conversation.
   const conversationEnters = [
     "Enter in Conversation on a row of the first page",
-    "Enter in Conversation on a row of the second page",
+    "Enter in Conversation on a row of a later page",
   ];
   const graphEnters = [
     "Enter in Graph on a node of the first page",
-    "Enter in Graph on a node of the second page",
+    "Enter in Graph on a row of a later page",
   ];
   const viewsAfter = PRESET_ORDER.filter((view) => view !== "conversation").flatMap((view) => [
     `a press on ${PRESET_NAMES[view]}`,

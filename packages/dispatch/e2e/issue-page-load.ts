@@ -183,9 +183,8 @@ export interface LoadAct {
   /** The view an act after the load is made in, where it is not Conversation: it follows the
    *  press on that view (`afterLoadOrder`). */
   readonly on?: Preset;
-  /** The paging control an act after the load presses first, which the page draws only where
-   *  the rows it holds or its tree read have a next page: Row 5 makes the act only where the page
-   *  draws it once the load has ended, and fails naming it where it does not. */
+  /** The paging control an act after the load presses first. It draws another page of rows from
+   *  the tree the view already holds. Row 5 fails with this selector if the control is absent. */
   readonly paging?: string;
   /** The first moment the act can be made during the load: a press on a control at the first
    *  drawing of the view row, and a fold, an unfold, `j`, `k` and `Enter` at the first drawing of
@@ -216,12 +215,10 @@ const ROW_WORDS = '[elementtiming="issue-page-row"]';
  *  its block's fragment (`tree-drafts.ts`'s `blockNodeId`): a row whose text `Enter` puts the
  *  caret in, where a row of a child issue, a comment or a message has none. */
 export const DOCUMENT_ROW_SELECTOR = '[data-issue-body] [data-node-row][data-node-id*="#b-"]';
-/** The control of the root's paging rule, which draws the next top-level rows of the read the
- *  page holds (`TreeRows.tsx`'s `PageControl`, kind `page`, at the top level). */
+/** The root's paging control in either outline (Conversation or Graph). It draws the next
+ *  top-level rows from the read the view already holds (`TreeRows.tsx`, `PageControl` kind
+ *  `page` at level 1), not another server page. */
 export const ROWS_PAGE_CONTROL = '[data-issue-body] [data-tree-page][aria-level="1"] button';
-/** The control after the last row that reads the tree read's next page (`PageControl`, kind
- *  `more`). */
-export const READ_PAGE_CONTROL = "[data-issue-body] [data-tree-more] button";
 
 /** A step made with the mouse at `target`'s box. */
 function press(name: string, target: ActTarget, result: ActStep["result"], measured: boolean) {
@@ -323,17 +320,16 @@ function enterOn(name: string, on: Preset, paging: string | null): LoadAct {
 }
 
 /**
- * Row 5's `Enter`s, four in each load (Verification v8, `c-load-1440` Row 5): in Conversation and
- * in Graph, each on a row of the tree read's first page and on one of its second page. In
- * Conversation, whose read is one page, the second page's row is one the root's paging rule draws
- * once its control is pressed; in Graph it is a node of the read's next page, which the control
- * after the last row reads.
+ * Row 5's `Enter`s, four in each load (Verification v9, `c-load-1440` Row 5). In both Conversation
+ * and Graph, the first is on a row already drawn when the load ends; the next is on a row that
+ * view's root paging control draws when pressed. Graph uses the same outline (`ViewGraphSlot`'s
+ * `BodySlot`) and the same paging control as Conversation.
  */
 export const AFTER_LOAD_ENTERS: readonly LoadAct[] = [
   enterOn("Enter in Conversation on a row of the first page", "conversation", null),
-  enterOn("Enter in Conversation on a row of the second page", "conversation", ROWS_PAGE_CONTROL),
+  enterOn("Enter in Conversation on a row of a later page", "conversation", ROWS_PAGE_CONTROL),
   enterOn("Enter in Graph on a node of the first page", "graph", null),
-  enterOn("Enter in Graph on a node of the second page", "graph", READ_PAGE_CONTROL),
+  enterOn("Enter in Graph on a row of a later page", "graph", ROWS_PAGE_CONTROL),
 ];
 
 /**
@@ -804,11 +800,11 @@ export async function fiveLoads<T>(
  * waited on until its result shows. A step armed at once is first brought where a press reaches
  * its control (`revealStep`), which an earlier act may have scrolled away, and so is a fold of the
  * first row of the document that holds children (390 px), whose row is scrolled to before the
- * fold's first moment; any other step made at a first drawing is made where its target was first
- * drawn. `settle` runs before each measured step, after that: a row of acts after the load waits
- * for the load to end again there. A step whose result does not show ends the steps, since the
- * step after it has nothing to act on. Answers the index of the last step, the act measured, and
- * the index the next steps start at.
+ * fold's first moment. No other step made at a first drawing waits for `revealStep`. All presses
+ * read the target's current point just before sending the input. `settle` runs before each
+ * measured step: a row of acts after the load waits for the load to end again there. If the
+ * result does not show, the next step has nothing to act on. Returns the measured step's index
+ * and the index where the next act starts.
  */
 export async function makeSteps(
   page: Page,
@@ -825,8 +821,8 @@ export async function makeSteps(
       step.input.target.within === "document";
     if (armedAt === "now" || scrolledTo) await revealStep(page, step);
     if (step.measured) await settle?.();
-    const point = await armStep(page, first + at, step, armedAt);
-    await makeInput(page, step, point);
+    await armStep(page, first + at, step, armedAt);
+    await makeInput(page, step);
     if (!(await resultShown(page, first + at, ACT_RESULT_MS))) break;
   }
   return { last: first + steps.length - 1, next: first + steps.length };
