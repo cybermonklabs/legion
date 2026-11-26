@@ -1202,42 +1202,37 @@ func moveToOf(ctx context.Context) string {
 	return move.moveTo
 }
 
-// copyMoveAfterFix is the head a start of a step of w's task moves the task's working copy to
-// where a fix left that copy behind: the head the task's latest fix ended at, where that fix has
-// ended with commits of its own (its end is not the head it started at) and no start since has
-// carried that move. The fix pushes from a working copy of its own, so until a step starts after it
-// the task's copy stands where the fix started; the first start after it moves the copy, and a
-// later start finds the copy there or past it, where a move could take it back from a commit made
-// since.
-//
-// Where the fix's way returned the task or ran the steps after the fix again (wayReturn,
-// wayAfterFix), the way's own start carried the move (moveToOf), and the fix's Way, which afterFix
-// writes in that start's transaction, is the record of it: every later start answers "", whatever
-// the clock read. Every other start a fix's end leads to is the one read that still decides by the
-// clock, from the step starts' moments: no step of the task started after the fix ended
-// (record.StepStart.StartedAt after record.TaskFix.EndedAt), which a clock that does not advance or
-// steps back reads wrongly. Those starts are a restart of the task after a stop, a leave or a new
-// generation ended the fix (wayNone), the retro after the end hold or a step after a way that left
-// each step its result (wayOn), and a start while the way is pending. It answers "" for every
-// other start, and for each task that has had no fix.
-func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, error) {
+// copyMoveAfterFix is the head a start of a step of w's task moves the task's working copy to, and
+// the task's latest fix whose move that start carries, nil for none, which start marks carried
+// (record.TaskFix.MoveCarried) in the transaction that writes the start. The fix pushes from a
+// working copy of its own, so the task's copy stands where the fix started until a start after the
+// fix moves it; a later start finds the copy there or past it, where a move could take it back from
+// a commit made since. So one start carries each fix's move, and the fix's mark, not any moment,
+// records which: the way's own start, which moves the copy to the head the way chose (moveToOf, the
+// first two ways), and otherwise the first start after the fix ended with commits of its own (its
+// end is not the head it started at), which moves the copy to that end. That is a restart of the
+// task after a stop, a leave or a new generation ended the fix (wayNone), the retro, the merge or a
+// step after a way that left each step its result (wayOn), and a start while the way is pending.
+// A start after the one that carried the move answers "", and so does every start of a task that
+// has had no fix, or whose latest fix is open or ended with no commit of its own outside a way's
+// start.
+func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, *record.TaskFix, error) {
+	moveTo := moveToOf(ctx)
 	if !w.Stored {
-		return "", nil
+		return moveTo, nil, nil
 	}
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
-	if err != nil || fix == nil || fix.State != record.FixEnded || fix.EndedAt == nil || fix.EndHead == "" || fix.EndHead == fix.Head {
-		return "", err
+	switch {
+	case err != nil || fix == nil || fix.State != record.FixEnded:
+		return moveTo, nil, err
+	case fix.MoveCarried:
+		return "", nil, nil
+	case moveTo != "":
+		return moveTo, fix, nil
+	case fix.EndHead == "" || fix.EndHead == fix.Head:
+		return "", nil, nil
 	}
-	if fix.Way == wayReturn || fix.Way == wayAfterFix {
-		return "", nil
-	}
-	for place := range w.Steps {
-		start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place + 1})
-		if err != nil || start.StartedAt.After(*fix.EndedAt) {
-			return "", err
-		}
-	}
-	return fix.EndHead, nil
+	return fix.EndHead, fix, nil
 }
 
 // besideFix takes, in place of the row transition found, a move of a task whose latest fix is open

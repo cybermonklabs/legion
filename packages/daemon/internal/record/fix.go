@@ -64,6 +64,10 @@ type TaskFix struct {
 	// it took, 1, 2 or 3; and 4 for a fix a stop, a leave or a new generation ended, which takes
 	// no way.
 	Way int
+	// MoveCarried says a start of the task carried this fix's move: it moved the task's working
+	// copy, which the fix left where it started, to the head the way chose or to the head the fix
+	// ended at, so no later start moves that copy for this fix.
+	MoveCarried bool
 	// Pushed is, for each role, the head of that role's branch beside the fix that a push of it
 	// showed (RecordBesidePush), nil for none: what the texts of a step beside the fix name of its
 	// own branch. PutFix and UpdateFix write none of it.
@@ -111,7 +115,7 @@ var ErrFixOpen = errors.New("a fix of the task is still reading its job or runni
 // RecordBesidePush writes.
 const (
 	fixInsertColumns = `issue, generation, task, fix, state, check_id, head, place, entry, got_report, return_to, failed,
-	end_head, result, job_name, job_url, read_failed, claim_failed, way, started_at, ended_at`
+	end_head, result, job_name, job_url, read_failed, claim_failed, way, move_carried, started_at, ended_at`
 	fixColumns = fixInsertColumns + `, pushed`
 )
 
@@ -142,7 +146,7 @@ func (s *Postgres) PutFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
 		return fmt.Errorf("%s: the task's next fix is fix %d", describe, latest+1)
 	}
 	if _, err := tx.Exec(ctx, `insert into task_fixes (`+fixInsertColumns+`)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`, fixValues(f)...); err != nil {
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`, fixValues(f)...); err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
 	return nil
@@ -161,11 +165,11 @@ func (s *Postgres) UpdateFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
 		if f.Pushed == nil {
 			pushed = []byte(`{}`)
 		}
-		values, setPushed = append(values, pushed), ", pushed = $22"
+		values, setPushed = append(values, pushed), ", pushed = $23"
 	}
 	tag, err := tx.Exec(ctx, `update task_fixes set state = $5, check_id = $6, head = $7, place = $8, entry = $9, got_report = $10,
 			return_to = $11, failed = $12, end_head = $13, result = $14, job_name = $15, job_url = $16, read_failed = $17,
-			claim_failed = $18, way = $19, started_at = $20, ended_at = $21`+setPushed+`
+			claim_failed = $18, way = $19, move_carried = $20, started_at = $21, ended_at = $22`+setPushed+`
 		where `+fixKey+` and fix = $4`, values...)
 	if err != nil {
 		return fmt.Errorf("update fix %d of task %s of %s at generation %d: %w", f.Fix, f.Task, f.Issue, f.Generation, err)
@@ -179,7 +183,7 @@ func (s *Postgres) UpdateFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
 // fixValues is f's columns as fixInsertColumns lists them.
 func fixValues(f TaskFix) []any {
 	return []any{f.Issue, int64(f.Generation), f.Task, f.Fix, f.State, f.Check, f.Head, f.Place, f.Entry, f.GotReport, f.ReturnTo, f.Failed,
-		f.EndHead, f.Result, f.JobName, f.JobURL, f.ReadFailed, f.ClaimFailed, f.Way, f.StartedAt, f.EndedAt}
+		f.EndHead, f.Result, f.JobName, f.JobURL, f.ReadFailed, f.ClaimFailed, f.Way, f.MoveCarried, f.StartedAt, f.EndedAt}
 }
 
 // RecordBesidePush writes that a push showed head at the branch beside fix of task that role
@@ -264,7 +268,7 @@ func scanFix(row pgx.Row) (*TaskFix, error) {
 	var generation int64
 	var pushed []byte
 	if err := row.Scan(&f.Issue, &generation, &f.Task, &f.Fix, &f.State, &f.Check, &f.Head, &f.Place, &f.Entry, &f.GotReport,
-		&f.ReturnTo, &f.Failed, &f.EndHead, &f.Result, &f.JobName, &f.JobURL, &f.ReadFailed, &f.ClaimFailed, &f.Way,
+		&f.ReturnTo, &f.Failed, &f.EndHead, &f.Result, &f.JobName, &f.JobURL, &f.ReadFailed, &f.ClaimFailed, &f.Way, &f.MoveCarried,
 		&f.StartedAt, &f.EndedAt, &pushed); err != nil {
 		return nil, err
 	}

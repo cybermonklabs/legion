@@ -138,6 +138,8 @@ func fixBesideStepsStore(t *testing.T) *Store {
 	for _, read := range []struct{ what, query, want string }{
 		{"the existing task's fixes_ci", `select fixes_ci::text from plan_tasks where issue = 'LEGION-208'`, "false"},
 		{"the fixes", `select count(*)::text from task_fixes`, "0"},
+		{"the default of a fix's move_carried", `select column_default from information_schema.columns
+			where table_schema = current_schema() and table_name = 'task_fixes' and column_name = 'move_carried'`, "false"},
 		{"the CI failures", `select count(*)::text from ci_failures`, "0"},
 		{"the review's start", `select row(start_commit, end_commit, fix_check)::text from step_starts where issue = 'LEGION-208'`, `("","","")`},
 		{"the reviewer's delivery", `select row(fix, fix_from, move_to)::text from pending_task_deliveries`, `(0,"","")`},
@@ -157,8 +159,8 @@ func fixBesideStepsStore(t *testing.T) *Store {
 		queue(row)
 	}
 	exec("mark the task", `update plan_tasks set fixes_ci = true where issue = 'LEGION-208'`)
-	exec("record the fix", `insert into task_fixes (issue, generation, task, fix, state, check_id, head, place, entry, started_at)
-		values ('LEGION-208', 1, 'default', 1, 'running', 'ci/test', $1, 2, 2, now())`, fixBesideStepsCommit)
+	exec("record the fix", `insert into task_fixes (issue, generation, task, fix, state, check_id, head, place, entry, move_carried, started_at)
+		values ('LEGION-208', 1, 'default', 1, 'running', 'ci/test', $1, 2, 2, true, now())`, fixBesideStepsCommit)
 	exec("record the failure", `insert into ci_failures (issue, generation, task, check_id, head, went_to, fix, at)
 		values ('LEGION-208', 1, 'default', 'ci/test', $1, 'fix', 1, now())`, fixBesideStepsCommit)
 	exec("record the fix's delivery", `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at, fix, fix_from, fix_branch)
@@ -226,6 +228,9 @@ func TestMigrationFixBesideStepsKeepsEachRowAndItsWayBack(t *testing.T) {
 	ctx := context.Background()
 	t.Run("the way back leaves only what the release before reads", func(t *testing.T) {
 		store := fixBesideStepsStore(t)
+		if got := rowsAsText(t, store, `select move_carried::text from task_fixes`); !reflect.DeepEqual(got, []string{"true"}) {
+			t.Fatalf("the fix's move_carried before the way back = %v, want the true it was written with", got)
+		}
 		runFixBesideStepsWayBack(t, store, wayBackOf(t, fixBesideStepsVersion, fixBesideStepsRelease))
 
 		queued := queuedRows(t, store)
@@ -255,7 +260,7 @@ func TestMigrationFixBesideStepsKeepsEachRowAndItsWayBack(t *testing.T) {
 			{"the columns of this release", `select count(*)::text from information_schema.columns
 				where table_schema = current_schema() and (table_name, column_name) in (('plan_tasks', 'fixes_ci'),
 				('step_starts', 'start_commit'), ('step_starts', 'end_commit'), ('step_starts', 'fix_check'),
-				('step_starts', 'beside_fix'), ('step_starts', 'push_branch'),
+				('step_starts', 'beside_fix'), ('step_starts', 'push_branch'), ('task_fixes', 'move_carried'),
 				('pending_task_deliveries', 'fix'), ('pending_task_deliveries', 'fix_from'), ('pending_task_deliveries', 'move_to'),
 				('pending_task_deliveries', 'fix_branch'), ('workspace_bundles', 'fix_head'))`,
 				[]string{"0"}},

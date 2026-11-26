@@ -84,6 +84,67 @@ func TestNoStartAfterTheWaysStartMovesTheCopyAgain(t *testing.T) {
 	}
 }
 
+// After a stop ended a fix that pushed Y (way 4), the first start of the task moves its working copy
+// to Y, and no later start moves it for that fix. The owner stops the task while fix 1 runs and the
+// pull request stands at Y, and a todo starts the task again: the implementer's start moves the copy
+// to Y; the implementer passes, and the tester's start moves nothing, whatever the engine's clock
+// reads. Its red is the clock deciding it: the tester's start moved the copy to Y again wherever the
+// implementer's start was not later than the fix's end by the clock, as with a clock that does not
+// advance, or one that steps back.
+func TestNoStartAfterARestartsStartMovesTheCopyAgain(t *testing.T) {
+	for _, clock := range engineClocks {
+		t.Run(clock.name, func(t *testing.T) {
+			r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+			clock.set(r.engine)
+			r.pushed(headTwo)
+			r.stop()
+			r.todo()
+			if fix := r.latestFix(); fix.Way != wayNone || fix.EndHead != headTwo {
+				t.Fatalf("fix 1 after the stop = %+v, want way %d ended at %s", fix, wayNone, headTwo)
+			}
+			if got := r.moveToOf(claim.RoleImplementer); got != headTwo {
+				t.Fatalf("the restarted implementer moves the task's copy to %q, want %s, the head the fix ended at", got, headTwo)
+			}
+			if got := r.nextStart(TriggerImplementationReady, claim.RoleTester, phase.Testing).MoveTo; got != "" {
+				t.Fatalf("the tester's start after the restarted implementer passed moves the task's copy to %q, want no move", got)
+			}
+		})
+	}
+}
+
+// After a fix at the task's end with commits of its own (way 3: no step comes after the fix's), the
+// retro's start moves the task's working copy to the head the fix ended at, Y, and the merge's start
+// after it moves nothing. On a task whose one step is the implementation, a check fails at its end,
+// the fix pushes Y and ends, CI passes at Y, the retro starts moved to Y and completes, and the
+// merger's start moves nothing, whatever the engine's clock reads. Its red is the read that decided
+// it: it counted only the starts of the task's steps, never the retro's, so the merger's start moved
+// the copy to Y again on every clock.
+func TestNoStartAfterTheRetrosStartMovesTheCopyAgain(t *testing.T) {
+	for _, clock := range engineClocks {
+		t.Run(clock.name, func(t *testing.T) {
+			r := newFixRig(t, returnEngine(), []string{"implementer"})
+			clock.set(r.engine)
+			r.at(fixHead, jobRunning("k-ci"))
+			r.move(TriggerImplementationReady, "", record.PhaseRow{})
+			r.assertEndHold(record.HoldForCI)
+			r.fails(fixHead, "k-ci")
+			r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+			r.assertEndHold(record.HoldForFix)
+			r.fixEnds(headTwo)
+			r.at(headTwo, noCIJob("k-unit"), ciPassing("k-ci2"), ciPassing("k-ci"))
+			if fix := r.latestFix(); fix.Way != wayOn {
+				t.Fatalf("the fix took way %d, want %d: %+v", fix.Way, wayOn, fix)
+			}
+			if got := r.assertRetroStarted().MoveTo; got != headTwo {
+				t.Fatalf("the retro's start moves the task's copy to %q, want %s, the head the fix ended at", got, headTwo)
+			}
+			if got := r.nextStart(TriggerRetroCompleted, claim.RoleMerger, phase.Merging).MoveTo; got != "" {
+				t.Fatalf("the merger's start after the retro moves the task's copy to %q, want no move", got)
+			}
+		})
+	}
+}
+
 // The start a way 2 runs again of a step that pushed to its own branch beside the fix names that
 // branch and the head the daemon holds of the push, so the step takes its commits from it
 // (keptSentence), whatever the engine's clock reads. Fix 1 runs beside the running tester, which is
