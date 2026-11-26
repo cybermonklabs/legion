@@ -69,8 +69,9 @@ var keepsFHead = regexp.MustCompile(`\b[0-9a-f]{40}\b`)
 // keepsFRig is the pod-update rig over the issue in testing, its task a beside fix 1, with a
 // machine of each role of keepsFRoles ready in the issue's pod. Its machines adopt a working copy as
 // the daemon's do (adoptingAsTheDaemonDoes), drop a task whose phase the issue left
-// (workflowRuntime.phaseHolds), and apply each claim's ready through the engine
-// (workflowRuntime.terminal). runner is the outbox's start executor over the same supervisor, so
+// (workflowRuntime.phaseHolds), and apply each claim's ready through the engine with the daemon's
+// own callback (workflowRuntime.claimDurableState). runner is the outbox's start executor over the
+// same supervisor, so
 // a start the engine queues reaches its claim as the outbox's lane takes it there.
 type keepsFRig struct {
 	*podUpdateRig
@@ -146,7 +147,7 @@ func newKeepsFRig(t *testing.T, head string) *keepsFRig {
 		PhaseHolds:         w.phaseHolds,
 	}
 	adoptingAsTheDaemonDoes(sup)
-	sup.OnDurableState(w.terminal)
+	sup.OnDurableState(w.claimDurableState)
 	t.Cleanup(sup.stop)
 	stored, err := sup.Claims(ctx)
 	if err != nil {
