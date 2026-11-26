@@ -150,6 +150,9 @@ export function useWaitingWalk({
       if (owed === undefined) owe();
       return;
     }
+    // The item takes the focus as the walk's stop and is no Tab stop. The list draws it with no
+    // tab index (`WaitingList.tsx`, INFRA-5702's), so the walk gives the item one as it lands.
+    item.tabIndex = -1;
     item.focus({ preventScroll: true });
     bringOnScreen(item);
     settle();

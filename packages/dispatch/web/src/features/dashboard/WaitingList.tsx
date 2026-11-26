@@ -267,7 +267,6 @@ export function WaitingList({
               className={`rounded-xl border p-3 ${pageHairBorder}`}
               data-testid={`dashboard-item-${item.kind}-${item.id}`}
               key={`${item.kind}-${item.id}`}
-              tabIndex={-1}
             >
               <ItemBody
                 decisionsDocument={decisionsDocument}
