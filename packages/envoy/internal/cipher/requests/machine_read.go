@@ -2434,28 +2434,20 @@ func recordProfiles(set *policy.Set, details []record.AuthorizationDetail) []Rec
 }
 
 // kindScope is where rules let the credential of name go behind its kind, and the kind's allow
-// rows: the kind's hosts; or, where the name's binding holds an allow of its own (a profile's) and
-// every row of it names a host, those hosts alone, in the order its rows first name them, since a
-// request to any other host of the kind matches no row of it (proxyrules' allowOK); and no host at
-// all for such an allow of no row, which allows no request anywhere. A kind binds at least one host
-// (proxyrules.Validate), so no host answers that case alone. It answers nil and nil for a name
-// rules bind to no kind.
+// rows: the hosts the name's own allow (a profile's) narrows its kind to, where it narrows them
+// (proxyrules.AllowHosts), which for an allow of no row is no host at all; else the kind's hosts.
+// A kind binds at least one host (proxyrules.Validate), so no host answers that case alone. It
+// answers nil and nil for a name rules bind to no kind.
 func kindScope(rules proxyrules.Rules, name string) (hosts []string, allow []proxyrules.Allow) {
 	binding := rules.Lookup(name)
 	kind := rules.KindOf(binding)
 	if kind == nil {
 		return nil, nil
 	}
-	if binding.Allow == nil || slices.ContainsFunc(binding.Allow, func(row proxyrules.Allow) bool { return row.Host == "" }) {
-		return kind.Hosts, kind.Allow
+	if narrowed, ok := proxyrules.AllowHosts(binding.Allow); ok {
+		return narrowed, kind.Allow
 	}
-	hosts = []string{}
-	for _, row := range binding.Allow {
-		if !slices.Contains(hosts, row.Host) {
-			hosts = append(hosts, row.Host)
-		}
-	}
-	return hosts, kind.Allow
+	return kind.Hosts, kind.Allow
 }
 
 // ApproverGrant is one live grant a person may revoke, for GET /v1/grants?approver=<login>.

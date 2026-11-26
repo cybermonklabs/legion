@@ -653,7 +653,7 @@ func servingOf(file policy.Profiles, name string, tags *storeTags) serving {
 			return serving{state: behindProxy, how: "behind " + words, allow: b.Allow, allowKnown: true, hosts: b.Hosts, hostsKnown: true}
 		}
 		s := serving{allow: p.Allow, allowKnown: p.Allow != nil}
-		s.hosts, s.hostsKnown = rowHosts(p.Allow)
+		s.hosts, s.hostsKnown = proxyrules.AllowHosts(p.Allow)
 		var tag string
 		if tags != nil {
 			tag = tags.proxy(p.Source)
@@ -687,26 +687,6 @@ func servingOf(file policy.Profiles, name string, tags *storeTags) serving {
 		return serving{state: notBehind, how: fmt.Sprintf("no profile holds the name, and its stored secret carries no %s tag", policy.TagProxy)}
 	}
 	return byKind(serving{}, tags.proxy(name), fmt.Sprintf("its own %s tag", policy.TagProxy))
-}
-
-// rowHosts is the hosts an allow narrows its kind's to, and whether it narrows them: the hosts its
-// rows name, each once, when every row names one, since a row with a host allows a request to that
-// host alone; an empty list, which reaches no host, for an allow that allows nothing; and no
-// narrowing for a missing allow or one with a row of no host, which leave the kind's hosts.
-func rowHosts(allow []proxyrules.Allow) ([]string, bool) {
-	if allow == nil {
-		return nil, false
-	}
-	hosts := []string{}
-	for _, row := range allow {
-		if row.Host == "" {
-			return nil, false
-		}
-		if !slices.Contains(hosts, row.Host) {
-			hosts = append(hosts, row.Host)
-		}
-	}
-	return hosts, true
 }
 
 // writeWidens writes, for each name behind the proxy under both files, each row of its allow under
