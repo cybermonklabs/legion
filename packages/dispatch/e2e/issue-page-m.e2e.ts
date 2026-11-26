@@ -71,7 +71,7 @@ import {
   scrollHistoryBy,
   scrollHistoryTo,
 } from "./history-scroll";
-import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
+import { inboxList, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { focusAfterStaleness } from "./inbox-pane-scroll";
 import { replyRowId } from "./inbox-threads";
 import { seedConversationState } from "./issue-layout-seed";
@@ -136,6 +136,7 @@ import { viewportAt } from "./issue-page-p";
 import { tabWalk } from "./issue-page-v";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { setCreatedAt, setEventCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
 import {
