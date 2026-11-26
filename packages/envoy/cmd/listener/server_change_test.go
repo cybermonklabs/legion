@@ -354,7 +354,7 @@ func (s *serverChangeSoak) startStandIn(t *testing.T) {
 // registration that listener has not read yet.
 func (s *serverChangeSoak) awaitStandInSeenBySenders(t *testing.T) {
 	t.Helper()
-	waitFor(t, serverChangeRecovery, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
+	waitFor(t, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
 		status, body := callListener(t, s.via.port, http.MethodGet, "/v1/sessions", "")
 		var sessions []listenerwire.SessionInfo
 		if status != http.StatusOK || json.Unmarshal([]byte(body), &sessions) != nil {

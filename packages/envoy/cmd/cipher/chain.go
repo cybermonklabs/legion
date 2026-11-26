@@ -416,6 +416,13 @@ func machineChainSource() signerSource {
 	}
 }
 
+// noLauncherCredential names each identity kind machineSource refuses, as its refusal names it:
+// the kinds whose trade the broker mints no launcher credential for.
+var noLauncherCredential = map[string]string{
+	cipherclient.IdentityKubernetes:    "a Kubernetes identity",
+	cipherclient.IdentityGitHubActions: "a GitHub Actions run",
+}
+
 // machineSource is the identity this machine proves at the broker's token exchange: the one
 // AGENT_SECRETS_MACHINE_IDENTITY names, from the environment or the settings file, whose error
 // stops the caller; else the one cipherclient.DetectMachineIdentity finds for the Google exchange
@@ -424,10 +431,12 @@ func machineChainSource() signerSource {
 // accepts no machine identity, and nothing is asked of the machine then. The use command, `agent-
 // secrets login` and a sign-in's renewal all take the machine from here.
 //
-// AGENT_SECRETS_MACHINE_IDENTITY=kubernetes is a usage error here, before anything is traded: the
-// exchange mints a launcher credential for a Google subject and a person alone, so a pod's token
-// registers no session and acts as no sign-in's machine. The helper and the Legion controller,
-// which read the same setting through cipherclient.MachineIdentity, are unchanged.
+// AGENT_SECRETS_MACHINE_IDENTITY=kubernetes or github-actions is a usage error here, before
+// anything is traded: the exchange mints a launcher credential for a Google subject and a person
+// alone, so a pod's token or a workflow run's registers no session and acts as no sign-in's
+// machine. The Legion controller and natsprobe, which read the same setting through
+// cipherclient.MachineIdentity and decline the launcher credential, take both; the helper reads it
+// too, and gets no launcher credential with either.
 //
 // Those settings are unauthenticated and choose the audience of the identity token this machine
 // mints and hands over, so they are read only from an https broker, or a loopback one
@@ -439,9 +448,9 @@ func machineChainSource() signerSource {
 // and keeps nothing.
 func machineSource(ctx context.Context, keep bool) (cipherclient.Source, []cipherclient.Skipped, error) {
 	if kind := strings.TrimSpace(clientGetenv(cipherclient.IdentityVar)); kind != "" {
-		if kind == cipherclient.IdentityKubernetes {
-			return nil, nil, &settingError{fmt.Errorf("%s=%s is not one agent-secrets takes: the broker mints no launcher credential for a Kubernetes identity, so no session could be registered under it; set %s or %s, or unset it to find this machine's identity from the broker's settings",
-				cipherclient.IdentityVar, kind, cipherclient.IdentityMetadata, cipherclient.IdentityPool)}
+		if what, refused := noLauncherCredential[kind]; refused {
+			return nil, nil, &settingError{fmt.Errorf("%s=%s is not one agent-secrets takes: the broker mints no launcher credential for %s, so no session could be registered under it; set %s or %s, or unset it to find this machine's identity from the broker's settings",
+				cipherclient.IdentityVar, kind, what, cipherclient.IdentityMetadata, cipherclient.IdentityPool)}
 		}
 		identity, err := cipherclient.MachineIdentity(clientGetenv)
 		return identity, nil, err
