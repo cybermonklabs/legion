@@ -831,15 +831,25 @@ func TestTheRigPanesGhIsTheStandIn(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "bin", "gh"), []byte("#!/bin/sh\necho \"stand-in $*\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(runDir, "bin", "kubectl"), []byte("#!/bin/sh\necho kubectl\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := rigPaneGH(stateDir, runDir); err != nil {
 		t.Fatal(err)
 	}
 
+	panePath := workerbin.Path(os.Getenv("PATH"), stateDir)
 	pane := exec.Command("bash", "-c", shellprefix.For(workerbin.LauncherDir(stateDir))+" gh pr merge 41")
-	pane.Env = []string{"PATH=" + workerbin.Path(os.Getenv("PATH"), stateDir)}
+	pane.Env = []string{"PATH=" + panePath}
 	answered, err := pane.CombinedOutput()
 	if got := strings.TrimSpace(string(answered)); err != nil || got != "stand-in pr merge 41" {
 		t.Errorf("the pane's `gh pr merge 41` answered %q (%v), want the stand-in's %q", got, err, "stand-in pr merge 41")
+	}
+	kubectl := exec.Command("bash", "-c", shellprefix.For(workerbin.LauncherDir(stateDir))+" command -v kubectl")
+	kubectl.Env = []string{"PATH=" + panePath}
+	located, err := kubectl.CombinedOutput()
+	if got, want := strings.TrimSpace(string(located)), filepath.Join(runDir, "bin", "kubectl"); err != nil || got != want {
+		t.Errorf("the pane's `command -v kubectl` answered %q (%v), want the rig stand-in %q", got, err, want)
 	}
 }
