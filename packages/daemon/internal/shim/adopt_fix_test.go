@@ -400,12 +400,12 @@ func TestAnAdoptionMovesTheTaskCopyToTheHead(t *testing.T) {
 		t.Errorf("the task's working copy is %q, want an undescribed commit authored by %s", author, adoptingUser)
 	}
 	if ran := r.commands(); !slices.Equal(verbs(ran), []string{"log", "new", "log", "metaedit"}) {
-		t.Errorf("the adoption ran jj\n%s\nwant the read of @-, the move, then the adoption as without one", strings.Join(ran, "\n"))
+		t.Errorf("the adoption ran jj\n%s\nwant the read of whether the copy holds the commit, the move, then the adoption as without one", strings.Join(ran, "\n"))
 	}
 }
 
-// A move to the commit the task's working copy already stands on reads it and moves nothing: the
-// one read, then the adoption as without a move, and no `jj new`.
+// A move to the commit the task's working copy already stands on reads that the copy holds it and
+// moves nothing: the one read, then the adoption as without a move, and no `jj new`.
 func TestAMoveToWhereItStandsRunsNoJJNew(t *testing.T) {
 	r := newCopyRig(t)
 	got := r.adopt("stay", shimwire.AdoptWorkingCopy{MoveTo: r.head})
@@ -417,10 +417,10 @@ func TestAMoveToWhereItStandsRunsNoJJNew(t *testing.T) {
 	}
 	ran := r.commands()
 	if want := []string{"log", "log", "metaedit"}; !slices.Equal(verbs(ran), want) {
-		t.Errorf("the adoption ran jj\n%s\nwant %v: one read of @-, no jj new", strings.Join(ran, "\n"), want)
+		t.Errorf("the adoption ran jj\n%s\nwant %v: one read, no jj new", strings.Join(ran, "\n"), want)
 	}
-	if len(ran) > 0 && ran[0] != "log -r @- --no-graph -T commit_id -R "+r.workspace {
-		t.Errorf("the adoption's first command is %q, want the read of the working copy's parent", ran[0])
+	if len(ran) > 0 && ran[0] != "log -r "+r.head+" & ::@- --no-graph -T commit_id -R "+r.workspace {
+		t.Errorf("the adoption's first command is %q, want the read of whether the working copy holds %s", ran[0], r.head)
 	}
 }
 
