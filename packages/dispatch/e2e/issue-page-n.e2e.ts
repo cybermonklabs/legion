@@ -79,6 +79,7 @@ import {
   selectTextIn,
   typeAtEnd,
 } from "./editor";
+import { nextFrames } from "./frames";
 import {
   type AdvancingIssueSeed,
   type BaselineSeed,
@@ -233,6 +234,7 @@ import {
   MEASURED_TITLE,
   propertiesLine,
   seedHeader,
+  stickyReading,
   viewportAt,
   waitingCount,
 } from "./issue-page-p";
@@ -2887,8 +2889,8 @@ test("the first load stays inside its request budget", async ({ browser }) => {
   await phase(browser, withLongDocument(seedRequestBaseline), async (page, seeded) => {
     const traffic = watchApiRequests(page);
     traffic.reset();
-    // The bare address's load (at most 40, Dashboard's) is read once dispatch://INFRA-5702 is on
-    // this part's stack: until then the bare address draws Conversation, the load read here.
+    // Conversation's own address, whose load reads the tree: the bare address draws Dashboard
+    // (dispatch://INFRA-5702), whose own cold load is read below.
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expectTheSeedIsDrawn(page, seeded);
@@ -2954,6 +2956,22 @@ test("the first load stays inside its request budget", async ({ browser }) => {
     expect(
       traffic.total(),
       `the first load of /spec sent ${traffic.total()} requests under /api/: ${specByRoute}`
+    ).toBeLessThanOrEqual(40);
+
+    // The bare address's own cold load, which draws Dashboard (dispatch://INFRA-5702), within the
+    // same ceiling, and no read of the long document's blocks there either.
+    traffic.reset();
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectDashboardDrawn(page, "the bare address");
+    await expectLoadSettled(traffic);
+    const bareByRoute = JSON.stringify(traffic.byRoute());
+    expect(
+      blocksReadsOf(traffic, seeded.long),
+      `the first load of the bare address read the blocks of ${seeded.long.name}, a document of ${LONG_DOCUMENT_BLOCKS} typed blocks, before it was opened from Documents`
+    ).toEqual([]);
+    expect(
+      traffic.total(),
+      `the first load of the bare address sent ${traffic.total()} requests under /api/: ${bareByRoute}`
     ).toBeLessThanOrEqual(40);
 
     // Opening the document from Documents reads its text and its blocks.
@@ -6272,6 +6290,136 @@ test("the header links the issue's pull request @phone", async ({ browser }) => 
     // The worst header: the same, and an approval request waiting on the reader.
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
     await expectLinkAddsNothingOn("with the longest title, 20 labels and a request");
+  });
+});
+
+/** The layers of the title block's computed `box-shadow`, in words: "the lower line" for the
+ *  1 px line in `lineColour`, the page's line colour as the browser writes it, "the soft shadow"
+ *  for the prototype's 6 px shadow, each other layer as the browser writes it, and nothing for
+ *  `none` or for the transparent layers Tailwind sets under every shadow. A comma inside a
+ *  colour's parentheses splits no layer. */
+function titleBlockEdge(shadow: string, lineColour: string): string[] {
+  if (shadow === "none") return [];
+  return shadow
+    .split(/,(?![^(]*\))/)
+    .map((layer) => layer.trim())
+    .filter((layer) => !layer.startsWith("rgba(0, 0, 0, 0) "))
+    .map((layer) => {
+      if (layer === `${lineColour} 0px 1px 0px 0px`) return "the lower line";
+      return layer.endsWith(" 0px 6px 14px 0px") ? "the soft shadow" : layer;
+    });
+}
+
+// c-title-edge (R22): from 761 px, where the title block stays at the top of the screen, it draws
+// its lower line, 1 px in the page's line colour, from the first pixel the page scrolls, and its
+// soft shadow under that line past 40 px as the prototype does, so the properties line passes
+// under an edge and not under a cut; at the page's top it draws neither. It is read on part P's
+// header seed with 20 labels written, so the properties line that passes under the block holds
+// labels and a photo, the assignee's circle: at 1440 px the block's computed `box-shadow` is
+// `none` at the top, holds the line and no soft shadow at 1, 20 and 40 px scrolled, and the line
+// and the soft shadow at 320 px. At 390 px the header scrolls away with the page and the block
+// draws neither at any of those places. A pass does not show 760 px or 761 px, which the row does
+// not read; part P's sticky rows read both.
+// SLOW(>=2s): the header's seed with 20 labels written, then a load of the issue into a short
+// window at each of two widths, each page scrolled to five places with two frames drawn after each.
+test("the title block draws its lower line from the first pixel scrolled", async ({ browser }) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...HEADER_LABELS] });
+    for (const width of [DESKTOP.width, IPHONE_13.width]) {
+      const stays = width > 760;
+      // A short window and a page made taller than it, so the page scrolls 320 px at both widths,
+      // opened as part P's sticky rows open it (`openScrollingPage` in `e2e/issue-page-p.e2e.ts`):
+      // the outline's opening lands and the focus then leaves it, or the page's growth would
+      // scroll back to the row it holds.
+      await page.setViewportSize({ height: 420, width });
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+      await expectHeaderDrawn(page);
+      await expectOpeningLanded(page);
+      await focusThePage(page);
+      await page.evaluate(() => {
+        const issue = document.querySelector("[data-issue-page]");
+        if (issue instanceof HTMLElement) issue.style.minHeight = "2000px";
+        window.scrollTo(0, 0);
+      });
+      // The page's line colour as the browser writes a computed colour, read off an element that
+      // takes it, so it compares with a layer of a computed `box-shadow`.
+      const lineColour = await page.evaluate(() => {
+        const root = getComputedStyle(document.documentElement);
+        if (root.getPropertyValue("--color-page-line").trim() === "") {
+          throw new Error("the page defines no --color-page-line");
+        }
+        const probe = document.createElement("span");
+        probe.style.color = "var(--color-page-line)";
+        document.body.append(probe);
+        const colour = getComputedStyle(probe).color;
+        probe.remove();
+        return colour;
+      });
+      if (stays) {
+        // What passes under the block as the page scrolls: the seed's labels and its photo.
+        await expect(
+          propertiesLine(page).locator("[data-header-label]").first(),
+          "the properties line holds no label"
+        ).toBeVisible();
+        await expect(
+          propertiesLine(page).locator("[data-initial]"),
+          "the properties line holds no photo"
+        ).toBeVisible();
+      }
+      for (const y of [0, 1, 20, 40, 320]) {
+        await page.evaluate((top) => window.scrollTo(0, top), y);
+        await expect
+          .poll(async () => (await stickyReading(page))?.scrolled, {
+            message: `the page did not scroll to ${y} px at ${width} px`,
+          })
+          .toBe(y);
+        // The scroll's handler and the render it asked for are done within two frames.
+        await nextFrames(page);
+        const reading = await stickyReading(page);
+        if (reading === null) throw new Error(`the page draws no header at ${width} px`);
+        expect(reading.scrolled, `the page left ${y} px scrolled at ${width} px`).toBe(y);
+        if (!stays) {
+          expect
+            .soft(
+              reading.shadow,
+              `the title block draws an edge at ${y} px scrolled at ${width} px, where the header scrolls away`
+            )
+            .toBe("none");
+          if (y === 320) {
+            expect(
+              reading.block.bottom,
+              `the header stayed on screen at ${width} px`
+            ).toBeLessThanOrEqual(0);
+          }
+          continue;
+        }
+        if (y === 0) {
+          expect
+            .soft(reading.shadow, "the title block draws an edge at the page's top")
+            .toBe("none");
+          continue;
+        }
+        const drawn = titleBlockEdge(reading.shadow, lineColour);
+        const under = drawn.filter((layer) => layer !== "the lower line");
+        expect
+          .soft(drawn, `the title block draws no lower line at ${y} px scrolled`)
+          .toContain("the lower line");
+        if (y <= 40) {
+          expect
+            .soft(under, `the title block draws more than its lower line at ${y} px scrolled`)
+            .toEqual([]);
+        } else {
+          expect
+            .soft(under, `the title block draws no soft shadow at ${y} px scrolled`)
+            .toEqual(["the soft shadow"]);
+          expect(
+            Math.abs(reading.block.top),
+            `the title block left the top of the screen at ${y} px scrolled`
+          ).toBeLessThanOrEqual(1);
+        }
+      }
+    }
   });
 });
 

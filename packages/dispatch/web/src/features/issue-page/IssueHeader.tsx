@@ -102,7 +102,7 @@ export function IssueHeader({
 }): ReactNode {
   const { drafts, pendingStatus, updateIssue } = writes;
   const block = useRef<HTMLDivElement | null>(null);
-  const { condensed } = useIdentityBlock(block);
+  const { condensed, scrolled } = useIdentityBlock(block);
   const header = useRef<HTMLElement | null>(null);
   useFocusKeeper(header, HEADER_FOCUS_FALLBACKS);
   useIssuePalette({
@@ -164,10 +164,16 @@ export function IssueHeader({
     >
       {/* The band stays from 761 px up and scrolls away at 760 px and below: `min-[761px]`
           and no `max-[760px]`, which Tailwind builds as `width < 760px` and so leaves 760 px
-          itself sticky. */}
+          itself sticky. Where it stays it draws its lower line, 1 px in the page's line colour,
+          from the first pixel the page scrolls, and its soft shadow under it past 40 px; at the
+          page's top, and where it scrolls away, neither (`useIdentityBlock`). */}
       <div
         className={`z-20 flex min-w-0 flex-col px-3.5 pt-2 pb-0.5 min-[761px]:sticky min-[761px]:top-0 min-[761px]:px-7 min-[761px]:pt-[7px] min-[761px]:pb-px ${pagePaperBg} ${pageInkText} ${
-          condensed ? "shadow-[0_1px_0_var(--color-page-line),0_6px_14px_rgba(28,25,23,0.06)]" : ""
+          condensed
+            ? "shadow-[0_1px_0_var(--color-page-line),0_6px_14px_rgba(28,25,23,0.06)]"
+            : scrolled
+              ? "shadow-[0_1px_0_var(--color-page-line)]"
+              : ""
         }`}
         data-identity-block=""
         ref={block}

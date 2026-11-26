@@ -50,6 +50,7 @@ import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ACTION_WORDS } from "./approval-chip-box";
+import { HEADER_SCROLLS_QUERY } from "./identity-block";
 import { CONTROL_LABELS } from "./page-words";
 import { PULL_REQUEST_STATE_WORDS } from "./page-words-n";
 import { ShellNavigationContext } from "./shell-navigation";
@@ -3233,5 +3234,146 @@ test("an issue with no pull request draws no link", async () => {
   } finally {
     view.unmount();
     restore();
+  }
+});
+
+// R22 of dispatch://INFRA-3940 (`c-title-edge`): from 761 px, where the title block stays at the
+// top of the screen, it draws its lower line, 1 px in the page's line colour, from the first
+// pixel the page scrolls, and its soft shadow under that line past 40 px, as the prototype does,
+// so the properties line passes under an edge and not under a cut. At the page's top it draws
+// neither, nor where the header scrolls away with the page, at 760 px and below. The header's
+// `data-condensed`, which part P's rows read, keeps its 40 px rule. happy-dom applies no style
+// sheet, so the cases read the class the block draws its edge with, and its window is 1024 px
+// wide, where the block stays.
+
+/** The class the title block draws its lower line with. */
+const LOWER_LINE = "shadow-[0_1px_0_var(--color-page-line)]";
+
+/** The class the title block draws that line and the soft shadow under it with. */
+const LINE_AND_SOFT_SHADOW =
+  "shadow-[0_1px_0_var(--color-page-line),0_6px_14px_rgba(28,25,23,0.06)]";
+
+/** Leaves the page `y` pixels down, as a scroll leaves `window.scrollY`. */
+function placePage(y: number): void {
+  Object.defineProperty(window, "scrollY", { configurable: true, value: y, writable: true });
+}
+
+/** Scrolls the page to `y` and says so, as the browser does: the block's listener sets its state
+ *  from the event, so the event is sent inside `act`. */
+function scrollPageTo(y: number): void {
+  act(() => {
+    placePage(y);
+    window.dispatchEvent(new Event("scroll"));
+  });
+}
+
+/** Puts back the `scrollY` a case found, which `placePage` replaced. */
+function restoreScrollY(found: PropertyDescriptor | undefined): void {
+  if (found === undefined) Reflect.deleteProperty(window, "scrollY");
+  else Object.defineProperty(window, "scrollY", found);
+}
+
+/** The classes the title block in `container` draws an edge with: its `shadow-` ones. */
+function titleBlockEdges(container: HTMLElement): string[] {
+  const block = container.querySelector("[data-identity-block]");
+  if (block === null) throw new Error("the header draws no title block");
+  return [...block.classList].filter((name) => name.startsWith("shadow-"));
+}
+
+/** The header's `data-condensed` in `container`, as part P's rows read it. */
+function headerCondensed(container: HTMLElement): string | null {
+  return container.querySelector("[data-issue-header]")?.getAttribute("data-condensed") ?? null;
+}
+
+test("the title block draws no edge at the page's top", async () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  placePage(0);
+  const restore = stubHeader(issue);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1/conversation", queryClient);
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(titleBlockEdges(view.container), "the block draws an edge as it opens").toEqual([]);
+    // Scrolled down and back to the top, it draws none again.
+    scrollPageTo(320);
+    expect(titleBlockEdges(view.container)).toEqual([LINE_AND_SOFT_SHADOW]);
+    scrollPageTo(0);
+    expect(titleBlockEdges(view.container), "the block draws an edge back at the top").toEqual([]);
+    expect(headerCondensed(view.container)).toBe("false");
+  } finally {
+    view.unmount();
+    restore();
+    restoreScrollY(scrollY);
+  }
+});
+
+test("from the first pixel scrolled it draws its lower line, and past 40 px the soft shadow too", async () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  placePage(0);
+  const restore = stubHeader(issue);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1/conversation", queryClient);
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    for (const [y, edge, condensed] of [
+      [1, LOWER_LINE, "false"],
+      [20, LOWER_LINE, "false"],
+      [40, LOWER_LINE, "false"],
+      [41, LINE_AND_SOFT_SHADOW, "true"],
+      [320, LINE_AND_SOFT_SHADOW, "true"],
+    ] as const) {
+      scrollPageTo(y);
+      expect(titleBlockEdges(view.container), `the block's edge at ${y} px scrolled`).toEqual([
+        edge,
+      ]);
+      expect(headerCondensed(view.container), `data-condensed at ${y} px scrolled`).toBe(condensed);
+    }
+  } finally {
+    view.unmount();
+    restore();
+    restoreScrollY(scrollY);
+  }
+});
+
+test("where the header scrolls away it draws neither", async () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const originalMatchMedia = window.matchMedia;
+  // happy-dom answers every media query against its own 1024 px window, where the block stays:
+  // here `HEADER_SCROLLS_QUERY` answers as a width of 760 px or less does, and every other query
+  // as happy-dom answers it.
+  const narrow = {
+    addEventListener: () => {},
+    addListener: () => {},
+    dispatchEvent: () => true,
+    matches: true,
+    media: HEADER_SCROLLS_QUERY,
+    onchange: null,
+    removeEventListener: () => {},
+    removeListener: () => {},
+  } as MediaQueryList;
+  window.matchMedia = (query: string) =>
+    query === HEADER_SCROLLS_QUERY ? narrow : originalMatchMedia.call(window, query);
+  placePage(0);
+  const restore = stubHeader(issue);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1/conversation", queryClient);
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    for (const y of [0, 1, 20, 40, 41, 320]) {
+      scrollPageTo(y);
+      expect(
+        titleBlockEdges(view.container),
+        `the block draws an edge at ${y} px scrolled`
+      ).toEqual([]);
+      expect(headerCondensed(view.container), `data-condensed at ${y} px scrolled`).toBe("false");
+    }
+  } finally {
+    view.unmount();
+    restore();
+    window.matchMedia = originalMatchMedia;
+    restoreScrollY(scrollY);
   }
 });
