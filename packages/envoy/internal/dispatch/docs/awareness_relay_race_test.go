@@ -32,6 +32,7 @@ import (
 // 30 s). Here the purge is put ahead of the relay's own observer, so it lands in that window
 // every time.
 func TestAReaderLeavingIsRelayedAtItsClientsClockThoughAPurgeRacesTheEncode(t *testing.T) {
+	t.Parallel()
 	pair := newSeededProcessPair(t, "First.\n\nSecond.\n")
 	var purged atomic.Int64
 	pair.taskA.beforeAwarenessWatch = func(room string, aw *awareness.Awareness) {
@@ -178,6 +179,7 @@ func announcesAlice(entries []awarenessEntry, clock uint64) bool {
 // Alice is announced again from an observer ahead of the relay's own, so her return lands
 // between her removal's apply and the relay hearing of it every time.
 func TestAReaderInTheRoomAgainKeepsItsStateThoughARemovalRacesItsReturn(t *testing.T) {
+	t.Parallel()
 	aReturnRacingARemoval(t, returnRace{
 		window: "before the relay's own observer heard of her removal",
 		wire: func(service *Service, back func(aw *awareness.Awareness)) {
@@ -202,6 +204,7 @@ func TestAReaderInTheRoomAgainKeepsItsStateThoughARemovalRacesItsReturn(t *testi
 // removal and recording it, so her return - and the record of it, which the announcement runs
 // through - lands in it every time.
 func TestAReaderBackBeforeItsRemovalIsRecordedKeepsItsState(t *testing.T) {
+	t.Parallel()
 	aReturnRacingARemoval(t, returnRace{
 		window: "between her removal being decided and being recorded",
 		wire: func(service *Service, back func(aw *awareness.Awareness)) {
@@ -228,6 +231,7 @@ func TestAReaderBackBeforeItsRemovalIsRecordedKeepsItsState(t *testing.T) {
 // clock the relay holds for her must stay c+1, so the removal is settled against the room and
 // dropped.
 func TestAReaderBackWhileAnOlderStateOfHersIsAnsweredToAQueryKeepsItsState(t *testing.T) {
+	t.Parallel()
 	// The bound every wait below runs on, taken here: roomWait reads the binary's deadline
 	// through t, and the hooks run on the goroutines of the room's own changes.
 	wait := roomWait(t)
@@ -374,6 +378,7 @@ func anAnswerRecordedOverARemoval(t *testing.T, flushed bool) {
 // The answer records the state it read after the removal, and before the batch carrying the
 // removal is sent: the removal is what that batch must carry.
 func TestAReaderLeavingWhileAnOlderStateOfHersIsAnsweredToAQueryStillLeaves(t *testing.T) {
+	t.Parallel()
 	anAnswerRecordedOverARemoval(t, false)
 }
 
@@ -382,6 +387,7 @@ func TestAReaderLeavingWhileAnOlderStateOfHersIsAnsweredToAQueryStillLeaves(t *t
 // would reach rooms that hold nothing of her and be taken for a reader who has just joined, so
 // it must not be sent at all, and task A's own list must be left without a reader who is gone.
 func TestAReaderLeavingBeforeAnOlderStateOfHersIsAnsweredToAQueryIsNotRelisted(t *testing.T) {
+	t.Parallel()
 	anAnswerRecordedOverARemoval(t, true)
 }
 
@@ -546,6 +552,7 @@ func aHeartbeatRacingARemoval(t *testing.T, removalLast bool) {
 // decided at the clock the relay's list still holds her at, her heartbeat records, and her
 // removal records over it.
 func TestAReaderLeavingOverItsOwnHeartbeatStillLeavesTheOtherProcess(t *testing.T) {
+	t.Parallel()
 	aHeartbeatRacingARemoval(t, true)
 }
 
@@ -554,6 +561,7 @@ func TestAReaderLeavingOverItsOwnHeartbeatStillLeavesTheOtherProcess(t *testing.
 // recorded first - which takes her off the list this process relays and answers queries from
 // and puts her removal in the room's pending batch - and her heartbeat's record follows it.
 func TestAReadersHeartbeatRecordedOverItsOwnRemovalStillLeavesTheOtherProcess(t *testing.T) {
+	t.Parallel()
 	aHeartbeatRacingARemoval(t, false)
 }
 
@@ -577,6 +585,7 @@ func TestAReadersHeartbeatRecordedOverItsOwnRemovalStillLeavesTheOtherProcess(t 
 // It drives three records where the two orders above drive two - two beats and a removal, with
 // a send between them - so it keeps a body of its own.
 func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *testing.T) {
+	t.Parallel()
 	pair := newSeededProcessPair(t, "First.\n\nSecond.\n")
 	cursor := cursorOf("alice", 1)
 	state, err := json.Marshal(cursor)
@@ -724,6 +733,7 @@ func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *t
 // here: the observer waits without one of its own, since a deadline of the observer's would
 // fire on the write's goroutine after the subtest it belongs to had already failed and ended.
 func TestARoomsAwarenessFiresItsObserversWithItsLockReleased(t *testing.T) {
+	t.Parallel()
 	const cursor = `{"user":{"name":"alice"}}`
 	live := func(aw *awareness.Awareness) {
 		if err := aw.ApplyUpdate(awarenessStates(aliceClient, 1, 1, cursor), "a peer of this process"); err != nil {

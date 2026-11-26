@@ -488,7 +488,7 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 // Each walk keeps the keys it has already visited, so a chain that loops stops rather than
 // running for ever, which is the stop every tree walk holds (legion.TreeChain). What the
 // descent costs a pass is measured over the rig's histories and recorded with the pass's other
-// costs (PassGap).
+// costs (PassRetry).
 func rowsTouchedBy(keys []string, above map[string]string) []string {
 	touched := make(map[string]bool, len(keys))
 	climbed := map[string]bool{}

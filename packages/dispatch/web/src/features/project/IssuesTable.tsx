@@ -9,9 +9,10 @@ import {
   useDataTable,
 } from "../../components/DataTable";
 import type { FilterChip } from "../../components/filter-chips";
-import { useFocusPlace } from "../../components/focus-place";
+import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
+import { useLastMarkedPlace } from "../../components/SelectionBar";
 import { TABLE_FRAME_MARK } from "../../components/table-keys";
 import { useTableLayout } from "../../components/table-layout";
 import {
@@ -33,14 +34,21 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
-import { useIssueTableActions } from "./issues-table-actions";
+import { ISSUES_NOT_LOADED, useIssueTableActions } from "./issues-table-actions";
 import {
+  type IssueTableColumnId,
+  type IssueTableWidths,
   issueTableLayout,
   listingColumns,
-  type ShownColumnId,
+  ROW_ACTIONS_WIDTH,
   useIssueTableColumns,
 } from "./issues-table-columns";
-import { answeredWhole, type IssueListing, useIssueTableItems } from "./issues-table-data";
+import {
+  answeredWhole,
+  type IssueListing,
+  listsQueued,
+  useIssueTableItems,
+} from "./issues-table-data";
 import {
   ALL_ROWS,
   clearPicked,
@@ -54,6 +62,8 @@ import {
   isEpic,
   matchesFilters,
   matchesSearch,
+  NOBODY_FACET,
+  narrowsNothing,
   PAGE_SIZES,
   tableStorageKey,
   UNCLAIMED_FACET,
@@ -66,14 +76,13 @@ import { issueIsUnread } from "./UnreadDot";
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 /** Status offers Done before the closed issues it would count are read. */
 const DONE_UNLOADED: ReadonlyMap<string, readonly string[]> = new Map([["status", ["done"]]]);
-/** The one layout key of every table scoped to a priority: the work advancing a priority is
- *  one table, drawn under an opened row of the priorities page and on the priority's own page,
- *  so the columns a reader drags there are dragged once rather than once per priority. */
+/** The one layout key of every table scoped to a priority that names no layout of its own: the
+ *  work advancing a priority is one table wherever it is drawn, so the columns a reader drags
+ *  there are dragged once rather than once per priority. A priority's own page names its own
+ *  layout (`priorities/PriorityPage.tsx`). */
 const SCOPED_LAYOUT_KEY = "priority-work";
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
-
-const ACTION_WIDTH = 104;
 
 /** The checkbox a row draws for its selection (`issues-table-columns.tsx`'s select column), the
  *  one checkbox every row has. */
@@ -96,15 +105,6 @@ const ISSUE_TABLE_NAMES: DataTableNames = {
   rowAttribute: ISSUE_ROW_ATTRIBUTE,
 };
 
-/** The same words for an issue table a page draws beside its main table over the same keys - the
- *  priorities page's fault lists, and the work under an opened priority - whose `j` and `k` walk
- *  it only from one of its own rows (`moveFrom: "row"`), so they never take those keys from the
- *  main table. */
-const ISSUE_TABLE_BESIDE_NAMES: DataTableNames = {
-  ...ISSUE_TABLE_NAMES,
-  keymap: { ...ISSUE_TABLE_NAMES.keymap, moveFrom: "row" },
-};
-
 /** What the List's rows are, which its header filters count in and its pager counts: issues, in
  *  groups, over rows. */
 const ISSUE_TABLE_NOUN: RowNoun = {
@@ -122,29 +122,55 @@ const ISSUE_TABLE_PAGER: PagerOptions = {
 };
 
 export function IssuesTable({
+  empty,
   label,
   layout: ownLayout,
   listing,
-  moveFrom = "page",
   priorityTitles,
   stateKey,
 }: {
+  /** What the table says when it lists no row and the reader narrowed it by nothing - no filter
+   *  but the statuses it opens with, no search, no issues picked (`narrowsNothing`), and neither
+   *  Needs you nor Unread: that its listing holds no issue, in its caller's words. Unset, or once
+   *  the reader narrowed it, it says no issues match these filters. */
+  empty?: string;
   /** What this list is called, for a reader who cannot see where it sits; by its listing when
    *  unset: a project's issues, or the issues advancing one priority. */
   label?: string;
-  /** The layout this table keeps, under its own key, where it is not its listing's, and the
-   *  columns it opens with shown: each fault list of the priorities page shows its listing
-   *  columns and Updated, which a table opens with hidden (`issueTableLayout`). */
-  layout?: { readonly key: string; readonly shown: readonly ShownColumnId[] };
+  /** The layout this table keeps, under its own key, where it is not its listing's: the whole
+   *  set of columns it opens with shown (`opens`), registry and listing columns alike, every
+   *  other one opening hidden for the reader to show, the widths it gives any column in place
+   *  of its own, or the columns it makes as wide as what they hold (`widths`), and the columns it
+   *  pins at the left of a desktop's box in place of the registry's (`pins`,
+   *  `issueTableLayout`). Given one, Title fills a desktop box: it takes what the other shown
+   *  columns and the row's actions leave (`fills`). `rowActions: false` draws no row's actions
+   *  after the columns, no cell for a row's Start next, and keeps no width for them, as on a
+   *  listing that holds no issue in Legion's queue (`listsQueued`): Title takes that width too,
+   *  and the selection's bar keeps Start next. `wrapTitles: true` wraps each row's title onto as
+   *  many as eight lines, ending in '…' with the whole title in its tooltip where it runs
+   *  longer, where a project's table clamps it to two lines that end in '…': a table read by its
+   *  titles, as each fault list of the priorities page and a priority's work table are.
+   *  `statusLegend: true` draws each segment of the status bar as its count alone where the
+   *  segments with their names are wider than the bar, and the names in a legend under it
+   *  (`IssueTableStatus`), so no name is cut at the bar's edge: each of those tables stands in a
+   *  box narrower than a project's, whose bar keeps its names and scrolls sideways on a phone.
+   *  Each of those gives its own; unset, the table opens as a project's table does. */
+  layout?: {
+    readonly key: string;
+    readonly opens: readonly IssueTableColumnId[];
+    readonly widths?: IssueTableWidths;
+    readonly rowActions?: boolean;
+    readonly pins?: readonly IssueTableColumnId[];
+    readonly wrapTitles?: boolean;
+    readonly statusLegend?: boolean;
+  };
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
   listing: IssueListing;
-  /** Where its `j` and `k` walk its rows from (`RowKeymap.moveFrom`): anywhere on the page the
-   *  focus is in no other table, for the page's one table or its main one (the default); or only
-   *  from one of its own rows, for a table drawn beside the page's main one. */
-  moveFrom?: "page" | "row";
-  /** Each priority's title by its id. Given, the table has the Advances column, which names each
-   *  priority a row advances by its title; unset, it has none (`listingColumns`). */
+  /** Each priority's title by its id, in the one order the priorities read answers them in.
+   *  Given, the table has the Advances column, which names each priority a row advances by its
+   *  place in that order and its title (`#3`, `PriorityChip`); unset, it has none
+   *  (`listingColumns`). */
   priorityTitles?: ReadonlyMap<string, string>;
   /** The prefix this table's own view takes in the address: `<stateKey>.sort` and the rest.
    *  Unset keeps the bare `sort`, `q`, `group`, `page` and `size` the project page publishes. */
@@ -162,27 +188,37 @@ export function IssuesTable({
   const navigate = useAddressNavigate();
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  // The listing columns this table has: the ones its listing gives a use (`listingColumns`).
+  // Whether the table draws a row's actions after its columns - the cell for its Start next -
+  // and the width it draws them at: where the listing can hold a row a reader starts next
+  // (`listsQueued`) and its layout does not leave them out (`rowActions`). A fault list of the
+  // priorities page holds no such row and a priority's work table leaves them out, so neither
+  // draws them.
+  const rowActions = listsQueued(listing) && ownLayout?.rowActions !== false;
+  const actions = rowActions ? ROW_ACTIONS_WIDTH : 0;
+  // The columns this table has - the listing columns its listing gives a use (`listingColumns`)
+  // beside the registry's - which it opens with and at which widths.
   const columnsLayout = issueTableLayout(
     listingColumns(listing, priorityTitles !== undefined),
-    ownLayout?.shown
+    ownLayout?.opens,
+    ownLayout?.widths,
+    actions,
+    ownLayout?.pins
   );
-  // One stored layout per project, and one for every scoped table: the work advancing a
-  // priority is one table drawn in two places, so a reader who drags a column there drags it
-  // for the priorities page and the priority's own page alike, and not once per priority.
+  // One stored layout per project, one per layout a caller names, and one for every other scoped
+  // table: the work advancing any priority is one table, so a reader who drags a column on it
+  // drags it for every priority, and not once per priority.
   const layout = useTableLayout(
     tableStorageKey(ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY)),
     columnsLayout
   );
-  const { attachAbove, boxWidth } = layout;
+  const { attachAbove, boxWidth, responsive } = layout;
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
-  // The issue the reader marked last - by its own checkbox, or `x` on its row - and the List's
-  // search box: where the focus goes when the bar goes with it (`returnFocus`, below). A
-  // select-all marks no row of the reader's own, so it records none.
+  // The issue the reader marked last - by its own checkbox, or `x` on its row: where the focus
+  // goes when the bar goes with it (`returnFocus`, below). A select-all marks no row of the
+  // reader's own, so it records none.
   const lastMarked = useRef<string | null>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
   const recordMark = useCallback((key: string) => {
     lastMarked.current = key;
   }, []);
@@ -194,7 +230,8 @@ export function IssuesTable({
   // Which claims have lapsed is the agent registry's answer, read only while the Claimed by
   // filter asks for it: because it is picked, or because its panel is open and counting.
   const wantsFree = claimPicked.includes(UNCLAIMED_FACET);
-  const registry = useAgentRegistry(wantsFree || openFilter === "claim");
+  const readsRegistry = wantsFree || openFilter === "claim";
+  const registry = useAgentRegistry(readsRegistry);
   const {
     all,
     allItems,
@@ -263,10 +300,10 @@ export function IssuesTable({
 
   const columns = useIssueTableColumns(
     userState.data,
-    boxWidth < 640,
+    responsive.compact,
     recordMark,
     columnsLayout,
-    priorityTitles
+    { priorityTitles, wrapTitles: ownLayout?.wrapTitles }
   );
 
   const model = useDataTable<Item>({
@@ -274,7 +311,7 @@ export function IssuesTable({
     columns,
     getRowId: (item) => item.issue.key,
     layout,
-    names: moveFrom === "row" ? ISSUE_TABLE_BESIDE_NAMES : ISSUE_TABLE_NAMES,
+    names: ISSUE_TABLE_NAMES,
     state: { sorting, grouping, columnFilters: filters, globalFilter: search, pagination },
     onSortingChange: setSorting,
     onGroupingChange: setGrouping,
@@ -287,24 +324,73 @@ export function IssuesTable({
     groupOrder: { compare: compareGroups, heading: groupValue },
   });
   const { table } = model;
-  // The bar gone with the focus (`SelectionBar`): the checkbox of the issue the reader marked
-  // last, else the first row's, else the search box once no row is listed. A row the window has
-  // not drawn is scrolled to and takes the focus as it lands (`focusRow`).
+  // The issues this page of the table lists, in its order: its rows, not its group headings.
+  const leaves = () => model.displayRows.flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]));
+  // The List's own stop: its named table, which is drawn with no row as well.
+  const tableStop = () => model.layout.scrollRef.current?.querySelector("table") ?? null;
+  // The bar's hand-off (`useLastMarkedPlace`): the checkbox of the issue marked last while the
+  // table draws its row, out of sight or not. After a press that took that issue out of the view
+  // - off the list, or out of what the filters show, as Take out of epic does under the Epic
+  // filter: a row with any part of its mark in sight at its place, else the nearest before it,
+  // else the nearest after it. With no issue marked, as after a select-all from the table's head:
+  // the first row the reader can see below the sticky head. Each mark is shown whole at its
+  // nearest edge. `head` is a header cell: the cells stick, and the `thead` does not
+  // (`DataTable`). Else the table's own stop, with no scroll. A row the window has not drawn is
+  // out of their sight, so it is never where the focus lands in the place of an issue that went.
+  // What the table's own actions say is leaving, read through a ref because they are read after
+  // this hook (`useIssueTableActions`, below) and assigned there: each issue an action's writes
+  // are for, from the reader's press until the action and the read after it are over, or until
+  // its write is refused or stopped. The hand-off waits for each such row to leave the list by
+  // name, as the Inbox's does, so a landing never stands on a row the press is taking away however
+  // long the write and its read take, and a focus the reader left in such a row is landed once the
+  // row has gone.
+  const leavingNow = useRef<((key: string) => boolean) | undefined>(undefined);
+  const landAtPlace = useLastMarkedPlace({
+    control: (key) =>
+      model.layout.scrollRef.current
+        ?.querySelector(`[${ISSUE_ROW_ATTRIBUTE}="${CSS.escape(key)}"]`)
+        ?.querySelector<HTMLElement>(ROW_CHECKBOX) ?? null,
+    drawRow: (key) => model.focusRow(key, ROW_CHECKBOX, "nearest"),
+    // The box's height made current right before each landing, once the foot's pass has taken
+    // away the end room main held while the bar stood at the foot: the table sizes the box to the
+    // page at a `ResizeObserver`'s read, a frame after whatever changed the page, and the bar's
+    // going is such a change. At 390x664 the box stood at 434 px when the bar went, from a read
+    // long before, and at 414 a frame later, which left a landing shown whole in the old box below
+    // the new one's edge (builds Jobs `infra-3135-infra-3135-r30q-frames` and `-r30r-frames`).
+    // Fitted at the bar's going instead, at 1440x900 the box took 400 px while main still held
+    // 100 px of end room for the bar, and 430 once the foot's pass had taken it away, a frame
+    // after the landing.
+    fit: model.layout.fitHeight,
+    head: () => model.layout.scrollRef.current?.querySelector("thead th") ?? null,
+    lastMarked: () => lastMarked.current,
+    leaving: (key) => leavingNow.current?.(key) === true,
+    list: tableStop,
+    order: leaves,
+    shown: Object.keys(selection).length !== 0,
+  });
+  // The bar gone with the focus (`SelectionBar`): the hand-off above (`landAtPlace`) puts the
+  // focus itself, including where the table lists the issue marked last and its window has not
+  // drawn that row (`drawRow` above, through `focusRow`), each landing against the box `fit`
+  // gives its height first. A table action clears the selection only once the list read after it
+  // has settled (`useIssueTableActions`), so the view read here is the one the action left.
   const returnFocus = () => {
-    const leaves = model.displayRows.flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]));
-    const last = lastMarked.current;
-    const key = last !== null && leaves.includes(last) ? last : leaves[0];
-    return key === undefined ? searchRef.current : model.focusRow(key, ROW_CHECKBOX);
+    landAtPlace.land();
+    return null;
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
-  // own - goes with the table when a press in it sends the List back to its skeleton, and the
-  // focus it held goes to the search box rather than the page's body. A notice's button under
-  // the toolbar goes with the notice it answers - the interrupted action's Finish and Dismiss, the
-  // possible duplicate's Create anyway and Cancel new epic, the unanswered epic's Dismiss - and its
-  // focus goes to the control now at its place among the notices, else the one before it, else
-  // the search box. Only the head and the notices are counted: the selection bar, the rows and
-  // the dialogs each hand the focus on themselves. The handler sits on the List's section, which
-  // stays in every branch.
+  // own - goes with the table when a press in it sends the List back to its skeleton. A notice's
+  // button under the toolbar goes with the notice it answers - the interrupted action's Finish
+  // and Dismiss, the possible duplicate's Create anyway and Cancel new epic, the unanswered
+  // epic's Dismiss - and its focus goes to the control now at its place among the notices, else
+  // the one before it. Each of these takes the focus only while the reader can see it; where none
+  // is in sight, the main content's own stop takes it with no scroll (`useFocusPlace`). Where the
+  // head or the notices hold no other control, this hand-off walks back over the main content to
+  // the nearest control before them that the reader can see and that takes no typed text, so
+  // never into the search box. Only the head and the notices are counted: the selection bar, the
+  // rows and the dialogs each hand the focus on themselves. The handler sits on the List's
+  // section, which stays in every branch, beside the capture handlers that arm it at a press
+  // inside the section (`armOnPress`): React bubbles a column filter's portalled list's events to
+  // it too.
   const sectionRef = useRef<HTMLElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
@@ -316,7 +402,7 @@ export function IssuesTable({
       const notices = noticesRef.current;
       return notices?.contains(element) ? notices : element.closest("thead");
     },
-    () => searchRef.current
+    () => null
   );
 
   // The keys the table lists under the filters and the search it is showing, in row order. A key
@@ -360,6 +446,7 @@ export function IssuesTable({
     busy,
     notice,
     moved,
+    leaving,
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,
@@ -384,6 +471,11 @@ export function IssuesTable({
     items: allItems,
     clearSelection: () => setSelection({}),
   });
+  // Written while rendering, as the hand-off's own `latest` is (`useLastMarkedPlace`): a ref of
+  // the latest answer, which no render reads. The names' state changes only in the actions' own
+  // handlers. A layout effect here would run after the hand-off's, which is declared above, so
+  // the commit that lets an action's rows go would be read with the previous render's answer.
+  leavingNow.current = leaving;
 
   // How many parents the walk could not read: every one of them when the walk itself failed,
   // else the ones it named. The rest of the rows keep the epic they were read with.
@@ -406,8 +498,20 @@ export function IssuesTable({
     () => (openFilter ? facetCounts(items, openFilter, filters, search) : EMPTY_FACETS),
     [items, openFilter, filters, search]
   );
-
-  const visibleColumns = table.getVisibleLeafColumns().length + 1;
+  // A header filter's count is drawn once every read it counts has answered, and a read it does
+  // not count never hides it. Every count counts the rows the table waits on (`counted`), as the
+  // chip does: never the open issues alone while the closed ones it asked for are out. While a
+  // Nobody-or-lapsed narrowing is active (`wantsFree`) and the agent registry's first read is
+  // still pending (`registryPending`), the listed rows can still change when the registry answers,
+  // so no column draws a count. Once the registry answers or settles on its error (where the page
+  // shows `unclaimed-unchecked` and counts every claim as held), each count that the registry does
+  // not decide draws: every other column, and Claimed by's Nobody. Every other Claimed by value -
+  // Nobody or lapsed, and each holder - still waits until the registry's latest read has succeeded
+  // (`known`), since only it decides which claims have lapsed (`claimIsTakeable`).
+  const registryPending = wantsFree && !registry.known && !registry.isError;
+  const filterCounted = (column: string, value: string) =>
+    counted && !registryPending && (column !== "claim" || value === NOBODY_FACET || registry.known);
+  const visibleColumns = table.getVisibleLeafColumns().length + (rowActions ? 1 : 0);
   // A column filter's panel hangs off its header and goes with the table: it is closed then, as
   // a panel whose anchor has left the page closes (`AnchoredPanel`), so the table coming back
   // does not open it again and take the focus from wherever it went meanwhile.
@@ -427,6 +531,7 @@ export function IssuesTable({
       aria-label={name}
       className="space-y-3 sm:pb-24"
       {...TABLE_FRAME_MARK}
+      {...ARM_ON_PRESS}
       onFocus={noteFocus}
       ref={sectionRef}
     >
@@ -461,12 +566,16 @@ export function IssuesTable({
               </p>
             ) : null}
             {/* Issues by status: a click shows only that status, a second click every status. */}
-            <IssueTableStatus table={table} items={allItems} epics={epics} />
+            <IssueTableStatus
+              epics={epics}
+              items={allItems}
+              legend={ownLayout?.statusLegend}
+              table={table}
+            />
           </>
         ) : null}
 
         <IssueTableToolbar
-          searchRef={searchRef}
           selection={pickedChip}
           stateKey={stateKey}
           table={table}
@@ -486,6 +595,7 @@ export function IssuesTable({
               role={notice ? (notice.kind === "error" ? "alert" : "status") : undefined}
               className={`min-h-5 text-sm ${notice?.kind === "error" ? dangerText : textSecondaryOnCanvas}`}
             >
+              {/* The table's own notice of what a table action did. */}
               {notice?.text}
             </p>
             {interrupted ? (
@@ -522,7 +632,13 @@ export function IssuesTable({
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)}
+                  onClick={() =>
+                    void newEpic(duplicateEpic.keys, {
+                      force: true,
+                      intoWork: duplicateEpic.intoWork,
+                      title: duplicateEpic.title,
+                    })
+                  }
                 >
                   Create anyway
                 </button>
@@ -538,7 +654,7 @@ export function IssuesTable({
       {loading ? <LoadingSkeleton label="Loading issues" /> : null}
       {failed ? (
         <p className={dangerText} role="alert">
-          Could not load issues.{" "}
+          {ISSUES_NOT_LOADED}{" "}
           <button
             type="button"
             onClick={() => {
@@ -554,10 +670,16 @@ export function IssuesTable({
       {loaded ? (
         <>
           <DataTable
-            empty="No issues match these filters."
+            empty={
+              empty !== undefined && narrowsNothing(view) && !flags.needsYou && !flags.unread
+                ? empty
+                : "No issues match these filters."
+            }
+            filterCounted={filterCounted}
             filterCounts={openFacets}
             filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
             label={`${name} table`}
+            leaving={leaving}
             model={model}
             noun={ISSUE_TABLE_NOUN}
             onOpenFilterChange={setOpenFilter}
@@ -590,13 +712,14 @@ export function IssuesTable({
                 index={index}
                 measure={measure}
                 moved={moved}
-                onStartNext={(key) => startNext([key])}
+                onStartNext={rowActions ? (key) => startNext([key]) : undefined}
                 row={row}
               />
             )}
             scrollTestId="issues-table-scroll"
+            size="compact"
             stackColumn="title"
-            trailingWidth={ACTION_WIDTH}
+            trailingWidth={actions}
           />
 
           <IssueTableSelection
@@ -612,6 +735,7 @@ export function IssuesTable({
           {confirming === undefined ? null : (
             <ConfirmDialog
               body={confirming.body}
+              changes={confirming.changes}
               confirmLabel={confirming.confirmLabel}
               key={confirming.title}
               onCancel={cancelConfirming}
@@ -624,7 +748,7 @@ export function IssuesTable({
               <EpicNameDialog
                 key="new-epic"
                 onCancel={cancelNaming}
-                onSubmit={(name) => void newEpic(naming.keys, name)}
+                onSubmit={(name) => void newEpic(naming.keys, { title: name })}
                 submitLabel="Create epic"
                 title="Name the new epic"
               />

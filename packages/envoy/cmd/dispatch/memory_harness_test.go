@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -44,6 +46,19 @@ import (
 // server's resident memory read from /proc, and requests over HTTP and the document websocket.
 // Both files build only under the `memory` tag, which the dispatch-memory CI job sets: their rows
 // run past go test's default deadline, so the unit run of every Go package leaves them out.
+//
+// The tests run at the same time (t.Parallel), each on a database of its own (newMemoryHarness).
+// What a test measures is one server process's own memory - its resident peak above its own idle
+// (peakAboveIdle) or the heap its own collector found live (liveHeapAboveIdle) - which other
+// processes do not move while the machine has memory to spare: the most any test reads is about
+// 400 MiB above a server's idle (TestColdReadCacheEvictionPlateaus), four servers at once on a
+// 16 GB runner. One after another, the suite kept 0.92 of 4 CPUs busy on average (2,461 CPU
+// seconds over 2,675 s, the whole suite pinned to 4 CPUs of a dev box). The two tests that
+// measure this test process's own allocations (TestBlockPathsOfTheHeaviestTablesStayWithinTheMemoryBound
+// and TestTableRowsOfSpannedTablesShareOneSpanBudget) do not call t.Parallel, so go test runs
+// them before any parallel test starts. At most testlimits.MaxProcessesAtOnce servers run at once
+// (dispatchSlots), the count the lane's Postgres is sized for, and a test that runs two at once
+// reserves both before its first start (dispatchSlots.reserve).
 
 const memoryTestToken = "memory-test-token"
 
@@ -166,13 +181,15 @@ func collectOnSignal() {
 
 // start starts a Dispatch server on a loopback port the kernel chose and the test holds from that
 // moment, which the server inherits as DISPATCH_LISTEN_FD and serves on, so no other program can
-// take the port before it serves.
+// take the port before it serves. It takes the server's slot before the drain, so what the drain
+// leaves owed is what the server meets.
 func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	t.Helper()
+	releaseSlot := dispatchSlots.take(t)
 	held := cmdtest.HoldPort(t)
 	port := strconv.Itoa(held.Port)
 	h.drainBeforeStart(t, port)
-	command := exec.Command(os.Args[0])
+	command := exec.Command(dispatchCopy(t))
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),
@@ -202,11 +219,14 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	held.Pass(command, "DISPATCH_LISTEN_FD")
 	// This server is a Dispatch process like any other a test starts, so the connection guard
 	// counts it, and releases it before exited closes, so a test that sees the exit sees the
-	// count fall (requireConnectionCeiling, cmdtest.StartThen). StartThen closes the test's copy
-	// of the held socket once the server has started, so the server releases the port when it
-	// exits.
+	// count fall (requireConnectionCeiling, cmdtest.StartThen); its slot goes back with it.
+	// StartThen closes the test's copy of the held socket once the server has started, so the
+	// server releases the port when it exits.
 	releaseConnections := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
-	process := cmdtest.StartThen(t, "the Dispatch server", command, releaseConnections)
+	process := cmdtest.StartThen(t, "the Dispatch server", command, func() {
+		releaseConnections()
+		releaseSlot()
+	})
 	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: process.Output, exited: process.Exited, database: h.database}
 	// Registered after StartThen's own cleanup, so it runs first: the server is stopped with
 	// SIGTERM as a deploy stops it, and StartThen's kill finds it gone.
@@ -238,12 +258,11 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		time.Sleep(50 * time.Millisecond)
 	}
 	// The idle is read after a collection that gives the heap's free memory back to the system.
-	// Every boot compiles the pg_query WebAssembly module its migrations parse with
-	// (pgmigrate.Load, wazero), which holds about 220 MiB of the heap until it is done, and whether
-	// a collection frees that before /healthz answers is the luck of where the boot's collections
-	// fall: read at once, the idle was about 90 MiB on one server and about 330 MiB on the next,
-	// and a request then reused the dead pages, so its peak above idle read up to about 240 MiB
-	// low, and below zero (INFRA-3904).
+	// Whether a collection had freed what a boot left dead before /healthz answered was the luck of
+	// where the boot's collections fell: read at once, the idle was about 90 MiB on one server and
+	// about 330 MiB on the next, and a request then reused the dead pages, so its peak above idle
+	// read up to about 240 MiB low, and below zero (INFRA-3904). Most of that dead heap was the
+	// migrations' libpg_query parse, which a start no longer runs (pgmigrate.LoadBuilt).
 	server.collect(t)
 	server.idle = server.resident(t, "VmRSS")
 	return server
@@ -713,15 +732,24 @@ func (p *memoryServer) tryUpload(mode, issue, markdown string) (uploadResult, er
 }
 
 // tryUploadNamed is tryUpload of a document named name: a new version of the issue's document of
-// that name where it has one.
+// that name where it has one. A version after the first replaces a document that already exists,
+// so it names the token of the version it replaces, which uploadBase reads.
 func (p *memoryServer) tryUploadNamed(mode, issue, name, markdown string) (uploadResult, error) {
+	base, err := p.uploadBase(issue, name)
+	if err != nil {
+		return uploadResult{}, err
+	}
 	actor := map[string]string{"kind": "session", "id": "memory-test"}
 	var body *bytes.Buffer
 	var contentType string
 	switch mode {
 	case "json":
 		body = &bytes.Buffer{}
-		if err := json.NewEncoder(body).Encode(map[string]any{"name": name, "content": markdown, "actor": actor}); err != nil {
+		upload := map[string]any{"name": name, "content": markdown, "actor": actor}
+		if base != nil {
+			upload["precondition"] = base
+		}
+		if err := json.NewEncoder(body).Encode(upload); err != nil {
 			return uploadResult{}, fmt.Errorf("encode the upload: %w", err)
 		}
 		contentType = "application/json"
@@ -730,7 +758,15 @@ func (p *memoryServer) tryUploadNamed(mode, issue, name, markdown string) (uploa
 		if err != nil {
 			return uploadResult{}, fmt.Errorf("encode the actor: %w", err)
 		}
-		body, contentType, err = apitest.MultipartUpload(map[string]string{"name": name, "actor": string(encodedActor)}, name, "text/markdown", []byte(markdown))
+		fields := map[string]string{"name": name, "actor": string(encodedActor)}
+		if base != nil {
+			encodedBase, err := json.Marshal(base)
+			if err != nil {
+				return uploadResult{}, fmt.Errorf("encode the token the upload replaces: %w", err)
+			}
+			fields["precondition"] = string(encodedBase)
+		}
+		body, contentType, err = apitest.MultipartUpload(fields, name, "text/markdown", []byte(markdown))
 		if err != nil {
 			return uploadResult{}, err
 		}
@@ -755,6 +791,32 @@ func (p *memoryServer) tryUploadNamed(mode, issue, name, markdown string) (uploa
 	return result, nil
 }
 
+// uploadBase is the token an upload of the document the issue holds under name must name: the one
+// that document carries now, read as every reader of it reads it. It answers nothing where the
+// issue holds no document under that name, since such an upload is the document's first version
+// and replaces nothing. Any other answer is this reader's error: it cannot know what the upload
+// should name.
+func (p *memoryServer) uploadBase(issue, name string) (map[string]string, error) {
+	answer, err := p.trySend(http.MethodGet, "/api/v1/issues/"+issue+"/artifacts/"+name+"/text", "", nil,
+		http.Header{"Authorization": {"Bearer " + memoryTestToken}})
+	if err != nil {
+		return nil, err
+	}
+	if answer.status == http.StatusNotFound {
+		return nil, nil
+	}
+	if answer.status != http.StatusOK {
+		return nil, fmt.Errorf("read the document %q of %s: status %d body %.300s", name, issue, answer.status, answer.body)
+	}
+	var document struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(answer.body, &document); err != nil {
+		return nil, fmt.Errorf("decode the document %q of %s: %w", name, issue, err)
+	}
+	return map[string]string{"document": document.Token}, nil
+}
+
 // requireAnswered fails the test unless the upload was stored or refused with a 4xx naming its
 // code and why.
 func requireAnswered(t *testing.T, upload uploadResult) {
@@ -769,9 +831,11 @@ func requireAnswered(t *testing.T, upload uploadResult) {
 }
 
 // loadOverWebsocket opens the document's room as a browser does - it connects and asks for the
-// whole document - and closes once the room has sent it.
+// whole document - closes once the room has sent it, and returns once the server has ended the
+// socket, the settlement attempt its departure makes included.
 func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 	t.Helper()
+	written := p.output.Len()
 	address := "ws" + strings.TrimPrefix(p.base, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
 	connection, answer, err := gws.DefaultDialer.Dial(address, http.Header{"X-Dispatch-User": {"alice"}})
 	if err != nil {
@@ -807,9 +871,42 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 	if err := connection.Close(); err != nil {
 		t.Fatalf("close the connection: %v", err)
 	}
-	// The room's last peer leaving runs its settlement; give it the time a settlement of the
-	// heaviest admitted document takes here, so the peak counts it.
-	time.Sleep(3 * time.Second)
+	// The room's last peer leaving runs the settlement it owes on the socket's own handler: ygo's
+	// ServeHTTP runs the departure (handleDisconnect, which calls OnLastPeer, the service's
+	// settleLastPeer, and waits for it) before it returns, and the access log writes the request's
+	// line once the handler has returned (accesslog.Handler). So the socket's line is the moment
+	// the departure, and the settlement attempt it made, have ended, and the peak read after it
+	// counts them. A settlement whose timer fired before the departure, or one that attempt arms
+	// again, runs on its own and can end after the line; this load sends no update, and the
+	// server it meets started owing nothing (drainBeforeStart), so it leaves neither.
+	// A fixed 3 s stood here before, which counted no settlement that ran past it: across nine
+	// cold loads of heavy documents the server spent at most 40 ms of CPU in those 3 s.
+	p.waitForRequestLine(t, written, "route=/ws/doc/{room}", "path=/ws/doc/"+artifactID)
+}
+
+// waitForRequestLine waits until the server's output past offset holds the access log line of a
+// request whose line carries every one of fields, and fails the test if the server exits first or
+// a minute passes, a hang guard on a line a healthy server writes in milliseconds.
+func (p *memoryServer) waitForRequestLine(t *testing.T, offset int, fields ...string) {
+	t.Helper()
+	want := append([]string{`msg="` + accesslog.Message + `"`}, fields...)
+	deadline := time.Now().Add(time.Minute)
+	for {
+		for line := range strings.Lines(p.outputFrom(offset)) {
+			if !slices.ContainsFunc(want, func(field string) bool { return !strings.Contains(line, field) }) {
+				return
+			}
+		}
+		select {
+		case <-p.exited:
+			t.Fatalf("the server exited before it logged the request %q:\n%s", fields, p.outputTail())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server logged no request %q within a minute:\n%s", fields, p.outputTail())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // outputTail is the last 4,000 bytes the server has written, for a failure to show.

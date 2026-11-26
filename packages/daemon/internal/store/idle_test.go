@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -23,6 +23,7 @@ import (
 // claims' states and contracts, the rows queued for a role of the pod, and the issue's place in
 // the workflow beside its root's.
 func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -82,7 +83,7 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 	if !got.LastTurnAt.Equal(now.Add(-45 * time.Minute)) {
 		t.Fatalf("last turn = %s, want the delivery's confirmation %s", got.LastTurnAt, now.Add(-45*time.Minute))
 	}
-	if !got.Reported() {
+	if claim.ReadSessionWork(got.ActivityAt, got.LastTurnAt, got.ActivityBackground) == claim.WorkUnreported {
 		t.Fatalf("claim %+v reads as unreported, though its report is newer than its turn", got)
 	}
 	if since, ok := got.ActivityAt, got.UpdatedAt.IsZero(); ok || got.UpdatedAt.Before(since) {
@@ -103,40 +104,60 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 	}
 }
 
-// The view carries two facts beside the rule's own conditions: whether the issue holds a bundle
-// no pod has restored, which keeps the pod from being released over work that never came back,
-// and whether a hold streak of the pod is running, which is what the daemon's pass reads before
-// it ends one. The second is in the view because the pass already takes this read, and ending
-// streaks a pod does not have would cost a write transaction per pod per tick.
-func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T) {
+// The view carries three facts beside the rule's own conditions: the release the daemon last
+// declined for the issue, with its last check's moment, the newest start row of its claims at that
+// check and the pod it read; each claim's newest turn start, which a decline is ended by
+// (pods.IdleDecline.Stands); and whether a hold streak of the pod is running, which is what the
+// daemon's pass reads before it ends one. The last is in the view because the pass already takes
+// this read, and ending streaks a pod does not have would cost a write transaction per pod per
+// tick.
+func TestTheIdleViewReadsTheDeclinedReleaseTheTurnStartAndTheRunningHoldStreak(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
-	now := time.Now().UTC()
-
-	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored || view.Holding {
-		t.Fatalf("view = %+v, want no stored bundle and no running streak", view)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	turn := now.Add(-2 * time.Hour)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-legion-208-architect", Project: "legion", Tree: rootIssue,
+		Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+		State: supervise.StateIdle, LastStartRow: 12, LastTurnStart: turn}); err != nil {
+		t.Fatal(err)
 	}
 
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7,
-		runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", At: now, PodUID: "pod-being-released"}); err != nil {
-		t.Fatalf("save a bundle for %s: %v", rootIssue, err)
+	view := idleViewOf(t, st, rootIssue)
+	if view.Declined != (pods.IdleDecline{}) || view.Holding {
+		t.Fatalf("view = %+v, want no declined release and no running streak", view)
 	}
-	if err := st.RecordPodHold(ctx, PodHold{Project: "legion", Issue: rootIssue, Reason: "image", At: now}); err != nil {
+	if len(view.Claims) != 1 || !view.Claims[0].LastTurnStart.Equal(turn) {
+		t.Fatalf("claims = %+v, want the architect's turn start %s", view.Claims, turn)
+	}
+
+	markRelease(t, st, 18, 20, 22, 12)
+	if declined, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, IdleReleaseDecline{At: now, Role: claim.RoleArchitect,
+		Reason: pods.DeclineUnpushedWork, Head: "abc", Commits: 1, PodUID: "pod-a"}, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: now}); err != nil || !declined.Declined {
+		t.Fatalf("decline the release of %s = %+v, %v; want it declined", rootIssue, declined, err)
+	}
+	if err := st.RecordPodHold(ctx, PodHold{Project: "legion", Issue: rootIssue, Reason: "unpushed_work", At: now}); err != nil {
 		t.Fatalf("record a hold of %s: %v", rootIssue, err)
 	}
-	if view := idleViewOf(t, st, rootIssue); !view.BundleUnrestored || !view.Holding {
-		t.Fatalf("view = %+v, want the unrestored bundle and the running streak", view)
+	view = idleViewOf(t, st, rootIssue)
+	want := pods.IdleDecline{At: now, CheckedAt: now, Reason: pods.DeclineUnpushedWork, StartedRow: 12, PodUID: "pod-a"}
+	if !view.Declined.At.Equal(want.At) || !view.Declined.CheckedAt.Equal(want.CheckedAt) || view.Declined.Reason != want.Reason ||
+		view.Declined.StartedRow != want.StartedRow || view.Declined.PodUID != want.PodUID || view.PodUID != "" || !view.Holding {
+		t.Fatalf("view = %+v, want the decline %+v, no pod of the runtime's (the daemon's pass reads that), and the running streak", view, want)
+	}
+	if view.Releasing {
+		t.Fatal("the view reads a release in progress after its decline deleted the mark")
 	}
 
 	if err := st.EndPodHoldStreaks(ctx, "legion", rootIssue); err != nil {
 		t.Fatalf("end the hold streaks of %s: %v", rootIssue, err)
 	}
-	if err := st.DeleteWorkspaceBundle(ctx, rootIssue); err != nil {
-		t.Fatalf("delete the bundle of %s: %v", rootIssue, err)
+	if err := st.ForgetIdleDecline(ctx, "legion", rootIssue); err != nil {
+		t.Fatalf("forget the declined release of %s: %v", rootIssue, err)
 	}
-	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored || view.Holding {
-		t.Fatalf("view = %+v, want the restored bundle and the ended streak gone from it", view)
+	if view := idleViewOf(t, st, rootIssue); view.Declined != (pods.IdleDecline{}) || view.Holding {
+		t.Fatalf("view = %+v, want the forgotten decline and the ended streak gone from it", view)
 	}
 }
 
@@ -147,7 +168,7 @@ func idleViewOf(t *testing.T, st *Store, issue string) pods.IdleView {
 	t.Helper()
 	ctx := context.Background()
 	var view pods.IdleView
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		view, err = readIdleView(ctx, tx, "legion", issue)
 		return err
@@ -161,6 +182,7 @@ func idleViewOf(t *testing.T, st *Store, issue string) pods.IdleView {
 // reads it from the store: this pins that a PutClaim after a report leaves the four columns
 // standing, so a view taken later still sees what the session said.
 func TestAClaimWriteAfterAReportLeavesTheReportStanding(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -189,6 +211,7 @@ func TestAClaimWriteAfterAReportLeavesTheReportStanding(t *testing.T) {
 // records it commit together, and the mark's boundary is the first row's id. A decision that
 // releases nothing writes nothing, and a second release never starts behind the first.
 func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -245,7 +268,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 	queued.Close()
 	if len(kinds) != 3 || kinds[0] != "issue_bundle" || kinds[1] != "supervise" || kinds[2] != "issue_release" ||
 		ids[1] <= ids[0] || ids[2] <= ids[1] {
-		t.Fatalf("queued rows = %v (%v), want the save, then the role stop, then the teardown", kinds, ids)
+		t.Fatalf("queued rows = %v (%v), want the workspace check, then the role stop, then the teardown", kinds, ids)
 	}
 	var first, boundary, last, generation int64
 	var role string
@@ -253,7 +276,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 		where project='legion' and issue=$1`, rootIssue).Scan(&first, &boundary, &last, &generation, &role); err != nil {
 		t.Fatal(err)
 	}
-	// The mark names its own rows: the save, the role stop that is its boundary, and the
+	// The mark names its own rows: the workspace check, the role stop that is its boundary, and the
 	// teardown, which is how a row of this release is told from a row of one that is over.
 	if first != ids[0] || boundary != ids[1] || last != ids[2] || generation != 1 || role != "implementer" {
 		t.Fatalf("mark = rows %d..%d boundary %d, generation %d, role %s; want the rows %v", first, last, boundary, generation, role, ids)
@@ -287,12 +310,45 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 	}
 }
 
-// The release of a pod no role can use (workflow.UnownedPodRelease) suspends no role and saves
-// no bundle, so its mark names no role and records the rule that wrote it instead: every row of
+// The idle release queues no row keyed by another project's issue (insertOutboxRow,
+// claim.KeyOfProject): an operator's spawn of that issue runs under this project's token, so its
+// pod is one the release reads, but a row keyed by the issue is run only by the other project's
+// daemon, against that daemon's own claims. A release whose rows are keyed so is refused whole
+// (claim.ErrKeyOfAnotherProject), with neither a row nor its mark written. The same release of this
+// project's own issue is marked.
+func TestTheIdleReleaseQueuesNoRowOfAnotherProjectsIssue(t *testing.T) {
+	t.Parallel()
+	st := migratedStore(t)
+	ctx := context.Background()
+	const theirs = "OTHERPROJECT-9"
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", theirs, func(pods.IdleView) (IdleReleaseMark, error) {
+		return IdleReleaseMark{Generation: 1, Role: claim.RoleArchitect, Rows: []IdleReleaseRow{
+			{Kind: "issue_bundle", Payload: []byte(`{"tree":"OTHERPROJECT-9","generation":1,"treeGeneration":1,"role":"architect"}`)},
+			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"OTHERPROJECT-9","role":"architect","generation":1}`), Boundary: true},
+		}}, nil
+	})
+	if !errors.Is(err, claim.ErrKeyOfAnotherProject) || marked {
+		t.Errorf("the release of %s = %t, %v; want it refused with claim.ErrKeyOfAnotherProject: its rows are keyed by OTHERPROJECT's issue",
+			theirs, marked, err)
+	}
+	var rows, marks int
+	if err := st.Pool().QueryRow(ctx, `select (select count(*) from outbox where issue = $1),
+		(select count(*) from issue_releases where issue = $1)`, theirs).Scan(&rows, &marks); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || marks != 0 {
+		t.Errorf("after the release of %s the outbox holds %d rows keyed by it and %d marks of it, want none", theirs, rows, marks)
+	}
+	releaseThroughTheStore(t, st, rootIssue)
+}
+
+// The release of a pod no role can use (workflow.UnownedPodRelease) suspends no role and reads
+// no workspace, so its mark names no role and records the rule that wrote it instead: every row of
 // that release, and the cancel that ends it, read the kind to know what the release did. A mark
 // that names no role and is not that release is the rule's own fault, and is refused before
 // anything is written.
 func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -339,17 +395,18 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 		t.Fatalf("the teardown's decision = %+v, %v; want it to carry the release that suspends no role", decision, err)
 	}
 
-	resumed, suspendsNoRole, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
-	if err != nil || !suspendsNoRole || len(resumed) != 0 {
-		t.Fatalf("the cancel = %v, %t, %v; want no role resumed and the release named as the one that suspends none",
-			resumed, suspendsNoRole, err)
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
+	if err != nil || !cancelled.SuspendsNoRole || len(cancelled.Resumed) != 0 {
+		t.Fatalf("the cancel = %+v, %v; want no role resumed and the release named as the one that suspends none",
+			cancelled, err)
 	}
 }
 
 // IdlePods is the tick's candidate list: every issue of the project with a live claim, and no
-// issue whose roles have all stopped — there is no role there to ask for a bundle and no claim to
-// suspend.
+// issue whose roles have all stopped — there is no role there to read the workspace through and
+// no claim to suspend.
 func TestIdlePodsListsOnlyIssuesWithALiveClaim(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -380,6 +437,7 @@ func TestIdlePodsListsOnlyIssuesWithALiveClaim(t *testing.T) {
 // the issue whose own phase is done and the one closed long ago all hold claims that have
 // stopped and are no candidates, and the pod with a live claim is the idle rule's.
 func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		lingeringRoot = "LEGION-300"
 		unowned       = "LEGION-301"
@@ -440,6 +498,7 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 // Both outcomes are read here rather than only the wait, so the failure the lock prevents is
 // reported as the end state it leaves.
 func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -447,7 +506,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	releasedClaim(t, st, claim.RoleImplementer)
 	markRelease(t, st, first, boundary, last, 0, claim.RoleImplementer)
 
-	park, err := st.Pool().Begin(ctx)
+	park, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,8 +531,8 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	}
 	done := make(chan cancelled, 1)
 	go func() {
-		roles, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
-		done <- cancelled{roles: roles, err: err}
+		answer, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
+		done <- cancelled{roles: answer.Resumed, err: err}
 	}()
 
 	var got cancelled
@@ -535,10 +594,226 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 // kind added to the lane and left out of the idle list lets the daemon release the pod out from
 // under a row nobody has read yet.
 func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
+	t.Parallel()
 	for _, kind := range record.LaneKinds(record.LaneRoleMessage) {
 		if !slices.Contains(idleWaitingKinds, string(kind)) {
 			t.Errorf("the role-message kind %q stands in no idleWaitingKinds %v: a release would stop the role before it reads the row", kind, idleWaitingKinds)
 		}
+	}
+}
+
+// A start queued for news of the approved design alone (record.SuperviseRequest.News) holds no
+// pod and cancels no release (idleWaitingRow). It reaches only a claim already given its phase,
+// and a claim an idle release suspended is one: the start resumes it, so the role comes back with
+// its news. It can also wait for a long time: a merger's waits for the whole time its tree's design
+// gate stays closed. So a pod whose only queued row for a role is such a start reads nothing
+// waiting, and such a start queued after the release was marked does not cancel it at its
+// boundary. A start that carries a task of the phase still does both.
+func TestAStartQueuedForNewsAloneHoldsNoPodAndCancelsNoRelease(t *testing.T) {
+	t.Parallel()
+	const newsOnly = `{"op":"start","tree":"LEGION-208","role":"architect","generation":1,"news":true}`
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	token := claim.Token("legion-legion-legion-208-architect")
+	if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: rootIssue, Issue: rootIssue,
+		Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle}); err != nil {
+		t.Fatal(err)
+	}
+	queue := func(payload string) {
+		t.Helper()
+		if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ('supervise', $1, $2, 3, now() + interval '1 minute', 'a delivery is already pending')`, rootIssue, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	queue(newsOnly)
+	if view := idleViewOf(t, st, rootIssue); view.Waiting {
+		t.Fatal("the view reads a row waiting for a role of the pod, though the only one queued is a start of news alone")
+	}
+
+	_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+	queue(newsOnly)
+	decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+	if err != nil {
+		t.Fatalf("IssueReleaseStop: %v", err)
+	}
+	if decision.Act != ReleaseActs {
+		t.Fatalf("the boundary = %s for %s with only starts of news alone queued beside the release, want %s", decision.Act, decision.Cause, ReleaseActs)
+	}
+
+	queue(`{"op":"start","tree":"LEGION-208","role":"architect","generation":1,"task":"Continue."}`)
+	if view := idleViewOf(t, st, rootIssue); !view.Waiting {
+		t.Fatal("the view reads nothing waiting, though a start carrying a task is queued for the pod's architect")
+	}
+	if decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary); err != nil || decision.Act != ReleaseCancel {
+		t.Fatalf("the boundary = %s (%v) with a start carrying a task queued after the mark, want %s", decision.Act, err, ReleaseCancel)
+	}
+}
+
+// A worker start that waits for its issue's admission slot (record.SuperviseRequest.NeedsSlot)
+// holds no pod and cancels no release while no slot of its issue stands (idleWaitingRow). The
+// outbox holds such a start back until then (record's outboxInOrder), and an issue whose work came
+// back waits in the admission line for as long as its blocker stays open or the line is ahead of
+// it: hours, and for a blocked issue days. A pod held for it would stand idle all that time. Once
+// the slot comes the start runs, and it wakes the worker a release suspended as any start does. So
+// with the slot given, the same row holds the pod and cancels a release as any start that carries
+// a task does: at the boundary when the slot comes before it, and at the teardown when it comes
+// after the boundary ran, since a start left out there that has come due since is the pod about
+// to be used again.
+func TestAStartWaitingForItsSlotHoldsNoPodUntilTheSlotComes(t *testing.T) {
+	t.Parallel()
+	type release struct {
+		st                    *Store
+		ctx                   context.Context
+		worker                supervise.Claim
+		first, boundary, last int64
+	}
+	// setUp is an issue whose one live role is its implementer, idle in the pod, owed a start of
+	// its phase that waits for the issue's admission slot, and the release of that pod marked.
+	setUp := func(t *testing.T) release {
+		st := migratedStore(t)
+		ctx := context.Background()
+		openRunningTree(t, st)
+		worker := supervise.Claim{Token: claim.Token("legion-legion-legion-208-implementer"), Project: "legion",
+			Tree: rootIssue, Issue: rootIssue, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle}
+		if err := st.PutClaim(ctx, worker); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ('supervise', $1, '{"op":"start","tree":"LEGION-208","role":"implementer","generation":1,"phase":"implementing","task":"Continue.","needsSlot":true}', 0, now(), '')`,
+			rootIssue); err != nil {
+			t.Fatal(err)
+		}
+		if view := idleViewOf(t, st, rootIssue); view.Waiting {
+			t.Fatal("the view reads a row waiting for a role of the pod, though the only one queued is a start that waits for an admission slot the issue does not hold")
+		}
+		first, boundary, last := releaseRoleThroughTheStore(t, st, rootIssue, claim.RoleImplementer)
+		return release{st: st, ctx: ctx, worker: worker, first: first, boundary: boundary, last: last}
+	}
+	// stopRan is the release's check and its role stop having run: the lane finished both rows,
+	// and the stop suspended the worker as released.
+	stopRan := func(t *testing.T, r release) {
+		if _, err := r.st.Pool().Exec(r.ctx, `delete from outbox where id in ($1, $2)`, r.first, r.boundary); err != nil {
+			t.Fatal(err)
+		}
+		r.worker.State, r.worker.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByReleased
+		if err := r.st.PutClaim(r.ctx, r.worker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	slotComes := func(t *testing.T, r release) {
+		if _, err := r.st.Pool().Exec(r.ctx, `insert into slots (issue, index, admitted_at) values ($1, 0, now())`, rootIssue); err != nil {
+			t.Fatal(err)
+		}
+		if view := idleViewOf(t, r.st, rootIssue); !view.Waiting {
+			t.Fatal("the view reads nothing waiting, though the issue now holds its slot and its start is due for a role of the pod")
+		}
+	}
+	boundaryDecides := func(t *testing.T, r release, act ReleaseAct, cause ReleaseCause) {
+		decision, err := r.st.IssueReleaseStop(r.ctx, "legion", rootIssue, r.boundary)
+		if err != nil || decision.Act != act || decision.Cause != cause {
+			t.Fatalf("the boundary = %s for %s, %v; want %s for %s", decision.Act, decision.Cause, err, act, cause)
+		}
+	}
+	teardownDecides := func(t *testing.T, r release, act ReleaseAct, cause ReleaseCause) {
+		decision, err := r.st.IssueRelease(r.ctx, "legion",
+			IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: r.last}, record.OutOfWorkflow)
+		if err != nil || decision.Act != act || decision.Cause != cause {
+			t.Fatalf("the teardown = %s for %s, %v; want %s for %s", decision.Act, decision.Cause, err, act, cause)
+		}
+	}
+
+	t.Run("no slot comes", func(t *testing.T) {
+		t.Parallel()
+		r := setUp(t)
+		boundaryDecides(t, r, ReleaseActs, ReleaseCauseNone)
+		stopRan(t, r)
+		teardownDecides(t, r, ReleaseActs, ReleaseCauseNone)
+	})
+	t.Run("the slot comes before the boundary runs", func(t *testing.T) {
+		t.Parallel()
+		r := setUp(t)
+		slotComes(t, r)
+		boundaryDecides(t, r, ReleaseCancel, ReleaseCauseOvertaken)
+	})
+	t.Run("the slot comes after the boundary ran", func(t *testing.T) {
+		t.Parallel()
+		r := setUp(t)
+		boundaryDecides(t, r, ReleaseActs, ReleaseCauseNone)
+		stopRan(t, r)
+		slotComes(t, r)
+		teardownDecides(t, r, ReleaseCancel, ReleaseCauseOvertaken)
+	})
+}
+
+// The store's rule for a start that waits for its admission slot (slotWaitingStart, read by the
+// idle view and by WaitsForItsSlot) repeats record's outboxInOrder, which holds such a start back
+// until the slot comes. The two must agree about one row encoded as the workflow writes it, or the
+// idle rule holds the pod of an issue waiting in the line again, or releases a pod under a start
+// that is due. For a start marked to wait: without a slot the outbox lists no due start, the idle
+// view reads nothing waiting, and the issue waits for its slot; with a slot the start is due, the
+// view reads it as waiting, and the issue no longer waits. An ordinary start, whose payload carries
+// no `needsSlot`, is due, holds the pod and makes no wait, whether a slot stands or not.
+func TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		needsSlot bool
+	}{
+		{name: "a start marked to wait for its slot", needsSlot: true},
+		{name: "an ordinary start", needsSlot: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			row, err := record.NewOutboxRow(rootIssue, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
+				Generation: 1, Phase: phase.Implementing, Task: "Continue.", NeedsSlot: tc.needsSlot}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var id int64
+			if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
+				id, err = record.NewStore().EnqueueID(ctx, tx, row)
+				return err
+			}); err != nil {
+				t.Fatalf("queue the start: %v", err)
+			}
+			records, err := st.PodRecordsOf("LEGION")
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(slot bool) {
+				t.Helper()
+				var due, waits bool
+				if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
+					rows, err := record.NewStore().DueRows(ctx, tx, "LEGION", rootIssue, []record.OutboxKind{record.OutboxKindSupervise}, time.Now().Add(time.Minute))
+					if err != nil {
+						return err
+					}
+					due = slices.ContainsFunc(rows, func(r record.OutboxRow) bool { return r.ID == id })
+					waits, err = records.WaitsForItsSlot(ctx, tx, rootIssue)
+					return err
+				}); err != nil {
+					t.Fatalf("read the outbox: %v", err)
+				}
+				held := tc.needsSlot && !slot
+				view := idleViewOf(t, st, rootIssue)
+				if due == held || waits != held || view.Waiting == held {
+					t.Fatalf("with a slot %t: due %t, waits for its slot %t, the idle view waiting %t; want due %t, waits %t, waiting %t",
+						slot, due, waits, view.Waiting, !held, held, !held)
+				}
+			}
+
+			check(false)
+			if _, err := st.Pool().Exec(ctx, `insert into slots (issue, index, admitted_at) values ($1, 0, now())`, rootIssue); err != nil {
+				t.Fatal(err)
+			}
+			check(true)
+		})
 	}
 }
 
@@ -548,6 +823,7 @@ func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
 // or after them. A start of a role of the pod queued beside it does both, which shows the reads
 // see the queue at all.
 func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		attempts int
@@ -589,7 +865,7 @@ func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
 			if err != nil || !slices.Contains(candidates, rootIssue) {
 				t.Fatalf("IdlePods = %v, %v; want %s, whose claim is live, a candidate", candidates, err, rootIssue)
 			}
-			_, boundary, _ := releaseThroughTheStore(t, st)
+			_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
 			queueRecord()
 			decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
 			if err != nil || decision.Act != ReleaseActs {

@@ -128,13 +128,14 @@ const (
 // the history the golden reports were recorded over, with its facts and filings stored as the facts
 // consumer stores them, every day's Legion rows are written as the refresher's walk writes them;
 // then for each window of the golden files and each cut, the six folds over the window's stored
-// rows, read as the eval routes read them (DayWindow), answer every number the base head's report
+// rows, read as the eval routes read them (DayWindowIn), answer every number the base head's report
 // answered at the matching scope: work time, each bar with its segments, the idle share, rework
 // and splitting, whose root figures the base answered the same at every scope and the all cut
 // carries. The report's tables of issues are no folds: each is compared with the stored rows of
 // the window and cut, which the items route answers. Then one day's rows are deleted, and the
 // same comparison must find numbers that moved.
 func TestTheLegionFoldsOfTheStoredDayRowsAnswerTheBaseHeadsReports(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	windows, project, _ := seedGoldenLegionHistory(t, r)
 	spec := windows[0].Spec
@@ -152,8 +153,8 @@ func TestTheLegionFoldsOfTheStoredDayRowsAnswerTheBaseHeadsReports(t *testing.T)
 	for _, differ := range check.differ {
 		t.Error(differ)
 	}
-	if check.issues < 200 {
-		t.Errorf("the windows counted %d finished issues, want the at least 200 the check is stated over", check.issues)
+	if len(check.issues) < 200 {
+		t.Errorf("the windows counted %d distinct finished issues, want at least 200", len(check.issues))
 	}
 	t.Logf("history %s, %d trees, as of %s (recorded at %s): %d days written, %d day rows stored", project, spec.Trees,
 		spec.Now.Format(time.RFC3339), windows[0].Head, days, stored)
@@ -162,18 +163,31 @@ func TestTheLegionFoldsOfTheStoredDayRowsAnswerTheBaseHeadsReports(t *testing.T)
 			window.Window.Name, window.Scopes)
 	}
 	t.Logf("%d windows x %d cuts: %d numbers of the folds and %d of the issue tables compared, %d finished issues counted, %d differ",
-		len(windows), len(windows[0].Scopes), check.folded, check.listed, check.issues, len(check.differ))
+		len(windows), len(windows[0].Scopes), check.folded, check.listed, len(check.issues), len(check.differ))
 
 	// The negative control: one day's rows gone, the same comparison must see numbers move.
 	control := time.Date(2026, time.September, 28, 0, 0, 0, 0, time.UTC)
 	deleted := r.count(t, `with gone as (delete from eval_days where project_key = $1 and day = $2 returning 1) select count(*) from gone`,
 		project, control)
 	moved := compareLegionWindows(t, r, project, windows)
-	if len(moved.differ) == 0 {
-		t.Errorf("with the %d rows of %s deleted the comparison found no number that moved, so it cannot fail", deleted, control.Format(time.DateOnly))
+	if len(moved.differ) == 0 || moved.tableDifferences != 0 {
+		t.Errorf("deleted %d day rows of %s: %d differences in the folds, %d in the tables, want changed folds alone",
+			deleted, control.Format(time.DateOnly), len(moved.differ)-moved.tableDifferences, moved.tableDifferences)
 	}
 	t.Logf("negative control: %d rows of %s deleted, %d of %d numbers differ, the first: %s", deleted, control.Format(time.DateOnly),
 		len(moved.differ), moved.folded+moved.listed, firstOf(moved.differ))
+
+	// With the day rows held fixed, remove one facts row that closed within the golden windows.
+	removed := r.count(t, `
+		with gone as (delete from issue_facts where issue_key =
+			(select issue_key from issue_facts where project_key = $1 and closed_at >= $2 and closed_at < $3 order by issue_key limit 1)
+			returning 1)
+		select count(*) from gone`, project, first, last)
+	tables := compareLegionWindows(t, r, project, windows)
+	if removed != 1 || tables.tableDifferences == 0 || len(tables.differ)-tables.tableDifferences != len(moved.differ) {
+		t.Errorf("facts control removed %d rows and found %d table differences; want one removal, changed tables and unchanged folds", removed, tables.tableDifferences)
+	}
+	t.Logf("facts control: %d row removed, %d table differences, no additional fold differences", removed, tables.tableDifferences)
 }
 
 // seedGoldenLegionHistory writes into r's database the history the golden reports were recorded
@@ -257,10 +271,11 @@ func firstOf(lines []string) string {
 // folds and of the issue tables it compared, how many finished issues the reports counted, and
 // each number that differed.
 type legionCheck struct {
-	folded, listed, issues int
-	differ                 []string
-	where                  string
-	tables                 bool
+	folded, listed, tableDifferences int
+	issues                           map[string]bool
+	differ                           []string
+	where                            string
+	tables                           bool
 }
 
 func (c *legionCheck) count() {
@@ -271,38 +286,45 @@ func (c *legionCheck) count() {
 	}
 }
 
-// within compares a folded value with the report's, a nil value standing for the report's 0,
-// which is what the base answered where the folds answer no value.
+// within compares a number, requiring a value even when it is zero. The reports wrote zero
+// instead of null for an empty population; only optional knows which populations were empty.
 func (c *legionCheck) within(name string, got *float64, want, tolerance float64) {
 	c.count()
-	value := 0.0
-	if got != nil {
-		value = *got
+	if got == nil || math.Abs(*got-want) > tolerance {
+		c.difference(fmt.Sprintf("%s: %s is %s, want the base head's %g", c.where, name, showValue(got), want))
 	}
-	if math.Abs(value-want) > tolerance {
-		c.differ = append(c.differ, fmt.Sprintf("%s: %s is %s, want the base head's %g", c.where, name, showValue(got), want))
+}
+
+func (c *legionCheck) optional(name string, got *float64, want, tolerance float64, present bool) {
+	if present {
+		c.within(name, got, want, tolerance)
+	} else {
+		c.exact(name+" has a value", got != nil, false)
 	}
+}
+
+func (c *legionCheck) difference(message string) {
+	if c.tables {
+		c.tableDifferences++
+	}
+	c.differ = append(c.differ, message)
 }
 
 func (c *legionCheck) hours(name string, got *float64, want float64) {
 	c.within(name, got, want, goldenHours)
 }
 
-func (c *legionCheck) share(name string, got *float64, want float64) {
-	c.within(name, got, want, goldenShare)
-}
-
 func (c *legionCheck) exact(name string, got, want any) {
 	c.count()
 	if got != want {
-		c.differ = append(c.differ, fmt.Sprintf("%s: %s is %v, want the base head's %v", c.where, name, got, want))
+		c.difference(fmt.Sprintf("%s: %s is %v, want the base head's %v", c.where, name, got, want))
 	}
 }
 
 func (c *legionCheck) moment(name string, got, want *time.Time) {
 	c.count()
 	if (got == nil) != (want == nil) || got != nil && !got.Equal(*want) {
-		c.differ = append(c.differ, fmt.Sprintf("%s: %s is %v, want the base head's %v", c.where, name, got, want))
+		c.difference(fmt.Sprintf("%s: %s is %v, want the base head's %v", c.where, name, got, want))
 	}
 }
 
@@ -325,9 +347,9 @@ func compareLegionWindows(t *testing.T, r rig, project string, windows []goldenR
 		entries[i] = Entry{Definition: catalogued.definition, Series: catalogued.series}
 		entries[i].Definition.EvalID = EvalID(project, slug)
 	}
-	check := &legionCheck{}
+	check := &legionCheck{issues: map[string]bool{}}
 	for _, window := range windows {
-		read, err := r.registry.DayWindow(ctx, []string{project}, entries, nil, Range{From: window.Window.From, To: window.Window.To}, nil)
+		read, err := DayWindowIn(ctx, r.database.Pool, []string{project}, entries, "", nil, Range{From: window.Window.From, To: window.Window.To}, nil)
 		if err != nil {
 			t.Fatalf("read the day rows of %s: %v", window.Window.Name, err)
 		}
@@ -350,7 +372,11 @@ func compareLegionWindows(t *testing.T, r rig, project string, windows []goldenR
 				t.Fatalf("%s holds no report of scope %s", window.Window.Name, cut)
 			}
 			check.where = fmt.Sprintf("%s to %s, %s", window.Window.From.Format(time.DateOnly), window.Window.To.Format(time.DateOnly), cut)
-			check.issues += report.Finished
+			if cut == metrics.ScopeAll {
+				for _, issue := range report.Rework.Issues {
+					check.issues[issue.Key] = true
+				}
+			}
 			check.tables = false
 			compareFolds(check, parts, cut, report)
 			check.tables = true
@@ -369,20 +395,24 @@ func compareFolds(check *legionCheck, parts map[string][]measures.DayPart, cut m
 		work = &metrics.SampleFold{}
 	}
 	check.exact("work time's issues", work.N, len(report.WorkTime.Issues))
-	check.hours("work time's median", work.Median, report.WorkTime.MedianHours)
-	check.hours("work time's p90", work.P90, report.WorkTime.P90Hours)
+	check.optional("work time's median", work.Median, report.WorkTime.MedianHours, goldenHours, len(report.WorkTime.Issues) > 0)
+	check.optional("work time's p90", work.P90, report.WorkTime.P90Hours, goldenHours, len(report.WorkTime.Issues) > 0)
 
 	phase := metrics.FoldPhaseTime(parts[SlugLegionPhaseTime], cut)
 	if phase == nil {
 		phase = &metrics.PhaseTimeFold{}
 	}
+	expectedBars := map[string]bool{}
+	var barHours float64
 	for _, bar := range report.PhaseTime.Bars {
+		expectedBars[bar.Role] = true
+		barHours += bar.Hours
 		folded := phase.Bars[bar.Role]
 		name := "the " + bar.Role + " bar's "
 		check.exact(name+"issues counted", float64(folded.N), finished)
 		check.exact(name+"issues", folded.Issues, bar.Issues)
 		check.hours(name+"hours", &folded.Hours, bar.Hours)
-		check.hours(name+"median per issue", folded.MedianPerIssue, bar.MedianHoursPerIssue)
+		check.optional(name+"median per issue", folded.MedianPerIssue, bar.MedianHoursPerIssue, goldenHours, report.Finished > 0)
 		for _, segment := range []struct {
 			name      string
 			got, want float64
@@ -396,7 +426,12 @@ func compareFolds(check *legionCheck, parts map[string][]measures.DayPart, cut m
 			check.hours(name+segment.name, &segment.got, segment.want)
 		}
 	}
-	check.share("the idle share", phase.IdleShare, report.PhaseTime.IdleShare)
+	for _, role := range slices.Sorted(maps.Keys(phase.Bars)) {
+		if !expectedBars[role] {
+			check.exact("unexpected bar", role, "none")
+		}
+	}
+	check.optional("the idle share", phase.IdleShare, report.PhaseTime.IdleShare, goldenShare, barHours > 0)
 
 	rework := metrics.FoldRework(parts[SlugLegionRework], cut)
 	if rework == nil {
@@ -413,13 +448,13 @@ func compareFolds(check *legionCheck, parts map[string][]measures.DayPart, cut m
 		}
 	}
 	check.exact("review rounds' issues", rounds.N, report.Finished)
-	check.share("review rounds' median", rounds.Median, report.Rework.MedianReviewRounds)
+	check.optional("review rounds' median", rounds.Median, report.Rework.MedianReviewRounds, goldenShare, report.Finished > 0)
 	check.exact("issues sent back", sent.Num, sentBack)
 	check.exact("issues the sent-back share is over", sent.Den, report.Finished)
-	check.share("the sent-back share", sent.Share, report.Rework.SentBackShare)
+	check.optional("the sent-back share", sent.Share, report.Rework.SentBackShare, goldenShare, report.Finished > 0)
 	check.exact("hours after the first review's issues", after.N, report.Finished)
 	check.hours("hours after the first review", &after.Sum, report.Rework.HoursAfterFirstReview)
-	check.hours("hours after the first review's median", after.Median, report.Rework.MedianHoursAfterFirstReview)
+	check.optional("hours after the first review's median", after.Median, report.Rework.MedianHoursAfterFirstReview, goldenHours, report.Finished > 0)
 
 	split := metrics.FoldSplitting(parts[SlugLegionSplitting], cut)
 	if split == nil {
@@ -458,9 +493,10 @@ func compareFolds(check *legionCheck, parts map[string][]measures.DayPart, cut m
 		roots = all.Roots
 	}
 	check.exact("finished roots", roots.FinishedRoots, report.Splitting.FinishedRoots)
-	check.share("children per root", roots.ChildrenPerRoot, report.Splitting.ChildrenPerRoot)
-	check.hours("roots with children's median", orEmpty(roots.HoursWithChildren).Median, report.Splitting.MedianHoursRootsWithChildren)
-	check.hours("roots with no children's median", orEmpty(roots.HoursWithoutChildren).Median, report.Splitting.MedianHoursRootsNoChildren)
+	check.optional("children per root", roots.ChildrenPerRoot, report.Splitting.ChildrenPerRoot, goldenShare, report.Splitting.FinishedRoots > 0)
+	// Every root in this fixture has children, even in the windows with no finished roots.
+	check.optional("roots with children's median", orEmpty(roots.HoursWithChildren).Median, report.Splitting.MedianHoursRootsWithChildren, goldenHours, report.Splitting.FinishedRoots > 0)
+	check.optional("roots with no children's median", orEmpty(roots.HoursWithoutChildren).Median, report.Splitting.MedianHoursRootsNoChildren, goldenHours, false)
 	switch {
 	case cut == metrics.ScopeChildren && split.Roots != nil:
 		check.exact("the children cut's root figures", "a value", "no value")

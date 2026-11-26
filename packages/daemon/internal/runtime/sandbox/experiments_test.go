@@ -115,6 +115,7 @@ func drawnIntoBoth(t *testing.T, dir string, role claim.Role, reversed bool) run
 // prove less than it says. The other runtime's twelve are its own package's
 // (runtime/tmux's experiments_test).
 func TestATreeInTwoExperimentsNamesEveryArmInTheFilesOrder(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	operator := operatorPod().Env["PI_CONFIG_FILES"]
 	launches := 0
@@ -156,6 +157,7 @@ func TestATreeInTwoExperimentsNamesEveryArmInTheFilesOrder(t *testing.T) {
 // which name the control arms in legion.arms, so a call of a control tree reads as control rather
 // than as a tree in no experiment.
 func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.T) {
+	t.Parallel()
 	r := twoExperimentRuntime(t, false)
 	control := workerSpec(t)
 	control.Variants = []runtime.Variant{{Experiment: "alpha", Name: "off"}, {Experiment: "beta", Name: "off"}}
@@ -190,6 +192,7 @@ func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.
 // controller runs in neither. Two controller launches are read, and the test fails below two, so
 // neither deployment can quietly drop out of the comparison.
 func TestTheControllerCarriesNoVariant(t *testing.T) {
+	t.Parallel()
 	read := 0
 	for _, tc := range []struct {
 		name string
@@ -226,6 +229,7 @@ func TestTheControllerCarriesNoVariant(t *testing.T) {
 // the generation records that it ran outside the arm it was drawn into; a launch that builds its
 // own pod, the control, names both arms there.
 func TestAKeptPodMissingOneArmsMountDropsThatArmAndLogsIt(t *testing.T) {
+	t.Parallel()
 	before := runtimeWithOptions(t, func(o *Options) {
 		mountExperiments(o, alphaDir)
 		o.RoleConfigFiles = baselineRoleFiles
@@ -252,7 +256,7 @@ func TestAKeptPodMissingOneArmsMountDropsThatArmAndLogsIt(t *testing.T) {
 	}
 	s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{Spec: podOf(t, before, spec)}}}
 	l := launchOf(t, after, spec)
-	kept, readable := after.keptBy(s, l)
+	kept, readable := after.keptBy(s, "", l)
 	if !readable {
 		t.Fatal("keptBy could not read the pod's template")
 	}

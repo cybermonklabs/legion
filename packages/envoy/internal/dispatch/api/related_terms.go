@@ -449,6 +449,10 @@ func (s *server) ensureSearchTermStats(project string) <-chan singleflight.Resul
 type relatedExclusion struct {
 	issueKey   string
 	artifactID string
+	// outOfN takes the owner's items the refresh counted out of N as well, so the statistics read
+	// as the project's would without the owner: the near-copy gate's exclusion of the project's
+	// `evals-md` (pickNearCopyTerms). A related check's source owner stays in N.
+	outOfN bool
 }
 
 // relatedTerm is one lexeme the picker chose.
@@ -474,7 +478,8 @@ type relatedTerms struct {
 	// StatsPresent is whether the project had a totals row. Without one every lexeme was probed
 	// (probe mode) and a refresh was started.
 	StatsPresent bool
-	// Items is the project's item count at its last refresh (N); zero in probe mode.
+	// Items is the project's item count at its last refresh (N), less the excluded owner's items
+	// it counted where the exclusion says so (relatedExclusion.outOfN); zero in probe mode.
 	Items int
 	// NoLexemes is a text that holds no lexeme at all: blank, or stopwords alone.
 	NoLexemes bool
@@ -487,13 +492,12 @@ type relatedTerms struct {
 }
 
 // relatedTermsSQL reads, for every lexeme of the text, its frequency there (tf), its df from the
-// project's statistics, and its surface word in the title, in one statement.
+// project's statistics, and its surface word in the title, with the project's item count (N) and
+// how many of the excluded owner's items the refresh counted, in one statement.
 //
-// The text is tokenized as a document version's vector is built (0087_search_vector_bound):
-// search_text, then ask blocks stripped, then search_vector, in that order, so its lexemes are the
-// ones stored vectors hold: stripping a block first can join the underscore runs either side of it
-// into one search_text breaks, which the stored vector holds unbroken. Each lexeme's tf is its
-// position count.
+// The text is tokenized as a document version's vector is built (20261121060636): the ask blocks
+// removed and then search_text, both through search_document_text, and then search_vector, so its
+// lexemes are the ones stored vectors hold. Each lexeme's tf is its position count.
 //
 // df is null for a lexeme the statistics do not hold, and for every lexeme when the project has
 // no totals row; the caller probes those. Otherwise it is ndoc less the excluded owner's items
@@ -508,6 +512,10 @@ type relatedTerms struct {
 // that item's queued change for its successor, while refreshed_at has already moved past the
 // item's creation - and an item written since may hold a word only the source held then.
 //
+// The excluded owner's items the refresh counted are own_items, read by the rule above; every row
+// answers their number, which pickRelatedTerms takes out of N where the exclusion says so
+// (relatedExclusion.outOfN), and it is 0 when the project has no totals row.
+//
 // A surface costs a to_tsvector per distinct word, so only the title's words are read for one:
 // they are what a reader recognises (Suggestions.SearchQuery), and the title is a few words where
 // a spec can be thousands.
@@ -516,7 +524,7 @@ type relatedTerms struct {
 // artifact id (null for none), $5 the title.
 const relatedTermsSQL = `
 with body as (
-  select regexp_replace(search_text($2::text), '(?s):::ask\{.*?:::', '', 'g') as text
+  select search_document_text($2::text) as text
 ),
 text_lexemes as (
   select u.lexeme, coalesce(array_length(u.positions, 1), 1) as tf
@@ -572,7 +580,7 @@ surfaces as (
 )
 select l.lexeme, l.tf, quote_literal(l.lexeme),
        case when s.ndoc is not null then greatest(s.ndoc - coalesce(o.n, 0), 0) end,
-       coalesce(sf.word, ''), t.items
+       coalesce(sf.word, ''), t.items, (select count(*)::int from own_items)
   from text_lexemes l
   left join totals t on true
   left join search_term_stats s on t.items is not null and s.project_key = $1 and s.lexeme = l.lexeme
@@ -671,7 +679,8 @@ const (
 // a lexeme no other item holds (df 0), one in more than a tenth of the project (past
 // relatedCommonFloor), and numbers and hashes (relatedNoise); a lexeme whose df would take the
 // summed df past relatedMatchBudget is skipped, and the next by score is weighed in its place. The
-// excluded owner's items count toward no df.
+// excluded owner's items count toward no df, and toward no N where the exclusion says so
+// (relatedExclusion.outOfN).
 //
 // df comes from the project's statistics (refreshSearchTermStats). A lexeme they do not hold, or
 // whose df the excluded owner's items bring to zero, is probed live, the relatedProbeLimit most
@@ -694,10 +703,11 @@ func (s *server) pickRelatedTerms(
 	}
 	var candidates []relatedCandidate
 	var items *int
+	var ownItems int
 	for rows.Next() {
 		var candidate relatedCandidate
 		var df *int
-		if err := rows.Scan(&candidate.Lexeme, &candidate.tf, &candidate.quoted, &df, &candidate.Surface, &items); err != nil {
+		if err := rows.Scan(&candidate.Lexeme, &candidate.tf, &candidate.quoted, &df, &candidate.Surface, &items, &ownItems); err != nil {
 			rows.Close()
 			return relatedTerms{}, err
 		}
@@ -715,6 +725,9 @@ func (s *server) pickRelatedTerms(
 	picked := relatedTerms{StatsPresent: items != nil}
 	if items != nil {
 		picked.Items = *items
+		if exclude.outOfN {
+			picked.Items = max(picked.Items-ownItems, 0)
+		}
 	} else if probe {
 		// Only the related-item check starts the refresh. It needs the statistics, since it
 		// drops a word it cannot price; the near-copy gate prices one instead and reads whatever

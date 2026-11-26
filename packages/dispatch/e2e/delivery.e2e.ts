@@ -1,10 +1,5 @@
-import {
-  createProject,
-  listProjectEvals,
-  mintAgentToken,
-  putRepoProject,
-  registerEval,
-} from "./api";
+import type { DeliveryMeasuresResponse } from "../web/src/api/types";
+import { createProject, mintAgentToken, putProjectDefaultRepository, registerEval } from "./api";
 import {
   FIXTURE_WINDOW as MEASURES_WINDOW,
   seedDeliveryFixture,
@@ -12,7 +7,7 @@ import {
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { openFilterPanel } from "./filters";
+import { listTrigger, openFilterPanel, pickFromList } from "./filters";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
 import { pressFinger } from "./touch";
@@ -174,7 +169,7 @@ test("colour by priority with swimlanes splits the merges into one column per pr
   const lanes = page.getByRole("switch", { name: "Swimlanes" });
   await expect(lanes).toHaveAttribute("aria-checked", "false");
   await expect(page.getByTitle("Merges (2)")).toBeVisible();
-  await page.getByLabel("Color merges by").selectOption("priority");
+  await pickFromList(listTrigger(page, "Color merges by"), "Priority");
   await lanes.click();
 
   await expect(page).toHaveURL(/colorBy=priority/);
@@ -645,37 +640,50 @@ test("the measures API gives an agent the numbers the panel shows", async ({ bro
   await context.close();
 });
 
+/** The target the measures answer for the fixture window judges deploys a day by, null where it
+ *  is off: the target the panel's "Deploys a day" card states. */
+async function deploysTarget(page: Page): Promise<number | null> {
+  const response = await page.request.get(`/api/v1/delivery/measures?${MEASURES_QUERY}`);
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as DeliveryMeasuresResponse;
+  return body.targets.deploys_per_day?.value ?? null;
+}
+
 // dispatch://INFRA-2916's R5: the measures panel judges a KPI by the target a person sets on the
-// deploy repository's project's eval, and states that target, not a constant of the code. A
-// target written on deploy-frequency moves the card's caption and its verdict, and a null target
-// turns it off.
+// eval of the deploy repository's project, the one whose default repository it is, and states that
+// target, not a constant of the code. A target written on deploy-frequency moves the card's caption
+// and its verdict, and a null target turns it off.
 test("the measures panel judges deploys a day by the target a person set on the eval", async ({
   browser,
 }) => {
   await seedMeasuresFixture();
+  // The create seeds TGT's evals in its own transaction, so TGT holds them once it has answered.
   await createProject({ key: "TGT", name: "Targets" });
-  await putRepoProject("acme/widgets", { default: true, project: "TGT" });
-  await expect
-    .poll(async () => ((await listProjectEvals("TGT"))?.items ?? []).map((item) => item.id), {
-      timeout: 60_000,
-    })
-    .toContain("TGT/deploy-frequency");
+  await putProjectDefaultRepository("TGT", "acme/widgets");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const card = page.getByLabel("KPI targets").locator('[data-kpi="Deploys a day"]');
 
-  // 5 deploys over the window: under the catalogue's 20 a day.
+  // 5 deploys over the window: under the catalogue's 20 a day, which is also the target TGT's seed
+  // wrote.
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
   await expect(card).toContainText("5 deploys");
   await expect(card).toContainText("target \u2265 20/day");
   await expect(card).toContainText("\u2717 missed");
 
+  // A target written on TGT reaches the measures answer only once the eval refresher has published
+  // TGT as acme/widgets' project, which a page of the refresher's does after the default
+  // repository's write; until then the answer judges by the catalogue's entry
+  // (evals.Store.DeployRepoEvals). So each write is awaited at the answer before the page loads
+  // again.
   await registerEval("TGT", { slug: "deploy-frequency", target: 0.1, target_inclusive: true });
+  await expect.poll(() => deploysTarget(page)).toBe(0.1);
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
   await expect(card).toContainText("target \u2265 0.1/day");
   await expect(card).toContainText("\u2713 met");
 
   await registerEval("TGT", { slug: "deploy-frequency", target: null });
+  await expect.poll(() => deploysTarget(page)).toBeNull();
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
   await expect(card).toContainText("target off");
   await expect(card).not.toContainText("\u2713 met");

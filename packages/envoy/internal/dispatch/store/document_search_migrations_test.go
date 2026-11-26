@@ -33,6 +33,7 @@ const sessionTitlesTrigger = 20261117100015
 // so the test needs no gigabyte, over a database at the migration before each, where its table is
 // already above that.
 func TestCensusExemptsATriggerMigrationFromTheTableLimit(t *testing.T) {
+	t.Parallel()
 	for _, migration := range []struct {
 		name    string
 		before  int
@@ -43,8 +44,7 @@ func TestCensusExemptsATriggerMigrationFromTheTableLimit(t *testing.T) {
 		{"the session titles trigger", sessionTitlesTrigger - 1, sessionTitlesTrigger, "events"},
 	} {
 		t.Run(migration.name, func(t *testing.T) {
-			store := openEmptyTestStore(t)
-			migrateThrough(t, store, migration.before)
+			store := openMigratedTestStore(t, migration.before)
 			report, err := census(context.Background(), store.Pool.Config().ConnString(),
 				migrationsThrough(t, migration.trigger), pgmigrate.CensusOptions{TableLimit: 1})
 			if err != nil {
@@ -72,6 +72,7 @@ func TestCensusExemptsATriggerMigrationFromTheTableLimit(t *testing.T) {
 // writes and not in the migration), and the test above is why it may; each fill's progress table
 // names nothing but itself, because each fill reads its source outside every migration.
 func TestTheTriggerMigrationsTouchOnlyWhatTheyMustLock(t *testing.T) {
+	t.Parallel()
 	for _, migration := range []struct {
 		name  string
 		files string

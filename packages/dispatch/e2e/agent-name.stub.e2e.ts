@@ -3,7 +3,7 @@
  *  agent, and a name with no space in it.
  *
  *  Each reads what the browser does - a box, a width, an address - so each runs against a
- *  recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
  *  The rows that read the margin on the live document, that count the registry's reads, and
  *  that watch a rename and a stop arrive stayed in `agent-name.e2e.ts`.
  */
@@ -20,6 +20,7 @@ import {
 } from "./agent-name";
 import { setLiveSessions } from "./agents";
 import { createIssue, createMessage, createProject } from "./api";
+import { askCard } from "./inbox-pane";
 import { stubbed } from "./stub/stub-test";
 
 /** The file's own three sessions: one running, one stopped, one untitled. */
@@ -45,7 +46,8 @@ test("on a phone the ask card's asker still opens its copy handles, and the live
   scene,
 }) => {
   await page.goto("/");
-  const card = page.getByTestId(`ask-${scene.runAsk}`);
+  // The card of the row the reader opens, read in place of the list on a phone.
+  const card = await askCard(page, scene.runAsk);
   const asker = card.getByRole("button", { expanded: false, name: /Running agent \(current\)/ });
   const live = card.getByRole("link", {
     exact: true,

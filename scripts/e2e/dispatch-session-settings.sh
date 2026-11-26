@@ -75,6 +75,11 @@ mkdir -p "$evidence/logs" "$evidence/checks"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-session-settings.$$.XXXXXXXX")
+# Every program the run execs from here on carries its mark (run_marks, lib/process-tree.sh): the
+# driver hands it to each Oh My Pi it starts, and the listener's and Dispatch's `env -i` starts name
+# it. A fork of this shell that execs nothing carries none and is stopped by its pid (run_marks'
+# comment there). The transcript's tee, started above, carries none.
+export LEGION_E2E_RUN=$work
 driver=$root/scripts/e2e/lib/dispatch-session-settings.ts
 check=setup
 timeout_hook=
@@ -86,43 +91,55 @@ holder_pid=
 # database_created, which the `create database` sets, and never names a database that is not there.
 database=
 database_created=
-ok=
 
 note() { echo "   $*"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
+. "$root/scripts/e2e/lib/omp-home.sh"
 
-# stop_omp PID ends one Oh My Pi the driver started, and only while its command line still names
-# this run's work directory, so a pid the kernel gave to another process since is never signalled.
-# It is continued first: a check stops one with SIGSTOP, and a stopped process keeps a TERM pending.
+# stop_omp PID ends one Oh My Pi the driver started, and only while it still carries the run's mark
+# (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process since
+# is never signalled: a shell that works under this run's work directory names it on its command
+# line and carries no mark. It is continued first: a check stops one with SIGSTOP, and a stopped
+# process keeps a TERM pending.
 stop_omp() {
-  grep -qsF "$work" "/proc/$1/cmdline" || return 0
+  names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
   kill -CONT "$1" 2>/dev/null || true
   stop_pid "$1"
 }
 
+# cleanup stops what the run started, drops its database, and prints its last line through
+# lib/run-verdict.sh: PASS only for a run that reached run_end, the script's last statement.
 cleanup() {
-  local status=$? pid
+  local status=$? pid start
   set +e
+  # Each line is a pid and its start, which the driver read as it started it (session-settings-omp.ts).
   if [ -f "$work/omp.pids" ]; then
-    while read -r pid; do stop_omp "$pid"; done <"$work/omp.pids"
+    while read -r pid start; do
+      [ -z "$start" ] || started_at[$pid]=$start
+      stop_omp "$pid"
+    done <"$work/omp.pids"
   fi
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$holder_pid"
   stop_pid "$nats_pid"
   if [ -n "$database_created" ]; then
-    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
+    psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
       echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
-  if [ "$status" -eq 0 ] && [ -n "$ok" ]; then
-    echo "dispatch session settings e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "dispatch session settings e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
-  fi
+  run_verdict "$status" \
+    "dispatch session settings e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "dispatch session settings e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -130,7 +147,7 @@ trap 'exit 143' TERM
 
 # ---- inputs ------------------------------------------------------------------------------------------
 echo "== setup"
-[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+[ -n "${LEGION_TEST_PG_DSN:+set}" ] ||
   fail "LEGION_TEST_PG_DSN is required: a loopback PostgreSQL with pgvector (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable) the run creates its own database in. This script starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
 for tool in go bun jq curl psql tar python3; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
@@ -141,7 +158,8 @@ done
 # whose values the connection string cannot carry as well. Its answer is the connection string
 # the run keeps, and its refusal is the line this script fails with.
 database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there" || fail "$database_url"
+database_url=''
+run_database_url_env database_url LEGION_TEST_PG_DSN "$database" "the run creates and drops a database there" || fail "$database_url"
 omp=${LEGION_TEST_OMP:-$(command -v omp || true)}
 if [ -z "$omp" ] && [ -x /opt/omp/bin/omp ]; then omp=/opt/omp/bin/omp; fi
 [ -n "$omp" ] || fail "LEGION_TEST_OMP is required: no omp is on PATH and the worker image's /opt/omp/bin/omp is absent"
@@ -203,10 +221,11 @@ note "pi-envoy $(jq -r .version "$work/pi-envoy/package.json") from this checkou
 mkdir -p "$work/nats-store"
 "$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store" >"$evidence/logs/nats.log" 2>&1 &
 nats_pid=$!
+record_start "$nats_pid" || true
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
 
-psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
 
 (umask 077 &&
@@ -217,20 +236,27 @@ listener() { curl -fsS -H "@$work/envoy-auth-header" "$@"; }
 envoy_port=$(bun "$driver" free-port)
 dispatch_port=$(bun "$driver" free-port)
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
-# holding legion/envoy.json would hand Dispatch a production configuration.
-env -i PATH="$PATH" HOME=/nonexistent ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
+# holding legion/envoy.json would hand Dispatch a production configuration. Dispatch has an identity
+# of its own at the listener (lib/dispatch-identity.sh), as a deployment gives it.
+dispatch_identity_start
+env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
-  "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
+  "${dispatch_identity_listener_env[@]}" "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
 listener_pid=$!
+record_start "$listener_pid" || true
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
-env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+# The subshell turns the shell's xtrace off before it expands DATABASE_URL, the connection string
+# run_database_url_env rebuilt, which carries the DSN's password, so a run under `bash -x` traces
+# no part of it. It then execs env, so Dispatch runs as the pid the subshell started as.
+(set +x; exec env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
   DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
   DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
-  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" \
-  "$work/dispatch" >"$evidence/logs/dispatch.log" 2>&1 &
+  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
+  "$work/dispatch") >"$evidence/logs/dispatch.log" 2>&1 &
 dispatch_pid=$!
+record_start "$dispatch_pid" || true
 until_true 120 "Dispatch to serve, with NATS" sh -c "curl -fsS http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"
 
 # The broken provider's port: bound and never listened on, by a process of the run's own, so every
@@ -242,15 +268,15 @@ print(s.getsockname()[1], flush=True)
 sys.stdout.close()
 time.sleep(1e9)' >"$work/broken-port" &
 holder_pid=$!
+record_start "$holder_pid" || true
 until_true 30 "the broken provider's port to be held" test -s "$work/broken-port"
 broken_port=$(cat "$work/broken-port")
 
 # ---- the Oh My Pi profile ----------------------------------------------------------------------------
-# HOME is the run's own, with .omp/natives linked to the caller's native-module cache as
-# lib/omp-home.sh's make_omp_home links it, so nothing is downloaded and nothing of the caller's
-# ~/.omp is written. The agent directory holds the profile every session of the run shares.
-natives=$HOME/.omp/natives
-if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+# HOME is the run's own, with .omp/natives linked to the caller's native-module cache
+# (omp_natives_dir, lib/omp-home.sh), so nothing is downloaded and nothing of the caller's ~/.omp is
+# written. The agent directory holds the profile every session of the run shares.
+natives=$(omp_natives_dir)
 mkdir -p "$natives" "$work/home/.omp" "$work/agent" "$work/session" "$work/tmp"
 ln -sfT "$natives" "$work/home/.omp/natives"
 # rig-broken answers nothing: its one model is the fallback check's, and retry.fallbackChains (the
@@ -297,4 +323,4 @@ note "setup took $((SECONDS - started))s"
 check=checks
 ANTHROPIC_API_KEY=$anthropic_key OPENAI_API_KEY=$openai_key bun "$driver" run "$work/rig.json" ||
   fail "the driver failed (the failing check is named above)"
-ok=1
+run_end

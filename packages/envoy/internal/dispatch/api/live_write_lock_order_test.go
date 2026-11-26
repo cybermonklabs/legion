@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A project document upload and another write to the same document, started together, both
@@ -24,6 +25,7 @@ import (
 // row by then) or queued behind a lock. A write that waits for the in-memory writer slot while
 // holding a lock the slot's holder needs is a cycle Postgres cannot see, so both would hang.
 func TestProjectDocumentUploadAndAConcurrentWriteBothFinish(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		write func(f *uploadRaceFixture, ctx context.Context, token string) *httptest.ResponseRecorder
@@ -69,8 +71,9 @@ func TestProjectDocumentUploadAndAConcurrentWriteBothFinish(t *testing.T) {
 			f.persistence.holdNextAppend()
 			uploads := make(chan *httptest.ResponseRecorder, 1)
 			go func() {
-				uploads <- f.request(ctx, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]string{
+				uploads <- f.request(ctx, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]any{
 					"name": f.document.Name, "content": "before\n\nuploaded",
+					"precondition": map[string]string{"document": token},
 				})
 			}()
 			f.persistence.waitHeld(t)
@@ -148,14 +151,13 @@ func (f *uploadRaceFixture) request(ctx context.Context, method, target string, 
 }
 
 // waitForWriteToEngage returns once the second request has entered its document operation or
-// waits on a database lock.
+// waits on a database lock. Its one bound is the test binary's deadline (testwait.UntilPolling).
 func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.UntilPolling(t, 5*time.Millisecond, "the second write to enter its document operation or wait on a database lock (the backends waiting on a lock)", func() (int, bool) {
 		select {
 		case <-f.docs.engaged:
-			return
+			return 0, true
 		default:
 		}
 		var waiting int
@@ -165,32 +167,18 @@ func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the second write neither entered its document operation nor waited on a lock")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting, waiting > 0
+	})
 }
 
-// awaitWithin waits for a request that must not hang. On a timeout it cancels every request
-// the test started, so a deadlocked pair unwinds before the test fails.
+// awaitWithin waits for a request that must not hang. Its one bound is the test binary's deadline
+// (testwait.Receive): a deadlocked pair fails the test by name there. cancel, which cancels every
+// request the test started, is registered as a cleanup after the fixture's, so it runs before them
+// and a deadlocked pair is cut loose before the fixture shuts its services down.
 func awaitWithin(t *testing.T, responses <-chan *httptest.ResponseRecorder, cancel context.CancelFunc, name string) *httptest.ResponseRecorder {
 	t.Helper()
-	select {
-	case response := <-responses:
-		return response
-	case <-time.After(10 * time.Second):
-		cancel()
-		select {
-		case <-responses:
-		case <-time.After(10 * time.Second):
-		}
-		t.Fatalf("%s did not finish within 10 s", name)
-		return nil
-	}
+	t.Cleanup(cancel)
+	return testwait.Receive(t, name+" to answer", responses)
 }
 
 // heldAppendStore holds the next transactional append it sees, once asked to, until release.
@@ -210,16 +198,14 @@ func (s *heldAppendStore) holdNextAppend() {
 	s.releaser = make(chan struct{})
 }
 
+// waitHeld waits for the held append to be reached. Its one bound is the test binary's deadline
+// (testwait.Receive).
 func (s *heldAppendStore) waitHeld(t *testing.T) {
 	t.Helper()
 	s.mu.Lock()
 	held := s.held
 	s.mu.Unlock()
-	select {
-	case <-held:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the upload never reached its transactional append")
-	}
+	testwait.Receive(t, "the upload to reach its transactional append", held)
 }
 
 func (s *heldAppendStore) release() {

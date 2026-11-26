@@ -21,12 +21,13 @@ const derivedIntakeHandlerLimitLine = "intake: one fact's handling is cut after 
 // check: the check names the intake handler limit when the window derives one above the floor,
 // and says nothing about it when the floor still decides it. Both halves matter, and the quiet
 // one matters most. The line is a report an operator reads back, so a check that printed it for
-// every file would add a fifth line to the output of every deployment on the default window —
+// every file would add one line more to the output of every deployment on the default window —
 // including the ones this package's other rows assert whole, character for character
 // (TestConfigCheckValidatesAndStartsNothing and its neighbours) — and would tell an operator
 // nothing they could not read in the daemon's own default. The derived half is asserted verbatim
 // for the same reason: the sentence is the deliverable.
 func TestConfigCheckNamesTheIntakeHandlerLimitOnlyWhenTheWindowDerivesOne(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	for _, row := range []struct {
 		name     string
 		projects string
@@ -35,12 +36,12 @@ func TestConfigCheckNamesTheIntakeHandlerLimitOnlyWhenTheWindowDerivesOne(t *tes
 		{
 			"a window the ten-minute floor covers names no limit",
 			"worker_rpc_timeout_seconds: 5\nprojects:\n  DEMO: {}\n",
-			demoCheckConfigOK + tmuxCapabilityGaps,
+			demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable,
 		},
 		{
 			"a window that derives a limit above the floor names it",
 			"worker_rpc_timeout_seconds: 200\nprojects:\n  DEMO: {}\n",
-			demoCheckConfigOK + tmuxCapabilityGaps + derivedIntakeHandlerLimitLine,
+			demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable + derivedIntakeHandlerLimitLine,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

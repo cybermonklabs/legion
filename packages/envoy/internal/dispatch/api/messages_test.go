@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func createIssueMessage(t *testing.T, handler http.Handler, issueKey string, input map[string]any, login string) model.Message {
@@ -27,6 +29,7 @@ func createIssueMessage(t *testing.T, handler http.Handler, issueKey string, inp
 }
 
 func TestCreateMessageAlwaysReturnsDeliveriesArray(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Message deliveries", "before")
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
@@ -46,13 +49,25 @@ func TestCreateMessageAlwaysReturnsDeliveriesArray(t *testing.T) {
 }
 
 // newTargetedMessageHandler is the mux a targeted-delivery test drives, with the store behind
-// it: an ordinary test server pointed at that test's fake Envoy listener. An optional window
-// shortens the listener client's timeout, for a test that exercises a receipt timeout.
-func newTargetedMessageHandler(t *testing.T, envoyURL string, window ...time.Duration) (http.Handler, *store.Store) {
+// it: an ordinary test server pointed at that test's fake Envoy listener.
+func newTargetedMessageHandler(t *testing.T, envoyURL string) (http.Handler, *store.Store) {
+	t.Helper()
+	return newTargetedMessageHandlerOn(t, envoyURL, nil)
+}
+
+// newTargetedMessageHandlerOn is newTargetedMessageHandler on a server whose clock, which a
+// comment's mention lookups and every listener call's window run on, is clock (nil is the real
+// one): a test whose lookups must be answered however late the listener answers them passes
+// clocktest.Held(), and a test of a receipt timeout passes a fake and moves it to the end of each
+// window its stand-in holds (answerWhileCallsAreHeld). A held clock freezes every timer of the
+// server's, the listener take-over's backoff and the related-item check's allowance among them,
+// so a row on it that met a retryable failure would wait to the binary's deadline, where testwait
+// ends it by name; no row on it meets one today.
+func newTargetedMessageHandlerOn(t *testing.T, envoyURL string, clock *clocktest.Fake) (http.Handler, *store.Store) {
 	t.Helper()
 	options := testServerOptions{envoyURL: envoyURL}
-	if len(window) > 0 {
-		options.envoyTimeout = window[0]
+	if clock != nil {
+		options.clock = clock
 	}
 	handler, database, _ := newTestServer(t, options)
 	return handler, database
@@ -73,6 +88,7 @@ func bearerRequest(t *testing.T, handler http.Handler, method, path string, body
 }
 
 func TestCreateMessageRejectsMalformedMissingAndCrossIssueInReplyTo(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Message threading", "before")
 	other := createInteractionIssue(t, handler, "OTHER", "Other issue", "before")
@@ -105,6 +121,7 @@ func TestCreateMessageRejectsMalformedMissingAndCrossIssueInReplyTo(t *testing.T
 }
 
 func TestCreateMessageReplyCarriesReplyBodyAndGetMessageReturnsChain(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Message threading", "before")
 	root := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Ship the build tonight"}, "alice")
@@ -118,7 +135,7 @@ func TestCreateMessageReplyCarriesReplyBodyAndGetMessageReturnsChain(t *testing.
 		t.Fatalf("list events: status=%d body=%s", events.Code, events.Body.String())
 	}
 	if !strings.Contains(events.Body.String(), `"reply_body":"Ship the build tonight"`) {
-		t.Fatalf("message.created event missing reply_body preview: %s", events.Body.String())
+		t.Fatalf("message.answered event missing reply_body preview: %s", events.Body.String())
 	}
 
 	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+root.ID, nil, "alice")
@@ -149,6 +166,7 @@ func TestCreateMessageReplyCarriesReplyBodyAndGetMessageReturnsChain(t *testing.
 }
 
 func TestMessageReferencingAnotherMessageCreatesAToKindMessageRef(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Message refs", "before")
 	target := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "The decision"}, "alice")
@@ -168,6 +186,7 @@ func TestMessageReferencingAnotherMessageCreatesAToKindMessageRef(t *testing.T) 
 }
 
 func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T) {
+	t.Parallel()
 	// starting is a listener behind its starting gate past the take-over window: it answers every
 	// send 503, a failure Dispatch does not queue, so the attempt fails and a person retries it.
 	starting := false
@@ -357,6 +376,7 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 }
 
 func TestTargetedMessageRejectsInvalidDeliveryInputBeforePersisting(t *testing.T) {
+	t.Parallel()
 	handler, database := newTargetedMessageHandler(t, "")
 	issue := createInteractionIssue(t, handler, "TEST", "Targeted input", "before")
 
@@ -437,6 +457,7 @@ func TestTargetedMessageRejectsInvalidDeliveryInputBeforePersisting(t *testing.T
 }
 
 func TestTargetedMessageRecordsCapabilityAndListenerFailures(t *testing.T) {
+	t.Parallel()
 	capabilities := []string{"aside", "btw"}
 	sendStatus := http.StatusOK
 	sendError := ""
@@ -512,6 +533,7 @@ func TestTargetedMessageRecordsCapabilityAndListenerFailures(t *testing.T) {
 }
 
 func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
+	t.Parallel()
 	t.Run("refused", func(t *testing.T) {
 		handler, _ := newTargetedMessageHandler(t, "http://127.0.0.1:1")
 		issue := createInteractionIssue(t, handler, "TEST", "Refused listener", "before")
@@ -525,35 +547,45 @@ func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
 	})
 
 	t.Run("timeout", func(t *testing.T) {
-		// An unanswered read is what a listener take-over gives, so the send asks again for the
-		// take-over window before it settles; every one of those reads is cancelled the same way.
-		// The listener client's window is a short one, so those reads cost a fraction of a second
-		// each rather than the client's five.
+		// An unanswered read is what a listener take-over gives, but the read's window ends on the
+		// server's clock CallWindow past its start, past the test server's take-over window
+		// (testTakeoverWindow), so the send makes one try and settles. The read is cancelled at
+		// the end of its window, which the test moves there once the stand-in holds the read.
 		cancelled := make(chan struct{})
 		var cancelledOnce sync.Once
+		var calls listenerCalls
 		listener := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			defer calls.took()()
+			defer calls.holding()()
 			<-r.Context().Done()
 			cancelledOnce.Do(func() { close(cancelled) })
 		}))
 		defer listener.Close()
-		handler, _ := newTargetedMessageHandler(t, listener.URL, 300*time.Millisecond)
+		clock := clocktest.New(time.Now())
+		calls.on(clock)
+		handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clock)
 		issue := createInteractionIssue(t, handler, "TEST", "Timeout listener", "before")
-		message := createIssueMessage(t, handler, issue.Key, map[string]any{
-			"body": "Can you receive?", "target": "session:s1", "delivery": "steer",
-		}, "alice")
+		sent := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			sent <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+				"body": "Can you receive?", "target": "session:s1", "delivery": "steer",
+			}, "alice")
+		}()
+		response := answerWhileCallsAreHeld(t, clock, &calls, sent)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create message: status=%d body=%s", response.Code, response.Body.String())
+		}
+		message := decodeBody[model.Message](t, response)
 		if got := message.Deliveries; len(got) != 1 || got[0].State != "failed" ||
 			got[0].Error == nil || !strings.HasPrefix(*got[0].Error, "envoy listener: ") {
 			t.Fatalf("timeout delivery = %#v", got)
 		}
-		select {
-		case <-cancelled:
-		case <-time.After(time.Second):
-			t.Fatal("listener request was not cancelled after the Dispatch timeout")
-		}
+		testwait.Receive(t, "the cancel of the listener request once Dispatch's timeout ended it", cancelled)
 	})
 }
 
 func TestTargetedMessageResolvesRolesAndEnforcesReplyBoundaries(t *testing.T) {
+	t.Parallel()
 	roleRequests := 0
 	roleLive := true
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -710,6 +742,7 @@ func TestTargetedMessageResolvesRolesAndEnforcesReplyBoundaries(t *testing.T) {
 }
 
 func TestCreateMessageAuthenticatesBeforeReadingTheBody(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/TEST-1/messages", strings.NewReader("{"))
 	request.Header.Set("Authorization", "Bearer invalid")
@@ -722,6 +755,7 @@ func TestCreateMessageAuthenticatesBeforeReadingTheBody(t *testing.T) {
 }
 
 func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *testing.T) {
+	t.Parallel()
 	sendStatus := http.StatusOK
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -831,6 +865,7 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 }
 
 func TestAgentConversationReplyStaysInThatAgentsConversation(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner",` +
 		`"capabilities":["aside","btw","steer"]},{"session_id":"s2","title":"reviewer",` +
 		`"capabilities":["aside","btw","steer"]}]`
@@ -958,6 +993,7 @@ func sessionListener(t *testing.T, live *bool, sent *[]map[string]any) *httptest
 }
 
 func TestReplyOnFailedAttemptRecordsTheAnswer(t *testing.T) {
+	t.Parallel()
 	live := false
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -1016,6 +1052,7 @@ func TestReplyOnFailedAttemptRecordsTheAnswer(t *testing.T) {
 }
 
 func TestHumanReplyInheritsTheThreadTarget(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -1109,6 +1146,7 @@ func TestHumanReplyInheritsTheThreadTarget(t *testing.T) {
 // page groups the reply under the thread root it answers, so the event has to name that root's
 // target or the open card never refreshes.
 func TestUntargetedSessionReplyNamesItsThreadTarget(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -1185,6 +1223,7 @@ func threadTargetOf(t *testing.T, database *store.Store, messageID string) (stri
 // - whatever shape the thread has: the root may be the message answered or an ancestor of it,
 // the thread may carry no target at all, and an agent conversation has no issue.
 func TestReplyEventsNameTheirThreadRootTarget(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -1301,6 +1340,7 @@ func TestReplyEventsNameTheirThreadRootTarget(t *testing.T) {
 // not off the issue event log, so the frame has to name the same conversation the stored
 // event does - on the first attempt and on a retry, which derives it from the stored row.
 func TestReplyDeliveryFrameNamesItsThreadTarget(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -1370,6 +1410,7 @@ func TestReplyDeliveryFrameNamesItsThreadTarget(t *testing.T) {
 // A sender that dies in between leaves the attempt pending: a retry records its own attempt,
 // and the session's own reply still lands on the pending one.
 func TestTargetedMessageAttemptIsPendingAcrossItsSend(t *testing.T) {
+	t.Parallel()
 	var database *store.Store
 	stateDuringSend := "not observed"
 	envelopeDuringSend := "not observed"
@@ -1483,6 +1524,7 @@ func TestTargetedMessageAttemptIsPendingAcrossItsSend(t *testing.T) {
 // already has it. The stalled sender, answered at last, finds the attempt resumed by someone else
 // and leaves it as the retry settled it.
 func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
+	t.Parallel()
 	var listenerState struct {
 		sync.Mutex
 		keys      []string
@@ -1546,11 +1588,7 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 		handler.ServeHTTP(recorder, request)
 		answered <- recorder
 	}()
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the send never reached the listener")
-	}
+	testwait.Receive(t, "the send's arrival at the listener that holds it", held)
 	select {
 	case recorder := <-answered:
 		t.Fatalf("the send should not have completed while its listener holds it: status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1596,12 +1634,7 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 	// The stalled sender is answered at last. Its claim is no longer the row's, so it records
 	// nothing and answers with the attempt as the retry settled it.
 	letGo()
-	var late *httptest.ResponseRecorder
-	select {
-	case late = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the stalled sender never answered")
-	}
+	late := testwait.Receive(t, "the stalled sender's answer once its listener let it go", answered)
 	if late.Code != http.StatusCreated {
 		t.Fatalf("the stalled sender: status=%d body=%s", late.Code, late.Body.String())
 	}
@@ -1637,11 +1670,17 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 // its own. While the key carried the attempt number, that retry was a key no dedupe layer had
 // ever seen and the agent was handed the same instruction twice. The key is now stable across
 // the attempts of one message in one mode, so the stream recognises the repeat, answers
-// duplicate, and the retry's row says so instead of claiming a delivery that never happened. A
-// missed receipt is tried again inside the listener take-over window (takeoverRetry) under the
-// same key, so the attempt is recorded failed only when every try of that window missed; this
-// listener misses every one until the message's own request has answered.
+// duplicate, and the retry's row says so instead of claiming a delivery that never happened. The
+// listener client's window and the take-over's tries run on the server's clock, a fake the test
+// moves through each held call's window (answerWhileCallsAreHeld), so the stand-in's lookups,
+// which it answers at once, are never cut by a window a loaded machine ran out. The first send's
+// window ends CallWindow past its start on that clock, past the test server's take-over window
+// (testTakeoverWindow), so the take-over makes no second try under the same key and the attempt
+// is recorded failed at once (TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce covers the
+// same-key tries).
 func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
+	t.Parallel()
+	var calls listenerCalls
 	var listenerState struct {
 		sync.Mutex
 		keys      []string
@@ -1651,6 +1690,7 @@ func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing
 	listenerState.delivered = map[string]struct{}{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -1676,9 +1716,12 @@ func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing
 			listenerState.delivered[key] = struct{}{}
 			listenerState.Unlock()
 			if missing {
-				// Past the window the handler below gives the client, so Dispatch records the
-				// attempt failed while the agent already has the message.
-				time.Sleep(400 * time.Millisecond)
+				// Held past the window the client gives the call, which ends on the server's
+				// clock where the test moves it once the send is held here, so Dispatch records
+				// the attempt failed while the agent already has the message.
+				done := calls.holding()
+				<-r.Context().Done()
+				done()
 			}
 			if held {
 				_, _ = w.Write([]byte(`{"event_id":"target-envelope-2","recipient":"s1","duplicate":true}`))
@@ -1690,12 +1733,18 @@ func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL, 150*time.Millisecond)
+	clock := clocktest.New(time.Now())
+	calls.on(clock)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A send that landed then timed out", "before")
 
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
-		"body": "The send landed; the answer did not.", "target": "session:s1", "delivery": "steer",
-	}, "alice")
+	sent := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		sent <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+			"body": "The send landed; the answer did not.", "target": "session:s1", "delivery": "steer",
+		}, "alice")
+	}()
+	created := answerWhileCallsAreHeld(t, clock, &calls, sent)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create targeted message: status=%d body=%s", created.Code, created.Body.String())
 	}
@@ -1779,6 +1828,7 @@ func readMessageAttemptHistory(t *testing.T, database *store.Store, messageID st
 // failed only when every try of that window was refused; this listener refuses every one until
 // the message's own request has answered.
 func TestSendThatFailedBeforeLandingStillDeliversOnRetry(t *testing.T) {
+	t.Parallel()
 	var listenerState struct {
 		sync.Mutex
 		answering bool
@@ -1868,6 +1918,7 @@ func TestSendThatFailedBeforeLandingStillDeliversOnRetry(t *testing.T) {
 // message takes the same path without a 409: the new attempt's route is that pinned session, not
 // whoever holds the role now.
 func TestRetryInAnotherModeSupersedesTheStrandedAttempt(t *testing.T) {
+	t.Parallel()
 	for _, target := range []string{"session:s1", "role:planner"} {
 		t.Run(target, func(t *testing.T) {
 			var listenerState struct {
@@ -1974,6 +2025,7 @@ func TestRetryInAnotherModeSupersedesTheStrandedAttempt(t *testing.T) {
 // held - appends a SECOND message.delivery receipt for one attempt. The card's history is
 // event-sourced, so that renders the attempt twice under a colliding React key.
 func TestASupersededAttemptIsNotSettledAgainByItsOriginalSender(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer","btw"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -2118,6 +2170,7 @@ func messageDeliveryReceiptRows(t *testing.T, database *store.Store, messageID s
 // so the settle transaction still owes the attempt its message.delivery: without it the
 // conversation has a delivered, answered attempt no delivery event ever describes.
 func TestReplyDuringASendStillRecordsTheDeliveryReceipt(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	replied := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
@@ -2202,6 +2255,7 @@ func TestReplyDuringASendStillRecordsTheDeliveryReceipt(t *testing.T) {
 // answered first; only answeredReceipt, built from the row settleDeliveryAttempt just read,
 // gets this right.
 func TestReplyDuringASendThatErrorsStillRecordsTheOwedReceiptAsSent(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	replied := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
@@ -2272,6 +2326,7 @@ func TestReplyDuringASendThatErrorsStillRecordsTheOwedReceiptAsSent(t *testing.T
 // receipts - the conversation card, the issue log, a NATS consumer - would show the refused
 // delivery as delivered.
 func TestErrorReplyDuringASendLeavesOneReceiptAgreeingWithTheAttempt(t *testing.T) {
+	t.Parallel()
 	const refusal = "the session could not accept this steer"
 	var handler http.Handler
 	replied := 0
@@ -2358,6 +2413,7 @@ func TestErrorReplyDuringASendLeavesOneReceiptAgreeingWithTheAttempt(t *testing.
 // the resumed send paid exactly as it found them, or the attempt carries two receipts saying
 // the same thing.
 func TestAMessageSenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	answerTheSend := false
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
@@ -2478,8 +2534,12 @@ func TestAMessageSenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testi
 // role whose holder has moved since. The attempt the listener already deduplicated under
 // <message>:1 belongs to the session that frame was sent to: re-pointing it at the new holder
 // sends one attempt number to two sessions under one key and leaves the first unable to answer
-// the frame it is holding. A retry that wants the new holder takes an attempt of its own.
+// the frame it is holding. A retry that wants the new holder takes an attempt of its own. The
+// role's new holder, live, may still answer an attempt sent for the role
+// (lookUpRoleHolderReply); once the original recipient has answered, its reply is the attempt's,
+// and the new holder is answered with it.
 func TestAResumedRoleMessageKeepsItsOriginalRecipient(t *testing.T) {
+	t.Parallel()
 	roleHolder := "s1"
 	roleLookups := 0
 	sends := []map[string]any{}
@@ -2544,19 +2604,20 @@ func TestAResumedRoleMessageKeepsItsOriginalRecipient(t *testing.T) {
 		t.Fatalf("role lookups = %d, want only the one the message's creation made", roleLookups)
 	}
 
-	// The session the frame reached answers the attempt it holds; the role's new holder, which
-	// was never sent this attempt, cannot.
+	// The session the frame reached answers the attempt it holds, and its reply is the attempt's;
+	// the role's new holder, live, is answered with that first reply, as a second reply is.
 	reply := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "It reached me.",
 	})
 	if reply.Code != http.StatusCreated {
 		t.Fatalf("the original recipient's reply: status=%d body=%s", reply.Code, reply.Body.String())
 	}
-	stolen := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
+	first := decodeBody[model.Message](t, reply)
+	second := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s2"}, "attempt": 1, "body": "I hold the role now.",
 	})
-	if stolen.Code != http.StatusForbidden {
-		t.Fatalf("the new holder's reply to an attempt it never received: status=%d body=%s", stolen.Code, stolen.Body.String())
+	if second.Code != http.StatusOK || decodeBody[model.Message](t, second).ID != first.ID {
+		t.Fatalf("the new holder's reply after the first: status=%d body=%s, want 200 with the first reply %s", second.Code, second.Body.String(), first.ID)
 	}
 }
 
@@ -2607,6 +2668,7 @@ func issueMessageRows(t *testing.T, handler http.Handler, issueKey string) []mes
 // attempts, and each row is what the per-message read it replaces hands back. Another issue's
 // message is not listed.
 func TestIssueMessageListCarriesEachRootWithItsThreadAndDeliveries(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1",` +
 		`"roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2682,6 +2744,7 @@ func TestIssueMessageListCarriesEachRootWithItsThreadAndDeliveries(t *testing.T)
 }
 
 func TestIssueMessageListWithoutMessagesIsAnEmptyArray(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "No messages", "before")
 

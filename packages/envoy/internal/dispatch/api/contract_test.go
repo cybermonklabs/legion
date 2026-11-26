@@ -1,14 +1,14 @@
 // contract_test.go is the contract layer (built because every fake had been built from the
 // client's assumption): it mounts the real broker handlers
 // (brokerapi.Register with real services on
-// BROKER_TEST_DATABASE_URL, exactly as the broker/api tests do)
+// BROKER_TEST_DATABASE_URL, exactly as the cipher/api tests do)
 // behind an httptest.Server, wires Dispatch's own routes to relay to it, and drives every UI
 // action through DISPATCH's routes as a signed-in human — proving the proxy round-trips a real
 // broker, which lists each person's pending requests and the expired ones nobody has dismissed,
 // decides a machine login, a dismissal and a revoke by the login Dispatch names, and refuses
 // every decision of a secret request with the page where a person signed in to the broker
 // decides it. A test needing a secret request decided decides it on
-// that page, signed in to the broker (brokertest.Decide), as a person does. Skips without
+// that page, signed in to the broker (ciphertest.Decide), as a person does. Skips without
 // BROKER_TEST_DATABASE_URL (via brokerstoretest.Open) or DISPATCH_TEST_DATABASE_URL (via
 // storetest.Open, already required by every other test in this package).
 package api
@@ -30,19 +30,19 @@ import (
 
 	"github.com/google/uuid"
 
-	brokerapi "github.com/sjawhar/envoy/internal/broker/api"
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/enroll"
-	"github.com/sjawhar/envoy/internal/broker/machine"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/broker/policy"
-	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
-	"github.com/sjawhar/envoy/internal/broker/proof"
-	"github.com/sjawhar/envoy/internal/broker/record"
-	"github.com/sjawhar/envoy/internal/broker/requests"
-	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/broker/store"
-	brokerstoretest "github.com/sjawhar/envoy/internal/broker/store/storetest"
+	brokerapi "github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/machine"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/store"
+	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -116,8 +116,8 @@ func newContractRig(t *testing.T) *contractRig {
 		PendingTTL: 12 * time.Hour,
 		Audience:   brokerServer.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute, reqMachine.Airlock)
-	provider := brokertest.NewOAuthProvider(t, brokerStore, issuer)
+	reqMachine.Chain = requests.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute, reqMachine.Policy)
+	provider := ciphertest.NewOAuthProvider(t, brokerStore, issuer)
 	mach := &machine.Service{
 		Store: brokerStore, Enroll: enr, Policy: cur,
 		Audience: brokerServer.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -131,7 +131,7 @@ func newContractRig(t *testing.T) *contractRig {
 	dispatchToken := issuer.Mint(t, issuerKey, dispatchClaims)
 	brokerapi.Register(brokerMux, brokerapi.Deps{
 		PublicURL:     brokerServer.URL,
-		APIAccounts:   map[string]brokerapi.Account{contractDispatchAccount: brokertest.Caller(t, "dispatch")},
+		APIAccounts:   map[string]brokerapi.Account{contractDispatchAccount: ciphertest.Caller(t, "dispatch")},
 		AccountTokens: enroll.K8sPodVerifier{Verifier: tokenVerifier},
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
@@ -139,7 +139,7 @@ func newContractRig(t *testing.T) *contractRig {
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// People sign in to the broker's approval page at the same local issuer, which stands in for
 		// every provider.
-		Approval: brokertest.NewApprovalPage(t, brokertest.SignIn(issuer, issuerKey), brokerServer.URL, brokerStore, reqMachine),
+		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), brokerServer.URL, brokerStore, reqMachine),
 	})
 
 	dispatchDB := storetest.Open(t)
@@ -176,7 +176,7 @@ func contractSigningKey(t *testing.T) *ecdsa.PrivateKey {
 	return key
 }
 
-// newSessionEnrollment inserts a live box enrollment directly (mirroring broker/api's own
+// newSessionEnrollment inserts a live box enrollment directly (mirroring cipher/api's own
 // api_test.go newSessionEnrollment): a session route is out of Dispatch's UI scope entirely, so
 // there is no proxy path that could create one.
 func (rig *contractRig) newSessionEnrollment(t *testing.T, operator string) (enrollmentID string, key *ecdsa.PrivateKey) {
@@ -304,7 +304,14 @@ func (rig *contractRig) createPendingAgentSecretRecord(t *testing.T, reason stri
 // the broker as that person: where a secret request is decided, since no Dispatch route decides one.
 func (rig *contractRig) approveOnBrokerPage(t *testing.T, login, recordID string) {
 	t.Helper()
-	brokertest.Decide(t, rig.BrokerURL, rig.issuer, login, recordID, true)
+	ciphertest.Decide(t, rig.BrokerURL, rig.issuer, login, recordID, true)
+}
+
+// approveOnBrokerPageRefused is approveOnBrokerPage for an approval the broker refuses with a
+// reason the page names, code being the page's fixed refusal code (ciphertest.DecideRefused).
+func (rig *contractRig) approveOnBrokerPageRefused(t *testing.T, login, recordID, code string) {
+	t.Helper()
+	ciphertest.DecideRefused(t, rig.BrokerURL, rig.issuer, login, recordID, true, code)
 }
 
 // grantOf reads requestID as session, which made it, straight from the broker, and answers its
@@ -371,6 +378,7 @@ func (rig *contractRig) decisionEvents(t *testing.T, recordID string) int {
 // the record stays pending in its approver's inbox. Approved on that page by its approver, signed
 // in to the broker, the request releases its value, and Dispatch's approve still decides nothing.
 func TestContractDispatchDecidesNoSecretRequest(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	pending := rig.createPendingAgentSecretRecord(t, "need it for the demo", "DEEL_API_KEY")
 	page := rig.BrokerURL + "/approve/" + pending.RecordID
@@ -409,6 +417,7 @@ func TestContractDispatchDecidesNoSecretRequest(t *testing.T) {
 // record shows in Dispatch's proxied ?approver=me list with its minimal facts and the broker's
 // page where it is decided.
 func TestContractPendingListShowsCreatedRecordThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	recordID := rig.createPendingAgentSecretRecord(t, "checking the inbox lists a pending record", "DEEL_API_KEY").RecordID
 
@@ -424,6 +433,7 @@ func TestContractPendingListShowsCreatedRecordThroughDispatch(t *testing.T) {
 // code mints a launcher credential, while without the code the broker refuses CODE_REQUIRED and
 // with another code CODE_MISMATCH.
 func TestContractMachineLoginLookupAndApproveThroughDispatch(t *testing.T) {
+	t.Parallel()
 	newContractRig(t).approveMachineLogin(t, contractApprover, "contract-test-host")
 }
 
@@ -431,6 +441,7 @@ func TestContractMachineLoginLookupAndApproveThroughDispatch(t *testing.T) {
 // Dispatch with its code, as they approve one: another code is refused CODE_MISMATCH and leaves it
 // pending, its own code denies it, and a later approve is the broker's 409 RECORD_TERMINAL.
 func TestContractMachineLoginDeniedThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	machineKey := contractSigningKey(t)
 	compact, err := record.Sign(machineKey, rig.BrokerURL,
@@ -462,6 +473,7 @@ func TestContractMachineLoginDeniedThroughDispatch(t *testing.T) {
 // approver — refused for another login — the human path that ends a grant, distinct from a session
 // ending its own.
 func TestContractGrantsListAndRevokeByApproverThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	pending := rig.createPendingAgentSecretRecord(t, "checking a grant lists and its approver revokes it", "DEEL_API_KEY")
 	rig.approveOnBrokerPage(t, contractApprover, pending.RecordID)
@@ -516,6 +528,7 @@ func (rig *contractRig) pendingFor(t *testing.T, login string) []contractPending
 // approves it on the broker's page, the broker records that person's email as the deciding login,
 // the session gets the value, and the request leaves the inbox.
 func TestContractASharedSecretsRequestIsInItsOperatorsInboxAndAnyoneApprovesIt(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	pending := rig.createPendingAgentSecretRecord(t, "deploy the preview", "SHARED_KEY")
 
@@ -582,6 +595,7 @@ func asJSON(t *testing.T, v any) string {
 // the secret is an approval request to its owner, while another of the person's sessions still
 // gets it at once.
 func TestContractAnAutomaticGrantIsListedRevokedAndThenAsksItsOwner(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	session := rig.newSession(t, contractApprover)
 	auto := rig.request(t, session, "", "AUTO_TOKEN")
@@ -770,6 +784,7 @@ func (rig *contractRig) machineLoginsOf(t *testing.T, login string) []contractMa
 // the person's own revoke ends it, and with it the session the machine enrolled, whose grant then
 // releases nothing and whose machine enrolls no one more.
 func TestContractAPersonRevokesTheirMachineLoginThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	credentialID, machineKey := rig.approveMachineLogin(t, contractApprover, "contract-test-host")
 	status, body, session := rig.enrollWithLauncher(t, machineKey, credentialID, "box-"+t.Name())
@@ -847,6 +862,7 @@ func (rig *contractRig) tokenLogin(t *testing.T) (string, *ecdsa.PrivateKey) {
 // service, which an older daemon would open, is refused SERVICE_LOGS_IN_WITH_TOKEN with nothing
 // for Dispatch to show.
 func TestContractAServicesTokenLoginIsListedAndRevokedByAnyoneThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	credentialID, machineKey := rig.tokenLogin(t)
 
@@ -894,6 +910,7 @@ func TestContractAServicesTokenLoginIsListedAndRevokedByAnyoneThroughDispatch(t 
 // login is refused NOT_APPROVER to every other signed-in person, and stays pending for the person
 // it names.
 func TestContractAPersonsMachineLoginIsTheirsAloneToApproveThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	machineKey := contractSigningKey(t)
 	compact, err := record.Sign(machineKey, rig.BrokerURL,
@@ -918,6 +935,7 @@ func TestContractAPersonsMachineLoginIsTheirsAloneToApproveThroughDispatch(t *te
 // person, who owns nothing, approving it on the broker's page decides nothing; the operator,
 // AUTO_TOKEN's owner, approves it there and the session reads AUTO_TOKEN on that approval.
 func TestContractAnyoneApprovalCannotReleaseAPersonsWithheldSecret(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	session := rig.newSession(t, contractApprover)
 	auto := rig.request(t, session, "", "AUTO_TOKEN")
@@ -934,7 +952,9 @@ func TestContractAnyoneApprovalCannotReleaseAPersonsWithheldSecret(t *testing.T)
 	if resp := dispatchRequest(t, rig.Dispatch, http.MethodPost, "/api/v1/credential-grants/"+*auto.GrantID+"/revoke", map[string]any{}, contractApprover); resp.Code != http.StatusOK {
 		t.Fatalf("revoke = %d: %s", resp.Code, resp.Body.String())
 	}
-	rig.approveOnBrokerPage(t, contractOther, *mixed.RecordID)
+	// The current policy has the operator approve AUTO_TOKEN now that it is withheld, so the
+	// broker refuses the second person's approval and the page names that reason ("policy").
+	rig.approveOnBrokerPageRefused(t, contractOther, *mixed.RecordID, "policy")
 	if n := rig.decisionEvents(t, *mixed.RecordID); n != 0 {
 		t.Fatalf("the request has %d decisions after %s approved it once %s withheld AUTO_TOKEN, want none", n, contractOther, contractApprover)
 	}
@@ -1029,6 +1049,7 @@ func (rig *contractRig) dismissThroughDispatch(t *testing.T, recordID, login str
 // browser's body names; the approver's dismissal answers 200, and the inbox then holds the live
 // request alone.
 func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	late := rig.createPendingAgentSecretRecord(t, "needed before its deadline", "DEEL_API_KEY")
 	live := rig.createPendingAgentSecretRecord(t, "needed now", "DEEL_API_KEY")
@@ -1077,6 +1098,7 @@ func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T)
 // nothing. After the broker's machine-login sweep records it expired, the inbox still holds both;
 // the approver's dismissal answers 200, and the inbox then holds the live login alone.
 func TestContractExpiredMachineLoginStaysInTheInboxUntilDismissed(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	const expiredCode = "BCDF-GHJK"
 	expired, deadline := rig.expiredMachineLogin(t, "contract-expired-host", expiredCode)

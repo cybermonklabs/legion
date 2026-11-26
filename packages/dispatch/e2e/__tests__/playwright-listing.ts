@@ -33,12 +33,17 @@ const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
  *
  *  `extra` is where a caller names the projects or the grep whose selection it is reading -
  *  `e2e/__tests__/pull-request-lane.test.ts` lists the lane the shard job runs. It goes before
- *  `--list` because Playwright reads the `--list` of `--grep --list` as that option's value. */
+ *  `--list` because Playwright reads the `--list` of `--grep --list` as that option's value.
+ *
+ *  `reporters` are loaded beside the JSON one, which stays first so stdout is still the listing:
+ *  `e2e/__tests__/shard-split.test.ts` names `./e2e/shard-reporter.ts`, which decides what a
+ *  `--shard` listing holds and is in the config's own list only, which a `--reporter` replaces. */
 export async function listing(
   from: string,
   configPath: string,
   environment: Record<string, string>,
-  extra: readonly string[] = []
+  extra: readonly string[] = [],
+  reporters: readonly string[] = []
 ): Promise<Listing> {
   const { code, named, stderr, stdout } = await runBounded({
     argv: [
@@ -49,7 +54,7 @@ export async function listing(
       configPath,
       ...extra,
       "--list",
-      "--reporter=json",
+      `--reporter=${["json", ...reporters].join(",")}`,
     ],
     bound: "listing",
     cwd: dispatchPackage,
@@ -65,12 +70,12 @@ export async function listing(
 }
 
 /** The `--project` arguments naming `projects` on such a command line, in the list's own order.
- *  The four readers of a listing that names its projects - this directory's `no-browser-rows`,
- *  `pull-request-lane` and `row-configurations` tests, and `e2e/tools/row-map.ts` - spell them
- *  through this rather than each its own way, and they spell them attached, which is the one
- *  spelling this suite writes: the option is variadic, so `--project <name>` reads whatever
- *  follows it as a second name (`packages/dispatch/AGENTS.md`, "Write a project as
- *  `--project=<name>` and never `--project <name>`"). */
+ *  The five readers of a listing that names its projects - this directory's `no-browser-rows`,
+ *  `pull-request-lane`, `reading-walk` and `row-configurations` tests, and
+ *  `e2e/tools/row-map.ts` - spell them through this rather than each its own way, and they spell
+ *  them attached, which is the one spelling this suite writes: the option is variadic, so
+ *  `--project <name>` reads whatever follows it as a second name (`packages/dispatch/README.md`,
+ *  "Projects"). */
 export function projectArguments(projects: readonly string[]): string[] {
   return projects.map((project) => `--project=${project}`);
 }

@@ -1,11 +1,13 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { DELIVERY_DUPLICATE_WINDOW_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api } from "../../api/client";
@@ -17,8 +19,15 @@ import type {
   MessageDelivery,
   UserAgentStates,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { BroadcastPage } from "./BroadcastPage";
 import { messageDeliveryFields } from "./delivery-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const agents: Agent[] = [
   {
@@ -67,6 +76,7 @@ function broadcast(deliveries: MessageDelivery[]): BroadcastRead {
           broadcast_id: "broadcast-1",
           created_at: new Date().toISOString(),
           deliveries,
+          ...messageCorrectionFields(),
           id: "message-1",
           in_reply_to: null,
           issue_key: null,
@@ -129,6 +139,7 @@ function threadMessage(id: string, author: Message["author"], body: string): Mes
     broadcast_id: null,
     created_at: new Date().toISOString(),
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: "message-1",
     issue_key: null,
@@ -275,6 +286,32 @@ test("a pending attempt nobody is carrying offers a same-mode retry and no mode 
     await waitFor(() =>
       expect(page.createMessageDelivery).toHaveBeenCalledWith("message-1", "steer", keyedAttempt)
     );
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A stranded recipient's Retry is held while its retry is out: by `aria-disabled`, not
+// `disabled`, which Chromium answers by taking the focus off the button (`pressHeld`). So the
+// keyboard reader who pressed it stays on it, and a press of it then, by key or by pointer, sends
+// nothing.
+test("a stranded recipient's Retry keeps the keyboard focus while its retry is out, and a second press sends nothing", async () => {
+  const stranded = attempt({ created_at: new Date(Date.now() - 5 * 60_000).toISOString() });
+  const page = renderBroadcast(broadcast([stranded]));
+  // Dispatch answers the retry only once the case lets it.
+  const delivered = Promise.withResolvers<MessageDelivery>();
+  page.createMessageDelivery.mockImplementation(() => delivered.promise);
+  try {
+    const row = await screen.findByRole("article", { name: "Planner" });
+    const retry = within(row).getByRole("button", { name: "Retry" });
+    await pressHeld(userEvent.setup(), retry, {
+      name: "Retry",
+      sent: () => page.createMessageDelivery.mock.calls.length,
+    });
+    expect(retry).toBeEnabled();
+    await act(async () => delivered.resolve(attempt({ attempt: 2, state: "sent" })));
+    await waitFor(() => expect(retry).not.toHaveAttribute("aria-disabled"));
   } finally {
     page.view.unmount();
     page.restore();

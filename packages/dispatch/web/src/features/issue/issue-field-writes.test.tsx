@@ -9,7 +9,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { type Commits, drawnPick, recordCommits } from "../../__tests__/commits";
@@ -38,11 +38,11 @@ import type {
   IssueDetails,
   IssuePriority,
   IssueSummary,
-  RepoProject,
+  Project,
   UpdateIssueInput,
 } from "../../api/types";
 import { useBoardMoves } from "../project/board-moves";
-import { MAX_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { MAX_BACKOFF_MS, SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
 import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
 import { KEPT_SEND_RESUME_MS, resetWriteStorage } from "../writes/write-storage";
 import { plainWrite, type Writes, writesOf } from "../writes/write-store";
@@ -241,8 +241,23 @@ function shownPriorities() {
   };
 }
 
-function prioritySelects(): HTMLSelectElement[] {
-  return screen.getAllByRole("combobox", { name: "Priority of CORE-1" }) as HTMLSelectElement[];
+/** The priority lists of CORE-1 the page draws: the triggers of the shared list's single picks,
+ *  each named `Priority of CORE-1` and then the priority it shows. */
+function priorityTriggers(): HTMLElement[] {
+  return screen.getAllByRole("button", { name: pickNamed("Priority of CORE-1") });
+}
+
+/** Picks `priority` - `P0` to `P3`, or `Unset` - from the `index`th priority list of CORE-1,
+ *  as a reader does: a press of its trigger, then of the option. The trigger is found once: it is
+ *  the same element with its list open or shut. */
+async function pickPriority(user: UserEvent, priority: string, index = 0): Promise<void> {
+  const trigger = priorityTriggers()[index] as HTMLElement;
+  await pickIn(user, () => trigger, priority);
+}
+
+/** The priority the `index`th priority list of CORE-1 shows: `P0` to `P3`, or `Priority`. */
+function shownPriority(index = 0): string {
+  return shownBy(priorityTriggers()[index] as HTMLElement);
 }
 
 /** A save Dispatch answers by storing the change: its answer is the issue with it. */
@@ -257,8 +272,8 @@ test("each pick joins the issue's line in the write store when it is made", asyn
   const view = renderIn(client, <CachedPriority reads={dispatchReads()} />);
   const user = userEvent.setup();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "3");
+    await pickPriority(user, "P0");
+    await pickPriority(user, "P3");
     // The second pick is the store's from its press, behind the first on `issue:CORE-1`, so it
     // is kept for a reload and goes out after the first whatever becomes of the picker.
     expect(
@@ -286,10 +301,9 @@ test("a pick behind a waiting pick of the same field takes it out: one request c
   const view = renderIn(client, <CachedPriority reads={reads} />);
   const user = userEvent.setup();
   try {
-    const select = () => prioritySelects()[0] as HTMLSelectElement;
-    await user.selectOptions(select(), "0");
-    await user.selectOptions(select(), "3");
-    await user.selectOptions(select(), "2");
+    await pickPriority(user, "P0");
+    await pickPriority(user, "P3");
+    await pickPriority(user, "P2");
     expect(
       writesOf(client)
         .rows()
@@ -299,7 +313,7 @@ test("a pick behind a waiting pick of the same field takes it out: one request c
       ["CORE-1 set to P2", "queued"],
     ]);
     // The pick taken out puts nothing back: every cache shows the newest.
-    expect(select().value).toBe("2");
+    expect(shownPriority()).toBe("P2");
     expect(cachedPriorities(client)).toEqual({ detail: 2, inbox: 2, list: 2 });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
@@ -311,7 +325,7 @@ test("a pick behind a waiting pick of the same field takes it out: one request c
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }]);
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt);
-    expect(select().value).toBe("2");
+    expect(shownPriority()).toBe("P2");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -341,10 +355,9 @@ test("two pickers of one field share one line: a pick in either takes out the ot
   );
   const user = userEvent.setup();
   try {
-    const [row, pane] = prioritySelects() as [HTMLSelectElement, HTMLSelectElement];
-    await user.selectOptions(row, "0");
-    await user.selectOptions(pane, "3");
-    await user.selectOptions(row, "2");
+    await pickPriority(user, "P0", 0);
+    await pickPriority(user, "P3", 1);
+    await pickPriority(user, "P2", 0);
     expect(
       writesOf(client)
         .rows()
@@ -358,7 +371,7 @@ test("two pickers of one field share one line: a pick in either takes out the ot
     });
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }]);
-    expect(prioritySelects().map((select) => select.value)).toEqual(["2", "2"]);
+    expect(priorityTriggers().map(shownBy)).toEqual(["P2", "P2"]);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -398,9 +411,8 @@ test("a pick takes out no waiting write of the issue but a pick of its own field
     });
   const user = userEvent.setup();
   try {
-    const select = () => prioritySelects()[0] as HTMLSelectElement;
-    await user.selectOptions(select(), "0");
-    await user.selectOptions(select(), "3");
+    await pickPriority(user, "P0");
+    await pickPriority(user, "P3");
     plain("CORE-1 set to done", { status: "done" });
     plain("Labels of CORE-1", { labels: ["ui"] });
     act(() => {
@@ -411,7 +423,7 @@ test("a pick takes out no waiting write of the issue but a pick of its own field
       await Promise.resolve();
     });
     await waitFor(() => expect(writesOf(client).rows()).toHaveLength(6));
-    await user.selectOptions(select(), "1");
+    await pickPriority(user, "P1");
     expect(
       writesOf(client)
         .rows()
@@ -438,7 +450,7 @@ test("a pick takes out no waiting write of the issue but a pick of its own field
       { assignee: "bob" },
       { priority: 1 },
     ]);
-    expect(select().value).toBe("1");
+    expect(shownPriority()).toBe("P1");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     assignee.unmount();
@@ -528,9 +540,8 @@ test("an older pick refused while a newer one is live keeps the newer one on scr
   const view = renderIn(client, <CachedPriority reads={reads} />);
   const user = userEvent.setup();
   try {
-    const select = () => prioritySelects()[0] as HTMLSelectElement;
-    await user.selectOptions(select(), "0");
-    await user.selectOptions(select(), "2");
+    await pickPriority(user, "P0");
+    await pickPriority(user, "P2");
     await act(async () => {
       first.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed" }));
       await first.promise.catch(() => undefined);
@@ -539,7 +550,7 @@ test("an older pick refused while a newer one is live keeps the newer one on scr
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
     expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(select().value).toBe("2");
+    expect(shownPriority()).toBe("P2");
     expect(cachedPriorities(client)).toEqual({ detail: 2, inbox: 2, list: 2 });
 
     reads.store(2);
@@ -551,7 +562,7 @@ test("an older pick refused while a newer one is live keeps the newer one on scr
     expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }]);
     // Dispatch holds the newer pick now: the refusal has nothing left to report.
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-    expect(select().value).toBe("2");
+    expect(shownPriority()).toBe("P2");
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -573,9 +584,8 @@ test("an older pick refused while a newer one is live reports the refusal with n
   const view = renderIn(client, <CachedPriority reads={reads} />);
   const user = userEvent.setup();
   try {
-    const select = () => prioritySelects()[0] as HTMLSelectElement;
-    await user.selectOptions(select(), "0");
-    await user.selectOptions(select(), "2");
+    await pickPriority(user, "P0");
+    await pickPriority(user, "P2");
     await act(async () => {
       first.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed" }));
       await first.promise.catch(() => undefined);
@@ -586,9 +596,9 @@ test("an older pick refused while a newer one is live reports the refusal with n
     expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
 
     // P2 is still out when the person picks P3: the report clears with the press.
-    await user.selectOptions(select(), "3");
+    await pickPriority(user, "P3");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(select().value).toBe("3");
+    expect(shownPriority()).toBe("P3");
     expect(cachedPriorities(client)).toEqual({ detail: 3, inbox: 3, list: 3 });
 
     reads.store(3);
@@ -599,7 +609,7 @@ test("an older pick refused while a newer one is live reports the refusal with n
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }, { priority: 3 }]);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(select().value).toBe("3");
+    expect(shownPriority()).toBe("P3");
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -630,10 +640,8 @@ test("an older pick refused while a newer one is live reports the refusal with n
   );
   const user = userEvent.setup();
   try {
-    const page = () => prioritySelects()[0] as HTMLSelectElement;
-    const drawer = () => prioritySelects()[1] as HTMLSelectElement;
-    await user.selectOptions(page(), "0");
-    await user.selectOptions(page(), "2");
+    await pickPriority(user, "P0", 0);
+    await pickPriority(user, "P2", 0);
     await act(async () => {
       first.reject(closed());
       await first.promise.catch(() => undefined);
@@ -646,9 +654,9 @@ test("an older pick refused while a newer one is live reports the refusal with n
     expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
 
     // P2 is still out when the person picks P3 in the drawer's row: the issue page's report ends.
-    await user.selectOptions(drawer(), "3");
+    await pickPriority(user, "P3", 1);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(prioritySelects().map((select) => select.value)).toEqual(["3", "3"]);
+    expect(priorityTriggers().map(shownBy)).toEqual(["P3", "P3"]);
     expect(cachedPriorities(client)).toEqual({ detail: 3, inbox: 3, list: 3 });
 
     reads.store(3);
@@ -698,10 +706,9 @@ test("an older pick's refusal reported with no Retry stays while a save of anoth
   const view = renderIn(client, <CachedPriority reads={reads} />);
   const user = userEvent.setup();
   try {
-    const select = () => prioritySelects()[0] as HTMLSelectElement;
-    await user.selectOptions(select(), "0");
+    await pickPriority(user, "P0");
     saveStatus(client);
-    await user.selectOptions(select(), "2");
+    await pickPriority(user, "P2");
     await act(async () => {
       first.reject(closed());
       await first.promise.catch(() => undefined);
@@ -720,7 +727,7 @@ test("an older pick's refusal reported with no Retry stays while a save of anoth
     expect(
       within(screen.getByRole("alert")).queryByRole("button", { name: "Retry" })
     ).not.toBeInTheDocument();
-    expect(select().value).toBe("2");
+    expect(shownPriority()).toBe("P2");
 
     reads.store(2);
     await act(async () => {
@@ -728,7 +735,7 @@ test("an older pick's refusal reported with no Retry stays while a save of anoth
       await newer.promise;
     });
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-    expect(select().value).toBe("2");
+    expect(shownPriority()).toBe("P2");
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -758,7 +765,6 @@ test("an older pick's refusal reported with no Retry ends once a save of the fie
   );
   const user = userEvent.setup();
   try {
-    const select = () => prioritySelects()[0] as HTMLSelectElement;
     // P3 from the table goes out first, and the pick of P0 waits behind it.
     act(() => {
       void writesOf(client)
@@ -772,7 +778,7 @@ test("an older pick's refusal reported with no Retry ends once a save of the fie
         })
         .catch(() => undefined);
     });
-    await user.selectOptions(select(), "0");
+    await pickPriority(user, "P0");
     await act(async () => {
       table.reject(closed());
       await table.promise.catch(() => undefined);
@@ -791,7 +797,7 @@ test("an older pick's refusal reported with no Retry ends once a save of the fie
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
     expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(select().value).toBe("3");
+    expect(shownPriority()).toBe("P3");
 
     reads.store(3);
     await act(async () => {
@@ -801,7 +807,7 @@ test("an older pick's refusal reported with no Retry ends once a save of the fie
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     // Dispatch holds P3, saved after the refused pick: the refusal has nothing left to report.
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-    expect(select().value).toBe("3");
+    expect(shownPriority()).toBe("P3");
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -841,9 +847,8 @@ test("an older pick's refusal reported with no Retry offers Retry once the newer
   const view = renderTwoPickers(client, dispatchReads());
   const user = userEvent.setup();
   try {
-    const [page, drawer] = prioritySelects() as [HTMLSelectElement, HTMLSelectElement];
-    await user.selectOptions(page, "0");
-    await user.selectOptions(drawer, "2");
+    await pickPriority(user, "P0", 0);
+    await pickPriority(user, "P2", 1);
     await act(async () => {
       first.reject(closed());
       await first.promise.catch(() => undefined);
@@ -883,10 +888,9 @@ test("an older pick's refusal reported with no Retry offers Retry once the newer
   const view = renderTwoPickers(client, dispatchReads());
   const user = userEvent.setup();
   try {
-    const [page, drawer] = prioritySelects() as [HTMLSelectElement, HTMLSelectElement];
-    await user.selectOptions(page, "0");
+    await pickPriority(user, "P0", 0);
     saveStatus(client);
-    await user.selectOptions(drawer, "2");
+    await pickPriority(user, "P2", 1);
     await act(async () => {
       first.reject(closed());
       await first.promise.catch(() => undefined);
@@ -929,7 +933,7 @@ async function pickAndReload(picks: readonly string[], pressedAgo: number) {
   const view = renderIn(client, <CachedPriority reads={dispatchReads()} />);
   const user = userEvent.setup();
   for (const pick of picks) {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, pick);
+    await pickPriority(user, `P${pick}`);
   }
   view.unmount();
   const kept = keptWrites();
@@ -1098,7 +1102,7 @@ test("a pick a reload kept refused, which the page never showed, puts nothing ba
     expect(line()).toEqual([["CORE-1 set to P3", "refused"]]);
     // A later pick of P2 lands, and the app reads the issue, the list and the Inbox again.
     reads.store(2);
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 3 }, { priority: 2 }]));
     await waitFor(() => expect(line()).toEqual([["CORE-1 set to P3", "refused"]]));
     await waitFor(() => expect(after.isFetching()).toBe(0));
@@ -1211,10 +1215,9 @@ test("a refusal reported with no Retry ends once a kept pick the reader retried 
       </>
     );
     const user = userEvent.setup();
-    await waitFor(() => expect(prioritySelects()).toHaveLength(1));
-    const select = () => prioritySelects()[0] as HTMLSelectElement;
-    await user.selectOptions(select(), "0");
-    await user.selectOptions(select(), "2");
+    await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
+    await pickPriority(user, "P0");
+    await pickPriority(user, "P2");
     await act(async () => {
       older.reject(closed());
       await older.promise.catch(() => undefined);
@@ -1233,7 +1236,7 @@ test("a refusal reported with no Retry ends once a kept pick the reader retried 
       ["CORE-1 set to P3", "queued"],
       ["CORE-1 set to P2", "sending"],
     ]);
-    expect(select().value).toBe("3");
+    expect(shownPriority()).toBe("P3");
     await act(async () => {
       newer.reject(closed());
       await newer.promise.catch(() => undefined);
@@ -1250,7 +1253,7 @@ test("a refusal reported with no Retry ends once a kept pick the reader retried 
     expect(
       within(screen.getByRole("alert")).queryByRole("button", { name: "Retry" })
     ).not.toBeInTheDocument();
-    expect(select().value).toBe("3");
+    expect(shownPriority()).toBe("P3");
 
     reads.store(3);
     await act(async () => {
@@ -1260,7 +1263,7 @@ test("a refusal reported with no Retry ends once a kept pick the reader retried 
     await waitFor(() => expect(writesOf(after).rows()).toEqual([]));
     // Dispatch holds P3, the newest write of the priority: the refusal has nothing left to report.
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-    expect(select().value).toBe("3");
+    expect(shownPriority()).toBe("P3");
   } finally {
     view?.unmount();
     patchIssue.mockRestore();
@@ -1351,7 +1354,7 @@ async function dropPick(drop: (writes: Writes) => void) {
     await waitFor(() =>
       expect(shownPriorities()).toEqual({ detail: "P1", inbox: "P1", list: "P1" })
     );
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 0 }]));
     expect(shownPriorities()).toEqual({ detail: "P0", inbox: "P0", list: "P0" });
     const answerReads = reads.hold();
@@ -1403,7 +1406,7 @@ test("an answer that lands while a pick is unsaved keeps the pick on the issue, 
   const picker = renderIn(client, <CachedPriority reads={reads} />);
   const user = userEvent.setup();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 2 }]));
     picker.unmount();
 
@@ -1443,7 +1446,7 @@ test("a read that answers after the pick landed with the value from before it do
   const picker = renderIn(client, <CachedPriority reads={reads} />);
   const user = userEvent.setup();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 2 }]));
     // Three reads reach Dispatch before the save does, and are still out when it lands.
     const answerEarlyReads = reads.hold();
@@ -1494,7 +1497,7 @@ test("a read held at a landing that is then cancelled leaves the list at the lan
   const user = userEvent.setup();
   const answerReads = reads.hold();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 2 }]));
     // A read of the project's list reaches Dispatch before the save does, and is out when it
     // lands: the landing holds it.
@@ -1537,9 +1540,9 @@ test("a read sent before a pick landed that answers after it is older than the l
   const picker = renderIn(client, <CachedPriority reads={reads} />);
   const user = userEvent.setup();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 2 }]));
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     const answerEarlyReads = reads.hold();
     const early = Promise.all(
       [detailKey, listKey, inboxKey].map((queryKey) => client.refetchQueries({ queryKey }))
@@ -1599,9 +1602,9 @@ test("a read sent before a pick landed that answers after a later pick's refusal
     seen.push(`${step}: detail ${detail} list ${list} inbox ${inbox}`);
   };
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 2 }]));
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     // Three reads reach Dispatch before the save of P2 does.
     const answerEarlyReads = reads.hold();
     const early = Promise.all(
@@ -1655,15 +1658,15 @@ test("a refused priority pick with no newer live pick puts back the confirmed pr
   const view = renderIn(client, <CachedPriority reads={{ ...reads, detail: detailRead }} />);
   const user = userEvent.setup();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
     expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(cachedPriorities(client)).toEqual({ detail: 1, inbox: 1, list: 1 });
-    expect((prioritySelects()[0] as HTMLSelectElement).value).toBe("1");
+    expect(shownPriority()).toBe("P1");
     // The issue is read again, as Dispatch holds it.
     await waitFor(() => expect(detailRead).toHaveBeenCalledTimes(1));
-    expect((prioritySelects()[0] as HTMLSelectElement).value).toBe("1");
+    expect(shownPriority()).toBe("P1");
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -1691,9 +1694,8 @@ test("a refused pick whose older pick was refused before it puts back the priori
   const view = renderIn(client, <CachedPriority reads={{ ...reads, detail: detailRead }} />);
   const user = userEvent.setup();
   try {
-    const select = () => prioritySelects()[0] as HTMLSelectElement;
-    await user.selectOptions(select(), "1");
-    await user.selectOptions(select(), "2");
+    await pickPriority(user, "P1");
+    await pickPriority(user, "P2");
     expect(
       writesOf(client)
         .rows()
@@ -1712,7 +1714,7 @@ test("a refused pick whose older pick was refused before it puts back the priori
     const reported = await screen.findByRole("alert");
     expect(reported).toHaveTextContent("Could not update the priority of CORE-1.");
     expect(within(reported).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(select().value).toBe("2");
+    expect(shownPriority()).toBe("P2");
     expect(cachedPriorities(client)).toEqual({ detail: 2, inbox: 2, list: 2 });
     const readsBefore = detailRead.mock.calls.length;
     // The issue's read again is held until the roll-back is checked, so what shows is the
@@ -1729,12 +1731,12 @@ test("a refused pick whose older pick was refused before it puts back the priori
       expect(within(alert).getByRole("button", { name: "Retry" })).toBeInTheDocument()
     );
     expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
-    expect(select().value).toBe("3");
+    expect(shownPriority()).toBe("P3");
     expect(cachedPriorities(client)).toEqual({ detail: 3, inbox: 3, list: 3 });
     // The issue is read again, as Dispatch holds it.
     await waitFor(() => expect(detailRead.mock.calls.length).toBeGreaterThan(readsBefore));
     await act(async () => answerReads());
-    expect(select().value).toBe("3");
+    expect(shownPriority()).toBe("P3");
     expect(bodies(patchIssue)).toEqual([{ priority: 1 }, { priority: 2 }]);
   } finally {
     view.unmount();
@@ -1761,14 +1763,13 @@ test("a refused pick puts back the priority of Dispatch's newest answer, another
   const view = renderIn(client, <CachedPriority reads={{ ...reads, detail: detailRead }} />);
   const user = userEvent.setup();
   try {
-    const select = () => prioritySelects()[0] as HTMLSelectElement;
-    await user.selectOptions(select(), "1");
+    await pickPriority(user, "P1");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 1 }]));
     // Another person sets P0, and a read of the issue answers with it while P1 is out: P1 stays
     // shown over it.
     reads.store(0);
     await act(() => client.refetchQueries({ queryKey: detailKey }));
-    expect(select().value).toBe("1");
+    expect(shownPriority()).toBe("P1");
     expect(cachedPriorities(client)).toEqual({ detail: 1, inbox: 1, list: 1 });
     // Another person sets P2 before the refusal. The read the refusal starts is held until what
     // the refusal put back is checked.
@@ -1783,13 +1784,13 @@ test("a refused pick puts back the priority of Dispatch's newest answer, another
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
     expect(within(alert).getByRole("button", { name: "Retry" })).toBeInTheDocument();
-    expect(select().value).toBe("0");
+    expect(shownPriority()).toBe("P0");
     expect(cachedPriorities(client)).toEqual({ detail: 0, inbox: 0, list: 0 });
     await waitFor(() => expect(detailRead.mock.calls.length).toBe(readsBefore + 1));
-    expect(select().value).toBe("0");
+    expect(shownPriority()).toBe("P0");
 
     await act(async () => answerReads());
-    await waitFor(() => expect(select().value).toBe("2"));
+    await waitFor(() => expect(shownPriority()).toBe("P2"));
     expect(client.getQueryData<IssueDetails>(detailKey)?.priority).toBe(2);
     expect(detailRead.mock.calls.length).toBe(readsBefore + 1);
   } finally {
@@ -1833,7 +1834,7 @@ for (const [older, newer] of [
       await waitFor(() => expect(shownPriorities()[newer]).toBe("P1"));
       expect(shownPriorities()[older], `the ${older} read before Dispatch stored P1`).toBe("P3");
 
-      await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+      await pickPriority(user, "P0");
       await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 0 }]));
       // The reads the refusal starts are held until what it put back is checked.
       const answerReads = reads.hold();
@@ -1887,7 +1888,7 @@ test("a read sent while no pick is live is as new as its request: a refusal afte
     seen.push(`${step}: detail ${detail} list ${list} inbox ${inbox}`);
   };
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "1");
+    await pickPriority(user, "P1");
     reads.store(1);
     await act(async () => {
       first.resolve({ ...issue, priority: 1 });
@@ -1900,7 +1901,7 @@ test("a read sent while no pick is live is as new as its request: a refusal afte
     reads.store(0);
     const answerRead = reads.hold();
     const read = client.refetchQueries({ queryKey: detailKey });
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 1 }, { priority: 2 }]));
     see("P2 picked while that read is out");
     await act(async () => {
@@ -1989,7 +1990,7 @@ test("a refused pick puts back the priority the reads a retried save's landing s
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     see("the status save retried and answered at P1, the reads after its landing at P2");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(3));
     see("P0 picked");
     // The reads the refusal starts are held until what it put back is checked.
@@ -2053,7 +2054,7 @@ test("a pick refused after a read older than the cached issue answered puts back
       await Promise.resolve();
     });
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ assignee: "bob" }]));
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     see("P0 picked behind the assignee save");
     // Another person sets P2, and a read of the issue reaches Dispatch before the assignee save.
     reads.store(2, { updated_at: "2026-09-09T00:00:30Z" });
@@ -2174,7 +2175,7 @@ test("a refused pick puts back the priority a save of the issue's title answered
     });
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     see("the title saved, its answer at P2 merged into the issue");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     see("P0 picked");
 
@@ -2239,7 +2240,7 @@ test("a refused priority pick puts back the priority an assignee pick that lande
       await Promise.resolve();
     });
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ assignee: "bob" }]));
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     see("P0 picked behind the assignee save");
     // Another person sets P2 before the assignee save reaches Dispatch. Every read sent from now
     // on - those the landing and the refusal start - waits.
@@ -2289,6 +2290,7 @@ function releaseClaim(client: DispatchQueryClient, answer: Promise<Issue>): void
         kind: plainWrite,
         label: `Claim on ${issue.key} released`,
         presentation: "indicator",
+        method: "DELETE",
         write: (bounds) => {
           bounds.sent?.({ method: "DELETE", path: `/api/v1/issues/${issue.key}/claim` });
           return answer;
@@ -2341,7 +2343,7 @@ test("a refused pick puts back the priority a pick that landed answered, not the
     );
     await waitFor(() => expect(client.isFetching()).toBe(0));
     see("the issue, the list and the Inbox read at P1");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 0 }]));
     releaseClaim(client, release.promise);
     see("P0 picked and the claim released, both out");
@@ -2361,7 +2363,7 @@ test("a refused pick puts back the priority a pick that landed answered, not the
     });
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     see("the release's answer, at P1 from before P0, arrives after P0's");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }]));
     see("P2 picked");
 
@@ -2481,21 +2483,26 @@ test("a refused assignee pick puts back the person an Inbox row waited on in Dis
   }
 });
 
-const mappings: RepoProject[] = ["acme/widgets", "acme/gadgets"].map((repo) => ({
-  created_at: "2026-10-01T00:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  default: repo === "acme/widgets",
-  project: "CORE",
-  renamed_to: null,
-  repo,
-}));
+/** CORE, whose default repository, acme/widgets, is the one repository the list suggests. */
+const projects: Project[] = [
+  {
+    created_at: "2026-10-01T00:00:00Z",
+    default_repo: "acme/widgets",
+    gated_steps: [],
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+    proven_sessions: false,
+  },
+];
 
 /** A repository picker on CORE-1, whose own repository is `repo` and which resolves to
- *  `resolved`, with the project's mappings read once the reader reaches for it. The picker is the
- *  shared list's single pick: its list suggests the mappings after Inherit, a pick of a row writes
- *  it, and the Inherit row is an Inherit pick: the issue inherits a repository again. */
+ *  `resolved`, with the project list read once the reader reaches for it. The picker is the
+ *  shared list's single pick: its list suggests the project's default repository and the issue's
+ *  own after Inherit, a pick of a row writes it, a repository it does not suggest is given as
+ *  typed text, and the Inherit row is an Inherit pick: the issue inherits a repository again. */
 function renderRepo(repo: string | null, resolved: string | null) {
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mappings);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
   // The issue's read, which the test seeds: the one asked of it is the issue read again.
   const detailRead = mock(() =>
     Promise.reject<IssueDetails>(new Error("the test seeds this query"))
@@ -2534,7 +2541,7 @@ function renderRepo(repo: string | null, resolved: string | null) {
     trigger,
     unmount: () => {
       view.unmount();
-      listRepoProjects.mockRestore();
+      listProjects.mockRestore();
     },
   };
 }
@@ -2554,7 +2561,7 @@ test("a refused repository pick puts back the repository Dispatch last confirmed
   try {
     await user.hover(trigger());
     await user.click(trigger());
-    await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
+    await waitFor(() => expect(suggestions()).toEqual(["acme/widgets"]));
     await pickRepo(user, trigger, "acme/gadgets");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("acme/gadgets cannot be the repository of CORE-1");
@@ -2585,7 +2592,7 @@ test("an Inherit pick of the repository shows the repository the issue showed be
     expect(described()).toBe("acme/gadgets");
     await user.hover(trigger());
     await user.click(trigger());
-    await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
+    await waitFor(() => expect(suggestions()).toEqual(["acme/widgets", "acme/gadgets"]));
     await pickRepo(user, trigger, "");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ repo: null }]));
     expect(described()).toBe("acme/gadgets, inherited or the project's default");
@@ -2619,13 +2626,13 @@ test("a second pick waits in the Pending changes list as Waiting to send, and it
   );
   const user = userEvent.setup();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "3");
+    await pickPriority(user, "P0");
+    await pickPriority(user, "P3");
     const pending = screen.getByTestId("pending-writes");
     expect(pending).toHaveTextContent("CORE-1 set to P3 — Waiting to send");
     await user.click(within(pending).getByRole("button", { name: "Discard" }));
     // The pick still out is the newest live one: it shows, and nothing is refused.
-    expect((prioritySelects()[0] as HTMLSelectElement).value).toBe("0");
+    expect(shownPriority()).toBe("P0");
     expect(cachedPriorities(client)).toEqual({ detail: 0, inbox: 0, list: 0 });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
@@ -2668,13 +2675,13 @@ test("a pick discarded from the Pending changes list with no other live pick put
         })
         .catch(() => undefined);
     });
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     const pending = screen.getByTestId("pending-writes");
     expect(pending).toHaveTextContent("CORE-1 set to P0 — Waiting to send");
     expect(cachedPriorities(client)).toEqual({ detail: 0, inbox: 0, list: 0 });
     await user.click(within(pending).getByRole("button", { name: "Discard" }));
     expect(cachedPriorities(client)).toEqual({ detail: 1, inbox: 1, list: 1 });
-    expect((prioritySelects()[0] as HTMLSelectElement).value).toBe("1");
+    expect(shownPriority()).toBe("P1");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(bodies(patchIssue)).toEqual([{ status: "done" }]);
   } finally {
@@ -2693,7 +2700,7 @@ test("a pick shows on the issue tables of the Priorities view, over their answer
   const view = renderIn(client, <CachedPriority reads={dispatchReads()} />);
   const user = userEvent.setup();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     expect(shown()).toBe(2);
     // The table's read, composed before Dispatch has the pick, answers while it is out.
     await act(() => client.fetchQuery({ queryFn: async () => [summary], queryKey: advancesKey }));
@@ -2741,8 +2748,9 @@ test("a board move to another priority lane made over a live pick is the priorit
   });
   const user = userEvent.setup();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "1");
-    expect(cachedPriorities(client)).toEqual({ detail: 1, inbox: 1, list: 1 });
+    // A pick of P0: the issue is at P1, and a pick of the priority it holds writes nothing.
+    await pickPriority(user, "P0");
+    expect(cachedPriorities(client)).toEqual({ detail: 0, inbox: 0, list: 0 });
     // The pick is still out when the card is dragged into the P3 lane: the move joins the issue's
     // line behind it, and Dispatch will store the move's priority last.
     let moved: Promise<void> | undefined;
@@ -2755,12 +2763,12 @@ test("a board move to another priority lane made over a live pick is the priorit
 
     reads.store(3);
     await act(async () => {
-      pick.resolve({ ...issue, priority: 1 });
+      pick.resolve({ ...issue, priority: 0 });
       await moved;
     });
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     expect(shownPriorities()).toEqual({ detail: "P3", inbox: "P3", list: "P3" });
-    expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([1, 3]);
+    expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([0, 3]);
   } finally {
     board.unmount();
     view.unmount();
@@ -2833,8 +2841,8 @@ function renderBoard(
     detail: read(() => ({ ...details, priority: stored() })),
   };
   const commits = recordCommits<IssuePriority | null>(() => {
-    const [select] = prioritySelects();
-    return select === undefined ? "(none)" : drawnPick(select);
+    const [trigger] = priorityTriggers();
+    return trigger === undefined ? "(none)" : drawnPick(trigger);
   });
   const view = renderIn(
     client,
@@ -2888,7 +2896,7 @@ test("two drags of a card over its live pick show the card in the newest drag's 
   const seen: string[] = [];
   const see = (step: string) => seen.push(`${step}: ${board.shown()}`);
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     see("pick P2 out");
     act(() => {
@@ -2956,7 +2964,7 @@ test("a read composed before a drag of the card landed as the last write of its 
   const see = (step: string) =>
     seen.push(`${step}: detail P${cachedPriorities(client).detail} board ${board.shown()}`);
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     act(() => {
       void board.moves().moveCardToLane(issue.key, "todo", 0, 0);
     });
@@ -3012,7 +3020,7 @@ test("a refused drag of a card over its pick puts the pick back on every surface
   const board = renderBoard(client, () => stored);
   const user = userEvent.setup();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     act(() => {
       void board.moves().moveCardToLane(issue.key, "todo", 3, 0);
     });
@@ -3065,7 +3073,7 @@ test("a pick made behind a live drag of its card and refused after the drag puts
     seen.push(`${step}: detail P${detail} inbox P${inbox} board ${board.shown()}`);
   };
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     act(() => {
       void board.moves().moveCardToLane(issue.key, "todo", 0, 0);
     });
@@ -3077,7 +3085,7 @@ test("a pick made behind a live drag of its card and refused after the drag puts
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     see("P2 lands, drag to P0 out");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "1");
+    await pickPriority(user, "P1");
     see("P1 picked behind the drag");
     // The reads the refusals start are held until what the refusals put back is checked.
     const answerReads = board.hold();
@@ -3136,7 +3144,7 @@ test("a pick made on a card while its drag is out and refused after the drag nev
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     see("drag to P0 out");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     see("P2 picked on the card behind it");
     // The reads the refusals start are held until what the refusals put back is checked.
     const answerReads = board.hold();
@@ -3188,7 +3196,7 @@ test("a pick refused while a later drag of its card still waits behind another c
   const board = renderBoard(client, () => 1, { others: [neighbour] });
   const user = userEvent.setup();
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     act(() => {
       void board.moves().moveCardToLane(neighbour.key, "todo", 2, 0);
@@ -3295,9 +3303,11 @@ for (const first of ["the pick", "the other card's move"] as const) {
           .map((row) => row.label)
       ).toEqual(["CORE-2 moved on the board"]);
       expect(board.shown()).toBe("P3");
-      const [picker] = prioritySelects();
-      const fromPick = board.commits.markAt(picker as HTMLSelectElement, "change");
-      await user.selectOptions(picker as HTMLSelectElement, "2");
+      const [picker] = priorityTriggers();
+      await user.click(picker as HTMLElement);
+      const p2 = within(panelOf(picker as HTMLElement)).getByRole("option", { name: "P2" });
+      const fromPick = board.commits.markAt(p2, "click");
+      await user.click(p2);
       await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
       if (first === "the pick") {
         await land(pick, { ...issue, priority: 2 });
@@ -3316,9 +3326,9 @@ for (const first of ["the pick", "the other card's move"] as const) {
       ]);
       expect(board.shown()).toBe("P3");
       expect(fromPick().map(({ drawn }) => drawn)).toEqual(
-        fromPick().map(({ host }) => `${host} P${host}`)
+        fromPick().map(({ host }) => `P${host} P${host}`)
       );
-      expect(fromPick().at(-1)?.drawn).toBe("3 P3");
+      expect(fromPick().at(-1)?.drawn).toBe("P3 P3");
     } finally {
       board.unmount();
       patchIssue.mockRestore();
@@ -3353,7 +3363,7 @@ test("two drags of a card that wait behind another card's move, made over its li
       .rows()
       .map((row) => row.label);
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "2");
+    await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     act(() => {
       void board.moves().moveCardToLane(neighbour.key, "todo", 2, 0);
@@ -3435,7 +3445,7 @@ test("a refused pick puts back the priority of the newest read across the caches
     seen.push(`${step}: detail P${cachedPriorities(client).detail} board ${board.shown()}`);
   try {
     await waitFor(() => expect(board.shown()).toBe("P3"));
-    await waitFor(() => expect(prioritySelects()).toHaveLength(1));
+    await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
     act(() => {
       void board.moves().moveCardToLane(issue.key, "todo", 1, 0);
     });
@@ -3449,7 +3459,7 @@ test("a refused pick puts back the priority of the newest read across the caches
     await waitFor(() => expect(api.listIssues).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     see("the issue read at P3, the card dragged to P1 and the board read again");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     see("P0 picked");
     // The reads the refusal starts are held until what it put back is checked.
@@ -3497,7 +3507,7 @@ test("a drag saved while no pick is live is the priority a later refused pick pu
     seen.push(`${step}: detail P${cachedPriorities(client).detail} board ${board.shown()}`);
   try {
     await waitFor(() => expect(board.shown()).toBe("P3"));
-    await waitFor(() => expect(prioritySelects()).toHaveLength(1));
+    await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     // Every read from now on - the board's after the drag, those the refusal starts - waits.
     const answerReads = board.hold();
@@ -3512,7 +3522,7 @@ test("a drag saved while no pick is live is the priority a later refused pick pu
     });
     await waitFor(() => expect(api.listIssues).toHaveBeenCalledTimes(2));
     see("the issue and the board read at P3, the card dragged to P1 and saved");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     see("P0 picked");
 
@@ -3558,7 +3568,7 @@ test("a drag that landed with no answer while no pick is live is the priority a 
     seen.push(`${step}: detail P${cachedPriorities(client).detail} board ${board.shown()}`);
   try {
     await waitFor(() => expect(board.shown()).toBe("P3"));
-    await waitFor(() => expect(prioritySelects()).toHaveLength(1));
+    await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     // Every read from now on - those the drag's landing starts, those the refusal starts - waits.
     const answerReads = board.hold();
@@ -3569,7 +3579,7 @@ test("a drag that landed with no answer while no pick is live is the priority a 
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     await waitFor(() => expect(client.isMutating()).toBe(0));
     see("the issue and the board read at P3, the card dragged to P1 and stored with no answer");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     see("P0 picked");
 
@@ -3650,7 +3660,7 @@ test("a refused pick puts back the priority the reads a drag's landing with no a
     seen.push(`${step}: detail P${detail} inbox P${inbox}`);
   };
   try {
-    await waitFor(() => expect(prioritySelects()).toHaveLength(1));
+    await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     act(() => {
       void page.moves().moveCardToLane(issue.key, "todo", 1, 0);
@@ -3665,7 +3675,7 @@ test("a refused pick puts back the priority the reads a drag's landing with no a
     await waitFor(() => expect(client.isMutating()).toBe(0));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     see("the card dragged to P1 and stored with no answer, the reads after its landing at P2");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     see("P0 picked");
     // The reads the refusal starts are held until what it put back is checked.
@@ -3715,7 +3725,7 @@ test("a refused pick puts back the priority a read of the board that waited for 
     seen.push(`${step}: detail P${cachedPriorities(client).detail} board ${board.shown()}`);
   try {
     await waitFor(() => expect(board.shown()).toBe("P3"));
-    await waitFor(() => expect(prioritySelects()).toHaveLength(1));
+    await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     act(() => {
       void board.moves().moveCardToLane(issue.key, "todo", 1, 0);
@@ -3741,7 +3751,7 @@ test("a refused pick puts back the priority a read of the board that waited for 
     await act(async () => answerWaiting());
     await waitFor(() => expect(board.shown()).toBe("P2"));
     see("the card dragged to P1, the board's read that waited for it at P2");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     see("P0 picked");
 
@@ -3842,7 +3852,7 @@ test("a refused pick puts back the priority a read's retry answered, not the old
     });
     expect(detailReads).toBe(2);
     see("the status save landed at P1, then the read's retry went out and answered P2");
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     see("P0 picked");
     // The reads the refusal starts are held until what it put back is checked.
@@ -3931,7 +3941,7 @@ test("a refused pick puts back the priority a retried read of the open issues an
   };
   try {
     await waitFor(() => expect(screen.getByTestId("open-priority")).toHaveTextContent("P3"));
-    await waitFor(() => expect(prioritySelects()).toHaveLength(1));
+    await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     act(() => {
       void board.result.current.moveCardToLane(issue.key, "todo", 1, 0);
@@ -3980,7 +3990,7 @@ test("a refused pick puts back the priority a retried read of the open issues an
     see(
       "the card dragged to P1, then to P0, the open issues' retry that waited for the second drag at P2"
     );
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "1");
+    await pickPriority(user, "P1");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(3));
     see("P1 picked");
 
@@ -4036,9 +4046,8 @@ test("Stop trying on a late pick with a newer pick live behind it keeps the newe
       .rows()
       .map((row) => [row.label, row.status]);
   try {
-    const select = () => prioritySelects()[0] as HTMLSelectElement;
-    await user.selectOptions(select(), "0");
-    await user.selectOptions(select(), "2");
+    await pickPriority(user, "P0");
+    await pickPriority(user, "P2");
     await jump(SEND_DEADLINE_MS);
     expect(line()).toEqual([
       ["CORE-1 set to P0", "late"],
@@ -4049,9 +4058,15 @@ test("Stop trying on a late pick with a newer pick live behind it keeps the newe
     await user.click(pendingRow("CORE-1 set to P0").getByRole("button", { name: "Stop trying" }));
     await jump(1_000);
     const alert = screen.getByRole("alert");
-    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    // A pick the reader stopped may have been saved: the picker says so rather than that it
+    // failed, and, with no Retry offered, that the newer pick goes after it.
+    expect(alert).toHaveTextContent(
+      stoppedWriteNote("the priority of CORE-1", "saved", {
+        anew: "The newer change shown goes to Dispatch after it, so that one is stored last.",
+      })
+    );
     expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(select().value).toBe("2");
+    expect(shownPriority()).toBe("P2");
     expect(cachedPriorities(client)).toEqual({ detail: 2, inbox: 2, list: 2 });
     expect(shownPriorities()).toEqual({ detail: "P2", inbox: "P2", list: "P2" });
     // The stopped pick has left the line, and P2 is out.
@@ -4097,7 +4112,7 @@ test("a pick that is late and still being tried stays shown over the reads that 
     </>
   );
   try {
-    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await pickPriority(user, "P0");
     await jump(SEND_DEADLINE_MS);
     expect(
       writesOf(client)

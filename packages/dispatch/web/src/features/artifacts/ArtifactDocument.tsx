@@ -1,14 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { api } from "../../api/client";
+import { ambiguousItems, api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact, IDCandidate } from "../../api/types";
 import { AddressRedirect, addressWithParam, usePageAddress } from "../../lib/page-address";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { ItemMatchList } from "../issue/ItemMatchList";
-import { ambiguousItems } from "../issue/useItemLanding";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { useWholeRouteRead } from "../refs/reference-target";
 import type { DispatchReferenceRoute } from "../refs/routes";

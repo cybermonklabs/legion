@@ -354,6 +354,17 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 // row this pass knows nothing of: the pass that states it computes it, and until then it
 // stands.
 
+// Each deletion below finds its stale rows as the stored keys except the computed ones (`gone`),
+// materialized, so the set operation runs once whatever plan the statement is given and reads
+// each side once, and deletes or stamps each by its primary key (staleFactsStatement,
+// staleFilingsStatement). Written as `not (issue_key = any($n))`, the filter compared each stored
+// row with the whole computed list: a plan with the values hashes the list, and the generic plan a
+// statement pgx caches can settle on after its fifth run cannot, so a whole pass of a project of
+// INFRA's 13,000 issues compared each of its rows with up to 13,000 keys.
+// TestEachDeletionOfStaleFactsReadsItsListOnce holds each to its plan. Each statement spells its
+// table in its own text: the census of item-row writers reads a write's table there, and refuses
+// one whose table a value fills (api's TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus).
+
 // deleteStaleRows deletes the stored rows of the stated keys that computed holds no row for, and
 // answers the keys it deleted. It is the deletion of a pass that computed a set of keys: the
 // write's Stated is the set the pass considered, computed is the keys its computation answered
@@ -363,14 +374,21 @@ func deleteStaleRows(ctx context.Context, q Querier, write ProjectWrite, compute
 	if len(write.Stated) == 0 {
 		return nil, nil
 	}
-	const where = `where project_key = $1 and issue_key = any($2) and not (issue_key = any($3))`
+	args := []any{write.Project, write.Stated, computed}
 	if write.Yielded {
-		return deleteRows(ctx, q, write.Project,
-			`update issue_facts set written_build = $4 `+where+` and written_build <> $4 returning issue_key`,
-			write.Project, write.Stated, computed, write.Build)
+		args = append(args, write.Build)
 	}
-	return deleteRows(ctx, q, write.Project, `delete from issue_facts `+where+` returning issue_key`,
-		write.Project, write.Stated, computed)
+	return deleteRows(ctx, q, write.Project, staleRowsStatement(write.Yielded), args...)
+}
+
+// staleRowsStatement is deleteStaleRows' statement, the stamp where yielded: the rows of project
+// $1 among the stated keys $2 that the computed keys $3 hold no row for, stamped with the build $4.
+func staleRowsStatement(yielded bool) string {
+	return staleFactsStatement(`with gone as materialized (
+		select issue_key from issue_facts where project_key = $1 and issue_key = any($2)
+		except
+		select * from unnest($3::text[]) as computed(issue_key)
+	)`, yielded, "$4") + ` returning f.issue_key`
 }
 
 // deleteStaleProjectRows deletes the stored rows of the project that computed holds no row for,
@@ -381,16 +399,38 @@ func deleteStaleRows(ctx context.Context, q Querier, write ProjectWrite, compute
 // stands. A Yielded write stamps those rows with its build instead, and answers the keys it
 // stamped (ProjectWrite.Yielded).
 func deleteStaleProjectRows(ctx context.Context, q Querier, write ProjectWrite, computed []string) ([]string, error) {
-	const where = `where project_key = $1 and not (issue_key = any($2))
-		  and exists (select 1 from issues
-		              where issues.project_key = $1 and issues.key = issue_facts.issue_key)`
+	args := []any{write.Project, computed}
 	if write.Yielded {
-		return deleteRows(ctx, q, write.Project,
-			`update issue_facts set written_build = $3 `+where+` and written_build <> $3 returning issue_key`,
-			write.Project, computed, write.Build)
+		args = append(args, write.Build)
 	}
-	return deleteRows(ctx, q, write.Project, `delete from issue_facts `+where+` returning issue_key`,
-		write.Project, computed)
+	return deleteRows(ctx, q, write.Project, staleProjectRowsStatement(write.Yielded), args...)
+}
+
+// staleProjectRowsStatement is deleteStaleProjectRows' statement, the stamp where yielded: the
+// rows of project $1 whose key names an issue of the project and that the computed keys $2 hold
+// no row for, stamped with the build $3.
+func staleProjectRowsStatement(yielded bool) string {
+	return staleFactsStatement(`with gone as materialized (
+		select f.issue_key from issue_facts f
+		where f.project_key = $1
+		  and exists (select 1 from issues where issues.project_key = $1 and issues.key = f.issue_key)
+		except
+		select * from unnest($2::text[]) as computed(issue_key)
+	)`, yielded, "$3") + ` returning f.issue_key`
+}
+
+// staleFactsStatement is the statement, headed by gone, the CTE of the stale keys, that deletes
+// each issue_facts row of project $1 that gone names, or where yielded stamps each that holds
+// another build with the build the parameter build names.
+func staleFactsStatement(gone string, yielded bool, build string) string {
+	if yielded {
+		return gone + `
+	update issue_facts f set written_build = ` + build + ` from gone
+	where f.project_key = $1 and f.issue_key = gone.issue_key and f.written_build <> ` + build
+	}
+	return gone + `
+	delete from issue_facts f using gone
+	where f.project_key = $1 and f.issue_key = gone.issue_key`
 }
 
 // deleteRows runs one of the two deletions, or the stamp a Yielded write makes in its place, and
@@ -429,14 +469,15 @@ func storedMap[V any](values map[string]V) map[string]V {
 	return values
 }
 
-// Read answers the stored rows the Legion board serves, by issue key, each as of at (Row.At): the
-// project's rows of keys, the issue of each card; of every issue whose tree root is one of roots,
-// the trees the cards stand in; and of every open issue of the project, which no other route
-// serves, since the items route serves an issue by its close day (dispatch://INFRA-2916, R22). No
-// other row is read: a closed issue of no shown tree is the items route's (ReadClosedIn), so the
-// read and the board's body follow the open work and what the daemon runs, not every issue the
-// project's Legion work ever covered. The read is three index reads, by key, by root and of the
-// open rows (shownWhere), never the project's rows filtered after they are read.
+// Read answers the stored rows the Legion board serves, by issue key, each as of at (Row.At):
+// every open row of the project, which no other route serves, since the items route serves an
+// issue by its close day (dispatch://INFRA-2916, R22); of every issue whose tree root is one of
+// roots, the trees the cards stand in; and the rows of keys, the issue of each card. No other row
+// is read: a closed issue of no shown tree is the items route's (ReadClosedIn), so the read and the
+// board's body follow the open work and what the daemon runs, not every issue the project's Legion
+// work ever covered. The read is three index reads that share no row, keyed on closed_at: the open
+// rows, the closed rows of the trees by root, and the closed rows of the cards outside those trees
+// by key (shownWhere), never the project's rows filtered after they are read.
 //
 // The statement runs in a read-only transaction of its own with sequential scans off
 // (readByIndex), because the planner left to itself reads the open rows by scanning the whole
@@ -456,7 +497,7 @@ func storedMap[V any](values map[string]V) map[string]V {
 // rows of a window's closed issues instead (ReadClosedIn).
 func Read(ctx context.Context, pool *store.Pool, project string, keys, roots []string, at time.Time) (map[string]Row, error) {
 	// A nil list goes to Postgres as null, which `= any` answers null for, and `not (null)` would
-	// leave out every row of the trees and every open row; an empty array answers false.
+	// leave out every closed row of a card; an empty array answers false.
 	if keys == nil {
 		keys = []string{}
 	}
@@ -478,19 +519,26 @@ func Read(ctx context.Context, pool *store.Pool, project string, keys, roots []s
 }
 
 // readByIndex runs read in a read-only transaction of its own on pool whose first statement turns
-// the planner's sequential scans off for that transaction alone (`set local`), so nothing of it
-// is left on the pooled connection once the transaction ends. It is Read's transaction, and the
-// one its plan test takes the board's plans in, so the plans the test judges are the ones Read
-// runs. It takes one connection and holds no lock another read waits on, so it is one of the reads
-// the board runs side by side (store.ReadSideBySide), as the board's snapshot read is.
+// the planner's sequential scans off and has it plan each statement with its values for that
+// transaction alone (`set local`), so nothing of it is left on the pooled connection once the
+// transaction ends. It is Read's transaction, and the one its plan test takes the board's plans
+// in, so the plans the test judges are the ones Read runs. It takes one connection and holds no
+// lock another read waits on, so it is one of the reads the board runs side by side
+// (store.ReadSideBySide), as the board's snapshot read is.
+//
+// The plan with the values (`plan_cache_mode = force_custom_plan`) is the one a statement pgx
+// caches would otherwise leave after its fifth run for a generic plan, where `= any` over a
+// parameter scans the array for each row it tests rather than hashing it. shownWhere tests no
+// array on the open rows, so it costs a generic plan little, and the setting keeps the arms that
+// do test one (each bounded by the board's cards) on the values as well.
 func readByIndex(ctx context.Context, pool *store.Pool, read func(tx pgx.Tx) error) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return fmt.Errorf("begin the board's read of the Legion facts: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local enable_seqscan = off`); err != nil {
-		return fmt.Errorf("turn sequential scans off for the board's read of the Legion facts: %w", err)
+	if _, err := tx.Exec(ctx, `set local enable_seqscan = off; set local plan_cache_mode = force_custom_plan`); err != nil {
+		return fmt.Errorf("turn sequential scans and generic plans off for the board's read of the Legion facts: %w", err)
 	}
 	if err := read(tx); err != nil {
 		return err
@@ -501,24 +549,31 @@ func readByIndex(ctx context.Context, pool *store.Pool, read func(tx pgx.Tx) err
 	return nil
 }
 
-// shownWhere is Read's clause, which completes boardSelect, as three reads of the project's rows:
-// the rows of the keys given, each a probe of the primary key (project_key, issue_key); the rows
-// of the trees given, each root a range of issue_facts_root (project_key, root_key); and the open
-// rows, the range of issue_facts_closed (project_key, closed_at desc), both of migration
-// 20261117100000, where closed_at is null, which a btree answers as an index condition: the
-// plan's condition of that arm names closed_at IS NULL beside the project, so the range holds the
-// project's open rows alone and never the project's whole primary-key range. The planner keeps
-// that arm on the index only because Read runs the statement with sequential scans off
-// (readByIndex): priced by itself, a scan of the whole table ties with the range once the open
-// rows are a large share of the table, and at INFRA's size the plan with the values of a board of
-// no card was that scan. Each later read leaves out what an earlier one answered rather than the
-// three being merged, so no row is answered twice and no answered row is compared with another; a
-// card's row the tree's range reaches again is dropped by its filter, a cost bounded by the board's
-// cards.
-const shownWhere = `where project_key = $1 and issue_key = any($2)
-	union all ` + boardSelect + `where project_key = $1 and root_key = any($3) and not (issue_key = any($2))
-	union all ` + boardSelect + `where project_key = $1 and closed_at is null
-		and not (issue_key = any($2)) and not (root_key = any($3))`
+// shownWhere is Read's clause, which completes boardSelect, as three reads of the project's rows
+// that share no row, keyed on closed_at: the open rows, the range of issue_facts_closed
+// (project_key, closed_at desc) where closed_at is null, which a btree answers as an index
+// condition, so the range holds the project's open rows alone and tests nothing of them; the
+// closed rows of the trees given, each root a range of issue_facts_root (project_key, root_key);
+// and the closed rows of the keys given whose root is none of those trees, each a probe of the
+// primary key (project_key, issue_key). Both indexes are migration 20261117100000's. The three
+// answer the open rows, the trees' rows and the cards' rows, each once, and only the last tests a
+// list on the rows it reads, the roots on each closed card's, which the cards bound. An earlier
+// shape left the rows of the cards and the trees out of the open rows, which tested both lists on
+// every open row: under the generic plan a statement pgx caches can settle on, `<> all($n)` scans
+// the list for each row rather than hashing it, and over 15,803 rows of one project, 4,300 of them
+// open, with 200 cards in 60 trees, that read took 119 to 168 ms against 13 to 14 ms with its
+// values, and 417 to 482 ms with 1,000 cards in 300 trees; this one takes 7 to 9 ms and 11 to 16
+// ms under either plan (dispatch://INFRA-2916, round 15).
+// TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget holds it to 20 ms.
+//
+// The planner keeps the open arm on the index only because Read runs the statement with
+// sequential scans off (readByIndex): priced by itself, a scan of the whole table ties with the
+// range once the open rows are a large share of the table, and at INFRA's size the plan with the
+// values of a board of no card was that scan.
+const shownWhere = `where project_key = $1 and closed_at is null
+	union all ` + boardSelect + `where project_key = $1 and root_key = any($3) and closed_at is not null
+	union all ` + boardSelect + `where project_key = $1 and issue_key = any($2) and closed_at is not null
+		and not (root_key = any($3))`
 
 // ReadClosedIn answers the stored rows of the project's issues that closed from from up to to,
 // newest close first, through issue_facts_closed (migration 20261117100000), each as of at
@@ -717,31 +772,48 @@ func exec(ctx context.Context, q Querier, statement string, args ...any) error {
 // filing another project's session made is that project's row, which this never reads. A
 // Yielded write stamps those filings with its build instead (FilingsWrite.Yielded).
 func deleteStaleFilings(ctx context.Context, q Querier, write FilingsWrite) error {
+	if !write.Whole && len(write.Stated) == 0 {
+		return nil
+	}
 	kept := make([]string, len(write.Filings))
 	for index, filing := range write.Filings {
 		kept[index] = filing.Key
 	}
-	var where string
 	args := []any{write.Project, kept}
-	switch {
-	case write.Whole:
-		where = `where project_key = $1 and not (issue_key = any($2))`
-	case len(write.Stated) > 0:
-		where = `where project_key = $1 and not (issue_key = any($2)) and issue_key = any($3)`
+	if !write.Whole {
 		args = append(args, write.Stated)
-	default:
-		return nil
 	}
-	statement := `delete from issue_filings ` + where
 	if write.Yielded {
-		build := fmt.Sprintf("$%d", len(args)+1)
-		statement = `update issue_filings set written_build = ` + build + ` ` + where + ` and written_build <> ` + build
 		args = append(args, write.Build)
 	}
-	if err := exec(ctx, q, statement, args...); err != nil {
+	if err := exec(ctx, q, staleFilingsStatement(!write.Whole, write.Yielded), args...); err != nil {
 		return fmt.Errorf("delete or stamp the stale Legion filings of %s: %w", write.Project, err)
 	}
 	return nil
+}
+
+// staleFilingsStatement is deleteStaleFilings' statement, the stamp where yielded: the filings of
+// project $1 that the computed filings $2 do not hold, of the stated filed issues $3 where stated
+// and of every filed issue otherwise, stamped with the build that follows them, each deleted or
+// stamped by its primary key as staleFactsStatement writes an issue_facts row.
+func staleFilingsStatement(stated, yielded bool) string {
+	filter, build := "", "$3"
+	if stated {
+		filter, build = " and issue_key = any($3)", "$4"
+	}
+	gone := `with gone as materialized (
+		select issue_key from issue_filings where project_key = $1` + filter + `
+		except
+		select * from unnest($2::text[]) as kept(issue_key)
+	)`
+	if yielded {
+		return gone + `
+	update issue_filings f set written_build = ` + build + ` from gone
+	where f.project_key = $1 and f.issue_key = gone.issue_key and f.written_build <> ` + build
+	}
+	return gone + `
+	delete from issue_filings f using gone
+	where f.project_key = $1 and f.issue_key = gone.issue_key`
 }
 
 // ReadFilingsIn answers the stored filings a Legion session of the project made from from up to

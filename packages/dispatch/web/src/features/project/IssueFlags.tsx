@@ -2,19 +2,29 @@ import type { ReactNode } from "react";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import { Chip } from "../../components/Chip";
+import type { ControlSize } from "../../components/control-names";
 import { textSecondaryOnCanvas } from "../../theme/classes";
 import { useIssueFilters } from "./issue-filters";
 
 /** The flag chips both issue views share: Needs you and Unread, each toggling the URL-backed
- *  filter it names. The component reads `useIssueFilters` itself, so a view only places it. */
-export function IssueFlagChips(): ReactNode {
+ *  filter it names. The component reads `useIssueFilters` itself, so a view only places it, with
+ *  its own size (`ControlSize`): the Board's comfortable, the List's compact. */
+export function IssueFlagChips({ size = "comfortable" }: { size?: ControlSize }): ReactNode {
   const filters = useIssueFilters();
   return (
     <>
-      <Chip onClick={() => filters.setNeedsYou(!filters.needsYou)} selected={filters.needsYou}>
+      <Chip
+        onClick={() => filters.setNeedsYou(!filters.needsYou)}
+        selected={filters.needsYou}
+        size={size}
+      >
         Needs you
       </Chip>
-      <Chip onClick={() => filters.setUnread(!filters.unread)} selected={filters.unread}>
+      <Chip
+        onClick={() => filters.setUnread(!filters.unread)}
+        selected={filters.unread}
+        size={size}
+      >
         Unread
       </Chip>
     </>

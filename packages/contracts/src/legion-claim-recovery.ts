@@ -87,14 +87,14 @@ export const LegionFreshSessionResponse = z.object({
   phaseNotRestarted: nonEmptyString.optional(),
 });
 
-/** `api.CompactResponse`, what became of a compaction. `compacted` is whether Oh My Pi
- * compacted the session, and `reason` why it did not: Oh My Pi's own words for a compaction it
- * refused or skipped ("Already compacted", "Nothing to compact (session too small)"), and the
- * daemon's for a wait that ran out. The daemon cuts it to 200 bytes, since the words are a
- * model's and reach the controller's next prompt. A compaction that did not run is this answer
- * rather than a failure, because the claim came back and whatever task it owed has gone to it
- * again. */
+/** `api.CompactResponse`, what became of a compaction. `compacted` is whether Oh My Pi's handoff
+ * shortened the session, and `reason` why it did not: Oh My Pi's own words for a handoff it
+ * refused ("Cannot hand off while a response is in progress", "Nothing to hand off (already
+ * compacted)"), and the daemon's for a handoff with no document or a wait that ran out. The
+ * daemon cuts it to 200 bytes, since the words are a model's and reach the controller's next
+ * prompt. A compaction that did not run is this answer rather than a failure, because the claim
+ * came back and whatever task it owed has gone to it again. */
 export const LegionCompactResponse = z.object({
-  compacted: z.boolean(),
+  compacted: z.boolean().optional(),
   reason: z.string().optional(),
 });

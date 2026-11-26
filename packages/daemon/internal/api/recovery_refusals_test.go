@@ -13,12 +13,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // The windows both of the controller's claim recoveries are read in, and the fixtures that
@@ -121,17 +121,11 @@ func parkedRelaunchCauses() []parkedRelaunchCause {
 //
 // The pacing is installed before the claim is created, because a machine takes its deps where
 // it is built, and it holds nothing until the verdict below: the launches that make the claim
-// ready run as they are raised. The turn it then gives is an hour away and this harness's clock
+// ready run as they are raised. The turn it then gives is minutes away and this harness's clock
 // fires no timer at all (stillClock), so the wake stays parked for the rest of the test.
 func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
 	t.Helper()
-	var park atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
-		if park.Load() {
-			return now.Add(time.Hour)
-		}
-		return now
-	}}
+	park := pacedUntilParked(h)
 	token := idleOnTheLadder(t, h)
 	conn := connected(h, token)
 	release := conn.HoldCompact()
@@ -141,7 +135,7 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 	}()
 	waitForCompacting(t, h, token)
 
-	park.Store(true)
+	park()
 	m, _ := h.supervisor.Machine(token)
 	locator := m.Claim().Locator
 	if locator == nil {
@@ -182,6 +176,26 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 	return token
 }
 
+// pacedUntilParked sets the harness's wake pacing to a pacer on the machines' own clock that lets
+// every paced launch out at its join until park is called, and parks every one after it: the
+// limiter's burst holds every launch the fixtures make before the park, and park reserves a whole
+// burst more, so every token is spent and a place joined after waits for a turn minutes out (one
+// for each launch the fixtures made, and one more), which a harness clock that fires no timer
+// (stillClock) never gives. It is set before any claim is created, because a machine takes its
+// deps where it is built. The burst is the pace the wake lines name.
+func pacedUntilParked(h *harness) (park func()) {
+	const burst = 64
+	limiter := wakepace.New(1, burst, nil)
+	clock := h.supervisor.deps.Clock
+	pacer := supervise.NewPacer(limiter, clock)
+	h.supervisor.deps.WakePace = supervise.WakePace{Pacer: pacer, Interval: limiter.Interval(), Rate: 1, Burst: burst}
+	return func() {
+		for range burst {
+			limiter.Reserve(clock.Now())
+		}
+	}
+}
+
 // A claim whose relaunch waits its paced turn is a claim between states with a launch in
 // flight, and the compaction says so after each of the three verdicts that leave it there: the
 // refusal names that launch rather than a turn, and says nothing of what the launch's turn
@@ -214,7 +228,7 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 				h := compactHarness(t, nil)
 				token := workingUnderAParkedRelaunch(t, h, cause.observation)
 
-				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 				refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 					parkedRelaunchRefusal(token, wantFreshSessionReaches))
@@ -243,19 +257,13 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 // TheLaunchsTurn in supervise).
 func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
 	t.Helper()
-	var park atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
-		if park.Load() {
-			return now.Add(time.Hour)
-		}
-		return now
-	}}
+	park := pacedUntilParked(h)
 	token := idleOnTheLadder(t, h)
 
-	park.Store(true)
+	park()
 	m, _ := h.supervisor.Machine(token)
 	stale := m.Claim()
-	stale.PluginContract = DaemonAPIVersion - 1
+	stale.PluginContract = DaemonAPIVersion() - 1
 	if err := h.store.PutClaim(h.ctx, stale); err != nil {
 		t.Fatalf("seed %s at an earlier plugin contract: %v", token, err)
 	}
@@ -301,7 +309,7 @@ func TestARecoveryRefusedWhileTheStalePluginRefreshWaitsItsTurnNamesTheLaunchInF
 			h := compactHarness(t, nil)
 			token := workingUnderAParkedRefresh(t, h)
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 				parkedRelaunchRefusal(token, wantFreshSessionReaches))
@@ -594,10 +602,14 @@ type recoveryDoor struct {
 func recoveryDoors() []recoveryDoor {
 	doors := make([]recoveryDoor, 0, 4)
 	for _, door := range freshSessionDoors() {
-		doors = append(doors, recoveryDoor{door.name, door.ask, "a fresh session would cut that turn off", wantFreshSessionReaches})
+		ask := func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder {
+			t.Helper()
+			return door.ask(t, h, issue, role, nil)
+		}
+		doors = append(doors, recoveryDoor{door.name, ask, "a fresh session would cut that turn off", wantFreshSessionReaches})
 	}
 	for _, door := range compactDoors() {
-		doors = append(doors, recoveryDoor{door.name, door.ask, "a compaction would abort that turn", wantCompactionReaches})
+		doors = append(doors, recoveryDoor{door.name, door.ask, "Oh My Pi refuses a compaction's handoff in that turn", wantCompactionReaches})
 	}
 	return doors
 }
@@ -623,7 +635,7 @@ func TestAFreshSessionReachesAClaimOverADeadProcess(t *testing.T) {
 					h.runtime.ScriptProbe(verdict.result)
 					reads := processReads(h)
 
-					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 					if recorder.Code != http.StatusOK {
 						t.Fatalf("the fresh session over the dead process = %d, want the 200 of a claim started again; body %s",
@@ -775,7 +787,7 @@ func workingController(t *testing.T, h *harness) claim.Token {
 	generation := m.Claim().Generation
 	for _, ev := range []supervise.Event{
 		supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses_controller",
-			SessionFile: "/sessions/ses_controller.jsonl", CapabilityHash: capabilityHash("secret"), PluginContract: DaemonAPIVersion},
+			SessionFile: "/sessions/ses_controller.jsonl", CapabilityHash: capabilityHash("secret"), PluginContract: DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: "ses_controller"},
 		supervise.StreamTurnStart{Claim: token},
 	} {
@@ -931,7 +943,7 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 			reads := processReads(h)
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("the fresh session whose start was refused = %d, want the 200 of a claim that was stopped; body %s",
@@ -963,7 +975,7 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 			writes.refusing(func(c supervise.Claim) bool { return c.Session == "" })
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("the fresh session whose forget was refused = %d, want the 200 of a claim that was stopped; body %s",
@@ -999,7 +1011,7 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 			writes.refusing(func(c supervise.Claim) bool { return c.State == supervise.StateLaunching })
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("the fresh session whose launch was not written = %d, want the 200 of a claim that was stopped; body %s",
@@ -1036,7 +1048,7 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Alive})
 			reads := processReads(h)
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			refusedSaying(t, recorder, http.StatusConflict, claimInATurn,
 				inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
@@ -1159,13 +1171,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 	} {
 		t.Run("the read: "+door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
-			var park atomic.Bool
-			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
-				if park.Load() {
-					return now.Add(time.Hour)
-				}
-				return now
-			}}
+			park := pacedUntilParked(h)
 			token := readyImplementer(t, h)
 			m, _ := h.supervisor.Machine(token)
 			if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
@@ -1175,7 +1181,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 			if before.State != supervise.StateWorking || before.WakeWaiting != nil {
 				t.Fatalf("the view is of a claim %s with wake %+v, want one in a turn with nothing parked", before.State, before.WakeWaiting)
 			}
-			park.Store(true)
+			park()
 			if err := m.Handle(h.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
 				Locator: *before.Locator, Kind: runtime.Gone, At: stillClock{}.Now(),
 			}}); err != nil {
@@ -1619,7 +1625,7 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 				h := compactHarness(t, nil)
 				token := held.start(t, h)
 
-				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 				refusedSaying(t, recorder, http.StatusConflict, held.code,
 					heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))

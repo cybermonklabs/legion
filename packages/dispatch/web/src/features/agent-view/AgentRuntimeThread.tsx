@@ -10,6 +10,7 @@ import type { Message, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { SessionSends } from "../conversation/useSessionSends";
 import { isViewer } from "../refs/actor";
+import { postDeletion } from "../refs/post-marks";
 import { AgentThread } from "./AgentThread";
 import {
   type AgentConversation,
@@ -128,7 +129,8 @@ export function AgentRuntimeThread({
     // A person's direct message the session took as its own user turn is in the stream too,
     // normally tagged with its Dispatch id: then it shows once, where the session took it, still
     // naming whoever wrote it. An untagged one is returned unchanged and its stored copy is never
-    // taken, so it shows twice (`packages/pi-envoy/AGENTS.md` says which turns go untagged). Any
+    // taken, so it shows twice (`packages/pi-envoy/README.md`, "A person's message from
+    // Dispatch", says which turns go untagged). Any
     // bus client can publish a tag, so only a person's stored message can be one, and only a
     // streamed message saying what that person wrote - beside what the stream names of what the
     // message carried, such as a picture's `[image]` - or answering their `!` line, replaces its
@@ -188,12 +190,19 @@ export function AgentRuntimeThread({
         const content = [{ text: message.body, type: "text" as const }];
         const createdAt = new Date(message.created_at);
         const id = dispatchId(message.id);
+        // A deleted message's body is cleared, and an edited one carries the time of the edit:
+        // the turn reads both from the marks and draws the deleted line where the text was.
+        const deleted = postDeletion(message);
+        const corrected = {
+          ...(deleted === null ? {} : { deleted }),
+          ...(message.edited_at === null ? {} : { edited: message.edited_at }),
+        };
         if (message.author.kind === "session" && message.author.id === sessionId) {
           return {
             content,
             createdAt,
             id,
-            metadata: dispatchMetadata({ dispatch: true }),
+            metadata: dispatchMetadata({ ...corrected, dispatch: true }),
             role: "assistant" as const,
             status: { reason: "stop", type: "complete" } as const,
           };
@@ -202,7 +211,7 @@ export function AgentRuntimeThread({
           content,
           createdAt,
           id,
-          metadata: dispatchMetadata({ author: otherAuthor(message, viewer) }),
+          metadata: dispatchMetadata({ ...corrected, author: otherAuthor(message, viewer) }),
           role: "user" as const,
         };
       });

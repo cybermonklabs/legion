@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"authelia.com/provider/oauth2/handler/rfc9449"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -67,27 +67,32 @@ func (spentProofsUnanswered) CheckAndSetDPoPProofUsed(context.Context, string, s
 
 // listenerBrokerTokens is the credential apiAuth takes, built over broker and ready to serve, as
 // a listener whose spent-proof bucket is open holds it.
-func listenerBrokerTokens(t *testing.T, broker *brokertokentest.StubBroker) *brokerTokens {
+func listenerBrokerTokens(t *testing.T, broker *ciphertokentest.StubBroker) *brokerTokens {
 	t.Helper()
 	return listenerBrokerTokensOver(t, broker.Server.URL, &spentProofsInMemory{})
 }
 
 // listenerBrokerTokensOver is the same credential over the broker at brokerURL and the spent-proof
-// store named, which is how the outcomes of that store reach apiAuth.
-func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage) *brokerTokens {
+// store named, which is how the outcomes of that store reach apiAuth. Each of adjust changes the
+// verifier's options before it is built, as a row that needs its own clock or bucket sets them.
+func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage, adjust ...func(*ciphertoken.Options)) *brokerTokens {
 	t.Helper()
 	tokens := newBrokerTokens(listenerBrokerConfig{
 		BrokerURL:        brokerURL,
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
-	verifier, err := brokertoken.New(brokertoken.Options{
+	options := ciphertoken.Options{
 		BrokerURL: brokerURL,
 		Account:   listenerBrokerAccount("listener-account-token"),
-		Origin:    listenerBrokerOrigin,
+		Origins:   []string{listenerBrokerOrigin},
 		Replay:    replay,
 		Address:   listenerSourceAddress,
-	})
+	}
+	for _, change := range adjust {
+		change(&options)
+	}
+	verifier, err := ciphertoken.New(options)
 	if err != nil {
 		t.Fatalf("build the broker-token verifier: %v", err)
 	}
@@ -97,44 +102,64 @@ func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPo
 
 // sessionAnswer is the broker's answer about a token issued to a session acting for a person:
 // what an agent's own access token is.
-func sessionAnswer(session, person, jkt string) brokertoken.Introspection {
-	return brokertoken.Introspection{
+func sessionAnswer(session, person, jkt string) ciphertoken.Introspection {
+	return ciphertoken.Introspection{
 		Active:       true,
 		Session:      session,
 		Person:       person,
-		ProjectScope: brokertoken.ProjectScopePerson,
-		ClientID:     brokertoken.ExchangeClientID,
+		ProjectScope: ciphertoken.ProjectScopePerson,
+		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
 }
 
 // serviceAnswer is the broker's answer about a token naming a service and no person: a machine
 // nobody has signed in on. It names no project, under the person scope, as the exchange mints it
-// (exchange.Set.Google), and as brokertoken holds such an answer to.
-func serviceAnswer(session, service, jkt string) brokertoken.Introspection {
-	return brokertoken.Introspection{
+// (exchange.Set.Google), and as ciphertoken holds such an answer to.
+func serviceAnswer(session, service, jkt string) ciphertoken.Introspection {
+	return ciphertoken.Introspection{
 		Active:       true,
 		Session:      session,
 		Service:      service,
-		ProjectScope: brokertoken.ProjectScopePerson,
-		ClientID:     brokertoken.ExchangeClientID,
+		ProjectScope: ciphertoken.ProjectScopePerson,
+		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
 }
 
 // readOnlyAnswer is the broker's answer about a token a read entry minted for Dispatch's read
 // list: the one scope read, the project scope none, a service, and no person and no project
-// (internal/broker/oauth, TestAReadEntrysPodExchangesForATokenThatOnlyReads). The listener's
-// verifier is built without the switch that serves one (brokertoken.Options.ServesReadOnly), so
+// (internal/cipher/oauth, TestAReadEntrysPodExchangesForATokenThatOnlyReads). The listener's
+// verifier is built without the switch that serves one (ciphertoken.Options.ServesReadOnly), so
 // such a token is no session's credential here.
-func readOnlyAnswer(session, service, jkt string) brokertoken.Introspection {
-	return brokertoken.Introspection{
+func readOnlyAnswer(session, service, jkt string) ciphertoken.Introspection {
+	return ciphertoken.Introspection{
 		Active:       true,
 		Session:      session,
 		Service:      service,
-		ProjectScope: brokertoken.ProjectScopeNone,
-		Scope:        brokertoken.ScopeRead,
-		ClientID:     brokertoken.ExchangeClientID,
+		ProjectScope: ciphertoken.ProjectScopeNone,
+		Scope:        ciphertoken.ScopeRead,
+		ClientID:     ciphertoken.ExchangeClientID,
+		Thumbprint:   jkt,
+	}
+}
+
+// jobService is the service a job's token names: the identity its job entry lists, here a pod's
+// Kubernetes service account as the exchange spells its subject.
+const jobService = "system:serviceaccount:example-ns:example-job"
+
+// jobAnswer is the broker's answer about a job's token, as the exchange mints it from a job
+// entry: the entry's identity as its service and no person, the entry's project scope - named
+// with its one project, or public with the private projects its entry lists - and its whole list,
+// and no OAuth scope.
+func jobAnswer(session, scope, jkt string, projects ...string) ciphertoken.Introspection {
+	return ciphertoken.Introspection{
+		Active:       true,
+		Session:      session,
+		Service:      jobService,
+		ProjectScope: scope,
+		Projects:     projects,
+		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
 }
@@ -142,7 +167,7 @@ func readOnlyAnswer(session, service, jkt string) brokertoken.Introspection {
 // brokerTokenRequest is the request a caller holding token sends to path, signed as its real
 // client signs one: the proof the caller's own DPoP transport produced, on a request carrying
 // this listener's JSON body.
-func brokerTokenRequest(t *testing.T, caller *brokertokentest.Caller, method, path, token, body string) *http.Request {
+func brokerTokenRequest(t *testing.T, caller *ciphertokentest.Caller, method, path, token, body string) *http.Request {
 	t.Helper()
 	signed := caller.Signed(t, method, listenerBrokerOrigin+path, token)
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -187,6 +212,7 @@ func assertBrokerRejectionLog(t *testing.T, logged, wantReason, token, proof str
 // itself, as every other case in apiauth_test.go is, so the order it sits in — before the
 // bearers and before the open listener's pass-through — is part of what is proved.
 func TestAPIAuthBrokerToken(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		caller, ok := brokerCaller(r)
 		w.Header().Set("Content-Type", "application/json")
@@ -194,25 +220,29 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"session": caller.Session, "service": caller.Service, "person": caller.Person, "bound": ok})
 	})
 
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
-	stranger := brokertokentest.NewCaller(t)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
+	stranger := ciphertokentest.NewCaller(t)
 	const (
-		personToken   = "access-token-of-a-person"
-		serviceToken  = "access-token-of-a-service"
-		readOnlyToken = "access-token-that-only-reads"
-		revokedToken  = "access-token-that-was-revoked"
-		unknownToken  = "access-token-the-broker-never-issued"
-		strangerToken = "access-token-bound-to-another-key"
-		machineToken  = "access-token-of-a-machine-login"
+		personToken    = "access-token-of-a-person"
+		serviceToken   = "access-token-of-a-service"
+		jobNamedToken  = "access-token-of-a-named-job"
+		jobPublicToken = "access-token-of-a-public-job"
+		readOnlyToken  = "access-token-that-only-reads"
+		revokedToken   = "access-token-that-was-revoked"
+		unknownToken   = "access-token-the-broker-never-issued"
+		strangerToken  = "access-token-bound-to-another-key"
+		machineToken   = "access-token-of-a-machine-login"
 	)
 	broker.Says(personToken, sessionAnswer("ses_person", "ada@example.com", caller.JKT()))
 	broker.Says(serviceToken, serviceAnswer("ses_service", "example-fleet", caller.JKT()))
+	broker.Says(jobNamedToken, jobAnswer("ses_job_named", ciphertoken.ProjectScopeNamed, caller.JKT(), "ACME"))
+	broker.Says(jobPublicToken, jobAnswer("ses_job_public", ciphertoken.ProjectScopePublic, caller.JKT(), "PRIVA", "PRIVB"))
 	broker.Says(readOnlyToken, readOnlyAnswer("ses_reader", "example-reader", caller.JKT()))
-	broker.Says(revokedToken, brokertoken.Introspection{Active: false})
+	broker.Says(revokedToken, ciphertoken.Introspection{Active: false})
 	broker.Says(strangerToken, sessionAnswer("ses_person", "ada@example.com", caller.JKT()))
 	// A machine login's own access token: live, bound to this key, and no session's credential.
-	broker.Says(machineToken, brokertoken.Introspection{
+	broker.Says(machineToken, ciphertoken.Introspection{
 		Active: true, ClientID: "agent-secrets-helper", Thumbprint: caller.JKT(),
 	})
 
@@ -223,7 +253,7 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 		configured bool
 		started    bool
 		// signer is the caller whose key signs the proof, the token's own by default.
-		signer     *brokertokentest.Caller
+		signer     *ciphertokentest.Caller
 		token      string
 		wantStatus int
 		wantReason string
@@ -247,6 +277,24 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			wantStatus:  http.StatusOK,
 			wantSession: "ses_service",
 			wantService: "example-fleet",
+		},
+		{
+			name:        "admits a job's named token",
+			configured:  true,
+			started:     true,
+			token:       jobNamedToken,
+			wantStatus:  http.StatusOK,
+			wantSession: "ses_job_named",
+			wantService: jobService,
+		},
+		{
+			name:        "admits a job's public token",
+			configured:  true,
+			started:     true,
+			token:       jobPublicToken,
+			wantStatus:  http.StatusOK,
+			wantSession: "ses_job_public",
+			wantService: jobService,
 		},
 		{
 			name:       "refuses a revoked token",
@@ -284,10 +332,10 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 		{
 			// R4: the listener serves a read-only token on no route, and its code does not
 			// change for that: its verifier is built without the read-only switch, so the token
-			// is refused as a build before the switch refuses it. The row "admits a token naming
-			// a service and no person" sends the same request under a token of the same kind — a
-			// session and a service, no person — whose project scope is named, with a project
-			// and no scope read, and it is admitted, so the refusal is the scope's.
+			// is refused as a build before the switch refuses it. The row "admits a job's named
+			// token" sends the same request under a token of the same kind — a session and a
+			// service, no person — whose project scope is named, with a project and no scope
+			// read, and it is admitted, so the refusal is the scope's.
 			name:       "refuses a token that only reads",
 			configured: true,
 			started:    true,
@@ -381,8 +429,9 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 // every other RFC 9449 Section 4.3 failure shares, and the body says no more about it than any
 // other refusal does.
 func TestAPIAuthRefusesAReplayedProof(t *testing.T) {
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
+	t.Parallel()
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
 	const token = "access-token-replayed"
 	broker.Says(token, sessionAnswer("ses_replay", "ada@example.com", caller.JKT()))
 	tokens := listenerBrokerTokens(t, broker)
@@ -412,7 +461,8 @@ func TestAPIAuthRefusesAReplayedProof(t *testing.T) {
 // judged, so the caller is asked to come back rather than told to discard a token that may be
 // perfectly live. The broker is at a port the test holds and nothing listens on.
 func TestAPIAuthAnswers503WhenTheBrokerCannotBeReached(t *testing.T) {
-	caller := brokertokentest.NewCaller(t)
+	t.Parallel()
+	caller := ciphertokentest.NewCaller(t)
 	const token = "access-token-nobody-answers-about"
 	tokens := listenerBrokerTokensOver(t, "http://"+testport.Refused(t), &spentProofsInMemory{})
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
@@ -437,8 +487,9 @@ func TestAPIAuthAnswers503WhenTheBrokerCannotBeReached(t *testing.T) {
 // Dispatch answers that failure 503 BROKER_UNAVAILABLE: a client does not retry a 401, so a
 // NATS fault of a few seconds answered as one would fail every send a live token makes.
 func TestAPIAuthAnswers503WhenTheSpentProofStoreCannotAnswer(t *testing.T) {
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
+	t.Parallel()
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
 	const token = "access-token-whose-proof-could-not-be-recorded"
 	broker.Says(token, sessionAnswer("ses_unrecorded", "ada@example.com", caller.JKT()))
 	tokens := listenerBrokerTokensOver(t, broker.Server.URL, spentProofsUnanswered{})
@@ -463,8 +514,9 @@ func TestAPIAuthAnswers503WhenTheSpentProofStoreCannotAnswer(t *testing.T) {
 // value, sent as a DPoP presentation to a listener that holds it, is refused, and a listener
 // that takes broker tokens still serves its shared bearer.
 func TestAPIAuthDoesNotRetryADPoPPresentationAsABearer(t *testing.T) {
+	t.Parallel()
 	const shared = "expected-token"
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 	tokens := listenerBrokerTokens(t, broker)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	handler := apiAuth(listenerAPIAuth{token: shared, brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}, next)
@@ -492,7 +544,8 @@ func TestAPIAuthDoesNotRetryADPoPPresentationAsABearer(t *testing.T) {
 // all is judged exactly as it was before the credential existed. The open listener serves it,
 // and the Host fence it serves under still refuses a host it does not serve.
 func TestAPIAuthLeavesARequestWithNoTokenToTheRuleItAlwaysHad(t *testing.T) {
-	broker := brokertokentest.NewStubBroker(t)
+	t.Parallel()
+	broker := ciphertokentest.NewStubBroker(t)
 	tokens := listenerBrokerTokens(t, broker)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	handler := apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}, next)
@@ -523,6 +576,7 @@ func TestAPIAuthLeavesARequestWithNoTokenToTheRuleItAlwaysHad(t *testing.T) {
 
 // resolveListenerBrokerConfig's all-or-nothing rule, variable by variable.
 func TestResolveListenerBrokerConfig(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		env         map[string]string
@@ -633,7 +687,8 @@ func TestResolveListenerBrokerConfig(t *testing.T) {
 // library's, and a bearer, an empty scheme and a DPoP header with no token all reach the
 // credential they always did.
 func TestAPIAuthReadsOnlyTheDPoPSchemeAsABrokerToken(t *testing.T) {
-	broker := brokertokentest.NewStubBroker(t)
+	t.Parallel()
+	broker := ciphertokentest.NewStubBroker(t)
 	tokens := listenerBrokerTokens(t, broker)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	handler := apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}, next)
@@ -653,26 +708,25 @@ func TestAPIAuthReadsOnlyTheDPoPSchemeAsABrokerToken(t *testing.T) {
 }
 
 // R9, the whole of it for this credential: with none of the broker variables set the listener
-// is the listener it was before this credential existed, whatever a client presents. A client
-// sends `Authorization: DPoP` whenever it has a broker and an identity to trade and no Envoy
+// admits and refuses as it did before this credential existed, whatever a client presents. A
+// client sends `Authorization: DPoP` whenever it has a broker and an identity to trade and no Envoy
 // bearer is set (packages/envoy-client/src/envoy-settings.ts), so it presents one to every
 // listener it is pointed at — including the no-bearer listeners a GCP VM and the clustered hub
 // run, one on loopback and one off it behind its NetworkPolicy, which take no broker token. Such
 // a listener reads that header as it read every Authorization header it did not know: the open
 // one serves the request, the one that requires a bearer answers the 401 it always answered. It
 // asks the broker nothing, binds no caller, and writes no refusal of a credential kind it does
-// not take.
+// not take. The open one counts the admission as none_broker_token and warns once a minute
+// (TestEveryAdmittedRequestCountsItsCredential holds both), so the census sees it.
 func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
+	t.Parallel()
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
 	const token = "access-token-of-a-session-on-another-listener"
 	broker.Says(token, sessionAnswer("ses_elsewhere", "ada@example.com", caller.JKT()))
 
 	issuer := oidctest.New(t)
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
-	}
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 
 	bound := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -683,7 +737,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		shared     string
-		verifier   *oidc.Verifier
+		verifier   *oidc.LazyVerifier
 		wantStatus int
 	}{
 		{

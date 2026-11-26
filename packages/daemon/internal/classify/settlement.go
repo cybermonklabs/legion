@@ -29,18 +29,23 @@ const (
 // dispatch://INFRA-714/spec R1). The listener publishes a settlement for every settled commit of
 // a pull request, its current head or not, and the daemon takes one only for the head itself
 // (SettlementFor), since a settlement stands only for the head it names; a settlement of another
-// head than the recorded one starts the fence afresh. A check still running is in no settlement
-// at all - the listener settles a commit only once every check it has seen there is terminal - so
-// it is no verdict rather than a failure. A check_run delivery the listener lost is recovered
-// only by Dispatch's webhook redelivery sweep
-// (packages/envoy/internal/dispatch/redeliver: it runs only where Dispatch has the App key and
-// NATS, every two minutes, and asks GitHub again for each delivery GitHub recorded as failed until
-// GitHub records it OK or 72 hours after its first failed attempt; its listing starts at the last
-// hour while it runs without a gap, at its stored cursor after one, and 72 hours back on a first
-// sweep with no cursor) or by the check's next run. Nothing on the Go path corrects the rest: a
-// check_run with no pull_requests yields no observation, a deleted check's failure stands for the
-// life of the head, and a rerun whose completion is never observed holds the last verdict until
-// the check runs again.
+// head than the recorded one is applied to the fence the pull request remembers for that head, or
+// to an empty one. A check still running is in no settlement at all - the listener settles a
+// commit only once every check it has seen there is terminal - so it is no verdict rather than a
+// failure. A check_run delivery the listener lost is recovered by Dispatch's webhook redelivery
+// sweep (packages/envoy/internal/dispatch/redeliver: it runs only where Dispatch has the App key
+// and NATS, every two minutes, and asks GitHub again for each delivery GitHub recorded as failed
+// until GitHub records it OK or 72 hours after its first failed attempt; its listing starts an
+// hour and six minutes back (redeliver.Lookback) while it runs without a gap, two minutes before
+// its stored cursor after one, and 72 hours back on a first sweep with no cursor), by Dispatch's
+// CI reconcile once the run has completed (packages/envoy/internal/dispatch/cireconcile: where
+// Dispatch has NATS and the App key, a pass every five minutes records each completed check run
+// of an open pull request's head that the listener's record of that head lacks), or by the
+// check's next run. The listener attributes a check_run with no pull_requests only by its check
+// suite's refs/pull/<n>/head branch, and the CI reconcile records any other such run on an open
+// pull request's head once it has completed. Nothing on the Go path corrects the rest: a deleted
+// check's failure stands until a newer run of that name, and a rerun whose completion neither the
+// listener nor the CI reconcile observes holds the last verdict until the check runs again.
 type SettlementCandidate struct {
 	// Head is the commit the settlement is for, which need not be the pull request's head
 	// (SettlementFor).
@@ -185,9 +190,13 @@ func EffectiveOutcome(pr record.PullRequest, in SettlementCandidate) CiOutcome {
 // head GitHub reported each run on, which is the head the settlement is of, and what the run
 // concluded, which the settlement's own lists give - a name in Failing failed, one in Cancelled
 // was cancelled, and one in neither concluded without either, since the listener settles a
-// commit only once every check it has seen there is terminal. They travel with the run into the
-// fence, which needs the first to say the run is one of the current head's own
-// (ChecksConcludedOnHead) and the second to say what the name's newest run came to
+// commit only once every check it has seen there is terminal. A run in neither list that the
+// decoder already took as skipped (intake's decodeChecks, from the settlement's skipped group)
+// stays skipped, and every other such run succeeded; the lists come first, so a skipped run whose
+// name a list gives is failed or cancelled as the list says. The word GitHub gave the run
+// (record.AttemptRun.GitHubConclusion) travels with it unchanged, deciding nothing. They travel
+// with the run into the fence, which needs the head to say the run is one of the current head's
+// own (ChecksConcludedOnHead) and the conclusion to say what the name's newest run came to
 // (mergeAttemptSets, concludedBy).
 func stampedRuns(in SettlementCandidate) []record.AttemptRun {
 	concluded := make(map[string]record.RunConclusion, len(in.Failing)+len(in.Cancelled))
@@ -204,7 +213,9 @@ func stampedRuns(in SettlementCandidate) []record.AttemptRun {
 	runs := make([]record.AttemptRun, 0, len(in.CheckRuns))
 	for _, run := range in.CheckRuns {
 		run.Head = in.Head
-		if run.Conclusion = concluded[run.Name]; run.Conclusion == "" {
+		if conclusion, listed := concluded[run.Name]; listed {
+			run.Conclusion = conclusion
+		} else if run.Conclusion != record.RunSkipped {
 			run.Conclusion = record.RunSucceeded
 		}
 		runs = append(runs, run)

@@ -17,6 +17,7 @@ import (
 // the run on the backfill's list, so the rest of its jobs are read; jobs read after it ended take
 // it off.
 func TestJobsReadBeforeARunEndsLeaveItForTheBackfill(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(800, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -65,6 +66,7 @@ func TestJobsReadBeforeARunEndsLeaveItForTheBackfill(t *testing.T) {
 // TestACompleteJobsWriteRefusesARunningJob: complete is the monotonic run-level flag, so a caller
 // cannot set it from a list that still holds a job without its completion.
 func TestACompleteJobsWriteRefusesARunningJob(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(802, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -89,6 +91,7 @@ func TestACompleteJobsWriteRefusesARunningJob(t *testing.T) {
 // TestALateReadNeverUndoesAFinishedJob: a read taken while the run ran, landing after one taken
 // once it ended, keeps every finished job and the run's completeness, and logs no change.
 func TestALateReadNeverUndoesAFinishedJob(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(801, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -135,6 +138,7 @@ func TestALateReadNeverUndoesAFinishedJob(t *testing.T) {
 // monotonic upsert rule: a later finished listing replaces a running listing, while a stale
 // running listing cannot erase the finished result.
 func TestRunJobApplyStepRoundTripsAndResistsALateRead(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(806, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -175,6 +179,7 @@ func TestRunJobApplyStepRoundTripsAndResistsALateRead(t *testing.T) {
 // and the one statement that writes a run's jobs folds them by the rule a write follows, so a
 // finished one wins over an unfinished one whichever GitHub listed first.
 func TestAListingThatRepeatsAJobNameStoresItAsWritingEachInTurn(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(804, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -201,6 +206,7 @@ func TestAListingThatRepeatsAJobNameStoresItAsWritingEachInTurn(t *testing.T) {
 // them yet. Such a listing writes no job, but it is still a successful listing: it clears the run's
 // jobs-unfetchable mark, and its complete flag reaches the run row.
 func TestAnEmptyListingStillWritesTheRunRow(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(805, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -248,6 +254,7 @@ func TestAnEmptyListingStillWritesTheRunRow(t *testing.T) {
 // change log's lock while it waits for the row the run write holds, and Postgres refuses one of
 // them as a deadlock (40P01).
 func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -275,14 +282,10 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	}
 	jobsDone := make(chan error, 1)
 	go func() { jobsDone <- UpsertRunJobs(ctx, pool, "acme/widgets", 803, jobs, true) }()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
-		t.Fatalf("the jobs write never waited for the change log's lock: %d waiting", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 1)
 	runDone := make(chan error, 1)
 	go func() { runDone <- UpsertRun(ctx, pool, run) }()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
-		t.Fatalf("the run write never waited behind the jobs write: %d waiting", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("release the change log's lock: %v", err)
 	}
@@ -373,13 +376,9 @@ func TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock(t *tes
 	}
 
 	first := goTimed(func() error { return UpsertRunJobs(ctx, pool, "acme/widgets", 813, forward, true) })
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
-		t.Fatal("the first jobs write never reached its first job's update")
-	}
+	storetest.WaitForLockWaiters(t, gate, 1)
 	second := goTimed(func() error { return UpsertRunJobs(ctx, pool, "acme/widgets", 813, reversed, true) })
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
-		t.Fatal("the second jobs write never waited, at its first job's update or behind the first write")
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("let the writes on: %v", err)
 	}
@@ -399,6 +398,7 @@ func TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock(t *tes
 // TestReconcilePrunesChangesOlderThanADay: a successful pass deletes the changes recorded more than
 // ChangeRetention ago and keeps the rest.
 func TestReconcilePrunesChangesOlderThanADay(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	if _, err := pool.Exec(ctx, `delete from delivery_changes`); err != nil {
@@ -419,7 +419,7 @@ func TestReconcilePrunesChangesOlderThanADay(t *testing.T) {
 			mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
 		})
 	}
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	settings, err := GetSettings(ctx, pool)
 	if err != nil || settings.LastError != nil {

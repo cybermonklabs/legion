@@ -136,10 +136,7 @@ func seedArchitectWakeRoot(t *testing.T, pool *pgxpool.Pool, f architectWakeFixt
 		}
 		putArchitectTask(t, pool, token, generation, entry, f.queuedAt, f.confirmed, f.interrupted)
 		if !f.firstQueuedAt.IsZero() {
-			if _, err := pool.Exec(ctx, `update claims set handshake_entry = $2, handshake_generation = $3, handshake_queued_at = $4
-				where token = $1`, string(token), entry, int64(generation), f.firstQueuedAt); err != nil {
-				t.Fatalf("record the handshake of entry %d of the claim %s as first queued at %s: %v", entry, token, f.firstQueuedAt, err)
-			}
+			putArchitectHandshake(t, pool, token, entry, generation, f.firstQueuedAt, time.Time{})
 		}
 	}
 }
@@ -177,6 +174,24 @@ func putArchitectTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, gener
 		generation, phase, entry, confirmed_at, interrupted) values ($1, 'outbox:21', 'Carry the tree on.', $2, $3, '', $4, $5, $6)`,
 		string(token), queued, int64(generation), entry, at, interrupted); err != nil {
 		t.Fatalf("record the task the architect claim %s holds: %v", token, err)
+	}
+}
+
+// putArchitectHandshake records the claim's handshake of entry, of generation's run, as the claim's
+// machine keeps it (record.RoleClaim.Handshake): a task of that entry first queued at queued, and
+// first confirmed by a turn at confirmed, none where confirmed is the zero time. The first arm
+// counts the entry's task from the queued moment, and the gate arm counts its bound from no
+// earlier than the confirmed one where there is one.
+func putArchitectHandshake(t *testing.T, pool *pgxpool.Pool, token claim.Token, entry int64, generation uint64, queued, confirmed time.Time) {
+	t.Helper()
+	var at *time.Time
+	if !confirmed.IsZero() {
+		at = &confirmed
+	}
+	if _, err := pool.Exec(context.Background(), `update claims set handshake_entry = $2, handshake_generation = $3, handshake_queued_at = $4,
+		handshake_confirmed_at = $5 where token = $1`, string(token), entry, int64(generation), queued, at); err != nil {
+		t.Fatalf("record the handshake of entry %d of the claim %s as first queued at %s and confirmed at %v: %v",
+			entry, token, queued, at, err)
 	}
 }
 
@@ -237,9 +252,10 @@ func assertArchitectWakes(t *testing.T, pool *pgxpool.Pool, root string, arms []
 }
 
 // Each of the three arms wakes the project's controller once for a root and a run, however many
-// passes read it. The pass runs on every fact of the project and on the sweep's own minute, so a
-// wake decided by the reading alone would reach the controller again on each of them; the mark
-// the arm writes is what keeps it to one (record.Store.TellArchitectsStalled).
+// passes read it. The pass runs again and again (the pass rule, Admission.Apply) and on the
+// sweep's own minute, so a wake decided by the reading alone would reach the controller again on
+// each of them; the mark the arm writes is what keeps it to one
+// (record.Store.TellArchitectsStalled).
 //
 // Each root is the base fixture — the one the reading raises nothing for — with the fields its
 // own arm is about changed, so each wake turns on the thing its case names and on nothing else.

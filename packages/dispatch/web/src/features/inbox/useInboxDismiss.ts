@@ -39,7 +39,9 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { inboxThreadsWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./grouping";
 import { type InboxListRow, rowId } from "./list-row";
@@ -130,13 +132,33 @@ export function dismissesThread(thread: MyReplyRow, body: InboxDismissRequest): 
   return inWriteScope(thread, body);
 }
 
+/** `count` threads, in the words the page says a press over them in. */
+function threadsOf(count: number): string {
+  return `${count} ${count === 1 ? "thread" : "threads"}`;
+}
+
 /** What the page says about a press the server refused: the rows are back, so it says what did
  *  not happen and the reason the server gave, as a refused bulk snooze does (`snoozeRefusalText`
  *  in `useInboxSelection.ts`). */
 export function dismissRefusalText(count: number, restore: boolean, reason: string): string {
-  const threads = `${count} ${count === 1 ? "thread" : "threads"}`;
-  const what = restore ? `move ${threads} back to the Inbox` : `dismiss ${threads}`;
+  const what = restore
+    ? `move ${threadsOf(count)} back to the Inbox`
+    : `dismiss ${threadsOf(count)}`;
   return `Could not ${what}: ${reason}.`;
+}
+
+/** What the page says about a press the reader stopped (`SendStoppedError`): the rows are back,
+ *  as after a refusal, but Dispatch may have made it, and the next press is one of its own, under
+ *  a key of its own. The error's own words are a composer's, of a message and its Retry. */
+export function dismissStoppedText(count: number, restore: boolean): string {
+  const them = count === 1 ? "it" : "them";
+  return restore
+    ? stoppedWriteNote(`the move of ${threadsOf(count)} back to the Inbox`, "made", {
+        anew: `Moving ${them} back again sends a new write.`,
+      })
+    : stoppedWriteNote(`the dismissal of ${threadsOf(count)}`, "made", {
+        anew: `Dismissing ${them} again sends a new write.`,
+      });
 }
 
 /** One row a press took out of a cached read, and where it stood in it, so a refusal puts it back
@@ -224,14 +246,14 @@ export interface InboxDismiss {
  * with it every control drawn on it - off the page, so a refusal owned by the row would be
  * unmounted before it arrived. The drawer mounts its own Inbox, so it gets its own.
  *
- * `onSettled` is told the rows one press named once Dispatch has decided it, either way: the
- * Inbox keeps those rows out of its hand-hold while the press is out, and a row the rollback put
- * back is an ordinary row again.
+ * `onSettled` is told the rows one press named once Dispatch has decided it, and whether it
+ * refused them: a row the rollback put back is an ordinary row again at once, and a row Dispatch
+ * took is still leaving until the page no longer draws it.
  */
 export function useInboxDismiss({
   onSettled,
 }: {
-  readonly onSettled?: (ids: readonly string[]) => void;
+  readonly onSettled?: (ids: readonly string[], refused: boolean) => void;
 } = {}): InboxDismiss {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
@@ -252,6 +274,10 @@ export function useInboxDismiss({
   };
 
   const write = useKeyedWrite<InboxDismissResponse, InboxDismissInput, DismissRollback>({
+    // A read of either view or the count asked while the press is out waits until Dispatch has
+    // taken it (its answer or its thread-state event): Dispatch can answer it before, with the
+    // rows it took out still in.
+    holds: () => ({ endsOn: inboxThreadsWritten, keys: [inboxKey, dismissedKey, countKey] }),
     inline: true,
     label: (input) => (input.restore === true ? "Threads moved to the Inbox" : "Threads dismissed"),
     onError: (error, input, rollback) => {
@@ -259,7 +285,11 @@ export function useInboxDismiss({
       // narrowing names no row, and a restore's rows come out of the Dismissed read rather than
       // the Inbox's, so the count is every row the optimistic apply took out, either side.
       const taken = "rows" in input ? input.rows.length : droppedRows(rollback).length;
-      setRefusal(dismissRefusalText(taken, input.restore === true, error.message));
+      setRefusal(
+        error instanceof SendStoppedError
+          ? dismissStoppedText(taken, input.restore === true)
+          : dismissRefusalText(taken, input.restore === true, error.message)
+      );
       if (rollback === undefined) return;
       queryClient.setQueryData<MyRepliesResponse>(inboxKey, (current) =>
         current === undefined ? current : withRows(current, rollback.inbox)
@@ -328,16 +358,20 @@ export function useInboxDismiss({
       void queryClient.invalidateQueries({ queryKey: myRepliesKey });
       void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
     },
-    onSettled: (_data, _error, input, context) => {
+    onSettled: (_data, error, input, context) => {
+      const refused = error !== null;
       if ("rows" in input) {
         const ids = input.rows.map(({ id }) => id);
         live(ids, false);
-        onSettled?.(ids);
+        onSettled?.(ids, refused);
         return;
       }
       // A press under the narrowing names no row, so the rows it settles are the ones its own
       // optimistic apply took out of the view.
-      onSettled?.(droppedRows(context).map(({ row }) => rowId({ kind: "thread", thread: row })));
+      onSettled?.(
+        droppedRows(context).map(({ row }) => rowId({ kind: "thread", thread: row })),
+        refused
+      );
     },
     request: (input) => inboxDismissRequest(inboxDismissBody(input)),
     target: () => "inbox:dismiss",

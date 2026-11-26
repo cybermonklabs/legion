@@ -17,6 +17,7 @@ import (
 // under the person it reaches, and asks that read for the questions nobody waits on, which is
 // now none.
 func TestEveryQuestionReachesAPerson(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// REACH is created by alice (createInteractionIssue), so the person it defaults to is
 	// alice: a question nobody was handed, on an issue nobody holds or on a project document,

@@ -223,6 +223,7 @@ func defaultsFor(port int) Config {
 		PromptRetireLimit:                       2,
 		WorkerWakesPerMinute:                    8,
 		WorkerWakeBurst:                         1,
+		GitHubGraphQLShare:                      0.5,
 		EnvoyURL:                                "http://127.0.0.1:9020",
 		NatsURLs:                                []string{"nats://127.0.0.1:4222"},
 		DispatchURL:                             "http://127.0.0.1:8080",
@@ -418,6 +419,85 @@ hooks:
 		Prompt: "Read the reviewer's thread before you write anything.",
 	}}; !reflect.DeepEqual(cfg.Hooks, want) {
 		t.Errorf("Hooks = %+v, want the file's one hook %+v and no default beside it", cfg.Hooks, want)
+	}
+}
+
+// The broker's lines in the tests below: the setting on, and kubernetesFile's bearer file, which
+// the setting replaces.
+const (
+	brokerOn          = "dispatch_token_broker: true\n"
+	dispatchTokenLine = "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN\n"
+	// exchangeAudienceBlock is a runtime.kubernetes.agent_secrets block that names the exchange
+	// audience every pod's roles trade for their own Dispatch tokens under the setting.
+	exchangeAudienceBlock = "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+		"      exchange_audience: legion-broker-exchange\n"
+)
+
+// `dispatch_token_broker: true` makes the daemon's Dispatch credential its own pod identity,
+// traded at the secrets broker (dispatch://INFRA-4425 R1). Beside dispatch_token_file, without
+// dispatch_url, and without runtime.kubernetes.agent_secrets.exchange_audience it is each refused,
+// naming the key; with dispatch_url and the audience it loads, and that dispatch_url needs no
+// token file.
+func TestDispatchTokenBrokerNeedsThePodIdentity(t *testing.T) {
+	broker := kubernetesWith(dispatchTokenLine, brokerOn)
+	noURL := strings.Replace(broker, "dispatch_url: https://dispatch.internal.example\n", "", 1)
+	if noURL == broker {
+		t.Fatal("the broker file names no dispatch_url to take out")
+	}
+	const noAudience = "dispatch_token_broker needs runtime.kubernetes.agent_secrets.exchange_audience: under the setting a launch carries no Dispatch token, and each role trades its pod's exchange identity for its own, which no pod carries while exchange_audience is unset"
+	for name, tc := range map[string]struct{ body, want string }{
+		"beside dispatch_token_file": {kubernetesWith(dispatchTokenLine, dispatchTokenLine+brokerOn) + exchangeAudienceBlock,
+			"dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both"},
+		"without dispatch_url":                          {noURL + exchangeAudienceBlock, "dispatch_token_broker is set but dispatch_url is not"},
+		"with a broker that names no exchange_audience": {broker + "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile, noAudience},
+		"with no broker block at all":                   {broker, noAudience},
+		"a setting that is no boolean":                  {kubernetesWith(dispatchTokenLine, "dispatch_token_broker: yes please\n") + exchangeAudienceBlock, "dispatch_token_broker must be true or false"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("LoadForValidation error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	cfg, err := LoadForValidation(writeConfigFile(t, broker+exchangeAudienceBlock), noEnv)
+	if err != nil {
+		t.Fatalf("LoadForValidation: %v", err)
+	}
+	if !cfg.DispatchTokenBroker || cfg.DispatchTokenFile != "" || cfg.DispatchTokenTransitionFile != "" || cfg.DispatchURL != "https://dispatch.internal.example" {
+		t.Fatalf("DispatchTokenBroker = %t, DispatchTokenFile = %q, DispatchTokenTransitionFile = %q, DispatchURL = %q; want the setting on, no token file, no transition file and the URL",
+			cfg.DispatchTokenBroker, cfg.DispatchTokenFile, cfg.DispatchTokenTransitionFile, cfg.DispatchURL)
+	}
+}
+
+// `dispatch_token_transition_file` names the file holding the shared Dispatch token a launch into a
+// pod built before dispatch_token_broker gets (dispatch://INFRA-4425 R4), so the loader takes it
+// only beside `dispatch_token_broker: true`: without the setting, or with it false, the file is
+// refused naming both keys. Beside it the file loads, its path resolved against the
+// configuration's directory as dispatch_token_file's is.
+func TestDispatchTokenTransitionFileNeedsTheBroker(t *testing.T) {
+	const transition = "dispatch_token_transition_file: tokens/DISPATCH_TOKEN\n"
+	const refusal = "dispatch_token_transition_file is set but dispatch_token_broker is not true: the file holds the shared Dispatch token a pod built before dispatch_token_broker gets, so the daemon reads it only under that setting"
+	for name, body := range map[string]string{
+		"without dispatch_token_broker":    kubernetesWith(dispatchTokenLine, dispatchTokenLine+transition) + exchangeAudienceBlock,
+		"with dispatch_token_broker false": kubernetesWith(dispatchTokenLine, dispatchTokenLine+"dispatch_token_broker: false\n"+transition) + exchangeAudienceBlock,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, body), noEnv)
+			if err == nil || err.Error() != refusal {
+				t.Fatalf("LoadForValidation error = %v, want %q", err, refusal)
+			}
+		})
+	}
+
+	path := writeConfigFile(t, kubernetesWith(dispatchTokenLine, brokerOn+transition)+exchangeAudienceBlock)
+	cfg, err := LoadForValidation(path, noEnv)
+	if err != nil {
+		t.Fatalf("LoadForValidation: %v", err)
+	}
+	if want := filepath.Join(filepath.Dir(path), "tokens", "DISPATCH_TOKEN"); !cfg.DispatchTokenBroker || cfg.DispatchTokenTransitionFile != want {
+		t.Fatalf("DispatchTokenBroker = %t, DispatchTokenTransitionFile = %q; want the setting on and %q", cfg.DispatchTokenBroker, cfg.DispatchTokenTransitionFile, want)
 	}
 }
 
@@ -836,11 +916,11 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: `projects key "demo" must match ^[A-Z][A-Z0-9]*$`,
 		},
 		{
-			// Dispatch holds the project's repository mapping, so a file that still names a
-			// repository is refused, naming where the mapping is set.
+			// The daemon takes each issue's repository from Dispatch, so a file that still names a
+			// repository is refused, naming where the repository comes from.
 			name: "a project names its repository",
 			body: strings.Replace(minimalFile, "DEMO: {}", "DEMO: { repo: acme/widgets }", 1),
-			want: `Unknown key "projects.DEMO.repo": Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`,
+			want: `Unknown key "projects.DEMO.repo": the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project`,
 		},
 		{
 			name: "review_workflows is no longer a key",
@@ -1554,8 +1634,8 @@ func TestLoadRefuses(t *testing.T) {
 		},
 		{
 			name: "a hook naming a move the daemon does not count",
-			body: aHook("{name: stuck, on: work_back, every: 1, moves: [planning-merging], roles: [tester], prompt: Words.}"),
-			want: `hooks[0].moves names "planning-merging", which is no move back the daemon counts: a move is written "<from>-<to>", both of them workflow phases, and the phase it goes to before the phase it leaves`,
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: [testing-testing], roles: [tester], prompt: Words.}"),
+			want: `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two different workflow phases`,
 		},
 		{
 			name: "a hook with both prompt and prompt_file",
@@ -1696,10 +1776,10 @@ func TestLoadReadsRuntimeAsItsDiscriminator(t *testing.T) {
 }
 
 // Every top-level key of the earlier schema (38 keys, nats_daemon_nkey_seed_file among them since
-// #1494) plus the new postgres_dsn and the wake pacing's two keys, and the class it is in. No
-// shipped key may fall through to the typo refusal, and none is accepted without being modelled,
-// but for a warned key, which is accepted, read for nothing, and answered with a warning rather
-// than a refusal.
+// #1494) plus the new postgres_dsn, the wake pacing's two keys and the daemon's Dispatch broker's
+// two, and the class it is in. No shipped key may fall through to the typo refusal, and none is
+// accepted without being modelled, but for a warned key, which is accepted, read for nothing, and
+// answered with a warning rather than a refusal.
 func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 	const (
 		modelled  = "modelled"
@@ -1750,6 +1830,8 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 
 		{key: "dispatch_url", line: "dispatch_url: https://dispatch.example", class: modelled},
 		{key: "dispatch_token_file", line: "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN", class: modelled},
+		{key: "dispatch_token_broker", line: "dispatch_token_broker: true", class: kubernetesOnly, want: "dispatch_token_broker is not used when runtime is tmux: a tmux daemon has no pod identity to trade at the secrets broker; remove dispatch_token_broker"},
+		{key: "dispatch_token_transition_file", line: "dispatch_token_transition_file: /var/run/legion/DISPATCH_TOKEN_TRANSITION", class: kubernetesOnly, want: "dispatch_token_transition_file is not used when runtime is tmux: it holds the shared Dispatch token a pod built before dispatch_token_broker gets, and a tmux daemon starts no pod; remove dispatch_token_transition_file"},
 		{key: "projects", line: "projects: {DEMO: {}}", class: modelled},
 		{key: "gates", line: "gates: {design: off}", class: modelled},
 		{key: "github_apps", line: "github_apps: {implement: {app_id: \"1\", private_key: key}, review: {app_id: \"2\", private_key: key}}", class: modelled},
@@ -1977,8 +2059,8 @@ func TestLoadReadsCapabilityDecisions(t *testing.T) {
 		}
 	})
 	for _, tc := range []struct{ name, line, want string }{
-		{"a name that is no deployment capability", `capabilities: {decided: {nonsense: "because"}}`, "unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity"},
-		{"an image row, which no decision covers", `capabilities: {decided: {browser: "no Chromium"}}`, "unknown key capabilities.decided.browser: a decision may name secrets, model-fallback, resource-limits or pool-capacity"},
+		{"a name that is no deployment capability", `capabilities: {decided: {nonsense: "because"}}`, "unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room"},
+		{"an image row, which no decision covers", `capabilities: {decided: {browser: "no Chromium"}}`, "unknown key capabilities.decided.browser: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room"},
 		{"a blank reason", `capabilities: {decided: {secrets: "  "}}`, "capabilities.decided.secrets must not be empty"},
 		{"a null reason", `capabilities: {decided: {secrets: }}`, "capabilities.decided.secrets must not be empty"},
 		{"a reason that is not a string", `capabilities: {decided: {secrets: [a, b]}}`, "capabilities.decided.secrets must be a string"},

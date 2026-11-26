@@ -21,6 +21,24 @@ import { type InboxListRow, rowType } from "./list-row";
  *  list with no thread row to write. */
 export type InboxWriteScope = Pick<InboxReadRequest, "kind" | "priority" | "project" | "urgency">;
 
+/** Every field of `InboxWriteScope`: its type names each one, so a field the type gains must be
+ *  added here before the page builds, and `sameWriteScope` compares it too. */
+const SCOPE_FIELDS: Record<keyof InboxWriteScope, true> = {
+  kind: true,
+  priority: true,
+  project: true,
+  urgency: true,
+};
+
+/** Whether `a` and `b` narrow the list alike: each field the same values in the same order, and
+ *  a field left out only where the other leaves it out. A press belongs to the list it was made
+ *  over (`mark-all.ts`), and this says whether the list on screen is that one. */
+export function sameWriteScope(a: InboxWriteScope, b: InboxWriteScope): boolean {
+  return (Object.keys(SCOPE_FIELDS) as (keyof InboxWriteScope)[]).every(
+    (field) => JSON.stringify(a[field]) === JSON.stringify(b[field])
+  );
+}
+
 /** The viewer `inFieldFilter` takes for the assignee field, which is not one of the fields read
  *  below: a thread row is the reader's own, so no write ever narrows by holder. */
 const NO_VIEWER = "";

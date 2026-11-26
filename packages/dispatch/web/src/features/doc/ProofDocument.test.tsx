@@ -1,10 +1,11 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { settle } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
@@ -14,11 +15,18 @@ import {
   renderProofDocument,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import type { Ask, IssueDetails, IssueReferenceSummary } from "../../api/types";
+import type { Artifact, Ask, IssueDetails, IssueReferenceSummary, Version } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
@@ -143,6 +151,68 @@ test("a version named with its answer lost closes the dialog and says it was mad
     expect(screen.queryByText("Could not name this version. Try again.")).not.toBeInTheDocument();
     expect(createArtifactVersion).toHaveBeenCalledTimes(1);
   } finally {
+    createArtifactVersion.mockRestore();
+    view.unmount();
+  }
+});
+
+// A read of the document asked before a version is named answers the versions from before it.
+// Landing after the version's answer, it would take the new version back off the toolbar's list.
+test("a read of the document asked before a version is named does not take the version back off the list", async () => {
+  const user = userEvent.setup();
+  const queryClient = createQueryClient();
+  const before = Promise.withResolvers<Artifact>();
+  const getArtifact = spyOn(api, "getArtifact")
+    .mockResolvedValueOnce(artifact)
+    .mockReturnValueOnce(before.promise);
+  const named: Version = {
+    authors: [{ id: "alice", kind: "user" }],
+    created_at: "2026-09-10T00:00:00Z",
+    named: true,
+    number: 1,
+    summary: "Settled the rollout",
+  };
+  const answer = Promise.withResolvers<Version>();
+  const createArtifactVersion = spyOn(api, "createArtifactVersion").mockReturnValue(answer.promise);
+  const { toolbar, view } = renderProofDocument({ queryClient });
+  try {
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["artifact", artifact.id])?.status).toBe("success")
+    );
+    // A refresh of the document, asked before the version is named and still out.
+    await act(async () => {
+      void queryClient.invalidateQueries({ exact: true, queryKey: ["artifact", artifact.id] });
+      await settle();
+    });
+    expect(getArtifact).toHaveBeenCalledTimes(2);
+
+    act(() => toolbar.current?.requestNamedVersion());
+    const dialog = await screen.findByRole("dialog", { name: "Name this version" });
+    await user.click(within(dialog).getByLabelText("What changed?"));
+    await user.paste("Settled the rollout");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(createArtifactVersion).toHaveBeenCalledTimes(1));
+    // The answer gives up the read still out and asks for the document again, after the version
+    // is named: Dispatch lists the version then.
+    getArtifact.mockResolvedValueOnce({ ...artifact, versions: [named] });
+    await act(async () => {
+      answer.resolve(named);
+      await settle();
+    });
+    await waitFor(() => expect(toolbar.current?.versions).toEqual([named]));
+
+    // The read answers the document as the server held it before the version was named.
+    await act(async () => {
+      before.resolve(artifact);
+      await settle();
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["artifact", artifact.id])?.fetchStatus).toBe("idle")
+    );
+    expect(toolbar.current?.versions).toEqual([named]);
+    expect(getArtifact).toHaveBeenCalledTimes(3);
+  } finally {
+    getArtifact.mockRestore();
     createArtifactVersion.mockRestore();
     view.unmount();
   }
@@ -610,9 +680,9 @@ test("a selection-bar action opens the margin composer for the mark and settles 
   const { editors, margin, sync, view } = renderProofDocument({ queryClient });
   const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
   const openCompose = () => {
-    const open = margin.current?.pendingCompose;
-    if (open === undefined) throw new Error("expected an open compose");
-    return open;
+    const compose = margin.current?.composes.get(artifact.id);
+    if (compose?.open === undefined) throw new Error("expected an open compose");
+    return { ...compose.open, seq: compose.seq };
   };
   /** Sends the compose the margin has open, as its composer's Send does: from then on the
    *  compose is its send's, and the library's promise resolves. */
@@ -621,7 +691,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
       anchor,
       ask: { multiple: false, options: [], urgency: "med" },
-      draft: { body: "Why?", mentions: [], replacement: "" },
+      draft: { body: "Why?", replacement: "" },
       edit: undefined,
       kind,
       owner: { issueKey: "CORE-1", kind: "issue" },
@@ -656,7 +726,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     if (comment === undefined) {
       throw new Error("The comment action did not return a promise.");
     }
-    expect(margin.current?.pendingCompose).toMatchObject({
+    expect(margin.current?.composes.get(artifact.id)?.open).toMatchObject({
       anchor: {
         artifact: artifact.id,
         mark_id: "m-9",
@@ -687,7 +757,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     if (suggest === undefined) {
       throw new Error("The suggestion action did not return a promise.");
     }
-    expect(margin.current?.pendingCompose?.kind).toBe("suggestion");
+    expect(margin.current?.composes.get(artifact.id)?.open?.kind).toBe("suggestion");
     act(() => sendOpenCompose());
     await expect(suggest).resolves.toBeUndefined();
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
@@ -709,8 +779,8 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     if (ask === undefined) {
       throw new Error("The ask action did not return a promise.");
     }
-    expect(margin.current?.pendingCompose?.kind).toBe("ask");
-    act(() => margin.current?.cancelCompose(openCompose().seq));
+    expect(margin.current?.composes.get(artifact.id)?.open?.kind).toBe("ask");
+    act(() => margin.current?.cancelCompose(artifact.id, openCompose().seq));
     await expect(ask).rejects.toThrow("composer closed");
 
     let unsupported: unknown;
@@ -778,14 +848,14 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
       cancelled = Promise.resolve(onMarkAction({ from: 11, kind: "quote-comment", to: 16 }));
       void cancelled.catch(() => {});
     });
-    const open = margin.current?.pendingCompose;
-    expect(open).toMatchObject({
+    const compose = margin.current?.composes.get(artifact.id);
+    expect(compose?.open).toMatchObject({
       anchor: { artifact: artifact.id, occurrence: 1, quote: "brown" },
       kind: "comment",
     });
-    expect(open?.anchor.mark_id).toBeUndefined();
+    expect(compose?.open?.anchor.mark_id).toBeUndefined();
     // Ending it unsent takes nothing out of the document: there is no mark.
-    act(() => margin.current?.cancelCompose(open?.seq ?? -1));
+    act(() => margin.current?.cancelCompose(artifact.id, compose?.seq ?? -1));
     await expect(cancelled).rejects.toThrow("composer closed");
     expect(removed).toEqual([]);
 
@@ -793,13 +863,13 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
     act(() => {
       sent = Promise.resolve(onMarkAction({ from: 11, kind: "quote-comment", to: 16 }));
     });
-    const { anchor } = margin.current?.pendingCompose ?? {};
+    const { anchor } = margin.current?.composes.get(artifact.id)?.open ?? {};
     if (anchor === undefined) throw new Error("expected an open compose");
     act(() =>
       heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
         anchor,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body: "After the close", mentions: [], replacement: "" },
+        draft: { body: "After the close", replacement: "" },
         edit: undefined,
         kind: "comment",
         owner: { issueKey: "CORE-1", kind: "issue" },
@@ -867,12 +937,12 @@ test("a closed document's Comment on a selection with no text to quote says so a
     });
     await expect(refused).resolves.toBeUndefined();
     expect(within(view.container).getByRole("status").textContent).toBe(notice);
-    expect(margin.current?.pendingCompose).toBeUndefined();
+    expect(margin.current?.composes.get(artifact.id)?.open).toBeUndefined();
 
     act(() => {
       void Promise.resolve(onMarkAction({ from: 1, kind: "quote-comment", to: 6 })).catch(() => {});
     });
-    expect(margin.current?.pendingCompose).toMatchObject({
+    expect(margin.current?.composes.get(artifact.id)?.open).toMatchObject({
       anchor: { artifact: artifact.id, occurrence: 0, quote: "brown" },
       kind: "comment",
     });

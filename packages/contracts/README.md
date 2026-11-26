@@ -8,13 +8,44 @@ Current scope:
 
 - envelope schema and subject helpers
 - the Dispatch specs the `dispatch` command is built from, over `zodSchemaApi(hostZod)`
-- Go generation: `scripts/gen-go.ts`
-- generated Go output: `packages/envoy/listenerwire/envelope_generated.go` (the envelope) and
-  `packages/envoy/internal/contracts/generated.go` (the shared constants)
+- Go and TypeScript generation (below)
 
 This package has no release of its own, so nothing renders its changelog entries: each stays
 readable as the fragment file that holds it, under `.changes/unreleased/`. `CHANGELOG.md` is the
 history before that and stops where the fragments begin.
+
+## Commands
+
+Run each from this directory.
+
+- `bun test`; one file: `bun test src/dispatch-tools.test.ts`.
+- `bun run typecheck` and `bun run lint`.
+- `bun run gen:go` rewrites the files `scripts/gen-go.ts` generates; `bun run check:go` names a
+  stale one and writes nothing.
+- `bun run gen:api` renders `src/dispatch-api.generated.ts` again; every `bun install` at the
+  repository root already does (the root `package.json`'s postinstall).
+
+## Generated files
+
+Change the source and regenerate; never edit these by hand.
+
+- `scripts/gen-go.ts` writes, in `packages/envoy`, `listenerwire/envelope_generated.go` (the
+  envelope), `internal/contracts/generated.go` (its aliases and every shared constant),
+  `internal/contracts/dispatch_tools_generated.go` (from `src/dispatch-tools.ts`) and
+  `internal/dispatch/pmdoc/schema_generated.go` (from `schemas/block-schema.schema.json`), and
+  here `src/block-schema.generated.ts`.
+- `schemas/dispatch-openapi.json` is reflected from Dispatch's Go route table. In
+  `packages/envoy`, `go run ./cmd/dispatch openapi --check` compares it with a fresh render and
+  prints the command that rewrites it.
+- `src/dispatch-api.generated.ts` is rendered from that document by `scripts/gen-api.ts` and is in
+  no commit, so two branches that each add a route never edit one generated file. Every
+  `bun install` renders it, and so does the `typecheck` script of every package that compiles it,
+  so `bun run typecheck` reads the document the tree holds. A `tsc` run directly, or an editor,
+  reads the last render: run `bun run gen:api` after a pull or a branch switch that changes the
+  document. Only type checks read the module: `src/dispatch-api.ts` re-exports it with
+  `export type *`, so a type check in a tree that never ran `bun install` fails naming it.
+- `scripts/adopt-api-layout.sh` takes the module out of a merge of main into a branch made while it
+  was committed, with git or jj.
 
 ## GitHub Topic Hierarchy
 
@@ -62,6 +93,8 @@ share one), so a consumer takes the repository from the payload's `repo`.
 ### CI check settlement
 
 `notifications.github.{owner}.{repo}.pr.{number}.checks` publishes once a commit of the pull request has its recorded checks and suites settle after the quiet period, whether or not that commit is still the head. The payload's `sha` names the commit, and a consumer decides which commit a settlement stands for.
+
+The payload's `check_runs` names the latest run of each check that has a run id, as `{name, id, conclusion}`, sorted by name. `conclusion` is GitHub's own word for that run (`success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `startup_failure` or `stale`), passed on as GitHub gave it, a word GitHub adds later included; `fixtures/checks-settlement/listener-rules.json` holds one, `a_conclusion_github_adds_later`. It is left out where the listener's record holds no word for the run, and a listener of an earlier release sends it for no run. A consumer shows a check by its word and decides by the groups, not by the word: the groups `failed`, `running`, `passed`, `queued`, `cancelled` and `skipped` are the listener's rule, so a word a consumer does not know still lands in one group, and a completed run whose word the listener does not know is in `failed`. `skipped` names each check whose run GitHub concluded `skipped`: that check ran nothing on the commit.
 
 The payload's `statuses` names each commit status the record holds for that commit, as `{context, state, created_at}` in context order, with `state` one of `success`, `failure` and `error` and `created_at` GitHub's RFC 3339 text of when it created the status. The field is left out when the record holds no status. A commit status is no check run: `check_runs`, the status groups and the failing names hold check runs alone, and a status and a check run of one name are two entries. A status has no id, so `created_at` orders two statuses of one context, never `generation`: a settlement that names a context a consumer keeps no status of for that commit, or one with a later `created_at` than the status it keeps of that context, changes those statuses alone where its attempt set is older than the one the consumer keeps, or the same at a `generation` no higher than the kept one, and is newer, and applied whole, only where its attempt set is newer or mixed, or the same at a higher `generation`. A consumer merges the `statuses` of each settlement it applies into the statuses it keeps, one context at a time: the entry with the later `created_at` stands, on an equal one the settlement's where it is applied whole and the kept one where it changes those statuses alone, and a context the settlement leaves out stays as kept (the Legion daemon's `ClassifySettlement` and `mergedStatuses`, `packages/daemon/internal/classify/settlement.go`). Dispatch's CI reconcile records the statuses from GitHub's read of each open head, since GitHub's `status` webhook event names no pull request. `fixtures/checks-settlement/listener-rules.json` holds a settlement with statuses.
 

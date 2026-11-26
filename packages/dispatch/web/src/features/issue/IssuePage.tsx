@@ -35,10 +35,11 @@ import { VerificationTab } from "../verification/VerificationTab";
 import { ChildrenTab } from "./ChildrenTab";
 import { CollaboratorsTab } from "./CollaboratorsTab";
 import { DecisionsPanel } from "./DecisionsPanel";
-import { IssueHeader } from "./IssueHeader";
+import { IssueHeader, STATUS_TRIGGER_SELECTOR } from "./IssueHeader";
 import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
 import { issuePriority } from "./issue-priority";
+import { PRIORITY_TRIGGER_SELECTOR } from "./PriorityControl";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
@@ -105,14 +106,13 @@ function ItemLandingFailure({
 const HEADER = "[data-issue-header]";
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
-const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
-const STATUS_SELECT = 'select[aria-label="Status"]';
-const TITLE_HEADING = 'h1[tabindex="0"]';
+const TITLE_BUTTON = 'button[aria-label="Edit title"]';
 
-/** The header control `selector` names, or `null` when it is absent or refuses input: disabled
- *  (a closed issue, a save in flight), or held with `aria-disabled` (the labels' trigger while
- *  their save is out, `IssueLabels`). It is the one fact both the key's `run` and the `when` that
- *  offers it read, so a shortcut is listed exactly while its control would take a click. */
+/** The header control `selector` names, or `null` when it is absent or refuses input: disabled,
+ *  or held with `aria-disabled` (the status's and the priority's triggers on a closed issue or
+ *  while a save is in flight, the labels' trigger while their save is out, `IssueLabels`). It is
+ *  the one fact both the key's `run` and the `when` that offers it read, so a shortcut is listed
+ *  exactly while its control would take a click. */
 function usableControl(selector: string): HTMLElement | null {
   const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
   if (node == null) {
@@ -120,7 +120,7 @@ function usableControl(selector: string): HTMLElement | null {
   }
   const refused =
     node.getAttribute("aria-disabled") === "true" ||
-    ((node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled);
+    (node instanceof HTMLButtonElement && node.disabled);
   return refused ? null : node;
 }
 
@@ -272,22 +272,22 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       id: "status",
       keys: "s",
       label: "Focus the status",
-      run: () => usableControl(STATUS_SELECT)?.focus(),
-      when: () => usableControl(STATUS_SELECT) !== null,
+      run: () => usableControl(STATUS_TRIGGER_SELECTOR)?.focus(),
+      when: () => usableControl(STATUS_TRIGGER_SELECTOR) !== null,
     },
     {
       id: "priority",
       keys: "p",
       label: "Focus the priority",
-      run: () => usableControl(PRIORITY_SELECT)?.focus(),
-      when: () => usableControl(PRIORITY_SELECT) !== null,
+      run: () => usableControl(PRIORITY_TRIGGER_SELECTOR)?.focus(),
+      when: () => usableControl(PRIORITY_TRIGGER_SELECTOR) !== null,
     },
     {
       id: "set-priority",
       keys: ["0", "1", "2", "3"],
       label: "Set priority P0–P3",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
+      when: () => usableControl(PRIORITY_TRIGGER_SELECTOR) !== null && outsideInputsAndAskCards(),
     },
     {
       id: "labels",
@@ -297,14 +297,14 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(LABELS_TRIGGER) !== null,
     },
     {
-      // The heading is a Tab stop only while the issue is open - closed, its `tabIndex` is -1
-      // and it opens no editor - so the key is offered exactly while it edits. The key clicks
-      // it, since the heading opens its editor when activated and not when it takes the focus.
+      // The header draws its Edit title button only while the issue is open, so the key is
+      // offered exactly while the title can be edited. The key presses that button, which opens
+      // the editor when it is activated and not when it takes the focus.
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.click(),
-      when: () => usableControl(TITLE_HEADING) !== null,
+      run: () => usableControl(TITLE_BUTTON)?.click(),
+      when: () => usableControl(TITLE_BUTTON) !== null,
     },
     {
       id: "pin",
@@ -314,10 +314,12 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
     {
-      // `s` and `p` put focus in a native select, where every single-key binding is suspended
-      // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
-      // rather than start the tab chord. Escape is the way back out, as it is on the Inbox
-      // rows, the board's cards and the architecture rows.
+      // `s` and `p` put the focus on an option list's trigger, the status's or the priority's.
+      // There every single-key binding is suspended, and the next keystroke is the control's own:
+      // the list's search, which a character typed on its closed trigger opens. So `t` opens the
+      // list with `t` in its text box rather than start the tab chord. Escape is the way back
+      // out, as it is on the Inbox rows, the board's cards and the architecture rows. Each
+      // trigger keeps the focus while it is held (`aria-disabled`), so Escape leaves it then too.
       id: "back",
       inEditable: true,
       keys: "Escape",
@@ -325,7 +327,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       run: () => (document.activeElement as HTMLElement | null)?.blur(),
       when: () => {
         const active = document.activeElement;
-        return active === usableControl(STATUS_SELECT) || active === usableControl(PRIORITY_SELECT);
+        const header = document.querySelector(HEADER);
+        return (
+          active === header?.querySelector(STATUS_TRIGGER_SELECTOR) ||
+          active === header?.querySelector(PRIORITY_TRIGGER_SELECTOR)
+        );
       },
     },
     ...tabChords.map(({ keys, label, tab }) => ({
@@ -368,6 +374,8 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     [issue.data?.artifacts]
   );
 
+  // The title bar holds no markup, so an issue's key and title go in as the characters they
+  // are; the reading list's `issue-page-title` (`DISPATCH_READING_SURFACES`) says why.
   useDocumentTitle(
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
   );

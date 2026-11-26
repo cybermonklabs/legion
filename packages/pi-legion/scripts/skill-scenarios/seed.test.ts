@@ -7,10 +7,10 @@ import type * as seedModule from "./seed";
 
 // e2e/api.ts, which seed.ts calls, reads its port when it loads: set it as rig.sh's seed_ts does,
 // then load seed.ts. PLAYWRIGHT_BASE_URL would point api.ts somewhere else. Both go back to what
-// the caller held once this file ends: `bun test` runs every file in one process. The names are
-// written, and the module loaded, in the `beforeAll` below: a `bun test -t <pattern>` that selects
-// no row of this file runs neither that hook nor the `afterEach` and `afterAll` the capture
-// registered, so a write at module scope would stay written for every later file.
+// the caller held once this file ends: a plain `bun test` runs every file in one process. The
+// names are written, and the module loaded, in the `beforeAll` below: a `bun test -t <pattern>`
+// that selects no row of this file runs neither that hook nor the `afterEach` and `afterAll` the
+// capture registered, so a write at module scope would stay written for every later file.
 restoreEnvironment(["DISPATCH_E2E_PORT", "PLAYWRIGHT_BASE_URL"]);
 let seed: typeof seedModule;
 
@@ -1031,6 +1031,42 @@ describe("capture-spec", () => {
     expect(existsSync(path.join(dir, "plan.md"))).toBe(false);
     expect(JSON.parse(readFileSync(path.join(dir, "agent-texts.json"), "utf8"))).toEqual([]);
   });
+
+  // Catches (dispatch://INFRA-1523, census row X.3, the architect's ruling of 2026-11-21 10:44Z): a
+  // post the agent under test deleted reaches agent-texts.json as an empty, unmarked text, which the
+  // judges score as something the agent said. Dispatch reads a deleted post with its body empty and
+  // its deleted_at set; the capture must leave it out or mark it deleted.
+  test("a post the run deleted reaches the judges neither as an empty text nor unmarked", async () => {
+    const spec = dispatch.issue("LWEVAL-2");
+    const post = (id: string, body: string, at: string, deleted: boolean) => ({
+      id,
+      issue_key: "LWEVAL-2",
+      author: runSession,
+      body,
+      created_at: at,
+      deleted_at: deleted ? "2026-10-24T11:00:00Z" : null,
+      deleted_by: deleted ? runSession : null,
+    });
+    dispatch.messages.push(
+      { message: post("m-gone", "", "2026-10-24T10:40:00Z", true), replies: [] },
+      { message: post("m-kept", "Still here.", "2026-10-24T10:41:00Z", false), replies: [] }
+    );
+    dispatch.comments.push({ ...post("c-gone", "", "2026-10-24T10:42:00Z", true), ask_id: null });
+    const dir = runDir();
+    await seed.captureSpec(fixture(dir, spec), dir);
+    const texts: Record<string, unknown>[] = JSON.parse(
+      readFileSync(path.join(dir, "agent-texts.json"), "utf8")
+    );
+    // The control: the run's standing message is captured as it reads.
+    expect(texts.find((text) => text.id === "m-kept")?.body).toBe("Still here.");
+    const unmarked = texts.filter(
+      (text) =>
+        (text.id === "m-gone" || text.id === "c-gone") &&
+        !text.deleted &&
+        (text.deleted_at === undefined || text.deleted_at === null)
+    );
+    expect(unmarked).toEqual([]);
+  });
 });
 
 describe("tester-proof", () => {
@@ -1056,9 +1092,9 @@ describe("tester-proof", () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
-    const body = { schemaVersion: 1, phase: "implement", issue: "LWEVAL-2" };
-    writeFileSync(path.join(dir, "implement.json"), JSON.stringify(body));
     const commit = "1111111111111111111111111111111111111111";
+    const body = { head: commit };
+    writeFileSync(path.join(dir, "implement.json"), JSON.stringify(body));
     await seed.implementHandoff(file, path.join(dir, "implement.json"), commit);
     expect(dispatch.handoffs).toEqual([
       expect.objectContaining({

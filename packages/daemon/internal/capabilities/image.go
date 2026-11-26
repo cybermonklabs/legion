@@ -11,19 +11,25 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // Image is what the image-site checks read.
 type Image struct {
-	// Launch is the Oh My Pi invocation as a shell fragment, run as `exec <Launch> <args>` under
-	// `sh -c`: the probe's --omp or LEGION_OMP_PATH. The shell parses it as a pod's shim parses
-	// its launch, so a prefix in it runs as it would there.
+	// Launch is the Oh My Pi invocation as a shell fragment: every check runs it as
+	// `exec <Launch> <args>` under `sh -c` (launch), and ReadModelFallback's and CheckOverlays'
+	// errors name it as it stands. Two callers build it. `legion probe-image` gives its --omp or
+	// LEGION_OMP_PATH, a path, as one shell word (shellprefix.Word). The daemon's boot gate
+	// (daemon.go) gives omplaunch.ResolveInvocation's invocation with the operator's
+	// OmpLaunchPrefix before it (omplaunch.WithPrefix), as a pane launches Oh My Pi. The shell
+	// parses it as a pod's shim parses its launch, so a prefix runs as it would there.
 	Launch string
 	// Env is the environment the checks run under (PATH, PUPPETEER_EXECUTABLE_PATH, HOME,
 	// OMP_PROFILE, PI_CONFIG_FILES, …): the one the pod's Oh My Pi starts with, after the pod
@@ -45,11 +51,22 @@ type Image struct {
 	// Chromium. The daemon's probe Sandbox never sets it, so a Sandbox pod's image is always
 	// checked for the browser.
 	SkipBrowser bool
+	// cuts counts the commands the end of the caller's context stopped, or kept from starting
+	// (ran.cut), so CheckImage, which sets it on its own copy, tells a row whose check that end cut
+	// from one its own commands decided. A copy of the Image keeps the same count; nil counts
+	// nothing.
+	cuts *atomic.Int32
 }
 
 // commandTimeout bounds each command a check runs: a `--version` or a `--check` that has not
 // answered in a minute is hanging, not slow, and the probe's own budget is not to be spent on it.
 var commandTimeout = 60 * time.Second
+
+// errCommandTimeout is the cause a command's own budget gives its attempt's context when it
+// passes (runWithin). The context keeps the cause of whichever end fired first, the budget's or the
+// caller's, so the run tells the two apart by that record, and never by ctx.Err() read once the
+// command is gone.
+var errCommandTimeout = errors.New("the command's own budget passed")
 
 // maxDetail caps a command's quoted output in a State's detail, so a chatty command cannot push
 // the table past the log tail the daemon reads back.
@@ -68,22 +85,30 @@ var imageChecks = map[Name]imageCheck{
 // image rows present or missing with their evidence (with img.SkipBrowser, the browser row
 // unchecked and no browser run), live rows reported as what a claimed session reports while it
 // runs, which the probe cannot check and `legion state` renders, deployment rows reported as what
-// the daemon reports from the deployment's configuration, withheld rows with their citations. It
-// runs after the launch probes (daemon.ProbeImage) passed: the eval-js and skills rows are
-// present by those probes, which ran Oh My Pi — its own JavaScript runtime — and resolved the
-// prompt-named skills. err is nil when every image row's check passed; otherwise it names every
-// missing one, so one rebuild of the image fixes them all rather than the first alone. A ctx that
-// ends ends the check with an error wrapping ctx's.
+// the daemon measures, each naming what it measures that row from (Capability.MeasuredFrom: its
+// configuration, what boot learned, or the repository caches' health), withheld rows with their
+// citations. It runs after the launch probes (daemon.ProbeImage) passed: the eval-js and skills
+// rows are present by those probes, which ran Oh My Pi — its own JavaScript runtime — and resolved
+// the prompt-named skills. err is nil when every image row checked passed; otherwise it names
+// every missing one, so one rebuild of the image fixes them all rather than the first alone. An
+// image row a command of whose check the end of ctx stopped, or kept from starting (img.cuts
+// counts each such command), and every image row render reaches after ctx ended, which is not
+// run, is unanswered and left out of err. Every other image row keeps what its check decided,
+// whenever the check returned: a row found missing while ctx was alive is still named, one whose
+// command its own timeout stopped among them, also where that command's stop outlasted ctx.
 func CheckImage(ctx context.Context, img Image) ([]State, error) {
-	var absent []string
-	states, err := render(ctx, renderer{
+	img.cuts = new(atomic.Int32)
+	states := render(ctx, renderer{
 		image: func(row Capability) State {
 			if row.Name == Browser && img.SkipBrowser {
 				return State{Name: row.Name, Status: StatusUnchecked, Detail: "not checked (--skip-browser): the image is for a deployment that turns Oh My Pi's browser off"}
 			}
+			cuts := img.cuts.Load()
 			detail, ok := imageChecks[row.Name](ctx, img)
+			if img.cuts.Load() != cuts {
+				return unanswered(row.Name, ctx.Err())
+			}
 			if !ok {
-				absent = append(absent, fmt.Sprintf("capability %s is missing: %s", row.Name, detail))
 				return State{Name: row.Name, Status: StatusMissing, Detail: detail}
 			}
 			return State{Name: row.Name, Status: StatusPresent, Detail: detail}
@@ -92,11 +117,14 @@ func CheckImage(ctx context.Context, img Image) ([]State, error) {
 			return State{Name: row.Name, Status: StatusReported, Detail: "a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: " + row.Summary}
 		},
 		deployment: func(row Capability) State {
-			return State{Name: row.Name, Status: StatusReported, Detail: "the daemon reports it from the deployment's configuration: " + row.Summary}
+			return State{Name: row.Name, Status: StatusReported, Detail: "the daemon reports it from " + row.MeasuredFrom + ": " + row.Summary}
 		},
 	})
-	if err != nil {
-		return states, err
+	var absent []string
+	for _, state := range states {
+		if state.Status == StatusMissing {
+			absent = append(absent, fmt.Sprintf("capability %s is missing: %s", state.Name, state.Detail))
+		}
 	}
 	if len(absent) > 0 {
 		return states, errors.New(strings.Join(absent, "; "))
@@ -110,24 +138,66 @@ func CheckImage(ctx context.Context, img Image) ([]State, error) {
 // is unavailable. An error names the command and its output.
 func ReadModelFallback(ctx context.Context, img Image) (string, error) {
 	const args = "config get retry.modelFallback --json"
-	command := img.Launch + " " + args
-	r := img.launch(ctx, args)
-	if r.err != nil {
-		return "", fmt.Errorf("%s: %w", command, r.err)
-	}
-	if r.exit != 0 {
-		return "", fmt.Errorf("%s exited %d: %s", command, r.exit, r.output())
+	r, err := img.answer(ctx, args)
+	if err != nil {
+		return "", err
 	}
 	var answer struct {
 		Value *bool `json:"value"`
 	}
 	if err := json.NewDecoder(strings.NewReader(r.stdout)).Decode(&answer); err != nil || answer.Value == nil {
-		return "", fmt.Errorf("%s printed no JSON object with a boolean value: %s", command, r.output())
+		return "", fmt.Errorf("%s %s printed no JSON object with a boolean value: %s", img.Launch, args, r.output())
 	}
 	if *answer.Value {
 		return bootprobe.ModelFallbackOn, nil
 	}
 	return bootprobe.ModelFallbackOff, nil
+}
+
+// ReadOmpVersion runs `<Launch> --version` under img and answers the first non-blank line it
+// printed on stdout, trimmed: which Oh My Pi the image carries. It cannot say whether that Oh My
+// Pi takes --session-id (ReadSessionIDFlag): every release of the fork's 18.18.6 line prints
+// `omp/18.18.6`, those with the flag and those without it. An error names the command and its
+// output.
+func ReadOmpVersion(ctx context.Context, img Image) (string, error) {
+	const args = "--version"
+	r, err := img.answer(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(r.stdout), "\n")
+	if first = strings.TrimSpace(first); first == "" {
+		return "", fmt.Errorf("%s %s printed no version: %s", img.Launch, args, r.output())
+	}
+	return first, nil
+}
+
+// sessionIDFlag is a line of Oh My Pi's `--help` that defines --session-id: its flags table's flag
+// column, after an optional short flag (`  -r, --resume=<value>`), names the whole flag, followed
+// by `=<value>`, a space or the line's end. A description that mentions the words, and a longer
+// flag that begins with them, are not it.
+var sessionIDFlag = regexp.MustCompile(`(?m)^[ \t]*(?:-\w,[ \t]+)?--session-id(?:[=\s]|$)`)
+
+// ReadSessionIDFlag runs `<Launch> --help` under img and answers bootprobe.SessionIDFlagTaken when
+// the help it printed on stdout defines --session-id (sessionIDFlag), and
+// bootprobe.SessionIDFlagAbsent when it printed help that defines no such flag. The help is the
+// one answer Oh My Pi gives: its version does not tell (ReadOmpVersion), and
+// `<omp> --session-id <uuid> --version` exits 0 on a release without the flag, since --version
+// answers before Oh My Pi checks its flags. The first release of the fork whose help defines it is
+// v18.18.6-sami.20261117-074351. An error names the command and its output.
+func ReadSessionIDFlag(ctx context.Context, img Image) (string, error) {
+	const args = "--help"
+	r, err := img.answer(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(r.stdout) == "" {
+		return "", fmt.Errorf("%s %s printed no help: %s", img.Launch, args, r.output())
+	}
+	if sessionIDFlag.MatchString(r.stdout) {
+		return bootprobe.SessionIDFlagTaken, nil
+	}
+	return bootprobe.SessionIDFlagAbsent, nil
 }
 
 // evalJS: Oh My Pi is its JavaScript runtime, and the launch probes ran it.
@@ -476,12 +546,15 @@ func envMap(env []string) map[string]string {
 	return m
 }
 
-// ran is one command's run: its exit code, what it printed, and the error when it could not run
-// to an exit of its own — it never started, its budget killed it, or a signal ended it.
+// ran is one command's run: its exit code, what it printed, the error when it could not run to an
+// exit of its own — it never started, its budget killed it, or a signal ended it — and whether the
+// end of the caller's context stopped it or kept it from starting (cut), which leaves the run no
+// answer of the command's own.
 type ran struct {
 	exit           int
 	stdout, stderr string
 	err            error
+	cut            bool
 }
 
 // output is what the command printed, stderr then stdout, as one line.
@@ -504,6 +577,20 @@ func (img Image) launch(ctx context.Context, args string) ran {
 	return img.run(ctx, "sh", "-c", "exec "+img.Launch+" "+args)
 }
 
+// answer is the launch's run of args when it exited 0, and otherwise an error naming the command
+// — `<Launch> <args>` — and the run's own error, or its exit and its output.
+func (img Image) answer(ctx context.Context, args string) (ran, error) {
+	command := img.Launch + " " + args
+	r := img.launch(ctx, args)
+	if r.err != nil {
+		return r, fmt.Errorf("%s: %w", command, r.err)
+	}
+	if r.exit != 0 {
+		return r, fmt.Errorf("%s exited %d: %s", command, r.exit, r.output())
+	}
+	return r, nil
+}
+
 // run runs one command within commandTimeout, under img's environment, in its directory, in a
 // process group of its own, so a timeout kills what is actually running rather than a shell that
 // leaves it holding the pipes (procgroup). Its stdin is empty: nothing a check runs may wait on
@@ -512,9 +599,17 @@ func (img Image) run(ctx context.Context, name string, args ...string) ran {
 	return img.runWithin(ctx, commandTimeout, name, args...)
 }
 
-// runWithin is run with budget in place of commandTimeout.
+// runWithin is run with budget in place of commandTimeout. What ended the command is read from the
+// run itself: whether the end of its attempt's context signalled its process group (killed), and
+// which end that context recorded as its cause when the end fired, errCommandTimeout for budget or
+// the cause of ctx's own end. The cause is read, and not ctx.Err() once the command is gone,
+// because a stop can take up to procgroup.StopGrace and procgroup.WaitDelay after the end that
+// sent it: a deadline of ctx that passes in that time does not make a command its budget stopped
+// one the caller stopped. A command its budget stopped timed out. One the end of ctx stopped, or
+// kept from starting, is cut (ran.cut, counted on img.cuts), whatever it answered the stop with.
+// One that exited before either end stopped it is its exit, whenever ctx ended.
 func (img Image) runWithin(ctx context.Context, budget time.Duration, name string, args ...string) ran {
-	attempt, cancel := context.WithTimeout(ctx, budget)
+	attempt, cancel := context.WithTimeoutCause(ctx, budget, errCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(attempt, name, args...)
 	cmd.Env = img.Env
@@ -523,24 +618,34 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	killed := procgroup.Configure(cmd)
 	err := cmd.Run()
-	r := ran{stdout: stdout.String(), stderr: stderr.String()}
+	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
+	// own, context.Canceled.
+	cause := context.Cause(attempt)
+	timedOut := errors.Is(cause, errCommandTimeout)
+	r := ran{stdout: stdout.String(), stderr: stderr.String(), cut: cause != nil && !timedOut && (killed() || cmd.Process == nil)}
 	switch {
-	case ctx.Err() == nil && killed():
+	case killed() && timedOut:
 		r.err = fmt.Errorf("timed out after %s", budget)
 	case procgroup.Err(err) != nil:
 		r.err = procgroup.Said(procgroup.Err(err), r.output())
 	default:
 		r.exit = cmd.ProcessState.ExitCode()
 	}
+	if r.cut && img.cuts != nil {
+		img.cuts.Add(1)
+	}
 	return r
 }
 
 // oneLine is text as one printed line: its whitespace runs collapsed, and cut at maxDetail on a
-// rune boundary with an ellipsis after the cut.
+// rune boundary with an ellipsis after the cut. The text is a command's output, which can quote a
+// URL with a token in its userinfo or its query, so redact.Bytes reads the whole line through the
+// URL rule before the cut: a cut made first could end inside that userinfo, before its "@", and
+// leave the start of the token where the rule no longer finds it.
 func oneLine(text string) string {
-	line := strings.Join(strings.Fields(text), " ")
-	if len(line) > maxDetail {
-		line = truncate(line, maxDetail) + "…"
+	line, cut := redact.Bytes(strings.Join(strings.Fields(text), " "), maxDetail)
+	if cut {
+		line += "…"
 	}
 	return line
 }

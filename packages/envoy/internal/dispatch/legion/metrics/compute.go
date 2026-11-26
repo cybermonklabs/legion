@@ -23,8 +23,11 @@ const (
 // for the phases no role works. "A seventh bar, 'no role', holds the phases no role works:
 // `awaiting_person` and `held`", and the spec's "Phase boundaries before observations" holds it
 // to those two alone — a handoff starts the next phase, so no hour falls between two phases for
-// it to hold. Time in the queue is on no bar, and neither is an hour the work time leaves out,
-// so the seven bars of an issue add up to its work time (barPartsOf).
+// it to hold. `awaiting_children`, which dispatch://INFRA-3320 added after that spec, is a third
+// phase no role works (RoleFor in packages/daemon/internal/phase gives it none), a parent
+// waiting on its open children, so it is on that bar too. Time in the queue is on no bar, and
+// neither is an hour the work time leaves out, so the seven bars of an issue add up to its work
+// time (barPartsOf).
 const barNoRole = "no_role"
 
 // mergerPhases are the two phases of the merger's bar, "merging and awaiting merge", and the two a
@@ -44,7 +47,7 @@ var bars = []struct {
 	{"tester", []string{legion.PhaseTesting}},
 	{"reviewer", []string{legion.PhaseReviewing}},
 	{"merger", mergerPhases},
-	{barNoRole, []string{legion.PhaseAwaitingPerson, legion.PhaseHeld}},
+	{barNoRole, []string{legion.PhaseAwaitingPerson, legion.PhaseAwaitingChildren, legion.PhaseHeld}},
 }
 
 // The four classes of issue a Legion session filed (metric 4).
@@ -83,10 +86,10 @@ type FiledIssue struct {
 	// FilerPhase is the phase the filer's issue was in when it filed, named by the word a table
 	// names it by (tablePhase): the eight words of the spec's "Phase words in tables" — `design`,
 	// `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro` and `merging` —,
-	// `queued` for the waiting line, `awaiting_person` and `held` for the "no role" bar, `done`
-	// for an hour the issue was out of the workflow before its close (outOfWorkflowSpans), with
-	// observations or before them, and the empty string for a moment the issue's timeline does
-	// not cover, which is what every filing by the controller carries.
+	// `queued` for the waiting line, `awaiting_person`, `awaiting_children` and `held` for the
+	// "no role" bar, `done` for an hour the issue was out of the workflow before its close
+	// (outOfWorkflowSpans), with observations or before them, and the empty string for a moment
+	// the issue's timeline does not cover, which is what every filing by the controller carries.
 	FilerPhase string
 }
 
@@ -486,12 +489,28 @@ var sentBackPhases = []string{
 // part from there on, as the review rounds beside it are. Before observations the move is the
 // status's (sentBackStatuses): `needs_review` is the status of both reviewing and accepting,
 // `retro` the status of both retro and merging, and `in_progress` the status of implementing.
+// `in_progress` is the status of awaiting_children as well (the daemon's phaseStatus, in
+// packages/daemon/internal/workflow/table.go), so a stop for an open child out of testing,
+// reviewing or accepting writes the same move of status as a send-back, and before observations
+// it is counted as one: the statuses cannot tell the two apart.
+// On the observed part a stretch of `implementing` is compared with the closest stretch before it
+// whose phase is not `awaiting_children`: a failed test or a review that requests changes while a
+// Dispatch child of the issue is open moves it into awaiting_children first, and the return from
+// there brings it to implementing (dispatch://INFRA-3320, record.ReturnStep in
+// packages/daemon/internal/record), so the send-back is the move across that wait.
 func sentBackOnce(issue *Issue, timeline phaseTimeline) bool {
 	if statusMoved(timeline.statusesBefore(issue), sentBackStatuses, statusImplementing) {
 		return true
 	}
 	for index := max(timeline.firstObserved, 1); index < len(timeline.spans); index++ {
-		if timeline.spans[index].Phase == legion.PhaseImplementing && slices.Contains(sentBackPhases, timeline.spans[index-1].Phase) {
+		if timeline.spans[index].Phase != legion.PhaseImplementing {
+			continue
+		}
+		before := index - 1
+		for before > 0 && timeline.spans[before].Phase == legion.PhaseAwaitingChildren {
+			before--
+		}
+		if slices.Contains(sentBackPhases, timeline.spans[before].Phase) {
 			return true
 		}
 	}
@@ -580,11 +599,12 @@ func phaseAt(timeline []PhaseSpan, at time.Time) string {
 // retro is on the implementer's bar and keeps its own word.
 //
 // The whole of what it answers, which a stored filing's filer_phase holds: those eight words; the
-// four words a timeline holds that are on no role's bar — `queued` and `done`, which are on no
+// five words a timeline holds that are on no role's bar — `queued` and `done`, which are on no
 // bar at all, being the waiting line and an hour out of the workflow before the close
-// (queuedSpans, outOfWorkflowSpans), with observations or before them, and `awaiting_person` and
-// `held`, which are the "no role" bar's; and "" for a moment no span of the timeline covers, which
-// is what a filing by the controller carries, since the controller works no issue.
+// (queuedSpans, outOfWorkflowSpans), with observations or before them, and `awaiting_person`,
+// `awaiting_children` and `held`, which are the "no role" bar's; and "" for a moment no span of
+// the timeline covers, which is what a filing by the controller carries, since the controller
+// works no issue.
 func tablePhase(phase string) string {
 	if slices.Contains(mergerPhases, phase) {
 		return legion.PhaseMerging
@@ -592,14 +612,14 @@ func tablePhase(phase string) string {
 	return phase
 }
 
-// quantile is the q-th quantile of a sorted list, "linear interpolation between the closest
-// ranks", and zero for an empty one: the delivery measures' own rule (measures.Quantile),
-// rounded as every number of a fold is.
-func quantile(sorted []float64, q float64) float64 {
-	if len(sorted) == 0 {
+// quantile is the q-th quantile of samples in ascending order, "linear interpolation between the
+// closest ranks", and zero for none: the delivery measures' own rule (measures.Quantile), rounded
+// as every number of a fold is.
+func quantile(sorted measures.SortedSamples, q float64) float64 {
+	if sorted.Len() == 0 {
 		return 0
 	}
-	return round(measures.Quantile(sorted, q))
+	return round(sorted.Quantile(q))
 }
 
 // hours is a duration in hours, rounded as every number of a fold is.

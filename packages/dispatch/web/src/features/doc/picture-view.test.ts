@@ -1,9 +1,16 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { Schema } from "prosemirror-model";
 import { pictureClassName } from "../refs/DispatchPicture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { DispatchReferenceRoute } from "../refs/routes";
 import { pictureView } from "./picture-view";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // Milkdown's `image` node: `src`/`alt`/`title` strings and a `toDOM` that writes them onto an
 // `<img>`.

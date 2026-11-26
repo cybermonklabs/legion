@@ -12,8 +12,8 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CSSProperties, ReactNode } from "react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
@@ -46,13 +46,14 @@ import {
 } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
-import { PriorityControl } from "../issue/PriorityControl";
+import { PRIORITY_TRIGGER_SELECTOR, PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
+import { ParentStatusDialog } from "../issue/parent-status/ParentStatusDialog";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
-import { closestMatching } from "../shell/roving";
+import { closestMatching, focusOnDocument } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
 import {
   announceMove,
@@ -310,6 +311,25 @@ const BoardLaneRow = memo(function BoardLaneRow({
   );
 });
 
+/**
+ * Draws nothing. While the rule's question is open, `tookFocusFrom` holds the element the question
+ * took the focus from as it opened, which the question gives the focus back to as it closes
+ * (`useDialog`). Once the question has closed, it holds `null`. The board draws this just before
+ * the question, in one fragment with it. A commit runs the layout effects of siblings in their
+ * order, so this effect reads the focus before the question's own effect takes it. A development
+ * build's StrictMode runs the effects of a new subtree a second time, the whole fragment at once:
+ * the question has given the focus back by then, so the second read finds the same element.
+ */
+function QuestionOpening({ tookFocusFrom }: { tookFocusFrom: RefObject<Element | null> }): null {
+  useLayoutEffect(() => {
+    tookFocusFrom.current = document.activeElement;
+    return () => {
+      tookFocusFrom.current = null;
+    };
+  }, [tookFocusFrom]);
+  return null;
+}
+
 export function IssueBoard({
   project,
   showEdges = false,
@@ -383,7 +403,7 @@ export function IssueBoard({
     (issue: IssueSummary) => matches(issue, userState.data?.[issue.key]?.last_read_seq ?? 0),
     [matches, userState.data]
   );
-  const { error, moveCard, moveCardToLane } = useBoardMoves(project, labels, isVisible);
+  const { error, moveCard, moveCardToLane, question } = useBoardMoves(project, labels, isVisible);
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } })
@@ -487,15 +507,37 @@ export function IssueBoard({
   // One `aria-live` sentence per keyboard move; `focusAfterMove` names the card focus follows
   // once the optimistic list has rendered (a status move remounts the article under its new
   // column, so the old node cannot keep focus; a card moved into a rail has no node, and focus
-  // lands on the rail). The effect runs on the `columns`/`boardLanes` render - the
-  // announcement's own render comes first, before the query observer has notified, and would
-  // focus the doomed node.
+  // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), and only
+  // while the focus then stands in the card the press moved (`pressed`): on the card itself, or on
+  // a control inside it, such as the card's link that a Tab reaches while the move's dry run is
+  // out. The move draws the card in its new column, which takes that control away with the card,
+  // so the focus goes with the card. A move sets it too where the rule's question took the focus
+  // from that card or from a control inside it (`questionTookFocusFrom`). The question's choice
+  // places the card, and the question gives the focus back where it took it from as it closes
+  // (`useDialog`). The plan's `from` is the element the focus stood on in that card, or the one
+  // the question took it from. Another dialog gives a move no focus, and nor does a question that
+  // took the focus from the body or from another control. The move reads this as it places the
+  // card, before the board draws the card in its new place and so takes the focus off that card.
+  // So a move that ends without placing the card takes no focus later, and nor does a move the
+  // rule's dry run checks first, placed once the dry run answers, where the reader has moved the
+  // focus out of the card by then - a key to another card, a Tab out of the card, a click, a
+  // click on a blank spot that leaves the focus on the body too. A move that takes no focus
+  // leaves the plan of an earlier move as it is: the effect checks that plan against its own
+  // press. The effect runs on the `columns`/`boardLanes` render - the announcement's own render
+  // comes first, before the query observer has notified, and would focus the doomed node. It
+  // moves the focus only while the focus still stands on the plan's `from`, or on the body where
+  // that element's going with the card left it, or where the question's hand-back left it once
+  // that element had gone.
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
     key: string;
     status: IssueStatus;
     laneId: string | null;
+    from: Element | null;
   } | null>(null);
+  /** The element the rule's question took the focus from as it opened, while the question is
+   *  open, else `null` (`QuestionOpening`). */
+  const questionTookFocusFrom = useRef<Element | null>(null);
   const boardNode = (selector: string) => boardRef.current?.querySelector<HTMLElement>(selector);
   /** The `data-board-column` selector for `status`, scoped to `laneId` (`null` outside a
    *  swimlane). */
@@ -510,6 +552,9 @@ export function IssueBoard({
       return;
     }
     focusAfterMove.current = null;
+    const { from } = pending;
+    const stands = document.activeElement === from || (!from?.isConnected && focusOnDocument());
+    if (!stands) return;
     (
       boardNode(`[data-board-card="${pending.key}"]`) ??
       boardNode(laneColumnSelector(pending.status, pending.laneId))
@@ -563,8 +608,10 @@ export function IssueBoard({
     )?.focus();
   };
   const move = (direction: MoveDirection) => {
-    const key = cardAround(document.activeElement)?.dataset.boardCard;
-    if (key === undefined) {
+    // The card the press moves: the focus stands on it, or on a control inside it.
+    const pressed = cardAround(document.activeElement);
+    const key = pressed?.dataset.boardCard;
+    if (pressed === null || key === undefined) {
       return;
     }
     const laneId = currentLaneId();
@@ -573,24 +620,43 @@ export function IssueBoard({
     if (target === undefined) {
       return;
     }
-    // Both move functions place the card in the cache synchronously before their request goes
-    // out, so the announcement reads the optimistic position - the one the user sees.
+    // Each move function tells `placed` (its `onPlaced`) once it has placed the card in the cache:
+    // in the call itself, before its request goes out, or, for a move the rule's question checks
+    // first, after the dry run or a choice of the question. So the announcement reads the
+    // optimistic position - the one the user sees - and, after a choice, each other issue it
+    // moved is already in its cell, so the count holds them. A move that ends without placing
+    // the card (kept, cancelled or refused) says nothing and takes no focus.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
+    /** Says where the card stands now - its position and count in the visible cell, the one the
+     *  user sees, or nothing while it is not in that cell - and, while the focus stands in the
+     *  card the press moved, has focus follow the card once the board has drawn it there
+     *  (`focusAfterMove`). */
+    const placed = () => {
+      const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
+        (issue) =>
+          issue.status === target.status &&
+          isVisible(issue) &&
+          (lane === undefined || issue.priority === lane)
+      );
+      const position = column.findIndex((issue) => issue.key === key);
+      if (position !== -1) {
+        setAnnouncement(announceMove(key, target.status, position + 1, column.length));
+      }
+      // Read now, before the query observer notifies the board: the draw that follows takes the
+      // focus off the press's card, so after it a focus on the body cannot tell that draw from a
+      // reader's click. A choice of the question places the card while the question is still
+      // open, so `questionTookFocusFrom` still holds what the question took the focus from.
+      const active = document.activeElement;
+      const stood = pressed.contains(active) ? active : questionTookFocusFrom.current;
+      if (pressed.contains(stood)) {
+        focusAfterMove.current = { from: stood, key, laneId, status: target.status };
+      }
+    };
     if (lanes && lane !== undefined) {
-      void moveCardToLane(key, target.status, lane, target.insertionIndex);
+      void moveCardToLane(key, target.status, lane, target.insertionIndex, placed);
     } else {
-      void moveCard(key, target.status, target.insertionIndex);
+      void moveCard(key, target.status, target.insertionIndex, placed);
     }
-    // The announcement's position and count are the visible cell - the one the user sees.
-    const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
-      (issue) =>
-        issue.status === target.status &&
-        isVisible(issue) &&
-        (lane === undefined || issue.priority === lane)
-    );
-    const position = column.findIndex((issue) => issue.key === key);
-    setAnnouncement(announceMove(key, target.status, position + 1, column.length));
-    focusAfterMove.current = { key, status: target.status, laneId };
   };
   const focusedCard = () => cardAround(document.activeElement) !== null;
   /** Copies the focused card's key or `dispatch://` reference and announces which. */
@@ -684,7 +750,10 @@ export function IssueBoard({
       id: "priority",
       keys: "p",
       label: "Focus the card's priority",
-      run: () => cardAround(document.activeElement)?.querySelector("select")?.focus(),
+      run: () =>
+        cardAround(document.activeElement)
+          ?.querySelector<HTMLElement>(PRIORITY_TRIGGER_SELECTOR)
+          ?.focus(),
       when: focusedCard,
     },
     {
@@ -722,7 +791,7 @@ export function IssueBoard({
   ]);
   // One row holds the Board's search and filtering, above whatever the board itself is showing
   // - its cards, the skeleton or a refusal - so a reader who has narrowed the list keeps the
-  // controls that did it (INFRA-3135, R1). Nothing they can press here makes the header taller:
+  // controls that did it. Nothing they can press here makes the header taller:
   // the filter panel is portalled over the page (`AnchoredPanel`), and the chips are the one
   // part of the row that may take a second line.
   const controls = (
@@ -774,99 +843,98 @@ export function IssueBoard({
       <UnclaimedUnchecked reason={filters.unclaimedUnchecked} />
     </>
   );
-  if (issues.isPending) {
-    return (
+  // The question belongs to the board's moves (`useBoardMoves`), not to the list: it is drawn
+  // whatever the list read shows, so a read that fails while it is open leaves it to be answered,
+  // and its answer ends the move that holds every later read of the list. `QuestionOpening` comes
+  // first, so it reads what the question takes the focus from (`focusAfterMove`).
+  const questionDialog =
+    question === undefined ? null : (
       <>
-        {controls}
-        <LoadingSkeleton label="Loading board" />
+        <QuestionOpening tookFocusFrom={questionTookFocusFrom} />
+        <ParentStatusDialog question={question} />
       </>
     );
-  }
-  if (issues.isError) {
-    return (
-      <>
-        {controls}
-        <p className={textSecondaryOnSurface}>Could not load board.</p>
-      </>
-    );
-  }
-
+  const body = issues.isPending ? (
+    <LoadingSkeleton label="Loading board" />
+  ) : issues.isError ? (
+    <p className={textSecondaryOnSurface}>Could not load board.</p>
+  ) : (
+    <section aria-label="Project board" className="min-w-0" ref={boardRef}>
+      {error === undefined ? null : (
+        <div
+          aria-live="assertive"
+          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+      <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
+        {announcement}
+      </p>
+      {issues.data.length === 0 ? (
+        // The active query is the label-filtered list, so an empty answer under a label filter
+        // means "nothing matches", not "empty project" - the same copy the List shows.
+        labels.length === 0 ? (
+          <EmptyState label="Empty project board" message="No issues in this project." />
+        ) : (
+          <EmptyState label="No matching project issues" message="No issues match these filters." />
+        )
+      ) : (
+        <DndContext
+          accessibility={{
+            screenReaderInstructions: {
+              draggable:
+                "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
+            },
+          }}
+          collisionDetection={boardCollisionDetection}
+          onDragCancel={landCard}
+          onDragEnd={onDragEnd}
+          onDragStart={liftCard}
+          sensors={sensors}
+        >
+          {lanes ? (
+            <div className="flex flex-col gap-6" data-testid="board-lanes-container">
+              {boardLanes.map((boardLane) => (
+                <BoardLaneRow
+                  boardLane={boardLane}
+                  dragging={dragging}
+                  isCollapsed={isCollapsed}
+                  key={laneKey(boardLane.lane)}
+                  userState={userState.data}
+                />
+              ))}
+            </div>
+          ) : (
+            <div
+              className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+              data-testid="board-scroll-container"
+            >
+              <div className="flex w-max items-stretch gap-4">
+                {columns.map((column) =>
+                  isCollapsed(column.status) ? (
+                    <CollapsedColumn column={column} key={column.status} />
+                  ) : (
+                    <BoardColumnView
+                      column={column}
+                      key={column.status}
+                      userState={userState.data}
+                    />
+                  )
+                )}
+              </div>
+            </div>
+          )}
+        </DndContext>
+      )}
+    </section>
+  );
   return (
     <>
+      {questionDialog}
       {controls}
-      <section aria-label="Project board" className="min-w-0" ref={boardRef}>
-        {error === undefined ? null : (
-          <div
-            aria-live="assertive"
-            className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
-        <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
-          {announcement}
-        </p>
-        {issues.data.length === 0 ? (
-          // The active query is the label-filtered list, so an empty answer under a label filter
-          // means "nothing matches", not "empty project" - the same copy the List shows.
-          labels.length === 0 ? (
-            <EmptyState label="Empty project board" message="No issues in this project." />
-          ) : (
-            <EmptyState
-              label="No matching project issues"
-              message="No issues match these filters."
-            />
-          )
-        ) : (
-          <DndContext
-            accessibility={{
-              screenReaderInstructions: {
-                draggable:
-                  "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
-              },
-            }}
-            collisionDetection={boardCollisionDetection}
-            onDragCancel={landCard}
-            onDragEnd={onDragEnd}
-            onDragStart={liftCard}
-            sensors={sensors}
-          >
-            {lanes ? (
-              <div className="flex flex-col gap-6" data-testid="board-lanes-container">
-                {boardLanes.map((boardLane) => (
-                  <BoardLaneRow
-                    boardLane={boardLane}
-                    dragging={dragging}
-                    isCollapsed={isCollapsed}
-                    key={laneKey(boardLane.lane)}
-                    userState={userState.data}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div
-                className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
-                data-testid="board-scroll-container"
-              >
-                <div className="flex w-max items-stretch gap-4">
-                  {columns.map((column) =>
-                    isCollapsed(column.status) ? (
-                      <CollapsedColumn column={column} key={column.status} />
-                    ) : (
-                      <BoardColumnView
-                        column={column}
-                        key={column.status}
-                        userState={userState.data}
-                      />
-                    )
-                  )}
-                </div>
-              </div>
-            )}
-          </DndContext>
-        )}
-      </section>
+      {body}
     </>
   );
 }

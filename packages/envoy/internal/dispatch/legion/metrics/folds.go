@@ -320,8 +320,8 @@ func sampleFoldOf(parts []measures.DayPart, series string, folded measures.Folde
 		return nil
 	}
 	merged := measures.MergedSamples(parts, series)
-	fold := &SampleFold{N: len(merged), Sum: round(folded.Sum)}
-	if len(merged) > 0 {
+	fold := &SampleFold{N: merged.Len(), Sum: round(folded.Sum)}
+	if merged.Len() > 0 {
 		fold.Median, fold.P90 = new(quantile(merged, 0.5)), new(quantile(merged, 0.9))
 	}
 	return fold

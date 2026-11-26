@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -137,9 +138,10 @@ type messageRecovery struct {
 }
 
 // recoveredMessage is the message a keyed write committed, read once sendHeldMessageOn has put a
-// targeted one on its way, with its deliveries as they stand and the block it answers. It is read
-// from the database before the listener is, so a repeat never fails because the listener is down.
-func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (model.Message, error) {
+// targeted one on its way, with its deliveries as they stand and the block it answers, read for
+// who, the writer the repeat answers. It is read from the database before the listener is, so a
+// repeat never fails because the listener is down.
+func (s *server) recoveredMessage(ctx context.Context, who model.Actor, point messageRecovery) (model.Message, error) {
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, "", point.MessageID)
 	if err != nil {
 		return model.Message{}, err
@@ -147,7 +149,7 @@ func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (m
 	// loadMessage scans the row alone, so a reply that names a block carries only its node id:
 	// without this the repeat of a keyed reply answers reply_block null where the first answered
 	// the block.
-	if err := hydrateMessageReplyBlocks(ctx, s.deps.Store.Pool, &message); err != nil {
+	if err := hydrateMessageReplyBlocks(ctx, s.deps.Store.Pool, who, &message); err != nil {
 		return model.Message{}, err
 	}
 	if message.Target != nil {
@@ -155,11 +157,9 @@ func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (m
 			return model.Message{}, err
 		}
 	}
-	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, []string{message.ID})
-	if err != nil {
+	if err := s.hydrateWrittenMessage(ctx, s.deps.Store.Pool, &message); err != nil {
 		return model.Message{}, err
 	}
-	message.Deliveries = deliveries[message.ID]
 	return message, nil
 }
 
@@ -167,7 +167,11 @@ func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (m
 // message as GET /api/v1/agents/{session_id}/messages reads it (recoveredMessage), under the send's
 // own 201.
 func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, point messageRecovery, _ []byte) {
-	message, err := s.recoveredMessage(r.Context(), point)
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.recoveredMessage(r.Context(), who, point)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -179,12 +183,66 @@ func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, poin
 // message as it stands (recoveredMessage), a targeted one's owed delivery made first, in the first
 // answer's shape - its advice kept - under the post's own 201.
 func (s *server) replayIssueMessage(w http.ResponseWriter, r *http.Request, point messageRecovery, stored []byte) {
-	message, err := s.recoveredMessage(r.Context(), point)
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.recoveredMessage(r.Context(), who, point)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeRefreshed(w, stored, message)
+	s.writeRefreshed(w, http.StatusCreated, stored, message)
+}
+
+// freshMessage is one message as a write of it answers it: the row with the block it replies to,
+// read for who, the caller the answer goes to, and its delivery attempts (hydrateWrittenMessage),
+// read now from the pool.
+func (s *server) freshMessage(ctx context.Context, who model.Actor, id string) (model.Message, error) {
+	pool := s.deps.Store.Pool
+	message, err := s.loadMessage(ctx, pool, "", id)
+	if err != nil {
+		return model.Message{}, err
+	}
+	if err := hydrateMessageReplyBlocks(ctx, pool, who, &message); err != nil {
+		return model.Message{}, err
+	}
+	if err := s.hydrateWrittenMessage(ctx, pool, &message); err != nil {
+		return model.Message{}, err
+	}
+	return message, nil
+}
+
+// rereadMessage is the keyedReread of PATCH /api/v1/messages/{id}: the message as it stands now,
+// read for the caller the repeat answers (freshMessage), unshaped, as editMessage answers it.
+func (s *server) rereadMessage(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.freshMessage(r.Context(), who, id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeRefreshed(w, status, stored, message)
+}
+
+// rereadMessageReply is the keyedReread of POST /api/v1/messages/{id}/reply, whose answer is the
+// reply, not the message the path names: the reply as it stands now, read for the caller the
+// repeat answers (freshMessage), shaped as replyMessage answers it (replyRead), its duplicate mark
+// kept from the first answer.
+func (s *server) rereadMessageReply(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	reply, err := s.freshMessage(r.Context(), who, id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeRefreshed(w, status, stored, newShapedMessage(reply, wantsDisplayTrees(r)))
 }
 
 // sendHeldMessageOn makes sure a keyed send's message is on its way before its repeat is answered,
@@ -251,6 +309,45 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 	return owed, rows.Err()
 }
 
+// planMessageNode reads, in a request's read phase, the scope of message id, which the request
+// is about to store, and answers the write of its node (graphstore.MessageNode), held for the
+// event that records the message: the request queues the node write before the row's insert
+// (graphstore.QueueNodes) and its cause after the event (graphstore.QueueCaused), both in its
+// write phase. A message on an issue is in that issue's project. A message on none is between
+// its thread's parties (graphstore.ThreadParties): those of the root it answers, read up
+// in_reply_to as messageThreadCTE walks it, or, for a message that answers nothing, its own
+// author and target. at is the row's created_at, which the node is dated with.
+func planMessageNode(
+	ctx context.Context, tx pgx.Tx, id string, issueKey, inReplyTo *string, author model.Actor, target *string, at time.Time,
+) (graphstore.Uncaused, error) {
+	var project string
+	var parties []string
+	switch {
+	case issueKey != nil:
+		var err error
+		if project, _, err = graphstore.ScopeOf(ctx, tx, issueKey, nil); err != nil {
+			return graphstore.Uncaused{}, err
+		}
+	case inReplyTo != nil:
+		var rootAuthor []byte
+		var rootTarget *string
+		if err := tx.QueryRow(ctx, messageThreadCTE+`
+			select m.author, m.target from messages m join thread t on t.id = m.id
+			where t.in_reply_to is null
+		`, *inReplyTo).Scan(&rootAuthor, &rootTarget); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("read the thread root of a reply to message %s: %w", *inReplyTo, err)
+		}
+		var root model.Actor
+		if err := json.Unmarshal(rootAuthor, &root); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("decode the author of the thread root of message %s: %w", *inReplyTo, err)
+		}
+		parties = graphstore.ThreadParties(root, rootTarget)
+	default:
+		parties = graphstore.ThreadParties(author, target)
+	}
+	return graphstore.PlanUncaused([]graphstore.Node{graphstore.MessageNode(id, project, parties, author, at)}, nil), nil
+}
+
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
 // recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
@@ -282,13 +379,20 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
+	// A reply adds text under the message it answers, and a deleted post takes none: the
+	// thread reply is refused as the delivery callback's reply is (message_delivery.go's
+	// replyMessage), on the parent row this read already holds. Only the message in_reply_to
+	// named is judged, and a reply written before the delete keeps its text and its place.
+	if parent.Deleted {
+		return model.Message{}, nil, deletedPostError(refs.ItemMessage)
+	}
 	// A block the reply names is read here, with the index its parent owes planned beside it: the
 	// parent's lock and that index are queued with this message's own writes, in that order
 	// (below), so neither holds a transaction id while the reply is read (INFRA-636).
 	var block *namedBlock
 	var parentRepair refs.ItemRepair
 	if input.InReplyToBlock != nil {
-		if parentRepair, block, err = s.planReplyBlock(ctx, tx, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
+		if parentRepair, block, err = s.planReplyBlock(ctx, tx, actor, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
 			return model.Message{}, nil, err
 		}
 		parent.ReplyBody = messageReplyPreview(block.excerpt)
@@ -371,21 +475,30 @@ func (s *server) createStoredMessage(
 	// row will name is handed over: it gives the document its `#id`s resolve against, its
 	// issue's spec, which no read of the row can answer yet.
 	referenceChanges, indexWrite, err := s.planPendingItem(
-		ctx, tx, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
+		ctx, tx, actor, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
 	)
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	// The parent's lock, the index its blocks owe, the insert, the recovery point, this message's
-	// own index, the event, its stamp and a targeted message's first delivery attempt go in one
-	// batch (store.WriteBatch): the message is known before the insert runs, and the stamp names
-	// the event's id as the id sequence left it.
+	// The message's node, in its issue's project or between its thread's parties, read here in
+	// the read phase; its write goes in before the row's insert, and what it states waits for the
+	// event below (graphstore.QueueCaused).
+	messageNode, err := planMessageNode(ctx, tx, messageID, issueKey, input.InReplyTo, actor, input.Target, createdAt)
+	if err != nil {
+		return model.Message{}, nil, err
+	}
+	// The parent's lock, the index its blocks owe, the message's node, the insert, the recovery
+	// point, this message's own index, the event, its stamp, what the node write stated and a
+	// targeted message's first delivery attempt go in one batch (store.WriteBatch): the message is
+	// known before the insert runs, and the stamp and the node's cause name the event's id as the
+	// id sequence left it.
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
 			parentRepair.Queue(b)
 		}
+		graphstore.QueueNodes(b, messageNode)
 		b.Queue("", `
 			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
 			values ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -400,14 +513,17 @@ func (s *server) createStoredMessage(
 		}
 		payload := thread.payload(message, referenceChanges)
 		payload.ThreadLogins = directLogins
-		if err := s.deps.Events.QueueAppendWithLogins(b, messageEvent(message, eventType, actor, payload), logins, func(appended model.Event) {
+		// Only an issue message's references are stamped: a direct message writes none.
+		stamped := ""
+		if issueKey != nil {
+			stamped = "message"
+		}
+		if err := s.queueLoggedEventOn(b, messageEvent(message, eventType, actor, payload), logins, stamped, message.ID, func(appended model.Event) {
 			event = appended
 		}); err != nil {
 			return err
 		}
-		if issueKey != nil {
-			refs.QueueStamp(b, "message", message.ID)
-		}
+		graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent)
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that
 		// stores the message, unclaimed and naming no session yet, as writeBroadcast opens each
 		// recipient's: a process that dies, or a request whose connection is cut, between this
@@ -454,11 +570,9 @@ func (s *server) createStoredMessage(
 		attempt, err := s.deliverMessageResuming(sending, message, delivery, actor, &thread, 1)
 		switch {
 		case errors.Is(err, errAttemptNotPending):
-			deliveries, err := s.loadMessageDeliveries(sending, s.deps.Store.Pool, []string{message.ID})
-			if err != nil {
+			if err := s.hydrateWrittenMessage(sending, s.deps.Store.Pool, &message); err != nil {
 				return model.Message{}, nil, err
 			}
-			message.Deliveries = deliveries[message.ID]
 		case err != nil:
 			return model.Message{}, nil, err
 		default:
@@ -580,6 +694,9 @@ type messageReplyParent struct {
 	ReplyBody string
 	Target    *string
 	InReplyTo *string
+	// Deleted says the parent's author withdrew it. It is read with the parent's own row, so
+	// the refusal a reply takes from it costs no read of its own.
+	Deleted bool
 }
 
 // messageReplyPreview is how much of a parent's body a reply's event and delivery frame carry.
@@ -604,6 +721,7 @@ func messageReplyParentOf(message model.Message) messageReplyParent {
 		ReplyBody: messageReplyPreview(message.Body),
 		Target:    message.Target,
 		InReplyTo: message.InReplyTo,
+		Deleted:   message.DeletedAt != nil,
 	}
 }
 
@@ -632,27 +750,28 @@ func loadMessageReplyParent(
 	var err error
 	if issueKey != nil {
 		err = tx.QueryRow(ctx, `
-			select body, target, in_reply_to::text from messages where id = $1 and issue_key = $2
-		`, *inReplyTo, *issueKey).Scan(&parentBody, &parent.Target, &parent.InReplyTo)
+			select body, target, in_reply_to::text, deleted_at is not null from messages where id = $1 and issue_key = $2
+		`, *inReplyTo, *issueKey).Scan(&parentBody, &parent.Target, &parent.InReplyTo, &parent.Deleted)
 	} else {
 		if target == nil {
 			return messageReplyParent{}, invalid
 		}
 		err = tx.QueryRow(ctx, `
 			with recursive thread as (
-				select id, body, issue_key, target, in_reply_to, 0 as depth from messages where id = $1
+				select id, body, issue_key, target, in_reply_to, deleted_at, 0 as depth from messages where id = $1
 				union all
-				select m.id, m.body, m.issue_key, m.target, m.in_reply_to, t.depth + 1
+				select m.id, m.body, m.issue_key, m.target, m.in_reply_to, m.deleted_at, t.depth + 1
 				from messages m join thread t on m.id = t.in_reply_to
 			)
 			select
 				(select body from thread where depth = 0),
 				(select target from thread where depth = 0),
-				(select in_reply_to::text from thread where depth = 0)
+				(select in_reply_to::text from thread where depth = 0),
+				(select deleted_at is not null from thread where depth = 0)
 			from thread
 			where in_reply_to is null and issue_key is null and target = $2
 			  and not exists (select 1 from thread where issue_key is not null)
-		`, *inReplyTo, *target).Scan(&parentBody, &parent.Target, &parent.InReplyTo)
+		`, *inReplyTo, *target).Scan(&parentBody, &parent.Target, &parent.InReplyTo, &parent.Deleted)
 	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -779,7 +898,11 @@ func (s *server) getMessage(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "message") {
 		return
 	}
-	read, err := s.readMessage(r.Context(), r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	read, err := s.readMessage(r.Context(), who, r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -812,7 +935,7 @@ func (s *server) getMessageThread(w http.ResponseWriter, r *http.Request) {
 // message by its id alone (the conversation, the message's blocks) asks it. ok is false once it
 // has written the refusal.
 func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (messageRead, bool) {
-	_, _, err := s.optionalActor(r)
+	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return messageRead{}, false
@@ -827,14 +950,14 @@ func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (
 		s.writeHandlerError(w, err)
 		return messageRead{}, false
 	}
-	read, err := s.readMessage(r.Context(), "", rootID, wantsDisplayTrees(r))
+	read, err := s.readMessage(r.Context(), actor.Recorded(), "", rootID, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return messageRead{}, false
 	}
 	// A direct conversation is the person's own, so a credential of theirs reads it whole and
 	// names no session in it, as their browser does. The scope is the request's credential's;
-	// this read records no actor, so there is nothing else to resolve.
+	// this rule records no actor, so there is nothing else to resolve.
 	if !s.callerHoldsScope(r, model.ScopePerson) && read.Message.IssueKey == nil {
 		session := strings.TrimSpace(r.URL.Query().Get("session"))
 		if session == "" {
@@ -866,13 +989,13 @@ func (read messageRead) hasSession(session string) bool {
 }
 
 // readMessage is one message, on issueKey when it is not empty, with its deliveries and every
-// message transitively replying to it.
-func (s *server) readMessage(ctx context.Context, issueKey, id string, trees bool) (messageRead, error) {
+// message transitively replying to it, read for who.
+func (s *server) readMessage(ctx context.Context, who model.Actor, issueKey, id string, trees bool) (messageRead, error) {
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, issueKey, id)
 	if err != nil {
 		return messageRead{}, err
 	}
-	reads, err := s.hydrateMessageThreads(ctx, []model.Message{message}, trees)
+	reads, err := s.hydrateMessageThreads(ctx, who, []model.Message{message}, trees)
 	if err != nil {
 		return messageRead{}, err
 	}
@@ -880,13 +1003,13 @@ func (s *server) readMessage(ctx context.Context, issueKey, id string, trees boo
 }
 
 // hydrateMessageThreads is each root as a thread: its own deliveries, every message transitively
-// replying to it, and the block each of those messages answers. Each side table is read once over
-// every root, never once per root, so a list of threads costs the same three queries one does.
-// trees is whether the caller asked for the display trees (wantsDisplayTrees).
+// replying to it, and the block each of those messages answers, read for who. Each side table is
+// read once over every root, never once per root, so a list of threads costs the same three
+// queries one does. trees is whether the caller asked for the display trees (wantsDisplayTrees).
 //
 // Every read of a message passes here, so this is where a message's trees are taken from the
 // table and what the table did not hold is stored back (displayTreeReader).
-func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Message, trees bool) ([]messageRead, error) {
+func (s *server) hydrateMessageThreads(ctx context.Context, who model.Actor, roots []model.Message, trees bool) ([]messageRead, error) {
 	rootIDs := make([]string, len(roots))
 	for index, root := range roots {
 		rootIDs[index] = root.ID
@@ -899,7 +1022,7 @@ func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Messag
 	if err != nil {
 		return nil, err
 	}
-	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, roots, replies); err != nil {
+	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, who, roots, replies); err != nil {
 		return nil, err
 	}
 	reader := s.readDisplayTrees(ctx, trees)
@@ -932,7 +1055,8 @@ var listIssueRootMessagesQuery = `
 // conversation held there. A targeted message is an ordinary root and is listed like any
 // other.
 func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), listIssueRootMessagesQuery, r.PathValue("key"))
@@ -955,7 +1079,7 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
+	result, err := s.hydrateMessageThreads(r.Context(), who, roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -988,11 +1112,11 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		-- names (message_deliveries_session). An OR spanning messages and message_deliveries can
 		-- use neither index, and Postgres reads every root there is.
 		candidates as (
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by
 			from messages m
 			where m.in_reply_to is null and m.target = 'session:' || $3::text
 			union
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by
 			from messages m
 			join message_deliveries d on d.message_id = m.id
 			where m.in_reply_to is null and d.session_id = $3::text
@@ -1014,6 +1138,7 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		roots as (
 			select c.id::text as id, c.issue_key, c.author, c.body, c.target,
 			       c.in_reply_to::text as in_reply_to, c.broadcast_id, c.created_at, c.replies_to_block,
+			       c.edited_at, c.deleted_at, c.deleted_by,
 			       greatest(c.created_at, activity.latest) as moved,
 			       unread.root_id is not null as unread
 			from candidates c
@@ -1051,7 +1176,7 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
+	result, err := s.hydrateMessageThreads(r.Context(), actor, roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1099,20 +1224,26 @@ func insertedMessage(id string, issueKey *string, author []byte, input createMes
 }
 
 // messageColumns is the messages select list scanMessage reads, in scan order.
-const messageColumns = `id::text, issue_key, author, body, target, in_reply_to::text, broadcast_id::text, created_at, replies_to_block`
+const messageColumns = `id::text, issue_key, author, body, target, in_reply_to::text, broadcast_id::text, created_at, replies_to_block, edited_at, deleted_at, deleted_by`
 
 // scanMessage decodes one messageColumns row; extra receives any columns selected after them.
 func scanMessage(row pgx.Row, extra ...any) (model.Message, error) {
 	var message model.Message
-	var author []byte
+	var author, deletedBy []byte
+	var deletedAt *time.Time
 	dest := append([]any{
 		&message.ID, &message.IssueKey, &author, &message.Body, &message.Target, &message.InReplyTo, &message.BroadcastID, &message.CreatedAt, &message.RepliesToBlock,
+		&message.EditedAt, &deletedAt, &deletedBy,
 	}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return model.Message{}, err
 	}
 	if err := json.Unmarshal(author, &message.Author); err != nil {
 		return model.Message{}, fmt.Errorf("decode message author: %w", err)
+	}
+	var err error
+	if message.DeletedAt, message.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+		return model.Message{}, err
 	}
 	message.Deliveries = []model.MessageDelivery{}
 	return message, nil
@@ -1132,10 +1263,10 @@ func (s *server) loadMessageReplyChains(ctx context.Context, q queryer, seedIDs 
 	}
 	rows, err := q.Query(ctx, `
 		with recursive replies as (
-			select id, issue_key, author, body, target, in_reply_to, broadcast_id, created_at, replies_to_block, in_reply_to as seed_id
+			select id, issue_key, author, body, target, in_reply_to, broadcast_id, created_at, replies_to_block, edited_at, deleted_at, deleted_by, in_reply_to as seed_id
 			from messages where in_reply_to = any($1::uuid[])
 			union all
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, r.seed_id
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by, r.seed_id
 			from messages m join replies r on m.in_reply_to = r.id
 		)
 		select `+messageColumns+`, seed_id::text

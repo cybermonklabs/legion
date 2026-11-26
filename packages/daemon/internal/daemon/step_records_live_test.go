@@ -65,7 +65,7 @@ type stepRecordsLive struct {
 // and the merge then walk it to done with Dispatch stopped.
 func TestStepRecordsLive(t *testing.T) {
 	l := newStepRecordsLive(t, "scripts/e2e/step-records.sh", 1, "steps-reader")
-	l.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
+	l.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, l.key, l.number, l.cfg.DispatchURL)
 	l.step("walk-to-the-second-review-with-dispatch-up", l.walkToTheSecondReview)
 	l.step("a-phase-moves-while-dispatch-is-down", l.outage)
@@ -318,7 +318,8 @@ func (l *stepRecordsLive) holdsID(read stepRecordsRead, id string) bool {
 	return false
 }
 
-// stepsPrinted is what `dispatch steps` printed: its header's counts and one line per run.
+// stepsPrinted is what `dispatch steps` printed of an issue in no experiment's group, which every
+// issue these proofs read is: its header's counts and one line per run, with no `Experiment …` line.
 type stepsPrinted struct {
 	steps, tasks int
 	lines        []stepLine
@@ -333,8 +334,9 @@ type stepLine struct {
 	agent, model, started, ended, result string
 }
 
-// parseSteps reads the output of `dispatch steps --issue key`: the header `<key>: <n> steps in <m>
-// tasks`, then exactly n lines of runs.
+// parseSteps reads the output of `dispatch steps --issue key` for an issue in no experiment's
+// group: the header `<key>: <n> steps in <m> tasks`, then exactly n lines of runs, with no
+// `Experiment <experiment>: variant <variant>.` line between them, which it would read as no run.
 func parseSteps(key, out string) (stepsPrinted, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var printed stepsPrinted

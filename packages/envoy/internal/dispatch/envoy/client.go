@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -17,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
@@ -28,10 +31,10 @@ var ErrUnavailable = errors.New("envoy listener unavailable")
 // ErrUnreachable marks the ErrUnavailable failures no listener answered: the request found no
 // connection, lost it, or ran out of time before an answer, or a 502, 503 or 504 came back - a
 // gateway in front of a listener that is gone, or a listener behind its starting gate
-// (cmd/listener/main.go startingGate). Those are what a listener being replaced gives for a few
-// seconds, so asking again a little later may be answered. Every other ErrUnavailable - a status
-// the listener chose, such as the 401 it gives a token it refuses, or an answer that does not
-// decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
+// (cmd/listener/starting_gate.go startingGate). Those are what a listener being replaced gives for
+// a few seconds, so asking again a little later may be answered. Every other ErrUnavailable - a
+// status the listener chose, such as the 401 it gives a token it refuses, or an answer that does
+// not decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
 // failure is ErrUnavailable too, with the same text, so a caller that asks only errors.Is(err,
 // ErrUnavailable) reads it exactly as before.
 var ErrUnreachable = errors.New("envoy listener unreachable")
@@ -239,17 +242,33 @@ type SendInput struct {
 	// every send of a message whose agents-route request asked for it. Unset, the field is left
 	// out of the body.
 	ConnectedOnly bool
+	// Role is the role a send for a route to a role is sent for: the session TargetSession names
+	// held it when Dispatch resolved the route (resolveDeliveryTarget in internal/dispatch/api).
+	// The listener stores it on the envelope (contracts.Envelope.Role), so that a different session
+	// that takes the role receives what the holder did not read, and keeps the message for the
+	// role's next holder when the role's claim names another session than the target when the
+	// send arrives (its 202). It takes the mark from Dispatch's own identity alone, so such a send
+	// is made on that identity only (WithAccountTokenFile or WithGoogleIdentity, Send); a client
+	// that presents no identity refuses it (ErrNoListenerIdentity) and logs it at Error.
+	Role string
 }
 
 // SendResult identifies the listener envelope emitted for a successful delivery. Duplicate
 // reports that the stream already held this message, so it stored nothing new; the publish still
 // reached the agent's subject. What recognises that repeat, and for how long, is stated on
 // DELIVERY_DUPLICATE_WINDOW_MS in @legion/contracts (contracts.DeliveryDuplicateWindow here). The
-// envelope id then names an envelope JetStream discarded.
+// envelope id then names the copy the stream holds under the same key where the listener is of
+// this release, which may be an earlier attempt's or another sender's (whose text the answer
+// leaves out, listenerwire.ReadsKeyTaken), and the envelope it built for the repeat, which
+// JetStream discarded, where it is older; the answer does not say which, so a caller reads no
+// envelope id from a duplicate.
 //
 // State is what the target was when the listener stored the message, SendStateConnected or
 // SendStateStopped. A listener that predates the field answers none, which reads as a connected
-// target.
+// target. A send for a role that the listener kept on the role's kept lane, because the role's
+// claim named another session than the target when the send arrived, answers no State, and
+// EnvelopeID names the copy the lane holds: the message reaches the session that holds the role,
+// live, through the lane's walk, and the delivery records it sent like any other.
 type SendResult struct {
 	EnvelopeID string
 	Recipient  string
@@ -259,14 +278,60 @@ type SendResult struct {
 
 // Client reads live session metadata from the Envoy listener.
 type Client struct {
-	baseURL    string
-	apiToken   string
+	baseURL  string
+	apiToken string
+	// identity is Dispatch's own identity at the listener (listenerIdentity): the token file
+	// WithAccountTokenFile names, or the Google identity WithGoogleIdentity names; nil presents
+	// apiToken alone. The last of the two options given wins; cmd/dispatch refuses both.
+	identity   listenerIdentity
 	httpClient *http.Client
+	// window is how long every listener call gets (roundTrip): CallWindow, or what WithTimeout
+	// names. clock is what that window runs on: clock.Real(), or what WithClock names.
+	window time.Duration
+	clock  clock.Clock
+	// logger takes the line a call made again on the shared token writes (do); slog.Default()
+	// unless WithLogger names another.
+	logger *slog.Logger
 }
 
-// defaultTimeout is the window every listener call gets. A send that misses it is
+// CallWindow is the window every listener call gets. A send that misses it is
 // ErrReceiptTimeout rather than a plain failure, because the envelope may already be published.
-const defaultTimeout = 5 * time.Second
+// It is exported because a test whose server runs on a fake clock moves that clock past the
+// window to make a call miss it (api's comment delivery tests).
+const CallWindow = 5 * time.Second
+
+// ErrCallWindow reports a listener call its window ended (CallWindow, or what WithTimeout names):
+// the call's error wraps it beside the request's own error, so it is still context.DeadlineExceeded
+// and a net.Error whose Timeout is true, as an end of http.Client.Timeout was. A call the caller's
+// own context ended is not ErrCallWindow, so a caller tells its own bound's end from the window's.
+var ErrCallWindow = errors.New("envoy listener call window ended")
+
+// callWindowError is a call's error once its window ended and its caller's context had not.
+type callWindowError struct {
+	err    error
+	window time.Duration
+}
+
+func (e callWindowError) Error() string {
+	return fmt.Sprintf("%v (%v: %s)", e.err, ErrCallWindow, e.window)
+}
+
+func (e callWindowError) Unwrap() []error { return []error{e.err, ErrCallWindow} }
+
+// Timeout is true: the window is a timeout, as http.Client.Timeout's end was (net.Error).
+func (e callWindowError) Timeout() bool { return true }
+
+// Temporary is true, as net/http's own timeout errors report it (net.Error).
+func (e callWindowError) Temporary() bool { return true }
+
+// windowEnded wraps err in a callWindowError when ctx, the call's window, ended and parent, the
+// caller's context, did not; otherwise it answers err as it is.
+func (c *Client) windowEnded(err error, ctx, parent context.Context) error {
+	if err == nil || err == io.EOF || ctx.Err() == nil || parent.Err() != nil {
+		return err
+	}
+	return callWindowError{err: err, window: c.window}
+}
 
 // Option configures a Client.
 type Option func(*Client)
@@ -274,7 +339,14 @@ type Option func(*Client)
 // WithTimeout replaces the window every listener call gets. Tests use it to exercise a receipt
 // timeout without waiting out the production window.
 func WithTimeout(timeout time.Duration) Option {
-	return func(c *Client) { c.httpClient.Timeout = timeout }
+	return func(c *Client) { c.window = timeout }
+}
+
+// WithClock sets the clock every listener call's window runs on. Without it the window is the
+// real clock's; a test passes a clocktest.Fake and moves it past the window, so a listener that
+// went quiet is a receipt timeout at the moment the test chooses.
+func WithClock(clock clock.Clock) Option {
+	return func(c *Client) { c.clock = clock }
 }
 
 // WithToken sets the bearer every listener call sends (cmd/dispatch: ENVOY_TOKEN). Without it, or
@@ -283,23 +355,163 @@ func WithToken(token string) Option {
 	return func(c *Client) { c.apiToken = token }
 }
 
+// WithAccountTokenFile makes every listener call present Dispatch's own identity (cmd/dispatch:
+// ENVOY_ACCOUNT_TOKEN_FILE): the projected Kubernetes service-account token the kubelet writes into
+// the file at path for the listener's audience and rewrites before it expires. Each call reads the
+// file when it is made, so the call after a rotation presents the new token, and judges the token
+// by its own exp before presenting it, so a token the kubelet did not rewrite in time is never
+// sent to earn a 401 (accountTokenFromFile). A call whose token could not be read, or that the
+// listener answered 401, reads the file again and is made once more (do). It is presented in
+// WithToken's bearer's place, which is then presented only on a call that carries no role mark
+// and whose account token the listener did not take on two tries, and it is what lets a send
+// carry its role mark (SendInput.Role).
+func WithAccountTokenFile(path string) Option {
+	return func(c *Client) { c.identity = tokenFile(path) }
+}
+
+// WithGoogleIdentity makes every listener call present Dispatch's own identity as the service
+// account of the Google Cloud machine it runs on (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE): an
+// identity token for audience, the listener's ENVOY_OIDC_GOOGLE_AUDIENCE, which the metadata server
+// mints (googleidentity.Token) and the client keeps until shortly before its own exp, and drops
+// when the listener refuses it (do). A mint that failed is that call's failure (ErrAccountToken),
+// which the delivery tries again; whether the machine has a metadata server at all is decided at
+// Dispatch's start (CheckGoogleIdentity). It and WithAccountTokenFile are one identity each;
+// cmd/dispatch refuses both at once.
+func WithGoogleIdentity(audience string) Option {
+	return func(c *Client) { c.identity = &googleIdentity{audience: audience} }
+}
+
+// WithLogger names the logger the client writes its lines to, slog.Default() when none is named.
+func WithLogger(logger *slog.Logger) Option {
+	return func(c *Client) { c.logger = logger }
+}
+
 // New returns a client for an Envoy listener's HTTP control API.
 func New(baseURL string, options ...Option) *Client {
 	client := &Client{
-		baseURL: strings.TrimSuffix(baseURL, "/"),
-		httpClient: &http.Client{
-			Timeout: defaultTimeout,
-		},
+		baseURL:    strings.TrimSuffix(baseURL, "/"),
+		httpClient: &http.Client{},
+		window:     CallWindow,
+		clock:      clock.Real(),
 	}
 	for _, option := range options {
 		option(client)
 	}
+	if client.logger == nil {
+		client.logger = slog.Default()
+	}
 	return client
 }
 
-func (c *Client) authorize(request *http.Request) {
-	if c.apiToken != "" {
-		request.Header.Set("Authorization", "Bearer "+c.apiToken)
+// roundTrip sends request within the client's window on the client's clock. The window covers
+// reading the answer's body as well as its head, as http.Client.Timeout does, so its end is
+// released when the caller closes the body. A call or a body read the window ended fails with
+// ErrCallWindow beside its own error (windowEnded).
+func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
+	parent := request.Context()
+	ctx, cancel := c.clock.WithTimeout(parent, c.window)
+	response, err := c.httpClient.Do(request.WithContext(ctx))
+	if err != nil {
+		err = c.windowEnded(err, ctx, parent)
+		cancel()
+		return nil, err
+	}
+	response.Body = windowedBody{ReadCloser: response.Body, client: c, ctx: ctx, parent: parent, cancel: cancel}
+	return response, nil
+}
+
+// windowedBody is an answer's body whose reads report the end of the window roundTrip opened for
+// its call (windowEnded), and whose Close also ends that window.
+type windowedBody struct {
+	io.ReadCloser
+	client      *Client
+	ctx, parent context.Context
+	cancel      context.CancelFunc
+}
+
+func (b windowedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	return n, b.client.windowEnded(err, b.ctx, b.parent)
+}
+
+func (b windowedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
+
+// do makes one listener call, the request build makes, and returns the listener's answer or the
+// error that kept it from answering: build's own, an identity token that could not be presented
+// (ErrAccountToken), or a failure of the transport, which transport classifies (each caller's
+// ErrUnavailable, and ErrUnreachable where nothing answered).
+//
+// A client that presents Dispatch's identity (WithAccountTokenFile or WithGoogleIdentity) makes
+// the call on its identity token. A try whose token could not be presented, or that the listener
+// answered 401, is made once more on a fresh token: the token file read again, where the kubelet
+// rewrites a projected token in place, or a Google token minted again, the refused one dropped
+// (listenerIdentity.forget). A call that still has no token the listener takes is made on the
+// shared token (WithToken), with a WARN line, when the client holds one and the call carries no
+// role mark (marked unset): a listener that does not verify Dispatch's identity yet - one of the
+// release before, still serving while a deploy rolls - takes the shared token, and nothing of such
+// a call needs Dispatch's identity. A marked call - a send for a role (Send) - is never made on the
+// shared token, since the listener takes the role mark from Dispatch's identity alone and a send
+// without it is not copied when the role moves: it ends with the second try's answer, logged at
+// Error, and the delivery records that failure. A 401 is answered before the listener's route runs
+// (cmd/listener, apiAuth), so a try it answered did nothing and the next is no repeat.
+func (c *Client) do(route string, marked bool, build func() (*http.Request, error), transport func(error) error) (*http.Response, error) {
+	try := func(shared bool) (*http.Response, error) {
+		request, err := build()
+		if err != nil {
+			return nil, err
+		}
+		if err := c.authorize(request, shared); err != nil {
+			return nil, fmt.Errorf("%s: %w", route, err)
+		}
+		response, err := c.roundTrip(request)
+		if err != nil {
+			return nil, transport(err)
+		}
+		return response, nil
+	}
+	response, err := try(false)
+	if !c.presentsIdentity() || !identityNotTaken(response, err) {
+		return response, err
+	}
+	closeBody(response)
+	c.identity.forget()
+	if response, err = try(false); !identityNotTaken(response, err) {
+		return response, err
+	}
+	if marked || c.apiToken == "" {
+		c.logger.Error("dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is not made on any other credential",
+			"route", route, "role_mark", marked, "refusal", identityRefusal(response, err))
+		return response, err
+	}
+	closeBody(response)
+	c.logger.Warn("dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token",
+		"route", route, "refusal", identityRefusal(response, err))
+	return try(true)
+}
+
+// identityNotTaken reports whether a try on Dispatch's identity ended without the listener taking
+// that identity: its token could not be presented (ErrAccountToken), or the listener answered 401.
+func identityNotTaken(response *http.Response, err error) bool {
+	return errors.Is(err, ErrAccountToken) || (err == nil && response.StatusCode == http.StatusUnauthorized)
+}
+
+// identityRefusal is what a log line says of a try identityNotTaken reports: the error, which
+// names the token's file and never the token, or the listener's status.
+func identityRefusal(response *http.Response, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("the listener answered %d", response.StatusCode)
+}
+
+// closeBody closes the body of an answer a try of do leaves unread; an error leaves none.
+func closeBody(response *http.Response) {
+	if response != nil {
+		_ = response.Body.Close()
 	}
 }
 
@@ -400,17 +612,21 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 	if err != nil {
 		return nil, fmt.Errorf("encode POST /v1/interests/unsubscribe body: %w", err)
 	}
-	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
-	)
+	const route = "POST /v1/interests/unsubscribe"
+	response, err := c.do(route, false, func() (*http.Request, error) {
+		request, err := http.NewRequestWithContext(
+			ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("%w: build %s request: %v", ErrUnavailable, route, err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		return request, nil
+	}, func(err error) error {
+		return unreachable(fmt.Errorf("%w: %s: %v", ErrUnavailable, route, err))
+	})
 	if err != nil {
-		return nil, fmt.Errorf("%w: build POST /v1/interests/unsubscribe request: %v", ErrUnavailable, err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	c.authorize(request)
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return nil, unreachable(fmt.Errorf("%w: POST /v1/interests/unsubscribe: %v", ErrUnavailable, err))
+		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -639,16 +855,15 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 // reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
 // both: no listener answered it (unreachable).
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
-	}
-	c.authorize(request)
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return nil, unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
-	}
-	return response, nil
+	return c.do("GET "+route, false, func() (*http.Request, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
+		if err != nil {
+			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
+		}
+		return request, nil
+	}, func(err error) error {
+		return unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
+	})
 }
 
 // unavailableGetStatus is ErrUnavailable for a GET of route the listener answered with a status
@@ -689,7 +904,16 @@ func (input SendInput) EnvelopeMessage() contracts.Message {
 // session was when the listener stored the message: connected, or stopped and stored for its own
 // consumer (SendResult). A send that set ConnectedOnly and met a stopped session is refused
 // instead, 409 with the listener's reason "the session is stopped", which arrives here as that
-// reason alone (listenerResponseError).
+// reason alone (listenerResponseError). A send for a role (SendInput.Role) that the listener kept
+// for the role's next holder is its 202, which names the kept copy (keptSend).
+//
+// A send for a role carries its role mark, which the listener takes from Dispatch's own identity
+// alone, so it is made on that identity and never on the shared token (do, marked): a send the
+// listener's authentication refused on two tries fails here, naming the role, and the delivery
+// records it. A client that presents no identity (neither WithAccountTokenFile nor
+// WithGoogleIdentity) cannot mark the send, so it refuses it (ErrNoListenerIdentity, logged at Error)
+// rather than make it unmarked: the session that takes the role from the target would not
+// receive an unmarked one.
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
 	message := input.EnvelopeMessage()
 	send := listenerwire.SendRequest{
@@ -712,31 +936,54 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		}
 		send.ExpectsReply = expectsReply
 	}
-	body, err := json.Marshal(send)
+	marked := input.Role != ""
+	if marked && !c.presentsIdentity() {
+		err := fmt.Errorf("%w (a send for role %s to %s)", ErrNoListenerIdentity, input.Role, input.TargetSession)
+		c.logger.Error("dispatch: a send for a role is refused: this Dispatch presents no identity to the Envoy listener",
+			"role", input.Role, "target_session", input.TargetSession, "error", err.Error())
+		return SendResult{}, err
+	}
+	send.Role = input.Role
+	encoded, err := json.Marshal(send)
 	if err != nil {
-		return SendResult{}, fmt.Errorf("encode POST /v1/messages/send body: %w", err)
+		return SendResult{}, fmt.Errorf("%w: encode POST /v1/messages/send body: %v", ErrUnavailable, err)
 	}
 	// written records that this client finished putting the request on the wire, which is what
 	// separates a listener that went quiet (the envelope may be published) from a connection
-	// that never came up (nothing was). Both surface as the same client-timeout error.
+	// that never came up (nothing was). Both surface as the same client-timeout error. It is
+	// cleared as each request is built, so a second try after a 401 is judged by its own write:
+	// the 401 came from the listener's authentication, before any route ran.
 	var written atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) { written.Store(info.Err == nil) },
 	})
-	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(body),
-	)
+	response, err := c.do("POST /v1/messages/send", marked, func() (*http.Request, error) {
+		written.Store(false)
+		request, err := http.NewRequestWithContext(
+			ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(encoded),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		// Dispatch reads the key-taken answer (SendResult): a duplicate's envelope id is never
+		// recorded, and a kept copy's 202 names that copy's event_id. Without the header the
+		// listener answers a copy Dispatch cannot prove its own, as every copy that names no
+		// session is, with the envelope it built for this request, whose id names no stored copy.
+		request.Header.Set(listenerwire.ReadsHeader, listenerwire.ReadsKeyTaken)
+		return request, nil
+	}, func(err error) error { return sendTransportError(err, written.Load()) })
 	if err != nil {
-		return SendResult{}, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	c.authorize(request)
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return SendResult{}, sendTransportError(err, written.Load())
+		return SendResult{}, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	switch {
+	case response.StatusCode == http.StatusAccepted:
+		return keptSend(response)
+	case marked && response.StatusCode == http.StatusUnauthorized:
+		return SendResult{}, fmt.Errorf("%w: POST /v1/messages/send for role %s: the listener refused Dispatch's identity token (ENVOY_ACCOUNT_TOKEN_FILE or ENVOY_ACCOUNT_GOOGLE_AUDIENCE) on two tries, and a send for a role is made on that identity alone; the listener verifies it with its ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE or ENVOY_OIDC_GOOGLE_AUDIENCE/ENVOY_OIDC_GOOGLE_ACCOUNTS and takes the role mark from ENVOY_DISPATCH_PRINCIPAL alone: %w",
+			ErrUnavailable, input.Role, listenerResponseError(response))
+	case response.StatusCode != http.StatusOK:
 		return SendResult{}, listenerResponseError(response)
 	}
 	var answer listenerwire.SendResponse
@@ -749,14 +996,28 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	}, nil
 }
 
+// keptSend reads the send route's 202, a send for a role the listener kept for the role's next
+// holder (listenerwire.KeptSendResponse), as the envelope the role's kept lane holds, whose walk
+// hands it to the session that holds the role, live. A 202 naming no kept copy is no answer a
+// send gets, and is ErrUnavailable.
+func keptSend(response *http.Response) (SendResult, error) {
+	var answer listenerwire.KeptSendResponse
+	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+		return SendResult{}, fmt.Errorf("%w: decode POST /v1/messages/send response: %v", ErrUnavailable, err)
+	}
+	if !answer.Kept {
+		return SendResult{}, fmt.Errorf("%w: POST /v1/messages/send answered 202 naming no kept copy", ErrUnavailable)
+	}
+	return SendResult{EnvelopeID: answer.EventID, Recipient: answer.Recipient}, nil
+}
+
 // sendTransportError classifies what stopped a send from being answered. Only a request this
 // client finished writing can have reached the listener, and only that one may be
 // ErrReceiptTimeout - the class that tells a human the message may already have been published
 // and a same-mode retry is therefore safe. A connect that timed out wrote nothing, and reports
-// the same "Client.Timeout exceeded while awaiting headers" text as a listener that went quiet,
-// so the text cannot tell them apart; requestWritten can. The cause is wrapped, not formatted,
-// so a caller can ask the same question again. Either way no listener answered, so both are
-// ErrUnreachable.
+// the same context deadline as a listener that went quiet, so the error cannot tell them apart;
+// requestWritten can. The cause is wrapped, not formatted, so a caller can ask the same question
+// again. Either way no listener answered, so both are ErrUnreachable.
 func sendTransportError(err error, requestWritten bool) error {
 	var timeout net.Error
 	timedOut := errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout())
@@ -768,20 +1029,30 @@ func sendTransportError(err error, requestWritten bool) error {
 
 // listenerResponseError is the error a role lookup or a send reports for a non-200 answer. A 502,
 // 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says: the listener behind its
-// starting gate answers 503 {"error":"service starting"} (cmd/listener/main.go startingGate), and
-// a gateway in front of one that is gone answers 502 or 504, so either is "ask again" rather than
-// the listener's verdict on the request. Any other status with a JSON reason is that reason alone,
-// which a delivery records and a person reads verbatim ("no live session <id>", "message is
-// required", "unauthorized"). The reason is kept on the unavailable error too, for the same
-// reader. Any other status without one is ErrUnavailable alone: the listener answered, and asking
-// again repeats it.
+// starting gate answers 503 {"error":"service starting"} (cmd/listener/starting_gate.go
+// startingGate), and a gateway in front of one that is gone answers 502 or 504, so either is "ask
+// again" rather than the listener's verdict on the request. Any other status with a JSON reason is
+// that reason alone, which a delivery records and a person reads verbatim ("no live session <id>",
+// "message is required", "unauthorized"). The reason is kept on the unavailable error too, for the
+// same reader. Any other status without one is ErrUnavailable alone: the listener answered, and
+// asking again repeats it.
 func listenerResponseError(response *http.Response) error {
 	var body listenerwire.APIError
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		return listenerRefusal(response, "")
 	}
+	if response.StatusCode == http.StatusServiceUnavailable && body.Code == listenerwire.CodeMaybeStored {
+		return unreachable(fmt.Errorf("%w: %w: listener returned %d: %s", ErrUnavailable, ErrStoreUnconfirmed, response.StatusCode, body.Error))
+	}
 	return listenerRefusal(response, body.Error)
 }
+
+// ErrStoreUnconfirmed reports a send the listener answered 503 with the code that says the
+// message may be stored (listenerwire.CodeMaybeStored): it published the envelope and the message
+// bus never acknowledged the publish, so the session may already hold it, as after
+// ErrReceiptTimeout. It is a failure of its own rather than ErrReceiptTimeout because the listener
+// did answer; it is ErrUnavailable and ErrUnreachable too, as every 503 is.
+var ErrStoreUnconfirmed = errors.New("envoy listener could not confirm the send was stored")
 
 // listenerRefusal is a refused answer as its caller reports it: the listener's own reason when
 // its body named one, and its status when the body named nothing a caller could act on. A 502,

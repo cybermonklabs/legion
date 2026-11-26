@@ -213,6 +213,72 @@ test("a caption writes its target exactly: a rate as its percentage, 0.755 as 75
   );
 });
 
+// R3-C1 (dispatch://INFRA-2916, test v13): a rate's target is written as the digits it is stored
+// with, its decimal point moved two places to the right as text. Scaled by 100 and rounded to
+// twelve significant digits, 0.1 + 0.2 was captioned "≥ 30%" beside a value of 0.3 its tone says
+// misses it, written "30.0%".
+test("a caption writes a rate's target as the shortest text that reads back as it: its own digits, the decimal point moved two places", () => {
+  const success = (value: number) => targetLabel(deploys({ value, judges: ["runs.rate"] }));
+  expect(
+    [0.755, 0.05, 0.07, 0.1 + 0.2, 0.7602339181286549, 1e-7, 1.5e-7, 0, 1].map(success)
+  ).toEqual([
+    "\u2265 75.5%",
+    "\u2265 5%",
+    "\u2265 7%",
+    "\u2265 30.000000000000004%",
+    "\u2265 76.02339181286549%",
+    "\u2265 0.00001%",
+    "\u2265 0.000015%",
+    "\u2265 0%",
+    "\u2265 100%",
+  ]);
+  expect(
+    targetLabel(deploys({ value: 0.1 + 0.2, direction: "lower_better", judges: ["per_pr.rate"] }))
+  ).toBe("failure rate \u2264 30.000000000000004% per PR");
+});
+
+test("a caption's rate target, read as a decimal and divided by 100 exactly, is the stored target, in no more digits than its own shortest text, for doubles all over [0, 1]", () => {
+  // mulberry32, a small seeded generator, so every run draws the same doubles.
+  let state = 0x2916;
+  const draw = () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return (t ^ (t >>> 14)) >>> 0;
+  };
+  const bits = new DataView(new ArrayBuffer(8));
+  const values = [0, 1, Number.MIN_VALUE, 0.7644000000000001];
+  for (let i = 0; i < 2000; i++) {
+    // Any double under 1 by its bits, so every exponent is drawn, the ones JavaScript writes in
+    // e-notation among them.
+    bits.setUint32(0, draw() % 0x3ff00000);
+    bits.setUint32(4, draw());
+    values.push(bits.getFloat64(0));
+    // Any 53-bit fraction of 1, the long decimals a share computed from counts has.
+    values.push(((draw() >>> 11) * 2 ** 32 + draw()) / 2 ** 53);
+    // A short decimal, as a person sets one.
+    const places = 1 + (draw() % 6);
+    values.push(Number(`${draw() % 10 ** places}e-${places}`));
+  }
+  /** A decimal's significant digits: its digits less the point and the zeros either side. */
+  const significant = (decimal: string) => decimal.replace(".", "").replace(/^0+|0+$/g, "");
+  const misread: string[] = [];
+  for (const value of values) {
+    const caption = targetLabel(deploys({ value, judges: ["runs.rate"] }));
+    const written = /^\u2265 ((?:0|[1-9]\d*)(?:\.\d*[1-9])?)%$/.exec(caption)?.[1];
+    const [shortest = ""] = value.toExponential().split("e");
+    if (
+      written === undefined ||
+      Number(`${written}e-2`) !== value ||
+      significant(written) !== significant(shortest)
+    ) {
+      misread.push(`${value}: ${caption}`);
+    }
+  }
+  expect(values).toHaveLength(6004);
+  expect(misread).toEqual([]);
+});
+
 test("meetsTarget: a value at an inclusive target meets it, at a strict one misses it, in the target's own direction, and an off target judges nothing", () => {
   expect(meetsTarget(20, deploys())).toBe(true);
   expect(meetsTarget(20, deploys({ inclusive: false }))).toBe(false);

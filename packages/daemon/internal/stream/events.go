@@ -86,12 +86,13 @@ type ToolStep struct {
 // prompt that ran no turn at all. Error is OMP's reason when the work ended in one: the message
 // of the frame's error object (shimwire.PromptError), which is what the daemon's own log records.
 //
-// The other four members of that error object come with it. Retryable is Oh My Pi's own word for
-// a failure that may succeed on a later try, HTTPStatus the status of the provider request that
-// failed (zero when the failure had none, as a content-filter refusal does), and Provider and
-// Model the provider and the model that request went to. Whether such a failure can clear is
-// read from HTTPStatus alone (supervise's providerErrored); the message is never parsed, since
-// it is a provider's own prose and changes without notice.
+// The other members of that error object come with it. Retryable is Oh My Pi's own word for a
+// failure that may succeed on a later try, HTTPStatus the status of the provider request that
+// failed (zero when the failure had none, as a content-filter refusal does), Provider and Model
+// the provider and the model that request went to, and Code Oh My Pi's class of the failure
+// (shimwire.PromptError.Code; empty when it gives none). Whether such a failure can clear is read
+// from HTTPStatus and Code (supervise's providerErrored); the message is never parsed, since it is
+// a provider's own prose and changes without notice.
 type PromptResult struct {
 	Claim        claim.Token
 	DeliveryID   string
@@ -101,6 +102,7 @@ type PromptResult struct {
 	HTTPStatus   int
 	Provider     string
 	Model        string
+	Code         string
 }
 
 // LateRefusal is OMP answering `{success:false}` for a prompt it had already answered

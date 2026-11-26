@@ -11,13 +11,46 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
 
 import type { DisplayTree } from "../api/types";
-import { loadedEngine } from "../features/refs/markdown-engine";
+import { loadedEngine, type MarkdownEngine } from "../features/refs/markdown-engine";
 
 /** The reading of `markdown` the server would send. `warmMarkdownRenderer` must have resolved
  *  before this is called; `undefined` for a text the engine refuses, as the server's own
  *  reading is never. */
 export function displayTree(markdown: string): DisplayTree | undefined {
   return loadedEngine()?.parse(markdown)?.toJSON() as DisplayTree | undefined;
+}
+
+/** A count of the markdown parses the page's shared engine makes, from the call that made it
+ *  until `restore`, which gives the engine its own `parse` back. */
+export interface EngineParses {
+  readonly count: () => number;
+  readonly restore: () => void;
+}
+
+/**
+ * Counts every markdown parse the page's shared engine makes from now on: the engine is one
+ * object the whole page holds, and its `parse` is the one parser every view of a stored text can
+ * reach (`stored-text-drawing.test.tsx` says why). A tree `displayTree` builds is a parse too, so
+ * a test builds its trees before it starts counting. `warmMarkdownRenderer` must have resolved.
+ */
+export function countEngineParses(): EngineParses {
+  const engine = loadedEngine();
+  if (engine === undefined) {
+    throw new Error("the Markdown engine did not load");
+  }
+  const own = engine.parse;
+  const counted: { parse: MarkdownEngine["parse"] } = engine;
+  let parses = 0;
+  counted.parse = (markdown, softBreaks) => {
+    parses += 1;
+    return own.call(engine, markdown, softBreaks);
+  };
+  return {
+    count: () => parses,
+    restore: () => {
+      counted.parse = own;
+    },
+  };
 }
 
 /**

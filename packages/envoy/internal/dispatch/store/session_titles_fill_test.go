@@ -38,7 +38,7 @@ const titlesBulkSessions = 2*SessionTitlesFillBatch + 500
 // migratedTitlesStore is a store carrying every migration, with titlesIssue in it.
 func migratedTitlesStore(t *testing.T) *Store {
 	t.Helper()
-	store := migratedEmptyStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	ctx := context.Background()
 	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TITLES', 'Titles', 'alice')`); err != nil {
 		t.Fatalf("seed the project: %v", err)
@@ -201,6 +201,7 @@ func requireSameTitles(t *testing.T, what string, stored, old map[string]string)
 // none for a session that stamped none or for a person's actor, the first event of an instant on a
 // tie, and the newer of two events whichever was inserted first.
 func TestTheTriggerStoresTheTitleTheEventsReadAnswered(t *testing.T) {
+	t.Parallel()
 	store := migratedTitlesStore(t)
 	titled := writeTitlesFixture(t, store)
 	old := eventsReadTitles(t, store)
@@ -224,6 +225,7 @@ func TestTheTriggerStoresTheTitleTheEventsReadAnswered(t *testing.T) {
 // the progress row is gone, and a second fill reads one empty table. A fill run again over the
 // filled table writes no row.
 func TestTheFillStoresTheTitleTheEventsReadAnswered(t *testing.T) {
+	t.Parallel()
 	store := migratedTitlesStore(t)
 	ctx := context.Background()
 	// The events below are stored as a database holds them before 20261117100015 applied.

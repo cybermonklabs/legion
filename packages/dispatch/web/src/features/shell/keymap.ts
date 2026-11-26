@@ -245,8 +245,12 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
 
 /** Whether `element` takes typed text: a content-editable element, an `<input>` of a text-entry
  *  type (`TEXT_INPUT_TYPES`), or a `<textarea>`. A key pressed on one is the control's own
- *  (`isEditableTarget`), and the page's focus rescue reads a character typed in one as no press
- *  of the reader's (`focus-place.ts`'s `isPress`), since it only edits the field. */
+ *  (`isEditableTarget`), and a character typed in one is no press of the reader's
+ *  (`focus-place.ts`'s `isPress`), since it only edits the field. A walk-back that hands the
+ *  focus on passes over every such control (`focus-place.ts`'s `walkBack`), since the reader's
+ *  next key would go into it. A date or time box plays two parts: it takes the
+ *  reader's keys, so a walk-back passes over it as over a text box, and its `change` and `input`
+ *  are the reader's pick, so they count as a press (`isPress`), as a select's do. */
 export function takesText(element: Element): boolean {
   if (element instanceof HTMLElement && element.isContentEditable) {
     return true;
@@ -259,13 +263,13 @@ export function takesText(element: Element): boolean {
   return element.tagName === "TEXTAREA";
 }
 
-/** Whether a `change` on `element` is the commit on blur of the text typed in it, rather than the
+/** Whether a `change` or an `input` on `element` is typing or its commit on blur, rather than the
  *  reader's pick: on an `<input>` whose value is typed text alone (`COMMIT_ON_BLUR_TYPES`), a
- *  `<textarea>`, or a content-editable element. Every other control fires its `change` at the
- *  pick - a `<select>`, a checkbox, a radio, a file, range or color input, a date or time box -
- *  so the page's focus rescue reads that `change` as a press of the reader's (`focus-place.ts`'s
- *  `isPress`). An `<input>` of the button family or of type hidden fires no `change`; it is
- *  answered false, so a `change` on one would read as a pick. */
+ *  `<textarea>`, or a content-editable element. Every other control fires both at the pick - a
+ *  `<select>`, a checkbox, a radio, a file, range or color input, a date or time box - so a
+ *  component's focus hand-off reads either as a press of the reader's (`focus-place.ts`'s
+ *  `isPress`). An `<input>` of the button family or of type hidden fires neither; it is answered
+ *  false, so one sent to it would read as a pick. */
 export function commitsOnBlur(element: Element): boolean {
   if (element instanceof HTMLInputElement) {
     return COMMIT_ON_BLUR_TYPES[element.type] === true;
@@ -281,19 +285,21 @@ export function commitsOnBlur(element: Element): boolean {
  * (`takesText`), a `<select>`, the trigger of an option list, or anything at all inside an open
  * panel.
  *
- * A panel - the display menu, a filter panel and the lists opened from it, a column filter -
- * stands over the page in place of the selects it replaced, and its keys are its own whatever
- * control of it holds the focus: Tab and Shift+Tab walk it, the arrows walk a group of radios,
+ * A panel - the display menu, a filter panel and the lists opened from it, a column filter, a
+ * control's own list such as Edit labels' - stands over the page, and its keys are its own
+ * whatever control of it holds the focus: Tab and Shift+Tab walk it, the arrows walk a group of radios,
  * Space ticks a box, and Escape closes it (`AnchoredPanel` takes Escape before this registry
  * hears it). A radio or a checkbox takes no text, so without this rule `j` on the display menu's
  * radio would walk the table behind the panel, and the Inbox's single keys would act on its
  * rows. Only the key's own target counts: a panel standing open while the focus is on the page -
  * the Board's, restored on load - masks nothing.
  *
- * An option list's trigger (`MultiSelect`'s, the one control that names a `listbox` popup) stands
- * in for the `<select>` or the text box it replaced, closed as much as open, so it takes the keys
- * a select takes: a digit on the issue header's Assignee is no priority, and `c` on a Settings
- * project list opens no Create issue.
+ * An option list's trigger (`MultiSelect`'s, the one control that names a `listbox` popup) takes
+ * the keys a select takes, open or closed; a typed character goes to its list's search. Which
+ * keys open a closed list is `MultiSelect`'s to say. So a digit on the issue header's Assignee is
+ * no priority, and `c` on a Settings project list opens no Create issue. A key the trigger leaves
+ * alone, such as a letter on a busy trigger, fires only the bindings that fire while the reader
+ * types (`inEditable`).
  */
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -310,8 +316,8 @@ function isEditableTarget(target: EventTarget | null): boolean {
   if (target instanceof HTMLInputElement) {
     return false;
   }
-  // A `<select>` stays editable: its own keys type-ahead and step through the options, and the
-  // Inbox's `h` hands it focus on purpose. A list's trigger is read as one.
+  // A `<select>` stays editable: its own keys type-ahead and step through the options. A list's
+  // trigger is read as one, and the Inbox's `h` hands a Snooze list's trigger focus on purpose.
   return target.tagName === "SELECT" || target.matches(LIST_TRIGGER);
 }
 
@@ -594,8 +600,12 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   };
 }
 
-/** The application's registry; `KeymapProvider` binds it to `window`. Unit tests build their own. */
-export const appKeymap = createKeymap({ strict: import.meta.env.DEV });
+/** The application's registry; `KeymapProvider` binds it to `window`. Unit tests build their own.
+ *  Strict in Vite's development build. A module loaded outside Vite has no `import.meta.env`:
+ *  the browser rows import names from the app's control modules in Node (`e2e/issue-page-h.e2e.ts`
+ *  imports `repoControlName`), and those modules reach this one through the shared list
+ *  (`MultiSelect`) and the focus hand-offs (`components/focus-place.ts`). */
+export const appKeymap = createKeymap({ strict: import.meta.env?.DEV === true });
 
 /** Registers `bindings` under `scope` for the component's lifetime; closures stay current. */
 export function useKeymap(scope: KeymapScope, bindings: readonly KeyBinding[]): void {

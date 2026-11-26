@@ -11,13 +11,15 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import type { ComposerAnchor, ComposerKind, ComposerOwner } from "../conversation/composer-model";
+import { useHeldSend, useHeldSends } from "../conversation/held-sends";
+import { DraftOffer, KIND_WORDS } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { SaveCommentEdit } from "../conversation/send-request";
+import type { AwayDraft } from "../conversation/unsent-drafts";
+import { type OfferedDraft, stoppedOfferOf } from "../conversation/useKeptDrafts";
 import { AskCard } from "../inbox/AskCard";
-import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import { DecisionList } from "./DecisionCard";
-import { marginComposeSendKey, useMargin } from "./margin-context";
+import { marginComposeKeptKey, marginComposeSendKey, useMargin } from "./margin-context";
 import { ThreadList } from "./ThreadList";
 import type { CommentActionFailure } from "./useCommentActionQueue";
 import type {
@@ -35,7 +37,9 @@ export interface MarginComposer {
   kind: ComposerKind;
   /** Where its sends go: the owner it was opened under. */
   owner: ComposerOwner;
-  /** The open compose it is, until its send holds it. */
+  /** The compose it is, by the number it opened under (`DocumentCompose.seq`): the open compose,
+   *  and after its Send the held send's, which keeps the number. A send held since before a
+   *  reload has none. `MarginSheet` keys the composer by it, so each compose draws its own. */
   seq: number | undefined;
   /** A newer selection-bar action had to wait for its send. */
   turnedAway: boolean;
@@ -99,7 +103,7 @@ export function MarginComposerSlot({
   hidden: boolean;
   isClosed: boolean;
   onClose: (composer: MarginComposer) => void;
-  onKindChange: (kind: ComposerKind) => string | undefined;
+  onKindChange: (artifact: string, kind: ComposerKind) => string | undefined;
   /** The reader can see it: the margin's tabs are not covered, the compact sheet is open, and the
    *  Comments tab shows. */
   onScreen: boolean;
@@ -109,7 +113,27 @@ export function MarginComposerSlot({
     () => marginComposeSendKey(composer.anchor.artifact),
     [composer.anchor.artifact]
   );
+  // Where a stopped compose of this document waits once a newer compose took its place.
+  const keptKey = useMemo(
+    () => marginComposeKeptKey(composer.anchor.artifact),
+    [composer.anchor.artifact]
+  );
   const { sending } = useSending(sendKey);
+  // That stopped compose as this compose offers it, with the presses that move it: Use my draft
+  // carries it into this compose's own name at its words and in its kind, and Discard my draft
+  // drops it where it waits. Built once per held send, so its words are worked out once.
+  const store = useHeldSends();
+  const keptAside = useHeldSend(keptKey);
+  const owner = composer.owner;
+  const stoppedAside = useMemo((): OfferedDraft | undefined => {
+    const offer = stoppedOfferOf(keptAside);
+    if (offer === undefined) return undefined;
+    return {
+      ...offer,
+      drop: () => store.discard(keptKey),
+      take: (at) => store.carryInto(keptKey, sendKey, { owner, replyTo: null }, at),
+    };
+  }, [keptAside, keptKey, owner, sendKey, store]);
   return (
     // The margin scrolls this into its scrollport when it opens: a composer the reader started
     // from the document renders at the top of the margin's scroll content, which can be thousands
@@ -124,6 +148,7 @@ export function MarginComposerSlot({
         anchor={composer.anchor}
         anchorRefusal={anchorRefusal}
         autoFocus={onScreen}
+        box="margin-composer"
         closed={isClosed}
         frame="pt-3"
         kind={composer.kind}
@@ -132,8 +157,47 @@ export function MarginComposerSlot({
         onSent={() => {}}
         owner={composer.owner}
         replyTo={null}
-        onKindChange={onKindChange}
+        stoppedAside={stoppedAside}
+        onKindChange={(kind) => onKindChange(composer.anchor.artifact, kind)}
       />
+    </div>
+  );
+}
+
+/**
+ * What the margin's compose kept for words of the open document (`AwayDraft.anchor`), while no
+ * compose is open on it (`useMarginSheet`'s `keptDrafts`). A reload, a sign-in after a lapse and
+ * an issue's closing each end a compose with nothing the reader pressed, and the next compose on
+ * the document would offer only the newest of its drafts, so the margin draws each here with the
+ * words it was written for, the kind it was written as, and Discard my draft. A compose opened on
+ * the document offers it beside its field, where Use my draft takes it in.
+ */
+export function MarginKeptDrafts({
+  drafts,
+  hidden,
+  onDiscard,
+}: {
+  drafts: readonly AwayDraft[];
+  hidden: boolean;
+  onDiscard: (away: AwayDraft) => void;
+}): ReactNode {
+  const kept = drafts.filter(
+    (away): away is AwayDraft & { anchor: ComposerAnchor } => away.anchor !== undefined
+  );
+  if (kept.length === 0) return null;
+  return (
+    <div className="space-y-3 pt-3" hidden={hidden}>
+      {kept.map((away) => (
+        <DraftOffer
+          body={away.draft.body}
+          drop={{ label: "Discard my draft", press: () => onDiscard(away) }}
+          // The words each draft was written for, as the document has them: `anchor-quote`.
+          key={`${away.anchor.mark_id ?? ""}:${away.anchor.occurrence ?? ""}:${away.anchor.quote}`}
+          // Those words again, named in the line over the draft: `anchor-quote`.
+          lead={`You wrote this draft${away.kind === undefined || away.kind === "comment" ? "" : ` as ${KIND_WORDS[away.kind]},`} for the words “${away.anchor.quote}”. It is kept here, and offered in the next compose you open on this document:`}
+          replacement={away.draft.replacement}
+        />
+      ))}
     </div>
   );
 }
@@ -167,7 +231,6 @@ export function MarginAskCard({
         owner={owner.kind === "document" ? owner : undefined}
         variant="compact"
       />
-      <Unfurl body={ask.question} source={textSourceOf("ask", ask.id)} />
     </div>
   );
 }

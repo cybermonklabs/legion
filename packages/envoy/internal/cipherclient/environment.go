@@ -1,0 +1,292 @@
+// packages/envoy/internal/cipherclient/environment.go
+
+package cipherclient
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
+)
+
+// The variables every program that holds one of these identities reads, so `agent-secrets`, its
+// helper and `legion controller start` are told the same things the same way, and a deployment
+// writes one set of values.
+const (
+	// BrokerURLVar names the secrets broker, as it does for every other form of agent-secrets.
+	BrokerURLVar = "AGENT_SECRETS_URL"
+	// IdentityVar says which identity this machine proves: kubernetes, metadata, pool or
+	// github-actions. Unset, this machine has none and nothing trades — which is every deployment
+	// that has not turned the exchange on, and is why no program here fails for want of it.
+	IdentityVar = "AGENT_SECRETS_MACHINE_IDENTITY"
+	// MachineTokenFileVar is the projected Kubernetes service-account token file, which
+	// IdentityKubernetes reads and IdentityPool federates.
+	MachineTokenFileVar = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
+	// MachineAudienceVar is the audience of this machine's identity token: the metadata server
+	// mints it for that audience, a pool mint names it as the minted token's own, and GitHub
+	// mints a GitHub Actions run's for it.
+	MachineAudienceVar = "AGENT_SECRETS_MACHINE_AUDIENCE"
+	// PoolAudienceVar is the workload identity pool provider an external credential is traded
+	// at, the full //iam.googleapis.com/projects/… resource name.
+	PoolAudienceVar = "AGENT_SECRETS_POOL_AUDIENCE"
+	// PoolAccountVar is the managed identity generateIdToken is called on.
+	PoolAccountVar = "AGENT_SECRETS_POOL_ACCOUNT"
+	// ActionsIDTokenRequestURLVar and ActionsIDTokenRequestTokenVar are where a GitHub Actions
+	// job asks GitHub for its OIDC token, and the bearer it asks with, which GitHub sets in a job
+	// that holds `id-token: write` (IdentityGitHubActions).
+	ActionsIDTokenRequestURLVar   = "ACTIONS_ID_TOKEN_REQUEST_URL"
+	ActionsIDTokenRequestTokenVar = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+	// SessionVar is the session a trade writes under for a caller that acts as no session of
+	// its own, which a daemon, a command and this helper are (TradeSession).
+	SessionVar = "AGENT_SECRETS_SESSION"
+	// KeyDirVar is the directory a session's agent-secrets identity lives in: in a pod, the
+	// role's own, where `agent-secrets keygen` wrote RoleKeyFile before the role's first hello.
+	// MachineKey reads it beside IdentityVar.
+	KeyDirVar = "AGENT_SECRETS_KEY_DIR"
+	// RoleKeyFile is the key in KeyDirVar's directory: the PKCS#8 P-256 PEM `agent-secrets
+	// keygen` writes and `enroll --pod` keeps.
+	RoleKeyFile = "key.pem"
+	// ProjectsVar is the projects a session works on, project keys separated by white space,
+	// which a trade that acts as its person may ask the broker to name in its token
+	// (TradeProjects). The broker names only projects the person may see, and a restricted
+	// member's token must name at least one. The TypeScript sign-in client sends it, and so do
+	// natsprobe's trade and `agent-secrets register`, `enroll --helper` and `enroll --pod`.
+	ProjectsVar = "AGENT_SECRETS_PROJECTS"
+	// SignInIssuerVar is the OpenID provider a person signs in at, Google's unless a dev stack
+	// says otherwise.
+	SignInIssuerVar = "AGENT_SECRETS_SIGNIN_ISSUER"
+	// SignInClientIDVar and SignInClientSecretFileVar are the device-flow client
+	// `agent-secrets login` runs the sign-in as. The secret is in a file, never in a variable:
+	// a variable is read by every child of the shell that set it.
+	SignInClientIDVar         = "AGENT_SECRETS_SIGNIN_CLIENT_ID"
+	SignInClientSecretFileVar = "AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE"
+
+	// DefaultSignInIssuer is where every real person signs in.
+	DefaultSignInIssuer = "https://accounts.google.com"
+
+	// The values IdentityVar takes.
+	IdentityKubernetes    = "kubernetes"
+	IdentityMetadata      = "metadata"
+	IdentityPool          = "pool"
+	IdentityGitHubActions = "github-actions"
+
+	// identityDeviceLogin is a value IdentityVar takes that this client refuses by name: a
+	// machine's device login (`dispatch login --device`), which only the TypeScript client
+	// (packages/cipher-client/src/device-login.ts) trades. A laptop sets it for its sessions, so a
+	// Go tool started there is told why it will not trade it.
+	identityDeviceLogin = "device-login"
+)
+
+// callTimeout bounds one call a client of this package makes to the broker, including the dial.
+const callTimeout = 30 * time.Second
+
+// HTTPClient is the client every caller of this package uses unless it has one of its own: a
+// timeout on each call, and the default transport.
+func HTTPClient() *http.Client { return &http.Client{Timeout: callTimeout} }
+
+// TradeSession is the session a trade writes under, which the broker records the minted token
+// against: own, the session the caller is acting as, where it acts as one, and otherwise
+// AGENT_SECRETS_SESSION. The TypeScript client reads the same rule out of the same two places
+// (packages/cipher-client/src/environment.ts, tradeSession).
+//
+// The caller's own session comes first because a token names one session and the Envoy listener
+// holds every write that acts as a session to the session its token names (cmd/listener/
+// brokerauth.go, sessionNotBound): a token minted under some other name is one its own holder
+// cannot spend, so a deployment's variable winning here would turn a refused trade, which says
+// which name the entry fixes, into a 403 on every subscribe, unsubscribe, role claim and send.
+// AGENT_SECRETS_SESSION is therefore the name for a caller that acts as no session of its own,
+// and the only name such a caller has.
+func TradeSession(getenv func(string) string, own string) string {
+	if acting := strings.TrimSpace(own); acting != "" {
+		return acting
+	}
+	return strings.TrimSpace(getenv(SessionVar))
+}
+
+// TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, read by
+// ParseProjectsSetting. It is the declaration a Go trade naming its projects reads them through:
+// `agent-secrets register` and `enroll` with no --projects, and natsprobe. The TypeScript client
+// reads the same variable the same way (packages/cipher-client/src/environment.ts,
+// tradeProjects).
+func TradeProjects(getenv func(string) string) ([]string, error) {
+	return ParseProjectsSetting(ProjectsVar, getenv(ProjectsVar))
+}
+
+// ParseProjectsSetting is the projects raw names, in the grammar the broker reads
+// (oauthwire.ParseProjects), sorted and each once; nil when it is blank. setting is where raw came
+// from (ProjectsVar, or a flag such as --projects), which a refusal names (ProjectsRefusal).
+func ParseProjectsSetting(setting, raw string) ([]string, error) {
+	projects, err := oauthwire.ParseProjects(raw)
+	if err != nil {
+		return nil, ProjectsRefusal(setting, ProjectsSpaced)
+	}
+	return projects, nil
+}
+
+// ProjectsSpaced and ProjectsListed say how a projects setting holds its keys, which
+// ProjectsRefusal names: a variable or a flag separates them by white space
+// (ParseProjectsSetting), and a register's JSON list holds one key in each element, never split
+// (the helper's sessionProjects).
+const (
+	ProjectsSpaced = "separated by white space"
+	ProjectsListed = "one in each element of the list"
+)
+
+// ProjectsRefusal is the error for a projects setting that is no list: it names the setting, how
+// it holds its keys (held, ProjectsSpaced or ProjectsListed) and the rule, never the value, and is
+// never a list quietly cut short. A value the setting cannot hold is where a credential pasted into
+// the wrong place shows up, and oauthwire's own errors quote the key they refuse. The helper's
+// check of a register's projects says the same words, with its own way of holding them.
+func ProjectsRefusal(setting, held string) error {
+	return fmt.Errorf("%s is not a list of project keys: at most %d keys, %s, each named once and each %s",
+		setting, oauthwire.MaxProjects, held, contracts.ProjectKeyRule)
+}
+
+// MachineIdentity is the identity IdentityVar names, or nil when it names none, which is a
+// machine that trades nothing and is no error. A named identity whose own variables are missing
+// is an error naming each of them, since a deployment that asked for one and gave it nothing has
+// a mistake in it. A kind it does not know is an error naming the variable and the kinds it
+// takes, and not the value, which is where a credential pasted into the wrong variable shows up;
+// device-login, which only the TypeScript client trades, is refused by name.
+func MachineIdentity(getenv func(string) string) (Source, error) {
+	kind := strings.TrimSpace(getenv(IdentityVar))
+	switch kind {
+	case "":
+		return nil, nil
+	case IdentityKubernetes:
+		path, err := required(getenv, MachineTokenFileVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		return NewProjectedToken(path), nil
+	case IdentityMetadata:
+		audience, err := required(getenv, MachineAudienceVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		return NewMetadataIdentity(audience), nil
+	case IdentityPool:
+		path, err := required(getenv, MachineTokenFileVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		audience, err := required(getenv, MachineAudienceVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		pool, err := required(getenv, PoolAudienceVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		account, err := required(getenv, PoolAccountVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		return &PoolIdentity{
+			Subject: NewProjectedToken(path), Audience: pool, ServiceAccount: account,
+			TokenAudience: audience, HTTP: HTTPClient(),
+		}, nil
+	case IdentityGitHubActions:
+		requestURL, err := required(getenv, ActionsIDTokenRequestURLVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		requestToken, err := required(getenv, ActionsIDTokenRequestTokenVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		audience, err := required(getenv, MachineAudienceVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		return &GitHubActionsIdentity{RequestURL: requestURL, RequestToken: requestToken, Audience: audience, HTTP: HTTPClient()}, nil
+	case identityDeviceLogin:
+		return nil, fmt.Errorf("%s=%s is a device login, which only the TypeScript client of the Dispatch and Envoy plugins trades and no Go tool does; unset it for this command, or name %s, %s, %s or %s",
+			IdentityVar, identityDeviceLogin, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
+	default:
+		return nil, fmt.Errorf("%s names no identity this machine can prove; it takes %s, %s, %s or %s",
+			IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
+	}
+}
+
+// MachineKey is the key a machine trade proves. A role in a pod, where IdentityVar is
+// IdentityKubernetes and KeyDirVar names the role's own agent-secrets directory, proves the key
+// in that directory's RoleKeyFile, because the broker refuses a pod session's exchange whose DPoP
+// key is not the one its registration names, which is that key. A file there that cannot be read,
+// or is no PKCS#8 P-256 key, is an error naming its path: a fresh key in its place would be
+// refused at the broker in words that name neither the file nor the key. Every other machine
+// proves a fresh key of this process's own, as each always has. The TypeScript client keeps the
+// same rule (packages/cipher-client/src/environment.ts, brokerTokenClient).
+func MachineKey(getenv func(string) string) (*ecdsa.PrivateKey, error) {
+	dir := strings.TrimSpace(getenv(KeyDirVar))
+	if strings.TrimSpace(getenv(IdentityVar)) != IdentityKubernetes || dir == "" {
+		return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	}
+	path := filepath.Join(dir, RoleKeyFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read this role's agent-secrets key: %w", err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("this role's agent-secrets key %s holds no PEM block", path)
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("read this role's agent-secrets key %s: %w", path, err)
+	}
+	key, ok := parsed.(*ecdsa.PrivateKey)
+	if !ok || key.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("this role's agent-secrets key %s is not a P-256 key, and a DPoP proof is signed ES256", path)
+	}
+	return key, nil
+}
+
+// SignInFlow is the device-flow client a person signs in with, or nil when the deployment
+// configures none. The client secret is read from its file here, so a refusal names the file
+// rather than failing at the first sign-in; it names the file by its variable, with the system's
+// reason alone (redact.File), and never its path, which for a person who pasted the secret itself
+// into the variable is the secret.
+func SignInFlow(getenv func(string) string) (*DeviceFlow, error) {
+	clientID := strings.TrimSpace(getenv(SignInClientIDVar))
+	secretFile := strings.TrimSpace(getenv(SignInClientSecretFileVar))
+	if clientID == "" && secretFile == "" {
+		return nil, nil
+	}
+	if clientID == "" || secretFile == "" {
+		return nil, fmt.Errorf("a person's sign-in needs both %s and %s; this machine has one of them",
+			SignInClientIDVar, SignInClientSecretFileVar)
+	}
+	secret, err := os.ReadFile(secretFile)
+	if err != nil {
+		return nil, fmt.Errorf("read the sign-in client's secret from the file %s names: %w", SignInClientSecretFileVar, redact.File(err))
+	}
+	issuer := strings.TrimSpace(getenv(SignInIssuerVar))
+	if issuer == "" {
+		issuer = DefaultSignInIssuer
+	}
+	return &DeviceFlow{
+		Issuer: strings.TrimSuffix(issuer, "/"), ClientID: clientID,
+		ClientSecret: strings.TrimSpace(string(secret)), HTTP: HTTPClient(),
+	}, nil
+}
+
+// required is a variable a named identity cannot do without.
+func required(getenv func(string) string, name, kind string) (string, error) {
+	value := strings.TrimSpace(getenv(name))
+	if value == "" {
+		return "", fmt.Errorf("%s is required by %s=%s", name, IdentityVar, kind)
+	}
+	return value, nil
+}

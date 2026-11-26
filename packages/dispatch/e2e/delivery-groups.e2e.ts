@@ -1,5 +1,5 @@
 import { seedSessionGroupsFixture } from "./delivery-seed";
-import { openFilterPanel } from "./filters";
+import { listTrigger, openFilterPanel, pickFromList } from "./filters";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -72,11 +72,11 @@ test("the window control changes what the page counts", async ({ browser }) => {
   await page.goto("/delivery?mode=list");
   await expect(page.getByText("3 PRs in current filter/window")).toBeVisible();
 
-  await page.getByLabel("Window").selectOption("7d");
+  await pickFromList(listTrigger(page, "Window"), "Last 7 days");
   await expect(page).toHaveURL(/[?&]window=7d/);
   await expect(page.getByText("2 PRs in current filter/window")).toBeVisible();
 
-  await page.getByLabel("Window").selectOption("custom");
+  await pickFromList(listTrigger(page, "Window"), "Custom range…");
   await page.getByRole("textbox", { name: "From", exact: true }).fill(utcDaysAgo(21));
   await page.getByRole("textbox", { name: "To", exact: true }).fill(utcDaysAgo(19));
   await page.getByRole("button", { name: "Apply" }).click();

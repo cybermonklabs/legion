@@ -1,0 +1,19 @@
+kind: Added
+custom:
+  Issue: pr3995
+body: |-
+  The generated Dispatch API types (`dispatch-api.generated.ts`) carry
+  `GET /api/v1/artifacts/{id}/changes`, whose answer is `ArtifactChanges` with its
+  `ArtifactSectionChange` and `ArtifactBlockChange` entries, and `holds` on the design-gate
+  entries: `IssueDesignGateInput`, the entry `PUT /api/v1/issues/{key}/design-gates` takes, has an
+  optional `holds?: null | boolean`, and `IssueDesignGate`, the entry it and the issue read return,
+  always carries `holds: null | boolean`. `ArtifactChanges.unchanged` says the two versions hold no change at all, and an
+  `ArtifactSectionChange` of the text outside every section carries its `place`
+  (`before_first_section` or `after_section`, with `after_heading` and `after_occurrence`).
+
+  The `dispatch_request_approval` tool's `summary` no longer asks a Legion architect for a
+  sentence with its two spec reviews' results. The summary says what the human is approving, and
+  nothing else. The `dispatch_issue` and `dispatch_request_approval` descriptions no longer have a
+  fresh read-only reader check the spec before every call: where the spec is large, or changed in
+  a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual
+  claims, and a Legion architect can use `plan-gap-analyst` and `plan-reviewer`.

@@ -44,11 +44,10 @@ func carriedRoot(t *testing.T, pool *pgxpool.Pool, key string, carries phase.Pha
 	seedMirror(t, pool, key, "todo")
 }
 
-// A handed-over root that carries a phase short of its review takes a row, because a started
-// issue holds one until its work is past that review, and implementing is short of it
-// (record.KeepsSlot), unless it waits on another issue (blockers.waitsOf), which this root does
-// not. So the cap does hold such a root back: its
-// tree is opened on the pass that finds a row free, and not before.
+// A handed-over root that carries a phase that keeps a slot takes a row, because a started issue
+// holds one while it stands in such a phase, and implementing is one (record.KeepsSlot), unless
+// it waits on another issue (blockers.waitsOf), which this root does not. So the cap does hold
+// such a root back: its tree is opened on the pass that finds a row free, and not before.
 //
 // The fixture: the cap's one row is held by a tree already at work, a released child of that
 // tree stands at admitted waiting for its own first phase, and the handed-over root ranks
@@ -59,8 +58,7 @@ func TestAHandedOverRootCarryingAWorkerPhaseWaitsForAFreeRow(t *testing.T) {
 
 	// The live tree that holds the cap's one row: its root at work of its own, its design gate
 	// open, with one released child whose first phase has still to start. The root works rather
-	// than stands in accepting, because an issue past its review holds no row and the cap would
-	// not be full.
+	// than stands in accepting, because accepting keeps no row and the cap would not be full.
 	seedSlotted(t, pool, "LEGION-100", "A")
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", ArtifactID: "spec", LatestVersion: 1, ApprovedVersion: new(1)})
 	working := issue(t, pool, "LEGION-100")
@@ -80,7 +78,7 @@ func TestAHandedOverRootCarryingAWorkerPhaseWaitsForAFreeRow(t *testing.T) {
 		t.Fatalf("rows = %#v, want the cap's one row still held by LEGION-100: neither candidate can be given one", holders)
 	}
 	if treeOpen(t, pool, "LEGION-200") {
-		t.Fatalf("the tree of the handed-over root LEGION-200 is open while the cap is full: a root carrying a phase short of its review takes a row, so the cap holds it back")
+		t.Fatalf("the tree of the handed-over root LEGION-200 is open while the cap is full: a root carrying a phase that keeps a slot takes a row, so the cap holds it back")
 	}
 	if carried := issue(t, pool, "LEGION-200"); carried.Status != "todo" {
 		t.Fatalf("the handed-over root's status = %q, want todo: nothing of it has been promoted", carried.Status)

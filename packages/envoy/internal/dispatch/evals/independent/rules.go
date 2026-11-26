@@ -9,25 +9,30 @@ import (
 )
 
 // rules.go is the reading of each finished issue's values: its work time, its hours on each bar of
-// phase time with their segments, its idle hours by role, its slot wait, its rework and, for a
-// root, its children. The words each rule is read from are quoted above it: R6 and D3 of
-// dispatch://INFRA-2916 for idle time and slot wait, and dispatch://INFRA-1077's "The four Legion
-// metrics" and "Rule details" for the other four, which keep that change's rules.
+// phase time with their segments, its rework and, for a root, its children; its idle hours by role
+// and its slot wait are observed.go's. The words each rule is read from are quoted above it:
+// dispatch://INFRA-1077's "The four Legion metrics" and "Rule details", whose rules the four
+// measures besides idle time and slot wait keep, and R6 of dispatch://INFRA-2916 for the bars.
 
 // The phases the daemon reports, written out here rather than taken from another package, so
-// this reading stands on the words and not on another reader's constants.
+// this reading stands on the words and not on another reader's constants. `awaiting_children`
+// came after the words the rules below quote: dispatch://INFRA-3320 added it, "a parent that held
+// a phase start because a Dispatch child of it is still open", which stands "outside RoleFor,
+// since no role works it" (packages/daemon/internal/phase), and each rule that names it says what
+// of that source it follows.
 const (
-	phaseAdmitted       = "admitted"
-	phaseAwaitingPerson = "awaiting_person"
-	phasePlanning       = "planning"
-	phaseImplementing   = "implementing"
-	phaseTesting        = "testing"
-	phaseReviewing      = "reviewing"
-	phaseAccepting      = "accepting"
-	phaseRetro          = "retro"
-	phaseMerging        = "merging"
-	phaseAwaitingMerge  = "awaiting_merge"
-	phaseHeld           = "held"
+	phaseAdmitted         = "admitted"
+	phaseAwaitingPerson   = "awaiting_person"
+	phaseAwaitingChildren = "awaiting_children"
+	phasePlanning         = "planning"
+	phaseImplementing     = "implementing"
+	phaseTesting          = "testing"
+	phaseReviewing        = "reviewing"
+	phaseAccepting        = "accepting"
+	phaseRetro            = "retro"
+	phaseMerging          = "merging"
+	phaseAwaitingMerge    = "awaiting_merge"
+	phaseHeld             = "held"
 )
 
 // The two phases this reading tells apart inside the daemon's `admitted`: "A root in `admitted`
@@ -66,24 +71,25 @@ var parkedStatuses = []string{"backlog", "icebox"}
 // noRole is the seventh bar of phase time, the one no role works.
 const noRole = "no_role"
 
-// bars are phase time's seven bars, each with the phases it holds: "architect (design and
-// accepting), planner (planning), implementer (implementing), tester (testing), reviewer
-// (reviewing) and merger (retro, merging and awaiting merge). A seventh bar, 'no role', holds the
-// phases no role works: `awaiting_person` and `held`." D3 gives idle time by role the same bars
-// for the six roles.
+// bars are phase time's seven bars, each with the phases it holds: "The bars are: architect,
+// `design` and `accepting`; planner, `planning`; implementer, `implementing` and `retro`; tester,
+// `testing`; reviewer, `reviewing`; merger, `merging` and `awaiting_merge`. Retro is on the
+// implementer's bar because the daemon gives retro to the implementer" (R6), and the seventh, "no
+// role: `awaiting_person`, `awaiting_children` and `held`" (legion-phase-time.md), the phases no
+// role works. `awaiting_children` is on it because RoleFor in packages/daemon/internal/phase gives
+// it no role (dispatch://INFRA-3320). Idle time by role reads the same bars for the six roles
+// (idleByRole).
 var bars = []struct {
 	role   string
 	phases []string
 }{
 	{"architect", []string{phaseDesign, phaseAccepting}},
 	{"planner", []string{phasePlanning}},
-	// "implementer (implementing and retro, because the daemon gives retro to the implementer)"
-	// and "merger (merging and awaiting merge)": the base's bars since 8beac41a07.
 	{"implementer", []string{phaseImplementing, phaseRetro}},
 	{"tester", []string{phaseTesting}},
 	{"reviewer", []string{phaseReviewing}},
 	{"merger", []string{phaseMerging, phaseAwaitingMerge}},
-	{noRole, []string{phaseAwaitingPerson, phaseHeld}},
+	{noRole, []string{phaseAwaitingPerson, phaseAwaitingChildren, phaseHeld}},
 }
 
 // The five segments each hour of a bar goes to, the first that holds: "Waiting on a person ... In
@@ -101,14 +107,18 @@ const (
 var segmentNames = [segmentCount]string{"waiting_on_person", "in_a_turn", "ci_wait", "waiting_on_children", "idle"}
 
 // childWorkingPhases are the phases "from planning to awaiting merge": a root with a child in one
-// of them is waiting on that child.
+// of them is waiting on that child. `awaiting_children` is one of them: a child in it is "a parent
+// that held a phase start because a Dispatch child of it is still open" (dispatch://INFRA-3320,
+// the daemon's phase.AwaitingChildren in packages/daemon/internal/phase), a start of planning
+// through accepting, so its own work goes on in those children, and its root waits on it.
 var childWorkingPhases = []string{
 	phasePlanning, phaseImplementing, phaseTesting, phaseReviewing, phaseAccepting,
-	phaseRetro, phaseMerging, phaseAwaitingMerge,
+	phaseRetro, phaseMerging, phaseAwaitingMerge, phaseAwaitingChildren,
 }
 
 // sentBackFrom is where a move to implementing is a send-back: "a move from `testing`,
-// `reviewing`, `accepting` or the merger's phase to `implementing`". sentBackStatuses is the same
+// `reviewing`, `accepting` or the merger's phase to `implementing`", words that held `retro` among
+// the merger's phases, which R6 puts on the implementer's bar (bars). sentBackStatuses is the same
 // before observations, where the statuses say it: "moves from `testing`, `needs_review` or `retro`
 // to `in_progress`", which is also when an `in_progress` marks implementing.
 var (
@@ -415,38 +425,6 @@ func (r *reading) childrenStretches(key string) []span {
 	return normalize(stretches)
 }
 
-// idleByRole is D3's idle time by role: "for role R, the hours of the issue's worked spans (life −
-// parked − queued) in which the issue holds its own slot, its observed phase is in R's bar ..., and
-// R's newest observed claim state is not `working` (no claim counts as not working)". The worked
-// spans leave out the hours out of the workflow before the close as well, as the work time does
-// since dispatch://INFRA-1077's 9f994275a7 (workedOf). The phase is the observed one alone, the
-// sampler's own marks, and the slot is the issue's own.
-func (r *reading) idleByRole(key string, worked []span) map[string]float64 {
-	end := r.population.end(key)
-	holding := intersect(worked, r.slotStretches(key))
-	sampled := r.sampledOf(key)
-	idle := make(map[string]float64, len(bars)-1)
-	for _, one := range bars {
-		if one.role == noRole {
-			continue
-		}
-		inBar := intersect(holding, phaseStretches(sampled, one.phases...))
-		working := markStretches(r.population.issues[key].observed[fieldClaimPrefix+one.role], end, claimWorking)
-		idle[one.role] = rounded(hoursOf(subtract(inBar, working)))
-	}
-	return idle
-}
-
-// slotWait is D3's slot wait: "the hours of the issue's observed life in which its phase is
-// `admitted` and it holds no slot, over the whole life, with parked hours left out". The life is
-// the issue's, from its creation to its end; the phase is the one the sampler recorded.
-func (r *reading) slotWait(key string) float64 {
-	held := r.population.issues[key]
-	life := []span{{from: held.created, to: r.population.end(key)}}
-	waited := intersect(phaseStretches(r.sampledOf(key), phaseQueued), life)
-	return hoursOf(subtract(waited, r.parked(key)))
-}
-
 // rework is the issue's review rounds, whether it was sent back, and its hours of implementing and
 // testing after its first review.
 //
@@ -461,7 +439,8 @@ func (r *reading) slotWait(key string) float64 {
 // the event log's part ends in reviewing too: "An issue in flight when its first observation is
 // stored takes its phases from observations only from that observation on" (the base's rule
 // since 8beac41a07). An issue whose observations are only its closing mark has no sampler's part,
-// so all of it is read off its statuses.
+// so all of it is read off its statuses. On the sampler's part a move to implementing is read
+// across a wait in `awaiting_children` (beforeTheWait).
 //
 // "The first review": the first entry into status `needs_review` before the sampler's part
 // begins, and else the first `reviewing` stretch of that part. The hours after it are the
@@ -504,7 +483,7 @@ func (r *reading) rework(key string, worked []span) (int, bool, float64) {
 			at := one.stretch.from
 			firstReview = &at
 		}
-		if one.phase == phaseImplementing && slices.Contains(sentBackFrom, previous) {
+		if one.phase == phaseImplementing && slices.Contains(sentBackFrom, beforeTheWait(drawn.spans, index)) {
 			sentBack = true
 		}
 	}
@@ -514,6 +493,22 @@ func (r *reading) rework(key string, worked []span) (int, bool, float64) {
 		after = hoursOf(intersect(since, phaseStretches(drawn.spans, phaseImplementing, phaseTesting)))
 	}
 	return rounds, sentBack, rounded(after)
+}
+
+// beforeTheWait is the phase of the closest stretch before the one at index whose phase is not
+// `awaiting_children`, and "" where there is none: the phase a move into the stretch at index
+// left, read across a wait on children. A failed test or a review that requests changes while a
+// Dispatch child of the issue is open moves the issue into `awaiting_children` first, and the
+// return from there brings it to implementing, as the step its return takes
+// (dispatch://INFRA-3320, record.ReturnStep in packages/daemon/internal/record), so the send-back
+// is the move out of the phase before that wait.
+func beforeTheWait(spans []phaseSpan, index int) string {
+	for before := index - 1; before >= 0; before-- {
+		if spans[before].phase != phaseAwaitingChildren {
+			return spans[before].phase
+		}
+	}
+	return ""
 }
 
 // changes is the status marks with each repeat of the status before it left out: the moves the
@@ -606,9 +601,10 @@ func (r *reading) sampledOf(key string) []phaseSpan {
 // read that no longer carried the issue's phase, which the sampler writes when the daemon stops
 // reporting the issue: it names no phase and ends none, so the phase before it runs on through it
 // to the next mark that names one, or to the issue's end, and the issue's bars still add up to its
-// work time (the spec's "Parked and pre-work hours in phase time", which the base reads so since
-// 22bd759ecb). Both readers of the marks take them from here, the timeline (sampledOf) and the
-// recorded wait on a person (personStretches).
+// work time (the method texts of legion-phase-time and legion-work-time: "The phase and the slot
+// that the issue held run on through a drop until the next observation that names a phase"). Both
+// readers of the marks take them from here, the timeline (sampledOf) and the recorded wait on a
+// person (personStretches).
 func phaseMarks(marks []mark) []mark {
 	var named []mark
 	for _, recorded := range marks {
@@ -625,10 +621,12 @@ func phaseMarks(marks []mark) []mark {
 // them, so a `null` slot mark beside a `null` phase mark is the daemon dropping the issue, not the
 // issue giving its slot up: the slot is held on through it, to the first read that carries the
 // issue again, its next phase mark that names a phase, which releases the slot unless the same
-// read names one (dispatch://INFRA-1077's e2a409a4f5, "an issue the daemon drops keeps the slot it
-// held").
+// read names one (the method texts of legion-phase-time and legion-work-time: "When the daemon
+// stops reporting an issue ... that is a drop, not a release").
 //
-// It is measured once per issue and kept, as sampledOf keeps its timeline: three rules read it.
+// It is measured once per issue and kept, as sampledOf keeps its timeline: two rules read it, the
+// timeline's split of `admitted` (sampledOf) and the design phase's start before observations
+// (logMarks).
 func (r *reading) slotStretches(key string) []span {
 	if kept, measured := r.slots[key]; measured {
 		return kept
@@ -837,10 +835,10 @@ func phaseSteps(marks []logMark) []logMark {
 }
 
 // statusPhase is the phase a status write marks for an issue the sampler never saw: "`testing` is
-// testing, `needs_review` is reviewing until that round's `review` handoff and then accepting,
-// `retro` is the merger's phase ... and an `in_progress` after `testing`, `needs_review` or `retro`
-// (a send-back) is implementing. Every other `in_progress`, such as admission's, and every `todo`
-// mark no phase." A park is no phase either: the work time leaves it out.
+// testing, `needs_review` is reviewing until that round's `review` handoff and then accepting, ...
+// and an `in_progress` after `testing`, `needs_review` or `retro` (a send-back) is implementing.
+// Every other `in_progress`, such as admission's, and every `todo` mark no phase." `retro` marks
+// retro, on the implementer's bar (bars). A park is no phase either: the work time leaves it out.
 func statusPhase(previous, status string) (string, bool) {
 	switch status {
 	case "testing":

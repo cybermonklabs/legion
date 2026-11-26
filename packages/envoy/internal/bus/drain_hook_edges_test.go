@@ -3,6 +3,7 @@ package bus_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // discardingCache is a kvwatch.Cache that keeps nothing: these tests read the watcher's consumers,
@@ -23,26 +25,23 @@ func (discardingCache) BeginRead(kvwatch.Read)            {}
 func (discardingCache) CompleteRead(kvwatch.Read)         {}
 
 // watchedBucket opens a bucket on client's connection and returns a watcher on it that has
-// finished its first scan, with the server's own view of the bucket's consumers through admin.
-func watchedBucket(t *testing.T, client *bus.Client, uri, bucket string) (*kvwatch.Watcher, func() []string) {
+// finished its first scan, writing its lines through logger, with the server's own view of the
+// bucket's consumers through admin.
+func watchedBucket(t *testing.T, client *bus.Client, uri, bucket string, logger *slog.Logger) (*kvwatch.Watcher, func() []string) {
 	t.Helper()
 	kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, client.JS(), &natsgo.KeyValueConfig{Bucket: bucket})
 	if err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}
-	watcher := kvwatch.New("drain-test", kv, discardingCache{})
+	watcher := kvwatch.New("drain-test", kv, discardingCache{}, kvwatch.WithLogger(logger))
 	watcher.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: the first scan can end late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	if err := watcher.WaitReady(ctx); err != nil {
 		t.Fatalf("wait for the watcher: %v", err)
 	}
 	admin := testnats.Connect(t, uri)
-	adminJS, err := admin.JetStream()
-	if err != nil {
-		t.Fatalf("admin JetStream: %v", err)
-	}
-	consumers := func() []string { return consumerNames(adminJS, "KV_"+bucket) }
+	consumers := func() []string { return consumerNames(t, admin, "KV_"+bucket) }
 	if got := consumers(); len(got) != 1 {
 		t.Fatalf("consumers before the drain = %v, want the watcher's one", got)
 	}
@@ -67,7 +66,7 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 				return func() {
 					proxy.refuse.Store(true)
 					proxy.drop()
-					waitFor(t, 5*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+					waitFor(t, "the client to start reconnecting", client.Conn.IsReconnecting)
 				}
 			},
 		},
@@ -92,14 +91,13 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			_, uri := testnats.Start(t)
 			proxy := startRelayProxy(t, uri)
-			logs := captureBusLogs(t)
-			name := t.Name()
-			client, err := bus.ConnectOwningStream([]string{proxy.url()}, bus.WithReplicas(1), bus.WithName(name))
+			logs := captureBusLogs()
+			client, err := bus.ConnectOwningStream([]string{proxy.url()}, bus.WithReplicas(1), bus.WithName(t.Name()), bus.WithLogger(logs.logger))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
 			t.Cleanup(client.Close)
-			watcher, consumers := watchedBucket(t, client, uri, "drain_hook_lost")
+			watcher, consumers := watchedBucket(t, client, uri, "drain_hook_lost", logs.logger)
 			lose := test.lose(t, proxy, client)
 			client.AddDrainHook(func(ctx context.Context) {
 				lose()
@@ -108,7 +106,7 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 			watcher.Stop()
 			_ = client.Drain(3 * time.Second)
 			time.Sleep(200 * time.Millisecond)
-			records := warnOrErrorRecords(t, logs, name)
+			records := warnOrErrorRecords(t, logs)
 			for _, record := range records {
 				if strings.HasPrefix(record, "ERROR") {
 					t.Fatalf("a connection lost during the drain hooks logged %q", records)
@@ -117,7 +115,7 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 			if got, want := strings.Join(records, ", "), "WARN drain-test watcher's consumer was left to the server: the connection was lost before its delete"; got != want {
 				t.Fatalf("the drain logged %q, want %q", got, want)
 			}
-			waitFor(t, 15*time.Second, "the server to delete the consumer it lost interest in", func() bool { return len(consumers()) == 0 })
+			waitFor(t, "the server to delete the consumer it lost interest in", func() bool { return len(consumers()) == 0 })
 		})
 	}
 }
@@ -144,11 +142,7 @@ func TestASlowDeliveryLeavesTheDrainHooksTheirShare(t *testing.T) {
 	if err := client.Conn.Publish("notifications.role.drain-slow", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	left := make(chan time.Duration, 1)
 	client.AddDrainHook(func(ctx context.Context) {
 		deadline, _ := ctx.Deadline()
@@ -187,11 +181,7 @@ func TestADeliveryKeepsTenSecondsOfTheListenersDrain(t *testing.T) {
 	if err := client.Conn.Publish("notifications.role.drain-window", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	type observed struct {
 		delivered bool
 		left      time.Duration
@@ -219,14 +209,13 @@ func TestADeliveryKeepsTenSecondsOfTheListenersDrain(t *testing.T) {
 // the watchers still subscribed would leave their consumers for the server to time out.
 func TestAStuckDeliveryStillEndsTheKVWatchers(t *testing.T) {
 	_, uri := testnats.Start(t)
-	logs := captureBusLogs(t)
-	name := t.Name()
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithName(name))
+	logs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithName(t.Name()), bus.WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	watcher, consumers := watchedBucket(t, client, uri, "drain_hook_stuck")
+	watcher, consumers := watchedBucket(t, client, uri, "drain_hook_stuck", logs.logger)
 	client.AddDrainHook(watcher.End)
 	started := make(chan struct{})
 	if _, err := client.SubscribeCore("notifications.role.drain-stuck", func(*natsgo.Msg) {
@@ -238,11 +227,7 @@ func TestAStuckDeliveryStillEndsTheKVWatchers(t *testing.T) {
 	if err := client.Conn.Publish("notifications.role.drain-stuck", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	watcher.Stop()
 	began := time.Now()
 	err = client.Drain(3 * time.Second)
@@ -255,7 +240,7 @@ func TestAStuckDeliveryStillEndsTheKVWatchers(t *testing.T) {
 	if got := consumers(); len(got) != 0 {
 		t.Fatalf("consumers right after a drain a stuck delivery held = %v, want none", got)
 	}
-	if got := strings.Join(warnOrErrorRecords(t, logs, name), ", "); got != "" {
+	if got := strings.Join(warnOrErrorRecords(t, logs), ", "); got != "" {
 		t.Fatalf("the drain logged %q, want nothing", got)
 	}
 }

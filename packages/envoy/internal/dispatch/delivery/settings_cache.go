@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -8,13 +9,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // SettingsChannel is the Postgres notification channel a delivery_settings change announces itself
-// on at commit (delivery_settings_changed, migration 0156): any change but the freshness columns
-// every GitHub event and reconcile pass rewrite. It is the channel whose pglisten.Hub wake the
-// server passes to StartIntakes.
+// on at commit (delivery_settings_changed, migrations 0156 and 20261120111107): any change but the
+// freshness columns every GitHub event and reconcile pass rewrite and who saved the settings and
+// when (updated_by, updated_at). It is the channel whose pglisten.Hub wake the server passes to
+// StartIntakes.
 const SettingsChannel = "dispatch_delivery_settings"
 
 // settingsRetryInterval is how soon a SettingsCache reads delivery_settings again after a read
@@ -34,34 +37,37 @@ const settingsRetryInterval = 30 * time.Second
 type SettingsCache struct {
 	pool *store.Pool
 	wake <-chan struct{}
+	// log is where the cache writes a read that failed and a malformed deploy repository: the
+	// intakes' logger (intakeTuning.log), given at construction.
+	log *slog.Logger
 
 	current atomic.Pointer[DeliverySettings]
 
-	mu sync.Mutex
-	// changed is closed by the next read that stores settings, and replaced by a fresh channel.
-	changed chan struct{}
+	// read is closed by the first read that answered (reload), and readOnce closes it once.
+	read     chan struct{}
+	readOnce sync.Once
 }
 
 // newSettingsCache builds a cache over pool's delivery_settings that reads again on each signal on
-// wake. It holds nothing until Run (or reload) has read the row.
-func newSettingsCache(pool *store.Pool, wake <-chan struct{}) *SettingsCache {
-	return &SettingsCache{pool: pool, wake: wake, changed: make(chan struct{})}
+// wake and logs to logger, the intakes' (startIntakes passes intakeTuning.log); a nil logger is the
+// default logger as it is now. It holds nothing until Run (or reload) has read the row.
+func newSettingsCache(pool *store.Pool, wake <-chan struct{}, logger *slog.Logger) *SettingsCache {
+	return &SettingsCache{pool: pool, wake: wake, log: cmp.Or(logger, slog.Default()), read: make(chan struct{})}
+}
+
+// Read returns a channel closed once the cache's first read of delivery_settings has answered,
+// whatever it found: settings, no row, or a deploy repository it refused. A read that failed is no
+// answer, and Run makes it again. The delivery intake binds its durable only after it (Intake.Run),
+// so a deployment with settings never routes an envelope by the nil the cache holds before then.
+func (c *SettingsCache) Read() <-chan struct{} {
+	return c.read
 }
 
 // Load returns the latest settings the cache read whose deploy repository is a well-formed
-// owner/repo (splitRepo), or nil while it has read none. A later read that finds no row, or a
-// malformed repository, leaves the settings before it in place.
+// owner/repo (refs.SplitGitHubRepo), or nil while it has read none. A later read that finds no
+// row, or a malformed repository, leaves the settings before it in place.
 func (c *SettingsCache) Load() *DeliverySettings {
 	return c.current.Load()
-}
-
-// Changed returns a channel that is closed once the cache next stores settings. Taken before a
-// Load, it cannot miss a store that lands after that Load: the intake's bind waits on it for the
-// first settings.
-func (c *SettingsCache) Changed() <-chan struct{} {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.changed
 }
 
 // Run reads delivery_settings at once, then each time the wake is signalled, until ctx ends. A read
@@ -95,21 +101,19 @@ func (c *SettingsCache) reload(ctx context.Context) bool {
 	settings, err := GetSettings(ctx, c.pool)
 	switch {
 	case errors.Is(err, ErrNoSettings):
+		c.readOnce.Do(func() { close(c.read) })
 		return true
 	case err != nil:
 		if ctx.Err() == nil {
-			slog.Error("dispatch delivery: read settings for the intakes", "error", err)
+			c.log.Error("dispatch delivery: read settings for the intakes", "error", err)
 		}
 		return false
 	}
-	if _, _, err := splitRepo(settings.DeployRepo); err != nil {
-		slog.Error("dispatch delivery: deploy_repo setting", "error", err)
+	defer c.readOnce.Do(func() { close(c.read) })
+	if _, _, err := refs.SplitGitHubRepo(settings.DeployRepo); err != nil {
+		c.log.Error("dispatch delivery: deploy_repo setting", "error", err)
 		return true
 	}
 	c.current.Store(&settings)
-	c.mu.Lock()
-	close(c.changed)
-	c.changed = make(chan struct{})
-	c.mu.Unlock()
 	return true
 }

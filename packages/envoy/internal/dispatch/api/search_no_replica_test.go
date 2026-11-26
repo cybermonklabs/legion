@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -24,6 +26,7 @@ import (
 // for some other reason that matches one of these names has to be read against R2 and either
 // renamed or argued for, which is exactly the conversation the decision is owed.
 func TestTheBarAddsNoReplicaRoute(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 
@@ -47,7 +50,25 @@ func TestTheBarAddsNoReplicaRoute(t *testing.T) {
 	// browser can build a replica of the graph from it, and its caller is the Delivery page, not
 	// the bar. R2 of dispatch://INFRA-1042 refuses a replica, not the list behind one number. Only
 	// that method and path, matched exactly, are exempt: every other "items" segment is refused.
+	// The argument is held below as far as the route's own shapes state it: the query keys it
+	// declares (evalItemsQueryKeys, every other of which it refuses) page by limit and offset and
+	// name no cursor, mark or delta, and its answer (evalItemsResponse) carries none either.
 	const evalItems = http.MethodGet + " /api/v1/projects/{key}/evals/{slug}/items"
+	replicaWord := func(name string) bool {
+		return slices.ContainsFunc([]string{"cursor", "since", "after", "before", "delta", "next", "token", "changed"}, func(word string) bool {
+			return strings.Contains(name, word)
+		})
+	}
+	declared := evalItemsQueryKeys.declared
+	if !slices.Contains(declared, "limit") || !slices.Contains(declared, "offset") || slices.ContainsFunc(declared, replicaWord) {
+		t.Errorf("%s declares the query keys %v, want it paged by limit and offset and walked by no cursor, mark or delta", evalItems, declared)
+	}
+	answer := reflect.TypeFor[evalItemsResponse]()
+	for index := range answer.NumField() {
+		if field := strings.Split(answer.Field(index).Tag.Get("json"), ",")[0]; replicaWord(field) {
+			t.Errorf("%s answers the field %q, a cursor, mark or delta a replica would walk", evalItems, field)
+		}
+	}
 	for _, route := range index.Routes {
 		if route.Method+" "+route.Path == evalItems {
 			continue

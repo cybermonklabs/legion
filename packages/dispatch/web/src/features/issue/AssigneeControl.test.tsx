@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of who has signed in, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -6,17 +6,29 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import {
   type Commits,
+  drawnPick,
   type HeldNotifications,
   holdNotifications,
   recordCommits,
 } from "../../__tests__/commits";
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, openList, pick, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { projectDefaultAssigneesQuery } from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AssigneeControl } from "./AssigneeControl";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const issue: Issue = {
   advances: [],
@@ -165,11 +177,7 @@ function renderControl() {
   const user = userEvent.setup();
   // What the trigger's name says after its label - the person it holds, as a `<select>` says its
   // value - and the text of its badge.
-  const commits = recordCommits<string | null>(() => {
-    const [, ...shown] = trigger().getAttribute("aria-labelledby")?.split(" ") ?? [];
-    const named = shown.map((id) => document.getElementById(id)?.textContent).join(" ");
-    return `${named} ${trigger().textContent}`;
-  });
+  const commits = recordCommits<string | null>(() => drawnPick(trigger()));
   const view = render(
     <QueryClientProvider client={queryClient}>
       <CachedControl commits={commits} />
@@ -486,5 +494,34 @@ test("the issue header's Assignee list says the people could not be loaded when 
     expect(rows(list)).toEqual(["Unassigned", "✓alice"]);
   } finally {
     unmount();
+  }
+});
+
+// A save the reader stopped may have been made: the control says so in the field's own words
+// (`useIssueFieldWrite`), and that its Retry asks again under the save's key, rather than the
+// stopped write's own words, which are a composer's, of a message.
+test("an assignee the reader stopped says Retry asks again under its key, not a message's words", async () => {
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    const list = await openList(user, ASSIGNEE);
+    await waitFor(() => expect(rows(list)).toEqual(["Unassigned", "✓alice", "bob"]));
+    jest.useFakeTimers();
+    await userOnFakeClock().click(within(list).getByRole("option", { name: /^bob\b/ }));
+    await stopTheLateWrite(queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the assignee of CORE-1", "saved", {
+        method: "PATCH",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    unmount();
+    queryClient.clear();
+    patchIssue.mockRestore();
   }
 });

@@ -1,9 +1,10 @@
 /** What a move changed in a row's assertions, for the rows where the usual sentence is false.
  *
- *  `e2e/row-map.md` says of every moved row that the move touched no line of what it asserts,
- *  and that sentence is what dispatch://INFRA-1407's k2 is read from: a reviewer reads the map
- *  rather than the diff, so a row the sentence covers is a row nobody looks at. A row whose
- *  assertions really did move therefore needs its own line, and this is where it is written.
+ *  The row map, which `bun e2e/tools/row-map.ts` generates and git does not keep, says of every
+ *  moved row that the move touched no line of what it asserts, and that sentence is what
+ *  dispatch://INFRA-1407's k2 is read from: a reviewer reads the map rather than the diff, so a
+ *  row the sentence covers is a row nobody looks at. A row whose assertions really did move
+ *  therefore needs its own line, and this is where it is written.
  *
  *  A note is needed when a row's assertions are not the ones its pre-move copy made. The usual
  *  cause is a forward merge: `main` changes a row this layer has already moved, and the change
@@ -19,11 +20,28 @@
  *  `unchangedByTheMove` is what the map says of every other moved row, and it lives here
  *  beside the exceptions so that one file holds both halves of the claim: the generation
  *  writes it, and `e2e/__tests__/row-map.test.ts` holds a row with a note to carrying its note
- *  and not that sentence. */
+ *  and not that sentence. `newInTheStubbedLayer` is what it says of every row of a spec file
+ *  written in the stubbed layer from the start, keyed by that file: such a row never moved, so
+ *  neither sentence about a move is true of it. */
 export const unchangedByTheMove =
   "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts";
 
-/** The rows the sentence above is false for, keyed by the spec file and the title the listing
+/** What the map says of a row INFRA-3135 (cybermonklabs/legion#3729) wrote for the stubbed layer:
+ *  no copy of it ran before, so it has no assertions from before a move for `unchangedByTheMove`
+ *  to speak of. */
+const newInInfra3135 =
+  "new in INFRA-3135 (cybermonklabs/legion#3729): written for the stubbed layer with no copy before it, so no move touched it";
+
+const NEW_IN_THE_STUBBED_LAYER =
+  "new - written in the stubbed layer from the start (dispatch://INFRA-5200), with no real-stack copy that moved";
+
+/** The stubbed spec files whose rows were written there from the start, by file. */
+export const newInTheStubbedLayer: Readonly<Record<string, string>> = {
+  "layout-measure.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
+  "layout-rule.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
+};
+
+/** The rows `unchangedByTheMove` is false for, keyed by the spec file and the title the listing
  *  gives, joined by ` › `. */
 export const movedRowNotes: Record<string, string> = {
   "agent-name.stub.e2e.ts › a claimed List row and Board card open their issue by keyboard, and the claim's agent link opens the agent @pr":
@@ -50,4 +68,16 @@ export const movedRowNotes: Record<string, string> = {
     "the Issues tab draws the table rather than a collapsed filter strip, so the row waits for the table instead of opening the strip, and the Status option it measures carries its count in its name; the fit and every other touch target are main's",
   "keyboard-palette.stub.e2e.ts › g d opens the route's project Documents, from an issue key or a project path, and g p picks a project @pr":
     "changed in one assertion, and this is the one row of the move that changed at all: the count of rows the query leaves is the Projects group's rather than main's dialog-wide one. Measured in this issue's pod, the row runs in two modes and they differ: on replay the bar's search is aborted, because no recording answers `/api/v1/search`, and `Operations` is the only row; in a recording run against the real harness the bar also offers `Make a new issue from \"operations\"`. The Projects group holds one row in both. Everything else is main's, Enter included: `g d` reads the route's project before and after, the group is visible, and Enter on the highlighted row opens `/projects/OPS/issues`",
+  "table-controls.stub.e2e.ts › each page draws every shared control its design gives it, and no other @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › each page draws one row of controls, and nothing else between its title and its first row @phone @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › each page's pager, selection bar and column filters take the size the page passes: compact on the List, comfortable on the Inbox @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › no narrowing, panel, display menu or selection moves the first row of a list @phone @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › one search box, panel trigger and chip across the Inbox and the Board, and the List's compact row behaving alike @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › the Inbox is rows with their marks and no table, and opening one opens the reading pane at its own width @pr":
+    newInInfra3135,
 };

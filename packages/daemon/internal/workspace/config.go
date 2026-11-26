@@ -60,20 +60,21 @@ const (
 
 // CloneTimeout is the one bound ensureRepoClone gives its size-following steps, together, as the
 // fetch's share FetchTimeout: from GitHub, a `jj git clone` that copies and imports every object;
-// from a pod's feed, a local `git clone` that hard-links objects where possible, then jj's import
-// of every commit. A 3.4 GB repository (816k objects, 421 refs) cloned from a local feed by `jj git
-// clone` in 253 s with four cores and 281 s with two on a 64-core devbox, using no more than about
-// two cores either way, so CommandTimeout's fixed 5 minutes is no bound for it once a sandbox slows
-// it at all.
+// from a pod's feed, a shared local `git clone` that copies no object (feedClone), then jj's
+// import of every commit. A 3.4 GB repository (816k objects, 421 refs) cloned from a local feed by
+// `jj git clone` in 253 s with four cores and 281 s with two on a 64-core devbox, using no more
+// than about two cores either way, so CommandTimeout's fixed 5 minutes is no bound for it once a
+// sandbox slows it at all.
 const CloneTimeout = 30 * time.Minute
 
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
 // repository's tree into a workspace that holds none — which is the issue's checkout alone today
 // (`jj sparse reset`, Provision), so the next such command takes this constant rather than a third
-// one. One write of the largest repository mapped, example-org/oss-verify-proofs-internal, 282,134
-// files and 11.56 GiB, took 548.8 s and 554.9 s in an issue pod: this is 6.5 times that measured
-// run, and three times it at the worst rate measured over a 60-second window of it (10.0 MiB/s,
-// which writes the 11.56 GiB in 19.7 minutes).
+// one. One write of the largest repository a project then worked in,
+// example-org/oss-verify-proofs-internal, 282,134 files and 11.56 GiB, took 548.8 s and 554.9 s
+// in an issue pod: this is 6.5 times that measured run, and three times it at the worst rate
+// measured over a 60-second window of it (10.0 MiB/s, which writes the 11.56 GiB in 19.7
+// minutes).
 const CheckoutTimeout = time.Hour
 
 // Command is one process the provisioner runs, each bounded independently of every other: most
@@ -222,9 +223,16 @@ type Workspace struct {
 
 // pinnedGitConfig is git configuration every process provisioning starts reads last, after the
 // shared clone's and after the command's own: no hook runs, wherever the clone's hooks directory
-// or its core.hooksPath points. git would read GIT_CONFIG_PARAMETERS (its `-c`) after the pins, so
-// no process provisioning starts inherits it.
-var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}}
+// or its core.hooksPath points, and no git starts git's automatic maintenance, whatever the
+// clone's own gc.auto, gc.autoPackLimit or maintenance.auto say. Every git fetch, the one jj
+// starts included, otherwise starts `git maintenance run --auto --detach`, whose `git gc --auto`
+// outlives the fetch and takes the clone's ref locks, HEAD's among them, while jj is still
+// exporting the refs that fetch moved: jj gives up on such a lock and fails the provision
+// (#5349). git 2.51 made that maintenance let go of the locks, and the image's git
+// is older. So no process provisioning starts holds a lock of the clone once it has returned. git
+// would read GIT_CONFIG_PARAMETERS (its `-c`) after the pins, so no process provisioning starts
+// inherits it.
+var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}, {"gc.auto", "0"}, {"maintenance.auto", "false"}}
 
 // transportEnvironment is set on every process provisioning starts before the command's own
 // environment: git reaches a remote over https alone, so a url.<base>.insteadOf the tree wrote
@@ -237,12 +245,23 @@ type execRunner struct {
 	timeout time.Duration
 	// tools maps each command's name to the executable boot resolved for it.
 	tools map[string]string
+	// environ is the environment each child's is built from (Run), or nil for this process's own
+	// (os.Environ, read at each command).
+	environ []string
 }
 
 // NewRunner returns the production process runner. The supplied timeout is applied to every
-// command separately, rather than bounding the whole provisioning sequence.
+// command separately, rather than bounding the whole provisioning sequence. Each child's
+// environment is built from this process's own.
 func NewRunner(timeout time.Duration, tools map[string]string) Runner {
 	return execRunner{timeout: timeout, tools: tools}
+}
+
+// NewRunnerIn is NewRunner whose children's environments are built from environ instead of this
+// process's: the environment `legion workspace-init` was handed, which a test of the command run
+// inside its test process hands it without changing that process's own.
+func NewRunnerIn(environ []string, timeout time.Duration, tools map[string]string) Runner {
+	return execRunner{timeout: timeout, tools: tools, environ: slices.Clone(environ)}
 }
 
 func (r execRunner) Timeout() time.Duration {
@@ -294,7 +313,7 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 		if !ok {
 			return Result{}, errors.New("workspace command jj needs the git the daemon resolved at boot")
 		}
-		args = append([]string{"--config=git.executable-path=" + tomlString(git)}, args...)
+		args = append([]string{"--config=git.executable-path=" + TOMLString(git)}, args...)
 	}
 	child := exec.CommandContext(bounded, executable, args...)
 	child.Dir = command.Dir
@@ -303,8 +322,13 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// before transportEnvironment and the command's own entries are merged in, so pinGitConfig
 	// counts the command's own pairs alone (withoutGitConfigPairs). A Legion pod hands every
 	// process such a block, a role's GitHub credential helper among them, which no clone or fetch
-	// provisioning starts may read.
-	base := withoutGitConfigPairs(runtime.WithoutNATSSeeds(os.Environ()))
+	// provisioning starts may read. The environment those entries are taken from is the one the
+	// runner was made with (NewRunnerIn), or this process's own.
+	environ := r.environ
+	if environ == nil {
+		environ = os.Environ()
+	}
+	base := withoutGitConfigPairs(runtime.WithoutNATSSeeds(environ))
 	env, err := pinGitConfig(without(merge(merge(base, transportEnvironment), command.Env), "GIT_CONFIG_PARAMETERS"))
 	if err != nil {
 		return Result{}, err
@@ -359,7 +383,7 @@ type guardedWorkspace struct {
 // maybe_migrate_legacy_config; automatic until jj 0.49). Those are a workspace's
 // `.jj/workspace-config.toml` beside `.jj/workspace-config-id`, and its repository's
 // `config.toml` beside `config-id`. Removing the legacy file leaves jj to open an empty
-// configuration of its own, never one a tree agent wrote. The worker image's jj is 0.45; the tmux
+// configuration of its own, never one a tree agent wrote. The worker image's jj is 0.46; the tmux
 // daemon refuses a host jj older than 0.38 (internal/daemon's resolveTools).
 //
 // A workspace with no `.jj` is refused when requireJJ and clone are set: it was provisioned with
@@ -425,6 +449,27 @@ func disarmLegacyConfig(jjDir, repo string) error {
 		}
 	}
 	return nil
+}
+
+// GuardJJ holds the workspace at dir to the layout before a jj command that a process other than
+// the daemon's own runner starts there, with the guards that runner runs before each of its own
+// (execRunner.Run): the layout's components and the workspace's .jj, its .jj/repo naming the shared
+// clone that Location puts beside it (guardWorkspace), and no legacy configuration file that jj
+// would migrate into the configuration it reads (disarmLegacyConfig, which removes each). The clone
+// is derived from dir's place in the layout and from nothing inside dir, by the derivation
+// WorkspaceOf makes (layoutWorkspace). The Kubernetes issue pod's launcher calls it before its
+// workspace read (R6 of #5285). An error is a workspace in which no jj command is
+// to run.
+func GuardJJ(dir string) error {
+	located, err := layoutWorkspace(dir)
+	if err != nil {
+		return fmt.Errorf("refusing to run jj in %s: %w", dir, err)
+	}
+	guarded, err := guardWorkspace(located.Dir, located.Clone, true)
+	if err != nil {
+		return err
+	}
+	return disarmLegacyConfig(guarded.jjDir, guarded.repo)
 }
 
 // refuseSymlinkedLayout refuses an operation at root when dir, or any of the directories above it
@@ -507,7 +552,10 @@ func refuseEnclosingWorkspace(dir string) error {
 // built as jj builds it (workspaceRepository, never cleaned) and stat'ed by the kernel, which
 // resolves it physically as jj's canonicalize does; it must be the same directory as the clone's
 // own (os.SameFile), or the command is refused, naming both, before jj opens a repository Legion
-// did not provision and before anything there is removed.
+// did not provision and before anything there is removed. The refusal names the path the file
+// holds quoted (%q), as data: a role writes it, and the refusal reaches the issue's architect and
+// the controller as a read's error (the Legion reviewer's point 14 on R6 of
+// #5285), so a path of several lines reaches them as one quoted string.
 func sharedRepository(jjDir, clone string) (string, error) {
 	own := filepath.Join(jjDir, "repo")
 	if clone != "" {
@@ -537,17 +585,17 @@ func sharedRepository(jjDir, clone string) (string, error) {
 		if resolved, err := filepath.EvalSymlinks(target); err == nil {
 			named = resolved
 		}
-		return "", fmt.Errorf("refusing to run jj in %s: its .jj/repo names %s, not the shared clone's %s", filepath.Dir(jjDir), named, expected)
+		return "", fmt.Errorf("refusing to run jj in %s: its .jj/repo names %q, not the shared clone's %s", filepath.Dir(jjDir), named, expected)
 	}
 	return expected, nil
 }
 
 // workspaceRepository is the path jj opens as the repository of the workspace whose `.jj` is
-// jjDir, built as jj 0.45's DefaultWorkspaceLoader builds it (lib/src/workspace.rs): `.jj/repo`
-// itself unless it is a regular file, else the path that file holds, appended to `.jj` unless it
-// is absolute. It is never cleaned: jj canonicalizes it physically, each symlink resolved before a
-// `..` after it, and filepath.Join would cancel `link/..` before anything resolved `link`, naming
-// a different directory than the one jj opens.
+// jjDir, built as jj's DefaultWorkspaceLoader builds it (lib/src/workspace.rs, verified against
+// jj 0.46.0-sami): `.jj/repo` itself unless it is a regular file, else the path that file holds,
+// appended to `.jj` unless it is absolute. It is never cleaned: jj canonicalizes it physically,
+// each symlink resolved before a `..` after it, and filepath.Join would cancel `link/..` before
+// anything resolved `link`, naming a different directory than the one jj opens.
 //
 // The pointer file is read through readGitdir, the bounded read of a pointer file a role can
 // write, with no link followed and no wait: a tree agent can write it, and this read runs under
@@ -674,9 +722,27 @@ func environmentKey(entry string) string {
 	return key
 }
 
-// tomlString is value as one TOML basic string, the form jj reads a --config value in.
-func tomlString(value string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
+// TOMLString is value as one TOML basic string, the form jj reads a --config value in: jj
+// refuses a bare value such as legion-implementer[bot]. A `"` and a `\` are escaped, and each
+// control character, which a TOML basic string may not hold bare, is written as \uXXXX. Every
+// other byte is value's own.
+func TOMLString(value string) string {
+	var quoted strings.Builder
+	quoted.Grow(len(value) + 2)
+	quoted.WriteByte('"')
+	for i := range len(value) {
+		switch b := value[i]; {
+		case b == '"' || b == '\\':
+			quoted.WriteByte('\\')
+			quoted.WriteByte(b)
+		case b < 0x20 || b == 0x7f:
+			fmt.Fprintf(&quoted, `\u%04X`, b)
+		default:
+			quoted.WriteByte(b)
+		}
+	}
+	quoted.WriteByte('"')
+	return quoted.String()
 }
 
 // jjString is name as a jj string literal, the form every jj argument here takes a bookmark name
@@ -684,8 +750,10 @@ func tomlString(value string) string {
 // selects how a pattern matches, not that its text is literal) and a revset symbol as expressions,
 // so a bare `release#stable` fails to parse and a bare `release|stable` matches `release` or
 // `stable`. Quoted, every name git accepts is the one name it is. jj's string literal escapes `\`
-// and `"` as a TOML basic string does.
-func jjString(name string) string { return tomlString(name) }
+// and `"` as a TOML basic string does. It reads no \uXXXX, which TOMLString writes for a control
+// character, but no name here holds one: git refuses a control character in a ref name
+// (git check-ref-format).
+func jjString(name string) string { return TOMLString(name) }
 
 // runCommand runs argv with the runner's own slow-command budget: run is nil-checked before
 // run.Timeout() is ever read, so a nil Runner always returns the error below rather than a panic.
@@ -843,9 +911,9 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 	// The fetch takes no snapshot of the clone's working copy: a snapshot runs the working-copy
 	// filter, fsmonitor, and signing programs jj's configuration names, which a tree agent can set,
 	// and on the tmux runtime this fetch holds the one-shot credential. A failed fetch returns its
-	// own error: no clone this code makes borrows objects from the feed (clone.go makes a plain
-	// local clone), so the connectivity scan that once diagnosed a clone whose borrowed history had
-	// gone had no case left and was deleted with the disk that carried such a clone (INFRA-80).
+	// own error. A pod's clone borrows the feed's objects through its alternates (feedClone), and no
+	// connectivity scan stands here to diagnose a clone whose borrowed history went: Fetch never
+	// removes or replaces a feed it finds present (ownFeedRepository), so that history does not go.
 	fetch := []string{"git", "fetch"}
 	for _, branch := range source.branches {
 		fetch = append(fetch, "--branch", exactName(branch))
@@ -862,8 +930,11 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 
 // GitHubCredentialHelper is the `credential.helper` every shared clone gets: `legion
 // git-credential`, which answers git from the hosts.yml of the owner the repository's path names
-// (the owner's directory of LEGION_GH_OWNERS_DIR, and nothing else; ghconfig.HostsFile), since
-// every shared clone also sets credential.useHttpPath so git passes that path. The `legion` in it
+// (the owner's directory of LEGION_GH_OWNERS_DIR; ghconfig.HostsFile), since every shared clone
+// also sets credential.useHttpPath so git passes that path. For a repository of an owner with no
+// such directory it reads the repository from GitHub with GH_CONFIG_DIR's token, and answers a
+// fork with the token of its parent's owner, or else of its source's owner, where the bundle
+// holds that directory (cmd/legion's forkUpstreamDir). The `legion` in it
 // is resolved on PATH when git runs it, so the one it reaches is the process's own (a pane's
 // launcher directory, the image's /opt/legion/bin), and the value names no path of this machine's
 // that the clone would carry to another.
@@ -939,6 +1010,67 @@ func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error
 	argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "core.warnAmbiguousRefs", "false"}
 	_, err := RunChecked(ctx, run, argv, nil, cloneDir)
 	return err
+}
+
+// packWindowConfig is the git configuration that bounds how much of a repository's packs one git
+// process holds in memory: pack data mapped 32 MiB at a time (core.packedGitWindowSize) and 256 MiB
+// at most at once (core.packedGitLimit), 64 MiB for the delta search window of pack-objects
+// (pack.windowMemory) and 64 MiB of cached delta bases (core.deltaBaseCacheLimit). git 2.47's
+// defaults on a 64-bit machine map 1 GiB windows up to 32 TiB, and gVisor, which runs every issue
+// pod and repository cache, counts the whole of each window a process has touched as the pod's
+// memory. On one pack of 5.94 GB or 12.3 GB, `git log`, `git status`, a push and a fetch in an issue
+// pod reached 5.2 GiB to 8.8 GB with the defaults, and two pods were killed at their 8 GiB limit
+// (2026-11-16 and 2026-11-18); with these four, that push peaked at 760 MB. In a gVisor Job of
+// 2026-11-19, `git log --first-parent -- <file>` on firefox's one 5.86 GB pack peaked at
+// 6,778,128 KiB with the defaults and at 1,283,352 KiB with these. The first two settings do not
+// bound the pack-objects a push runs, which is why the last two are here. A pack's .idx is mapped
+// whole whatever these say.
+//
+// Every git of an issue pod and of a repository cache gets them, the cache's repack apart, from four
+// places, each for gits the others miss: the role environment's GIT_CONFIG pairs (sandbox's
+// gitConfigPairs, through PackWindowConfig), for every role's git and the git jj runs for a push or
+// a fetch; the worker image's /etc/gitconfig (packages/daemon/docker/worker.Dockerfile), for
+// provisioning's git, whose runner removes the role's pairs (execRunner.Run); the shared clone's own
+// configuration (configurePackWindows), for the shared public leak check's git; and `-c` on the git
+// of Fetch, FeedGit and FeedGitWithin (feedGit), which reads no system file (isolatedGitConfig).
+// The Dockerfile cannot read this list, so it writes the four values out twice: its `git config
+// --system` writes, and the smoke list its build holds /etc/gitconfig to. What holds both copies to
+// this list in CI is TestTheWorkerImageWritesPackWindowConfig (sharedclone_test.go), which reads
+// them out of the Dockerfile and requires each, in order, to equal this list. The pack-memory
+// measurement Job (scripts/e2e/pack-memory-job.sh) measures the built image itself: its
+// `c-pack-window-config system <key>` rows hold the image's `git config --system` to the probe's
+// copy of the four values, and its `c-git-rows role scope <key>` rows hold the pairs rolegitconfig
+// prints from this list to that same copy. A value changed here is changed in the Dockerfile, which
+// that test requires, and in that probe too.
+var packWindowConfig = [][2]string{
+	{"core.packedGitWindowSize", "32m"},
+	{"core.packedGitLimit", "256m"},
+	{"pack.windowMemory", "64m"},
+	{"core.deltaBaseCacheLimit", "64m"},
+}
+
+// PackWindowConfig is packWindowConfig, for the role environment's pairs (sandbox's
+// gitConfigPairs), which carry it after their own.
+func PackWindowConfig() [][2]string { return slices.Clone(packWindowConfig) }
+
+// configurePackWindows sets packWindowConfig in the shared clone's own configuration, which
+// every workspace of the clone reads too, for the one git of a pod that reads nothing else: the
+// shared public leak check's, which every push runs with every GIT_CONFIG variable removed and
+// GIT_CONFIG_NOSYSTEM set, so neither the role environment's pairs nor the image's /etc/gitconfig
+// reach it. Every other git of a pod's clone reads this file beside one of those two, which hold the
+// same values. Every provision writes it, so every shared clone takes them, a host clone of the tmux
+// runtime too (the daemon's Provision with FromGitHub), where they only bound git's pack windows; a
+// clone made before the setting existed, or one whose file a role changed, takes it at its next
+// provision. --replace-all leaves one line of each key whatever the file held, a key a role set
+// twice included. The feed does not take them, for the reason configureCloneReads gives.
+func configurePackWindows(ctx context.Context, run Runner, cloneDir string) error {
+	for _, pair := range packWindowConfig {
+		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
+		if _, err := RunChecked(ctx, run, argv, nil, cloneDir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // configureCloneDefaultRepository marks origin as gh's default repository in the shared clone's

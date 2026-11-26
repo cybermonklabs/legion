@@ -7,17 +7,19 @@
 // No route lists every project's daemon, so the section reads each project's
 // `GET /api/v1/projects/{key}/legion/daemon` (`useLegionDaemons`), and a write changes the one
 // entry of the project it names. The two writes are `PUT` and
-// `DELETE /api/v1/projects/{key}/legion/daemon`, classed `scopeDeployment` beside the repository
-// mappings and the Delivery settings: pointing Dispatch at a host is the deployment's business,
-// not one project's. A credential naming one project is refused by the server, which is the only
-// role Dispatch has, so the controls are offered to any signed-in person (`useIsHuman`) and the
-// server refuses the rest; its refusal is shown under the form as it wrote it.
+// `DELETE /api/v1/projects/{key}/legion/daemon`, classed `scopeDeployment` beside a project's
+// default repository and the Delivery settings: pointing Dispatch at a host is the deployment's
+// business, not one project's. A credential naming one project is refused by the server, which is
+// the only role Dispatch has, so the controls are offered to any signed-in person (`useIsHuman`)
+// and the server refuses the rest; its refusal is shown under the form as it wrote it.
 import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { LegionSetting } from "../../api/types";
+import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -39,6 +41,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { settingsFieldLabel, settingsMonoInput, settingsSubmitButton } from "./classes";
 import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
@@ -51,12 +54,10 @@ interface DaemonInput {
 }
 
 /** A write the server refused or never answered, or a URL the field itself refused, with what
- *  the page says about it: the server's own reason where it gave one, else a generic line. An
- *  `input` refusal is the field's, so no Retry is offered for it - the URL has to change first. */
-type FailedAction =
-  | ({ readonly kind: "save"; readonly message: string } & DaemonInput)
-  | { readonly kind: "remove"; readonly message: string; readonly project: string }
-  | { readonly kind: "input"; readonly message: string };
+ *  the page says about it: the server's own reason where it gave one, what a write the reader
+ *  stopped may have done and what Retry does with it (`retry`), else a generic line. An `input`
+ *  refusal is the field's, so no Retry is offered for it - the URL has to change first. */
+type FailedAction = { readonly kind: "save" | "remove" | "input"; readonly message: string };
 
 /** What a project's entry held before a write changed it: its daemon, `null` for none, or
  *  `undefined` where the entry was never read. */
@@ -115,8 +116,15 @@ export function LegionDaemonsSection(): ReactNode {
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const legion = useLegionDaemons();
   const daemonKey = (named: string) => legionDaemonQuery(named).queryKey;
-  // Both writes show their refusal under the form, with the row they changed put back.
+  // Both writes show their refusal under the form, with the row they changed put back. Neither
+  // holds back the project's reads while it is out (`holds`): another browser names a project's
+  // daemon as this one does, and no live event names it, so a hold would keep that change back
+  // until this write's answer, however late. A read already out at the press is given up in the
+  // step the press shows its row, so no second press reads the row from before it; one Dispatch
+  // answers before it takes the write can still show the old row until the write settles and the
+  // project is read again.
   const saveDaemon = useKeyedWrite<LegionSetting, DaemonInput, PreviousDaemon>({
+    method: "PUT",
     write: ({ project: named, state_url: url }, bounds) => api.putLegionDaemon(named, url, bounds),
     inline: true,
     label: ({ project: named }) => `${named}'s Legion daemon`,
@@ -124,13 +132,20 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.setQueryData(daemonKey(variables.project), context?.previous);
       setFailedAction({
         kind: "save",
-        message: apiErrorMessage(error, `Couldn't save ${variables.project}'s Legion daemon.`),
-        ...variables,
+        message:
+          error instanceof SendStoppedError
+            ? // Built inside `saveDaemon`'s own `onError`, where its `KeyedWriteResult` is not in
+              // hand to read the method from; it is this write's own `PUT` (`useKeyedWrite` method).
+              stoppedWriteNote(`the Legion daemon of ${variables.project}`, "saved", {
+                method: "PUT",
+                stopped: error,
+              })
+            : apiErrorMessage(error, `Couldn't save ${variables.project}'s Legion daemon.`),
       });
     },
-    onMutate: async (variables) => {
+    onMutate: (variables) => {
       const key = daemonKey(variables.project);
-      await queryClient.cancelQueries({ queryKey: key });
+      void queryClient.cancelQueries({ exact: true, queryKey: key });
       const previous = queryClient.getQueryData(key);
       const optimistic: LegionSetting = {
         // As the server keeps it: whoever first named this project's daemon, else this person.
@@ -142,21 +157,23 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.setQueryData(key, optimistic);
       return { previous };
     },
-    // A landing with no answer keeps the optimistic row; `onSettled` reads the project again.
+    // A landing with no answer keeps the optimistic row; `onSettled` reads the project again. An
+    // answer goes over any read of the project still out, asked before it (`replaceQueryData`).
     onSuccess: (setting) => {
       if (setting !== null) {
-        queryClient.setQueryData(daemonKey(setting.project), setting);
+        replaceQueryData(queryClient, daemonKey(setting.project), setting);
       }
       setFailedAction(undefined);
       setProject("");
       setStateUrl("");
     },
     // The answer is the row as the server saved it when it answered; reading the project again
-    // once the write settles leaves the page on the server's state, as the repository mappings do.
+    // once the write settles leaves the page on the server's state.
     onSettled: (_setting, _error, variables) =>
       queryClient.invalidateQueries({ queryKey: daemonKey(variables.project) }),
   });
   const removeDaemon = useKeyedWrite<void, string, PreviousDaemon>({
+    method: "DELETE",
     write: (named: string, bounds) => api.deleteLegionDaemon(named, bounds),
     inline: true,
     label: (named) => `${named}'s Legion daemon removed`,
@@ -164,13 +181,20 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.setQueryData(daemonKey(named), context?.previous);
       setFailedAction({
         kind: "remove",
-        message: apiErrorMessage(error, `Couldn't remove ${named}'s Legion daemon.`),
-        project: named,
+        message:
+          error instanceof SendStoppedError
+            ? // Built inside `removeDaemon`'s own `onError`, where its `KeyedWriteResult` is not in
+              // hand to read the method from; it is this write's own `DELETE` (`useKeyedWrite`).
+              stoppedWriteNote(`the removal of ${named}'s Legion daemon`, "made", {
+                method: "DELETE",
+                stopped: error,
+              })
+            : apiErrorMessage(error, `Couldn't remove ${named}'s Legion daemon.`),
       });
     },
-    onMutate: async (named) => {
+    onMutate: (named) => {
       const key = daemonKey(named);
-      await queryClient.cancelQueries({ queryKey: key });
+      void queryClient.cancelQueries({ exact: true, queryKey: key });
       const previous = queryClient.getQueryData(key);
       queryClient.setQueryData(key, null);
       return { previous };
@@ -180,18 +204,28 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.invalidateQueries({ queryKey: daemonKey(named) }),
   });
 
+  // The refusal on screen is the newest press of its write: a later press of either write that
+  // lands lets it go, and Retry waits while either is out. So Retry is that write's own (`retry`),
+  // which makes a press the reader stopped again as that press. Both are a `PUT` or a `DELETE`,
+  // which sends no key, so that is the same change sent again. The field's own refusal of a URL
+  // made no press, and offers no Retry.
   const retry = () => {
     if (failedAction?.kind === "save") {
-      const { kind: _kind, message: _message, ...variables } = failedAction;
-      saveDaemon.mutate(variables);
+      saveDaemon.retry();
       return;
     }
     if (failedAction?.kind === "remove") {
-      removeDaemon.mutate(failedAction.project);
+      removeDaemon.retry();
     }
   };
+  // While either write is out, Save Legion daemon and every row's Remove are held by
+  // `aria-disabled` (`heldPress`), and the address box by `aria-disabled` and read-only, never
+  // disabled: the control the reader pressed or submitted from keeps the focus, and a press or a
+  // submit then sends nothing.
+  const writing = saveDaemon.isPending || removeDaemon.isPending;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (writing) return;
     // The project list is a button, which no `required` holds: an empty one files nothing here.
     if (project === "") {
       setProjectMissing(true);
@@ -204,7 +238,6 @@ export function LegionDaemonsSection(): ReactNode {
     }
     saveDaemon.mutate({ project, state_url: url });
   };
-  const writing = saveDaemon.isPending || removeDaemon.isPending;
 
   return (
     <section aria-labelledby="legion-daemons-heading" data-legion-daemons>
@@ -265,9 +298,8 @@ export function LegionDaemonsSection(): ReactNode {
                       <TableCell align="right">
                         <button
                           aria-label={`Remove the Legion daemon of ${setting.project}`}
-                          className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                          disabled={writing}
-                          onClick={() => removeDaemon.mutate(setting.project)}
+                          className={`font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                          {...heldPress(writing, () => removeDaemon.mutate(setting.project))}
                           type="button"
                         >
                           Remove
@@ -298,8 +330,8 @@ export function LegionDaemonsSection(): ReactNode {
               <label className={settingsFieldLabel} htmlFor="legion-state-url">
                 Legion daemon state URL
                 <input
+                  {...heldField(writing)}
                   className={settingsMonoInput}
-                  disabled={writing}
                   id="legion-state-url"
                   onChange={(event) => setStateUrl(event.target.value)}
                   placeholder="https://daemon.example"
@@ -307,7 +339,11 @@ export function LegionDaemonsSection(): ReactNode {
                   value={stateUrl}
                 />
               </label>
-              <button className={settingsSubmitButton} disabled={writing} type="submit">
+              <button
+                aria-disabled={writing || undefined}
+                className={settingsSubmitButton}
+                type="submit"
+              >
                 Save Legion daemon
               </button>
             </form>

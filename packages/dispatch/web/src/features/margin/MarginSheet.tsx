@@ -2,6 +2,7 @@ import { type ReactNode, type RefObject, useRef } from "react";
 
 import type { Artifact, Ask, DispatchEvent } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { FOOT_COMPOSER_FRAME_BOUND, useFootInset } from "../../hooks/useFootInset";
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
@@ -15,6 +16,7 @@ import {
 } from "../../theme/classes";
 import type { ComposerKind } from "../conversation/composer-model";
 import type { SaveCommentEdit } from "../conversation/send-request";
+import type { AwayDraft } from "../conversation/unsent-drafts";
 import { useMarginDrawer, useMarginSlotFill } from "../issue-page/margin-slot";
 import {
   COMPACT_VIEWPORT_QUERY,
@@ -22,7 +24,12 @@ import {
   useDialog,
   useMediaQuery,
 } from "../shell/useDialog";
-import { CommentsTab, type MarginComposer, MarginComposerSlot } from "./CommentsTab";
+import {
+  CommentsTab,
+  type MarginComposer,
+  MarginComposerSlot,
+  MarginKeptDrafts,
+} from "./CommentsTab";
 import { marginReplySendKey } from "./margin-context";
 import { PinnedTab } from "./PinnedTab";
 import { ThreadCard } from "./ThreadCard";
@@ -43,9 +50,12 @@ export interface MarginSheetModel {
      *  store holds for the document goes, its mark with it. */
     closeComposer: (composer: MarginComposer) => void;
     onAction: (id: string, action: MarginItemAction) => void;
-    onComposerKindChange: (kind: ComposerKind) => string | undefined;
+    /** The kind switch of the composer on the document `artifact` (`retypeCompose`). */
+    onComposerKindChange: (artifact: string, kind: ComposerKind) => string | undefined;
     onEdit: SaveCommentEdit;
     onRetryAction: () => void;
+    /** Discard my draft on a draft the compose kept for words of the document (`keptDrafts`). */
+    discardKeptDraft: (away: AwayDraft) => void;
     onUnpin: (eventId: number) => void;
     onUnpinConversation: (id: string) => void;
     onRetryAnsweredAsk: (() => void) | undefined;
@@ -72,6 +82,9 @@ export interface MarginSheetModel {
     issueError: boolean;
     owner: MarginOwner | undefined;
     issuePending: boolean;
+    /** What the margin's compose kept for words of the open document (`AwayDraft.anchor`), which
+     *  the margin draws while no compose is open there. */
+    keptDrafts: readonly AwayDraft[];
     needsYou: Ask[];
     onSelectCard: (id: string, blockID?: string) => void;
     openAskCount: number;
@@ -164,6 +177,7 @@ export function MarginSheet({
       issueError,
       owner,
       issuePending,
+      keptDrafts,
       openAskCount,
       pendingActionIds,
       pinned,
@@ -211,6 +225,11 @@ export function MarginSheet({
   });
   // What the margin's own tabs give way to: the rail it collapses to, or a phone margin thread.
   const covered = collapsed || (isPhoneViewport && phoneThread !== undefined);
+  // Collapsed below `xl`, the sheet is a bar fixed at the foot of the screen, in the foot's page
+  // layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so the hook
+  // holds its band, its box on the screen, and the floats keep clear of it. Expanded, it is a
+  // modal sheet over the page, and adds nothing. The dialog's container is this same `<aside>`.
+  useFootInset(dialog.containerRef, compactSheet && owner !== undefined && !sheet.expanded, "page");
 
   return (
     <>
@@ -360,12 +379,16 @@ export function MarginSheet({
               )}
             </>
           )}
+          {/* Keyed by its document and its compose: a newer compose on the document is the host's
+              move for the one before it, so it draws a composer of its own, which takes nothing
+              of that compose's draft, while Send, a kind switch and a re-written mark keep the
+              one the reader is writing in. */}
           {composer === undefined ? null : (
             <MarginComposerSlot
               composer={composer}
               hidden={tab.value !== "comments"}
               isClosed={isClosed}
-              key={composer.anchor.artifact}
+              key={`${composer.anchor.artifact}:${composer.seq ?? ""}`}
               onClose={actions.closeComposer}
               onKindChange={actions.onComposerKindChange}
               onScreen={
@@ -375,6 +398,17 @@ export function MarginSheet({
               }
             />
           )}
+          {/* With no compose open on the document, what the margin's compose kept for its words
+              is drawn here: the compose that held it ended with nothing the reader pressed - a
+              reload, a sign-in after a lapse, its issue's closing - and nothing else would show
+              it until the next compose on the document. */}
+          {composer === undefined && visibleArtifact !== undefined ? (
+            <MarginKeptDrafts
+              drafts={keptDrafts}
+              hidden={tab.value !== "comments"}
+              onDiscard={actions.discardKeptDraft}
+            />
+          ) : null}
           {tab.value === "comments" &&
           !covered &&
           owner !== undefined &&
@@ -443,7 +477,7 @@ export function MarginSheet({
                 actionFailure={actionFailure?.id === phoneThread.key ? actionFailure : undefined}
                 artifactSlug={visibleArtifact.slug}
                 className="min-h-full pb-32"
-                composerClassName={`fixed inset-x-0 bottom-0 z-10 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                composerClassName={`fixed inset-x-0 bottom-0 z-10 border-t px-4 pt-4 pb-2 ${FOOT_COMPOSER_FRAME_BOUND} ${card} ${borderDefault}`}
                 expanded
                 hovered={selection.hoveredMarkId === phoneThread.anchor?.mark_id}
                 editingCommentId={selection.editingCommentId}

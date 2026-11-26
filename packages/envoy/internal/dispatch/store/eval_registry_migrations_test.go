@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,8 +203,10 @@ func TestAReadingCarriesAValueOrItsReasonAndIsCorrectedOnce(t *testing.T) {
 
 // TestAWriteOfReadingsLogsOneChangePerEval: one statement writing a batch of three readings of one
 // eval logs one eval_readings change, naming the project and the eval and spanning the readings'
-// measured_at; a statement writing readings of two evals logs one change for each; and the write
-// of superseded_at on a replaced reading logs none.
+// measured_at; a statement writing readings of two evals logs one change for each; a transaction
+// of two such statements, as the readings write sends a batch past the statement bound, logs one
+// change of each eval still, spanning every reading of it the two wrote; and the write of
+// superseded_at on a replaced reading logs none.
 func TestAWriteOfReadingsLogsOneChangePerEval(t *testing.T) {
 	ctx := context.Background()
 	store := migratedEvalStore(t)
@@ -256,6 +260,40 @@ func TestAWriteOfReadingsLogsOneChangePerEval(t *testing.T) {
 	t.Logf("marking %d readings superseded logged %d change rows", superseded.RowsAffected(), len(changes))
 	if superseded.RowsAffected() != 2 || len(changes) != 0 {
 		t.Fatalf("marking %d readings superseded logged %d changes; want two readings marked and no change", superseded.RowsAffected(), len(changes))
+	}
+
+	head = changeLogHead(t, store)
+	tx, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin a transaction of two statements: %v", err)
+	}
+	for _, batch := range []struct {
+		evals    []string
+		measured []time.Time
+	}{{[]string{evalID, other}, []time.Time{evalAt(9, 9), evalAt(9, 10)}}, {[]string{evalID, evalID}, []time.Time{evalAt(10, 9), evalAt(8, 1)}}} {
+		if _, err := tx.Exec(ctx, `
+			insert into eval_readings (eval_id, series, row_kind, row_key, value, measured_at, recorded_by)
+			select eval, 'minutes', 'pull_request', 'acme/widgets#tx' || ordinality || '-' || extract(epoch from measured), ordinality * 10, measured, $3::jsonb
+			from unnest($1::text[], $2::timestamptz[]) with ordinality as given(eval, measured, ordinality)
+		`, batch.evals, batch.measured, evalRecorder); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("write a statement of the transaction: %v", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the transaction of two statements: %v", err)
+	}
+	changes = changesAfter(t, store, head)
+	t.Logf("a transaction of two statements over 2 evals logged %d change rows: %+v", len(changes), changes)
+	spans := map[string][2]time.Time{evalID: {evalAt(8, 1), evalAt(10, 9)}, other: {evalAt(9, 10), evalAt(9, 10)}}
+	if len(changes) != 2 {
+		t.Fatalf("a transaction of two statements writing readings of two evals logged %d changes; want one of each", len(changes))
+	}
+	for _, change := range changes {
+		want, held := spans[change.ref]
+		if !held || change.tOld == nil || !change.tOld.Equal(want[0]) || change.tNew == nil || !change.tNew.Equal(want[1]) {
+			t.Fatalf("the change of %s spans %v to %v; want every reading of it the two statements wrote, %s to %s", change.ref, change.tOld, change.tNew, want[0], want[1])
+		}
 	}
 }
 
@@ -400,11 +438,11 @@ func TestANewVersionLogsOneEvalVersionsChange(t *testing.T) {
 	}
 }
 
-// TestAMappingSavedAgainByAnotherPersonLogsNoChange: a repository's mapping in repo_projects logs a
-// settings change naming the repository when it is made, when a column the mapping decides moves
-// and when it is deleted, and none when the settings route's upsert saves it again unchanged as
-// another person, which rewrites created_by alone.
-func TestAMappingSavedAgainByAnotherPersonLogsNoChange(t *testing.T) {
+// TestAWriteOfRepoProjectsLogsNoChange: repo_projects is a read-only legacy table (no route writes
+// it, and dispatch://INFRA-4411 drops it), and no rule of the eval day rows reads it, so no trigger
+// logs a change of it: a row made, saved again by another person, made a default and deleted
+// leaves the change log and its outbox as they stood.
+func TestAWriteOfRepoProjectsLogsNoChange(t *testing.T) {
 	ctx := context.Background()
 	store := migratedEvalStore(t)
 	const save = `
@@ -416,26 +454,22 @@ func TestAMappingSavedAgainByAnotherPersonLogsNoChange(t *testing.T) {
 		what      string
 		statement string
 		args      []any
-		changes   int
 	}{
-		{"the mapping made by alice", save, []any{evalProject, `{"kind":"user","id":"alice"}`, false}, 1},
-		{"the same mapping saved by bob", save, []any{evalProject, `{"kind":"user","id":"bob"}`, false}, 0},
-		{"the mapping made the project's default", save, []any{evalProject, `{"kind":"user","id":"bob"}`, true}, 1},
-		{"the mapping deleted", `delete from repo_projects where repo = 'acme/web'`, nil, 1},
+		{"a row made by alice", save, []any{evalProject, `{"kind":"user","id":"alice"}`, false}},
+		{"the same row saved by bob", save, []any{evalProject, `{"kind":"user","id":"bob"}`, false}},
+		{"the row made the project's default", save, []any{evalProject, `{"kind":"user","id":"bob"}`, true}},
+		{"the row deleted", `delete from repo_projects where repo = 'acme/web'`, nil},
 	} {
 		head := changeLogHead(t, store)
 		if _, err := store.Pool.Exec(ctx, write.statement, write.args...); err != nil {
 			t.Fatalf("%s: %v", write.what, err)
 		}
-		changes := changesAfter(t, store, head)
-		t.Logf("%s logged %v", write.what, changes)
-		if len(changes) != write.changes {
-			t.Errorf("%s logged %d changes, want %d", write.what, len(changes), write.changes)
+		var pending int
+		if err := store.Pool.QueryRow(ctx, `select count(*) from delivery_changes_pending`).Scan(&pending); err != nil {
+			t.Fatalf("count the outbox's rows: %v", err)
 		}
-		for _, change := range changes {
-			if change.kind != "settings" || change.repo != "acme/web" {
-				t.Errorf("%s logged %v, want a settings change naming acme/web", write.what, change)
-			}
+		if changes := changesAfter(t, store, head); len(changes) != 0 || pending != 0 {
+			t.Errorf("%s logged %v and left %d rows in the outbox, want no change", write.what, changes, pending)
 		}
 	}
 }
@@ -455,7 +489,7 @@ func TestAnUpsertOfDayRowsLogsOneChangeSpanningItsDays(t *testing.T) {
 			insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
 			select $1, $2, 'minutes', '', day::date, true, 1, value, $3
 			from unnest($4::text[], $5::double precision[]) as given(day, value)
-			on conflict (project_key, eval_id, writer, series, repo, day) do update
+			on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do update
 			set listed = excluded.listed, n = excluded.n, sum = excluded.sum,
 			    built_by = excluded.built_by, updated_at = now()
 			where (eval_days.listed, eval_days.n, eval_days.sum, eval_days.built_by)
@@ -513,7 +547,7 @@ func TestAnUpsertOfDayRowsLogsOneChangeSpanningItsDays(t *testing.T) {
 	moved, err := store.Pool.Exec(ctx, `
 		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, last_value, last_at, built_by)
 		values ($1, $2, 'minutes', '', '2026-11-06', true, 1, 50, 7, $3, 'build-b')
-		on conflict (project_key, eval_id, writer, series, repo, day) do update
+		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do update
 		set last_value = excluded.last_value, last_at = excluded.last_at, updated_at = now()
 		where (eval_days.last_value, eval_days.last_at) is distinct from (excluded.last_value, excluded.last_at)
 	`, evalProject, evalID, evalAt(6, 18))
@@ -525,4 +559,142 @@ func TestAnUpsertOfDayRowsLogsOneChangeSpanningItsDays(t *testing.T) {
 	}
 	oneChangeOver("a write moving one day's last_value and last_at alone", changesAfter(t, store, head),
 		[]string{"2026-11-06"})
+}
+
+// TestAnUpdateThatMovesADayRowsDayLogsBothDays: eval_days_updated matches the old and the new rows
+// of an update by the primary key, so an update that moves a row's day matches it on neither side,
+// and the one change it logs spans the row's old day and its new one.
+func TestAnUpdateThatMovesADayRowsDayLogsBothDays(t *testing.T) {
+	ctx := context.Background()
+	store := migratedEvalStore(t)
+	if _, err := store.Pool.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
+		values ($1, $2, 'minutes', '', '2026-11-03', true, 1, 10, 'build-a')
+	`, evalProject, evalID); err != nil {
+		t.Fatalf("store the day row of 2026-11-03: %v", err)
+	}
+	head := changeLogHead(t, store)
+	moved, err := store.Pool.Exec(ctx, `update eval_days set day = '2026-11-06' where project_key = $1 and eval_id = $2 and day = '2026-11-03'`,
+		evalProject, evalID)
+	if err != nil {
+		t.Fatalf("move the day row to 2026-11-06: %v", err)
+	}
+	if moved.RowsAffected() != 1 {
+		t.Fatalf("the move rewrote %d rows; want the one stored row", moved.RowsAffected())
+	}
+	changes := changesAfter(t, store, head)
+	t.Logf("a move of the row's day logged %d change rows: %v", len(changes), changes)
+	if len(changes) != 1 || changes[0].kind != "eval_days" || changes[0].repo != evalProject || changes[0].ref != evalID {
+		t.Fatalf("a move of the row's day logged %v; want one eval_days change of %s", changes, evalID)
+	}
+	if days := changeDays(changes[0]); len(days) == 0 || days[0] != "2026-11-03" || days[len(days)-1] != "2026-11-06" {
+		t.Fatalf("the change's span covers days %v; want 2026-11-03, the old day, through 2026-11-06, the new one", days)
+	}
+}
+
+// TestTheTablesARewriteUpdatesHoldTheOptionsThatKeepTheirSize: eval_days, eval_range_figures and
+// eval_day_figures are created with fillfactor 80 (migrations 20261117100006 and 20261120072042).
+// A rewrite after a change of the delivery settings updates each row it sends whose values moved
+// (the upserts' `is distinct from` leaves the rest) and moves no column an index holds, so the
+// fifth of each page left free keeps each update on its page (HOT), writing no index entry; at the
+// default of 100 almost none is, and each table grows with every pass until a vacuum. eval_days is
+// also vacuumed after every 1,000 inserts, with its index pass, since a rewrite deletes and inserts
+// rows of it too and an insert reuses a deleted row's space only after a vacuum records it: at
+// autovacuum's defaults the table grew with every pass and was never vacuumed. The test reads the
+// options each table holds, not its size.
+func TestTheTablesARewriteUpdatesHoldTheOptionsThatKeepTheirSize(t *testing.T) {
+	ctx := context.Background()
+	store := migratedEmptyStore(t)
+	want := map[string][]string{
+		"eval_days":          {"fillfactor=80", "autovacuum_vacuum_insert_threshold=1000", "autovacuum_vacuum_insert_scale_factor=0", "vacuum_index_cleanup=on"},
+		"eval_range_figures": {"fillfactor=80"},
+		"eval_day_figures":   {"fillfactor=80"},
+	}
+	for table, options := range want {
+		var held []string
+		if err := store.Pool.QueryRow(ctx,
+			`select coalesce(reloptions, '{}') from pg_class where oid = $1::regclass`, table).Scan(&held); err != nil {
+			t.Fatalf("read %s's options: %v", table, err)
+		}
+		for _, option := range options {
+			if !slices.Contains(held, option) {
+				t.Errorf("%s's options are %v; want %s among them", table, held, option)
+			}
+		}
+	}
+}
+
+// TestEveryColumnOfADayRowButItsBookkeepingIsComparedByItsUpdateTrigger: eval_days_updated logs a
+// change of every row whose content an update moved by comparing the old row with the new one
+// column by column (migration 20261117100014), so a column eval_days gains and the comparison
+// leaves out would move with no change logged, and an evals view would never wake to it. Every
+// column the catalog lists for eval_days but updated_at and built_by, which a pass rewrites
+// whatever it finds, is compared, the old row's against the new row's at the same place, and
+// neither of those two is.
+func TestEveryColumnOfADayRowButItsBookkeepingIsComparedByItsUpdateTrigger(t *testing.T) {
+	ctx := context.Background()
+	store := migratedEmptyStore(t)
+	rows, err := store.Pool.Query(ctx, `
+		select column_name::text from information_schema.columns
+		where table_schema = current_schema() and table_name = 'eval_days'
+		order by ordinal_position
+	`)
+	if err != nil {
+		t.Fatalf("read the columns of eval_days: %v", err)
+	}
+	columns, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the columns of eval_days: %v", err)
+	}
+	ignored := []string{"updated_at", "built_by"}
+	want := slices.DeleteFunc(slices.Clone(columns), func(column string) bool { return slices.Contains(ignored, column) })
+	if len(want) != len(columns)-len(ignored) {
+		t.Fatalf("eval_days has columns %v; want updated_at and built_by among them", columns)
+	}
+	var definition string
+	if err := store.Pool.QueryRow(ctx, `select pg_get_functiondef('eval_days_updated'::regproc)`).Scan(&definition); err != nil {
+		t.Fatalf("read eval_days_updated: %v", err)
+	}
+	comparisons := rowComparison.FindAllStringSubmatch(definition, -1)
+	if len(comparisons) != 1 {
+		t.Fatalf("eval_days_updated holds %d comparisons of a list of the old row's columns with one of the new row's, "+
+			"`(old_row.c, …) is distinct from (new_row.c, …)`; want one:\n%s", len(comparisons), definition)
+	}
+	oldColumns, oldOthers := comparedColumns(comparisons[0][1], "old_row")
+	newColumns, newOthers := comparedColumns(comparisons[0][2], "new_row")
+	t.Logf("eval_days has %d columns; eval_days_updated compares the old row's %v with the new row's %v", len(columns), oldColumns, newColumns)
+	if len(oldOthers) > 0 || len(newOthers) > 0 {
+		t.Errorf("eval_days_updated compares %v beside the old row's columns and %v beside the new row's; want each side the row's columns alone",
+			oldOthers, newOthers)
+	}
+	if !slices.Equal(oldColumns, newColumns) {
+		t.Errorf("eval_days_updated compares the old row's %v with the new row's %v; want the same column at each place", oldColumns, newColumns)
+	}
+	missing := slices.DeleteFunc(slices.Clone(want), func(column string) bool { return slices.Contains(oldColumns, column) })
+	extra := slices.DeleteFunc(slices.Clone(oldColumns), func(column string) bool { return slices.Contains(want, column) })
+	if len(missing) > 0 || len(extra) > 0 || len(oldColumns) != len(want) {
+		t.Errorf("eval_days_updated compares the old row's %v; want every column of eval_days but %v once, %v, which leaves out %v and holds %v besides",
+			oldColumns, ignored, want, missing, extra)
+	}
+}
+
+// rowComparison matches one comparison of two lists of columns, `(…) is distinct from (…)`, each
+// list held with no parentheses inside it, its two lists the submatches.
+var rowComparison = regexp.MustCompile(`(?i)\(([^()]*)\)\s*is\s+distinct\s+from\s*\(([^()]*)\)`)
+
+// columnName matches a column's name alone.
+var columnName = regexp.MustCompile(`^\w+$`)
+
+// comparedColumns is the columns of row, a transition table's name, that list (one side of
+// rowComparison) names, in its order, and every item of it that names none of them.
+func comparedColumns(list, row string) (columns, others []string) {
+	for item := range strings.SplitSeq(list, ",") {
+		item = strings.TrimSpace(item)
+		if column, found := strings.CutPrefix(item, row+"."); found && columnName.MatchString(column) {
+			columns = append(columns, column)
+		} else {
+			others = append(others, item)
+		}
+	}
+	return columns, others
 }

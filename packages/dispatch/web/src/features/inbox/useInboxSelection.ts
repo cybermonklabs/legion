@@ -10,6 +10,7 @@
 import { type RefObject, useCallback, useRef, useState } from "react";
 
 import { useMarkedKeys } from "../../hooks/useMarkedKeys";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import type { InboxFilters } from "./grouping";
 import { type InboxListRow, rowId } from "./list-row";
 import { type AskSnoozeFailure, useAskSnoozeMany } from "./useAskSnooze";
@@ -23,16 +24,37 @@ import {
 /**
  * What the bar says after a pick the server refused in part. The count alone cannot tell a
  * sign-out from `snoozed_until must be in the future`, so the reason travels with it: one reason
- * when every refusal gave the same one, otherwise the first and how many others there are.
+ * when every refusal gave the same one, otherwise the first and how many others there are. A
+ * snooze the reader stopped is no refusal - it may have been saved - so those are said apart
+ * (`snoozeStoppedText`).
  */
 function snoozeRefusalText(failed: readonly AskSnoozeFailure[], of: number): string | undefined {
-  const first = failed[0];
-  if (first === undefined) return undefined;
-  const reasons = new Set(failed.map(({ reason }) => reason));
-  const head = `Could not snooze ${failed.length} of ${of}: ${first.reason}`;
-  if (reasons.size === 1) return `${head}.`;
+  const refused = failed.filter(
+    (failure): failure is Extract<AskSnoozeFailure, { stopped: false }> => !failure.stopped
+  );
+  const unconfirmed = snoozeStoppedText(failed.length - refused.length, of);
+  const first = refused[0];
+  if (first === undefined) return unconfirmed;
+  const reasons = new Set(refused.map(({ reason }) => reason));
+  // The reason is the server's own words for why it refused the snooze.
+  const head = `Could not snooze ${refused.length} of ${of}: ${first.reason}`;
   const others = reasons.size - 1;
-  return `${head}, and ${others} other reason${others === 1 ? "" : "s"}.`;
+  const said =
+    others === 0 ? `${head}.` : `${head}, and ${others} other reason${others === 1 ? "" : "s"}.`;
+  return unconfirmed === undefined ? said : `${said} ${unconfirmed}`;
+}
+
+/** What the bar says of the `stopped` snoozes of a pick over `of` asks that the reader stopped,
+ *  or undefined for none, in the words of a stopped write (`stoppedWriteNote`): each may have
+ *  been saved and stays marked, so the next pick is a press of its own over it. */
+function snoozeStoppedText(stopped: number, of: number): string | undefined {
+  if (stopped === 0) return undefined;
+  return stoppedWriteNote(`the snooze of ${stopped} of ${of}`, "saved", {
+    anew:
+      stopped === 1
+        ? "It stays marked, and the next pick snoozes it as a new write."
+        : "They stay marked, and the next pick snoozes them as a new write.",
+  });
 }
 
 /** The selection of one Inbox list, and the two presses it feeds. */
@@ -41,16 +63,18 @@ export interface InboxSelection {
    *  the ones a fold or a page is holding back included. The bar says so instead of counting. */
   readonly allRows: boolean;
   /** The bar's own element, which the keymap reaches through this: Escape from the bulk picker
-   *  focuses the bar itself when a press has left no row to return to. */
+   *  focuses the bar itself when no drawn row is left that the bar's own Snooze write, while it
+   *  is pending (`snoozing`), is not taking away. */
   readonly barRef: RefObject<HTMLElement | null>;
   /** Whether the bar shows: a mark is on the page, a pick is in the air, or a refusal is
    *  standing. Escape with no row focused is the keyboard's Clear and is offered on exactly this,
    *  so the two cannot drift. */
   readonly barShown: boolean;
   readonly clearSelection: () => void;
-  /** Whether the reader pressed **Dismiss** on this row here and that press is still out, which
-   *  is what the list's motion hold skips: a row they dismissed leaves the list at once even with
-   *  their hand still on it. */
+  /** Whether a **Dismiss** the reader pressed here is taking this row off the page: from the
+   *  press until the page no longer draws the row after Dispatch took it, or until Dispatch
+   *  refused it. The list's hand hold skips such a row, so a row they dismissed leaves the list
+   *  even with their hand, or the bar's parked focus, still on it. */
   readonly dismissedHere: (id: string) => boolean;
   /** One press over the threads the bar is counting. */
   readonly dismissPick: () => void;
@@ -59,6 +83,9 @@ export interface InboxSelection {
   readonly dismissRows: (rows: readonly InboxDismissRow[]) => void;
   /** The one dismiss write this list shares, for what it is doing and what it was refused. */
   readonly dismissWrite: InboxDismiss;
+  /** Ends the name of each row Dispatch took whose row `drawn` no longer holds: the page has let
+   *  it go, so nothing of the press is left to wait for (`dismissedHere`). */
+  readonly forgetDismissed: (drawn: (id: string) => boolean) => void;
   /** The row the reader marked last, by `rowId`, or null before their first mark: the row whose
    *  checkbox takes the focus when the bar goes with it (`SelectionBar`'s `returnFocus`). */
   readonly lastMarked: () => string | null;
@@ -71,12 +98,20 @@ export interface InboxSelection {
   /** The thread rows a **Dismiss** press names, each with what the page drew in it, which is
    *  what the bar counts for that press. */
   readonly selectedThreads: readonly InboxDismissRow[];
-  readonly snoozePick: (until: string) => void;
+  /** Snoozes the marked asks the view is drawing until `until`; settles once the server has
+   *  answered for every one of them. */
+  readonly snoozePick: (until: string) => Promise<void>;
   /** What the reader is told about the last bulk snooze the server refused in part. */
   readonly snoozeRefusal: string | undefined;
-  /** How many asks the snooze now in flight covers, 0 when none is: the optimistic fold empties
-   *  the selection the bar would otherwise count. */
-  readonly snoozing: number;
+  /** Whether Dispatch refused this ask's snooze in the bar's newest pick: the rollback has put
+   *  the row's moment back, so the row is staying where it is. */
+  readonly snoozeRefused: (id: string) => boolean;
+  /** The asks the snooze now in flight covers, none while none is: the list keeps each in the
+   *  band the reader saw it in until the write lands - save under the Blocked on you narrowing,
+   *  which lists no snoozed ask and keeps a row only while the reader's hand is on it - and the
+   *  bar counts them while it is out, since the optimistic moment takes them out of the
+   *  selection it would otherwise count. */
+  readonly snoozing: ReadonlySet<string>;
 }
 
 /**
@@ -131,21 +166,29 @@ export function useInboxSelection({
   // Whether the reader pressed **Select all**. Any change to the marks ends it.
   const [allRows, setAllRows] = useState(false);
   const bulkWrite = useAskSnoozeMany();
-  const [snoozing, setSnoozing] = useState(0);
+  const [snoozing, setSnoozing] = useState<ReadonlySet<string>>(() => new Set());
   const barRef = useRef<HTMLElement>(null);
   const [snoozeRefusal, setSnoozeRefusal] = useState<string | undefined>(undefined);
-  /** The rows the reader has pressed Dismiss on here, by `rowId`, while that press is out: the
-   *  list's hand-hold skips them, so a row they dismissed leaves the list at once even with their
-   *  hand still on it. An id leaves once its press settles - the rollback of a refused one puts
-   *  an ordinary row back, and one the server took is out of the list - so the hold never stops
-   *  covering a row the reader can still see. */
+  /** The asks Dispatch refused in the bar's newest pick (`snoozeRefused`). */
+  const refusedPick = useRef<ReadonlySet<string>>(new Set());
+  /** The rows the reader has pressed Dismiss on here, by `rowId`, from the press until the page
+   *  no longer draws them: the list's hand-hold skips them, so a row they dismissed leaves the
+   *  list even with their hand still on it. An id a refusal settles leaves at once, since the
+   *  rollback puts an ordinary row back; an id Dispatch took stays until the page lets its row go
+   *  (`forgetDismissed`), since a read that has not dropped it yet still draws it, and a hold that
+   *  read a settled press as over would keep that row for a hand in it. */
   const pressedHere = useRef<Set<string>>(new Set());
+  /** The ids of `pressedHere` that Dispatch took, each waiting for the page to let its row go. */
+  const takenHere = useRef<Set<string>>(new Set());
   // The one dismiss write every control on this list shares, the row's own and the bar's: the
   // write takes the row - and every control drawn on it - off the page, so its refusal is the
   // page's to show rather than the row's (`useInboxDismiss`).
   const dismissWrite = useInboxDismiss({
-    onSettled: (ids) => {
-      for (const id of ids) pressedHere.current.delete(id);
+    onSettled: (ids, refused) => {
+      for (const id of ids) {
+        if (refused) pressedHere.current.delete(id);
+        else takenHere.current.add(id);
+      }
     },
   });
   const clearSelection = useCallback(() => {
@@ -178,18 +221,24 @@ export function useInboxSelection({
     const named = row === undefined ? undefined : dismissRow(row);
     if (named !== undefined) selectedThreads.push(named);
   }
-  // One pick, over the ids the bar is counting: the same optimistic move and rollback the per-row
-  // control makes, once per ask. The ids the server took leave the selection; the ones it refused
-  // are marked again under its own reason, even if Clear ran while the write was in flight, so a
+  // One pick, over the ids the bar is counting: the same optimistic moment and rollback the
+  // per-row control makes, once per ask, with the rows kept where the reader saw them while the
+  // write is out (`snoozing`), save under the Blocked on you narrowing, which lists no snoozed
+  // ask: there each row leaves at the pick, since a row a press names as leaving is never kept for
+  // the reader's hand in it (`Inbox.tsx`'s `leavingNow`). The ids the server took leave the
+  // selection, and their rows the band they were kept in, in one commit; the ones it refused are
+  // marked again under its own reason, even if Clear ran while the write was in flight, so a
   // second pick retries exactly those.
-  const snoozePick = (until: string) => {
+  const snoozePick = (until: string): Promise<void> => {
     const ids = [...selectedAsks];
     setSnoozeRefusal(undefined);
-    setSnoozing(ids.length);
-    void bulkWrite.submit(ids, until).then(({ failed }) => {
-      setSnoozing(0);
-      setSnoozeRefusal(snoozeRefusalText(failed, ids.length));
+    refusedPick.current = new Set();
+    setSnoozing(new Set(ids));
+    return bulkWrite.submit(ids, until).then(({ failed }) => {
       const refused = new Set(failed.map(({ askId }) => askId));
+      refusedPick.current = refused;
+      setSnoozing(new Set());
+      setSnoozeRefusal(snoozeRefusalText(failed, ids.length));
       const taken = new Set(ids.filter((id) => !refused.has(id)));
       setMarked((current) => {
         const next = new Set([...current].filter((id) => !taken.has(id)));
@@ -227,12 +276,19 @@ export function useInboxSelection({
     barRef,
     // The bar outlives an empty list: a pick that empties this view leaves its write in the air,
     // and the refusal that comes back has to land somewhere the reader can see.
-    barShown: selected.length > 0 || snoozing !== 0 || snoozeRefusal !== undefined,
+    barShown: selected.length > 0 || snoozing.size !== 0 || snoozeRefusal !== undefined,
     clearSelection,
     dismissedHere: (id) => pressedHere.current.has(id),
     dismissPick,
     dismissRows,
     dismissWrite,
+    forgetDismissed: (drawn) => {
+      for (const id of takenHere.current) {
+        if (drawn(id)) continue;
+        takenHere.current.delete(id);
+        pressedHere.current.delete(id);
+      }
+    },
     lastMarked: () => lastMarkedId.current,
     marked,
     onMark,
@@ -244,6 +300,7 @@ export function useInboxSelection({
     selectedThreads,
     snoozePick,
     snoozeRefusal,
+    snoozeRefused: (id) => refusedPick.current.has(id),
     snoozing,
   };
 }

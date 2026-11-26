@@ -64,20 +64,29 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // tells the next why their write is safe, and whoever adds an entry writes the reason the entry
 // above theirs is written in - the lock named, and the caller or helper that takes it.
 //
-// Ten entries take no owner lock - five exceptions, since cmd/dispatch-seed's three loaders share
-// one and the migration runners' four writers of their version tables share another - and each
-// says why. Everything else on the list holds the item's owner, which is what makes the advisory
-// lock at refs.LockItemOwner enough: those that take it in a transaction they open are rows of
-// the lock table, which proves it by holding it (item_row_owner_lock_test.go),
-// and those that write inside a transaction their caller opened rest on the lock that caller
-// took, which no test here or there drives; the gap map (itemRowLockNoRow) names each with why,
-// and TestTheLockTablePlacesEveryWriterTheCensusNames keeps every entry in one of the two. That
-// any of them still takes or holds it is read off no entry here.
+// Eighteen entries take no owner lock - seven exceptions, since cmd/dispatch-seed's three loaders
+// share one, the boot rename pass's three statement builders share another, the migration
+// runners' four writers of their version tables share a third and the broker's hold store's five
+// writers share a fourth - and each says why. Everything else on the list holds the item's owner,
+// which is what makes the advisory lock at refs.LockItemOwner enough: those that take it in a
+// transaction they open are rows of the lock table, which proves it by holding it
+// (item_row_owner_lock_test.go), and those that write inside a transaction their caller opened
+// rest on the lock that caller took, which no test here or there drives; the gap map
+// (itemRowLockNoRow) names each with why, and TestTheLockTablePlacesEveryWriterTheCensusNames
+// keeps every entry in one of the two. That any of them still takes or holds it is read off no
+// entry here.
 var itemRowWriters = map[string]map[string]string{
 	"cmd/dispatch-seed/write_items.go": {
 		"writeAsks":     seedLoaderException,
 		"writeComments": seedLoaderException,
 		"writeMessages": seedLoaderException,
+	},
+	"internal/cipher/natshold/store.go": {
+		"DeleteCohort": holdTableException,
+		"Move":         holdTableException,
+		"PutCutover":   holdTableException,
+		"PutRecord":    holdTableException,
+		"Restore":      holdTableException,
 	},
 	"internal/dispatch/api/ask_asked_of.go": {
 		"putAskAskedOf": "the ask's owner lock, taken with the read of the owner it guards " +
@@ -93,19 +102,29 @@ var itemRowWriters = map[string]map[string]string{
 	},
 	"internal/dispatch/api/broadcasts.go": {
 		"writeBroadcast": "none, and none to take: each copy is a direct message, whose " +
-			"conversation is no owner (store.OwnerOf), and nothing rewrites a message's body",
+			"conversation is no owner (store.OwnerOf), and nothing rewrites a direct message's " +
+			"body: only an issue message is edited or deleted",
 	},
 	"internal/dispatch/api/comment_actions.go": {
 		"commentAction": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
-		"editComment":   "the comment's owner lock (lockedComment, lockOwnerOfComment)",
+		"editComment":   "the comment's owner lock (lockedCommentForCorrection, lockOwnerOfComment)",
+		"recordOrphanedCommentAnchor": "the comment's owner lock, which both its callers hold " +
+			"(commentAction's lockedComment, deleteComment's lockedCommentForCorrection)",
 		"reopenComment": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
 	},
 	"internal/dispatch/api/comment_create.go": {
 		"createCommentFor": "the owner's lock, taken inside the comment's transaction " +
 			"(lockCommentOwner)",
+		"queueCommentRow": "the owner's lock, which every caller holds: the comment route's, " +
+			"taken inside its transaction (createCommentFor, lockCommentOwner), and the issue " +
+			"write's that leaves a comment (writeIssue, lockIssueOwners)",
 	},
 	"internal/dispatch/api/comment_delivery.go": {
-		"replyComment": "the comment's owner lock (lockedCommentForDelivery, lockOwnerOfComment)",
+		"replyComment": "the comment's owner lock (lockedCommentAllowingClosed, lockOwnerOfComment)",
+	},
+	"internal/dispatch/api/message_corrections.go": {
+		"editMessage": "the issue's owner lock (lockedMessageForCorrection's lockIssue); a " +
+			"direct message is refused before anything is written",
 	},
 	"internal/dispatch/api/message_delivery.go": {
 		"insertSessionReply": "the issue's owner lock where the conversation names an issue " +
@@ -114,6 +133,13 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/api/messages.go": {
 		"createStoredMessage": "the issue's owner lock where the message names an issue " +
 			"(lockIssue); a direct message has no owner and needs none",
+	},
+	"internal/dispatch/api/post_history.go": {
+		"clearDeletedPostBody": "the post's owner lock, which both deletes hold before they plan " +
+			"it (deleteComment's lockedCommentForCorrection, deleteMessage's " +
+			"lockedMessageForCorrection)",
+		"queueDeletedPostSettlement": "the post's owner lock, which both deletes hold; its tables " +
+			"are comment_deliveries and message_deliveries, no item row",
 	},
 	"internal/dispatch/api/reviews.go": {
 		"handBackApprovalAsk": "the document's owner lock (requireOpenOwner)",
@@ -155,9 +181,16 @@ var itemRowWriters = map[string]map[string]string{
 			"it (errDecidedWordingsMoved). Settlement's own call holds the document's owner lock " +
 			"(restoreDocumentDecidedWordings, lockArtifactOwner)",
 	},
+	"internal/dispatch/refs/comment_nodes.go": {
+		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
+			"reads the rows (LockCommentOwners): the backfill's comment batch (graphcensus's " +
+			"writeCommentBatch) and the block-index tick's read of the events after its cursor " +
+			"(docs' readEventsAfterCursor)",
+	},
 	"internal/dispatch/refs/item_blocks.go": {
-		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
-		"markItemBlocksOwed":   "the item's owner lock, which the window arm takes (LockItemOwner)",
+		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner) " +
+			"and the post delete that queues TombstoneItem holds (api's clearDeletedPostBody)",
+		"markItemBlocksOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
 		"queueBlockRefs": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own); its tables are the item's block " +
 			"and block-ref tables, no item row",
@@ -168,6 +201,9 @@ var itemRowWriters = map[string]map[string]string{
 			"readSourceUnderOwner, or the writing route's own)",
 		"queueStateLock": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own)",
+		"TombstoneItem": "the post's owner lock, which the delete that queues it holds " +
+			"(api's clearDeletedPostBody); its tables are the item's block and block-text " +
+			"tables, no item row, and the state row it stamps is clearItemWindowsOwed's",
 	},
 	"internal/dispatch/refs/rebuild.go": {
 		"RebuildAll": "none, which is rebuild-refs' exception: it raises the owed markers " +
@@ -180,6 +216,13 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/refs/refs.go": {
 		"queueStamp": "the source's owner lock, which every caller holds before its write phase; " +
 			"its tables are refs and the item block-ref tables, no item row",
+	},
+	"internal/dispatch/store/repo_rename_pass.go": {
+		"collisions":      repoRenamePassException,
+		"nameWrite":       repoRenamePassException,
+		"ownerCollisions": repoRenamePassException,
+		"ownerWrite":      repoRenamePassException,
+		"urlWrite":        repoRenamePassException,
 	},
 	"internal/pgmigrate/identity.go": {
 		"Record":     versionTableException,
@@ -204,6 +247,19 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 	"there is no other writer for a lock to serialise it against; pointed at a database a " +
 	"server serves it would take the owner lock like every serving writer"
 
+// repoRenamePassException is why the boot rename pass's five statement builders are on the
+// census with no lock. They build the statements of store.RewriteRenamedRepositories from a table
+// name, which is the shape this scan cannot read (unspelledTableWrites), and every table they are
+// given holds one of the stored repository fields repoRenameLines lists, or the eval day rows'
+// owner keys that name a repository (ownerWrite, ownerCollisions), none of them an item
+// row: the pass writes no comment, message or ask and no block-state row of one, so there is no
+// owner lock for it to take. The only advisory lock it takes is its own, one line at a time
+// (repoRenameLockNamespace), and cmd/dispatch runs it once at boot, before the process serves.
+const repoRenamePassException = "none, and none to take: these build the statements of the boot " +
+	"rename pass (store.RewriteRenamedRepositories), whose tables are those of the stored " +
+	"repository fields repoRenameLines lists, no item row. It runs once at boot, before " +
+	"the process serves (cmd/dispatch's renameRepositories boot task)"
+
 // versionTableException is why the migration runners' writers of their version tables are on the
 // census with no lock. The table is the one each store's runner names at run time, Dispatch's
 // schema_migrations or the broker's broker_schema_migrations, which this scan cannot read
@@ -214,6 +270,17 @@ const versionTableException = "none, and none to take: the table is a migration 
 	"version table, which the store's runner names at run time (schema_migrations, " +
 	"broker_schema_migrations), never an item row; the runner writes it under the store's " +
 	"migration lock, and the test helpers in a test's own database"
+
+// holdTableException is why the broker's hold store's writers are on the census with no lock. Its
+// tables are the NATS writer hold's (nats_hold, nats_hold_log, nats_hold_records,
+// nats_hold_record_deletes and nats_cutover, migration 0044 of the broker's store), which
+// natshold.Store names at run time with its schema (Store.table), so this scan cannot read them
+// (unspelledTableWrites). None is an item row, and they live in the broker's database, which no
+// item's owner lock reaches.
+const holdTableException = "none, and none to take: the tables are the broker's NATS writer " +
+	"hold tables (nats_hold, nats_hold_log, nats_hold_records, nats_hold_record_deletes, " +
+	"nats_cutover), which natshold.Store names at run time with its schema, never an item row, " +
+	"in the broker's database, which no item's owner lock reaches"
 
 // TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus holds the names half of the invariant the
 // advisory owner lock rests on: every writer of a comment, a message, an ask or one of their
@@ -227,8 +294,8 @@ const versionTableException = "none, and none to take: the table is a migration 
 // without taking its owner. No writer a server runs is one: the lock table holds those that open
 // their own transaction behind a held owner lock (item_row_owner_lock_test.go), those that write
 // inside a transaction their caller opened rest on the lock that caller took, which that table
-// does not drive (itemRowLockNoRow names each with why), and the ten entries here that take no
-// owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
+// does not drive (itemRowLockNoRow names each with why), and the eighteen entries here that take
+// no owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
 // a `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its function is
 // on the census with the lock it takes.
 //
@@ -271,6 +338,7 @@ const versionTableException = "none, and none to take: the table is a migration 
 // map and is found there, which is how docs/decided_wording.go's restore is found in
 // restoreWordings.
 func TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -347,6 +415,9 @@ const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entr
 // it needs - and either way nobody has to read the table to find out which writers it left out.
 var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
+	"internal/dispatch/api/comment_actions.go": {"recordOrphanedCommentAnchor": itemRowCallersTransaction},
+	"internal/dispatch/api/comment_create.go":  {"queueCommentRow": itemRowCallersTransaction},
+	"internal/dispatch/api/post_history.go":    {"queueDeletedPostSettlement": itemRowCallersTransaction},
 	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_carry.go": {"answerApprovalAsk": itemRowCallersTransaction},
@@ -359,6 +430,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"queueAskResolution": itemRowCallersTransaction,
 		"WriteRestoredAsks":  itemRowCallersTransaction,
 	},
+	"internal/dispatch/refs/comment_nodes.go": {"Queue": itemRowCallersTransaction},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": itemRowCallersTransaction,
 		"markItemBlocksOwed":   itemRowCallersTransaction,
@@ -366,6 +438,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"queueBlocks":          itemRowCallersTransaction,
 		"queueRecordIndexed":   itemRowCallersTransaction,
 		"queueStateLock":       itemRowCallersTransaction,
+		"TombstoneItem":        itemRowCallersTransaction,
 	},
 	"internal/dispatch/refs/refs.go": {"queueStamp": itemRowCallersTransaction},
 
@@ -377,6 +450,13 @@ var itemRowLockNoRow = map[string]map[string]string{
 	},
 	"internal/dispatch/api/broadcasts.go":       {"writeBroadcast": itemRowNoOwnerLock},
 	"internal/dispatch/docs/decided_wording.go": {"restoreWordings": itemRowNoOwnerLock},
+	"internal/cipher/natshold/store.go": {
+		"DeleteCohort": itemRowNoOwnerLock,
+		"Move":         itemRowNoOwnerLock,
+		"PutCutover":   itemRowNoOwnerLock,
+		"PutRecord":    itemRowNoOwnerLock,
+		"Restore":      itemRowNoOwnerLock,
+	},
 	"internal/pgmigrate/identity.go": {
 		"Record":     itemRowNoOwnerLock,
 		"writeFixes": itemRowNoOwnerLock,
@@ -389,6 +469,13 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"RebuildAll": itemRowNoOwnerLock,
 		// The drain's settle runs under the owner lock the drain took for the row it settles.
 		"settleOwedStatement": itemRowCallersTransaction,
+	},
+	"internal/dispatch/store/repo_rename_pass.go": {
+		"collisions":      itemRowNoOwnerLock,
+		"nameWrite":       itemRowNoOwnerLock,
+		"ownerCollisions": itemRowNoOwnerLock,
+		"ownerWrite":      itemRowNoOwnerLock,
+		"urlWrite":        itemRowNoOwnerLock,
 	},
 }
 
@@ -408,6 +495,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 // It reads names alone and needs no database, as the census does: what the rows prove about locks
 // is TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites's half.
 func TestTheLockTablePlacesEveryWriterTheCensusNames(t *testing.T) {
+	t.Parallel()
 	placed := map[string]string{}
 	var unknown, twice []string
 	place := func(file, function, where string) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -43,6 +44,14 @@ const phaseEntryMigration = 20261111225552
 // beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
+// appliedWithTheFixture are the migrations above olderReleasesNewestMigration that preEntryStore
+// applies with the fixture's own rather than withholding them for the upgrade under test: the tree
+// is recorded through this release's PutIssue, so each migration that adds a column PutIssue
+// writes must stand before the tree is seeded. Each adds a column of issues, which no statement of
+// the phase entry reads or writes, so it changes nothing the upgrade under test reads.
+// 20261124060500_issue_priority adds issues.priority.
+var appliedWithTheFixture = []int{20261124060500}
+
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -63,8 +72,8 @@ const (
 // newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
 // touches no pull_requests column. Neither column is one any statement of the phase entry reads
 // or writes. Every version above that release's newest (olderReleasesNewestMigration) is withheld
-// with the phase entry, so Store.Migrate, which decides each migration on its own row, applies
-// the phase entry and those.
+// with the phase entry, but those appliedWithTheFixture names, so Store.Migrate, which decides
+// each migration on its own row, applies the phase entry and those it withheld.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -85,10 +94,10 @@ func preEntryStore(t *testing.T) *store.Store {
 	}
 	widened := false
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration {
+		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration && !slices.Contains(appliedWithTheFixture, migration.Version) {
 			continue
 		}
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}
@@ -107,8 +116,9 @@ func preEntryStore(t *testing.T) *store.Store {
 	return st
 }
 
-// migrationsAbove is how many embedded migrations carry a version above version: beside the
-// phase entry, what preEntryStore withheld, and so what the upgrade under test applies.
+// migrationsAbove is how many embedded migrations carry a version above version, less those
+// appliedWithTheFixture names: beside the phase entry, what preEntryStore withheld, and so what
+// the upgrade under test applies.
 func migrationsAbove(t *testing.T, version int) int {
 	t.Helper()
 	all, err := migrations.All()
@@ -117,11 +127,28 @@ func migrationsAbove(t *testing.T, version int) int {
 	}
 	withheld := 0
 	for _, migration := range all {
-		if migration.Version > version {
+		if migration.Version > version && !slices.Contains(appliedWithTheFixture, migration.Version) {
 			withheld++
 		}
 	}
 	return withheld
+}
+
+// putPreEntryIssue records issue as the release before the phase entry's issue writer did, with
+// the columns of the issues table that release named and these cases set, as literal SQL, so the
+// write names no column a migration above that release's newest adds; every other column takes
+// what that writer gave it for an issue with no hold, no wait on a person, no ancestry, no take-back
+// and no tree it was handed over from, its default.
+func putPreEntryIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	_, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over,
+		last_dispatch_seq, dispatch_status, repo, default_branch, github_repo)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
+		issue.Rank, issue.HandedOver, issue.LastDispatchSeq, issue.DispatchStatus, issue.Repo, issue.DefaultBranch, issue.GitHubRepo)
+	if err != nil {
+		return fmt.Errorf("record issue %s with the release before the phase entry's columns: %w", issue.Key, err)
+	}
+	return nil
 }
 
 // upgradeShape is one member of the tree as the release before the phase entry left it, and what
@@ -140,7 +167,7 @@ func migrationsAbove(t *testing.T, version int) int {
 // which is what decides everything below: a claim at or above its row's entry is holding that
 // entry's work. wantTask is the task the sweep must send, empty where it must send nothing, and
 // wantResume says the task is the line the daemon composes for a worker already in its phase
-// (workflow.ResumePhaseTask), which the fixture can only build once the issue record stands.
+// (workflow's Engine.ResumeTask), which the fixture can only build once the issue record stands.
 type upgradeShape struct {
 	key           string
 	title         string
@@ -201,8 +228,8 @@ type upgradeShape struct {
 //     the stamp the row would deliver with no entry, the claim would stand at 0 under a row at
 //     entry 1, and that sweep would hand the work a second time to a worker already doing it.
 //     The three roles the sweep does send are sent the line the daemon composes for a worker
-//     already in its phase (workflow.ResumePhaseTask), since the release before this one recorded
-//     no task of the entry it was handed.
+//     already in its phase (workflow's Engine.ResumeTask), since the release before this one
+//     recorded no task of the entry it was handed.
 //  8. A claim that confirmed its phase's assignment and whose issue still owes a start carrying
 //     that same token is the retry of a phase the role never left: the release before this one
 //     wrote such a start — its own restart, and the slot repair that went through it
@@ -257,6 +284,7 @@ type upgradeShape struct {
 // role level at zero is owed nothing — which is all workflow.OwedEntry answers and all admit's
 // owedEntryRoles selects.
 func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preEntryStore(t)
 	pool := st.Pool()
@@ -315,15 +343,19 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		tokens[shape.key] = token
 	}
 
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if err := records.PutIssue(ctx, tx, root); err != nil {
+	// The tree is written with that release's own columns as well: this release's issue writer
+	// (record.Store.PutIssue) names columns migrations above that release's newest add —
+	// issues.view_of (20261114064234) and the held start of awaiting_children (20261114232555) —
+	// which the fixture withholds with the phase entry, so the upgrade under test adds them.
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := putPreEntryIssue(ctx, tx, root); err != nil {
 			return err
 		}
 		if err := openTreeTx(ctx, tx, upgradeProject, root.Key); err != nil {
 			return err
 		}
 		for index, shape := range shapes {
-			if err := records.PutIssue(ctx, tx, issues[shape.key]); err != nil {
+			if err := putPreEntryIssue(ctx, tx, issues[shape.key]); err != nil {
 				return err
 			}
 			if err := records.PutSlot(ctx, tx, record.Slot{Issue: shape.key, Index: index, AdmittedAt: time.Now().UTC()}); err != nil {
@@ -481,7 +513,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	engine := workflow.New(records, workflow.Config{Project: upgradeProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, len(shapes), upgradeProject, log)
-	w := &workflowRuntime{pool: pool, records: record.NewStore(), admission: admission,
+	w := &workflowRuntime{pool: pool, records: record.NewStore(), engine: engine, admission: admission,
 		handlers: []intake.Handler{engine, admission}, dispatchProject: upgradeProject, bootID: "test-boot",
 		log: log, entrySweep: 10 * time.Millisecond}
 	swept := func() (n int) {
@@ -517,7 +549,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 
 	for i, shape := range shapes {
 		if shape.wantResume {
-			shapes[i].wantTask = workflow.ResumePhaseTask(issues[shape.key])
+			shapes[i].wantTask = resumeTaskOf(t, pool, engine, shape.key)
 			continue
 		}
 		shapes[i].wantTask = shape.owedTask

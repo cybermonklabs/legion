@@ -116,7 +116,8 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 // settles on, the read of a window's apply runs reads delivery_runs_kind_created from the window's
 // start to the bound of the first deploy created at or after its end, and the read of its deploys
 // beside them delivery_runs_kind_started_at over the window, so neither reads every run created
-// since the window began nor scans delivery_runs.
+// since the window began nor scans delivery_runs; and the read of several days' runs
+// (daysRunsQuery) reads each day's the same way, from the day's start.
 //
 // The plans are taken over a year of deploy runs, each with its production job, analyzed: over an
 // empty table every index costs one row, and which of two indexes leading with (repo, kind) the
@@ -147,16 +148,30 @@ func TestTheWindowsRunsReadIsBoundedThroughItsIndexes(t *testing.T) {
 		t.Fatalf("acquire a connection for the plan: %v", err)
 	}
 	defer connection.Release()
-	parameters := []string{"text", "timestamptz", "timestamptz", "text[]", "text", "integer"}
-	literals := []string{"'acme/deploy'", "now() - interval '84 days'", "now()", "array['production']", "null", "50000"}
+	window := struct{ parameters, literals []string }{
+		[]string{"text", "timestamptz", "timestamptz", "text[]", "text", "integer"},
+		[]string{"'acme/deploy'", "now() - interval '84 days'", "now()", "array['production']", "null", "50000"},
+	}
+	days := struct{ parameters, literals []string }{
+		[]string{"text", "timestamptz[]", "timestamptz[]", "text[]", "text", "integer"},
+		[]string{"'acme/deploy'", "array[now() - interval '84 days', now() - interval '40 days']",
+			"array[now() - interval '83 days', now() - interval '39 days']", "array['production']", "null", "50000"},
+	}
 	for _, read := range []struct {
-		name, statement string
-		indexes         map[string][]string
+		name, statement      string
+		parameters, literals []string
+		// start is how an index condition names the start of the window it reads.
+		start   string
+		indexes map[string][]string
 	}{
-		{"window_apply_runs", windowApplyRunsQuery, map[string][]string{"delivery_runs_kind_created": {">=", "<="}}},
-		{"window_runs", windowRunsQuery, map[string][]string{"delivery_runs_kind_created": {">=", "<="}, "delivery_runs_kind_started_at": {">=", "<"}}},
+		{"window_apply_runs", windowApplyRunsQuery, window.parameters, window.literals, "$2",
+			map[string][]string{"delivery_runs_kind_created": {">=", "<="}}},
+		{"window_runs", windowRunsQuery, window.parameters, window.literals, "$2",
+			map[string][]string{"delivery_runs_kind_created": {">=", "<="}, "delivery_runs_kind_started_at": {">=", "<"}}},
+		{"days_runs", daysRunsQuery, days.parameters, days.literals, "from_at",
+			map[string][]string{"delivery_runs_kind_created": {">=", "<="}, "delivery_runs_kind_started_at": {">=", "<"}}},
 	} {
-		plan := explaintest.GenericPlan(t, ctx, connection, read.name, read.statement, parameters, literals,
+		plan := explaintest.GenericPlan(t, ctx, connection, read.name, read.statement, read.parameters, read.literals,
 			"set local enable_seqscan = off", "set local enable_bitmapscan = off")
 		if explaintest.SeqScansRelation(t, plan, "delivery_runs") {
 			t.Fatalf("%s scans delivery_runs whole:\n%s", read.name, plan)
@@ -164,7 +179,7 @@ func TestTheWindowsRunsReadIsBoundedThroughItsIndexes(t *testing.T) {
 		scans := explaintest.IndexScans(t, plan)
 		for index, bounds := range read.indexes {
 			found := slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool {
-				if scan.Relation != "delivery_runs" || scan.Index != index || !strings.Contains(scan.Cond, "$2") {
+				if scan.Relation != "delivery_runs" || scan.Index != index || !strings.Contains(scan.Cond, read.start) {
 					return false
 				}
 				for _, bound := range bounds {

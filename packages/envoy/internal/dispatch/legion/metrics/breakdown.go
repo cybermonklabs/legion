@@ -24,7 +24,9 @@ import (
 // The three parts issueParts names outside the table below. breakdownPerson is the board's
 // awaiting-a-person column, which holds the hours an ask held as well as the hours of that
 // phase. breakdownChildren and breakdownOther are no column of the board: the hours a root
-// waited while a child worked, and the hours no other part took.
+// waited while a child worked, and the hours no other part took. breakdownChildren is not the
+// board's Waiting on children column either, whose part (legion.ColumnAwaitingChildren) holds a
+// parent's own hours in `awaiting_children`.
 const (
 	breakdownPerson   = legion.ColumnAwaiting
 	breakdownChildren = "waiting_on_children"
@@ -36,7 +38,9 @@ const (
 // (legion.ColumnDesign and the rest, and legion.PhaseColumns, which they follow), with waiting on
 // children and other beside them: retro is a part of its own, and merging holds merging and
 // awaiting merge alone (dispatch://INFRA-1077's b74df7a79b), so an issue's retro hours are under
-// `retro` and on no merger figure, as retro is on the implementer's bar of metric 2.
+// `retro` and on no merger figure, as retro is on the implementer's bar of metric 2; and
+// `awaiting_children`, which dispatch://INFRA-3320 added, is a part of its own, as it is a column
+// of its own on the board.
 var breakdownParts = []struct {
 	id     string
 	phases []string
@@ -49,6 +53,7 @@ var breakdownParts = []struct {
 	{legion.ColumnAccepting, []string{legion.PhaseAccepting}},
 	{legion.ColumnRetro, []string{legion.PhaseRetro}},
 	{legion.ColumnMerging, []string{legion.PhaseMerging, legion.PhaseAwaitingMerge}},
+	{legion.ColumnAwaitingChildren, []string{legion.PhaseAwaitingChildren}},
 	{breakdownPerson, []string{legion.PhaseAwaitingPerson}},
 	{legion.ColumnHeld, []string{legion.PhaseHeld}},
 }

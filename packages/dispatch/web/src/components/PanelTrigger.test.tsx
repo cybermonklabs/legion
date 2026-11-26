@@ -253,8 +253,8 @@ function BlockPanel() {
 }
 
 // The tree's architect's ruling of 2026-11-15 (the nearest earlier control wins) holds in the
-// panel's own hand-off too, not only in the app shell's rescue: a block of two taken away at the
-// panel's end lands the focus on the control before the block, not on the panel itself.
+// panel's own hand-off: a block of two taken away at the panel's end lands the focus on the
+// control before the block, not on the panel itself.
 test("a block of controls taken out of an open panel hands the focus to the control before the block", async () => {
   const user = userEvent.setup();
   const view = render(<BlockPanel />);

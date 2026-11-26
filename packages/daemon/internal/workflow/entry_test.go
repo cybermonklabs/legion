@@ -43,6 +43,7 @@ var seededRaisedAt = time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 // implementer is started in implementing, completes, and is started there again, which leaves its
 // row at the second entry carrying the second entry's task.
 func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
@@ -121,13 +122,14 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 }
 
 // A resume hands no new task: it is the task the worker already holds, said again for a session
-// that may have forgotten it (ResumePhaseTask). It raises no entry, so the row keeps the number,
+// that may have forgotten it (Engine.ResumeTask). It raises no entry, so the row keeps the number,
 // the work and the moment its phase's own start wrote, and the resumed worker's in-flight
 // completion is never refused. The claim here stands level with the entry its phases row names,
 // which is the claim a resume is for: one standing behind that entry is sent the work of that
 // entry instead, and raises no entry either
 // (TestTheBootsResumeOfAWorkerBehindItsEntrySendsThatEntrysWork).
 func TestTheBootsResumeRaisesNoEntry(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := t.Context()
 	project, err := claim.ProjectToken("LEGION")
@@ -172,6 +174,7 @@ func TestTheBootsResumeRaisesNoEntry(t *testing.T) {
 // still names the entry the worker is on and the start carries that number: a completion still in
 // flight is never refused for an entry nothing ever delivered.
 func TestAHeldPhasesRetryRaisesNoEntry(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing}, Generation: 1,
@@ -198,6 +201,7 @@ func TestAHeldPhasesRetryRaisesNoEntry(t *testing.T) {
 // instead, and the start raises no entry. So that role's record goes on naming whatever entry its
 // last phase gave it, and nothing of the check is weighed against a phases row.
 func TestAProductionChecksLookRaisesNoEntry(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
 	if len(starts) == 0 {
@@ -218,6 +222,7 @@ func TestAProductionChecksLookRaisesNoEntry(t *testing.T) {
 // (record.Store.ClearTreeGeneration), so the record would otherwise name an entry whose work
 // nothing could send again.
 func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "U"}
@@ -230,7 +235,8 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer)
+		_, err := engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer, false)
+		return err
 	})
 
 	starts := superviseRowsOf(t, pool, entryIssue, "start")
@@ -238,7 +244,7 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 		t.Fatalf("the promotion queued %+v, want the one start it writes", starts)
 	}
 	start := starts[0]
-	want := ResumePhaseTask(issue)
+	want := phaseResumeTask(t, pool, engine, entryIssue)
 	if start.Entry != seededEntry+1 || start.Task != want || !start.ResumeTask {
 		t.Fatalf("the promotion's start = %+v, want entry %d carrying %q, marked as the phase's resume task: the promotion hands the role its work again",
 			start, seededEntry+1, want)
@@ -259,6 +265,7 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 // raised is handed a forward move's entry next, and a value left behind would make the fence
 // refuse work the issue moved forward into.
 func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -299,27 +306,33 @@ func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
 // reset. The merger reads both halves, and no task of either names a head: the merger reads the
 // head it merges on GitHub itself.
 func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U"}
-	recorded := ResumePhaseTask(issue) + " Reason: the review approved."
 	for _, tc := range []struct {
 		name string
-		// held is the work the merger's phases row names, "" for a row that names none.
-		held string
-		want string
+		// holds is whether the merger's phases row names the work of its entry: the resume task
+		// with the review's reason, which the start must send as it stands. A row that names none is
+		// sent the phase's resume task.
+		holds bool
 	}{
-		{name: "a row that names the work of its entry", held: recorded, want: recorded},
-		{name: "a row an upgrade or a re-admission left with none", want: ResumePhaseTask(issue)},
+		{name: "a row that names the work of its entry", holds: true},
+		{name: "a row an upgrade or a re-admission left with none"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedIssue(t, pool, issue)
 			seedTreeLifecycle(t, pool, entryIssue)
 			seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleReviewer, Claim: "review-claim"})
-			merger := record.PhaseRow{Issue: entryIssue, Role: claim.RoleMerger, Claim: "merge-claim",
-				Entry: seededEntry, EntryTask: tc.held, EntryRaisedAt: seededRaisedAt}
-			seedPhase(t, pool, merger)
 			engine := testEngine(config.DesignGateRootIssues, nil)
+			want, held := phaseResumeTask(t, pool, engine, entryIssue), ""
+			if tc.holds {
+				held = want + " Reason: the review approved."
+				want = held
+			}
+			merger := record.PhaseRow{Issue: entryIssue, Role: claim.RoleMerger, Claim: "merge-claim",
+				Entry: seededEntry, EntryTask: held, EntryRaisedAt: seededRaisedAt}
+			seedPhase(t, pool, merger)
 
 			seedRecord(t, pool, func(tx pgx.Tx) error {
 				return engine.SendOwedEntry(t.Context(), tx, issue, claim.RoleMerger, merger)
@@ -330,14 +343,14 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 				t.Fatalf("the send queued %+v, want the one start it writes", starts)
 			}
 			start := starts[0]
-			if start.Entry != seededEntry || start.Task != tc.want {
+			if start.Entry != seededEntry || start.Task != want {
 				t.Fatalf("the start sent = entry %d carrying %q, want entry %d carrying %q: a claim behind the entry is owed that entry's own work",
-					start.Entry, start.Task, seededEntry, tc.want)
+					start.Entry, start.Task, seededEntry, want)
 			}
 			row := entryRow(t, pool, claim.RoleMerger)
-			if row.Entry != seededEntry || row.EntryTask != tc.held || !row.EntryRaisedAt.Equal(seededRaisedAt) {
+			if row.Entry != seededEntry || row.EntryTask != held || !row.EntryRaisedAt.Equal(seededRaisedAt) {
 				t.Fatalf("after the send the merger's row = entry %d, task %q, raised at %s; want the entry %d, task %q and moment %s it stood at: the send raises nothing",
-					row.Entry, row.EntryTask, row.EntryRaisedAt, seededEntry, tc.held, seededRaisedAt)
+					row.Entry, row.EntryTask, row.EntryRaisedAt, seededEntry, held, seededRaisedAt)
 			}
 		})
 	}
@@ -350,21 +363,22 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 // and the completion it answered with would be refused as behind that entry. A claim level with
 // its row is sent the resume, which is the whole of what its ready ever needed.
 func TestTheReadyOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: entryIssue, Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true}
 	for _, tc := range []struct {
 		name string
 		// given is the entry the claim was last queued a task of (record.RoleClaim.GivenEntry).
 		given int64
-		// want is the task the ready must send, and entry the entry that start must be of: the
-		// row's own for the work it names, and none for the resume, which hands the claim no work
-		// it was not already on.
+		// want is the task the ready must send, "" for the phase's resume task (phaseResumeTask), and
+		// entry the entry that start must be of: the row's own for the work it names, and none for
+		// the resume, which hands the claim no work it was not already on.
 		want   string
 		entry  int64
 		resume bool
 	}{
 		{name: "behind the entry its row names", given: seededEntry - 1, want: seededEntryTask, entry: seededEntry},
-		{name: "level with the entry its row names", given: seededEntry, want: ResumePhaseTask(issue), resume: true},
+		{name: "level with the entry its row names", given: seededEntry, resume: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -374,9 +388,9 @@ func TestTheReadyOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) {
 			seedGivenEntry(t, pool, token, tc.given)
 			seedEntryRow(t, pool, claim.RoleTester, token)
 
+			engine := testEngine(config.DesignGateRootIssues, nil)
 			if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
-				intake.ClaimReady{Issue: entryIssue, Role: claim.RoleTester, Launch: 2},
-				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				intake.ClaimReady{Issue: entryIssue, Role: claim.RoleTester, Launch: 2}, engine, admissionStub{}); err != nil {
 				t.Fatalf("apply the ready: %v", err)
 			}
 
@@ -384,14 +398,39 @@ func TestTheReadyOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) {
 			if len(starts) != 1 {
 				t.Fatalf("the ready queued %+v, want the one start it writes", starts)
 			}
-			start := starts[0]
-			if start.Task != tc.want || start.Entry != tc.entry || start.ResumeTask != tc.resume {
+			start, want := starts[0], tc.want
+			if tc.resume {
+				want = phaseResumeTask(t, pool, engine, entryIssue)
+			}
+			if start.Task != want || start.Entry != tc.entry || start.ResumeTask != tc.resume {
 				t.Fatalf("the ready of a claim given entry %d under a row at entry %d sent %q at entry %d, resume task %t; want %q at entry %d, resume task %t",
-					tc.given, seededEntry, start.Task, start.Entry, start.ResumeTask, tc.want, tc.entry, tc.resume)
+					tc.given, seededEntry, start.Task, start.Entry, start.ResumeTask, want, tc.entry, tc.resume)
 			}
 			assertEntryUntouched(t, pool, claim.RoleTester, "the ready")
 		})
 	}
+}
+
+// phaseResumeTask is the resume task engine sends the worker of key's phase, as the record holds the
+// issue now: Engine.ResumeTask, the one place every resume is composed, read in a transaction of
+// its own that writes nothing.
+func phaseResumeTask(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) string {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read of %s's resume task: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	issue, err := engine.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		t.Fatalf("read %s for its resume task: the record holds it %t, error %v", key, issue != nil, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		t.Fatalf("compose %s's resume task: %v", key, err)
+	}
+	return task
 }
 
 // seedEntryRow records role's phases row as a transition of the run before the fact under test

@@ -1,7 +1,29 @@
+import type {
+  GraphEdgeWithTrees,
+  GraphExcerptWithTrees,
+  GraphNode,
+  IssueReferences,
+  ReferenceLink,
+} from "./dispatch-api.generated";
+
 /**
- * The reference graph: what points at what, read by `GET /api/v1/references` and
- * `GET /api/v1/block-links`, and the document lists built on it.
+ * The reference graph: what points at what, read by `GET /api/v1/references`,
+ * `GET /api/v1/block-links` and an issue's `GET /api/v1/issues/{key}/references`, and the
+ * document lists built on it.
  */
+
+/** An edge's excerpt without the tree a dashboard read carries: the excerpt the route table holds
+ *  (`GraphExcerptWithTrees`) less its `text_tree`. It is written here because the route table no
+ *  longer names the plain excerpt: the server's edge read declares the edge's own fields rather
+ *  than embedding model.GraphEdge, so the document's reflector never reaches model.GraphExcerpt,
+ *  and main exports this name. A `GraphExcerptWithTrees` is a `GraphExcerpt` wherever one is
+ *  wanted. */
+export type GraphExcerpt = Omit<GraphExcerptWithTrees, "text_tree">;
+
+/** One edge of the reference graph without the tree a dashboard read carries: the edge the route
+ *  table holds (`GraphEdgeWithTrees`) with its excerpt back to the plain `GraphExcerpt`. A
+ *  `GraphEdgeWithTrees` is a `GraphEdge` wherever one is wanted. */
+export type GraphEdge = Omit<GraphEdgeWithTrees, "excerpt"> & { readonly excerpt?: GraphExcerpt };
 
 // GraphEdgeKind is an edge's kind: one of the structural kinds, or the name of a typed block's
 // `block[]` attribute (BlockAttributeSchema), whose pointers are edges of that kind. The block
@@ -22,3 +44,43 @@ export type GraphEdgeKind =
   | "depends_on"
   | "affects"
   | (string & {});
+
+/** `GET /api/v1/issues/{key}/references` as either build of Dispatch answers it ("Two builds at
+ *  once", `packages/envoy/cmd/dispatch/README.md`). A build from before the one-hop read answers
+ *  `members` and `truncated` alone, so a missing `links` is that build's answer; a `null` list,
+ *  which no build writes, holds no row. */
+export type IssueReferencesAnswer = Omit<IssueReferences, "links" | "linked_from"> &
+  Partial<Pick<IssueReferences, "links" | "linked_from">>;
+
+/** The key that matches a node of one read of the reference graph with a node of another (a row
+ *  of the references read, an edge of `GET /api/v1/references`): its ref, or its kind and id
+ *  where it has no ref. */
+export function graphNodeKey(node: Pick<GraphNode, "kind" | "id" | "ref">): string {
+  return node.ref ?? `${node.kind} ${node.id}`;
+}
+
+/** An issue's one-hop references as a reader shows them, each node once. */
+export interface IssueReferenceSections {
+  /** Every row of `links`, in the answer's order, each marked where its node is in `linked_from`
+   *  too: a node the issue links to and that links to the issue is shown once, here, as one that
+   *  also references the issue. */
+  readonly references: readonly { readonly row: ReferenceLink; readonly alsoReferences: boolean }[];
+  /** The rows of `linked_from` whose node is not in `links`, in the answer's order. */
+  readonly referencedBy: readonly ReferenceLink[];
+}
+
+/** The two sections of an answer with `links`; a `null` list counts as one with no row. An answer
+ *  without `links` is a build's from before the one-hop read, which a reader shows from its
+ *  `members` instead. */
+export function issueReferenceSections(
+  answer: Pick<IssueReferencesAnswer, "links" | "linked_from">
+): IssueReferenceSections {
+  const links = answer.links ?? [];
+  const linkedFrom = answer.linked_from ?? [];
+  const linked = new Set(links.map((row) => graphNodeKey(row.node)));
+  const linking = new Set(linkedFrom.map((row) => graphNodeKey(row.node)));
+  return {
+    references: links.map((row) => ({ row, alsoReferences: linking.has(graphNodeKey(row.node)) })),
+    referencedBy: linkedFrom.filter((row) => !linked.has(graphNodeKey(row.node))),
+  };
+}

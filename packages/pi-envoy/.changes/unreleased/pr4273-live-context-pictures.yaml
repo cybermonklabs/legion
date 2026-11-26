@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    At a session's start, and again at each compaction, the plugin counts as shown only the
+    Dispatch pictures in the model's live context: after the latest `/clear` that follows the
+    latest compaction, else from that compaction's first kept entry. It reads no message body
+    before that cut, where it read every message of the transcript before, which raised the
+    memory of a long session's resume by hundreds of MiB. A picture a compaction took from the
+    model is sent again when a later delivery names it.
+time: 2026-11-17T05:04:13Z
+custom:
+    Issue: pr4273

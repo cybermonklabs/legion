@@ -9,13 +9,15 @@
 // also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
 // keys outside it every pod needs.
 //
-// Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
-// `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
+// Load reads the file and nothing it names: a path key (`instructions`, `private_name_rules_file`,
+// `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
-// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
+// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, the daemon's read of the
+// private-name rule file (internal/daemon's launchSecrets), and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
-// then reads them as boot does (daemon.CheckStart).
+// then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
+// at each launch, so an edit of one needs no restart.
 package config
 
 import (
@@ -36,6 +38,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
@@ -66,9 +69,14 @@ const (
 // Config is the daemon's settled configuration: the file, the environment, and the defaults
 // resolved into the values the daemon runs on.
 type Config struct {
-	Project string
-	Port    int
-	Bind    string
+	// Revision is the commit this binary was built from (cmd/legion's revision, which the worker
+	// image and the release link in), "" for a build nothing stamped. It is not read from the file:
+	// `legion start` sets it, and the daemon names it after its NATS connection's name
+	// (natsauth.ConnectionName).
+	Revision string
+	Project  string
+	Port     int
+	Bind     string
 	// AdvertiseHost is `advertise_host`: the host every pod's shim dials the worker stream at in
 	// Bind's place, so Bind can be the unspecified address a daemon running as a pod listens on; ""
 	// (the default) has pods dial Bind. Only runtime: kubernetes accepts it, and readAdvertiseHost
@@ -103,6 +111,16 @@ type Config struct {
 	// InstructionsPath is the operator's deployment instructions, "" when none; boot copies it to
 	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
 	InstructionsPath string
+	// PrivateNameRulesFile is the deployment's private-name rule file, a gitleaks rule file the
+	// daemon reads and compiles at boot and hands every launch as the launch secret
+	// leakguard.RulesSecret, so that every role's leak guard runs it (internal/daemon's readBoot
+	// and launchSecrets): `private_name_rules_file`, resolved against the file's directory, else
+	// LEGION_PRIVATE_NAME_RULES_FILE (leakguard.RulesFileVar) in the daemon's environment, as
+	// written. "" names none, and every role's guard then runs no private-name rule.
+	// PrivateNameRulesNamedBy is which of the two named it, as the operator wrote it, so that a
+	// refusal of the file names the setting the operator has to change; "" when none is named.
+	PrivateNameRulesFile    string
+	PrivateNameRulesNamedBy string
 	// WorkerStreamPort is the worker stream listener's TCP port under a runtime that dials it by
 	// TCP; Port + 1 unless the file names another.
 	WorkerStreamPort int
@@ -136,6 +154,15 @@ type Config struct {
 	WorkerWakesPerMinute int
 	WorkerWakeBurst      int
 
+	// GitHubGraphQLShare is the share of the time this daemon's GraphQL queries of one GitHub App
+	// installation may keep GitHub at work (`github_graphql_share`, DefaultGitHubGraphQLShare
+	// when the file names none): after each query the next waits (1 - share) / share of the time
+	// it took (internal/daemon's queryGate). GitHub allows an installation 60 seconds of query
+	// processing time in 60 seconds, and every daemon that reads with the same installation
+	// spends that one allowance, so a deployment sets it near 1 divided by the number of daemons
+	// sharing the installation. It is at least MinGitHubGraphQLShare and at most 1 (readShare).
+	GitHubGraphQLShare float64
+
 	// OperatorTokenFile is the bearer the operator routes compare against, as a path; "" when
 	// the file sets none.
 	OperatorTokenFile string
@@ -157,9 +184,20 @@ type Config struct {
 	// bearer only after every local configuration refusal has passed.
 	DispatchURL       string
 	DispatchTokenFile string
-	Projects          map[string]Project
-	Gates             Gates
-	GitHubApps        GitHubApps
+	// DispatchTokenBroker is `dispatch_token_broker`: the daemon's Dispatch credential is its own
+	// pod identity, traded at the secrets broker, rather than the bearer DispatchTokenFile names,
+	// which is "" whenever this is true (resolveDispatchTokenBroker). Only `runtime: kubernetes`
+	// takes it, and only beside DispatchURL and runtime.kubernetes.agent_secrets.exchange_audience.
+	// The loader reads no environment, so it decides nothing about that trade: boot makes it.
+	DispatchTokenBroker bool
+	// DispatchTokenTransitionFile is `dispatch_token_transition_file`, a path like
+	// DispatchTokenFile and "" when the file names none: the file holding the shared Dispatch
+	// token a launch into a pod built before DispatchTokenBroker was on gets. The daemon never
+	// calls Dispatch with it, and the loader takes it only beside DispatchTokenBroker.
+	DispatchTokenTransitionFile string
+	Projects                    map[string]Project
+	Gates                       Gates
+	GitHubApps                  GitHubApps
 	// Linger is how long a finished tree keeps its workspace before it closes (`linger_hours`).
 	Linger time.Duration
 	// ProductionCheckBound is how long a closed issue's production check stays open after the
@@ -169,9 +207,11 @@ type Config struct {
 	// named for itself, at the retry of a look nobody reported, or at this bound.
 	ProductionCheckBound time.Duration
 	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
-	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role ends the
-	// round before it, and no answer holds the round past it. It is a decimal number of minutes,
-	// as `worker_silence_minutes` is, so a live proof can drive the bound inside one run.
+	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role the round
+	// asks ends the round before it once no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
+	// past it. It is a decimal number of minutes, as `worker_silence_minutes` is, so a live proof
+	// can drive the bound inside one run.
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
@@ -250,6 +290,12 @@ type Config struct {
 	// records keep the name each was written under. The zero value, which answers as
 	// strings.EqualFold does, while the file configures none.
 	RepositoryRenames ghrepo.Renames
+	// LeakCheck is `leak_check`, or leakguard.RepositoryVar and leakguard.ManifestVar in the
+	// daemon's environment, which the file's members override one by one: the repository the
+	// deployment's shared public leak check is read from and the check's manifest digest
+	// (leakguard.Manifest). The zero Setting is a deployment that runs no shared leak check of its
+	// own (resolveLeakCheck).
+	LeakCheck leakguard.Setting
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
 	// empty where it writes `hooks: []`, which runs none. A `prompt_file` is resolved against
@@ -278,6 +324,13 @@ const (
 	defaultWorkerWakesPerMinute = 8
 	defaultRuntimeName          = "tmux"
 	defaultEnvoyURL             = "http://127.0.0.1:9020"
+
+	// DefaultGitHubGraphQLShare is `github_graphql_share`'s default: half, so each query of an
+	// installation is followed by a pause as long as it took.
+	DefaultGitHubGraphQLShare = 0.5
+	// MinGitHubGraphQLShare is the smallest `github_graphql_share` the loader takes: one daemon in
+	// a hundred sharing an installation, a pause 99 times as long as each query.
+	MinGitHubGraphQLShare = 0.01
 
 	// maxTimerSeconds is the shipped bound on every duration key (config.ts MAX_TIMER_SECONDS):
 	// the largest whole number of seconds whose milliseconds fit a signed 32-bit timer. Go's
@@ -321,6 +374,12 @@ const (
 	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
+
+	// DefaultReviewRoundCap is `review_round_cap`'s default (Config.ReviewRoundCap). It is exported
+	// for a test that builds its Config by hand: the daemon API contract takes a positive cap
+	// alone (packages/contracts/src/legion-api.ts), so a pane's `legion` tool refuses every state
+	// read of a daemon whose cap is 0.
+	DefaultReviewRoundCap = 3
 )
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
@@ -384,6 +443,7 @@ type fileConfig struct {
 	// key: 0 is a value an operator may set, and the count reader refuses it.
 	WorkerWakesPerMinute *int
 	OperatorTokenFile    *string
+	PrivateNameRulesFile *string
 	EnvoyURL             *string
 	NatsURLs             []string
 	EnvoyTokenFile       *string
@@ -392,13 +452,17 @@ type fileConfig struct {
 	NatsDaemonNkeySeedFile *string
 	DispatchURL            *string
 	DispatchTokenFile      *string
-	Projects               map[string]Project
-	Gates                  *Gates
-	GitHubApps             *GitHubApps
-	Linger                 *time.Duration
-	ProductionCheckBound   *time.Duration
-	PodUpdateGrace         *time.Duration
-	StalledTreeNotice      *time.Duration
+	// DispatchTokenBroker is `dispatch_token_broker`, nil when the file leaves it out, and
+	// DispatchTokenTransitionFile `dispatch_token_transition_file`.
+	DispatchTokenBroker         *bool
+	DispatchTokenTransitionFile *string
+	Projects                    map[string]Project
+	Gates                       *Gates
+	GitHubApps                  *GitHubApps
+	Linger                      *time.Duration
+	ProductionCheckBound        *time.Duration
+	PodUpdateGrace              *time.Duration
+	StalledTreeNotice           *time.Duration
 	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
 	// pointers as every other duration key here is: a file that leaves a key out is
 	// distinguishable from one that sets it, so resolve leaves the default standing for the
@@ -419,6 +483,9 @@ type fileConfig struct {
 	RoleConfigFiles          map[claim.Role][]string
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
+	LeakCheck                *fileLeakCheck
+	// GitHubGraphQLShare is `github_graphql_share` (readShare).
+	GitHubGraphQLShare *float64
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
 	// DefaultHooks(), from one that writes the empty list, which runs no hook.
 	Hooks *[]Hook
@@ -564,6 +631,19 @@ func readString(value *yaml.Node, key string) (*string, error) {
 	var read string
 	if value.Kind != yaml.ScalarNode || value.Decode(&read) != nil {
 		return nil, fmt.Errorf("%s must be a string", key)
+	}
+	return &read, nil
+}
+
+// readBool reads a key that is only true or false, as the controller's loader reads its own
+// `dispatch_token_broker`; nil for an unset one (absent from its mapping, or null).
+func readBool(value *yaml.Node, key string) (*bool, error) {
+	if value == nil || value.Tag == "!!null" {
+		return nil, nil
+	}
+	var read bool
+	if value.Tag != "!!bool" || value.Decode(&read) != nil {
+		return nil, fmt.Errorf("%s must be true or false", key)
 	}
 	return &read, nil
 }
@@ -800,8 +880,9 @@ var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HO
 // readProviderKeys is `provider_keys`: a mapping of the variable OMP reads to the key that holds
 // it, both sides environment variable names, or to `file:` and the absolute path of the file that
 // holds it, in file order. A variable named twice is refused rather than one entry silently
-// winning, as is one the daemon sets on every pane itself. Which runtime reads a file is resolve's
-// to check (checkProviderKeyFiles).
+// winning, as is one the daemon sets on every pane itself. Which runtime reads a file, and which
+// of the names runtime.PaneVariableRefusal refuses a tmux pane, are resolve's to check
+// (checkProviderKeyFiles, checkTmuxProviderKeyNames).
 func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -915,6 +996,27 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 	return &duration, nil
 }
 
+// readShare is a key written as a share of a whole (`github_graphql_share`): a finite number at
+// least MinGitHubGraphQLShare and at most 1, a decimal among them, and nil for a key the file
+// writes with no value at all. A share below the floor asks for a pause no deployment needs -
+// one of 0 would wait forever after the first query, and a share of 1e-12 a pause past what a
+// time.Duration holds - and one above 1 a pause below nothing, so both are refused, as are NaN,
+// the infinities and anything that is not a number (`1/4` among them, which YAML reads as a
+// string).
+func readShare(value *yaml.Node, key string) (*float64, error) {
+	if value.Tag == "!!null" {
+		return nil, nil
+	}
+	var read float64
+	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&read) != nil {
+		return nil, fmt.Errorf("%s must be a number", key)
+	}
+	if math.IsNaN(read) || math.IsInf(read, 0) || read < MinGitHubGraphQLShare || read > 1 {
+		return nil, fmt.Errorf("%s must be at least %v and at most 1", key, MinGitHubGraphQLShare)
+	}
+	return &read, nil
+}
+
 // validURL is the shipped `validateUrl` (config.ts) for the URLs this daemon dials or
 // hands out: a scheme and a host, or the key is refused.
 func validURL(value, key string) (*url.URL, error) {
@@ -985,6 +1087,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		Runtime:              Runtime{Name: defaultRuntimeName},
 		AdmissionCap:         defaultAdmissionCap,
 		WorkerWakesPerMinute: defaultWorkerWakesPerMinute,
+		GitHubGraphQLShare:   DefaultGitHubGraphQLShare,
 		EnvoyURL:             defaultEnvoyURL,
 		Gates:                Gates{Design: DesignGateRootIssues.Steps()},
 		Linger:               72 * time.Hour,
@@ -993,7 +1096,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		StalledTreeNotice:    6 * time.Hour,
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
-		ReviewRoundCap:       3,
+		ReviewRoundCap:       DefaultReviewRoundCap,
 		Warnings:             file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
@@ -1012,6 +1115,19 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	if strings.TrimSpace(cfg.PostgresDSN) == "" {
 		return Config{}, errors.New("postgres_dsn is required (or set LEGION_POSTGRES_DSN)")
+	}
+
+	// The deployment's private-name rule file: the variable first and the file's key over it, as
+	// postgres_dsn is read. A variable set to the empty string names none, as a role's guard reads
+	// the same variable (leakguard.Guard.rules); a key set to it is refused by its reader, as every
+	// other path key's is. The variable is a setting of its own and not a fallback the key retires:
+	// a daemon of an earlier release refuses the key, so a deployment that may roll back names the
+	// file there.
+	if named := env(leakguard.RulesFileVar); named != "" {
+		cfg.PrivateNameRulesFile, cfg.PrivateNameRulesNamedBy = named, leakguard.RulesFileVar
+	}
+	if file.PrivateNameRulesFile != nil {
+		cfg.PrivateNameRulesFile, cfg.PrivateNameRulesNamedBy = underConfig(*file.PrivateNameRulesFile, configDir), "private_name_rules_file"
 	}
 
 	if file.Port != nil {
@@ -1033,6 +1149,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		}
 		cfg.AdvertiseHost = *file.AdvertiseHost
 	}
+	if err := resolveDispatchTokenBroker(file, configDir, &cfg); err != nil {
+		return Config{}, err
+	}
 
 	if file.Kubernetes != nil {
 		if err := resolveKubernetes(file, configDir, &cfg); err != nil {
@@ -1041,6 +1160,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	cfg.Runtime.Tmux = resolveTmux(file.Tmux, configDir)
 	if err := checkProviderKeyFiles(file); err != nil {
+		return Config{}, err
+	}
+	if err := checkTmuxProviderKeyNames(file); err != nil {
 		return Config{}, err
 	}
 
@@ -1065,6 +1187,10 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	// refuses it.
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
+	}
+
+	if file.GitHubGraphQLShare != nil {
+		cfg.GitHubGraphQLShare = *file.GitHubGraphQLShare
 	}
 
 	if err := resolveStage2(file, configDir, &cfg); err != nil {
@@ -1104,6 +1230,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	if err := checkRepositoryRenames(file, &cfg); err != nil {
+		return Config{}, err
+	}
+	if err := resolveLeakCheck(file, env, &cfg); err != nil {
 		return Config{}, err
 	}
 	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {
@@ -1166,6 +1295,26 @@ func checkProviderKeyFiles(file fileConfig) error {
 	for _, key := range file.ProviderKeys {
 		if key.File != "" {
 			return fmt.Errorf("provider_keys.%s names the file %s, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret", key.Env, key.File)
+		}
+	}
+	return nil
+}
+
+// checkTmuxProviderKeyNames refuses, under runtime tmux, a `provider_keys` entry with a name
+// runtime.PaneVariableRefusal refuses with no value, naming the variable and that function's
+// reason. The shim exports a provider key into the agent's environment, where it acts as the pane
+// variable of that name, so the tmux runtime refuses the same name at its construction, at boot
+// (tmux's readProviderKeyNames, which also refuses names only the tmux runtime knows, such as one
+// every pane carries); refusing it here lets `legion config check` see it. Under runtime
+// kubernetes it refuses nothing: there sandbox.CheckPod holds each provider key to the variables a
+// pod sets (podVariables).
+func checkTmuxProviderKeyNames(file fileConfig) error {
+	if file.Kubernetes != nil {
+		return nil
+	}
+	for _, key := range file.ProviderKeys {
+		if why := runtime.PaneVariableRefusal(key.Env, ""); why != "" {
+			return fmt.Errorf("provider_keys names %s: %s", key.Env, why)
 		}
 	}
 	return nil

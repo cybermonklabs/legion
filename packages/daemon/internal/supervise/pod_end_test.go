@@ -59,7 +59,7 @@ func TestAFailedClaimKeepsThePodEndThatRanItsBudgetOut(t *testing.T) {
 
 // A death the runtime reports with no pod end — every runtime but the Sandbox one, and a pod that
 // carries no reason — leaves the claim naming none. The relaunch between the two deaths here
-// clears the first one's end in any case (launchNow); a second report with no launch between is
+// clears the first one's end in any case (launchTries); a second report with no launch between is
 // TestASecondReportOfOneDeathReplacesThePodEndTheFirstWrote's.
 func TestAClaimsPodEndIsTheEndThatLastKilledIt(t *testing.T) {
 	h := newHarness(t)
@@ -123,5 +123,31 @@ func TestASecondReportOfOneDeathReplacesThePodEndTheFirstWrote(t *testing.T) {
 				t.Errorf("after the second report the claim holds pod end %q, want the second report's %q", got.PodEnd, row.second)
 			}
 		})
+	}
+}
+
+// The pod end is the kubelet's text, and the claim keeps it as the store keeps a far side's text:
+// a NUL as U+FFFD and a URL with no query, in memory and in the claim's write alike, so the
+// failure's fact the workflow writes from the claim in memory names what a restart reads back. A
+// refused relaunch keeps the claim over its dead process, as above, so no launch clears the end.
+func TestAPodEndWithNULAndAQueryTokenIsHeldAsTheStoreKeepsIt(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.must(StreamTurnStart{Claim: testToken})
+	h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	const want = "Evicted: The node was low\uFFFD on resource; see https://kubelet.example.test/why"
+
+	gone := RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+		PodEnd: "Evicted: The node was low\x00 on resource; see https://kubelet.example.test/why?token=planted-query-token-5c1e"}}
+	if err := h.handle(gone); err == nil {
+		t.Fatal("the relaunch the report raised was taken, want the lifecycle recheck's refusal of it")
+	}
+
+	if got := h.claim().PodEnd; got != want {
+		t.Errorf("the claim holds pod end %q, want %q, as the store keeps it", got, want)
+	}
+	if got := h.store.load(testToken).PodEnd; got != want {
+		t.Errorf("the claim's write carries pod end %q, want %q", got, want)
 	}
 }

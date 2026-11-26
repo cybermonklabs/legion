@@ -1,6 +1,8 @@
 import { createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
-import { leaveFocus, onBody, openIssue } from "./keyboard-issue";
+import { listTrigger, pickFromList } from "./filters";
+import { focusThePage } from "./issue-page-g";
+import { onBody, openIssue } from "./keyboard-issue";
 import { expect, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -34,16 +36,16 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Keyboard issue");
     const header = page.getByTestId("issue-header");
-    const priority = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
-    const status = page.getByRole("combobox", { name: "Status" });
+    const priority = listTrigger(page, `Priority of ${issue.key}`);
+    const status = listTrigger(header, "Status");
 
     // p and s reach their own control: two assertions, so a p that focused Status fails.
     await page.keyboard.press("p");
     await expect(priority).toBeFocused();
-    await leaveFocus(page);
+    await focusThePage(page);
     await page.keyboard.press("s");
     await expect(status).toBeFocused();
-    await leaveFocus(page);
+    await focusThePage(page);
 
     // A digit sets P0–P3 through the same write the picker uses, and Shift+P pins through the
     // header's own control. Both are optimistic, so each write is waited for rather than raced,
@@ -55,9 +57,9 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     );
     await page.keyboard.press("2");
     expect((await patch).postDataJSON()).toEqual({ priority: 2 });
-    await expect(header.locator("span", { hasText: /^P2$/ })).toBeVisible();
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} P2`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 2 });
-    await leaveFocus(page);
+    await focusThePage(page);
 
     const pinned = page.waitForResponse(
       (response) =>
@@ -67,12 +69,12 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await page.keyboard.press("Shift+P");
     await expect(header.getByRole("button", { name: "Unpin issue" })).toBeVisible();
     expect((await pinned).ok()).toBe(true);
-    await leaveFocus(page);
+    await focusThePage(page);
 
     await page.reload();
-    await expect(header.locator("span", { hasText: /^P2$/ })).toBeVisible();
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} P2`);
     await expect(header.getByRole("button", { name: "Unpin issue" })).toBeVisible();
-    await leaveFocus(page);
+    await focusThePage(page);
 
     // l opens the labels popover - the listbox itself, not just its trigger.
     await page.keyboard.press("l");
@@ -80,7 +82,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await expect(page.getByRole("combobox", { name: "Search or create label" })).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("listbox", { name: "Labels options" })).toHaveCount(0);
-    await leaveFocus(page);
+    await focusThePage(page);
 
     // e edits the title, where every single key is text again: typing "sp0" neither focused
     // Status or the priority nor set P0, and Escape discards the edit.
@@ -100,7 +102,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
         priority: 2,
         title: "Keyboard issue",
       });
-    await leaveFocus(page);
+    await focusThePage(page);
 
     // t is a chord: the indicator shows it waiting, then the second key picks that tab. c is a
     // global shortcut on its own (the create dialog), and completing the chord is not it. The
@@ -209,22 +211,23 @@ test("a priority the server refuses shows the header's own failure, whether the 
     await expect(failure).toBeVisible();
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
-    await expect(header.locator("span", { hasText: /^Priority$/ })).toBeVisible();
+    const priority = listTrigger(header, `Priority of ${issue.key}`);
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} Priority`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
 
     // The picker goes through that same write, so its refusal lands in the one failure the
     // digit key already showed instead of raising a second beside it.
-    await header.getByRole("combobox", { name: `Priority of ${issue.key}` }).selectOption("3");
+    await pickFromList(priority, "P3");
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
-    await expect(header.locator("span", { hasText: /^Priority$/ })).toBeVisible();
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} Priority`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
   } finally {
     await context.close();
   }
 });
 
-test("Escape leaves a focused header select, so the next chord is a chord and not type-ahead", async ({
+test("Escape leaves a focused header list's trigger, so the next chord is a chord and opens no list", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -234,8 +237,8 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Type-ahead");
-    // Every PATCH this page sends, so a status the select's own type-ahead picked is caught
-    // even though the pill would show it for only as long as the reader stayed.
+    // Every PATCH this page sends, so a status a list picked is caught even though the pill would
+    // show it for only as long as the reader stayed.
     const patched: string[] = [];
     page.on("request", (request) => {
       if (request.method() === "PATCH") {
@@ -243,11 +246,12 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
       }
     });
 
-    // Three of the status labels begin with `t` (Triage, Todo, Testing), so a `t` that reached
-    // the Status select would write one of them instead of starting the tab chord.
+    // Three of the status labels begin with `t` (Triage, Todo, Testing), and a `t` on the status's
+    // or the priority's list trigger would open that list with `t` in its text box, instead of
+    // starting the tab chord.
     for (const [key, control] of [
-      ["s", page.getByRole("combobox", { name: "Status" })],
-      ["p", page.getByRole("combobox", { name: `Priority of ${issue.key}` })],
+      ["s", listTrigger(page.getByTestId("issue-header"), "Status")],
+      ["p", listTrigger(page, `Priority of ${issue.key}`)],
     ] as const) {
       await page.keyboard.press(key);
       await expect(control).toBeFocused();
@@ -261,7 +265,7 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
         "true"
       );
       await page.getByRole("tab", { name: "Spec" }).click();
-      await leaveFocus(page);
+      await focusThePage(page);
     }
 
     expect(patched).toEqual([]);

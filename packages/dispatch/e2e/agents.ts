@@ -1,10 +1,17 @@
 import { DELIVERY_CAPABILITIES, type LegionRole, roleToken } from "@legion/contracts";
-import { expect, type Locator, type Page } from "@playwright/test";
+import { type BrowserContext, expect, type Locator, type Page } from "@playwright/test";
 
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
 import { CONTROL } from "../web/src/components/control-names";
 import type { AgentGroup } from "../web/src/features/agents/agent-groups";
-import { createAsk, createComment, createIssue, createProject } from "./api";
+import {
+  createAgentMessage,
+  createAsk,
+  createComment,
+  createIssue,
+  createProject,
+  replyToMessageDelivery,
+} from "./api";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
@@ -57,6 +64,35 @@ export async function resetFakeEnvoy(port?: number): Promise<void> {
 
 export async function setLiveSessions(rows: FakeSession[], port?: number): Promise<void> {
   await fixtureRequest("/__fixture/sessions", "PUT", rows, port);
+}
+
+/** A live session for the Agents page to list, seen 5 s ago. Its id is a UUID, which Dispatch's
+ *  agent routes require. `last_seen` is taken when the row seeds, never at a module's scope,
+ *  which a worker evaluates once and every later spec of that worker ages. */
+export function listedSession(sessionID: string, title: string): FakeSession {
+  return {
+    capabilities: ["aside", "btw"],
+    dir: `/workspaces/${title.toLowerCase()}`,
+    last_seen: Date.now() - 5_000,
+    machine_id: `${title.toLowerCase()}-host`,
+    roles: [title.toLowerCase()],
+    session_id: sessionID,
+    title,
+  };
+}
+
+/** One unread reply of the session `sessionID` to the reader, which is what keeps a row for a
+ *  session that has since left the registry. */
+export async function seedUnreadReply(sessionID: string): Promise<void> {
+  const asked = await createAgentMessage(sessionID, {
+    body: "How far along?",
+    delivery: "aside",
+  });
+  await replyToMessageDelivery(
+    asked.id,
+    { attempt: 1, body: "Done and gone." },
+    { id: sessionID, kind: "session" }
+  );
 }
 
 /** How the fake listener answers a send to a seeded session until a reseed: `200` takes it. `404`
@@ -164,8 +200,33 @@ export async function setSessionLastSeen(sessionID: string, lastSeen: number): P
  *  `ok`. */
 export type ListsState = "ok" | "refilling" | "down";
 
-export async function setListsState(state: ListsState): Promise<void> {
-  await fixtureRequest("/__fixture/lists", "PUT", { state });
+/** Sets the fake listener's list answer. `retryAfterSeconds` is the `Retry-After` a refilling
+ *  answer carries, the real listener's 5 when it is left out: the page's two retries of a refused
+ *  read each wait that long and up to as much again (`queryRetryDelay`,
+ *  `web/src/api/query-client.ts`), so a row that waits through several refilling reads sets 1. */
+export async function setListsState(
+  state: ListsState,
+  options: { retryAfterSeconds?: number } = {}
+): Promise<void> {
+  await fixtureRequest("/__fixture/lists", "PUT", {
+    state,
+    ...(options.retryAfterSeconds === undefined
+      ? {}
+      : { retry_after_seconds: options.retryAfterSeconds }),
+  });
+}
+
+/** Makes every page `context` opens from now on poll the agent list every `pollMs` in place of the
+ *  shell's 15 s (`AGENT_REGISTRY_POLL_MS`, read through `agentRegistryPollMs` in
+ *  `web/src/features/refs/agent-registry.ts`), so a row that waits for a change of the list to
+ *  reach an open page waits one short poll. Set before the page loads, as the poller reads it.
+ *  `Reflect.set` rather than the property itself: the `Window` field is declared in that web
+ *  module, which the docs site's program, which reads this file for its screenshots, does not
+ *  load. */
+export async function pollAgentListEvery(context: BrowserContext, pollMs: number): Promise<void> {
+  await context.addInitScript((ms) => {
+    Reflect.set(window, "__dispatchAgentRegistryPollMs", ms);
+  }, pollMs);
 }
 
 /** One Legion agent registry entry as the daemon writes it to the listener
@@ -367,6 +428,12 @@ export const reviewerSession: FakeSession = {
   session_id: sessionIds.reviewer,
   title: "Reviewer",
 };
+
+/** What a pick of one of those two sessions writes into a draft, and what a channel of its own
+ *  seeds there: the mention that names the party (`partyLink`), which is the
+ *  whole record of who the write addresses. */
+export const plannerMention = `[@${plannerSession.title}](dispatch://agent/${plannerSession.session_id})`;
+export const reviewerMention = `[@${reviewerSession.title}](dispatch://agent/${reviewerSession.session_id})`;
 
 /** Both sessions live, both with Dispatch activity, and two open issues for the picker to offer:
  *  a keyboard reader has to be able to pass the first to reach the second. Returns the first. */

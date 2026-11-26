@@ -34,6 +34,13 @@ export const DEPLOYED_LABELS: Record<DeployedFacet, string> = {
 
 export const REWORK_LABELS: Record<ReworkFacet, string> = { value: "value", rework: "rework" };
 
+/** What `table` holds under `key` as a key of its own, else nothing: a label, a title or a count.
+ *  A value the address carries can be any word, `constructor` among them, which every object
+ *  inherits and no table names. */
+export function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 /** Drops the "owner/" prefix from a repo label when the bare repo name is unique among
  *  `allRepoKeys` — e.g. "widgets" instead of "acme/widgets" — but keeps the full "owner/repo"
  *  wherever two different owners share a repo name, so labels stay unambiguous. */
@@ -57,8 +64,11 @@ export interface Filters {
   /** `<project>/<id>`; a selected parent includes its descendants. */
   component: string[];
   author: string[];
-  rework: ReworkFacet[];
-  deployed: DeployedFacet[];
+  // Every value the address names, a word outside `REWORK_LABELS` and `DEPLOYED_LABELS` included:
+  // Dispatch selects no row by such a word, as it does by any other unknown value, and the page
+  // draws it as a chip the reader can take off.
+  rework: string[];
+  deployed: string[];
   search: string;
 }
 

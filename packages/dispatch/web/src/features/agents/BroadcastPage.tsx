@@ -10,6 +10,7 @@ import type {
   MessageDeliveryMode,
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
 import { useNavigationState } from "../../lib/page-address";
@@ -40,6 +41,7 @@ import { useAgents } from "../conversation/useAgents";
 import { AgentName, type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 import { deliveryAttempts } from "./attempts";
@@ -87,6 +89,7 @@ function BroadcastRecipientRow({
   const retry = useKeyedWrite({
     label: (mode: MessageDeliveryMode) => `Delivery to ${label} again, as ${MODE_LABELS[mode]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["broadcast"] }),
+    method: "POST",
     write: (mode, bounds) => api.createMessageDelivery(recipient.message.id, mode, bounds),
   });
   // The row shows the recipient's whole thread, so its replies are read. Only these: the
@@ -144,11 +147,12 @@ function BroadcastRecipientRow({
         // Outstanding, and nobody is carrying it. Only the attempt's own mode is offered: the
         // frame may already have reached the agent, and a repeat of the same mode is recognised
         // by its dedupe key while a different mode is a new key - that would be a second delivery.
+        // While the retry is out, Retry is held (`heldPress`), not disabled: it keeps the focus
+        // and its Tab stop, and a press of it sends nothing.
         <div className="mt-3">
           <button
             className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retry.isPending}
-            onClick={() => retry.mutate(latest?.delivery ?? delivery)}
+            {...heldPress(retry.isPending, () => retry.mutate(latest?.delivery ?? delivery))}
             type="button"
           >
             Retry
@@ -165,7 +169,12 @@ function BroadcastRecipientRow({
             <Timestamp at={reply.created_at} />
           </p>
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={reply.body} tree={reply.body_tree} />
+            <MarkdownBody
+              markdown={reply.body}
+              source={textSourceOf("message", reply.id, reply.issue_key)}
+              surface="broadcast-recipient-reply"
+              tree={reply.body_tree}
+            />
           </div>
         </div>
       ))}
@@ -218,8 +227,10 @@ export function BroadcastPage(): ReactNode {
             {answeredCount(recipients)} of {recipients.length} answered
           </span>
         </p>
+        {/* No `source`: why a broadcast's own body is no record is the reading list's
+            `broadcast-sent-body` (`DISPATCH_READING_SURFACES`). */}
         <div className={`mt-2 ${textPrimaryOnCanvas}`}>
-          <MarkdownBody markdown={sent.body} tree={sent.body_tree} />
+          <MarkdownBody markdown={sent.body} surface="broadcast-sent-body" tree={sent.body_tree} />
         </div>
         {excluded.length === 0 ? null : (
           <p className={`mt-2 text-sm ${dangerText}`}>

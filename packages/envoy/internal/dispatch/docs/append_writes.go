@@ -13,10 +13,11 @@ import (
 )
 
 // appendUpdateTxClass appends one update inside tx under the gate: a run of one
-// (appendUpdatesTx), with no credit and no flush gating it. The version returned is the one it
-// stored; a run of one is stored whole or refused.
-func (p *PgVersioned) appendUpdateTxClass(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool, kind appendKind) (persistence.Version, error) {
-	version, _, err := p.appendUpdatesTx(ctx, tx, room, []BrowserUpdate{{Update: update, ContentChanged: contentChanged}}, kind, nil, false)
+// (appendUpdatesTx), with no credit and no flush gating it, owes saying whether it leaves the
+// document owing a settlement (appendWrites). The version returned is the one it stored; a run of
+// one is stored whole or refused.
+func (p *PgVersioned) appendUpdateTxClass(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool, kind appendKind, owes bool) (persistence.Version, error) {
+	version, _, err := p.appendUpdatesTx(ctx, tx, room, []BrowserUpdate{{Update: update, ContentChanged: contentChanged}}, kind, nil, false, owes)
 	return version, err
 }
 
@@ -45,16 +46,17 @@ func (p *PgVersioned) appendUpdateTxClass(ctx context.Context, tx pgx.Tx, room s
 // unmarked, for its own call to meet the gate again, which refuses it and closes the room for its
 // issue.
 func (p *PgVersioned) AppendRoomUpdatesTx(ctx context.Context, tx pgx.Tx, room string, flush *RoomFlush, updates []BrowserUpdate) (persistence.Version, int, error) {
-	return p.appendUpdatesTx(ctx, tx, room, updates, appendBrowser, flush, true)
+	return p.appendUpdatesTx(ctx, tx, room, updates, appendBrowser, flush, true, true)
 }
 
 // appendUpdatesTx appends updates inside tx under the gate, at consecutive versions from the head
 // it reads: the document's advisory lock where the caller holds none (roomLocked), the gate's read
 // (readAppendGate), a crashed prune's recovery where one stands, the gate's verdict (gateAppend)
-// and the append's writes (appendWrites), put on the transaction's write phase as one step
-// (write). It answers the first version the run stored and how many of the run it stored, which
-// the gate's prefix rule can leave short of the run it was handed.
-func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room string, updates []BrowserUpdate, kind appendKind, flush *RoomFlush, roomLocked bool) (persistence.Version, int, error) {
+// and the append's writes (appendWrites, owes saying whether they mark the document owing a
+// settlement), put on the transaction's write phase as one step (write). It answers the first
+// version the run stored and how many of the run it stored, which the gate's prefix rule can leave
+// short of the run it was handed.
+func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room string, updates []BrowserUpdate, kind appendKind, flush *RoomFlush, roomLocked, owes bool) (persistence.Version, int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, 0, err
 	}
@@ -102,7 +104,7 @@ func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room strin
 	head, admitted := read.latest, len(updates)
 	if gated {
 		var replaced bool
-		head, admitted, replaced, err = gateAppend(ctx, tx, room, through, kind, updates, read, p.maxPendingItems)
+		head, admitted, replaced, err = gateAppend(ctx, tx, room, through, kind, updates, read, p.maxPendingItems, p.closeMargin)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -115,7 +117,7 @@ func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room strin
 	// path leaves them (appendRoomTx). A flush left short this way is failed by its caller, which
 	// rolls this prefix back with it (Service.flushThrough).
 	updates = updates[:admitted]
-	plan, err := p.appendWrites(ctx, tx, room, head, updates, true)
+	plan, err := p.appendWrites(ctx, tx, room, head, updates, owes)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -244,7 +246,9 @@ func (p *appendPlan) send(ctx context.Context, tx pgx.Tx) error {
 // owes is whether the document owes a settlement from these updates. It is false for a room's
 // parked bytes alone (AppendParkedUpdate), which change nothing a settlement reads and credit
 // nobody: they write no owed row and no pending authors, and the commit that later integrates
-// them marks the document owed itself.
+// them marks the document owed itself. It is false too for the seed of a document CreateDocument
+// creates whose tree needs no settlement (SeedText, withUnowedAppend), which credits nobody and
+// whose version its caller writes at the head it leaves, so nothing it appends is owed one.
 //
 // Each update's credit is taken here (UpdateCredit.take), so the caller holds the document's
 // advisory lock from before the gate until the transaction ends. The owed row is taken with the

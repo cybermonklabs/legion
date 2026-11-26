@@ -264,6 +264,9 @@ export function ProjectPage(): ReactNode {
           issueView === "list" ? (
             <IssuesTable key={route.project} listing={{ project: route.project }} />
           ) : (
+            // Keyed by the project, as the list is: the board holds what became of its last move,
+            // and a refusal of one project's move names that project's issue, so another
+            // project's board is drawn with none of it.
             <IssueBoard
               key={route.project}
               lanes={lanes}

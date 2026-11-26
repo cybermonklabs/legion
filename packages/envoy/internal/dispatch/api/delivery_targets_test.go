@@ -57,9 +57,10 @@ func showTargets(targets measures.Targets) string {
 }
 
 // TestTheDeliveryVerdictsAreTheirEvalsVerdicts (R5): the measures answer and the Pipeline judge
-// their figures by the targets of the delivery evals of the project the deploy repository is
-// mapped to, which a person sets, so after register writes that move three targets onto figures of
-// a day-aligned window of seven days, inclusive or not, judge pr-open-to-merge by its p90 alone,
+// their figures by the targets of the delivery evals of the project whose published default
+// repository is the deploy repository (which a person sets and the evals refresher's page commit
+// publishes), so after register writes that move three targets onto figures of a day-aligned
+// window of seven days, inclusive or not, judge pr-open-to-merge by its p90 alone,
 // and turn deploy-frequency's off, each verdict of the measures answer and of the Pipeline's
 // lead-time cards is the verdict the eval route states for the same window, and each target the
 // answer states is the eval's: value, inclusiveness, direction and the statistics its verdict
@@ -67,9 +68,10 @@ func showTargets(targets measures.Targets) string {
 // target turned off is null and judges nothing. The Pipeline reads at alone, so it is read at the
 // window's last second, whose seven days are the window's. unowned-p0 is left out of the
 // comparison: its eval reads the project's stored count of each day, where the measures answer
-// counts every project's open P0 issues now. With the deploy repository mapped to no project, both
+// counts every project's open P0 issues now. With the deploy repository no project's default, both
 // answers are judged by the catalogue's targets, main's (catalogueTargets).
 func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture, _ := seedEvalHistories(t, database, deps, 14)
 	project := fixture.Project
@@ -174,10 +176,12 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 			answer.Targets.DeploysPerDay, showVerdict(answer.Status.DeploysPerDay))
 	}
 
-	// With no project mapped to the deploy repository, the catalogue's targets judge both answers.
-	if _, err := database.Pool.Exec(t.Context(), `delete from repo_projects where project = $1`, project); err != nil {
-		t.Fatalf("unmap %s's repositories: %v", project, err)
+	// With the deploy repository no project's default, once the refresher's page commit publishes
+	// that (publishDefaultRepos), the catalogue's targets judge both answers.
+	if _, err := database.Pool.Exec(t.Context(), `update projects set default_repo = null where key = $1`, project); err != nil {
+		t.Fatalf("clear %s's default repository: %v", project, err)
 	}
+	publishDefaultRepos(t, database.Pool)
 	unmapped := getDeliveryMeasures(t, handler, window)
 	unmappedPipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+pipelineAt)
 	if want := catalogueTargets(); !reflect.DeepEqual(unmapped.Targets, want) || !reflect.DeepEqual(unmappedPipeline.Targets, want) {
@@ -201,8 +205,9 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 // catalogue's judges (merge to production's longest change and median, the per-deploy rate) answer
 // the median's verdict, met, and no upper-bound verdict.
 func TestAFigureItsJudgesDoNotNameHasNoVerdict(t *testing.T) {
+	t.Parallel()
 	_, database := newTestHandlerWithStore(t)
-	catalogue, err := evals.New(database, nil, nil).DeployRepoEvals(t.Context(), "acme/widgets", evals.DeliveryTargetSlugs)
+	catalogue, err := evals.New(database, nil, nil, nil).DeployRepoEvals(t.Context(), "acme/widgets", evals.DeliveryTargetSlugs)
 	if err != nil {
 		t.Fatalf("read the catalogue's delivery evals: %v", err)
 	}
@@ -250,24 +255,27 @@ func TestAFigureItsJudgesDoNotNameHasNoVerdict(t *testing.T) {
 }
 
 // TestATargetWriteMovesTheLiveDeliveryVerdicts: a register write of merge-to-production's target
-// and judges in the project the deploy repository is mapped to reaches an open measures view and
-// an open Pipeline view: the write's version marks both, and each delta lands on its GET route's
-// body, which states the new target, its inclusiveness, the eval's direction and the judge the
-// write named. The Pipeline view is pinned at the test's start, the at its GET route reads, since
-// that route reads at alone and the hub's clock runs on.
+// and judges in the project whose published default repository is the deploy repository (which
+// the test publishes as the evals refresher's page commit does, publishDefaultRepos) reaches an
+// open measures view and an open Pipeline view: the write's version marks both, and each delta
+// lands on its GET route's body, which states the new target, its inclusiveness, the eval's
+// direction and the judge the write named. The Pipeline view is pinned at the test's start, the
+// at its GET route reads, since that route reads at alone and the hub's clock runs on.
 func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "HUB")
-	if _, err := rig.database.Pool.Exec(t.Context(), `insert into repo_projects (repo, project, created_by) values ('acme/widgets', 'HUB', '{"kind":"user","id":"alice"}'::jsonb)`); err != nil {
-		t.Fatalf("map acme/widgets to HUB: %v", err)
+	if _, err := rig.database.Pool.Exec(t.Context(), `update projects set default_repo = 'acme/widgets' where key = 'HUB'`); err != nil {
+		t.Fatalf("make acme/widgets HUB's default repository: %v", err)
 	}
+	publishDefaultRepos(t, rig.database.Pool)
 	now := rig.clock.Now()
 	upsertPR(t, rig.database, hubPR(1, now.Add(-3*time.Hour)))
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("m", presetView(deliveryLiveMeasures, 7, "")))
 	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(&now)))
-	snapshots := conn.firstSnapshots(t, 5*time.Second, "m", "p")
+	snapshots := conn.firstSnapshots(t, "m", "p")
 	rig.settle(t)
 
 	registered := evalRequest(t, rig.handler, http.MethodPost, "/api/v1/projects/HUB/evals", map[string]any{
@@ -283,7 +291,7 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	// pinned at.
 	queries := map[string]string{"p": "at=" + now.Format(time.RFC3339Nano)}
 	for len(kinds) > 0 {
-		frame := conn.next(t, 5*time.Second, "a delta of each view")
+		frame := conn.next(t, "a delta of each view")
 		delta, ok := frame.(DeliveryLiveDelta)
 		if !ok || kinds[delta.Sub] == "" {
 			raw, _ := json.Marshal(frame)

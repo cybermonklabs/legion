@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import {
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
@@ -13,11 +13,14 @@ import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
+import { correction, correctionFeed } from "../../__tests__/correction-feed";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
+import { useEventFeed } from "../../api/event-feed";
 import type { IssueReferenceSummary, Project, SearchResponse, SearchResult } from "../../api/types";
 import { CONTROL } from "../../components/control-names";
+import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -27,6 +30,12 @@ import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
 import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const results: SearchResult[] = [
   {
@@ -154,6 +163,8 @@ interface RenderPaletteOptions {
   entries?: string[];
   index?: number;
   onClose?: () => void;
+  /** The cache the palette reads, for a row that holds it before the palette renders. */
+  queryClient?: QueryClient;
 }
 
 function renderPalette({
@@ -161,8 +172,8 @@ function renderPalette({
   entries = ["/"],
   index,
   onClose = () => {},
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 }: RenderPaletteOptions = {}): { queryClient: QueryClient; unmount: () => void } {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={entries} initialIndex={index}>
       <QueryClientProvider client={queryClient}>
@@ -236,6 +247,139 @@ test("says how many matches a query has when the page holds fewer", async () => 
     search.mockRestore();
     view.unmount();
     view.queryClient.clear();
+  }
+});
+
+// A comment or a message hit prints the post, so one its author edited says so beside its kind,
+// as its byline does; one nobody edited carries no mark.
+test("an edited post's hit carries the edited mark, and a post nobody edited does not", async () => {
+  const user = userOnFakeClock();
+  const edited: SearchResult = {
+    edited_at: "2026-10-01T00:00:00Z",
+    href: "/issues/LEGION-2/comments/comment-3",
+    id: "comment-3",
+    kind: "comment",
+    owner: { key: "LEGION-2", kind: "issue", status: "todo", title: "Navigation instruments" },
+    rank: 2,
+    snippet: "The <mark>astrolabe</mark> was recalibrated.",
+  };
+  const standing = results[2] as SearchResult;
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer([edited, standing]));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    const option = (result: SearchResult) => document.getElementById(optionId(result));
+    await waitFor(() => expect(option(edited)?.textContent).toContain("comment · edited"));
+    expect(option(standing)?.textContent).toContain("comment");
+    expect(option(standing)?.textContent).not.toContain("edited");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A deleted post is no hit once its delete commits, which takes its windows with its body; the
+// mark is the backstop for a hit of one all the same, whose snippet is empty. The hit draws the deleted line where the snippet would be, naming who deleted it and
+// when, and no edited mark beside its kind; a post nobody deleted draws its snippet and no
+// deleted line.
+test("a deleted post's hit draws the deleted line where its snippet would be", async () => {
+  // The standing hit's snippet is Markdown (`MarkdownPreview`), empty until the lazy engine loads,
+  // and a wait on this row's held clock can spend its budget in fake time before the engine has
+  // loaded, so the row loads it first.
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const deleted: SearchResult = {
+    deleted_at: "2026-10-02T00:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+    edited_at: "2026-10-01T00:00:00Z",
+    href: "/issues/LEGION-2/comments/comment-4",
+    id: "comment-4",
+    kind: "comment",
+    owner: { key: "LEGION-2", kind: "issue", status: "todo", title: "Navigation instruments" },
+    rank: 2,
+    snippet: "",
+  };
+  const standing = results[2] as SearchResult;
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer([deleted, standing]));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    const option = (result: SearchResult) => document.getElementById(optionId(result));
+    const line = () => option(deleted)?.querySelector("[data-post-deleted]");
+    await waitFor(() => expect(line()?.textContent).toContain("Deleted by alice"));
+    expect(line()?.querySelector("time")).toHaveAttribute("datetime", "2026-10-02T00:00:00Z");
+    expect(option(deleted)?.textContent).not.toContain("edited");
+    expect(option(standing)?.querySelector("[data-post-deleted]")).toBeNull();
+    expect(option(standing)?.textContent).toContain("Discuss the astrolabe diagram.");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+/** The page's event feed, mounted beside the palette as the shell mounts it. */
+function EventFeed(): ReactNode {
+  useEventFeed();
+  return null;
+}
+
+// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. The bar
+// says a search failed only while it holds no answer, so a refetch that fails behind a held one
+// leaves its hits on screen: a post's correction writes its own facts into every answer the cache
+// holds (`markCorrectedPost`). The post's hit carries the edited mark once its author edits it,
+// and once they delete it the deleted line, with no word of its snippet, in both tiers' answers.
+test("a post's hit whose refetch fails after its edit and delete carries the edited mark, then the deleted line", async () => {
+  // Each snippet is Markdown (`MarkdownPreview`), empty until the lazy engine loads, and a wait on
+  // this row's held clock can spend its budget in fake time before the engine has loaded, so the
+  // row loads it first.
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const id = "f6a7b8c9-d0e1-4f2a-8b3c-4d5e6f7a8b9c";
+  const hit: SearchResult = {
+    href: `/issues/LEGION-2/comments/${id}`,
+    id,
+    kind: "comment",
+    owner: { key: "LEGION-2", kind: "issue", status: "todo", title: "Navigation instruments" },
+    rank: 2,
+    snippet: "The <mark>astrolabe</mark> was recalibrated.",
+  };
+  const standing = results[2] as SearchResult;
+  let failing = false;
+  const search = spyOn(api, "search").mockImplementation(async () => {
+    if (failing) throw new Error("503");
+    return searchAnswer([hit, standing]);
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const feed = correctionFeed(queryClient, { fakeClock: true });
+  const view = renderPalette({ control: <EventFeed />, queryClient });
+  const option = (result: SearchResult) => document.getElementById(optionId(result));
+
+  try {
+    await searchFor(user, "astrolabe");
+    // The pause's search answers too, so the bar holds both tiers' answers and draws the second.
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(option(hit)?.textContent).toContain("recalibrated"));
+    feed.start();
+    failing = true;
+
+    await feed.deliver(correction("comment", id, true), [["search"]]);
+    expect(option(hit)?.textContent).toContain("comment · edited");
+
+    await feed.deliver(correction("comment", id, false), [["search"]]);
+    expect(option(hit)?.querySelector("[data-post-deleted]")?.textContent).toContain(
+      "Deleted by alice"
+    );
+    expect(option(hit)?.textContent).not.toContain("recalibrated");
+    expect(option(standing)?.textContent).toContain("Discuss the astrolabe diagram.");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    feed.restore();
+    queryClient.clear();
   }
 });
 
@@ -600,6 +744,103 @@ test("arrow keys, Enter and Backspace inside an IME composition move no highligh
   } finally {
     search.mockRestore();
     getIssue.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A Tab that is part of an input method's composition is the composition's too: it narrows no
+// chip, and its default stays the browser's. The bar is opened with the writing cursor in a block
+// of a document behind it, which is where a plain Tab narrows the chip to that block. It is opened
+// over an issue page, so the chip names the issue before any key is pressed.
+test("Tab inside an IME composition moves no chip, where a plain Tab would", async () => {
+  const user = userOnFakeClock();
+  // The bar reads the writing cursor on the render that opens it (`scopeAtCursor`), so the cursor
+  // is put in a block of a writing surface before the bar is drawn.
+  const editable = document.createElement("div");
+  editable.setAttribute("contenteditable", "true");
+  const block = document.createElement("p");
+  block.setAttribute(BLOCK_ID_ATTRIBUTE, "b-1");
+  block.textContent = "The sextant sights the horizon.";
+  editable.append(block);
+  document.body.append(editable);
+  editable.focus();
+  const caret = document.createRange();
+  caret.setStart(block.firstChild ?? block, 0);
+  caret.collapse(true);
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(caret);
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  const chip = () => screen.getByTestId("search-scope").textContent;
+
+  try {
+    // A composition goes on in the box the reader types into, so the box holds the focus first:
+    // the bar takes the focus on itself as it opens and hands it to the box a frame later, and
+    // until then a Tab is the dialog's own, to its first control (`useDialog`).
+    await user.click(box);
+    // `fireEvent` answers false for a key whose default was cancelled, which the bar does to
+    // each key it spends. user-event has no form for this: it cannot mark a key as an IME
+    // composition.
+    expect(chip()).toContain("Acting on LEGION-2");
+    expect(fireEvent.keyDown(box, { isComposing: true, key: "Tab" })).toBe(true);
+    expect(chip()).toContain("Acting on LEGION-2");
+
+    // The plain Tab is the bar's: it narrows the chip to the block the composing one left alone.
+    await user.keyboard("{Tab}");
+    expect(chip()).toContain("Acting on the block “The sextant sights the horizon.”");
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+    editable.remove();
+    window.getSelection()?.removeAllRanges();
+  }
+});
+
+// Safari sends the key that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that key is the
+// composition's as well. In the bar's box an arrow moves no highlight and Enter opens no row, and
+// in the filter panel's Author box Enter takes no author. The plain Enter after it takes the
+// author.
+test("keys that end an IME composition in Safari, at keyCode 229, move no highlight, open no row and take no author", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const box = await searchFor(user, "astrolabe");
+    // Two rows at least, so an arrow the bar took would move the highlight off the first.
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    expect(box).toHaveAttribute("aria-activedescendant", first.id);
+    for (const key of ["ArrowDown", "ArrowUp", "Enter"]) {
+      // `fireEvent` answers false for a key whose default was cancelled, which the bar does to
+      // each key it spends. user-event has no form for this: it cannot mark a key as an IME
+      // composition.
+      const kept = fireEvent.keyDown(box, { isComposing: false, key, keyCode: 229 });
+      expect(kept, `${key} at keyCode 229`).toBe(true);
+      expect(box, `${key} at keyCode 229`).toHaveAttribute("aria-activedescendant", first.id);
+    }
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+
+    await openFilters(user);
+    const author = screen.getByRole("searchbox", { name: "Author" });
+    await user.click(author);
+    await user.paste("alice");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(author, { isComposing: false, key: "Enter", keyCode: 229 });
+    expect(
+      screen.queryByRole("button", { name: "Remove Author alice filter" }),
+      "an Enter at keyCode 229 took the author"
+    ).toBeNull();
+
+    await user.keyboard("{Enter}");
+    expect(
+      await screen.findByRole("button", { name: "Remove Author alice filter" })
+    ).not.toBeNull();
+  } finally {
+    search.mockRestore();
     view.unmount();
     view.queryClient.clear();
   }
@@ -1404,6 +1645,34 @@ test("a chip narrows the search, reads back in the person's words, and comes off
   }
 });
 
+test("a date typed in Updated since narrows the search only once its year is whole", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    const box = screen.getByLabelText("Updated since");
+    // An engine reports a valid date from the year's first typed digit, as Chromium does with
+    // `0002-11-22`. user-event cannot type into a date box's parts, so the value the engine
+    // reports is set as it would report it.
+    fireEvent.change(box, { target: { value: "0002-11-22" } });
+    expect(screen.getByLabelText("Updated since")).toBe(box);
+    expect(screen.queryByRole("button", { name: /^Remove Updated since/ })).toBeNull();
+    // The same box once the year's last digit is typed.
+    fireEvent.change(box, { target: { value: "2026-11-22" } });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Remove Updated since/ })).not.toBeNull()
+    );
+    expect(screen.queryByLabelText("Updated since")).toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("a project picked in the panel narrows the search and reads back as its chip", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
@@ -1414,6 +1683,7 @@ test("a project picked in the panel narrows the search and reads back as its chi
       key: "INFRA",
       name: "Infra",
       open_asks: 0,
+      proven_sessions: false,
     },
   ]);
   const view = renderPalette();
@@ -1456,8 +1726,8 @@ function picks(name: RegExp): HTMLElement[] {
   ];
 }
 
-// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
-// options." The bar's Project and Status lists are such lists. Each one, opened from the panel,
+// Every list of options a reader picks from holds a text box that narrows the options, and the
+// bar's Project and Status lists are such lists. Each one, opened from the panel,
 // holds a text box of its own, and a word typed into it leaves only the options that match.
 test("the bar's Project and Status lists each hold a text box that narrows their options", async () => {
   const user = userOnFakeClock();
@@ -1468,6 +1738,7 @@ test("the bar's Project and Status lists each hold a text box that narrows their
       key,
       name: key === "INFRA" ? "Infra" : "Core",
       open_asks: 0,
+      proven_sessions: false,
     }))
   );
   const view = renderPalette();
@@ -1501,9 +1772,8 @@ test("the bar's Project and Status lists each hold a text box that narrows their
   }
 });
 
-// INFRA-3135, round 12: the Project list was drawn from whatever the bar's read of the projects
-// held, and said "No projects yet" while that read was still out and after it had failed. It says
-// which, as the Agents composer's Issue list does.
+// The Project list says whether the bar's read of the projects is still out or failed, rather
+// than "No projects yet", as the Agents composer's Issue list does.
 test("the bar's Project list says its projects are loading, then that they could not be loaded, and never that there are none", async () => {
   const user = userOnFakeClock();
   const read = Promise.withResolvers<Project[]>();
@@ -1532,9 +1802,9 @@ test("the bar's Project list says its projects are loading, then that they could
   }
 });
 
-// INFRA-3135, review round 1 (thread PRRT_kwDORFy7ds63p6zJ): Shift+Tab out of the Project list
-// left both panels open with the focus on Updated since, and every Escape after it was refused
-// while the list stood open, so the bar could not be closed from the keyboard.
+// Shift+Tab out of the Project list closes that list and gives the focus back to its Project
+// trigger in the Filter panel. From there Escape closes the panel, with the focus on the bar's
+// Filter trigger, and the next Escape closes the bar, so the bar can be closed from the keyboard.
 test("after Shift+Tab out of the Project list, Escape closes the panel, and the next Escape the bar", async () => {
   const user = userOnFakeClock();
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
@@ -1544,6 +1814,7 @@ test("after Shift+Tab out of the Project list, Escape closes the panel, and the 
       key: "INFRA",
       name: "Infra",
       open_asks: 0,
+      proven_sessions: false,
     },
   ]);
   let closed = 0;

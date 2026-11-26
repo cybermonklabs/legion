@@ -3,17 +3,20 @@
  * it was, drawn as read (INFRA-450). Only a dismiss takes a row out of the list.
  */
 
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { onFakeClock } from "../../__tests__/fake-clock";
+import { onFakeClock, realClock, tick } from "../../__tests__/fake-clock";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates, answerThreadReads } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { api, NetworkError } from "../../api/client";
 import {
   inboxQuery,
   inboxThreadsQuery,
@@ -31,10 +34,18 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { ThreadRowCard } from "./ThreadRowCard";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const AS_OF = "2026-10-12T02:00:00Z";
 const NEWEST = "2026-10-12T01:00:00Z";
@@ -76,6 +87,8 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
     author: { id: "alice", kind: "user" },
     body,
     created_at: "2026-10-12T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id,
@@ -113,12 +126,14 @@ function seeded(rows: readonly MyReplyRow[]): QueryClient {
   return client;
 }
 
-function renderInbox(client: QueryClient): void {
+/** `pane: false` is the drawer's list of cards, where a thread is read in its own row: the page
+ *  reads one row at a time at every width. */
+function renderInbox(client: QueryClient, { pane = true }: { pane?: boolean } = {}): void {
   render(
     <MemoryRouter initialEntries={["/"]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
-          <Inbox />
+          <Inbox pane={pane} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -165,7 +180,7 @@ test("a card read by the dwell rule stays in the list, drawn as read", async () 
   mockCommentReads();
   const row = commentRow("comment-1", "The retry budget");
   const client = seeded([row]);
-  renderInbox(client);
+  renderInbox(client, { pane: false });
   try {
     await screen.findByTestId("inbox-thread-comment");
     await waitFor(() => expect(document.querySelector('[aria-label="Unread"]')).not.toBeNull());
@@ -236,6 +251,88 @@ test("a row read in the column stays in the list after the selection moves off i
   }
 });
 
+// A card's Mark read is a `PUT` of the thread's mark. One the reader stopped may have been saved,
+// so the card neither says it failed nor shows the stopped write's own words, which are a
+// composer's and speak of a message: it says what its Retry does with the mark.
+test("a Mark read the reader stopped says what Retry does, not a message's words", async () => {
+  answerThreadReads().mockRejectedValue(
+    new NetworkError("/api/v1/me/threads/comment-1/read", new TypeError("Failed to fetch"))
+  );
+  mockCommentReads();
+  // No thread is unread to the card's watcher, so the press is the one write the card makes.
+  const client = seeded([]);
+  render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ThreadRowCard thread={commentRow("comment-1", "The retry budget")} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  await screen.findByTestId("inbox-thread-comment");
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(screen.getByRole("button", { name: "Mark read" }));
+    await stopTheLateWrite(client);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("this thread's read mark", "saved", {
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+  }
+});
+
+// The row moves on while a stopped mark's refusal is on screen: a newer reply arrives and the
+// list read again names it. The card's Retry is still the stopped mark, so it marks the thread
+// through the reply that mark was of, not through the newer one the card draws by then.
+test("a Mark read's Retry marks what the stopped press marked, not the row's newer reply", async () => {
+  const mark = answerThreadReads().mockRejectedValue(
+    new NetworkError("/api/v1/me/threads/comment-1/read", new TypeError("Failed to fetch"))
+  );
+  mockCommentReads();
+  const client = seeded([]);
+  const row = commentRow("comment-1", "The retry budget");
+  const card = (thread: MyReplyRow) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ThreadRowCard thread={thread} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(card(row));
+  await screen.findByTestId("inbox-thread-comment");
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(screen.getByRole("button", { name: "Mark read" }));
+    await stopTheLateWrite(client);
+    const stoppedKey = mark.mock.calls[0]?.[2]?.key;
+    const stopped = mark.mock.calls.length;
+
+    view.rerender(
+      card({
+        ...row,
+        reply: { ...row.reply, created_at: "2026-10-12T01:30:00Z", id: "comment-1-later" },
+      })
+    );
+    mark.mockResolvedValue(undefined);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await tick(1_000);
+
+    expect(mark).toHaveBeenCalledTimes(stopped + 1);
+    const again = mark.mock.calls.at(-1);
+    expect(again?.[1]).toEqual({ read_through: NEWEST });
+    expect(again?.[2]?.key).toBe(stoppedKey);
+  } finally {
+    realClock();
+  }
+});
+
 const session: Agent = {
   capabilities: ["steer", "btw"],
   dir: "/work",
@@ -257,6 +354,7 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
     broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,

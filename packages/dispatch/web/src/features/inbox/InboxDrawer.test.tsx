@@ -1,15 +1,23 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { pickIn } from "../../__tests__/issue-picks";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { InboxDrawer } from "./InboxDrawer";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 installInboxApiMocks();
 
@@ -140,9 +148,10 @@ test("Snooze inside the drawer folds the row into Later, same as the Inbox page"
 
     const row = within(dialog).getByTestId("ask-ask-a").closest<HTMLElement>("[data-inbox-row]");
     if (row === null) throw new Error("ask-a row missing");
-    await user.selectOptions(
-      within(row).getByLabelText("Snooze CORE-1: Which approach?"),
-      "tomorrow"
+    await pickIn(
+      user,
+      () => within(row).getByLabelText("Snooze CORE-1: Which approach?"),
+      "Tomorrow"
     );
 
     await waitFor(() =>
@@ -197,8 +206,11 @@ test("Escape with a row focused backs out of the row first; only a second Escape
   const view = renderDrawer();
   try {
     await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    // The drawer is drawn at once, over the inbox's loading skeleton, so the row is waited for.
     const dialog = await screen.findByRole("dialog", { name: "Inbox" });
-    const row = within(dialog).getByTestId("ask-ask-a").closest<HTMLElement>("[data-inbox-row]");
+    const row = (await within(dialog).findByTestId("ask-ask-a")).closest<HTMLElement>(
+      "[data-inbox-row]"
+    );
     if (row === null) throw new Error("ask-a row missing");
     row.focus();
     expect(row).toHaveFocus();

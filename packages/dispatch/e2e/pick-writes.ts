@@ -26,11 +26,17 @@ import { settledState } from "./settled";
 export const PICK_HOLD_MS = 3_000;
 
 /** One save (`PATCH /issues/<KEY>`) as the route held it: what it carried, when it reached the
- *  route, and when the route was done with it - passed on to the server, or dropped because the
- *  page gave it up (`Date.now()` in the runner). `endedAt` is unset while it is held. */
+ *  route, whether the route holds it still, and when the route was done with it - passed on to the
+ *  server, or dropped because the page gave it up (`Date.now()` in the runner). `endedAt` is unset
+ *  while it is held. */
 export interface HeldPatch {
   readonly arrivedAt: number;
   readonly body: unknown;
+  /** True from the moment the save reaches the route until the route lets it go, just before it
+   *  passes the save on. A row reads it at a step of its own (`savesAtRoute`) to know the save was
+   *  still out then, with no clock: a hold measured with `Date.now()` can read a millisecond short
+   *  of the `PICK_HOLD_MS` timer that held it. */
+  held: boolean;
   endedAt?: number;
 }
 
@@ -66,22 +72,37 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     const request = route.request();
     if (request.method() !== "PATCH") return route.fallback();
     holding += 1;
-    const patch: HeldPatch = { arrivedAt: Date.now(), body: request.postDataJSON() };
+    const patch: HeldPatch = { arrivedAt: Date.now(), body: request.postDataJSON(), held: true };
     sent.push(patch);
     try {
       // The hold is the row's whole point: the save stays out at least this long, and until the
       // row lets it go, so the next pick, reload or read happens while it is out.
-      await Promise.all([sleep(PICK_HOLD_MS), released.promise]);
+      await Promise.all([heldFor(patch.arrivedAt), released.promise]);
+      patch.held = false;
       await route.fallback();
       forwarded.push(patch.body);
     } catch {
       // The page closed with the save held: it never left.
     } finally {
+      patch.held = false;
       patch.endedAt = Date.now();
       holding -= 1;
     }
   });
   return { forwarded, holding: () => holding, release: () => released.resolve(), sent };
+}
+
+/** Sleeps until `Date.now()` reads `PICK_HOLD_MS` past `arrivedAt`. A timer runs on the
+ *  monotonic clock, and `Date.now()`, which a row reads a hold by (`HeldPatch`), on the wall
+ *  clock, each in whole milliseconds, so one `sleep(PICK_HOLD_MS)` can end while `Date.now()`
+ *  still reads 2999 ms (CI run 44781930916, `board.e2e.ts`'s priority-lane row): the hold is
+ *  ended by the clock that reads it. */
+async function heldFor(arrivedAt: number): Promise<void> {
+  for (let left = PICK_HOLD_MS; left > 0; left = PICK_HOLD_MS - (Date.now() - arrivedAt)) {
+    // What is left of the hold by `Date.now()`: the save stays out this long, so the row's
+    // next pick, reload or read happens while it is out.
+    await sleep(left);
+  }
 }
 
 /** Waits until no save of `held` is held and the tab keeps no write for a reload to send: every
@@ -90,6 +111,13 @@ export async function savesEnded(page: Page, held: HeldPatches): Promise<void> {
   await expect
     .poll(async () => held.holding() === 0 && (await keptWrites(page)) === 0, { timeout: 30_000 })
     .toBe(true);
+}
+
+/** Each save of `held` that has reached the route, in order, with whether the route holds it
+ *  still. A save the route holds once a row has seen a step land, and that reached the route
+ *  before the step began, was held through the step: the route lets each save go once. */
+export function savesAtRoute(held: HeldPatches): { body: unknown; held: boolean }[] {
+  return held.sent.map((patch) => ({ body: patch.body, held: patch.held }));
 }
 
 /** The saves of one issue a page makes while `refuseIssuePatches` answers them. */
@@ -232,9 +260,9 @@ export function expectReadWhileHeld(
 export const ISSUE_PAGE_PICKERS = ':is(main, aside[aria-label="Details"])';
 
 /** The issue page's own picker named `name` (such as `Priority of CORE-1`), inside
- *  `ISSUE_PAGE_PICKERS`: a native select or box named `name`, such as the priority's, or the
- *  shared list's single pick (`MultiSelect`), whose trigger is named `name` and then what it
- *  shows, such as the assignee's and the repository's (`listTrigger`). */
+ *  `ISSUE_PAGE_PICKERS`: the shared list's single pick (`MultiSelect`), whose trigger is named
+ *  `name` and then what it shows, such as the priority's, the assignee's and the repository's
+ *  (`listTrigger`). */
 export function pagePicker(page: Page, name: string): Locator {
   return listTrigger(page.locator(ISSUE_PAGE_PICKERS), name);
 }

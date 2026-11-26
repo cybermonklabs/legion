@@ -87,16 +87,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -141,7 +137,6 @@ const ladderTolerance = 45 * time.Second
 // each pane, the daemon's own log as this driver reads it back, and the three issues it drives.
 type providerErrorLive struct {
 	liveAgentProof
-	built *built
 	clock *ladderClock
 	// ladder, refused and failing are the three issues, each in the phase its one worker works.
 	ladder, refused, failing string
@@ -181,12 +176,11 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/provider-error-retry.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/provider-error-retry.sh")
 	r := &providerErrorLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
-		built:          &built{}, clock: &ladderClock{},
-		ladder: proof.cfg.Project + "-1", refused: proof.cfg.Project + "-2", failing: proof.cfg.Project + "-3",
+		clock:          &ladderClock{},
+		ladder:         proof.cfg.Project + "-1", refused: proof.cfg.Project + "-2", failing: proof.cfg.Project + "-3",
 		stands: map[string]*providerStandin{},
 	}
 	r.seeded = []seededIssue{
@@ -241,7 +235,7 @@ func (r *providerErrorLive) registerController() {
 	t := r.t
 	t.Helper()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/controller/secret",
-		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("the controller's boot secret = %d %s, want 200", status, body)
 	}
@@ -252,29 +246,19 @@ func (r *providerErrorLive) registerController() {
 	session := "ses_controller_" + randomSuffix(t)
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: capability.Secret, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false); status != http.StatusOK {
 		t.Fatalf("register the controller = %d %s, want 200", status, body)
 	}
 	r.note("the project's controller is registered as %s, so a notice for it is published rather than dropped", session)
 }
 
-// overrides is the daemon this proof boots: the local runtime over the real worker stream, the
-// ladder's clock, the API listener the fixture holds, and the workflow's App tokens stood in for.
+// overrides is the daemon this proof boots: the local runtime's own wiring (daemonOverrides), the
+// ladder's clock, and the workflow's App tokens stood in for.
 func (r *providerErrorLive) overrides() overrides {
-	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			r.built.mu.Lock()
-			defer r.built.mu.Unlock()
-			r.built.conns, r.built.address = listener, address
-			r.rt.conns, r.rt.stream = listener, address
-			return r.rt, nil
-		},
-		clock:          r.clock,
-		listen:         heldListen,
-		workflowTokens: &workflowTokenRecorder{},
-	}
+	o := r.rt.daemonOverrides(r.rt)
+	o.clock, o.workflowTokens = r.clock, &workflowTokenRecorder{}
+	return o
 }
 
 // seed records the three issues as the daemon would hold them at the moment each one's worker
@@ -295,7 +279,7 @@ func (r *providerErrorLive) seed() {
 	for _, seeded := range r.issues() {
 		r.board.show(seeded.key, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range r.issues() {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
 				Key: seeded.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: seeded.key,
@@ -386,7 +370,10 @@ func (r *providerErrorLive) token(key string, role claim.Role) claim.Token {
 // waits for it rather than delivering a task of its own. It is read off the delivery's read
 // mark, the instant the shim acknowledged that first prompt, which a provider error keeps
 // (supervise's takeBackPending) — so every gap below is measured from the send that began the
-// ladder and not from a later rung.
+// ladder and not from a later rung. Each later send is the instant the daemon wrote its record
+// that the wait is over, never the instant this step's poll read that record: the poll reads each
+// record up to its interval late, so the difference of two reads can fall under the wait the
+// daemon kept, or hide a send that came early.
 func (r *providerErrorLive) ladderWalks() {
 	t := r.t
 	token := r.token(r.ladder, claim.RolePlanner)
@@ -402,7 +389,7 @@ func (r *providerErrorLive) ladderWalks() {
 		if driven, ok := ladderDriven(delay); ok {
 			within = driven + ladderTolerance
 		}
-		r.awaitLog("the ladder's send "+strconv.Itoa(attempt+1), within+time.Minute, func(record loggedRecord) bool {
+		resent := r.awaitLog("the ladder's send "+strconv.Itoa(attempt+1), within+time.Minute, func(record loggedRecord) bool {
 			return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
 				record.at.After(sent[attempt-1])
 		})
@@ -416,9 +403,8 @@ func (r *providerErrorLive) ladderWalks() {
 		if wait, want := armed.Attrs["wait"], delay.String(); wait != want {
 			t.Fatalf("the ladder armed %v before send %d, want %s", wait, attempt+1, want)
 		}
-		now := time.Now()
-		gap := now.Sub(sent[attempt-1])
-		sent = append(sent, now)
+		gap := resent.at.Sub(sent[attempt-1])
+		sent = append(sent, resent.at)
 		if driven, ok := ladderDriven(delay); ok {
 			r.note("send %d came %s after send %d; its %s wait was driven on the daemon's clock to %s",
 				attempt+1, gap.Round(time.Second), attempt, delay, driven)
@@ -426,7 +412,7 @@ func (r *providerErrorLive) ladderWalks() {
 		}
 		if gap < delay || gap > delay+ladderTolerance {
 			t.Fatalf("send %d of the ladder came %s after send %d, want between %s and %s",
-				attempt+1, gap.Round(time.Second), attempt, delay, delay+ladderTolerance)
+				attempt+1, gap.Round(time.Millisecond), attempt, delay, delay+ladderTolerance)
 		}
 		r.note("send %d came %s after send %d, and the daemon had armed %s (cause %q)",
 			attempt+1, gap.Round(time.Second), attempt, delay, armed.Attrs["cause"])
@@ -454,9 +440,11 @@ func (r *providerErrorLive) ladderWalks() {
 	}
 	r.note("%s is %s, still holding its task (%d re-sends counted on the delivery), and %s is %s",
 		token, held.State, ladderSends-1, r.ladder, r.issue(r.ladder).Phase)
-	if got := r.stands[overloadedProvider].requestsHolding(marker); got < ladderSends {
-		t.Fatalf("the overloaded stand-in was asked %d times for a request carrying the task, want %d", got, ladderSends)
-	}
+	// The send's record precedes the HTTP request: wait for the stand-in itself, not for
+	// the poll of that record to happen late enough for the request to arrive.
+	r.await("the overloaded stand-in to receive every send carrying the task", paneReady, func() bool {
+		return r.stands[overloadedProvider].requestsHolding(marker) >= ladderSends
+	})
 	r.note("the overloaded stand-in answered 529 to %d requests, %d of them carrying the task itself",
 		r.stands[overloadedProvider].count(), r.stands[overloadedProvider].requestsHolding(marker))
 }
@@ -519,7 +507,6 @@ func (r *providerErrorLive) refusalGoesAgain() {
 	if status != http.StatusOK {
 		t.Fatalf("deliver the refused task = %d %s, want 200", status, body)
 	}
-	sent := time.Now()
 	errored := r.awaitLogFrom("the turn a content filter ended", from, 4*time.Minute, func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage &&
 			record.Attrs["claim"] == string(token)
@@ -545,14 +532,28 @@ func (r *providerErrorLive) refusalGoesAgain() {
 	}
 	r.note("the content filter ended the turn with no HTTP status and the daemon armed %v: %q",
 		armed.Attrs["wait"], cause)
+	// The first send is the start of the turn the content filter ended: the daemon's own record of
+	// it, which names the delivery the error names too. It is a record the daemon wrote once, so no
+	// later send can stand in for it, and it is no moment this step read: both ends of the gap are
+	// the daemon's own instants, as in ladderWalks. The turn starts after its prompt went out, so
+	// the gap it gives is no longer than the one from the send itself.
+	started := r.daemon.firstAfter(from, func(record loggedRecord) bool {
+		return record.Message == "supervise: a turn started" && record.Attrs["claim"] == string(token) &&
+			record.Attrs["delivery"] == errored.Attrs["delivery"]
+	})
+	if started == nil {
+		t.Fatalf("the daemon recorded no start of the turn of delivery %v that the content filter ended",
+			errored.Attrs["delivery"])
+	}
+	sent := started.at
 
-	r.awaitLogFrom("the refused task sent again", from, ladderDelays[0]+ladderTolerance+time.Minute, func(record loggedRecord) bool {
+	again := r.awaitLogFrom("the refused task sent again", from, ladderDelays[0]+ladderTolerance+time.Minute, func(record loggedRecord) bool {
 		return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
 			record.Attrs["claim"] == string(token)
 	})
-	gap := time.Since(sent)
+	gap := again.at.Sub(sent)
 	if gap < ladderDelays[0] {
-		t.Fatalf("the refused task went again %s after it was first sent, want at least %s", gap.Round(time.Second), ladderDelays[0])
+		t.Fatalf("the refused task went again %s after it was first sent, want at least %s", gap.Round(time.Millisecond), ladderDelays[0])
 	}
 	held := r.claim(token)
 	if held.Pending == nil || held.Pending.Task != task {

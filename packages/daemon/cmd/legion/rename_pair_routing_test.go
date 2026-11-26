@@ -32,8 +32,8 @@ func (bothOwnersInstalled) InstalledOwners(context.Context, appauth.AppRole) ([]
 func pairRoutedBundle(t *testing.T) string {
 	t.Helper()
 	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
-	repos := func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")} }
-	credential := appauth.GitHubCredential(bothOwnersInstalled{}, repos, pair, nil, nil, slog.Default())
+	served := servesOneOf([]ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")})
+	credential := appauth.GitHubCredential(bothOwnersInstalled{}, served, pair, nil, nil, slog.Default())
 	bundle, err := credential(context.Background(), legionclaim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
 		t.Fatalf("build the bundle: %v", err)
@@ -54,6 +54,7 @@ func pairRoutedBundle(t *testing.T) string {
 // (ghconfig.PairsFile), so the two wrappers and the daemon that wrote the directories cannot
 // disagree about what moved.
 func TestThePairsRepositoryTakesTheDirectoryOfTheOwnerHoldingItAndItsSiblingsTheirOwn(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable gitCredentialStdin (runGitCredentialHere).
 	root := pairRoutedBundle(t)
 	for _, tc := range []struct{ name, owner, repository, dir string }{
 		{"the pair's from repository", "sjawhar", "legion", "cybermonklabs"},
@@ -96,6 +97,7 @@ func TestThePairsRepositoryTakesTheDirectoryOfTheOwnerHoldingItAndItsSiblingsThe
 // routing itself makes stay: an owner the bundle holds no directory for, and a pair whose `to`
 // owner it holds none for, which names the pair.
 func TestAGhCommandRunsWithTheOneDirectoryEveryRepositoryItNamesRoutesTo(t *testing.T) {
+	t.Parallel()
 	root := pairRoutedBundle(t)
 	routed := func(owner, name string) (string, error) { return ghConfigDirFor(root, owner, name) }
 	for _, tc := range []struct {
@@ -166,6 +168,7 @@ func TestAGhCommandRunsWithTheOneDirectoryEveryRepositoryItNamesRoutesTo(t *test
 // a push GitHub refuses at the remote and a read it answers 404: failing closed is what says so
 // where the request is made.
 func TestAPairWhoseNewOwnerHasNoDirectoryRefusesNamingThePair(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable gitCredentialStdin (runGitCredentialHere).
 	root := filepath.Join(t.TempDir(), "gh")
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{
 		Default: "sjawhar",
@@ -204,6 +207,7 @@ func TestAPairWhoseNewOwnerHasNoDirectoryRefusesNamingThePair(t *testing.T) {
 // for as long as the roll lasted, and the drift check replaces that pod on its own
 // (sandbox's movedGhDirs reads the file's presence).
 func TestABundleWithNoPairsFileRoutesByOwnerAsTheDaemonBeforeItWrote(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable gitCredentialStdin (runGitCredentialHere).
 	root := pairRoutedBundle(t)
 	if err := os.Remove(filepath.Join(root, ghconfig.PairsFile)); err != nil {
 		t.Fatal(err)
@@ -226,6 +230,7 @@ func TestABundleWithNoPairsFileRoutesByOwnerAsTheDaemonBeforeItWrote(t *testing.
 // that cannot reach it. The absent file above is the older daemon's bundle; this is a damaged
 // one, which is why the two answer differently.
 func TestAMalformedPairsFileRefusesNamingTheLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable gitCredentialStdin (runGitCredentialHere).
 	root := pairRoutedBundle(t)
 	if err := os.WriteFile(filepath.Join(root, ghconfig.PairsFile), []byte("sjawhar/legion cybermonklabs/legion\nsjawhar/ygo\n"), 0o600); err != nil {
 		t.Fatal(err)

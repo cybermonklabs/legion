@@ -1,3 +1,9 @@
+//go:build unix
+
+// A reservation's socket is a descriptor, an int, which is a unix socket's type; on Windows a
+// socket is a syscall.Handle and this file does not compile, so it builds on unix alone. Every
+// caller of Reserve runs its tests on Linux (testnats's Gate, envoy-infra's reservePorts).
+
 package testport
 
 import (

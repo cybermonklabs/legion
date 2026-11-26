@@ -12,11 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // idleRigPods runs the processes of every pod the rig's Kubernetes stand-in reports Ready: one
@@ -40,11 +44,13 @@ import (
 // upstream dialer is a plain TCP dial of the test database.
 type idleRigPods struct {
 	t *testing.T
-	// address is the worker stream every launcher dials, tcp://host:port.
-	address func() string
+	// launch is how the launchers of a pod run, asked when the pod is Ready: the worker stream
+	// they dial and whether they run as a microVM pod's (launcher.Config's Connect and MicroVM),
+	// or ok false where none of them may start.
+	launch func(pod, podUID string) (connect string, microVM, ok bool)
 	// session is the Cloud SQL session database the launchers proxy to, and dial is its upstream.
 	session ompsessions.Database
-	dial    func(ctx context.Context, account string) (sessionproxy.Dialer, error)
+	dial    func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)
 
 	mu sync.Mutex
 	// running is each live pod's launchers, by pod name.
@@ -60,17 +66,40 @@ type idleRigPods struct {
 	dirMu   sync.Mutex
 	dirRoot string
 	dirNext int
+
+	// workspace is the issue workspace every launcher of the rig reads when the daemon asks
+	// (launcher.Config.Workspace): a jj workspace holding no work, of a shared clone, both where
+	// provisioning lays them out (workspace.Location), since the launcher's read runs the
+	// workspace guards, which derive the clone from that layout (workspace.GuardJJ). It is made once
+	// in newIdleRigPods, so the release of a pod no claim owns reads it clean through the pod's
+	// launcher (R6). The launcher's own working directory is the test package's, which is no jj
+	// workspace.
+	workspace string
 }
 
-// idleRigPodProcesses is one pod's launchers: the context that stops them and the wait that their
-// goroutines have ended.
+// idleRigPodProcesses is one pod's launchers and what runs beside them (run): the worker stream
+// the launchers dial, the context that stops them all and the wait that their goroutines have
+// ended.
 type idleRigPodProcesses struct {
-	cancel context.CancelFunc
-	done   sync.WaitGroup
-	dirs   []string
+	connect string
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    sync.WaitGroup
+	dirs    []string
 }
 
-func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Database, dial func(ctx context.Context, account string) (sessionproxy.Dialer, error)) *idleRigPods {
+// run runs f on a goroutine of the pod's: f's context ends when the pod is gone, and podGone
+// waits for f to return before it removes the pod's directories. f may call run itself, since
+// the goroutine it runs on is counted until it returns, so the wait cannot end in between.
+func (processes *idleRigPodProcesses) run(f func(ctx context.Context)) {
+	processes.done.Add(1)
+	go func() {
+		defer processes.done.Done()
+		f(processes.ctx)
+	}()
+}
+
+func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect string, microVM, ok bool), session ompsessions.Database, dial func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)) *idleRigPods {
 	t.Helper()
 	// Each launcher's private directory is a numbered subdirectory of this root, and the unix
 	// socket of a generation's session database proxy is `<dir>/g<n>/.s.PGSQL.5432`. A unix
@@ -83,22 +112,41 @@ func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Dat
 	// privateDir runs on the fake Kubernetes server's goroutine, where a t.Fatalf would stop
 	// that goroutine alone and leave the test to run to its deadline.
 	root := testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName))
-	p := &idleRigPods{t: t, address: address, session: session, dial: dial,
+	located, err := workspace.Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "legion-208")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{filepath.Dir(located.Clone), filepath.Dir(located.Dir)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jj := fixturegit.Isolated(t, t.TempDir())
+	jj.Run(filepath.Dir(located.Clone), fixturegit.JJInit(located.Clone, false)...)
+	jj.Run(located.Clone, "jj", "workspace", "add", located.Dir, "--name", "legion-208", "-R", located.Clone)
+	p := &idleRigPods{t: t, launch: launch, session: session, dial: dial,
 		running: map[string]*idleRigPodProcesses{}, logs: &syncBuffer{}, started: map[string]int{},
-		dirRoot: root}
+		dirRoot: root, workspace: located.Dir}
 	t.Cleanup(p.stopAll)
 	return p
 }
 
-// podReady starts a launcher for each role of the pod, with that role's own launcher token.
-func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, record func(role, dir string)) {
+// podReady starts a launcher for each role of the pod, with that role's own launcher token and
+// the stream and MicroVM launch answers for the pod; a pod launch refuses gets no launcher and
+// counts no start. Before each launcher starts, record is handed its role, its private directory
+// and the pod's processes, beside which record may run its own (idleRigPodProcesses.run).
+func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, record func(role, dir string, processes *idleRigPodProcesses)) {
+	connect, microVM, ok := p.launch(pod, podUID)
+	if !ok {
+		return
+	}
 	p.mu.Lock()
 	if _, live := p.running[pod]; live {
 		p.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	processes := &idleRigPodProcesses{cancel: cancel}
+	processes := &idleRigPodProcesses{connect: connect, ctx: ctx, cancel: cancel}
 	p.running[pod] = processes
 	p.started[pod]++
 	p.mu.Unlock()
@@ -109,19 +157,17 @@ func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, reco
 			continue
 		}
 		processes.dirs = append(processes.dirs, dir)
-		record(role, dir)
+		record(role, dir, processes)
 		cfg := launcher.Config{
-			Connect: p.address(), Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
+			Connect: connect, MicroVM: microVM, Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
 			Stdout: p.logs, Stderr: p.logs, StopGrace: 10 * time.Second,
-			SessionDatabase: p.session, SessionDialer: p.dial,
+			SessionDatabase: p.session, SessionDialer: p.dial, Workspace: p.workspace,
 		}
-		processes.done.Add(1)
-		go func() {
-			defer processes.done.Done()
+		processes.run(func(ctx context.Context) {
 			if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(p.logs, "launcher %s/%s: %v\n", pod, role, err)
 			}
-		}()
+		})
 	}
 }
 
@@ -220,17 +266,19 @@ func idleRigSessionFile(issue, role string) string {
 // fakeOmp. The role process the real launcher starts in a pod is `legion worker-shim … -- <omp
 // argv>`; this stand-in is that whole process, Oh My Pi included: it speaks the worker stream's
 // frames, registers with the daemon, reports ready, claims its role on the Envoy listener, and
-// records every message it is given.
-func idleRigLegionTool(t *testing.T, dir string) string {
+// records every message it is given. The script names the rig that process serves, rigURL, in
+// idleRigURLVariable itself, so the rig's own test process never sets it: each rig writes its own
+// stand-in (toolsDir), and the rigs run beside each other, which a t.Setenv refuses.
+func idleRigLegionTool(t *testing.T, dir, rigURL string) string {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "legion")
-	script := "#!/bin/sh\nexec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' " +
-		"-test.timeout=0 -test.count=1 \"$@\"\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	script := "#!/bin/sh\n" + idleRigURLVariable + "=" + shellQuote(rigURL) + "\nexport " + idleRigURLVariable + "\n" +
+		"exec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' -test.timeout=0 -test.count=1 \"$@\"\n"
+	if err := execfile.Write(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the rig's legion stand-in: %v", err)
 	}
 	return path
@@ -246,7 +294,7 @@ func shellQuote(value string) string {
 func idleRigAgentTool(t *testing.T, dir string) []string {
 	t.Helper()
 	path := filepath.Join(dir, "omp")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("write the rig's omp stand-in: %v", err)
 	}
 	return []string{path}

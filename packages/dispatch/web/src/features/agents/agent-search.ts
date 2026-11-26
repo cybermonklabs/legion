@@ -8,6 +8,7 @@ import {
   fieldsAddress,
   useAddressFields,
 } from "../../lib/page-address";
+import { AGENTS_ROLE_PARAM } from "../refs/routes";
 import { AGENT_GROUPS, type AgentGroup } from "./agent-groups";
 
 /**
@@ -24,16 +25,18 @@ export interface AgentFilters {
 
 /** The page's whole narrowing as the address spells it: the free-text query (`?q=`), and the
  *  groups, machines and roles each as one comma-separated parameter (`?group=`, `?machine=`,
- *  `?role=`). These names are the page's own, and a link from another page reaches them only
- *  through `agentsAddress`, below, so nothing else spells them. Every one of them is absent
- *  while nothing is picked, so a plain `/agents` is the page as it opens and unticking the last
- *  value does not bring the filter back on reload. A module-level constant, since its identity
- *  is what `useAddressFields` memoizes on. */
+ *  `?role=`). A link from another page reaches them through `agentsAddress`, below, with one
+ *  exception: a `dispatch://role/<token>` reference opens the page with its `?role=` built in
+ *  `features/refs/routes.ts`. Both sides spell that parameter from `AGENTS_ROLE_PARAM`, the key
+ *  of the role field here, so they cannot drift apart. Every one of them is absent while nothing
+ *  is picked, so a plain `/agents` is the page as it opens and unticking the last value does not
+ *  bring the filter back on reload. A module-level constant, since its identity is what
+ *  `useAddressFields` memoizes on. */
 const AGENT_FILTER_SPEC = {
   group: commaListParam(),
   machine: commaListParam(),
   q: cappedTextParam(),
-  role: commaListParam(),
+  [AGENTS_ROLE_PARAM]: commaListParam(),
 } satisfies AddressSpec;
 
 /** The parameters a change of the narrowing writes, each under its name in `AGENT_FILTER_SPEC`.
@@ -147,32 +150,38 @@ export function matchesFilters(
 }
 
 /**
- * The machines and roles the filter control offers: the ones the live sessions occupy, and every
- * machine the filter already names wherever no live session reports it.
+ * The machines and roles the filter control offers: the ones the live sessions occupy, and
+ * every machine and every role the filter already names wherever no live session reports it.
  *
  * That last one is the whole of this rule. `?machine=` can name a host nothing live reports —
  * an old link, a machine whose sessions have ended, or `/machines/<machine>`'s own "Agents on
  * this machine" link, which that page shows even when it draws nothing. The list is then
  * honestly empty, which is the filter doing its job; but with the live hosts alone for options
- * the control would offer no row for the picked machine, read as though nothing were picked
+ * the control would offer no row for a picked machine, read as though nothing were picked
  * while every row was hidden, and leave the reader nothing to untick — the one control that
  * seems to show the filter could not clear it. Offering the picked machines keeps the control
  * showing the filter in force, so a stale option can never hide every agent with no way back.
+ * `?role=` is the same: a `dispatch://role/<token>` reference opens this page on a role whose
+ * holder may have stopped, and the picked roles are offered for that reason.
+ *
+ * So the page passes these two lists to the control as they come back, with nothing added
+ * after: what is picked is already in them.
  */
 export function filterOptions(
   agents: readonly Agent[],
-  machines: readonly string[]
+  machines: readonly string[],
+  roles: readonly string[]
 ): {
   machines: string[];
   roles: string[];
 } {
   const hosts = new Set<string>(machines.filter((machine) => machine !== ""));
-  const roles = new Set<string>();
+  const held = new Set<string>(roles.filter((role) => role !== ""));
   for (const agent of agents) {
     if (agent.host !== "") hosts.add(agent.host);
-    for (const role of agent.roles ?? []) roles.add(role);
+    for (const role of agent.roles ?? []) held.add(role);
   }
-  return { machines: [...hosts].sort(), roles: [...roles].sort() };
+  return { machines: [...hosts].sort(), roles: [...held].sort() };
 }
 
 /** Every issue key an OPEN ask by each session names, keyed by session id - the search box's

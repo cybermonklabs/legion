@@ -37,6 +37,7 @@ func sourceFunction(t *testing.T, source string) (string, string) {
 // in the server source of the package directory the source names; and the eval's method names
 // that function, so a reader of the section is sent to the code that is the eval's rule.
 func TestEveryCatalogueSourceNamesAnExportedFunctionOfTheServer(t *testing.T) {
+	t.Parallel()
 	files := token.NewFileSet()
 	declared := map[string]map[string]string{}
 	resolved := 0
@@ -86,10 +87,17 @@ func TestEveryCatalogueSourceNamesAnExportedFunctionOfTheServer(t *testing.T) {
 
 // TestEveryCatalogueEvalIsComputedAndRestatesNoRule: every entry is computed, with an empty
 // number_rule (R5: the source is the rule), a one-sentence question and decision, at least one
-// failure mode with its guard, a kind, a unit and a series; every target judge names one of its
-// series; and no eval has more than one primary series, which is listed and a headline one.
+// failure mode with its guard, a kind, a unit and a series; every target judge names a series of
+// the eval and a statistic its fold states; and no eval has more than one primary series, which is
+// listed and a headline one.
 func TestEveryCatalogueEvalIsComputedAndRestatesNoRule(t *testing.T) {
+	t.Parallel()
+	if len(catalogue) == 0 {
+		t.Fatal("the catalogue holds no eval")
+	}
+	days := Range{From: time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)}
 	slugs := map[string]bool{}
+	judged := 0
 	for _, entry := range catalogue {
 		definition := entry.definition
 		slug := definition.Slug
@@ -133,17 +141,27 @@ func TestEveryCatalogueEvalIsComputedAndRestatesNoRule(t *testing.T) {
 		if primaries > 1 {
 			t.Errorf("%s has %d primary series, want at most one", slug, primaries)
 		}
+		folded := FoldStatistics(definition, entry.series, nil, days)
 		for _, judge := range definition.TargetJudges {
-			series, _, _ := strings.Cut(judge, ".")
-			if !names[series] {
+			series, stat, found := strings.Cut(judge, ".")
+			if !found || !names[series] {
 				t.Errorf("%s: target judge %s names no series of the eval", slug, judge)
+				continue
 			}
+			if _, stated := folded[series][stat]; !stated {
+				t.Errorf("%s: target judge %s names statistic %q, which the fold of %s does not state: %v",
+					slug, judge, stat, series, slices.Sorted(maps.Keys(folded[series])))
+			}
+			judged++
 		}
 		if (definition.Target == nil) != (len(definition.TargetJudges) == 0) {
 			t.Errorf("%s: target %v with judges %v, want judges exactly where a target is set", slug, definition.Target, definition.TargetJudges)
 		}
 	}
-	t.Logf("%d computed evals, every one with no number rule", len(catalogue))
+	if judged == 0 {
+		t.Error("no eval of the catalogue names a target judge, so no judge's series and statistic were checked")
+	}
+	t.Logf("%d computed evals, every one with no number rule; %d target judges, each a statistic its series' fold states", len(catalogue), judged)
 }
 
 // TestTheSeededTargetsAreMainsDefaultTargets: each eval main judges (measures.DefaultTargets, read
@@ -151,6 +169,7 @@ func TestEveryCatalogueEvalIsComputedAndRestatesNoRule(t *testing.T) {
 // test is "at least" or "exactly" and strict where it is "under", in the direction the test reads;
 // every other eval's target is off.
 func TestTheSeededTargetsAreMainsDefaultTargets(t *testing.T) {
+	t.Parallel()
 	main := measures.DefaultTargets
 	want := map[string]struct {
 		target    float64
@@ -215,6 +234,7 @@ func seriesNames(entry catalogueEntry) []string {
 // change-fail-rate and failed-deploy-recovery, which get no day rows, are the only evals with no
 // row of the zero day.
 func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
+	t.Parallel()
 	day := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
 	built := map[string][]string{}
 	for _, row := range ZeroLegionDay("EVAL", day, legionDaySlugs...).Rows {
@@ -231,12 +251,17 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 		unwritten++
 	}
 	settings := delivery.DeliverySettings{StagingE2EJobName: new("e2e"), StagingApplyJobName: new("staging-apply")}
-	zero := ZeroDeliveryDay(settings, "EVAL", day)
+	// One repository kept as the deploy repository, whose zero rows are those of the evals that
+	// read it; the evals that read none have theirs once.
+	zero := ZeroDeliveryDay(settings, "EVAL", day, []string{"acme/deploy"})
 	for _, row := range zero.Rows {
 		slug := strings.TrimPrefix(row.EvalID, "EVAL/")
 		built[slug] = append(built[slug], row.Series)
 	}
-	built[SlugUnownedP0] = []string{SeriesUnownedP0}
+	if len(built[SlugUnownedP0]) != 0 {
+		t.Errorf("%s has zero-day rows %v from ZeroDeliveryDay, want none: its row is written on its own", SlugUnownedP0, built[SlugUnownedP0])
+	}
+	built[SlugUnownedP0] = append(built[SlugUnownedP0], SeriesUnownedP0)
 	built[SlugPRCI] = append(built[SlugPRCI], SeriesJobs)
 	for slug := range built {
 		slices.Sort(built[slug])
@@ -269,6 +294,7 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 // written with no judges, which judges the primary series' headline, judges a figure the read
 // states rather than one no read can give a value.
 func TestEveryCatalogueSeriesIsStatedByItsHeadline(t *testing.T) {
+	t.Parallel()
 	days := Range{From: time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)}
 	checked := 0
 	for _, entry := range catalogue {
@@ -285,6 +311,9 @@ func TestEveryCatalogueSeriesIsStatedByItsHeadline(t *testing.T) {
 			}
 		}
 	}
+	if checked == 0 {
+		t.Fatal("the catalogue holds no listed series, so the check compared nothing")
+	}
 	t.Logf("%d listed series of %d evals each state their headline statistic", checked, len(catalogue))
 }
 
@@ -293,6 +322,7 @@ func TestEveryCatalogueSeriesIsStatedByItsHeadline(t *testing.T) {
 // the with_prs rule change and its measured difference; and idle time's says it is not phase
 // time's idle segment and states D3's rule.
 func TestTheRequiredMethodsSayWhatTheSpecRequires(t *testing.T) {
+	t.Parallel()
 	for slug, phrases := range map[string][]string{
 		SlugLegionSlotWait: {
 			"dispatch://INFRA-979/artifact/flow-analysis-md", "status rule, at 39.3 percent of 14,458 hours",

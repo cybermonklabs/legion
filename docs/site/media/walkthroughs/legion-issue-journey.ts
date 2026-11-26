@@ -21,6 +21,7 @@ import {
   setStatus,
   specVersionAfter,
   specVersions,
+  statusOf,
   type Tracked,
   writeDesign,
 } from "../legion/journey";
@@ -77,18 +78,18 @@ const legionIssueJourney: Walkthrough<Seeded> = {
       ],
       open: async (page, seeded) => {
         await openConversation(page, seeded.done);
-        await expect(page.getByRole("combobox", { name: "Status" })).toHaveValue("done");
+        await expect(statusOf(page)).toHaveAttribute("data-issue-status", "done");
         await expect(turns(page)).toContainText("Signed off.");
       },
       act: async (page, _seeded, cue) => {
         await linger(page, 0.6);
-        await highlight(page, page.getByRole("combobox", { name: "Status" }));
+        await highlight(page, statusOf(page));
         cue("status");
         await linger(page, 1.2);
         await highlight(page, turns(page).getByText(/^Signed off\./));
         cue("signoff");
         await linger(page, 1.2);
-        await highlight(page, page.getByRole("combobox", { name: "Status" }));
+        await highlight(page, statusOf(page));
         cue("merge");
         await linger(page, 1.8);
       },
@@ -123,15 +124,18 @@ const legionIssueJourney: Walkthrough<Seeded> = {
         await pointTo(page, labels);
         await labels.click();
         await expect(header(page).getByText("legion", { exact: true })).toBeVisible();
-        const status = page.getByRole("combobox", { name: "Status" });
+        const status = statusOf(page);
         await pointTo(page, status);
-        await status.selectOption("todo");
+        await status.click();
+        const todo = page.getByRole("option", { exact: true, name: "Todo" });
+        await pointTo(page, todo);
+        await todo.click();
         cue("todo");
-        await expect(status).toHaveValue("todo");
+        await expect(status).toHaveAttribute("data-issue-status", "todo");
         await linger(page, 1.2);
         // The daemon admits it, and its architect claims it: the open page hears both.
         await admit(seeded.next);
-        await expect(status).toHaveValue("in_progress");
+        await expect(status).toHaveAttribute("data-issue-status", "in_progress");
         const claim = header(page).getByText(`${seeded.next.key} architect`);
         await expect(claim).toBeVisible();
         cue("admitted");
@@ -208,20 +212,20 @@ const legionIssueJourney: Walkthrough<Seeded> = {
       },
       act: async (page, seeded, cue) => {
         await linger(page, 0.4);
-        const pill = page.getByRole("combobox", { name: "Status" });
+        const pill = statusOf(page);
         // The daemon's status writes as the phases run; the open page hears each one. Nothing is
         // pointed at or ringed: the pointer stays off screen, so no one is seen setting a status.
         // (The Conversation would show each write as the daemon's activity line, but it follows
         // its newest turn and scrolls the header, and the status with it, off screen.)
         for (const [index, status] of PHASE_STATUSES.entries()) {
           await setStatus(seeded.next, status);
-          await expect(pill).toHaveValue(status);
+          await expect(pill).toHaveAttribute("data-issue-status", status);
           if (index === 0) cue("phases");
           await linger(page, 1.1);
         }
-        // The architect's acceptance of the reviewed head moves the issue to retro.
+        // The architect's acceptance, the last of the default steps, moves the issue to retro.
         await accept(seeded.next, DELIVERY_DATE);
-        await expect(pill).toHaveValue("retro");
+        await expect(pill).toHaveAttribute("data-issue-status", "retro");
         await linger(page, 1.7);
       },
     },

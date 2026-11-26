@@ -1,8 +1,8 @@
 -- 20261117100001_delivery_changes_pending.up.sql
 --
 -- The delivery change log admits the five kinds of the eval and Legion tables, and gains the
--- outbox those tables' triggers, and the trigger of a repository's mapping (20261117100020),
--- record their changes in (dispatch://INFRA-2915, dispatch://INFRA-2916, R10, R12, R19). Each kind
+-- outbox those tables' triggers record their changes in (dispatch://INFRA-2915,
+-- dispatch://INFRA-2916, R10, R12, R19). Each kind
 -- is logged by its table's trigger, so every view and loop built on those rows wakes the way a
 -- delivery row's write wakes the Delivery and Pipeline pages (0100):
 --   issue_facts     a write of the stored per-issue Legion facts (20261117100000; its trigger is
@@ -41,16 +41,17 @@
 -- delivery_changes_pending holds exactly the columns a delivery_changes row takes: kind, run_kind,
 -- repo, ref, t_old, t_new and at, set by clock_timestamp() when the pending row is written, which
 -- the move keeps. Its kinds are the five above, the ones the eval and Legion tables' triggers
--- write, and settings, the kind repo_projects' trigger writes for a change of a repository's
--- mapping (20261117100020, whose header says why it goes through the outbox). Every other change
+-- write, beside the eval_days rows the eval day-row refresher logs itself (20261117100014): its
+-- folds' and a rebuild's flip's, its word that the day rows stand at the delivery settings, and
+-- its publishing of the default repositories. Every other change
 -- of the delivery intake is written into delivery_changes directly: pull_request, run, run_job and
 -- session_group, and the settings change of a delivery_settings write, which logs it last, in its
 -- one statement. Those writes are one statement each or transactions that take 6900 first or in
--- their last statement (delivery.LockChanges). A run's jobs write (delivery.UpsertRunJobs) is one
--- statement now, the run row and every job, and a session group's write takes 6900 after its
--- reads and before its first write: 0100's header, which describes the jobs write as two
--- statements and the group write taking 6900 in the middle of its transaction, stays as it
--- shipped.
+-- their last statement (delivery's lockChangesStatement). A run's jobs write
+-- (delivery.UpsertRunJobs) is one statement now, the run row and every job, and a session group's
+-- write takes 6900 after its reads and before its first write: 0100's header, which describes the
+-- jobs write as two statements and the group write taking 6900 in the middle of its transaction,
+-- stays as it shipped.
 --
 -- delivery_change_log_pending(kind, run_kind, repo, ref, t_old, t_new) inserts one pending row,
 -- answers its id (eval_days_change_log widens its own transaction's row by it), and notifies
@@ -75,18 +76,15 @@
 -- skips a moved row either.
 --
 -- Who drains: an eval write, the registry's or the refresher's, one batch right after its own
--- commit, a registry write before its route answers; a write of a repository's mapping, one batch
--- right after its own commit (the mapping routes before they answer, the boot's seed of
--- DISPATCH_REPO_PROJECTS, cmd/dispatch-seed and the delivery fixtures); a Legion facts pass, every
+-- commit, a registry write before its route answers; a Legion facts pass, every
 -- pending row, right after its commit; the Delivery page's live hub, before each read of the log,
 -- while a page subscribes; the day-row refresher, at the start of each pass; and the server's
 -- boot, once, before it serves. A pending row left by a writer killed between its commit and its
 -- drain is moved by the next drain of any process, or else by the next process's boot before it
 -- serves (delivery.DrainPending states the bound).
 --
--- The release before this one writes none of the five kinds and never reads the outbox: its mapping
--- writes reach the outbox only through 20261117100020's trigger, as settings rows this release's
--- drains move (that migration's header says why the two roll together). This migration locks
+-- The release before this one writes none of the five kinds and never reads the outbox. This
+-- migration locks
 -- delivery_changes alone, for milliseconds (0073's reason): the outbox and the two functions are
 -- new, and creating them locks no table that exists. It reads no row, and the census answers 0.
 alter table delivery_changes drop constraint delivery_changes_kind_check;
@@ -98,7 +96,7 @@ alter table delivery_changes add constraint delivery_changes_kind_check check (
 create table delivery_changes_pending (
   id       bigserial primary key,
   at       timestamptz not null default clock_timestamp(),
-  kind     text not null check (kind in ('issue_facts', 'eval_readings', 'eval_versions', 'eval_days', 'issue_filings', 'settings')),
+  kind     text not null check (kind in ('issue_facts', 'eval_readings', 'eval_versions', 'eval_days', 'issue_filings')),
   run_kind text,
   repo     text,
   ref      text,

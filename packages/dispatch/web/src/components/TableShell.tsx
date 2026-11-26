@@ -19,10 +19,10 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../theme/classes";
-import { CONTROL, type ControlSize } from "./control-names";
+import { CONTROL } from "./control-names";
 import { useScrollEnds } from "./useScrollEnds";
 
-/** Everything one density of the shell draws, so the two sit side by side in one place. */
+/** Everything one density of the shell draws, so the densities sit side by side in one place. */
 interface TableRecipe {
   /** The text colour every row takes unless a row or a cell says otherwise. */
   readonly body: string;
@@ -33,8 +33,8 @@ interface TableRecipe {
   readonly headCell: string;
   readonly row: string;
   /** What a head takes on top of `head` when it stays at the top of the scrolling box. The
-   *  comfortable head already paints its own background; the compact one has none to stick
-   *  over the rows with. */
+   *  comfortable and dense heads already paint their own background; the compact and tight ones
+   *  have none to stick over the rows with. */
   readonly stickyHead: string;
   readonly table: string;
   /** `relative` is load-bearing: a head cell's `sr-only` span is absolutely positioned, and with
@@ -46,10 +46,16 @@ interface TableRecipe {
   readonly wrapper: string;
 }
 
-/** How much room a row takes: a control's two sizes, and `dense`, the comfortable table's look at
- *  the type and padding of a table read in a narrow tab beside other content (an issue's Steps),
- *  whose box sits inside a card of the caller's rather than drawing one. */
-export type TableDensity = ControlSize | "dense";
+/** How much room a row takes, and the box the rows sit in:
+ *  - `comfortable` and `compact` are the room of a control's comfortable and compact sizes
+ *    (`ControlSize`);
+ *  - `dense` is the comfortable table's look at the type and padding of a table read in a narrow
+ *    tab beside other content (an issue's Steps), whose box sits inside a card of the caller's
+ *    rather than drawing one;
+ *  - `tight` is the compact table's look with half its cell padding, in a box with a rounded
+ *    border of its own. It is for many one-line rows of figures in a short scrolling box (the
+ *    Delivery page's measures per day). */
+export type TableDensity = "comfortable" | "compact" | "dense" | "tight";
 
 const RECIPE: Record<TableDensity, TableRecipe> = {
   comfortable: {
@@ -84,6 +90,17 @@ const RECIPE: Record<TableDensity, TableRecipe> = {
     stickyHead: "sticky top-0",
     table: "w-full text-left text-xs",
     wrapper: "relative overflow-x-auto",
+  },
+  tight: {
+    body: "",
+    cell: "px-2 py-0.5",
+    empty: `px-2 py-0.5 ${textMutedOnSurface}`,
+    head: textMutedOnSurface,
+    headCell: "px-2 py-1 font-normal",
+    row: `border-t ${borderDefault}`,
+    stickyHead: `sticky top-0 ${surfaceBg}`,
+    table: "w-full text-xs tabular-nums",
+    wrapper: `relative overflow-x-auto rounded border ${borderDefault}`,
   },
 };
 
@@ -182,7 +199,7 @@ export function TableShell({
 }: TableShellProps): ReactNode {
   const recipe = RECIPE[size];
   const style = useMemo(() => ({ size, stickyHead }), [size, stickyHead]);
-  const ends = useScrollEnds({ ends: "trailing" });
+  const ends = useScrollEnds();
   return (
     <div
       className={joined(recipe.wrapper, className ?? "", fadeTrailing ? ends.fade : "")}

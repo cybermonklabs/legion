@@ -12,7 +12,13 @@
 // two-go shape of a call whose body is on standard input, and AnswersHelp is a check a pod's
 // launcher installs, counting the verifications that ran it. GitHubTarball writes the tarball
 // GitHub serves of the check's repository, which the daemon packs for the launcher, and Tarball
-// one of a shape GitHub's is not.
+// one of a shape GitHub's is not. GhReadNotFound and GhReadServerError are what gh prints for
+// the guard's own REST visibility read of a repository GitHub answers 404 and 500 for, which a
+// stand-in gh of the guard's tests and of `legion gh`'s prints in the real gh's place.
+//
+// It also holds the fixture private-name rule file (Rules, written by WriteRules) and the
+// invented names its rules refuse and allow: the guard runs the rule file a deployment names, and
+// no Legion binary carries one of its own.
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/fixturegit says
@@ -26,6 +32,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 // CheckName is the shared check's file name, which is how the guard finds it on PATH. The guard
@@ -33,6 +41,37 @@ import (
 // own resolution tests fail on: they write a stand-in with Write and read it back through the
 // guard's PATH lookup (leakguard/check_test.go).
 const CheckName = "public-leak-check.sh"
+
+// ProgramName is the file beside the check that the check only runs, and Program a stand-in body
+// for it, which a stand-in check a test installs carries beside itself. ReadmeName and
+// MustPassName are the two other files the check's manifest digest covers (leakguard.Manifest), and
+// Readme and MustPass stand-in bodies for them. A test holds a stand-in to a digest by computing
+// leakguard.Manifest over its directory, never by a copy of the formula here.
+const (
+	ProgramName  = "public_leak_check.py"
+	Program      = "# the check itself\n"
+	ReadmeName   = "README.md"
+	Readme       = "# the check's readme\n"
+	MustPassName = "must-pass-lines.txt"
+	MustPass     = "a line the self-test must pass\n"
+)
+
+// Companions writes, beside the stand-in check in dir, the files its manifest covers but the
+// check itself: program as its public_leak_check.py (none where program is empty), and Readme and
+// MustPass. A test that holds a stand-in to the deployment's manifest digest writes them, so the
+// digest is computable.
+func Companions(t testing.TB, dir, program string) {
+	t.Helper()
+	files := map[string]string{ReadmeName: Readme, MustPassName: MustPass}
+	if program != "" {
+		files[ProgramName] = program
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 // recordVar names the file a recording stand-in appends what it was asked to, which is how a test
 // reads whether the check ran at all and with what. A stand-in run without it records nowhere.
@@ -103,7 +142,7 @@ func Reading(status int, report string) string {
 // stand-in, written once for the package's own home).
 func WriteFile(dir, script string) (string, error) {
 	path := filepath.Join(dir, CheckName)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
 		return "", err
 	}
 	return path, nil

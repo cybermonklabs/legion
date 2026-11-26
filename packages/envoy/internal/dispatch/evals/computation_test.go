@@ -12,10 +12,12 @@ import (
 // statement: each field has a change of the same name in the register write
 // (ComputationChange, SeriesComputationChange) that names it as the body spells it (computationField
 // refuses it on a computed eval) and writes it (applyTo), and a value of it that differs makes two
-// computations differ (same: the seed writes a version where the release changed one). A field
-// added to one struct and missed in one of those fails here, rather than being taken and then
-// overwritten by the next seed, or refused and still carried forward.
+// computations differ, where two built alike with the same value answer the same (same: the seed
+// writes a version where the release changed one, and none where it changed none). A field added to
+// one struct and missed in one of those fails here, rather than being taken and then overwritten
+// by the next seed, or refused and still carried forward.
 func TestEveryComputationFieldIsChangedComparedAndNamedAsOne(t *testing.T) {
+	t.Parallel()
 	link := Link{Rel: "via", Href: "https://ci.example/runs", RecordedAt: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)}
 	differing := map[reflect.Kind]any{reflect.String: "changed", reflect.Bool: true}
 	for _, pair := range []struct {
@@ -53,19 +55,27 @@ func TestEveryComputationFieldIsChangedComparedAndNamedAsOne(t *testing.T) {
 		for index := range pair.owned.NumField() {
 			field := pair.owned.Field(index)
 			tag, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-			value := reflect.New(field.Type).Elem()
-			switch {
-			case field.Type == reflect.TypeFor[[]FailureMode]():
-				value = reflect.ValueOf([]FailureMode{{Mode: "A mode.", Guard: "A guard."}})
-			case field.Type == reflect.TypeFor[[]Link]():
-				value = reflect.ValueOf([]Link{link})
-			default:
-				value = reflect.ValueOf(differing[field.Type.Kind()]).Convert(field.Type)
+			// valued is a value of the field other than its zero, each call's its own: a list two
+			// computations share would answer the same for a same that compares where they lie.
+			valued := func() reflect.Value {
+				switch {
+				case field.Type == reflect.TypeFor[[]FailureMode]():
+					return reflect.ValueOf([]FailureMode{{Mode: "A mode.", Guard: "A guard."}})
+				case field.Type == reflect.TypeFor[[]Link]():
+					return reflect.ValueOf([]Link{link})
+				}
+				return reflect.ValueOf(differing[field.Type.Kind()]).Convert(field.Type)
 			}
+			value := valued()
 			changed := reflect.New(pair.owned).Elem()
 			changed.Field(index).Set(value)
 			if pair.same(reflect.New(pair.owned).Elem(), changed) {
 				t.Errorf("%s.same reads two computations that differ in %s as the same", pair.owned.Name(), field.Name)
+			}
+			twin := reflect.New(pair.owned).Elem()
+			twin.Field(index).Set(valued())
+			if !pair.same(twin, changed) {
+				t.Errorf("%s.same reads two computations that hold the same %s as differing", pair.owned.Name(), field.Name)
 			}
 			changeField, held := pair.change.FieldByName(field.Name)
 			if !held {

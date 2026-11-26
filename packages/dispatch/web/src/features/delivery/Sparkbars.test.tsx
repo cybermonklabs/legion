@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import { chartBar } from "../../theme/classes";
-import type { Judge, Target } from "./lib/target";
+import { formatDuration, pct } from "./lib/format";
+import type { Judge, Target, WriteFigure } from "./lib/target";
 import { type SparkbarPoint, Sparkbars } from "./Sparkbars";
 import { type SpreadBarDay, SpreadBars } from "./SpreadBars";
 
@@ -28,7 +29,10 @@ function named(svg: Element): (string | null)[][] {
   ]);
 }
 
-const asNumber = (value: number) => `${value}/day`;
+/** A day's deploys as the number itself, exact whatever decimals it is offered. */
+function asNumber(value: number): WriteFigure {
+  return () => `${value}/day`;
+}
 
 /** A target of `value`, at least it unless `over` says otherwise, judging `judges`. */
 function target(
@@ -53,7 +57,7 @@ const points: SparkbarPoint[] = [
 ];
 
 test("Sparkbars draws a bar per day and one dashed target line", () => {
-  render(<Sparkbars format={asNumber} judged={deploysJudged} max={0} points={points} />);
+  render(<Sparkbars judged={deploysJudged} max={0} points={points} write={asNumber} />);
   const svg = screen.getByRole("img", { name: "per-day trend" });
 
   expect(svg.getAttribute("viewBox")).toBe("0 0 30 28");
@@ -69,7 +73,7 @@ test("Sparkbars draws a bar per day and one dashed target line", () => {
 });
 
 test("Sparkbars colours a day whose value meets the target met and one whose value misses it missed", () => {
-  render(<Sparkbars format={asNumber} judged={deploysJudged} max={0} points={points} />);
+  render(<Sparkbars judged={deploysJudged} max={0} points={points} write={asNumber} />);
   const [meets, misses] = bars(screen.getByRole("img", { name: "per-day trend" }));
 
   expect(meets?.getAttribute("class")).toBe(chartBar.met);
@@ -79,7 +83,7 @@ test("Sparkbars colours a day whose value meets the target met and one whose val
 });
 
 test("Sparkbars draws a one-pixel stub on a day with nothing to measure", () => {
-  render(<Sparkbars format={asNumber} judged={deploysJudged} max={0} points={points} />);
+  render(<Sparkbars judged={deploysJudged} max={0} points={points} write={asNumber} />);
   const svg = screen.getByRole("img", { name: "per-day trend" });
   const stub = bars(svg)[2];
 
@@ -99,7 +103,6 @@ test("Sparkbars draws a one-pixel stub on a day with nothing to measure", () => 
 test("Sparkbars judges each bar by its own value in its target's direction: under 'at most 20' a tall bar misses and a short one meets, and each bar names its eval and statistic", () => {
   render(
     <Sparkbars
-      format={asNumber}
       judged={{
         ...deploysJudged,
         target: target(20, ["deploys.per_day"], { direction: "lower_better" }),
@@ -110,6 +113,7 @@ test("Sparkbars judges each bar by its own value in its target's direction: unde
         { label: "2026-09-26", value: 10, partial: false },
         { label: "2026-09-27", value: 20, partial: false },
       ]}
+      write={asNumber}
     />
   );
   const svg = screen.getByRole("img", { name: "per-day trend" });
@@ -127,7 +131,7 @@ test("Sparkbars judges each bar by its own value in its target's direction: unde
 });
 
 test("Sparkbars no eval judges, or judged by a target of another statistic or none, draws every bar neutral and no line", () => {
-  render(<Sparkbars format={asNumber} max={30} points={points.slice(0, 2)} />);
+  render(<Sparkbars max={30} points={points.slice(0, 2)} write={asNumber} />);
   const svg = screen.getByRole("img", { name: "per-day trend" });
 
   expect(bars(svg).map((bar) => bar.getAttribute("class"))).toEqual([
@@ -145,9 +149,9 @@ test("Sparkbars no eval judges, or judged by a target of another statistic or no
   for (const judging of [target(20, ["deploys.deploys"]), null]) {
     render(
       <Sparkbars
-        format={asNumber}
         judged={{ ...deploysJudged, target: judging }}
         points={points.slice(0, 2)}
+        write={asNumber}
       />
     );
     const judged = screen.getByRole("img", { name: "per-day trend" });
@@ -164,9 +168,9 @@ test("Sparkbars with no max scales a judged chart to its target line, and one wi
   const low: SparkbarPoint[] = [{ label: "2026-09-25", value: 0.5, partial: false }];
   render(
     <Sparkbars
-      format={asNumber}
       judged={{ ...deploysJudged, target: target(0.4, ["deploys.per_day"]) }}
       points={low}
+      write={asNumber}
     />
   );
   // The top is the line, 0.4, raised to 1.25 x it, 0.5, which the bar reaches.
@@ -175,14 +179,71 @@ test("Sparkbars with no max scales a judged chart to its target line, and one wi
   );
   cleanup();
 
-  render(<Sparkbars format={asNumber} points={low} />);
+  render(<Sparkbars points={low} write={asNumber} />);
   // No line: the top is 1, which the bar reaches half of.
   expect(
     Number(bars(screen.getByRole("img", { name: "per-day trend" }))[0]?.getAttribute("height"))
   ).toBeCloseTo(14);
 });
 
-const asMinutes = (minutes: number) => `${minutes}m`;
+// R3-C1 (dispatch://INFRA-2916, test v13): a toned bar's title is the one figure it writes, so it
+// is written on its value's side of the target, by the verdict its fill takes (`judgeFigure`): a
+// day's run success of 0.9504 above a strict 95% is green, and titled 95.04%, never 95.0%.
+test("Sparkbars writes a toned bar's title on its value's side of a strict target, and an untoned bar's as usual", () => {
+  const days: SparkbarPoint[] = [
+    { label: "2026-09-25", value: 0.9504, partial: false },
+    { label: "2026-09-26", value: 0.9496, partial: false },
+    { label: "2026-09-27", value: 0.95, partial: false },
+  ];
+  const chart = (target?: Target) => {
+    render(
+      <Sparkbars
+        judged={
+          target === undefined
+            ? undefined
+            : { evalSlug: "deploy-run-success", statistic: "runs.rate", target }
+        }
+        max={1}
+        points={days}
+        write={(value) => (extra) => pct(value, 1 + extra)}
+      />
+    );
+    const svg = screen.getByRole("img", { name: "per-day trend" });
+    const drawn = {
+      bars: bars(svg).map((bar) => bar.getAttribute("class")),
+      titles: titles(svg),
+    };
+    cleanup();
+    return drawn;
+  };
+
+  // Above 95%: the day over it meets, and its usual 95.0% would read as the target itself, missed;
+  // the day under it and the day on it miss, and their usual 95.0% reads missed too.
+  expect(chart(target(0.95, ["runs.rate"], { inclusive: false }))).toEqual({
+    bars: [chartBar.met, chartBar.missed, chartBar.missed],
+    titles: ["2026-09-25: 95.04%", "2026-09-26: 95.0%", "2026-09-27: 95.0%"],
+  });
+  // Under 95%: the other way round.
+  expect(
+    chart(target(0.95, ["runs.rate"], { inclusive: false, direction: "lower_better" }))
+  ).toEqual({
+    bars: [chartBar.missed, chartBar.met, chartBar.missed],
+    titles: ["2026-09-25: 95.0%", "2026-09-26: 94.96%", "2026-09-27: 95.0%"],
+  });
+  // No eval judges the chart, or its target judges a statistic no day is judged of: each bar is
+  // neutral and titled with its usual digits.
+  for (const untoned of [undefined, target(0.95, ["runs.concluded"], { inclusive: false })]) {
+    expect(chart(untoned)).toEqual({
+      bars: [chartBar.neutral, chartBar.neutral, chartBar.neutral],
+      titles: ["2026-09-25: 95.0%", "2026-09-26: 95.0%", "2026-09-27: 95.0%"],
+    });
+  }
+});
+
+/** A day's minutes as the number itself, exact whatever decimals it is offered. */
+function asMinutes(minutes: number): WriteFigure {
+  return () => `${minutes}m`;
+}
 
 /** A full day with `median` and `p90` minutes, which a test dates. */
 function dayOf(median: number, p90: number): SpreadBarDay {
@@ -210,7 +271,7 @@ const days: SpreadBarDay[] = [
 const bothUnder = leadJudged(["minutes.median", "minutes.p90"]);
 
 test("SpreadBars draws the p90 behind the median each day and one dashed target line", () => {
-  render(<SpreadBars days={days} format={asMinutes} judged={bothUnder} noun="runs" />);
+  render(<SpreadBars days={days} judged={bothUnder} noun="runs" write={asMinutes} />);
   const svg = screen.getByRole("img", { name: "per-day median and p90" });
 
   expect(svg.getAttribute("viewBox")).toBe("0 0 36 36");
@@ -228,7 +289,7 @@ test("SpreadBars draws the p90 behind the median each day and one dashed target 
 });
 
 test("SpreadBars colours each bar met where its own value meets the target and missed where it misses it", () => {
-  render(<SpreadBars days={days} format={asMinutes} judged={bothUnder} noun="runs" />);
+  render(<SpreadBars days={days} judged={bothUnder} noun="runs" write={asMinutes} />);
   const [p90Under, medianUnder, p90Over, medianOver] = bars(
     screen.getByRole("img", { name: "per-day median and p90" })
   );
@@ -249,9 +310,9 @@ test("SpreadBars judges each bar in its target's direction: under 'above 45m' ba
         { ...dayOf(50, 80), day: "2026-09-26" },
         { ...dayOf(45, 45), day: "2026-09-27" },
       ]}
-      format={asMinutes}
       judged={leadJudged(["minutes.median", "minutes.p90"], { direction: "higher_better" })}
       noun="runs"
+      write={asMinutes}
     />
   );
 
@@ -277,12 +338,7 @@ test("SpreadBars gives each of a day's two bars its own verdict: a neutral p90 b
     { ...dayOf(30, 50), day: "2026-09-26" },
   ];
   render(
-    <SpreadBars
-      days={apart}
-      format={asMinutes}
-      judged={leadJudged(["minutes.median"])}
-      noun="PRs"
-    />
+    <SpreadBars days={apart} judged={leadJudged(["minutes.median"])} noun="PRs" write={asMinutes} />
   );
   const medianOnly = screen.getByRole("img", { name: "per-day median and p90" });
   expect(bars(medianOnly).map((bar) => bar.getAttribute("class"))).toEqual([
@@ -301,7 +357,7 @@ test("SpreadBars gives each of a day's two bars its own verdict: a neutral p90 b
   ]);
   cleanup();
 
-  render(<SpreadBars days={apart} format={asMinutes} judged={bothUnder} noun="PRs" />);
+  render(<SpreadBars days={apart} judged={bothUnder} noun="PRs" write={asMinutes} />);
   expect(
     bars(screen.getByRole("img", { name: "per-day median and p90" })).map((bar) =>
       bar.getAttribute("class")
@@ -310,7 +366,7 @@ test("SpreadBars gives each of a day's two bars its own verdict: a neutral p90 b
 });
 
 test("SpreadBars draws a stub on a day with nothing to measure, naming the noun and today", () => {
-  render(<SpreadBars days={days} format={asMinutes} judged={bothUnder} noun="runs" />);
+  render(<SpreadBars days={days} judged={bothUnder} noun="runs" write={asMinutes} />);
   const svg = screen.getByRole("img", { name: "per-day median and p90" });
   const stub = bars(svg)[4];
 
@@ -326,7 +382,7 @@ test("SpreadBars draws a stub on a day with nothing to measure, naming the noun 
 });
 
 test("SpreadBars no eval judges, or judged by a target of a statistic no bar draws, draws the neutral pair and no line", () => {
-  render(<SpreadBars days={days.slice(0, 1)} format={asMinutes} noun="merges" />);
+  render(<SpreadBars days={days.slice(0, 1)} noun="merges" write={asMinutes} />);
   const svg = screen.getByRole("img", { name: "per-day median and p90" });
 
   expect(bars(svg).map((bar) => bar.getAttribute("class"))).toEqual([
@@ -343,9 +399,9 @@ test("SpreadBars no eval judges, or judged by a target of a statistic no bar dra
   render(
     <SpreadBars
       days={days.slice(0, 1)}
-      format={asMinutes}
       judged={leadJudged(["minutes.max"])}
       noun="merges"
+      write={asMinutes}
     />
   );
   const longest = screen.getByRole("img", { name: "per-day median and p90" });
@@ -354,4 +410,51 @@ test("SpreadBars no eval judges, or judged by a target of a statistic no bar dra
     chartBar.neutral,
   ]);
   expect(longest.querySelectorAll("line")).toHaveLength(0);
+});
+
+// R3-C1 (dispatch://INFRA-2916, test v13): each of a day's two values in a bar's title is written
+// on its value's side of the target by the verdict its own bar takes (`judgeFigure`): a median of
+// 44.6m under a strict 45m is a green bar, titled 44.6m, never 45m.
+test("SpreadBars writes each toned bar's value in its title on its value's side of a strict target, and an untoned bar's as usual", () => {
+  const spread: SpreadBarDay[] = [
+    { ...dayOf(44.6, 44.6), day: "2026-09-25" },
+    { ...dayOf(45.4, 44.6), day: "2026-09-26" },
+  ];
+  const chart = (judged?: { evalSlug: string; target: Target }) => {
+    render(
+      <SpreadBars
+        days={spread}
+        judged={judged}
+        noun="PRs"
+        write={(minutes) => (extra) => formatDuration(minutes, extra)}
+      />
+    );
+    const svg = screen.getByRole("img", { name: "per-day median and p90" });
+    const drawn = {
+      bars: bars(svg).map((bar) => bar.getAttribute("class")),
+      titles: titles(svg),
+    };
+    cleanup();
+    return drawn;
+  };
+
+  // Median under 45m: the median under it meets, and its usual 45m would read as the target
+  // itself, missed; the median over it misses, as its 45m reads; the p90, which the target does
+  // not judge, is neutral and written as usual.
+  expect(chart(leadJudged(["minutes.median"]))).toEqual({
+    bars: [chartBar.neutralFaint, chartBar.met, chartBar.neutralFaint, chartBar.missed],
+    titles: ["2026-09-25: median 44.6m, p90 45m, 3 PRs", "2026-09-26: median 45m, p90 45m, 3 PRs"],
+  });
+  // Median and p90 above 45m: each value by its own bar's verdict, the met one past the target.
+  expect(
+    chart(leadJudged(["minutes.median", "minutes.p90"], { direction: "higher_better" }))
+  ).toEqual({
+    bars: [chartBar.missedFaint, chartBar.missed, chartBar.missedFaint, chartBar.met],
+    titles: ["2026-09-25: median 45m, p90 45m, 3 PRs", "2026-09-26: median 45.4m, p90 45m, 3 PRs"],
+  });
+  // No eval judges the chart: every value as usual.
+  expect(chart().titles).toEqual([
+    "2026-09-25: median 45m, p90 45m, 3 PRs",
+    "2026-09-26: median 45m, p90 45m, 3 PRs",
+  ]);
 });

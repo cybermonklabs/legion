@@ -1,20 +1,20 @@
 /** The shared search, sort and filter controls as the six stubbable pages of INFRA-3135's R2
  *  draw them: one row of controls per page, nothing else between a page's title and its first
  *  row, nothing a reader presses moving that first row, exactly the controls the design gives
- *  each page, one look across two pages of a size family, and the Inbox still a list of rows
- *  with a reading pane beside it.
+ *  each page, one look across two pages of a size family, each control at the size its page
+ *  passes, and the Inbox still a list of rows with a reading pane beside it.
  *
  *  Every row reads what the page draws over one fixed answer - a box's height, a computed
  *  colour, the `data-control` values in the document - so each runs against a recording rather
- *  than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The Agents page
+ *  than against a harness (packages/dispatch/README.md, "The stubbed layer"). The Agents page
  *  and the Delivery page are read in `table-controls.e2e.ts` instead: a recording freezes a
  *  session's last-seen time and the delivery window's dates, so neither has a first row to
  *  measure to ten minutes after a re-recording. Everything that needs seeded counts, a write or
  *  a reload is in that file too.
  */
-import { expect } from "@playwright/test";
+import { expect, type Locator } from "@playwright/test";
 
-import { CONTROL, type ControlName } from "../web/src/components/control-names";
+import { CONTROL, type ControlName, type ControlSize } from "../web/src/components/control-names";
 import { control, controlRow } from "./filters";
 import { stubbed } from "./stub/stub-test";
 import {
@@ -27,6 +27,7 @@ import {
   STUBBABLE_SURFACES,
   SURFACE_CONTROLS,
   SURFACE_SEARCH_TERM,
+  type Surface,
   seedSurfaces,
   straysBetween,
   topOf,
@@ -47,6 +48,23 @@ const CHIP_LINE = 52;
  *  `DEFAULT_PANE_WIDTH` in `web/src/features/inbox/PaneDivider.tsx` - a file this change does
  *  not touch, so it is the share the pane has at the commit before it. */
 const PANE_SHARE = 0.6;
+
+/** The height each size draws a control at from `md` up and at 1280 px and over, where
+ *  `web/src/styles.css` stops raising every button to 44 px (`@media (max-width: 1279px)`): the
+ *  three recipes of `controlPadding` in `web/src/components/control-names.ts`, whose `min-h-11`
+ *  is 44 px, whose compact `md:min-h-8` is 32 px and whose toolbar `xl:h-8.5` is 34 px, at
+ *  Tailwind's 4 px a step. A column filter's funnel takes the compact two (`FILTER_TARGET`,
+ *  `web/src/components/ColumnFilter.tsx`). */
+const CONTROL_HEIGHT: Record<ControlSize, number> = { comfortable: 44, compact: 32, toolbar: 34 };
+
+/** The padding of the selection bar's own box at each size - top, right, bottom and left - as
+ *  `BAR_BOX` in `web/src/components/SelectionBar.tsx` draws it: `px-4 py-2`, and `px-2 py-1` at
+ *  the compact and toolbar sizes. */
+const BAR_PADDING: Record<ControlSize, string> = {
+  comfortable: "8px 16px 8px 16px",
+  compact: "4px 8px 4px 8px",
+  toolbar: "4px 8px 4px 8px",
+};
 
 // SLOW(>=2s): six pages opened at each of this project's widths, which is twelve page loads.
 test("each page draws one row of controls, and nothing else between its title and its first row @phone @pr", async ({
@@ -257,6 +275,85 @@ test("one search box, panel trigger and chip across the Inbox and the Board, and
   await expect(control(row, CONTROL.chip)).toHaveCount(chips - 1);
 });
 
+test("each page's pager, selection bar and column filters take the size the page passes: compact on the List, comfortable on the Inbox @pr", async ({
+  page,
+  scene,
+}) => {
+  // At 1440 px the two sizes draw apart (`CONTROL_HEIGHT`); below 1280 px every button is 44 px.
+  await page.setViewportSize({ height: 900, width: 1440 });
+  /** Reads that every element `elements` finds, and it finds one at least, is `size` tall. */
+  const expectSized = async (what: string, elements: Locator, size: ControlSize) => {
+    await expect(elements.first(), `${what}: none is drawn`).toBeVisible();
+    const drawn = await elements.evaluateAll((nodes) =>
+      nodes.map((node) => ({
+        height: Math.round(node.getBoundingClientRect().height),
+        name: (node.getAttribute("aria-label") ?? node.textContent ?? "").trim(),
+      }))
+    );
+    const off = drawn
+      .filter(({ height }) => height !== CONTROL_HEIGHT[size])
+      .map(({ height, name }) => `"${name}" is ${height}px`);
+    expect(
+      off,
+      `${what}: ${off.join(", ")}, where the ${size} size is ${CONTROL_HEIGHT[size]}px`
+    ).toEqual([]);
+  };
+  /** Marks the surface's first row and hands back the selection bar that draws. */
+  const markOne = async (surface: Surface) => {
+    if (surface.select === undefined) throw new Error(`${surface.name} offers no selection`);
+    await surface.select();
+    return control(surface.root, CONTROL.selectionBar);
+  };
+  /** The padding of a box, top, right, bottom and left. */
+  const paddingOf = (box: Locator) =>
+    box.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return `${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft}`;
+    });
+
+  // The List passes `compact` to its table, which hands it on to the Pager and to each column's
+  // filter (`IssuesTable.tsx`, `DataTable.tsx`), and to its selection bar and every action in
+  // it (`IssueTableSelection`, `issues-table-page.tsx`).
+  const list = await openSurface(page, "project List", scene);
+  await expectSized(
+    "the List's pager",
+    control(list.root, CONTROL.pager).getByRole("button"),
+    "compact"
+  );
+  await expectSized(
+    "the List's column filters",
+    control(list.root, CONTROL.columnFilter),
+    "compact"
+  );
+  const listBar = await markOne(list);
+  await expectSized("the List's selection bar actions", listBar.getByRole("button"), "compact");
+  expect(await paddingOf(listBar), "the List's selection bar box is not the compact size's").toBe(
+    BAR_PADDING.compact
+  );
+
+  // The Inbox passes no size, so its selection bar is the comfortable one, and so is each action
+  // the page puts in it (`BAR_CONTROL_CLASS`, `Inbox.tsx`). The bar's Snooze pick keeps the look
+  // of every row's Snooze badge and is no such action; Dismiss is drawn for a marked thread
+  // alone, and every seeded row is an ask.
+  const inbox = await openSurface(page, "Inbox", scene);
+  for (const absent of [CONTROL.pager, CONTROL.columnFilter]) {
+    await expect(control(inbox.root, absent), `the Inbox draws a ${absent}`).toHaveCount(0);
+  }
+  const inboxBar = await markOne(inbox);
+  const actions = inboxBar
+    .getByRole("button", { exact: true, name: "Select all" })
+    .or(inboxBar.getByRole("button", { exact: true, name: "Clear selection" }));
+  await expect(
+    actions,
+    "the Inbox's selection bar lacks Select all or Clear selection"
+  ).toHaveCount(2);
+  await expectSized("the Inbox's selection bar actions", actions, "comfortable");
+  expect(
+    await paddingOf(inboxBar),
+    "the Inbox's selection bar box is not the comfortable size's"
+  ).toBe(BAR_PADDING.comfortable);
+});
+
 test("the Inbox is rows with their marks and no table, and opening one opens the reading pane at its own width @pr", async ({
   page,
   scene,
@@ -280,11 +377,15 @@ test("the Inbox is rows with their marks and no table, and opening one opens the
   await rows.first().locator("time").first().click();
   const pane = page.getByTestId("inbox-pane");
   await expect(pane, "opening an item opened no reading pane").toBeVisible();
+  // The list is the grid's first column, the divider its second and the pane its third. The
+  // list's own box reaches 20 px left of its column into the page's inset, so that its rows'
+  // checkboxes are not clipped (`Inbox.tsx`): the list's width is the column's, the grid's own
+  // first track.
   const share = await pane.evaluate((node) => {
     const columns = node.closest<HTMLElement>("div.grid");
-    const list = columns?.firstElementChild as HTMLElement | null;
+    const tracks = columns === null ? [] : getComputedStyle(columns).gridTemplateColumns.split(" ");
     const paneWidth = node.getBoundingClientRect().width;
-    const listWidth = list?.getBoundingClientRect().width ?? 0;
+    const listWidth = Number.parseFloat(tracks[0] ?? "0");
     return { listWidth, paneWidth, share: paneWidth / (paneWidth + listWidth) };
   });
   expect(

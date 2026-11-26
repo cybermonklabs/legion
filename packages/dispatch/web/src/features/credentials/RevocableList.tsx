@@ -1,7 +1,8 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { apiErrorMessage, type WriteBounds } from "../../api/client";
+import type { WriteBounds } from "../../api/client";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -25,7 +26,8 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 
 /** One column of a `RevocableList`: its header, and what a row shows under it. The first column
  *  names the row. */
@@ -38,13 +40,17 @@ export interface RevocableColumn<Row> {
  * The revocable table `GrantsSection` and `MachineLoginsSection` both render: a heading and what
  * the list holds, the list's loading, failed and listed states, one row per item with a Revoke
  * button, and a refused revoke's broker message under the table (a `NOT_APPROVER` 403 among them),
- * so no refusal is silent. Each section hands over its own query, columns and revoke call, and
- * `confirm` when a revoke asks first; the list owns the one revoke in flight: every Revoke button
- * is disabled while it is pending, and the submit guard drops a second press that lands before
- * that re-render (a same-tick double click). `onRevoked` runs once a revoke succeeds, for the
- * section to refresh what it changed. A section may also list rows the broker lets nobody revoke:
- * `unrevocable` names why for such a row, which is then read-only, with that line where its
- * button would be, so the page offers no button that can only fail.
+ * so no refusal is silent. One line under the table speaks for every row, so it names the row the
+ * revoke was of (`rowName`), and it goes once that row leaves the list - revoked elsewhere, or
+ * expired - rather than stand under rows it was never about. Each section hands over its own
+ * query, columns and revoke call, and `confirm` when a revoke asks first; the list owns the one
+ * revoke in flight: every Revoke button is held while it is pending (`heldPress`), never disabled,
+ * so the pressed Revoke keeps the focus and a press of any Revoke does nothing, and the submit
+ * guard drops a second press that lands before that re-render (a same-tick double click).
+ * `onRevoked` runs once a revoke succeeds, for the section to refresh what it changed. A section
+ * may also list rows the broker lets nobody revoke: `unrevocable` names why for such a row, which
+ * is then read-only, with that line where its button would be, so the page offers no button that
+ * can only fail.
  */
 export function RevocableList<Row>({
   className,
@@ -58,8 +64,8 @@ export function RevocableList<Row>({
   onRevoked,
   query,
   revoke,
-  revokeError,
   rowKey,
+  rowName,
   unrevocable,
 }: {
   className: string;
@@ -72,10 +78,11 @@ export function RevocableList<Row>({
   noun: string;
   onRevoked: () => void;
   query: UseQueryResult<readonly Row[]>;
-  /** One attempt of `row`'s revoke, under the write's key. */
+  /** One attempt of `row`'s revoke - a `POST` of its revoke route - under the write's key. */
   revoke: (row: Row, bounds: WriteBounds) => Promise<void>;
-  revokeError: string;
   rowKey: (row: Row) => string;
+  /** `row` as the list's sentences of its revoke name it: `the machine login for devbox`. */
+  rowName: (row: Row) => string;
   /** Why nobody may revoke `row`, in place of its Revoke button, and null for a row anybody
    *  listed here may revoke. A section gives it where the broker refuses every person's revoke
    *  of some rows it lists, so the page never offers a button that can only fail. */
@@ -88,8 +95,15 @@ export function RevocableList<Row>({
     label: (row: Row) => `${heading}: revoke ${rowKey(row)}`,
     onSettled: () => submitGuard.release(),
     onSuccess: onRevoked,
+    method: "POST",
     write: revoke,
   });
+  const refused = useRefusalOfSubject(
+    mutation,
+    (row) => query.data?.some((listed) => rowKey(listed) === rowKey(row)) === true
+  )
+    ? mutation.variables
+    : undefined;
   const press = (row: Row) => {
     if (confirm === undefined || window.confirm(confirm(row))) {
       submitGuard.guard(() => mutation.mutate(row));
@@ -145,9 +159,8 @@ export function RevocableList<Row>({
                       </span>
                     ) : (
                       <button
-                        className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
-                        disabled={mutation.isPending}
-                        onClick={() => press(row)}
+                        className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap refused:cursor-not-allowed refused:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
+                        {...heldPress(mutation.isPending, () => press(row))}
                         type="button"
                       >
                         Revoke
@@ -160,9 +173,17 @@ export function RevocableList<Row>({
           </TableBody>
         </TableShell>
       ) : null}
-      {mutation.isError ? (
-        <p className={`mt-2 ${dangerText}`}>{apiErrorMessage(mutation.error, revokeError)}</p>
-      ) : null}
+      {/* A revoke the reader stopped may have been made, and Revoke is a press of its own, under
+          a key of its own: it never makes the stopped revoke again. */}
+      {refused === undefined ? null : (
+        <p className={`mt-2 ${dangerText}`}>
+          {mutation.error instanceof SendStoppedError
+            ? stoppedWriteNote(`the revoke of ${rowName(refused)}`, "made", {
+                anew: "Pressing Revoke again sends a new revoke.",
+              })
+            : refusedNote(`revoke ${rowName(refused)}`, mutation.error)}
+        </p>
+      )}
     </section>
   );
 }

@@ -42,7 +42,10 @@ export function IssueRow({
   measure: (element: Element | null) => void;
   /** The issues this action has just changed, which the row shows until the next one. */
   moved: ReadonlySet<string>;
-  onStartNext: (key: string) => void;
+  /** Starts the row's issue next: absent on a table that draws no row's actions - its listing
+   *  holds no issue in Legion's queue (`listsQueued`), or its layout leaves them out
+   *  (`rowActions`, `IssuesTable`) - which draws no cell for it. */
+  onStartNext: ((key: string) => void) | undefined;
   row: Row<Item>;
 }): ReactNode {
   const { issue, queue } = row.original;
@@ -62,8 +65,9 @@ export function IssueRow({
         cellClass={(cell) => (row.depth > 0 && cell.column.id === "select" ? "pl-6" : "")}
         highlight={changed ? selectedCardBg : undefined}
         row={row}
+        // A table that offers no Start next (`onStartNext`) draws no cell after its columns.
         trailing={
-          queue !== undefined && queue > 1 ? (
+          onStartNext === undefined ? undefined : queue !== undefined && queue > 1 ? (
             <button
               className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
               {...heldPress(busy, () => onStartNext(issue.key))}
@@ -200,9 +204,9 @@ export function GroupRow({
 
 /** An epic's actions, behind one trigger. While a table action is out (`busy`) the trigger is
  *  held (`PanelTrigger`'s `ariaDisabled`): it keeps the focus the closed panel or the merge's
- *  confirmation handed back to it, and the page's rescue reads the group row's going - the merge
- *  moving the epic's last issue out - as the reader's own (`causedByReader`), so the focus goes to
- *  the control now at the row's place. */
+ *  confirmation handed back to it until the group row goes with it - the merge moving the epic's
+ *  last issue out - and the action's hold keeps the reader's press live through that
+ *  (`holdHandOff`), so the row's going reads as the reader's own (`causedByReader`). */
 function EpicActions({
   busy,
   epicKey,

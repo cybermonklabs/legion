@@ -137,7 +137,8 @@ const (
 
 // editNoticeSchedule is the sweep's pace. minGap is the least time from one sweep's start to the
 // next one's, whatever woke it (duty.WokenLoop.MinGap), and also how long a sweep waits, plus up to
-// a tenth again, when another process holds the lease. A test runs the loop faster.
+// a tenth again, when another process holds the lease (duty.WokenLoop.Retry). A test runs the loop
+// faster.
 type editNoticeSchedule struct {
 	minGap time.Duration
 }
@@ -214,6 +215,7 @@ func (s *Service) runEditNotices(ctx context.Context, leases duty.Leases, wake <
 		Leases: leases,
 		Wake:   wake,
 		MinGap: schedule.minGap,
+		Retry:  schedule.minGap,
 		Pass:   s.editNoticePass,
 	})
 }

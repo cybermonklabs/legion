@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
-import { resolveIssueDocumentId } from "@legion/envoy-client/dispatch-execute";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state";
@@ -14,7 +15,7 @@ import {
 import { createEnvoyClient } from "@legion/envoy-client/transport";
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
-import { nextFallbackModel } from "@legion/pi-shared/fallback-chain";
+import { fallbackModels, nextFallbackModel } from "@legion/pi-shared/fallback-chain";
 import {
   fallbackCooldownLimits,
   LEGION_FALLBACK_ENTRY,
@@ -46,7 +47,7 @@ import {
   sessionActivity,
   sessionActivityRequest,
 } from "@legion/pi-shared/session-activity";
-import { stallLimits } from "@legion/pi-shared/stall-limits";
+import { stallLimits, stallSweepMs } from "@legion/pi-shared/stall-limits";
 import {
   createStallWatchdog,
   type StallWatchdog,
@@ -55,6 +56,7 @@ import {
 import { clearStartupTurn } from "@legion/pi-shared/startup-turn";
 import { subagentSessionCheck } from "@legion/pi-shared/subagent-session";
 import { logger } from "@oh-my-pi/pi-utils";
+import pkg from "../package.json";
 import {
   type CapabilityBudgets,
   type CapabilityHost,
@@ -69,6 +71,7 @@ import {
 import { createClaimSession } from "../src/claim-session";
 import { classifySession, type LegionSessionKind, requiredEnvironment } from "../src/classify";
 import { createControllerSession } from "../src/controller-session";
+import { createCyberPolicyLadder, cyberPolicyLadderSettings } from "../src/cyber-policy-ladder";
 import { createModelFallback } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
 import { daemonLaunchedController } from "../src/slack-channels";
@@ -85,6 +88,12 @@ import {
   workspaceRecreatedMessage,
   workspaceRecreatedNotice,
 } from "../src/workspace-recreated";
+
+// The daemon API contract this build speaks, read once as the module loads (`daemonContract`):
+// the manifest of the module this process loaded names it once a pack has written it, and a
+// checkout's own fixtures decide it for a plugin run from the checkout. A bundle installed with
+// neither refuses to load here rather than speak a number it guessed.
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 // Fatal bootstrap failures call this instead of `process.exit` directly, so a
 // test can substitute a throwing stand-in without killing the test runner. The stall watch's
@@ -240,26 +249,25 @@ export default function legionExtension(pi: PiApi): void {
   // The Envoy listener this entry's own notices go to — the architect's reminder notice, and the
   // stall watch's notice of a stuck call — built once and only when a notice is due: this entry
   // reaches no listener of its own otherwise. Envoy off for the session leaves it undefined, and
-  // the reminder keeps coming without a notice.
-  let noticePublisher: { readonly publish: EnvoyPublish | undefined } | undefined;
-  const publisher = (): EnvoyPublish | undefined => {
-    if (noticePublisher === undefined) {
-      const envoy = sessionEnvoySettings(sessionConfigFile("omp", process.env), process.env, {
-        cwd: process.cwd(),
-        nats: false,
-        session: currentSessionID,
+  // the reminder keeps coming without a notice. The build is kept as it starts, so two notices
+  // due together wait for one; a build that failed is dropped, and the next notice tries again.
+  let noticePublisher: Promise<EnvoyPublish | undefined> | undefined;
+  const publisher = (): Promise<EnvoyPublish | undefined> => {
+    noticePublisher ??= sessionEnvoySettings(sessionConfigFile("omp", process.env), process.env, {
+      cwd: process.cwd(),
+      nats: false,
+      session: currentSessionID,
+    })
+      .then((envoy) =>
+        envoy.enabled
+          ? createEnvoyClient({ baseUrl: envoy.url, credential: envoy.credential, fetch }).publish
+          : undefined
+      )
+      .catch((error: unknown) => {
+        noticePublisher = undefined;
+        throw error;
       });
-      noticePublisher = {
-        publish: envoy.enabled
-          ? createEnvoyClient({
-              baseUrl: envoy.url,
-              credential: envoy.credential,
-              fetch,
-            }).publish
-          : undefined,
-      };
-    }
-    return noticePublisher.publish;
+    return noticePublisher;
   };
   const phaseReminder = createPhaseReminder({
     sendReminder: (reminder) =>
@@ -270,7 +278,7 @@ export default function legionExtension(pi: PiApi): void {
     armTimer: (callback, delayMs) => paneContext?.setTimeout(callback, delayMs),
     saveEntry: (entry) => pi.appendEntry(PHASE_STALL_ENTRY, entry),
     claim: paneClaim,
-    readState: (signal) => roleDaemon().state({ signal }),
+    readRecord: (issue, signal) => roleDaemon().record(issue, { signal }),
     publisher,
     project: process.env.LEGION_PROJECT,
     limits,
@@ -281,12 +289,57 @@ export default function legionExtension(pi: PiApi): void {
   // (@legion/pi-shared/fallback-cooldown): the two waits come from this worker's own environment
   // with the specification's defaults, as the stall limits do, and the state is kept in the
   // transcript so a relaunched worker comes back with its due time and its doubling levels.
+  // When the return is made is `ModelFallback.maybeRestore`'s to say; its timer runs on the pane's
+  // own host timer, as the phase reminder's does, and the runner itself checks that the pane is
+  // still on the session whose state it holds when the timer fires.
   const modelFallback = createModelFallback({
     setModel: async (model) => (await pi.setModel?.(model)) === true,
     saveState: (state) => pi.appendEntry(LEGION_FALLBACK_ENTRY, recordedFallbackCooldown(state)),
     now: () => Date.now(),
     limits: fallbackCooldownLimits(process.env, logger),
     nextModel: nextFallbackModel,
+    fallbackModels,
+    log: logger,
+    armTimer: (callback, delayMs) => {
+      if (paneContext === undefined) return false;
+      paneContext.setTimeout(callback, delayMs);
+      return true;
+    },
+    paneContext: async () =>
+      paneContext !== undefined && (await modelFallbackSession(paneContext))
+        ? paneContext
+        : undefined,
+  });
+
+  // The host's own classifier of a `cyber_policy` refusal, read as a string-literal import when
+  // the first refusal comes, since the module exists only inside Oh My Pi and `bun test` has no
+  // loader for it. The ladder below and the turn-outcome reporter both class with it.
+  const cyberPolicyRefusal = async (message: unknown): Promise<boolean> =>
+    (await import("@oh-my-pi/pi-ai/error")).isCyberPolicyRefusal(message);
+
+  // What a role does when OpenAI refuses its turn under `cyber_policy` (src/cyber-policy-ladder.ts):
+  // retry, retry with a message, compact and retry, then a weaker model of the same family from the
+  // model fallback above, each inside the turn so the daemon's prompt reads the last rung's
+  // outcome. Each rung's send is input from outside the session, so Oh My Pi's hold ends for it.
+  const cyberPolicyLadder = createCyberPolicyLadder<SessionContext>({
+    settings: cyberPolicyLadderSettings(process.env, logger),
+    cyberPolicyRefusal,
+    recordableRefusal: async (message) =>
+      (
+        await import("@oh-my-pi/pi-coding-agent/session/cyber-policy-closure")
+      ).isRecordableCyberPolicyRefusal(message),
+    // `pi`'s own method, called on `pi` as every other send of this entry is.
+    sendMessage: (message, options) => pi.sendMessage(message, options),
+    sameFamilyFallback: (context) => modelFallback.sameFamilyFallback(context),
+    stepDownTo: (context, model) => modelFallback.stepDownTo(context, model),
+    wait: (delayMs, signal) => delay(delayMs, true, { signal }).catch(() => false),
+    timeout: (ms) => AbortSignal.timeout(ms),
+    // At the ladder's first compaction only: with any handler registered Oh My Pi runs no
+    // background compaction, and it has no way to remove one.
+    registerBeforeCompact: (handler) =>
+      pi.on("session_before_compact", async (event, context) => {
+        if (await modelFallbackSession(context)) handler(event);
+      }),
     log: logger,
   });
 
@@ -362,8 +415,11 @@ export default function legionExtension(pi: PiApi): void {
 
   let daemonClient: LegionDaemonClient | undefined;
   const roleDaemon = (): LegionDaemonClient => {
+    // This build's own contract, as the claim's registration states it. The daemon serves each
+    // answer in the shape the contract the caller states describes.
     daemonClient ??= createLegionDaemonClient(
-      requiredEnvironment(process.env, "LEGION_DAEMON_URL")
+      requiredEnvironment(process.env, "LEGION_DAEMON_URL"),
+      { pluginContract: PLUGIN_CONTRACT }
     );
     return daemonClient;
   };
@@ -371,11 +427,13 @@ export default function legionExtension(pi: PiApi): void {
   // Reports every turn this pane's claim ends to the daemon, refused or not (`src/turn-outcome.ts`).
   // It runs for an architect's claim as well as a phase worker's: a provider that refuses turn
   // after turn ends either of them the same way, and a `task` subagent, whose instance registers
-  // no claim of its own, reports nothing.
+  // no claim of its own, reports nothing. A refused turn is classed with the host's own
+  // classifier (`cyberPolicyRefusal` above).
   const turnOutcomes = createTurnOutcomeReporter({
     daemon: roleDaemon,
     claim: (sessionID) => claimSession.capability(sessionID),
     log: logger,
+    cyberPolicyRefusal,
   });
 
   // A root architect's or phase worker's claim, and the operator-launched controller's.
@@ -410,8 +468,9 @@ export default function legionExtension(pi: PiApi): void {
    * hands it to this instance instead (`subagentCall`).
    */
   let stallWatch: StallWatchdog | undefined;
-  /** The 5-second sweep, on the interval each session arms below. It is never awaited: a step of
-   * the ladder can outlast the tick that armed it, and the detector takes one sweep at a time. */
+  /** The sweep, on the interval each session arms below, `stallSweepMs(limits)` apart: 5 s on
+   * production's step gap. It is never awaited: a step of the ladder can outlast the tick that
+   * armed it, and the detector takes one sweep at a time. */
   const stallSweep = (): void => {
     void stallWatch?.sweep();
   };
@@ -440,7 +499,7 @@ export default function legionExtension(pi: PiApi): void {
         session: () => session,
         claim: paneClaim,
         project: process.env.LEGION_PROJECT,
-        readState: (signal) => roleDaemon().state({ signal }),
+        readRecord: (issue, signal) => roleDaemon().record(issue, { signal }),
         publisher,
         appendEntry: (customType, data) => pi.appendEntry(customType, data),
         log: logger,
@@ -536,16 +595,20 @@ export default function legionExtension(pi: PiApi): void {
   });
   // The turn is over, so every call it held open is closed and no step runs for one of them, and
   // the turn's one abort goes with them so the next turn aborts for itself (`turnEnded` in
-  // `pi-shared/src/stall-watchdog.ts`). How that turn ended is read nowhere here: an aborted
-  // turn is readable from its last assistant message, which the `message_end` handler below
-  // already hands the watch, and `turnEnded` closes what an aborted message would close and
-  // clears what it would clear — so a call to `assistantMessage` here would be a second name
-  // for the same close in the log and nothing else. A subagent's turn is not this session's and
-  // closes none of its calls, the `task` call that is running it least of all; the case
-  // "the turn's end closes every call it held open" holds this line.
-  pi.on("turn_end", async (_event, context) => {
+  // `pi-shared/src/stall-watchdog.ts`). The stall watch reads nothing of how that turn ended: an
+  // aborted turn is readable from its last assistant message, which the `message_end` handler
+  // below already hands the watch, and `turnEnded` closes what an aborted message would close and
+  // clears what it would clear — so a call to `assistantMessage` here would be a second name for
+  // the same close in the log and nothing else. The cyber_policy ladder does read it, below. A
+  // subagent's turn is not this session's and closes none of its calls, the `task` call that is
+  // running it least of all; the case "the turn's end closes every call it held open" holds this
+  // line.
+  pi.on("turn_end", async (event, context) => {
     if (subagentEvent(context)) return;
     stallWatch?.turnEnded();
+    // A reply the provider gave, or an abort, ends a pass of the cyber_policy ladder
+    // (src/cyber-policy-ladder.ts): its stop reason says which.
+    cyberPolicyLadder.turnEnded(event.message);
   });
   // The run settled, or ended with the host going on: `turn_end` fires 3 ms before this for an
   // aborted run (measured), so this closes nothing that run left open; it is what closes a run
@@ -618,16 +681,20 @@ export default function legionExtension(pi: PiApi): void {
       logger.error(refusal);
       exitProcess(1);
     }
-    // Every Legion session watches its own tool calls; a subagent's instance returned above.
+    // Every Legion session watches its own tool calls; a subagent's instance returned above. The
+    // sweep has a managed interval of its own, a quarter of the ladder's step gap and never more
+    // than 5 s apart, which bounds how late a stuck call or a due step is found against a gap
+    // that is minutes long in production: the controller reports no activity, and a worker's
+    // activity period below is not the ladder's to set.
     armStallWatch(session);
+    context.setInterval(stallSweep, stallSweepMs(limits));
     // The controller registers through the controller session and gets the `legion` tool's
-    // controller operations (`read_state`, `set_status`), each minting its own controller grant.
+    // controller operations (`OPERATIONS.controller` in `src/tools.ts`); each but `read_state`
+    // mints its own controller grant.
     if (session.kind === "controller") {
       await controllerSession.handleSessionStart(context);
       // The controller reports no activity — the daemon releases no pod of its — so it has no
-      // managed interval of its own, and the stall watch takes one here: its session runs tool
-      // calls that can stick like any other's.
-      context.setInterval(stallSweep, SESSION_ACTIVITY_PERIOD_MS);
+      // managed interval of its own beside the stall watch's sweep above.
     } else {
       // A resume whose role launcher found the workspace recreated since the session was last
       // written (src/workspace-recreated.ts) is told so in a message saved to the session ahead of
@@ -699,18 +766,15 @@ export default function legionExtension(pi: PiApi): void {
       // Between turns, the host's own managed interval is the only sight of this session's
       // background work; it sends nothing unless what it reads has changed. Every claimed
       // session reports, an architect's as much as a phase worker's: the daemon releases a pod
-      // only when each of its live roles has said it runs nothing. The stall watch's sweep rides
-      // the same 5 seconds, which bounds how late a stuck call is found against a ladder whose
-      // own steps are minutes apart.
+      // only when each of its live roles has said it runs nothing. The stall watch's sweep has
+      // its own interval, above.
       context.setInterval(() => {
         if (paneContext !== undefined) {
           void reportActivity(paneContext, { onlyWhenChanged: true });
         }
-        // None of the three is awaited: a measurement that runs for up to 10 s, or a step of the
-        // ladder that outlasts the tick, never delays the activity report the daemon reads to
-        // decide whether the pod may be released.
+        // Neither is awaited: a measurement that runs for up to 10 s never delays the activity
+        // report the daemon reads to decide whether the pod may be released.
         void capabilitySchedule?.tick();
-        stallSweep();
       }, SESSION_ACTIVITY_PERIOD_MS);
     }
     // The claim is registered, so this session is a Legion role's: a worker the daemon
@@ -729,8 +793,13 @@ export default function legionExtension(pi: PiApi): void {
   // earlier recreation saved not counting, and the run saves it on the branch. An Envoy card,
   // sent with triggerTurn, starts its turn with neither the recovery nor before_agent_start, so
   // its branch keeps the saved copy.
+  //
+  // It is also one of the triggers of the model fallback's return, the one for the first request
+  // of a run a prompt starts; `ModelFallback.maybeRestore` (src/model-fallback.ts) states the
+  // rule.
   let resentNoticeId: string | undefined;
   pi.on("before_agent_start", async (_event, context) => {
+    if (await modelFallbackSession(context)) await modelFallback.maybeRestore(context);
     if (recreatedNotice === undefined) return undefined;
     const branch = context.sessionManager.getBranch?.() ?? [];
     if (branchHoldsWorkspaceRecreatedNotice(branch, recreatedNotice.id)) return undefined;
@@ -740,6 +809,9 @@ export default function legionExtension(pi: PiApi): void {
   pi.on("agent_start", async (_event, context) => {
     recreatedNotice = undefined;
     clearStartupTurn(context.sessionManager.getSessionId());
+    // Whether this run is a prompt of the daemon's is the turn-outcome report's to read
+    // (`src/turn-outcome.ts`, and its `input` handler below).
+    turnOutcomes.runStarted(context.sessionManager.getSessionId());
     // The operator moved on: a session change's re-claim outcome left in its widget comes down.
     controllerSession.handleAgentStart(context);
     // INFRA-1573: a turn of this session has started, whatever started it, so the claim boot
@@ -756,18 +828,29 @@ export default function legionExtension(pi: PiApi): void {
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();
   });
-  // Every provider request of this session passes here, so this is where the session goes back
-  // on the model it fell back from: the host checks its own restore only when a new prompt
-  // arrives, which a long unattended tool loop never reaches (src/model-fallback.ts).
+  // Every provider request of this session passes here, which makes it one of the triggers of the
+  // model fallback's return; `ModelFallback.maybeRestore` (src/model-fallback.ts) states the rule.
   //
   // The rest of the handler is the recreated-workspace notice: the recovery kept the saved copy
   // in the process's live context, so once it is sent again every later request of this process
   // would carry it twice: the first copy, where the history put it, is the one each request
   // keeps.
+  //
+  // The cyber_policy ladder reads every request first (src/cyber-policy-ladder.ts): its own
+  // messages and the refused replies come out of it, and the compacted rung starts its compaction
+  // here, which aborts this request before it is sent.
   pi.on("context", async (event, context) => {
-    if (await modelFallbackSession(context)) await modelFallback.maybeRestore(context);
-    if (resentNoticeId === undefined) return undefined;
-    const messages = withoutRepeatedWorkspaceRecreatedNotice(event.messages, resentNoticeId);
+    const legionRole = await modelFallbackSession(context);
+    const ladderKept = legionRole
+      ? await cyberPolicyLadder.request(event.messages, context)
+      : undefined;
+    if (legionRole) await modelFallback.maybeRestore(context);
+    if (resentNoticeId === undefined) {
+      return ladderKept === undefined ? undefined : { messages: ladderKept };
+    }
+    const messages =
+      withoutRepeatedWorkspaceRecreatedNotice(ladderKept ?? event.messages, resentNoticeId) ??
+      ladderKept;
     return messages === undefined ? undefined : { messages };
   });
 
@@ -781,7 +864,10 @@ export default function legionExtension(pi: PiApi): void {
   });
 
   // A turn that has settled: a content filter the host did not walk is walked here, a clean turn
-  // puts the model's wait back to the base, and any other provider failure leaves it alone.
+  // puts the model's wait back to the base, and any other provider failure leaves it alone. It
+  // makes no return: a turn's end can be followed at once by a continuation that reads its model,
+  // so a return the timer found the pane too busy for is made at the timer's first firing on an
+  // idle pane (`ModelFallback.maybeRestore`).
   pi.on("agent_end", async (event, context) => {
     if (!(await modelFallbackSession(context))) return;
     await modelFallback.turnSettled(event, context);
@@ -808,6 +894,8 @@ export default function legionExtension(pi: PiApi): void {
     // pane was left on is a Legion role's at all: the controller's claim moves to it, and a
     // phase worker's stays on the session it was registered for.
     restoreModelFallback(context);
+    // A pass of the cyber_policy ladder belonged to the session the pane left.
+    cyberPolicyLadder.reset();
   };
   pi.on("session_switch", (_event, context) => afterSessionChange(context));
   pi.on("session_branch", (_event, context) => afterSessionChange(context));
@@ -819,10 +907,12 @@ export default function legionExtension(pi: PiApi): void {
   // message for a `/skill:`), but it is an inbound event, as its Envoy card was: the record
   // envoy.ts keeps of the turns it sent in says which message that is, whichever of the two
   // extensions asks first. A turn that record misses falls through to `inboundKind` and counts as
-  // an assignment; the phase-stall section of `packages/pi-legion/AGENTS.md` says which turns it
-  // misses. The `legion` tool's successful `handoff_complete`, and a successful backward move,
-  // close the phase (`onPhaseCompleted`, below). Every message, classified or not, says a turn is
-  // running and leaves every armed reminder timer stale.
+  // an assignment, which opens even a closed phase: a typed turn the host starts under a new
+  // session id, and, on a host without `sendUserInput`, a turn sent in after the run's last queue
+  // poll and before its `agent_end`, which the dashboard then shows twice. The `legion` tool's
+  // successful `handoff_complete`, and a successful backward move, close the phase
+  // (`onPhaseCompleted`, below). Every message, classified or not, says a turn is running and
+  // leaves every armed reminder timer stale.
   pi.on("message_start", async (event, context) => {
     if (!phaseWorkerSession(context)) return;
     phaseReminder.turnStarted();
@@ -858,7 +948,14 @@ export default function legionExtension(pi: PiApi): void {
   // that says how a turn ended, so it is where the outcome is reported (`src/turn-outcome.ts`).
   // The host does not await this handler and nothing of the turn waits on the report, but the
   // report is awaited inside it all the same, so its failure is the handler's own promise rather
-  // than a floating one, and the reporter never rejects.
+  // than a floating one, and the reporter never rejects. What it reads of which runs a prompt of
+  // the daemon's started comes from that prompt's RPC `input`, below, and the next `agent_start`
+  // (the handler above), so that a turn no prompt ran is reported as one, for the daemon to judge
+  // from the report (dispatch://INFRA-4508's R4). The input handler changes nothing of the input.
+  pi.on("input", async (event, context) => {
+    turnOutcomes.inputArrived(context.sessionManager.getSessionId(), event);
+    return undefined;
+  });
   pi.on("agent_end", async (event, context) => {
     await turnOutcomes.report(context.sessionManager.getSessionId(), event);
   });
@@ -870,6 +967,13 @@ export default function legionExtension(pi: PiApi): void {
   // turn end (src/phase-reminder.ts).
   pi.on("session_stop", async (event, context) => {
     if (event.signal.aborted) return undefined;
+    // A cyber_policy refusal climbs the ladder's next rung inside this same turn
+    // (src/cyber-policy-ladder.ts), and only a refusal of its last rung settles the turn, which
+    // the reminder below then leaves alone, as it leaves every refused turn.
+    if (await modelFallbackSession(context)) {
+      const rung = await cyberPolicyLadder.settle(event, context);
+      if (rung !== undefined) return rung;
+    }
     if (!phaseWorkerSession(context)) {
       // An architect has no phase of its own to settle, and its pod is released on the same rule
       // as a worker's, so its turn ends with a report of its own.
@@ -937,30 +1041,19 @@ export default function legionExtension(pi: PiApi): void {
             currentSessionID()
           )(phase, role),
         branchHead: () => findPushedBranchHead({ env: process.env }),
-        resolveDocument: async (issue, reference) => {
-          // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
+        // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
+        dispatch: async () => {
           const config = activeDispatchSettings(
-            sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
-              cwd: process.cwd(),
-              session: currentSessionID,
-            }).dispatch
+            (
+              await sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
+                cwd: process.cwd(),
+                session: currentSessionID,
+              })
+            ).dispatch
           );
-          if (config === null) {
-            throw new Error(
-              `register_gate cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
-            );
-          }
-          try {
-            return await resolveIssueDocumentId(
-              new DispatchClient(config.url, config.credential, fetch),
-              issue,
-              reference
-            );
-          } catch (error) {
-            throw new Error(
-              `register_gate could not look up document "${reference}" on ${issue} in Dispatch: ${messageFor(error)}`
-            );
-          }
+          return config === null
+            ? undefined
+            : new DispatchClient(config.url, config.credential, fetch);
         },
       })
     );

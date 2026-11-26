@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { DELIVERY_DUPLICATE_WINDOW_MS, RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
+import {
+  DELIVERY_DUPLICATE_WINDOW_MS,
+  RECEIPT_TIMEOUT_CAUSE,
+  STORE_UNCONFIRMED_CAUSE,
+} from "@legion/contracts";
 
 import {
   broadcastDelivery,
@@ -11,6 +15,7 @@ import {
   noDeliveryLine,
   plainDelivery,
   queuedParts,
+  resendable,
   rowAnsweredWithError,
   safeRetryGuidance,
   strandedRetryGuidance,
@@ -92,6 +97,16 @@ test("an attempt the session answered with an error is not offered a same-mode r
   expect(isSafeRetry(attempt({ answeredWithError: false }), now)).toBe(true);
 });
 
+// Dispatch refuses every new delivery of a deleted post, 409 POST_DELETED, a Retry and a mode
+// change alike, so no surface offers one once the post carries its deletion; a post nobody
+// deleted - its deletion null, or absent from a payload that predates the mark - still may.
+test("a deleted post is sent again in no mode, and a standing one still may be", () => {
+  expect(resendable({ at: "2026-09-25T11:59:00Z", by: { id: "alice", kind: "user" } })).toBe(false);
+  expect(resendable({ at: "2026-09-25T11:59:00Z", by: null })).toBe(false);
+  expect(resendable(null)).toBe(true);
+  expect(resendable(undefined)).toBe(true);
+});
+
 // Every failure Dispatch records itself leaves the envelope id null; only the session's own error
 // reply fails a row whose send the listener accepted.
 test("a row reads as answered with an error only when a send that reached the listener failed", () => {
@@ -135,12 +150,14 @@ test("the guidance is separated from a cause that has no trailing punctuation", 
 // "Sending in a different mode delivers it again" is only true of a send that may already have
 // reached the recipient. For a failure that never got there, nothing was delivered to deliver
 // "again"; and the mention surface has no mode-change button to name at all.
-test("the mode-change clause is offered only for a receipt timeout, and never on a mention", () => {
+test("the mode-change clause is offered only for a send that may have landed, and never on a mention", () => {
   const modeChange = "sending in a different mode delivers it again";
   expect(safeRetryGuidance("card", RECEIPT_TIMEOUT_CAUSE)).toContain(modeChange);
+  expect(safeRetryGuidance("card", STORE_UNCONFIRMED_CAUSE)).toContain(modeChange);
   expect(safeRetryGuidance("card", "no live session s1")).not.toContain(modeChange);
   expect(safeRetryGuidance("card", null)).not.toContain(modeChange);
   expect(safeRetryGuidance("mention", RECEIPT_TIMEOUT_CAUSE)).not.toContain(modeChange);
+  expect(safeRetryGuidance("mention", STORE_UNCONFIRMED_CAUSE)).not.toContain(modeChange);
 });
 
 // A host holds the keys it was handed in memory, so a session that restarted after the first

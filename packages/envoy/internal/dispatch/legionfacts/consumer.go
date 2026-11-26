@@ -32,32 +32,35 @@ const Lease = "legion-facts"
 // row is therefore never behind the clock, and only an input can leave it behind.
 const Freshness = time.Minute
 
-// PassGap is the least time from the start of one pass to the start of the next, whatever woke
-// it: the loop's MinGap, which duty.RunWoken needs of a leased loop. The gap coalesces the wakes a
-// burst of commits sends into one pass at its end, and it is how long a process that found the
-// lease held waits, plus up to a tenth again, before it tries once more, since the other
-// process's pass may have read before the change that woke this one.
+// PassRetry is how long a process that found the lease held waits, plus up to a tenth again,
+// before it tries once more (duty.WokenLoop.Retry), since the other process's pass may have read
+// before the change that woke this one, and how far on a pass that failed, whose cursors stand
+// where they were, asks for the next (runPass). It is also the longest a pass whose safe horizon
+// held an event back (events.Horizon.HeldBack) waits for the next, since the end of the write that
+// holds the event wakes nothing: such a pass asks for the next horizonRetry on, doubling with each
+// such pass in a row up to PassRetry (duty.Backoff). None of these is a timer that rewrites a row:
+// the pass it asks for reads what the last one could not, and one that finds nothing new computes
+// and writes nothing. Every other pass answers the zero time, and the loop waits for a wake.
 //
-// It is also how far on a pass asks for the next one where it is owed one no wake announces: a
-// pass whose safe horizon held an event back (events.Horizon.HeldBack), since the end of the
-// write that holds it wakes nothing, and a pass that failed, whose cursors stand where they
-// were. Neither is a timer that rewrites a row: the pass it asks for reads what the last one
-// could not, and one that finds nothing new computes and writes nothing. Every other pass answers
-// the zero time, and the loop waits for a wake.
-//
-// A row therefore stands behind the event that moved it by one gap, one lease retry and one
-// pass at most, from the moment the safe horizon can pass that event: 10 s, 11 s and the pass,
-// against the minute Freshness allows. A transaction left open on the Postgres instance holds
-// the horizon, and so the event, back for as long as it stands, as it holds every reader of the
-// horizon (events.Horizon), and the pass that meets it waits for nothing. Measured against the
-// pod's test Postgres by TestAPassHoldsTheFreshnessRequirement, over two runs: one pass that reads
-// one event on one issue takes 64 ms to 66 ms over the 252 issues of the facts' own rig, 210 of
-// them with Legion phase work, and 121 ms to 125 ms over four times that population; one whole
-// read of the project (ComputeProject and WriteProject), the pass a new build makes once, takes
-// 243 ms to 303 ms and 625 ms to 744 ms. The read of the rows another build wrote, which every
-// first page of the recorded build makes (otherBuildsRows), takes 0.7 ms to 0.8 ms finding none
-// over the rig and 1.3 ms to 1.6 ms over four times it, and 1.3 ms to 1.5 ms and 4.3 ms to 4.9 ms
-// finding every row of the project written by another build.
+// Nothing holds one pass back from the next (the loop's MinGap is zero): at most one pass runs
+// and at most one is owed, so a change that commits while a pass runs earns the one pass after it,
+// which starts as soon as the running one ends, and any number of changes during a pass earn that
+// one pass. A row therefore stands behind the event that moved it by the pass running when the
+// event commits, one lease retry and its own pass at most, from the moment the safe horizon can
+// pass that event: the running pass, 11 s and the pass, against the minute Freshness allows. A
+// held-back event waits past the end of the write that held it for the retry the loop then
+// stands at, horizonRetry after a brief hold and PassRetry at most. A transaction left open on the
+// Postgres instance holds the horizon, and so the event, back for as long as it stands, as it
+// holds every reader of the horizon (events.Horizon), and the pass that meets it waits for
+// nothing. Measured against the pod's test Postgres by TestAPassHoldsTheFreshnessRequirement,
+// over two runs: one pass that reads one event on one issue takes 64 ms to 66 ms over the 252
+// issues of the facts' own rig, 210 of them with Legion phase work, and 121 ms to 125 ms over
+// four times that population; one whole read of the project (ComputeProject and WriteProject),
+// the pass a new build makes once, takes 243 ms to 303 ms and 625 ms to 744 ms. The read of the
+// rows another build wrote, which every first page of the recorded build makes (otherBuildsRows),
+// takes 0.7 ms to 0.8 ms finding none over the rig and 1.3 ms to 1.6 ms over four times it, and
+// 1.3 ms to 1.5 ms and 4.3 ms to 4.9 ms finding every row of the project written by another
+// build.
 //
 // Every pass that computes a project narrowly also reads the project's tree links
 // (metrics.TreeLinks). That read takes about 4.5 ms over the rig's 252 issues and 2,142
@@ -81,7 +84,11 @@ const Freshness = time.Minute
 // below a key is read whether or not the set names it. upsert writes a row only where a value of
 // that row moved. A row the descent added and the computation left where it stood is therefore
 // written by nothing.
-const PassGap = 10 * time.Second
+const PassRetry = 10 * time.Second
+
+// horizonRetry is how far on a pass whose safe horizon held an event back asks for the next, the
+// first time in a row: each such pass after it doubles the wait, up to PassRetry.
+const horizonRetry = 250 * time.Millisecond
 
 // feedPage is the most rows one transaction reads of each feed. A pass whose page was full reads
 // the next one at once, in a transaction of its own, so a backlog is worked through in bounded
@@ -163,13 +170,14 @@ type process struct {
 // ctx is done.
 //
 // It is a woken loop (duty.RunWoken) under one lease (Lease): one pass at start, a pass on each
-// of the three wakes, and a pass PassGap after one that failed or whose safe horizon held an
-// event back, never two starts closer than PassGap, and no timer that rewrites a row. A pass
-// recomputes an issue and upserts its row when that issue's inputs move, and at no other time.
-// An open issue's hours grow with the clock while no input moves, and that is no input: the row
-// holds the issue's facts closed at the newest input they read and how fast each grows after it
-// (metrics.ProjectFactsClosed), so a recomputation whose inputs did not move answers the row the
-// table holds and writes nothing, and a reader gives each fact at its own clock (Row.At).
+// of the three wakes, which starts as soon as the pass running when it came ends (PassRetry), a
+// pass PassRetry after one that failed, a pass soon after one whose safe horizon held an event
+// back, and no timer that rewrites a row. A pass recomputes an issue and upserts its row when
+// that issue's inputs move, and at no other time. An open issue's hours grow with the clock while
+// no input moves, and that is no input: the row holds the issue's facts closed at the newest
+// input they read and how fast each grows after it (metrics.ProjectFactsClosed), so a
+// recomputation whose inputs did not move answers the row the table holds and writes nothing,
+// and a reader gives each fact at its own clock (Row.At).
 //
 // Three inputs move a stored row, and a pass reads each from a cursor of its own:
 //  1. The issue's events, woken by Deps.Events. Every event of an issue can move that issue's
@@ -200,7 +208,7 @@ type process struct {
 // computes its filed issue or its filer's issue (filingsToCompute), so its class, its filer's
 // phase and its root move with the inputs the rows move with.
 //
-// A pass that fails logs and leaves its cursors where they were, and asks for a pass PassGap
+// A pass that fails logs and leaves its cursors where they were, and asks for a pass PassRetry
 // later, which reads the same rows again unless a wake's pass has read them first (runPass).
 // Every pass is safe to run twice: a row whose values did not move is not rewritten (upsert), and
 // a cursor moves only in the transaction that wrote the rows it covers (passPage).
@@ -222,22 +230,26 @@ func run(ctx context.Context, deps Deps, sched schedule) {
 		sched.started = sched.now()
 	}
 	ctx = store.WithTransactionTracking(ctx)
+	held := &duty.Backoff{First: horizonRetry, Max: PassRetry}
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Lease:  Lease,
 		Leases: deps.Leases,
 		Wake:   duty.MergeWakes(ctx, deps.Events, deps.Observations, deps.Deliveries),
-		MinGap: PassGap,
-		Pass:   func(ctx context.Context) time.Time { return runPass(ctx, deps, sched) },
+		Retry:  PassRetry,
+		Pass:   func(ctx context.Context) time.Time { return runPass(ctx, deps, sched, held) },
 	})
 }
 
-// runPass is one pass as the loop runs it (pass), and the due time it answers the loop: the one
-// pass answered, and PassGap on for a pass that failed, as the suggestion outcomes and the eval
-// refresher retry theirs. A failed pass left its cursors where they were, so the event whose wake
-// started it is still unread, and with no retry it would wait for an unrelated wake. A pass whose
-// context ended answers the zero time: the loop is stopping.
-func runPass(ctx context.Context, deps Deps, sched schedule) time.Time {
-	changed, next, err := pass(ctx, deps, sched)
+// runPass is one pass as the loop runs it (pass), and the due time it answers the loop, on the
+// wall clock the loop's timer runs on rather than sched's, which a test stands still: PassRetry
+// on for a pass that failed, as the suggestion outcomes and the eval refresher retry theirs,
+// held's next wait on for a pass whose safe horizon held an event back (PassRetry), and the zero
+// time for every other pass, which begins held's waits again. A failed pass left its cursors
+// where they were, so the event whose wake started it is still unread, and with no retry it
+// would wait for an unrelated wake. A pass whose context ended answers the zero time: the loop is
+// stopping.
+func runPass(ctx context.Context, deps Deps, sched schedule, held *duty.Backoff) time.Time {
+	changed, heldBack, err := pass(ctx, deps, sched)
 	if ctx.Err() != nil {
 		return time.Time{}
 	}
@@ -246,14 +258,18 @@ func runPass(ctx context.Context, deps Deps, sched schedule) time.Time {
 	}
 	if err != nil {
 		slog.Warn("dispatch: the Legion facts pass failed", "error", err)
-		return sched.now().Add(PassGap)
+		return time.Now().Add(PassRetry)
 	}
-	return next
+	if heldBack {
+		return time.Now().Add(held.Next())
+	}
+	held.Reset()
+	return time.Time{}
 }
 
 // pass is one pass of the loop: it reads page after page of the three feeds until one comes back
 // short, each page computed and written in a transaction of its own, and answers the keys whose
-// stored rows it changed and when the loop should run again with no wake. Every page runs at the
+// stored rows it changed and whether its safe horizon held an event back. Every page runs at the
 // moment the pass read its horizon, and judges and stamps its change cursor by a reading of the
 // clock of its own (passPage). The first page carries the work no feed announces (passPage), and
 // so does a later page where the page before it met a lost change cursor it held (readPages), so
@@ -265,13 +281,13 @@ func runPass(ctx context.Context, deps Deps, sched schedule) time.Time {
 // first pass. The lease is held for the pass, so a pass that waited out every transaction open on
 // the instance would hold every facts update, and the other process's, behind the longest of
 // them. A pass that leaves an event above what it read (events.Horizon.HeldBack), the event whose
-// commit woke it among them, asks for a pass PassGap on, which reads it once the horizon has
-// passed it, and every other pass answers the zero time. The moment the pass computes at is read
-// after the horizon, so no event the pass reads is newer than the moment its rows are of.
-func pass(ctx context.Context, deps Deps, sched schedule) ([]string, time.Time, error) {
+// commit woke it among them, says so, and the loop asks for another soon, which reads it once the
+// horizon has passed it (runPass). The moment the pass computes at is read after the horizon, so
+// no event the pass reads is newer than the moment its rows are of.
+func pass(ctx context.Context, deps Deps, sched schedule) ([]string, bool, error) {
 	safe, err := deps.Horizon.SafeOrAwait(ctx)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, false, err
 	}
 	now := sched.now()
 	changed := []string{}
@@ -280,13 +296,10 @@ func pass(ctx context.Context, deps Deps, sched schedule) ([]string, time.Time, 
 		keys, page, err = passPage(ctx, deps, sched, safe, now, page.unfed)
 		changed = append(changed, keys...)
 		if err != nil {
-			return changed, time.Time{}, err
+			return changed, false, err
 		}
 	}
-	if deps.Horizon.HeldBack(safe) {
-		return changed, now.Add(PassGap), nil
-	}
-	return changed, time.Time{}, nil
+	return changed, deps.Horizon.HeldBack(safe), nil
 }
 
 // nextPage is what one page tells its pass of the page after it (passPage): whether to read one
@@ -444,7 +457,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		observations: read.observations.position,
 		changes:      delivery.ChangeCursor{Seq: read.changes.position, At: read.changes.at, ReadAt: read.changes.readAt},
 	}
-	changed, err := writePass(ctx, deps.Pool, computed, moved, now, self, read.changes.remapped)
+	changed, err := writePass(ctx, deps.Pool, computed, moved, now, self)
 	if err != nil {
 		return changed, nextPage{}, err
 	}
@@ -518,21 +531,20 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // writePass writes every project's rows and filings under the build self runs in, deletes the
 // stale rows and filings inside the sets each project's pass stated (a project whose record names
 // a newer build has its stale rows and filings stamped instead, WriteProject and WriteFilings),
-// resolves every stored row's repository again where remapped says the page read a change of a
-// repository's mapping (reresolveRepos), records the projects it computed whole and moves the
-// three cursors, all in one transaction. It answers the keys whose stored rows changed, the
+// records the projects it computed whole and moves the three cursors, all in one transaction. It
+// answers the keys whose stored rows changed, the
 // deleted and stamped keys among them, because a row that went is a change of the stored facts as
 // much as a row that moved. A failure leaves the cursors and the marks where they were, so the
 // next pass reads the same rows again.
 //
 // The rows' and the filings' triggers record their changes in the change log's outbox (migrations
 // 20261117100002 and 20261117100019) and take no lock, so the transaction never takes the change
-// log's lock (delivery.LockChanges); once it has committed, the pass moves them into the log
-// (delivery.DrainPending). A drain that fails is logged and fails nothing: the rows committed, and
+// log's lock (6900, delivery's lockChangesStatement); once it has committed, the pass moves them
+// into the log (delivery.DrainPending). A drain that fails is logged and fails nothing: the rows committed, and
 // the next drain of any process moves their changes (delivery.DrainPending states the bound). The
 // drain's notification is also the wake of the other process of a roll, whose build the project's
 // record may name (Deps.Deliveries).
-func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, cursors feedCursors, now time.Time, self process, remapped bool) ([]string, error) {
+func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, cursors feedCursors, now time.Time, self process) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -550,13 +562,6 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, cu
 		if err := WriteFilings(ctx, tx, filings); err != nil {
 			return nil, err
 		}
-	}
-	if remapped {
-		moved, err := reresolveRepos(ctx, tx)
-		if err != nil {
-			return nil, err
-		}
-		changed = append(changed, moved...)
 	}
 	if err := markComputedWhole(ctx, tx, computed, now, self); err != nil {
 		return nil, err

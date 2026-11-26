@@ -3,6 +3,8 @@
 // section's screenshots (`shots.config.ts` beside this file) and its narrated walkthrough
 // (`../walkthroughs/legion-issue-journey.ts`) show what a real journey leaves in Dispatch. Every
 // name, key, commit and URL is example data.
+import type { Page } from "@playwright/test";
+
 import { dispatchApi, expect, fakeEnvoy } from "../harness";
 
 export const PROJECT = "SHOP";
@@ -294,8 +296,13 @@ export async function setStatus(issue: Tracked, status: string): Promise<void> {
   await api.patchIssue(issue.key, { status }, DAEMON);
 }
 
-/** The reviewer approved, so the issue is in accepting: the architect posts its acceptance of the
- *  reviewed head and signs off, and the daemon moves the issue to retro. */
+/** The issue header's Status: the shared list's single pick, whose trigger carries the status it
+ *  shows (`data-issue-status`), as the native select it replaced carried its value. */
+export const statusOf = (page: Page) => page.locator("[data-issue-status]");
+
+/** The reviewer approved, so on the default steps the issue is in accepting: the architect posts
+ *  its acceptance of the reviewed head and signs off, and, the acceptance being the task's last
+ *  step, the daemon moves the issue to retro. */
 export async function accept(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   await api.createComment(issue.key, { body: example.acceptance }, agent(issue.key, "architect"));

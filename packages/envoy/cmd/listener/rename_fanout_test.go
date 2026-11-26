@@ -80,6 +80,7 @@ const renameQuiet = 3 * time.Second
 // name receives its own. Both of the listener's GitHub producers do it: the webhook route and the
 // CI summary loop.
 func TestRenameFansOutUnderTheFormerName(t *testing.T) {
+	t.Parallel()
 	rig := startRenameCase(t, "rename-on", renamePair)
 	frames := rig.drive(t, true)
 
@@ -151,6 +152,7 @@ func TestRenameFansOutUnderTheFormerName(t *testing.T) {
 // alone. Nothing reaches the former name's subscribers, which is the defect the setting removes
 // and the state every deployment that configures no rename stays in.
 func TestRenameUnsetPublishesTheCurrentNameAlone(t *testing.T) {
+	t.Parallel()
 	rig := startRenameCase(t, "rename-off", "")
 	frames := rig.drive(t, false)
 
@@ -193,7 +195,6 @@ type renameCase struct {
 func startRenameCase(t *testing.T, machineID, renames string) *renameCase {
 	t.Helper()
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	seedDueCIRecord(t, client, "cybermonklabs", "legion", renamePR, renameSHA)
 
 	// Each subscriber is written as a client writes it: a client subscribing to topic X subscribes

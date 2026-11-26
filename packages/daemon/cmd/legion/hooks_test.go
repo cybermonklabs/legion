@@ -14,6 +14,7 @@ import (
 // no file it names, so this check is the one proof that a hook's words can come from a file;
 // without the read, a deployment would start on a hook whose prompt says nothing.
 func TestConfigCheckReadsAHooksPromptFile(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	dir := t.TempDir()
 	present, missing := filepath.Join(dir, "stuck.md"), filepath.Join(dir, "missing.md")
@@ -24,7 +25,7 @@ func TestConfigCheckReadsAHooksPromptFile(t *testing.T) {
 	config, _ := workflowConfig(t, 13370, hookNaming(present))
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-	if want := demoCheckConfigOK + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("a prompt file that is there: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 

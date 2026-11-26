@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -22,16 +21,14 @@ const (
 )
 
 func TestAPIAuth(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "listener-test-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
-	}
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 
 	serviceToken := issuer.Mint(t, signing, issuer.Claims(listenerTestSubject, listenerTestAudience))
 
@@ -193,7 +190,7 @@ func TestAPIAuth(t *testing.T) {
 				request.Header.Set("Authorization", tc.authorize)
 			}
 
-			var configured *oidc.Verifier
+			var configured *oidc.LazyVerifier
 			if tc.oidc {
 				configured = verifier
 			}
@@ -219,6 +216,7 @@ func TestAPIAuth(t *testing.T) {
 }
 
 func TestAPIAuthValidatesV1BodyContentType(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -346,11 +344,9 @@ func assertRejectionLines(t *testing.T, logged, message, wantReason, wantAccount
 }
 
 func TestValidateListenerAPIAuth(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
-	}
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 	google := newGoogleStandIn(t, listenerGoogleAccount)
 
 	cases := []struct {
@@ -419,6 +415,7 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 }
 
 func TestResolveListenerOIDCConfig(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		env          map[string]string
@@ -474,6 +471,7 @@ func TestResolveListenerOIDCConfig(t *testing.T) {
 }
 
 func TestDescribeListenerAPIAuth(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		token    string
@@ -568,6 +566,7 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 }
 
 func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})

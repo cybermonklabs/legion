@@ -133,9 +133,8 @@ func readFeedHeads(ctx context.Context, q Querier, safe int64, checked time.Time
 }
 
 // feed is what one page of one feed read: where that feed now stands, the issues it named, the
-// filings it read (the events feed alone reads any), whether the page was full, and whether it
-// read a change of a repository's mapping (the changes feed alone reads any, readChangePage). at
-// and readAt are the changes feed's alone, which the change cursor keeps for the lost-cursor rule
+// filings it read (the events feed alone reads any), and whether the page was full. at and readAt
+// are the changes feed's alone, which the change cursor keeps for the lost-cursor rule
 // (delivery.CursorLost): at is when the change at position was recorded, nil where no change holds
 // position, and readAt when a page last read the change log to its end, the page's own reading of
 // the clock where it did and the cursor's earlier one where its page was full.
@@ -146,7 +145,6 @@ type feed struct {
 	touches  []touch
 	filings  []filing
 	full     bool
-	remapped bool
 }
 
 // filing is one issue a session of the page filed whose stored filing the page can have moved
@@ -184,8 +182,8 @@ type touch struct {
 }
 
 // readEventPage is the page of events after the cursor: up to limit events above after and at or
-// below safe, with the issues those events name and the issues the sessions those events name
-// can have moved through their titles (sessionIssues).
+// below safe, with the issues those events name and the issues the sessions those events name can
+// have moved through their titles (sessionIssues).
 //
 // The page stops at safe because events.id is not commit order. An event draws its id when its
 // write inserts the row, and two writes that wait on nothing commit out of id order, so a cursor
@@ -216,6 +214,11 @@ type touch struct {
 // filing with the filer its newest title names and the project that stores it, and the pass owes
 // it to both projects (passPage), so one pass writes it into the one and takes it out of the
 // other.
+//
+// A project.updated event, a write of the project's row (its default repository among what it can
+// move, api's putProjectDefaultRepository), moves no stored row: a row's repo is the repository its
+// issue's own chain names, or ':default' where none does (ReadRepos), which the evals' reads take
+// as the project's published default repository, so a default move rewrites no row.
 func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int) (feed, error) {
 	rows, err := q.Query(ctx, `
 		select event.id, coalesce(issue.project_key, ''), coalesce(event.issue_key, ''),
@@ -532,12 +535,6 @@ func blockMoved(before, after []byte) bool {
 // only where the pull request's merge before the change, the change's t_old, is the stored
 // merge, and no pull request of the issue merged at that moment any more (lostMerges).
 //
-// It also keeps whether the page holds a change of a repository's mapping in repo_projects, a
-// `settings` change that names the repository (migration 20261117100020). A stored row's repo is
-// the repository its issue resolves to, and the rule falls back to the project's default mapping
-// (refs.IssueRepoTerms), so a mapping change moves the repo of rows no feed names: the pass then
-// resolves every stored row's repository again (reresolveRepos).
-//
 // It also answers whether the cursor may have passed over changes it never read, by the change
 // log's one rule (delivery.CursorLost), judged at checked, the page's own reading of the clock: a
 // log holding rows whose newest seq stands below the cursor, its sequence restarted; or the change
@@ -562,9 +559,6 @@ func readChangePage(ctx context.Context, q Querier, after delivery.ChangeCursor,
 	repos, refs := make([]string, 0, len(changes)), make([]string, 0, len(changes))
 	merges := []time.Time{}
 	for _, change := range changes {
-		if change.Kind == delivery.ChangeKindSettings && change.Repo != "" {
-			page.remapped = true
-		}
 		// A pull request's merge time is the one delivery fact an issue's facts read.
 		if change.Kind != delivery.ChangeKindPullRequest {
 			continue

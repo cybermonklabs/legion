@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
-import type { LegionState } from "@legion/contracts/legion-api";
+import { EnvelopeSchema } from "@legion/contracts";
+import type { LegionIssue } from "@legion/contracts/legion-api";
 import {
   createEnvoyClient,
   EnvoyApiError,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
+import { createLegionDaemonClient } from "./daemon-client";
 import { createPhaseReminder, type EnvoyPublish, type PhaseReminder } from "./phase-reminder";
 import { type PhaseStallEntry, REMINDER } from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
@@ -23,33 +25,29 @@ const implementer = {
 /** A turn the worker ended by saying `text`, as `turnEndOf` classifies it on Oh My Pi. */
 const said = (text: string) => ({ kind: "settle", lastAssistantText: text }) as const;
 
-/** The daemon's state with this role's claim failed, which is its word that the session is
- * finished. Only the two fields the record check reads, cast because the state's own schema would
- * demand the whole daemon document for them; `rig` below reads its empty state the same way. */
+/** This role's own issue record with its claim failed, which is the daemon's word that the
+ * session is finished. Only the two fields the record check reads, cast because the record's own
+ * schema would demand the whole issue document for them; `rig` below answers no record at all. */
 const claimFailed = {
-  issues: {
-    "LEGION-208": {
-      phase: "implementing",
-      workers: { implementer: { claim: { state: "failed" } } },
-    },
-  },
-} as unknown as LegionState;
+  phase: "implementing",
+  workers: { implementer: { claim: { state: "failed" } } },
+} as unknown as LegionIssue;
 
 // A daemon that never answers the record check: the check fails open once its bound passes, and
 // the read it started is aborted then rather than left open, one request per reminder.
 test("the record check aborts a daemon read that outlives its bound, and reminds all the same", async () => {
-  const handed: AbortSignal[] = [];
+  const handed: { readonly issue: string; readonly signal: AbortSignal }[] = [];
   const debugged: string[] = [];
   const reminder = createPhaseReminder({
     sendReminder: () => {},
     armTimer: () => {},
     saveEntry: () => {},
     claim: () => implementer,
-    readState: (signal) => {
-      handed.push(signal);
-      return new Promise<LegionState>(() => {});
+    readRecord: (issue, signal) => {
+      handed.push({ issue, signal });
+      return new Promise<LegionIssue | undefined>(() => {});
     },
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "LEGION",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },
@@ -61,9 +59,65 @@ test("the record check aborts a daemon read that outlives its bound, and reminds
 
   expect(continuation).toBeString();
   expect(handed).toHaveLength(1);
-  expect(handed[0]?.aborted).toBe(true);
-  expect((handed[0]?.reason as Error).message).toBe("no answer within 20ms");
+  expect(handed[0]?.issue).toBe("LEGION-208");
+  expect(handed[0]?.signal.aborted).toBe(true);
+  expect((handed[0]?.signal.reason as Error).message).toBe("no answer within 20ms");
   expect(debugged).toEqual(["legion: the daemon did not answer the phase reminder's record check"]);
+});
+
+/** A reminder over a real daemon client whose fetch is `answer`, recording every route the
+ * check asks for and every line it logs at debug. */
+function overDaemon(answer: typeof fetch) {
+  const routes: string[] = [];
+  const debugged: string[] = [];
+  const recording = (async (input, init) => {
+    routes.push(new URL(input.toString()).pathname);
+    return answer(input, init);
+  }) as typeof fetch;
+  const daemon = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: 60,
+    fetch: recording,
+  });
+  const reminder = createPhaseReminder({
+    sendReminder: () => {},
+    armTimer: () => {},
+    saveEntry: () => {},
+    claim: () => implementer,
+    readRecord: (issue, signal) => daemon.record(issue, { signal }),
+    publisher: async () => undefined,
+    project: "LEGION",
+    limits: DEFAULT_STALL_LIMITS,
+    log: { debug: (message) => debugged.push(message), warn: () => {} },
+  });
+  reminder.apply({ kind: "assignment" });
+  return { reminder, routes, debugged };
+}
+
+// The check keeps its two branches apart: the route's own 404 for an issue the daemon records
+// nothing of is the absent record, and everything else is a read that failed. It asks for its
+// own issue's record and never for the whole project.
+test("the record check reads one record: the route's 404 is the absent record, a transport failure the read that failed", async () => {
+  const absent = overDaemon((async (_input, _init) =>
+    Response.json(
+      { code: "RECORD_NOT_FOUND", error: "The daemon has no record for LEGION-208" },
+      { status: 404 }
+    )) as typeof fetch);
+
+  expect(await absent.reminder.settle(said("Pushed."))).toBeString();
+  expect(absent.routes).toEqual(["/legion/v1/issues/LEGION-208/record"]);
+  expect(absent.debugged).toEqual([
+    "legion: the daemon holds no record for this phase reminder's issue",
+  ]);
+
+  const failed = overDaemon((async (_input, _init): Promise<Response> => {
+    throw new TypeError("fetch failed");
+  }) as typeof fetch);
+
+  expect(await failed.reminder.settle(said("Pushed."))).toBeString();
+  expect(failed.routes).toEqual(["/legion/v1/issues/LEGION-208/record"]);
+  expect(failed.debugged).toEqual([
+    "legion: the daemon did not answer the phase reminder's record check",
+  ]);
 });
 
 interface ArmedTimer {
@@ -87,7 +141,12 @@ interface Rig {
 function rig(options: {
   readonly sendReminder?: (reminder: string) => void | Promise<void>;
   readonly publish?: EnvoyPublish;
-  readonly state?: LegionState;
+  readonly record?: LegionIssue;
+  /** The publisher's build, which settles before the publisher is handed over, as a first build
+   *  that runs Envoy's token command does; the publisher is at hand at once otherwise. */
+  readonly buildPublisher?: () => Promise<void>;
+  /** The session's claim: the implementer's throughout unless a case names one. */
+  readonly claim?: () => typeof implementer | undefined;
 }): Rig {
   const timers: ArmedTimer[] = [];
   const sent: string[] = [];
@@ -103,11 +162,14 @@ function rig(options: {
       timers.push({ callback, delayMs });
     },
     saveEntry: (entry) => entries.push(entry),
-    claim: () => implementer,
-    readState: async () => options.state ?? ({ issues: {} } as unknown as LegionState),
-    publisher: () => async (input) => {
-      published.push(input);
-      return options.publish === undefined ? {} : options.publish(input);
+    claim: options.claim ?? (() => implementer),
+    readRecord: async () => options.record,
+    publisher: async () => {
+      await options.buildPublisher?.();
+      return async (input) => {
+        published.push(input);
+        return options.publish === undefined ? {} : options.publish(input);
+      };
     },
     project: "legion",
     limits: { ...DEFAULT_STALL_LIMITS, architectAfter: 2 },
@@ -169,6 +231,66 @@ test("a notice accepted after its run ended acknowledges nothing of the next run
   expect(published[1]?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
   expect(published[1]?.idempotencyKey).not.toBe(firstKey);
   expect(entries.at(-1)).toMatchObject({ count: 2, reported: true });
+});
+
+// The publisher's first build can run Envoy's token command, and the event loop goes on serving
+// the worker meanwhile: a turn that resets the count lands inside that wait. The notice must then
+// tell nothing, since its run has ended: read after the wait, it would tell the architect of a
+// worker that "has let 0 phase reminders go unanswered". The next run is told as any run is.
+test("a notice whose publisher was still being built when the run ended tells nothing, and the next run is told", async () => {
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  let builds = 0;
+  const { reminder, timers, entries, published } = rig({
+    buildPublisher: () => {
+      builds += 1;
+      if (builds > 1) return Promise.resolve();
+      building.resolve();
+      return built.promise;
+    },
+  });
+
+  // The run reaches the threshold; its notice waits for the publisher.
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  const delivered = fireLast(timers);
+  await building.promise;
+
+  // The worker acts meanwhile, which ends the run, and the publisher is built after.
+  reminder.apply({ kind: "tool-call" });
+  built.resolve();
+  await delivered;
+  expect(published).toEqual([]);
+  expect(entries.at(-1)).toMatchObject({ count: 0, reported: false });
+
+  // The next run reaches the threshold and tells the architect of its two reminders.
+  expect(await reminder.settle(said("Working on it."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published).toHaveLength(1);
+  expect(published[0]?.message).toContain("has let 2 phase reminders go unanswered");
+  expect(entries.at(-1)).toMatchObject({ count: 2, reported: true });
+});
+
+// A run whose claim has ended sends no notice, so it builds no publisher for one either: the
+// first build can run Envoy's token command, and a broker trade would buy a token for nothing.
+test("a run whose claim has ended builds no publisher for its notice", async () => {
+  let claimed = true;
+  let builds = 0;
+  const { reminder, timers, published } = rig({
+    claim: () => (claimed ? implementer : undefined),
+    buildPublisher: async () => {
+      builds += 1;
+    },
+  });
+
+  // The run reaches the threshold, and its claim ends before the reminder that would tell.
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  claimed = false;
+  await fireLast(timers);
+  expect(builds).toBe(0);
+  expect(published).toEqual([]);
 });
 
 // A failure other than "no live session holds the role" is not dropped: the next delivered
@@ -291,6 +413,50 @@ test("the owner notice is kept", async () => {
   expect(warned).toEqual([]);
 });
 
+// A listener answers a notice whose key another sender's message already holds with that
+// message's ids and times alone (`requestSender.answer` in the listener). Nothing reached the
+// architect, so the notice is not reported, its key is cleared, and the next reminder publishes it
+// under a new key. The control is the envelope schema every answer was read by before, which
+// throws on that answer.
+test("a notice whose key another sender's message holds is sent again under a new key", async () => {
+  const taken = {
+    event_id: "event-other",
+    source: "",
+    source_event_id: "",
+    topic: "notifications.role.legion-legion-208-architect",
+    dedupe_key: "publish.key",
+    issued_at: 1,
+    payload_summary: "",
+    trace_id: "",
+    duplicate: true,
+  };
+  expect(() => EnvelopeSchema.parse(taken)).toThrow();
+  const client = createEnvoyClient({
+    baseUrl: "http://listener.test",
+    fetch: async () => Response.json(taken),
+  });
+  const { reminder, timers, entries, published, warned } = rig({
+    publish: (input) => client.publish(input),
+  });
+
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+
+  expect(published).toHaveLength(1);
+  expect(warned).toEqual([
+    "legion: another sender's message holds the architect notice's key; telling it again later",
+  ]);
+  const cleared = entries.at(-1);
+  expect(cleared).toMatchObject({ count: 2, reported: false });
+  expect(cleared).not.toHaveProperty("reportKey");
+
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published).toHaveLength(2);
+  expect(published[1]?.idempotencyKey).not.toBe(published[0]?.idempotencyKey);
+});
+
 // A listener answers 404 with nothing kept when its keep failed, and a listener of an earlier
 // release answers it for an architect role whose holder is not live. That is the answer this
 // sender's retry exists for. Nobody was told, so the next delivered reminder publishes again
@@ -386,10 +552,10 @@ test("a failed delivery arms nothing once a turn has started meanwhile", async (
 
 // The whole of dispatch://INFRA-264: every turn of that implementer was refused by the provider,
 // and every reminder it was given at once bought another refused turn. So a refused turn earns no
-// continuation; but the daemon's task for the phase ended with that turn, and below
-// `launch_failure_limit` nothing fails the claim and nothing hands the task out again, so one
-// delayed reminder follows it rather than silence (the architect's decision, review round 2).
-test("a refused turn below the limit reminds once, after the delay and not before", async () => {
+// continuation; but the daemon's task for the phase ended with that turn, and a refusal that can
+// clear fails no claim (dispatch://INFRA-4508), so one delayed reminder follows it rather than
+// silence (the architect's decision, review round 2).
+test("a refused turn reminds once, after the delay and not before", async () => {
   const { reminder, timers, sent, entries } = rig({});
   const recorded = entries.length;
 
@@ -415,12 +581,35 @@ test("a refused turn below the limit reminds once, after the delay and not befor
   expect(timers).toHaveLength(2);
 });
 
-// At `launch_failure_limit` the daemon fails the claim, which is its own word that this session
-// is finished: the retry runs in a session of its own, in which the phase's task is given again.
-// The timer the last refused turn armed still fires, and its record check drops the reminder, so
-// nothing is written into a session nobody can act on.
-test("a refused turn at the limit, whose claim the daemon failed, reminds nothing", async () => {
-  const { reminder, timers, sent } = rig({ state: claimFailed });
+// A run of refusals that can clear — a provider overloaded, a team limit — fails no claim, a
+// reminder's own turn included: the daemon judges that turn from its turn-outcome report, counts
+// it in the claim's run of provider-error turns, and tells the project's controller once at six
+// in a row (dispatch://INFRA-4508). So each refused turn arms the next reminder at the same pace,
+// for as long as the run lasts, and the worker is reminded again the moment its provider takes a
+// turn. Only the daemon failing the claim stops them (the case below).
+test("a run of refused turns that can clear keeps arming its reminder", async () => {
+  const { reminder, timers, sent } = rig({});
+
+  for (let turn = 1; turn <= 6; turn += 1) {
+    reminder.turnStarted();
+    expect(
+      await reminder.settle({ kind: "refused", message: "529 overloaded_error: Overloaded" })
+    ).toBeUndefined();
+    expect(timers).toHaveLength(turn);
+    expect(timers.at(-1)?.delayMs).toBe(DEFAULT_STALL_LIMITS.reminderMs);
+    await fireLast(timers);
+    expect(sent).toHaveLength(turn);
+  }
+});
+
+// A refusal that cannot clear fails the claim, which is the daemon's own word that this session's
+// work is the architect's to decide: the daemon fails it at once, whether the refused turn ran its
+// prompt or was a reminder's own, which it judges from the turn-outcome report
+// (dispatch://INFRA-4508). The timer the refused turn armed still fires, and its record check
+// drops the reminder, so nothing is written into a session nobody can act on, and the reminding
+// ends.
+test("a refused turn whose claim the daemon failed reminds nothing", async () => {
+  const { reminder, timers, sent } = rig({ record: claimFailed });
 
   expect(
     await reminder.settle({ kind: "refused", message: "Refusal (reasoning_extraction)" })
@@ -448,8 +637,8 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
     },
     saveEntry: () => {},
     claim: () => implementer,
-    readState: async () => claimFailed,
-    publisher: () => undefined,
+    readRecord: async () => claimFailed,
+    publisher: async () => undefined,
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },

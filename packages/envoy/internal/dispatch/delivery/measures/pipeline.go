@@ -205,14 +205,14 @@ func cellOf(parts []DayPart, series string) Cell {
 	sorted := MergedSamples(parts, series)
 	counts := FoldSeries(parts, series).Counts
 	result := Cell{
-		N:         len(sorted),
+		N:         sorted.Len(),
 		Success:   int(counts[CountSuccess]),
 		Failure:   int(counts[CountFailure]),
 		Cancelled: int(counts[CountCancelled]),
 	}
-	if len(sorted) > 0 {
-		result.MedianMinutes = new(roundTo(Quantile(sorted, 0.5), 1))
-		result.P90Minutes = new(roundTo(Quantile(sorted, 0.9), 1))
+	if sorted.Len() > 0 {
+		result.MedianMinutes = new(roundTo(sorted.Quantile(0.5), 1))
+		result.P90Minutes = new(roundTo(sorted.Quantile(0.9), 1))
 	}
 	if decided := result.Success + result.Failure; decided > 0 {
 		result.SuccessRate = new(roundTo(float64(result.Success)/float64(decided), 4))

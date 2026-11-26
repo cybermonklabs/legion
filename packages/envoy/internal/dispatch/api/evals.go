@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
@@ -52,6 +54,15 @@ const (
 	// evalPageDefault where the caller names none.
 	evalPageDefault = 50
 	evalPageMax     = 200
+
+	// evalRepoMax is the most repositories an eval read's `repo` names, a repository the query
+	// repeats counted once, and evalRepoBytes the most bytes one of them holds, the bound of a
+	// reading's attributes.repo (evals' key bound): a longer name is the repository of no stored
+	// row. Every statement of the read sends the list, and at these bounds it takes at most
+	// 100 × (512 + 4) bytes, about 50 KiB of the 256 KiB a statement sends (evals'
+	// statementBytes), as a slug's 512 bytes keep each statement of a write under it.
+	evalRepoMax   = 100
+	evalRepoBytes = 512
 
 	codeEvalNotFound           = "EVAL_NOT_FOUND"
 	codeIdempotencyKeyRequired = "IDEMPOTENCY_KEY_REQUIRED"
@@ -127,11 +138,13 @@ func undeclaredQueryKey(query url.Values, declared []string) error {
 		if key == evalSessionQueryKey || slices.Contains(declared, key) {
 			continue
 		}
+		// The key is the request's, of any length, and the refusal of a write is the answer its
+		// idempotency key keeps, so it names the key cut to a field's bound.
 		if len(declared) == 0 {
-			return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is no query key of this route, which takes none but %s", key, evalSessionQueryKey)
+			return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is no query key of this route, which takes none but %s", evals.BoundedField(key), evalSessionQueryKey)
 		}
 		return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is no query key of this route, which takes %s and %s",
-			key, strings.Join(declared, ", "), evalSessionQueryKey)
+			evals.BoundedField(key), strings.Join(declared, ", "), evalSessionQueryKey)
 	}
 	return nil
 }
@@ -213,8 +226,10 @@ func unspelledBodyKey(raw json.RawMessage, keys bodyKeys, at string) error {
 		for _, key := range slices.Sorted(maps.Keys(named)) {
 			inner, spelled := keys[key]
 			if !spelled {
+				// The key is the body's, of any length; the refusal names it cut to a field's
+				// bound, so the answer an idempotency key keeps stays bounded whatever the body.
 				return errorf(http.StatusBadRequest, "INVALID_JSON", "%s holds the key %q, which is none of the keys it takes, each spelled exactly so: %s",
-					where, key, strings.Join(slices.Sorted(maps.Keys(keys)), ", "))
+					where, evals.BoundedField(key), strings.Join(slices.Sorted(maps.Keys(keys)), ", "))
 			}
 			if inner == nil {
 				continue
@@ -234,14 +249,23 @@ func unspelledBodyKey(raw json.RawMessage, keys bodyKeys, at string) error {
 // decodeEvalBody reads an eval write's JSON body into value, whose keys are keys
 // (evalRegisterBodyKeys, evalReadingsBodyKeys), and answers the body as sent. A body that is no
 // JSON value of value's type, or one holding a key keys does not spell exactly (unspelledBodyKey),
-// is 400 INVALID_JSON.
+// is 400 INVALID_JSON. The decoder's error carries a number of the body whole
+// (json.UnmarshalTypeError's Value), so the refusal names that number cut to a field's bound
+// (evals.BoundedField), which leaves room for the field and the type the error names after it, and
+// its whole text is cut to the most a refusal's text takes (evals.BoundedError, 1,024 bytes as JSON
+// writes it): a megabyte of digits would otherwise make a megabyte of answer, which the write's
+// Idempotency-Key keeps in one statement.
 func decodeEvalBody(r *http.Request, value any, keys bodyKeys) (json.RawMessage, error) {
 	var raw json.RawMessage
 	if err := decodeJSON(r, &raw); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(raw, value); err != nil {
-		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+		var typed *json.UnmarshalTypeError
+		if errors.As(err, &typed) {
+			typed.Value = evals.BoundedField(typed.Value)
+		}
+		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "%s", evals.BoundedError("invalid JSON body: "+err.Error()))
 	}
 	if err := unspelledBodyKey(raw, keys, ""); err != nil {
 		return nil, err
@@ -272,7 +296,7 @@ func evalCompareRange(compare *evals.Range) *evalRange {
 // evalFreshness is how fresh the day rows an answer folded are: the oldest updated_at among them,
 // the moment each row's values last moved (a rebuild to the same values leaves it, so the live
 // evals view, which hears of a row only when its values move, answers the same; null where it
-// folded none), and the day-row refresher's age (evals.Store.RefresherAge), in seconds: the time
+// folded none), and the day-row refresher's age (evals.RefresherAgeIn), in seconds: the time
 // since its last pass ran, or since a pass last read the delivery change log to its end,
 // whichever is older, so a pass catching up a backlog of changes reads as old as its last read of
 // the whole log; null where no pass has run on this database. The refresher is the deployment's
@@ -384,8 +408,17 @@ type evalReadingsBody struct {
 	Readings []json.RawMessage `json:"readings"`
 }
 
-// evalReadingsResponse is the readings write's answer: the readings stored, in the batch's order,
-// the eval's definition, and whether this write registered it (R3).
+// evalReadingsResponse is the readings write's answer: the readings it stored, the eval's
+// definition, and whether this write registered it (R3). Total is how many readings the write
+// stored, and Items the first of them in the batch's order, as many as keep the answer within
+// evals.MaxAnswerBytes, so that the statement that keeps it under the write's Idempotency-Key
+// sends at most 256 KiB, as every statement of the write does, and a repeat under the key is
+// answered this same answer however large the batch; Limit is how many Items lists. The ids of the
+// readings it leaves out are read from the eval's items route, each reading's cols.id
+// (evalItemRow). A definition takes at most evals.MaxVersionBytes, which leaves most of the answer
+// to the readings, but one reading may take more than the bound itself as JSON (a note of some
+// hundred kilobytes is within what one statement stores), so Items may list none while Total
+// counts every one.
 type evalReadingsResponse struct {
 	Items      []evals.Reading  `json:"items"`
 	Total      int              `json:"total"`
@@ -440,12 +473,17 @@ type evalRegisterInput struct {
 }
 
 // evalRegistered is what a register write left: the eval's newest definition, the newest version
-// of each of its series, and whether the write stored a new version of the definition or of a
-// series.
+// of its series by name, and whether the write stored a new version of the definition or of a
+// series. SeriesTotal is how many series the eval holds, and Series the first of them, as many as
+// keep the answer within evals.MaxAnswerBytes, so that the statement that keeps it under the
+// write's Idempotency-Key sends at most 256 KiB, as every statement of the write does, and a repeat
+// under the key is answered this same answer. A version, of the definition or of a series, takes
+// at most evals.MaxVersionBytes, so Series lists at least one series of an eval that holds any.
 type evalRegistered struct {
-	Definition evals.Definition `json:"definition"`
-	Series     []evals.Series   `json:"series"`
-	Wrote      bool             `json:"wrote"`
+	Definition  evals.Definition `json:"definition"`
+	Series      []evals.Series   `json:"series"`
+	SeriesTotal int              `json:"series_total"`
+	Wrote       bool             `json:"wrote"`
 }
 
 // evalRegisterResponse is the register write's answer: the one version it left.
@@ -457,9 +495,10 @@ type evalRegisterResponse struct {
 }
 
 // registry is the eval registry over this server's database, writing `evals-md` through its
-// document service and its events through its broker.
+// document service and its events through its broker, and attributing the pull requests its day
+// rows count through its Attributor (Deps.Attributor).
 func (s *server) registry() *evals.Store {
-	return evals.New(s.deps.Store, s.deps.Docs, s.deps.Events)
+	return evals.New(s.deps.Store, s.deps.Docs, s.deps.Events, s.deps.Attributor)
 }
 
 // evalRanges is the window and the compare range one eval read asked for: each as the whole UTC
@@ -615,21 +654,46 @@ func namedOnce(query url.Values, key string) error {
 }
 
 // parseEvalRepos reads `repo`, repeatable: the repositories whose day rows a read folds in place
-// of the project's own. An empty value names no repository and is refused.
+// of the project's own, each once, in the order the query first names it. An empty value names no
+// repository and is refused, and so is one of more than evalRepoBytes bytes, and one starting
+// with ':', which the stored rows keep the day rows of what a repository attributes and of what
+// reaches a project only through its default repository under (evals.OwnerKey,
+// legionfacts.DefaultRepo): no repository is called that, and a read names repositories alone. A
+// query naming more than evalRepoMax repositories is refused, so the list stays a small part of
+// each statement of the read that sends it.
 func parseEvalRepos(query url.Values) ([]string, error) {
-	repos := query["repo"]
-	if slices.Contains(repos, "") {
+	named := query["repo"]
+	if slices.Contains(named, "") {
 		return nil, errors.New("repo names a repository, and an empty repo names none")
+	}
+	if at := slices.IndexFunc(named, func(repo string) bool { return len(repo) > evalRepoBytes }); at >= 0 {
+		return nil, fmt.Errorf("repo %q holds %d bytes, and a repository name holds at most %d", evals.BoundedField(named[at]), len(named[at]), evalRepoBytes)
+	}
+	if at := slices.IndexFunc(named, func(repo string) bool { return strings.HasPrefix(repo, ":") }); at >= 0 {
+		return nil, fmt.Errorf("repo names a repository, and %q is no repository name", named[at])
+	}
+	var repos []string
+	seen := make(map[string]bool, len(named))
+	for _, repo := range named {
+		if !seen[repo] {
+			seen[repo] = true
+			repos = append(repos, repo)
+		}
+	}
+	if len(repos) > evalRepoMax {
+		return nil, fmt.Errorf("repo names %d repositories, and a read takes at most %d", len(repos), evalRepoMax)
 	}
 	return repos, nil
 }
 
-// evalListRequest is one read of the eval list: what every eval read reads of its query, the
-// projects it reads, in order, and the kind it keeps, "" for every kind.
+// evalListRequest is one read of the eval list: what every eval read reads of its query, the kind
+// it keeps, "" for every kind, and projectsIn, which reads in the answer's snapshot the projects it
+// reads, in order: the project route's project, found (loadProject), and the cross-project read's
+// (evalProjectsIn).
 type evalListRequest struct {
 	evalReadQuery
-	projects []string
-	kind     string
+	kind       string
+	projectsIn func(ctx context.Context, tx pgx.Tx) ([]string, error)
 }
 
 // parseEvalListQuery reads the list read's query, every key but `project`, which only the
@@ -663,18 +727,21 @@ func (s *server) listProjectEvals(w http.ResponseWriter, r *http.Request) {
 }
 
 // readProjectEvalList is the body of GET /api/v1/projects/{key}/evals for query, as of now: the
-// list read of project's evals (readEvalList), after the query is read (parseEvalListQuery) and
-// the project is found, 404 PROJECT_NOT_FOUND for a project no row holds (loadProject). The live
-// hub's evals view reads its body through this too, so the two answer one query alike.
+// list read of project's evals (readEvalList), after the query is read (parseEvalListQuery), the
+// project found in the answer's snapshot, 404 PROJECT_NOT_FOUND for a project no row holds
+// (loadProject). The live hub's evals view reads its body through this too, so the two answer one
+// query alike.
 func (s *server) readProjectEvalList(ctx context.Context, query url.Values, project string, now time.Time) (evalListResponse, error) {
 	request, err := parseEvalListQuery(query, evalListQueryKeys)
 	if err != nil {
 		return evalListResponse{}, err
 	}
-	if _, err := s.loadProject(ctx, s.deps.Store.Pool, project); err != nil {
-		return evalListResponse{}, err
+	request.projectsIn = func(ctx context.Context, tx pgx.Tx) ([]string, error) {
+		if _, err := s.loadProject(ctx, tx, project); err != nil {
+			return nil, err
+		}
+		return []string{project}, nil
 	}
-	request.projects = []string{project}
 	return s.readEvalList(ctx, request, now)
 }
 
@@ -697,12 +764,9 @@ func (s *server) listEvals(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "project names a project, and an empty project names none")
 		return
 	}
-	projects, err := s.evalProjects(r.Context(), named)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	request.projectsIn = func(ctx context.Context, tx pgx.Tx) ([]string, error) {
+		return evalProjectsIn(ctx, tx, named)
 	}
-	request.projects = projects
 	answer, err := s.readEvalList(r.Context(), request, time.Now().UTC())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -711,11 +775,11 @@ func (s *server) listEvals(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// evalProjects is the projects a cross-project read reads: those named, each once in the order
-// first named, or every project by key where none is named. A name no project holds is 404
-// PROJECT_NOT_FOUND naming it.
-func (s *server) evalProjects(ctx context.Context, named []string) ([]string, error) {
-	keys, err := s.registry().Projects(ctx)
+// evalProjectsIn is the projects a cross-project read reads, read in tx, the answer's snapshot:
+// those named, each once in the order first named, or every project by key where none is named
+// (evals.ProjectsIn). A name no project holds is 404 PROJECT_NOT_FOUND naming it.
+func evalProjectsIn(ctx context.Context, tx pgx.Tx, named []string) ([]string, error) {
+	keys, err := evals.ProjectsIn(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -735,103 +799,179 @@ func (s *server) evalProjects(ctx context.Context, named []string) ([]string, er
 }
 
 // readEvalList is the list read: one page of the evals of request's projects, by project in the
-// order given and then by slug (evals.Store.Current, through evals_current), each with its values
-// over the window and the compare range (evalItemsOf). The page runs across the projects: total is
+// order given and then by slug (evals.CurrentIn, through evals_current), each with its values over
+// the window and the compare range (readEvalValues). The page runs across the projects: total is
 // every project's count, and offset counts from the first project's first eval. It is the body of
 // both list routes, which the live hub's view of the evals reads too. Each of its reads reads
 // every project at once, so a read of many projects makes as many statements as a read of one.
+//
+// One answer, one snapshot: every read it makes (its projects, request.projectsIn, the page, the
+// deploy repository its values read, the one recorded with the stored rows, evals.DeployRepoIn,
+// and the reads its values are stated from, readEvalValues) runs in one read-only
+// repeatable-read transaction on one connection (evals.Store.BeginSnapshot), committed before the
+// folds (evalValues.items). A write that commits while the answer reads, as a settings rewrite
+// commits its day rows, their stored figures and the settings they stand built under, is in the
+// whole answer or in none of it, so the live evals view, which sends what moved between two
+// answers, sends it as one delta of the whole new state, never as an eval's old window figures
+// beside its new days, nor the new deploy repository's rows as the old production rule built
+// them. The transaction holds ctx's connection mark, so a read of the pool made under it is
+// refused (store.ErrNestedAcquire).
 func (s *server) readEvalList(ctx context.Context, request evalListRequest, now time.Time) (evalListResponse, error) {
-	registry := s.registry()
+	tx, err := s.registry().BeginSnapshot(ctx)
+	if err != nil {
+		return evalListResponse{}, fmt.Errorf("begin the read of the eval list: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	projects, err := request.projectsIn(ctx, tx)
+	if err != nil {
+		return evalListResponse{}, err
+	}
+	page, err := evals.CurrentIn(ctx, tx, projects, request.kind, request.limit, request.offset)
+	if err != nil {
+		return evalListResponse{}, err
+	}
+	deployRepo, err := evals.DeployRepoIn(ctx, tx)
+	if err != nil {
+		return evalListResponse{}, err
+	}
+	values, err := readEvalValues(ctx, tx, page.Items, deployRepo, request.repos, request.ranges, now)
+	if err != nil {
+		return evalListResponse{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return evalListResponse{}, fmt.Errorf("end the read of the evals of %v: %w", projects, err)
+	}
+	items, freshness := values.items()
 	answer := evalListResponse{
-		Items: []evalListItem{}, Limit: request.limit, Offset: request.offset,
-		Window: newEvalRange(request.ranges.window), Compare: evalCompareRange(request.ranges.compare),
+		Items: make([]evalListItem, len(items)), Total: page.Total, Limit: request.limit, Offset: request.offset,
+		Window: newEvalRange(request.ranges.window), Compare: evalCompareRange(request.ranges.compare), Freshness: freshness,
 	}
-	page, err := registry.Current(ctx, request.projects, request.kind, request.limit, request.offset)
-	if err != nil {
-		return evalListResponse{}, err
+	for index, item := range items {
+		answer.Items[index] = evalListItem{ID: item.Definition.EvalID, evalItem: item}
 	}
-	answer.Total = page.Total
-	items, freshness, err := s.evalItemsAndFreshness(ctx, registry, page.Items, request.repos, request.ranges, now)
-	if err != nil {
-		return evalListResponse{}, err
-	}
-	for _, item := range items {
-		answer.Items = append(answer.Items, evalListItem{ID: item.Definition.EvalID, evalItem: item})
-	}
-	answer.Freshness = freshness
 	return answer, nil
 }
 
-// evalItemsAndFreshness states each of entries with its values (evalItemsOf), none where entries
-// holds none, and the answer's freshness: the oldest updated_at of the rows it folded and the
-// refresher's age at now. The refresher's age is read side by side with the day rows, which it
-// does not depend on.
-func (s *server) evalItemsAndFreshness(ctx context.Context, registry *evals.Store, entries []evals.Entry, repos []string, ranges evalRanges, now time.Time) ([]evalItem, evalFreshness, error) {
-	var items []evalItem
-	var oldest *time.Time
-	var age time.Duration
-	var found bool
-	reads := []func(context.Context) error{func(ctx context.Context) (err error) {
-		age, found, err = registry.RefresherAge(ctx, now)
-		return err
-	}}
-	if len(entries) > 0 {
-		reads = append(reads, func(ctx context.Context) (err error) {
-			items, oldest, err = s.evalItemsOf(ctx, registry, entries, repos, ranges)
-			return err
-		})
-	}
-	if err := store.ReadSideBySide(ctx, reads...); err != nil {
-		return nil, evalFreshness{}, err
-	}
-	freshness := evalFreshness{RowsUpdatedAt: oldest}
-	if found {
-		freshness.RefresherAgeSeconds = new(int(age / time.Second))
-	}
-	return items, freshness, nil
+// evalValues is what one answer states its evals' values from, read in its snapshot
+// (readEvalValues): each eval's values where the stored figures answer it, the indexes of those
+// they do not (unstated) with the day rows and the first days their values are folded from, how far
+// each family's stored rows are whole through (built), the oldest updated_at of the stored rows
+// read, and the refresher's age.
+type evalValues struct {
+	entries  []evals.Entry
+	ranges   evalRanges
+	values   [][]evals.SeriesValues
+	unstated []int
+	rows     []evals.WindowRow
+	firsts   map[string]map[string]time.Time
+	built    evals.Built
+	oldest   *time.Time
+	age      time.Duration
+	aged     bool
 }
 
-// evalItemsOf states each of entries with its values: one read of the day rows of the page's
-// evals over the window and the compare range (evals.Store.DayWindow, the rows of repos where it
-// names any) and one read of each series' first day (evals.Store.FirstDays), side by side, each
-// of every project the entries are evals of. It answers the items, in entries' order, and the
-// oldest updated_at of the rows it folded.
-func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries []evals.Entry, repos []string, ranges evalRanges) ([]evalItem, *time.Time, error) {
-	var projects []string
-	for _, entry := range entries {
-		if !slices.Contains(projects, entry.Definition.ProjectKey) {
-			projects = append(projects, entry.Definition.ProjectKey)
+// readEvalValues reads in tx, one answer's snapshot (readEvalList), the refresher's age at now
+// (evals.RefresherAgeIn) and what each of entries' values over ranges is stated from. Each eval
+// that reads the deploy repository is stated from the rows kept for deployRepo, the repository
+// recorded with the stored rows (evals.DeployRepoOf, evals.DeployRepoIn), so a move of the deploy
+// repository is this selection and rewrites nothing. It reads each series' first day
+// (evals.FirstDaysIn), how far the stored rows of each computed eval's family are whole through as
+// of now's UTC day (evals.BuiltIn, one read of the serving records, made where an eval's rows are a
+// walk's), and for an offered range (evals.FiguresOffered: a window and a compare range each of a
+// length the Evals tab offers, of the projects' own rows or of the one repository named) the
+// stored figures of that cut (evals.ReadStoredFiguresIn: the read of how far each project is built
+// and which of its evals a stale mark of the cut names, then two primary-key reads of the evals
+// they serve), from which it states each eval they answer. An eval they cannot answer (an eval of
+// a project whose figures are not built yet, one whose rows in the cut a move of a default
+// repository moved and the refresher has not folded again, or one whose stored row was folded
+// under another fold key than the eval's) and every eval of any other read, one that names two or
+// more repositories among them, is stated from one read of the day rows of the window and the
+// compare range of those evals alone (evals.DayWindowIn, the rows of repos where it names any),
+// folded once the snapshot is committed (evalValues.items). Both answer the same bits
+// (evals.StoredFigures.SeriesValues). Each read reads every project the entries it reads are evals
+// of at once.
+func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deployRepo string, repos []string, ranges evalRanges, now time.Time) (evalValues, error) {
+	read := evalValues{entries: entries, ranges: ranges, values: make([][]evals.SeriesValues, len(entries))}
+	var err error
+	if read.age, read.aged, err = evals.RefresherAgeIn(ctx, tx, now); err != nil {
+		return evalValues{}, err
+	}
+	if len(entries) == 0 {
+		return read, nil
+	}
+	projects := evalProjects(entries)
+	repos, err = evals.StoredRepos(ctx, tx, projects, repos)
+	if err != nil {
+		return evalValues{}, err
+	}
+	if read.firsts, err = evals.FirstDaysIn(ctx, tx, entries, deployRepo); err != nil {
+		return evalValues{}, err
+	}
+	if read.built, err = evals.BuiltIn(ctx, tx, entries, now); err != nil {
+		return evalValues{}, err
+	}
+	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
+		stored, err := evals.ReadStoredFiguresIn(ctx, tx, projects, entries, deployRepo, repos, ranges.window, ranges.compare)
+		if err != nil {
+			return evalValues{}, err
+		}
+		for index, entry := range entries {
+			series, at, ok := stored.SeriesValues(entry, read.firsts[entry.Definition.EvalID], ranges.window, ranges.compare)
+			if !ok {
+				read.unstated = append(read.unstated, index)
+				continue
+			}
+			read.values[index] = series
+			if at != nil {
+				read.earliest(*at)
+			}
+		}
+	} else {
+		for index := range entries {
+			read.unstated = append(read.unstated, index)
 		}
 	}
-	var rows []evals.WindowRow
-	var firsts map[string]map[string]time.Time
-	if err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			rows, err = registry.DayWindow(ctx, projects, entries, repos, ranges.window, ranges.compare)
-			return err
-		},
-		func(ctx context.Context) (err error) {
-			firsts, err = registry.FirstDays(ctx, entries)
-			return err
-		},
-	); err != nil {
-		return nil, nil, err
+	if len(read.unstated) == 0 {
+		return read, nil
 	}
+	rest := make([]evals.Entry, len(read.unstated))
+	for position, index := range read.unstated {
+		rest[position] = entries[index]
+	}
+	if read.rows, err = evals.DayWindowIn(ctx, tx, evalProjects(rest), rest, deployRepo, repos, ranges.window, ranges.compare); err != nil {
+		return evalValues{}, err
+	}
+	return read, nil
+}
+
+// earliest makes at v's oldest updated_at where it is older than the one v holds.
+func (v *evalValues) earliest(at time.Time) {
+	if v.oldest == nil || at.Before(*v.oldest) {
+		v.oldest = &at
+	}
+}
+
+// items is each of v's evals with its values, in the order read, and the answer's freshness: the
+// oldest updated_at of the rows its values fold, and the refresher's age. It folds the day rows of
+// the evals the stored figures did not answer (evals.SeriesValuesOf) and reads nothing, so it runs
+// once the snapshot v was read in is committed. Every eval's values, the stored figures' and the
+// day rows' alike, are stated under one rule (evals.Built.Withhold): a window or a compare range
+// that holds a day before today its family's stored rows are not whole through answers no value,
+// as one before its series' first day does, until the walk has built the day (R12); the verdict
+// judges what is stated.
+func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	byEval := map[string][]evals.WindowRow{}
-	var oldest *time.Time
-	if len(rows) > 0 {
-		first := rows[0].UpdatedAt
-		oldest = &first
-	}
-	for _, row := range rows {
+	for _, row := range v.rows {
 		byEval[row.EvalID] = append(byEval[row.EvalID], row)
-		if row.UpdatedAt.Before(*oldest) {
-			*oldest = row.UpdatedAt
-		}
+		v.earliest(row.UpdatedAt)
 	}
-	items := make([]evalItem, len(entries))
-	for index, entry := range entries {
-		series := evals.SeriesValuesOf(entry, byEval[entry.Definition.EvalID], firsts[entry.Definition.EvalID], ranges.window, ranges.compare)
+	for _, index := range v.unstated {
+		id := v.entries[index].Definition.EvalID
+		v.values[index] = evals.SeriesValuesOf(v.entries[index], byEval[id], v.firsts[id], v.ranges.window, v.ranges.compare)
+	}
+	items := make([]evalItem, len(v.entries))
+	for index, entry := range v.entries {
+		series := v.built.Withhold(entry.Definition, v.values[index], v.ranges.window, v.ranges.compare)
 		items[index] = evalItem{
 			Definition: entry.Definition,
 			Owner:      evalOwnerOf(entry.Definition),
@@ -839,7 +979,22 @@ func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries
 			Verdict:    evals.VerdictOf(entry, evals.WindowStatistics(series)),
 		}
 	}
-	return items, oldest, nil
+	freshness := evalFreshness{RowsUpdatedAt: v.oldest}
+	if v.aged {
+		freshness.RefresherAgeSeconds = new(int(v.age / time.Second))
+	}
+	return items, freshness
+}
+
+// evalProjects is the projects entries are evals of, in the order they first appear.
+func evalProjects(entries []evals.Entry) []string {
+	var projects []string
+	for _, entry := range entries {
+		if !slices.Contains(projects, entry.Definition.ProjectKey) {
+			projects = append(projects, entry.Definition.ProjectKey)
+		}
+	}
+	return projects
 }
 
 func evalOwnerOf(definition evals.Definition) evalOwner {
@@ -847,12 +1002,17 @@ func evalOwnerOf(definition evals.Definition) evalOwner {
 }
 
 // getProjectEval answers GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,
-// newest first, read with its current definition and series in one snapshot
-// (evals.Store.EvalVersions, which reads the page's versions alone), the newest stating the
-// window's values as the list read states them, and the method its section of the project's
-// `evals-md` holds (evals.Store.Method), the values and the method read side by side. A query key
-// the route does not take is 400 INVALID_QUERY (undeclaredQueryKey), 404 PROJECT_NOT_FOUND for a
-// project no row holds, 404 EVAL_NOT_FOUND for a slug no eval of it holds.
+// newest first, read with its current definition and series (evals.EvalVersionsIn, which reads the
+// page's versions alone), the newest stating the window's values as the list read states them
+// (readEvalValues), and the method its section of the project's `evals-md` holds
+// (evals.Store.Method). One answer, one snapshot, as the list read's (readEvalList): the project,
+// the eval, its versions, the deploy repository (evals.DeployRepoIn) and the values' reads run in
+// one read-only repeatable-read transaction, committed before the folds. It is begun on a
+// connection mark of its own (store.ForConcurrentRead), so the method is read beside the values:
+// the documents service answers it from the document's room where one is open, not from a
+// database moment a snapshot can hold. A query key the route does not take is 400 INVALID_QUERY
+// (undeclaredQueryKey), 404 PROJECT_NOT_FOUND for a project no row holds, 404 EVAL_NOT_FOUND for a
+// slug no eval of it holds.
 func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -864,18 +1024,35 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	project, slug := r.PathValue("key"), r.PathValue("slug")
-	if _, err := s.loadProject(ctx, s.deps.Store.Pool, project); err != nil {
+	registry := s.registry()
+	evalID := evals.EvalID(project, slug)
+	snapshot, err := store.ForConcurrentRead(ctx)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	registry := s.registry()
-	entry, versions, found, err := registry.EvalVersions(ctx, evals.EvalID(project, slug), read.limit, read.offset)
+	tx, err := registry.BeginSnapshot(snapshot)
+	if err != nil {
+		s.writeHandlerError(w, fmt.Errorf("begin the read of eval %s: %w", evalID, err))
+		return
+	}
+	defer tx.Rollback(snapshot)
+	if _, err := s.loadProject(snapshot, tx, project); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	entry, versions, found, err := evals.EvalVersionsIn(snapshot, tx, evalID, read.limit, read.offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	if !found {
 		s.writeHandlerError(w, evalNotFound(project, slug))
+		return
+	}
+	deployRepo, err := evals.DeployRepoIn(snapshot, tx)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	answer := evalDetailResponse{
@@ -887,13 +1064,18 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	if slices.ContainsFunc(versions.Items, func(version evals.Definition) bool { return version.Version == entry.Definition.Version }) {
 		stated = []evals.Entry{entry}
 	}
-	var newest []evalItem
+	var values evalValues
 	var method string
 	var held bool
 	if err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			newest, answer.Freshness, err = s.evalItemsAndFreshness(ctx, registry, stated, read.repos, read.ranges, time.Now().UTC())
-			return err
+		func(context.Context) (err error) {
+			if values, err = readEvalValues(snapshot, tx, stated, deployRepo, read.repos, read.ranges, time.Now().UTC()); err != nil {
+				return err
+			}
+			if err := tx.Commit(snapshot); err != nil {
+				return fmt.Errorf("end the read of eval %s: %w", evalID, err)
+			}
+			return nil
 		},
 		func(ctx context.Context) (err error) {
 			method, held, err = registry.Method(ctx, project, entry.Definition.DocBlock)
@@ -903,6 +1085,8 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	newest, freshness := values.items()
+	answer.Freshness = freshness
 	for _, version := range versions.Items {
 		if version.Version != entry.Definition.Version {
 			answer.Items = append(answer.Items, evalItem{Definition: version, Owner: evalOwnerOf(version)})
@@ -916,31 +1100,17 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// loadEval reads the eval slug names in project, current definition and series: 404
-// PROJECT_NOT_FOUND for a project no row holds, 404 EVAL_NOT_FOUND for a slug no eval of it holds.
-func (s *server) loadEval(ctx context.Context, project, slug string) (evals.Entry, error) {
-	if _, err := s.loadProject(ctx, s.deps.Store.Pool, project); err != nil {
-		return evals.Entry{}, err
-	}
-	entry, found, err := s.registry().Eval(ctx, evals.EvalID(project, slug))
-	if err != nil {
-		return evals.Entry{}, err
-	}
-	if !found {
-		return evals.Entry{}, evalNotFound(project, slug)
-	}
-	return entry, nil
-}
-
 // evalNotFound is the 404 EVAL_NOT_FOUND of a slug no eval of project holds.
 func evalNotFound(project, slug string) error {
 	return errorf(http.StatusNotFound, codeEvalNotFound, "project %s holds no eval %q", project, slug)
 }
 
 // writeEvalError answers err: a registry refusal (*evals.Error) as its own body, {code, error}
-// and for a readings write the refused rows, 404 for a project no row holds, 409 for a project
-// whose `evals-md` slug names a file and 400 for every other; anything else as writeHandlerError
-// does.
+// and for a readings write its refused rows, the first evals.MaxRefusedRows of them, and
+// rows_omitted, how many more there are, every text in it bounded, so the answer the write's
+// idempotency key keeps stays within the statement bound whatever the body; 404 for a project no
+// row holds, 409 for a project whose `evals-md` slug names a file and 400 for every other;
+// anything else as writeHandlerError does.
 func (s *server) writeEvalError(w http.ResponseWriter, err error) {
 	var refused *evals.Error
 	if !errors.As(err, &refused) {
@@ -967,7 +1137,9 @@ func (s *server) writeEvalError(w http.ResponseWriter, err error) {
 // any other key, and that one named twice, is 400 INVALID_QUERY naming it (R7). The body's actor
 // follows Dispatch's bearer rule (bearerSessionActor); the server sets recorded_by and
 // recorded_at, and a row carrying either is refused (READING_FIELD_SERVER_SET). The day rows the
-// write keeps record s.deps.Build as the build that wrote them.
+// write keeps record s.deps.Build as the build that wrote them. It answers 201 with how many
+// readings it stored and the first of them, as many as the keyed layer keeps in its answer
+// (evalReadingsResponse, answerPrefix).
 func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1003,10 +1175,18 @@ func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 		s.writeEvalError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, evalReadingsResponse{
-		Items: written.Readings, Total: len(written.Readings), Limit: len(written.Readings),
-		Definition: written.Definition, Registered: written.Registered,
-	})
+	stored := len(written.Readings)
+	// The answer listing no reading, its limit as many digits as it can hold.
+	answer := evalReadingsResponse{
+		Items: []evals.Reading{}, Total: stored, Limit: stored, Definition: written.Definition, Registered: written.Registered,
+	}
+	listed, err := answerPrefix(answer, written.Readings)
+	if err != nil {
+		s.writeHandlerError(w, fmt.Errorf("encode the answer of a readings write of %d readings: %w", stored, err))
+		return
+	}
+	answer.Items, answer.Limit = listed, len(listed)
+	WriteJSON(w, http.StatusCreated, answer)
 }
 
 // refuseReadingChange answers PUT and DELETE /api/v1/projects/{key}/evals/{slug}/readings/{id}
@@ -1027,10 +1207,12 @@ func (s *server) refuseReadingChange(w http.ResponseWriter, r *http.Request) {
 // body leaves out copied forward (evals.Store.Register). doc_text, when given and not the method
 // the eval's section of the project's `evals-md` holds already, replaces that method. It answers
 // 201 with what it wrote, a version of the definition or of a series, and 200 with the versions
-// that stand where the body changed no field of the definition or of a series it names. A field
-// the body names that no earlier write of the eval named is a change of the version's record of
-// what a person set, so `target: null` on an eval whose target is already off is answered 201,
-// and sent again 200 (evals.Definition's SetByPerson).
+// that stand where the body changed no field of the definition or of a series it names, each
+// answer listing the eval's series by name as far as the keyed layer keeps them and counting them
+// all (evalRegistered, answerPrefix). A field the body names that no earlier write of the eval
+// named is a change of the version's record of what a person set, so `target: null` on an eval
+// whose target is already off is answered 201, and sent again 200 (evals.Definition's
+// SetByPerson).
 func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1054,10 +1236,46 @@ func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 	if registered.Wrote {
 		status = http.StatusCreated
 	}
-	WriteJSON(w, status, evalRegisterResponse{
-		Items: []evalRegistered{{Definition: registered.Definition, Series: registered.Series, Wrote: registered.Wrote}},
+	answer := evalRegisterResponse{
+		Items: []evalRegistered{{Definition: registered.Definition, Series: []evals.Series{}, SeriesTotal: len(registered.Series), Wrote: registered.Wrote}},
 		Total: 1, Limit: 1,
-	})
+	}
+	listed, err := answerPrefix(answer, registered.Series)
+	if err != nil {
+		s.writeHandlerError(w, fmt.Errorf("encode the answer of a register write of %s: %w", registered.Definition.EvalID, err))
+		return
+	}
+	answer.Items[0].Series = listed
+	WriteJSON(w, status, answer)
+}
+
+// answerPrefix is the longest leading part of items with which an eval write's answer takes at
+// most evals.MaxAnswerBytes as WriteJSON encodes it, so that the statement that keeps it under the
+// write's Idempotency-Key sends at most 256 KiB, as every statement of the write does, and a
+// repeat under the key is answered the first answer rather than ANSWER_NOT_KEPT. answer is that
+// answer listing none of items, every count in it as many digits as it will hold; each item adds
+// its JSON as the answer encodes it, and a comma before every one but the first. Each item is
+// encoded once, in order, and none past the first that passes the bound, so a batch far past it
+// is not encoded whole.
+func answerPrefix[T any](answer any, items []T) ([]T, error) {
+	var encoded bytes.Buffer
+	if err := json.NewEncoder(&encoded).Encode(answer); err != nil {
+		return nil, err
+	}
+	used := encoded.Len()
+	for index := range items {
+		item, err := json.Marshal(&items[index])
+		if err != nil {
+			return nil, err
+		}
+		if index > 0 {
+			used++
+		}
+		if used += len(item); used > evals.MaxAnswerBytes {
+			return items[:index], nil
+		}
+	}
+	return items, nil
 }
 
 // decodeEvalRegistration reads a register write's body into the registration it asks for: each

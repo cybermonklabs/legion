@@ -1,18 +1,35 @@
 #!/usr/bin/env bash
 # A stage driver's own home for Oh My Pi. Sourced, never run.
 #
+# omp_natives_dir prints the operator's native module cache (124 MiB per Oh My Pi version at the
+# pin, the one variant the CPU selects): $XDG_CACHE_HOME/omp/natives when XDG_CACHE_HOME is set and
+# $XDG_CACHE_HOME/omp exists, and $HOME/.omp/natives otherwise. Those are the two places getNativesDir
+# in @oh-my-pi/pi-natives' native/natives-dir.js reads when none of PI_NATIVES_DIR,
+# OMP_DOWNLOAD_ROOT and OMP_CONFIG_ROOT is set, as no Legion process sets them, and PI_CONFIG_DIR is
+# unset or `.omp`. Every script that links a home's .omp/natives to that cache calls it, so a home
+# Oh My Pi starts in reads the same natives the operator's own Oh My Pi wrote.
+omp_natives_dir() {
+  if [ -n "${XDG_CACHE_HOME:-}" ] && [ -e "$XDG_CACHE_HOME/omp" ]; then
+    printf '%s\n' "$XDG_CACHE_HOME/omp/natives"
+  else
+    printf '%s\n' "$HOME/.omp/natives"
+  fi
+}
+
 # make_omp_home DIR — DIR becomes the HOME every Oh My Pi process of the run runs under (the daemon,
 # so every pane, the controller, and each `omp` a lib runs), so the run's profile root is
 # DIR/.omp/profiles/<name>, inside its work directory, and the operator's own ~/.omp/profiles is
-# never written or deleted. Oh My Pi places a profile from the home directory alone:
-# os.homedir()/.omp/profiles/<name> (getProfileConfigRoot, @oh-my-pi/pi-utils dirs.ts).
+# never written or deleted. Oh My Pi places a profile under its config root:
+# os.homedir()/.omp/profiles/<name> (getProfileConfigRoot, @oh-my-pi/pi-utils dirs.ts), or
+# profiles/<name> under the directory OMP_CONFIG_ROOT names, which the pinned build reads and which
+# the driver's own shell is taken not to set.
 # XDG_DATA_HOME moves only a named profile's data, and only once $XDG_DATA_HOME/omp/profiles/<name>
-# exists, and PI_CONFIG_DIR reaches no pane (neither daemon's pane allow-list carries it).
+# exists, and neither PI_CONFIG_DIR nor OMP_CONFIG_ROOT reaches a pane (neither daemon's pane
+# allow-list carries them).
 #
-# DIR/.omp/natives links to the operator's native module cache (116 MiB per Oh My Pi version at the
-# pin, the one variant the CPU selects; resolved as getNativesDir in @oh-my-pi/pi-natives'
-# native/loader-state.js resolves it), which a
-# fresh home would download again; removing DIR removes the link, never the cache. MISE_DATA_DIR and
+# DIR/.omp/natives links to the operator's native module cache, the directory omp_natives_dir
+# prints. A fresh home would download that module again; removing DIR removes the link, never the
+# cache. MISE_DATA_DIR and
 # XDG_CONFIG_HOME are exported first as the operator's own, where each already resolves, so what the
 # daemon itself runs under DIR finds what it did under the operator's HOME: `mise` the same pinned
 # Oh My Pi, `secrets` its secretsd config (the daemon resolves provider_keys with it), and gh and jj
@@ -29,7 +46,7 @@
 # ~/ value this cannot pin (inside an array or table, or under a quoted key) fails the call,
 # naming it. Panes commit as their App's identity (JJ_USER and JJ_EMAIL), which "own" never signs.
 make_omp_home() {
-  local natives=$HOME/.omp/natives overlay=$1/.jjconfig-operator-paths.toml listing files line
+  local natives overlay=$1/.jjconfig-operator-paths.toml listing files line
   local pinned='^([A-Za-z0-9_.-]+) = "~/([^"\\]*)"$'
   # Read before HOME moves, and without this run's own overlay (a second call on the same DIR sees
   # JJ_CONFIG naming it), so each value reads as the operator's jj reads it.
@@ -37,7 +54,7 @@ make_omp_home() {
     { echo "make_omp_home: jj config path --user failed, so the operator's jj config cannot be named" >&2; return 1; }
   listing=$(JJ_CONFIG=$files jj config list --user) ||
     { echo "make_omp_home: jj config list --user failed, so the operator's ~/ jj paths cannot be pinned" >&2; return 1; }
-  if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+  natives=$(omp_natives_dir)
   export MISE_DATA_DIR="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
   export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
   mkdir -p "$natives" "$1/.omp"
@@ -83,11 +100,15 @@ omp_setup_wizard_off() {
 # that no Oh My Pi a rig starts from that session may inherit: OMP_SESSION_ID, that session's id;
 # OMPCODE, the mark Oh My Pi puts on the shells its bash tool spawns (buildSpawnEnv in
 # @oh-my-pi/pi-utils procmgr.ts); PI_CONFIG_FILES, that session's settings overlays, which Oh My Pi
-# lays over the profile it opens; ENVOY_NATS_URL, the NATS that session's Envoy plugin dials; and
+# lays over the profile it opens; ENVOY_NATS_URL, the NATS that session's Envoy plugin dials;
 # LEGION_OMP_PATH, the Oh My Pi binary that `legion controller start` and the daemon run in place
-# of omp_invocation (ResolveInvocation, packages/daemon/internal/omplaunch). `legion controller
+# of omp_invocation (ResolveInvocation, packages/daemon/internal/omplaunch); and
+# OMP_SESSION_EXCLUSIVE, the variable the runtime sets to 1 in a pane or pod that resumes a
+# recorded Oh My Pi session, under which an Oh My Pi a rig resumes (--continue) exits rather than
+# moving where another live process holds the session, and which `legion controller start` also
+# drops from what it inherits (packages/daemon/cmd/legion/controller.go). `legion controller
 # start` hands Oh My Pi its caller's environment, so every rig that runs it, or an interactive omp,
 # from the operator's shell drops these first: `env "${omp_session_unsets[@]}" …` in an argv, and
 # `env ${omp_session_unsets[*]} …` in a pane's shell command, which no name here needs quoted in.
 # shellcheck disable=SC2034 # the scripts that source this file read it
-omp_session_unsets=(-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH)
+omp_session_unsets=(-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH -u OMP_SESSION_EXCLUSIVE)

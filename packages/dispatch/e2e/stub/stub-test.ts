@@ -1,8 +1,8 @@
 /** The `test` a stubbed row takes, and the two modes it runs in.
  *
  *  A stubbed row runs in a real browser against a recording: the page and its assets come from
- *  the build under test over e2e/stub/static-server.ts, every `/api/v1/**` and `/auth/whoami`
- *  answer comes from a committed HAR, `/ws/live` answers from the contract fixtures
+ *  the build under test over e2e/stub/static-server.ts, every `/api/v1/**`, `/api/github/**` and
+ *  `/auth/whoami` answer comes from a committed HAR, `/ws/live` answers from the contract fixtures
  *  (e2e/stub/live-frames.ts), and there is no Go server, no Postgres, no fake listener, no
  *  sign-in and no database reset in the run at all.
  *
@@ -31,7 +31,7 @@
  *  which runs the same rows against the real harness, writes each row's HAR normalised
  *  (e2e/stub/recording.ts) and each row's scene beside it under `e2e/__recordings__/`.
  *
- *  What a stubbed row may assert, and what it may not, is `packages/dispatch/AGENTS.md`, "The
+ *  What a stubbed row may assert, and what it may not, is `packages/dispatch/README.md`, "The
  *  stubbed layer". The short of it: a row that writes and then reads its own write does not
  *  belong here, because the recording answers the refetch with the state recorded before the
  *  write and the row would pass while proving nothing.
@@ -46,8 +46,10 @@ import { recordingPath } from "./recordings";
 import { stubRecording } from "./selection";
 
 /** Everything a recording answers and nothing else. The document and its assets are the static
- *  server's, so that a pull request's own front-end change is the one under test. */
-const replayedRoutes = /\/(api\/v1\/|auth\/whoami)/;
+ *  server's, so that a pull request's own front-end change is the one under test. The GitHub
+ *  proxy (`/api/github/rest/...`, `web/src/api/client.ts`'s `githubRest`) is the server's answer
+ *  too: an issue's pull requests draw their titles, states and checks from it. */
+const replayedRoutes = /\/(api\/v1\/|api\/github\/|auth\/whoami)/;
 
 /** Answers `GET /api/v1/dashboard/builds` from the build under test rather than from the
  *  recording.

@@ -27,47 +27,55 @@ import (
 // phase's column with its place in the line on its card. Design holds the issues whose phase is
 // still `admitted` that are on a card at all — the slot holders, whose architect runs at the
 // design gate, and the ones no card stands above, which are on no other issue's count; Retro
-// `retro` alone; Merging `merging` and `awaiting_merge`; and Held the phase metric 2 puts on the
-// "no role" bar beside `awaiting_person` (the plan's D11).
+// `retro` alone; Merging `merging` and `awaiting_merge`; Waiting on children the parents in
+// `awaiting_children`, the phase dispatch://INFRA-3320 added, whether or not the daemon's blocked
+// list names them (Column); ColumnAwaiting, Waiting on a person, `awaiting_person`; and Held the
+// phase metric 2 puts on the "no role" bar beside `awaiting_person` and `awaiting_children` (the
+// plan's D11).
 const (
-	ColumnQueue        = "queue"
-	ColumnDesign       = "design"
-	ColumnPlanning     = "planning"
-	ColumnImplementing = "implementing"
-	ColumnTesting      = "testing"
-	ColumnReviewing    = "reviewing"
-	ColumnAccepting    = "accepting"
-	ColumnRetro        = "retro"
-	ColumnMerging      = "merging"
-	ColumnAwaiting     = "awaiting_person"
-	ColumnHeld         = "held"
+	ColumnQueue            = "queue"
+	ColumnDesign           = "design"
+	ColumnPlanning         = "planning"
+	ColumnImplementing     = "implementing"
+	ColumnTesting          = "testing"
+	ColumnReviewing        = "reviewing"
+	ColumnAccepting        = "accepting"
+	ColumnRetro            = "retro"
+	ColumnMerging          = "merging"
+	ColumnAwaitingChildren = "awaiting_children"
+	ColumnAwaiting         = "awaiting_person"
+	ColumnHeld             = "held"
 )
 
 // PhaseColumns is the column each phase the daemon reports falls in. A phase this does not name
 // (`done`, and any phase a later daemon adds) puts the issue on no card: the board shows the work
 // in flight, and a phase Dispatch has never heard of is not something it can place. Which phases
 // share a column is the board's own choice, made here: `retro` has a column of its own, as it has
-// a word of its own in the spec's tables ("Phase words in tables"), and Merging holds the two
-// phases those tables name merging, `merging` and `awaiting_merge` (dispatch://INFRA-1077's
-// b74df7a79b). The per-issue facts key their hours by these columns, so an issue's retro hours
-// are under `retro` there too, and on no merger figure.
+// a word of its own in the spec's tables ("Phase words in tables"), Merging holds the two phases
+// those tables name merging, `merging` and `awaiting_merge` (dispatch://INFRA-1077's
+// b74df7a79b), and `awaiting_children` has a column of its own: a parent in it keeps no slot and
+// waits for none, and no role works it. The per-issue facts key their hours by these columns, so
+// an issue's retro hours are under `retro` there too, and on no merger figure, and a parent's
+// hours waiting on its children are under `awaiting_children`.
 var PhaseColumns = map[string]string{
-	PhaseAdmitted:       ColumnDesign,
-	PhasePlanning:       ColumnPlanning,
-	PhaseImplementing:   ColumnImplementing,
-	PhaseTesting:        ColumnTesting,
-	PhaseReviewing:      ColumnReviewing,
-	PhaseAccepting:      ColumnAccepting,
-	PhaseRetro:          ColumnRetro,
-	PhaseMerging:        ColumnMerging,
-	PhaseAwaitingMerge:  ColumnMerging,
-	PhaseAwaitingPerson: ColumnAwaiting,
-	PhaseHeld:           ColumnHeld,
+	PhaseAdmitted:         ColumnDesign,
+	PhasePlanning:         ColumnPlanning,
+	PhaseImplementing:     ColumnImplementing,
+	PhaseTesting:          ColumnTesting,
+	PhaseReviewing:        ColumnReviewing,
+	PhaseAccepting:        ColumnAccepting,
+	PhaseRetro:            ColumnRetro,
+	PhaseMerging:          ColumnMerging,
+	PhaseAwaitingMerge:    ColumnMerging,
+	PhaseAwaitingChildren: ColumnAwaitingChildren,
+	PhaseAwaitingPerson:   ColumnAwaiting,
+	PhaseHeld:             ColumnHeld,
 }
 
 // WorkingColumns are the columns of the phases a worker works in. An issue in one of them has
 // started its work, so the Queue never holds it, even where the daemon's waiting line names it
-// while it waits for a slot to come back.
+// while it waits for a slot to come back. No worker works `awaiting_children`, so its column is
+// none of them, and a rule of its own keeps a parent in it out of the Queue (Column).
 var WorkingColumns = map[string]bool{
 	ColumnPlanning:     true,
 	ColumnImplementing: true,
@@ -107,6 +115,13 @@ const (
 // (WorkingColumns). A slot holder in `admitted` is a root whose architect runs at the design
 // gate.
 //
+// A parent in `awaiting_children` stands in Waiting on children whatever the line says. The
+// daemon lists such a parent as blocked on its open children while one is open
+// (dispatch://INFRA-3320, R11), but it waits on them and not on a slot, so a blocker link of that
+// list queues it nowhere: its card is in Waiting on children for the whole wait, naming its open
+// children while the daemon lists them (WaitingLine's BlockedBy), and stays there after its last
+// child closes until the pass that returns it.
+//
 // With no admission block read (QueuedUnread) the Queue holds the issues that are still
 // `admitted` and hold no slot, which are the issues waiting for one. The board draws them in
 // Dispatch's rank order, which is the order the daemon's own line follows once a root's wait is
@@ -116,7 +131,7 @@ func Column(phase string, slot *int, queued Queued) string {
 	column, named := PhaseColumns[phase]
 	switch queued {
 	case QueuedYes:
-		if !named || (slot == nil && !WorkingColumns[column]) {
+		if !named || (slot == nil && !WorkingColumns[column] && column != ColumnAwaitingChildren) {
 			return ColumnQueue
 		}
 	case QueuedUnread:
@@ -195,7 +210,8 @@ func SlotUse(phase string, roles []string, slot *int, childWorks bool) string {
 }
 
 // Why an issue waits: it is ready for the daemon to start it, it works nothing while it waits
-// for a slot to come back, a blocker link holds it, or a person has not answered it.
+// for a slot to come back, a blocker link holds it (for a parent in `awaiting_children`, the open
+// children the daemon lists it as blocked on), or a person has not answered it.
 const (
 	WaitingReady   = "ready"
 	WaitingSlot    = "slot"
@@ -216,8 +232,8 @@ type Wait struct {
 // is whether the value was read: it is false for a value of another shape than this one, and for
 // a wait that names no kind, because the daemon owns the wire shape and a reader of one names
 // what it expects rather than trusting it. A reader then does what it does with a value it
-// cannot read — the board keeps the issue's previous wait, and the stored facts read no wait at
-// all.
+// cannot read — a board card, which decodes the wait the issue's state holds (IssueState), shows
+// no wait, and the stored facts read no wait at all.
 func ParseWait(value []byte) (*Wait, bool) {
 	var wait struct {
 		Kind       string     `json:"kind"`
@@ -283,7 +299,19 @@ type WaitingInput struct {
 // line names that is on a column of its own has started its work and waits for a slot to come
 // back; an issue whose wait on a person no answer has ended waits for the person; and the rest
 // are ready for the daemon to start them.
+//
+// A parent in the Waiting on children column waits there for the whole of its wait, whatever
+// the line says (Column): its open children hold it while the daemon lists them as what blocks
+// it (dispatch://INFRA-3320, R11), and once no list names it, after its last child closed, it is
+// ready for the pass that returns it. Either wait began at its entry into `awaiting_children`.
 func CardWaiting(in WaitingInput) *Waiting {
+	if in.Column == ColumnAwaitingChildren {
+		waiting := Waiting{Reason: WaitingReady, Since: in.PhaseSince, BlockedBy: in.BlockedBy}
+		if len(in.BlockedBy) > 0 {
+			waiting.Reason = WaitingBlocked
+		}
+		return &waiting
+	}
 	placed := in.WaitingPlace != nil || in.Column == ColumnQueue
 	if !placed && in.Column != ColumnAwaiting {
 		return nil

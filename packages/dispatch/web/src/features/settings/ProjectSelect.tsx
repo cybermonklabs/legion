@@ -5,11 +5,12 @@ import { MultiSelect } from "../../components/MultiSelect";
 import { dangerText } from "../../theme/classes";
 import { settingsFieldLabel, settingsListText, settingsListTrigger } from "./classes";
 
-/** The "Choose a project" field both Settings forms use: its visible `label` over the shared
- *  list's single pick (`MultiSelect`) of the projects, `KEY · name`, whose text box narrows them
- *  as the reader types, and whose trigger's name starts with `label`. Its host draws it once the
- *  projects are read, so the list never waits on them. A button holds no `required`: its host
- *  files nothing while `value` is empty, and says so with `NoProjectPicked`. */
+/** The "Choose a project" field of the Settings page's architecture sources form and its Legion
+ *  daemons form: its visible `label` over the shared list's single pick (`MultiSelect`) of the
+ *  projects, `KEY · name`, whose text box narrows them as the reader types, and whose trigger's
+ *  name starts with `label`. Its host draws it once the projects are read, so the list never
+ *  waits on them. A button holds no `required`: its host files nothing while `value` is empty,
+ *  and says so with `NoProjectPicked`. */
 export function ProjectSelect({
   disabled,
   label,

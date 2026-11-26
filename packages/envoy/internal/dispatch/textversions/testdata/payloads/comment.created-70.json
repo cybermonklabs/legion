@@ -1,0 +1,61 @@
+{
+  "id": 635782,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 266,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a1e550-c0bd-760e-b4d1-7d538507bf14"
+  },
+  "notify": false,
+  "created_at": "2026-11-16T21:57:20.511732Z",
+  "payload": {
+    "id": "d4c3a891-6466-43b2-8f5d-341ff9eb2ef9",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor ",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "01a1e550-c0bd-760e-b4d1-7d538507bf14",
+      "kind": "session"
+    },
+    "answers": "be6d82cb-9925-4045-9c1e-078e888f667a",
+    "mentions": [
+      {
+        "target": "session:01a1c39f-3f24-7039-985c-bedceb77cb39",
+        "delivery": "steer",
+        "session_id": "01a1c39f-3f24-7039-985c-bedceb77cb39"
+      }
+    ],
+    "reply_to": "1cfc6359-0542-41fc-bed2-692775038da5",
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-11-16T21:57:20.520151Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "thread_logins": [],
+    "suppress_route": true,
+    "thread_root_id": "1cfc6359-0542-41fc-bed2-692775038da5",
+    "suppressed_route": "session:01a1c39f-3f24-7039-985c-bedceb77cb39",
+    "references_changed": [
+      {
+        "id": "ACME-1",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ],
+    "mentions_decide_routes": true,
+    "suppressed_route_session_id": "01a1c39f-3f24-7039-985c-bedceb77cb39"
+  }
+}

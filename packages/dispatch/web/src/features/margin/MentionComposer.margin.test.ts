@@ -1,32 +1,12 @@
-import { expect, test } from "bun:test";
-import { canSubmitComposer, hasUnsavedInput } from "../conversation/MentionComposer";
-import { buildIssuePath, composerReferences } from "../refs/routes";
+import { beforeAll, expect, test } from "bun:test";
+import { hasUnsavedInput } from "../conversation/composer-model";
+import { canSubmitComposer } from "../conversation/MentionComposer";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 
-test("composer turns typed dispatch and pasted same-origin links into reference chips", () => {
-  expect(
-    composerReferences(
-      "See dispatch://CORE-1/spec and https://dispatch.test/issues/CORE-1/artifact/design",
-      "https://dispatch.test"
-    )
-  ).toEqual([
-    {
-      href: buildIssuePath({ key: "CORE-1", kind: "spec" }),
-      reference: "dispatch://CORE-1/spec",
-    },
-    {
-      href: buildIssuePath({ key: "CORE-1", kind: "artifact", slug: "design" }),
-      reference: "dispatch://CORE-1/artifact/design",
-    },
-  ]);
-});
-
-test("composer emits canonical browser routes for versioned dispatch references", () => {
-  expect(composerReferences("dispatch://CORE-1/artifact/design@v3")).toEqual([
-    {
-      href: buildIssuePath({ key: "CORE-1", kind: "artifact", slug: "design", version: 3 }),
-      reference: "dispatch://CORE-1/artifact/design@v3",
-    },
-  ]);
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
 });
 
 test("composer holds Save until every image upload settles", () => {

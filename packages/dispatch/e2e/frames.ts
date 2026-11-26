@@ -17,9 +17,9 @@ export function nextFrames(page: Page): Promise<void> {
  *  running. The wait is frames rather than time, since a wheel step's scroll and a smooth scroll
  *  a link started both land over frames, and so does a box the page pulls back. Ten frames is
  *  long enough for a smooth scroll to have ended; a caller whose scroll lands sooner passes fewer.
- *  A frame WebKit holds back is given up on after 100 ms, as the page's focus rescue gives it up
- *  (`FRAME_WAIT_MS`), and a box still moving after twenty times `stillFrames` frames is read
- *  where it stands. */
+ *  A frame WebKit holds back is given up on after 100 ms, as an armed press gives it up
+ *  (`FRAME_WAIT_MS`, components/focus-place.ts), and a box still moving after twenty times
+ *  `stillFrames` frames is read where it stands. */
 export function settledScrollTop(target: Locator | Page, stillFrames = 10): Promise<number> {
   // A page scrolls its document, whose offset its root element holds: every page of the app is
   // drawn in standards mode (`web/index.html` opens with its doctype).

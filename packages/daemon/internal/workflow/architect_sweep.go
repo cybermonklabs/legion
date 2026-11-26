@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -130,23 +131,27 @@ func ArchitectCarried(ctx context.Context, tx pgx.Tx, store record.Store, root r
 // whose architect claim does not exist, and that tree is the very one the sweep writes the start
 // for, so with no claim a start still queued is the whole of what holds the row back.
 //
-// And owed answers "has not taken its task yet" for any task the claim holds unconfirmed, whatever
-// its run and entry. Here a task the root's own record has superseded is no start on its way: one
-// that carries a run and an entry, of a run earlier than the root's generation, or of the root's
-// run at an entry below the entry its architect's phases row names (entry, record.PhaseRow.Entry,
-// 0 for a row that names none). That task is the work of a run re-admission ended or of an entry
-// the row has moved past, and the start of the row's entry takes its place in the claim's hands
-// (supervise's Delivery.SupersededBy, the comparison the claim's machine makes when that start's
-// task arrives). Held back by it, the sweep would write nothing on every pass while a lost start
-// of the row's entry left the claim with only that task, and the relaunch of the claim would send
-// it first (dispatch://INFRA-2614 R4, R5). A task of no run or of no entry is superseded by
+// And owed answers "has not taken its task yet" for a task that holds work (supervise.HoldsWork)
+// the claim holds unconfirmed, whatever its run and entry. A task of news of the approved design
+// alone holds none, so it never holds the row back: the start of the row's entry takes its place
+// in the claim's hands and carries its news itself (supervise's Machine.supersedes). Here a task
+// the root's own record has superseded is no start on its way either: one that carries a run and
+// an entry, of a run earlier than the root's generation, or of the root's run at an entry below
+// the entry its architect's phases row names (entry, record.PhaseRow.Entry, 0 for a row that names
+// none). That task is the work of a run re-admission ended or of an entry the row has moved past,
+// and the start of the row's entry takes its place in the claim's hands (supervise's
+// Delivery.SupersededBy, the comparison the claim's machine makes when that start's task arrives).
+// Held back by it, the sweep would write nothing on every pass while a lost start of the row's
+// entry left the claim with only that task, and the relaunch of the claim would send it first
+// (dispatch://INFRA-2614 R4, R5). Any other task of no run or of no entry is superseded by
 // nothing: an operator's own, and a wake's (wakeRow), which says why the pod came back and is no
 // entry's work. The machine refuses the start's task behind it and sends it first, so it holds
 // the row back as owed answers. owed's other arms hold as they are: a start still queued, and a
 // claim still starting. A start still queued is any start row of the architect at the root's
-// generation, a wake's and the resume of a cancelled idle release (the daemon's releaseResume)
-// among them, though neither carries an entry: it holds the row back until a lane has run it,
-// and the passes after that read the claim it brought back by the arms above. owed itself answers
+// generation that brings it work (startsWork), a wake's and the resume of a cancelled idle release
+// (the daemon's releaseResume) among them, though neither carries an entry: it holds the row back
+// until a lane has run it, and the passes after that read the claim it brought back by the arms
+// above. A start queued for news alone is no such row, and holds nothing back. owed itself answers
 // as it did for its other reader, the awaiting sweep (decideAwait), which asks whether the
 // architect has taken whatever it was last given.
 func ArchitectStartPending(root record.Issue, entry int64, run record.RoleRun) (string, bool) {
@@ -205,13 +210,24 @@ const (
 // move. A next move wins over a failing start, so RelaunchFailing means that no start is the next
 // move.
 //
+// A start's age is counted from no earlier than floor, which admit's stall reading passes as the
+// end of the project's latest pause (its stallFloor): a pause holds every start (record's
+// pauseHolds), so a start queued before the pause ended has been the outbox's to run only since
+// then, as the stuck clocks restart at the resume (decision 14 and departure 2 of
+// dispatch://INFRA-3759). So the age read is the lesser of the start's Age and now less floor.
+// It is read as the lesser of two durations rather than from the later of two moments because
+// each duration is taken in one clock: Age in the store's, and now less floor in the daemon's,
+// which is the clock now is read in and the clock the resume wrote the pause's end in
+// (internal/pause's Service.Resume). A project no pause has ended passes the zero floor, and now
+// less the zero time is the largest duration (time.Time.Sub), so that floor bounds no age.
+//
 // Stranded reads the same claim through StartFor, which counts every start above the acting stop
 // whatever its age, its lease and its attempts, and the two readings answer different questions.
 // Stranded asks whether nothing will start the claim again, and a failing start will, since the
 // outbox runs it again on its backoff, so Stranded leaves such a claim out. The arm asks whether a
 // start can still cure the claim, and a start that has run against it and left it as it was cannot
 // (the architect's reading of R7 at dispatch://INFRA-2614).
-func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunch {
+func ArchitectRelaunchOf(run record.RoleRun, root record.Issue, floor, now time.Time) ArchitectRelaunch {
 	stop := actingStop(run, root)
 	lastStart := lastStartRow(run)
 	relaunch := RelaunchNone
@@ -226,7 +242,7 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunc
 			relaunch = RelaunchFailing
 			continue
 		}
-		if queued.Age <= StrandedReleaseWake {
+		if min(queued.Age, now.Sub(floor)) <= StrandedReleaseWake {
 			return RelaunchNext
 		}
 	}
@@ -236,7 +252,7 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunc
 // SendArchitectStart writes the start of root's architect again, for the entry its phases row
 // already names (row): the start StartArchitect writes, enqueued directly rather than through
 // StartOrOwe, so it waits for no admission slot and marks no movement: a root architect's start
-// takes no slot, whether the root holds its row, holds none past its review (record.KeepsSlot) or
+// takes no slot, whether the root holds its row, holds none in accepting, retro or merging (record.KeepsSlot) or
 // gave it back for a wait (admit's releaseSlotsForWaits). It raises no entry, as no resume of the
 // work an entry already names does (enter, SendOwedEntry).
 //
@@ -250,7 +266,8 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunc
 // what is still unclaimed now, and EnqueueNaming claims exactly what this row names in the same
 // transaction. That holds for every task the derivation writes, the one with no first-task
 // instruction among them: for a root past phase.Admitted under its own power the derivation's
-// answer is what a person decided on the tree and nothing else.
+// answer is what a person decided on the tree and the roots that rest on its approval, and
+// nothing else.
 //
 // An entry marked to be sent as written is one the resume of a root a person answered raised
 // (ResumeAwaitedRoot), and its task names the answer — which ask or which review, and where to
@@ -263,23 +280,23 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunc
 // admitted that the pass of the answer promoted it to (ArchitectAtWork).
 func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, row record.PhaseRow) error {
 	if row.EntryVerbatim {
-		return e.enqueueArchitectStart(ctx, tx, root, row.EntryTask, nil, row.Entry)
+		return e.enqueueArchitectStart(ctx, tx, root, row.EntryTask, nil, row.Entry, false)
 	}
 	task, kept, err := e.architectStartWork(ctx, tx, root)
 	if err != nil {
 		return err
 	}
-	return e.enqueueArchitectStart(ctx, tx, root, task, kept, row.Entry)
+	return e.enqueueArchitectStart(ctx, tx, root, task, kept, row.Entry, false)
 }
 
 // StartArchitect hands root's architect work it was not on, which two starts do: admission's
-// promotion of a queued root (admit's LineQueuedRoot branch) and the sweep's raise for an
-// architect whose phases row names no entry at all (admit's resumeSlottedWorkers). It derives
-// the architect's task from the record as it stands (architectStartWork), raises the architect's
-// phase entry with that task as the entry's work where the task is not empty (EnterArchitect),
-// and writes the start, carrying the task and the entry and claiming the kept decisions the task
-// names, all in the caller's transaction. Every other start of this file resumes the work an
-// entry already names and raises none.
+// promotion of a queued root (admit's LineQueuedRoot branch, through StartPromotedArchitect) and
+// the sweep's raise for an architect whose phases row names no entry at all (admit's
+// resumeSlottedWorkers). It derives the architect's task from the record as it stands
+// (architectStartWork), raises the architect's phase entry with that task as the entry's work
+// where the task is not empty (EnterArchitect), and writes the start, carrying the task and the
+// entry and claiming the kept decisions the task names, all in the caller's transaction. Every
+// other start of this file resumes the work an entry already names and raises none.
 //
 // The derivation is read once and the row and the start carry that one text, because a kept
 // decision is claimed by the outbox row that names it: deriving twice would compose a task from
@@ -288,16 +305,35 @@ func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.
 // A task the derivation leaves empty raises no entry, and the start carries no task and no entry,
 // so the outbox delivers nothing for it and the start only launches the claim. That is the
 // promotion of a root past phase.Admitted under its own power on which nobody decided anything
-// (ArchitectStartTask's second rule): an entry raised with no work on it would stand above every
-// entry its claim was ever given, with nothing to send it. The sweep's raise never meets that
-// case, because the roots it raises an entry for are inside its reach (ArchitectAtWork) with a
-// row that names no entry, which no resume raised, and those are the two roots the derivation
-// writes a first task for.
+// and on whose approval no root still in the workflow rests (ArchitectStartTask's second rule):
+// an entry raised with no work on it would stand above every entry its claim was ever given, with
+// nothing to send it. The sweep's raise never meets that case, because the roots it raises an
+// entry for are inside its reach (ArchitectAtWork) with a row that names no entry, which no resume
+// raised, and those are the two roots the derivation writes a first task for.
 //
 // The start waits for no admission slot, so it is enqueued directly rather than through
 // StartOrOwe, and it marks no movement of its own: the promotion marks the movement of the tree it
 // opens, and the sweep's raise is the daemon sending work the record already owes.
 func (e *Engine) StartArchitect(ctx context.Context, tx pgx.Tx, root record.Issue) error {
+	return e.startArchitect(ctx, tx, root, false)
+}
+
+// StartPromotedArchitect is StartArchitect for admission's promotion of a queued root, whose start
+// is marked decided (record.SuperviseRequest.Decided). A root reaches the line only by a person's
+// or the controller's todo on it, which hands it to Legion or opens its tree again — the
+// controller's restart of a tree, a backlog and then a todo on its root, among them — so the start
+// of its architect is theirs, as the held phase's retry is (restart). It is the one start that
+// brings back a root architect held for OpenAI's cyber-policy refusal, which it starts in a new
+// session (supervise's freshSession): an ordinary restart of the tree, which asks nothing of the
+// agent that makes it but the restart. A root admitted for the first time has no claim, and the
+// mark changes nothing for it.
+func (e *Engine) StartPromotedArchitect(ctx context.Context, tx pgx.Tx, root record.Issue) error {
+	return e.startArchitect(ctx, tx, root, true)
+}
+
+// startArchitect is StartArchitect's and StartPromotedArchitect's one body, decided being the mark
+// the start carries.
+func (e *Engine) startArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, decided bool) error {
 	task, kept, err := e.architectStartWork(ctx, tx, root)
 	if err != nil {
 		return err
@@ -308,12 +344,13 @@ func (e *Engine) StartArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 			return err
 		}
 	}
-	return e.enqueueArchitectStart(ctx, tx, root, task, kept, entry)
+	return e.enqueueArchitectStart(ctx, tx, root, task, kept, entry, decided)
 }
 
 // architectStartWork is the task a root architect's start carries, derived from the record as it
-// stands (ArchitectStartOf) with what its tree is owed and nothing claims (ParkedDecisionTask), and
-// the kept decisions that task names, which the row that carries it claims.
+// stands (ArchitectStartOf, which reads the roots that rest on its approval too) with what its tree
+// is owed and nothing claims (ParkedDecisionTask), and the kept decisions that task names, which
+// the row that carries it claims.
 func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.Issue) (string, *record.KeptDecisions, error) {
 	decided, kept, err := e.ParkedDecisionTask(ctx, tx, root)
 	if err != nil {
@@ -328,10 +365,11 @@ func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.
 }
 
 // enqueueArchitectStart writes the start row of root's architect for entry, carrying task and
-// claiming the kept decisions that task names in this same transaction.
+// claiming the kept decisions that task names in this same transaction, marked decided where a
+// person or the controller asked for it (StartPromotedArchitect).
 func (e *Engine) enqueueArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, task string,
-	kept *record.KeptDecisions, entry int64,
+	kept *record.KeptDecisions, entry int64, decided bool,
 ) error {
 	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
-		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept}, kept, e.now())
+		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept, Decided: decided}, kept, e.now())
 }

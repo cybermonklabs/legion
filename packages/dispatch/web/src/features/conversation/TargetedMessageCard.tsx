@@ -1,6 +1,8 @@
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import type { ReactNode } from "react";
 
 import type { Actor, Agent, DeliveryAttemptState, MessageDeliveryMode } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import {
   secondaryButtonBorder,
   secondaryButtonText,
@@ -9,14 +11,17 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
+import type { PostDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
 import {
   duplicateText,
+  endedByDeleteText,
   failureGuidance,
   isSafeRetry,
   MODE_LABELS,
   queuedParts,
+  resendable,
   withGuidance,
 } from "./delivery";
 import { ReplyButton } from "./ReplyButton";
@@ -74,11 +79,21 @@ export function takenAsUserTurn(deliveries: readonly TargetedMessageAttempt[]): 
   return deliveries.at(-1)?.acceptedAs === "user_turn";
 }
 
+/** What a failed attempt's line says: that the post's delete ended it, where it carries the
+ *  delete's words - a delete ends a send, the send did not fail, as the Pinned tab's
+ *  (`event-description.ts`) and the Activity tab's (`activity-model.ts`) lines say it - and why
+ *  it failed otherwise. */
+function failedText(attempt: Pick<TargetedMessageAttempt, "error">): string {
+  return attempt.error === DELETED_POST_DELIVERY_ERROR
+    ? endedByDeleteText
+    : `Failed: ${attempt.error ?? "delivery failed"}`;
+}
+
 /** The headline one targeted message gets: who answered it, that it reached the session's own
- *  conversation, why it failed, that it is queued for a session that is not running, that it is
- *  still going out, that it is a BTW waiting on an answer, or that it was delivered, naming the
- *  mode as the composer does (`MODE_LABELS`). It is `AgentPart`s, so the agents it names keep
- *  their identity until `AgentParts` draws them.
+ *  conversation, that the post's delete ended it or why it failed, that it is queued for a
+ *  session that is not running, that it is still going out, that it is a BTW waiting on an
+ *  answer, or that it was delivered, naming the mode as the composer does (`MODE_LABELS`). It is
+ *  `AgentPart`s, so the agents it names keep their identity until `AgentParts` draws them.
  *  `asking` is that BTW branch, whose line ends in a separator because it carries a timestamp:
  *  the two belong to one decision, so the caller reads it here rather than restating the
  *  condition.
@@ -101,7 +116,7 @@ function deliveryHeadline(
     };
   }
   if (delivery?.state === "failed") {
-    const cause = `Failed: ${delivery.error ?? "delivery failed"}`;
+    const cause = failedText(delivery);
     // Each sentence names a control in the retry row, so it is said only while that row is shown.
     const guidance = retryRow ? failureGuidance(delivery, "card") : undefined;
     return {
@@ -128,7 +143,7 @@ function deliveryHeadline(
  *  never carries the safe-retry promise. */
 function attemptSummary(attempt: TargetedMessageAttempt, targetName: AgentPart): AgentPart[] {
   const reached = attempt.targetName ?? targetName;
-  if (attempt.state === "failed") return [`Failed: ${attempt.error ?? "delivery failed"}`];
+  if (attempt.state === "failed") return [failedText(attempt)];
   if (attempt.state === "queued") return queuedParts(reached);
   if (attempt.duplicate === true) return [duplicateText];
   const verb = attempt.state === "pending" ? "Sending" : "Sent";
@@ -136,10 +151,10 @@ function attemptSummary(attempt: TargetedMessageAttempt, targetName: AgentPart):
 }
 
 /** What became of a targeted message: answered, taken into the session's conversation as the
- *  person's own turn, failed, queued for a session that is not running, asking (BTW), or sent -
- *  then the earlier attempts, oldest first. Shared by the card and by a delivered reply in its
- *  thread. `retryRow` is whether the surface shows `DeliveryRetry` beneath it, whose buttons the
- *  failure's guidance names. */
+ *  person's own turn, ended by the post's delete, failed, queued for a session that is not
+ *  running, asking (BTW), or sent - then the earlier attempts, oldest first. Shared by the card
+ *  and by a delivered reply in its thread. `retryRow` is whether the surface shows
+ *  `DeliveryRetry` beneath it, whose buttons the failure's guidance names. */
 export function DeliveryStatus({
   answeredBy,
   deliveries,
@@ -174,9 +189,12 @@ export function DeliveryStatus({
   );
 }
 
-/** The retry row an unanswered targeted message keeps while its issue is open. A disabled
- *  button's reason renders as visible text beneath it - not a `title` - so it reaches a phone,
- *  where a tooltip on a disabled control is unreachable.
+/** The retry row an unanswered targeted message keeps while its issue is open. A button is
+ *  disabled only while the session does not take its mode. That reason renders as visible text
+ *  beneath the button - not a `title` - so it reaches a phone, where a tooltip on a disabled
+ *  control is unreachable. While a retry's write is out (`retrying`), every button of the row is
+ *  held (`heldPress`), not disabled. The pressed one keeps the focus and its Tab stop, and a
+ *  press of any of them sends nothing.
  *
  *  Retry re-sends in the attempt's OWN mode, and appears only while `isSafeRetry` holds for
  *  `latest`, the attempt the failure guidance above it describes: that send carries the same
@@ -216,8 +234,8 @@ export function DeliveryRetry({
         <div>
           <button
             className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retrying || !supports[mode]}
-            onClick={() => onRetry(mode)}
+            disabled={!supports[mode]}
+            {...heldPress(retrying, () => onRetry(mode))}
             type="button"
           >
             Retry
@@ -233,8 +251,8 @@ export function DeliveryRetry({
         <div>
           <button
             className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retrying || !canBtw}
-            onClick={() => onRetry("btw")}
+            disabled={!canBtw}
+            {...heldPress(retrying, () => onRetry("btw"))}
             type="button"
           >
             Use {MODE_LABELS.btw} instead
@@ -250,8 +268,8 @@ export function DeliveryRetry({
         <div>
           <button
             className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retrying || !canSteer}
-            onClick={() => onRetry("steer")}
+            disabled={!canSteer}
+            {...heldPress(retrying, () => onRetry("steer"))}
             type="button"
           >
             Use {MODE_LABELS.steer} instead
@@ -281,6 +299,10 @@ interface TargetedMessageCardProps {
   readonly canBtw: boolean;
   readonly canSteer: boolean;
   readonly current?: boolean;
+  /** The message's deletion, where its author deleted it (`postDeletion`): a deleted message is
+   *  sent again in no mode (`resendable`), so the card keeps no retry row, and it takes no reply
+   *  (`409 POST_DELETED`), so the card offers no Reply. */
+  readonly deleted: PostDeletion | null;
   readonly deliveries: readonly TargetedMessageAttempt[];
   readonly header: ReactNode;
   readonly onReply?: () => void;
@@ -304,6 +326,7 @@ export function TargetedMessageCard({
   canBtw,
   canSteer,
   current = false,
+  deleted,
   deliveries,
   header,
   onReply,
@@ -316,7 +339,10 @@ export function TargetedMessageCard({
   turnID,
 }: TargetedMessageCardProps): ReactNode {
   // Narrowed once, so the render below needs no second test of the same condition.
-  const retry = answeredBy === undefined && !takenAsUserTurn(deliveries) ? onRetry : undefined;
+  const retry =
+    answeredBy === undefined && !takenAsUserTurn(deliveries) && resendable(deleted)
+      ? onRetry
+      : undefined;
   return (
     <li
       aria-current={current ? "true" : undefined}
@@ -327,7 +353,7 @@ export function TargetedMessageCard({
       <div className="flex gap-3">
         {header}
         <div className="min-w-0 flex-1">{body}</div>
-        {onReply === undefined ? null : (
+        {onReply === undefined || deleted !== null ? null : (
           <ReplyButton className="self-start" disabled={replyDisabled} onClick={onReply} />
         )}
       </div>

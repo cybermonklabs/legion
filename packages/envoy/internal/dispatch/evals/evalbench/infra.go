@@ -13,11 +13,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -83,6 +81,12 @@ type plannedIssue struct {
 
 // end is when the issue's last stretch ends.
 func (p plannedIssue) end() time.Time { return p.stretch[p.reached] }
+
+// title is the issue's title, which copyIssues writes to its row and every issue event's payload
+// carries (eventSource.payload).
+func (p plannedIssue) title() string {
+	return fmt.Sprintf("Infrastructure work item %d: %s", p.number, text(p.key, 40))
+}
 
 // infraHistory is INFRA's issues, in opening order (so in number order), which the delivery
 // history names and the readings' row keys draw from.
@@ -213,7 +217,10 @@ func planInfra(spec Spec) infraHistory {
 					break
 				}
 			}
-			// An open P0 is mostly in hand; one in ten has no owner, which unowned-p0 counts.
+			// An open P0 is mostly in hand: nine in ten are in progress. The tenth keeps the status
+			// drawn above and has no owner, which unowned-p0 counts, unless it is in progress
+			// (claimed) or a todo a route holds; two in three of them have none, so about one open P0
+			// in fifteen.
 			if p0[i] && rng.Float64() < 0.9 {
 				issue.status, issue.reached = "in_progress", 3
 			}
@@ -347,32 +354,26 @@ func planEvents(spec Spec, history infraHistory) []plannedEvent {
 	return planned
 }
 
-// writeInfra writes INFRA's project, its repositories' mapping, its issues, events, handoffs and
-// observations, and its legion_settings row, and answers the history. The project names alice as
-// its default assignee, the column every project fills (store migration 20261111210103), as the
-// smaller projects' Legion history does; no eval and no count the load prints reads it.
+// writeInfra writes INFRA's project, whose default repository is the first of Repos, its issues,
+// events, handoffs and observations, and its legion_settings row, and answers the history. The
+// project names alice as its default assignee, the column every project fills (store migration
+// 20261111210103), as the smaller projects' Legion history does; no eval and no count the load
+// prints reads it.
+//
+// The default is written where both heads read it, the project's default_repo (store migration
+// 20261119000230), which main has too. Main at the commit this head merges reads a project's
+// default repository from that column, not from the repository mapping (repo_projects), wherever
+// it resolves an issue's repository (refs.IssueRepoTerms: the issue's own, else its nearest
+// ancestor's, else its project's default), and its Delivery page counts a pull request for the
+// project of the issue its row names (delivery_pull_requests.issue_key, which delivery.go
+// writes). So both modes write this one project row, the same rows of every table after it, and
+// no repository mapping.
 func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory, error) {
 	history := planInfra(spec)
-	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee, next_number) values ($1, 'Infrastructure', 'alice', 1)`, Project); err != nil {
+	if _, err := pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee, next_number, default_repo) values ($1, 'Infrastructure', 'alice', 1, $2)
+	`, Project, Repos[0]); err != nil {
 		return infraHistory{}, fmt.Errorf("write the project %s: %w", Project, err)
-	}
-	mappings := make([]model.RepoProject, len(Repos))
-	for i, repo := range Repos {
-		mappings[i] = model.RepoProject{Repo: repo, Project: Project, Default: i == 0, CreatedBy: actor}
-	}
-	// Under -base the mappings go in by the insert alone, with none of a mapping write's locks
-	// (delivery.LockRepoProjectWrite): the load writes into the base head's schema, which lacks the
-	// owner lock (the owner_lock function) those locks take since #2468, and no other write of a
-	// mapping can run beside it, since job.sh runs no server during the load (run.sh migrate starts
-	// and stops the server before it, and run.sh measure starts one after).
-	var mapped error
-	if spec.Base {
-		mapped = deliverytest.InsertRepoProjects(ctx, pool, mappings...)
-	} else {
-		mapped = deliverytest.WriteRepoProjects(ctx, pool, mappings...)
-	}
-	if mapped != nil {
-		return infraHistory{}, fmt.Errorf("map INFRA's repositories: %w", mapped)
 	}
 	if err := copyIssues(ctx, pool, history); err != nil {
 		return infraHistory{}, err
@@ -424,8 +425,7 @@ func copyIssues(ctx context.Context, pool *store.Pool, history infraHistory) err
 		if issue.closed == nil {
 			updated = issue.stretch[issue.reached-1]
 		}
-		title := fmt.Sprintf("Infrastructure work item %d: %s", issue.number, text(issue.key, 40))
-		rows[i] = []any{issue.key, Project, int32(issue.number), title, issue.status, parent, repo, route, creator,
+		rows[i] = []any{issue.key, Project, int32(issue.number), issue.title(), issue.status, parent, repo, route, creator,
 			issue.opened, updated, issue.closed, int32(issue.events), fmt.Sprintf("%08d", issue.number), issue.priority,
 			claimedBy, claimedAt}
 	}
@@ -459,28 +459,44 @@ func (s *eventSource) Values() ([]any, error) {
 		}
 		actorJSON = legiontest.SessionActor(roles[event.role], owner)
 	}
-	var payload string
+	at := time.Unix(0, event.at).UTC()
+	s.values = append(s.values[:0], issue.key, event.seq, kindNames[event.kind], actorJSON, s.payload(event, issue), false, at, at)
+	return s.values, nil
+}
+
+// payload is the payload of event, an event of issue. It holds what this history's readers read
+// (an issue event's status and a filing's tree, and a comment's body) and the fields that
+// Dispatch's own event of that kind carries and that the keyword fill reads (textversions'
+// versionRules): an issue event's key and the issue's title, the one copyIssues writes, as api's
+// newIssueEventPayload writes them; and a comment's id (legiontest.CommentID) and issue_key. The
+// fill stops at the first event that lacks a field it needs, an issue event's title or a comment's
+// id or body, and tries that event again, at most a minute apart. It needs no key nor issue_key:
+// where the payload lacks one, issueKeyOf and postVersion read the event's own (events.issue_key).
+// Load writes the fill's cursor at the loaded log's newest event (keywordFillCaughtUpQuery), but a
+// fill that reads the log from its start, as one does after its cursor is reset, would never get
+// past the first event without the fields it needs.
+func (s *eventSource) payload(event plannedEvent, issue plannedIssue) string {
+	var fields string
 	switch event.kind {
 	case kindCreated:
-		payload = `{"status":"triage"}`
+		fields = `"status":"triage"`
 		if event.filing {
 			root := s.history.issues[issue.parent].key
-			payload = fmt.Sprintf(`{"status":"triage","parent":%q,"ancestors":[%q]}`, root, root)
+			fields = fmt.Sprintf(`"status":"triage","parent":%q,"ancestors":[%q]`, root, root)
 		}
 	case kindUpdated:
-		payload = `{"status":"in_progress"}`
+		fields = `"status":"in_progress"`
 		if event.role == 4 {
-			payload = `{"status":"needs_review"}`
+			fields = `"status":"needs_review"`
 		}
 	case kindClosed:
-		payload = `{"status":"done"}`
+		fields = `"status":"done"`
 	default:
 		key := fmt.Sprintf("%s/%d", issue.key, event.seq)
-		payload = fmt.Sprintf(`{"body":%q}`, text(key, 120+int(event.seq*37%360)))
+		return fmt.Sprintf(`{"id":%q,"issue_key":%q,"body":%q}`, legiontest.CommentID(issue.key, event.seq), issue.key,
+			text(key, 120+int(event.seq*37%360)))
 	}
-	at := time.Unix(0, event.at).UTC()
-	s.values = append(s.values[:0], issue.key, event.seq, kindNames[event.kind], actorJSON, payload, false, at, at)
-	return s.values, nil
+	return fmt.Sprintf(`{"key":%q,"title":%q,%s}`, issue.key, issue.title(), fields)
 }
 
 func (s *eventSource) Err() error { return nil }

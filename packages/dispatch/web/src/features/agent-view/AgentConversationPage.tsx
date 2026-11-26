@@ -1,6 +1,6 @@
 import { DELIVERY_CAPABILITIES, type MessageDeliveryMode } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { agentMessageRequest, apiErrorMessage } from "../../api/client";
@@ -10,6 +10,7 @@ import { ContextRing } from "../../components/ContextRing";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useFootInset } from "../../hooks/useFootInset";
 import {
   connectionDotConnecting,
   connectionDotFailed,
@@ -29,7 +30,7 @@ import { useSessionSends } from "../conversation/useSessionSends";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { SendStoppedError } from "../writes/keyed-write";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentRuntimeThread } from "./AgentRuntimeThread";
 import { sessionCommands, sessionSettingsView } from "./conversation";
@@ -298,7 +299,7 @@ export function AgentConversationPage({
   // The human's direct messages and the session's replies to them, as Dispatch stores them. A
   // person's Send or Aside to a session that takes one becomes the session's own user turn, which
   // the stream carries tagged with this message's id, and the thread shows it once; one the
-  // stream carries untagged shows twice (`packages/pi-envoy/AGENTS.md`, "A person's message from
+  // stream carries untagged shows twice (`packages/pi-envoy/README.md`, "A person's message from
   // Dispatch", says when). A BTW, an issue message, and any message to a session that takes no
   // user turn from Envoy arrive as notices the stream has no frame for, and the session answers
   // them with a `dispatch message` command, which the stream shows only as a `bash` tool call whose
@@ -366,6 +367,13 @@ export function AgentConversationPage({
   // The warning of a session whose capabilities hold no delivery mode; undefined for one that
   // takes a mode.
   const noDelivery = noDeliveryLine(agent?.capabilities ?? []);
+  // The rows under the message box - the row of pickers and the switch lines - sit at the foot of
+  // a page that fills the screen, so the one box that holds them is in the foot's page layer
+  // (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), and the floats
+  // above that layer keep clear of the pickers, the question mark and the lines. Only the view
+  // in front: one the shell keeps behind it is laid over the page, invisible.
+  const footerRef = useRef<HTMLDivElement>(null);
+  useFootInset(footerRef, front, "page");
 
   // The shell hands this route the viewport below its header as a flex column; the page takes
   // all of it and the thread is its only scroller, so the header and composer never leave the
@@ -445,8 +453,13 @@ export function AgentConversationPage({
       ) : null}
       {switchRefusal === null ? null : (
         <p className={`mt-2 text-sm ${dangerText}`} data-testid="agent-send-error">
+          {/* A switch the reader stopped, or whose key ran out, may have reached the session.
+              The header offers no Retry of it: picking again is a switch of its own, under a
+              key of its own, so the error's words - a composer's Retry - are not said here. */}
           {switchRefusal instanceof SendStoppedError
-            ? switchRefusal.message
+            ? stoppedWriteNote("the switch", "sent", {
+                anew: "Picking a model or thinking level again sends a new switch.",
+              })
             : `Could not send: ${apiErrorMessage(switchRefusal, "could not reach the session")}`}
         </p>
       )}
@@ -480,87 +493,87 @@ export function AgentConversationPage({
           viewer={viewer?.kind === "user" ? viewer.login : undefined}
         />
       </ErrorBoundary>
-      {/* The one row under the message box (R6): what a message is delivered as, where the
-          session runs, what it runs on, how full its window is, and the one question mark that
-          holds every rule this page used to print. The facts scroll sideways at a phone width
-          and wrap nowhere from `sm` up, so the row is one line on a laptop; the pickers hold
-          their width (`shrink-0`, `SessionSettings`) and the directory is the one part that
-          shortens. The ring and the question mark sit outside that scroller, so they keep the
-          box's right edge however far the facts scroll, and their panels open upwards from
-          here rather than inside a clipped scroller. */}
-      <div
-        className="mt-2 flex shrink-0 items-center gap-2 text-xs"
-        data-testid="agent-composer-footer"
-      >
-        <div
-          className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-3 gap-y-1 overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
-          data-testid="agent-composer-facts"
-        >
-          <select
-            aria-label="Delivery mode"
-            className={`min-h-8 shrink-0 rounded-lg px-2 py-1 text-xs ${inputClasses(false)}`}
-            data-testid="agent-delivery-picker"
-            onChange={(event) => setPicked(event.target.value as MessageDeliveryMode)}
-            value={mode}
+      <div className="shrink-0" ref={footerRef}>
+        {/* The one row under the message box (R6): what a message is delivered as, where the
+            session runs, what it runs on, how full its window is, and the one question mark
+            that holds every rule this page used to print. The facts scroll sideways at a phone
+            width and wrap nowhere from `sm` up, so the row is one line on a laptop; the pickers
+            hold their width (`shrink-0`, `SessionSettings`) and the directory is the one part
+            that shortens. The ring and the question mark sit outside that scroller, so they keep
+            the box's right edge however far the facts scroll, and their panels open upwards
+            from here rather than inside a clipped scroller. */}
+        <div className="mt-2 flex items-center gap-2 text-xs" data-testid="agent-composer-footer">
+          <div
+            className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-3 gap-y-1 overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
+            data-testid="agent-composer-facts"
           >
-            {modes.map((candidate) => (
-              <option key={candidate} value={candidate}>
-                {MODE_LABELS[candidate]}
-              </option>
-            ))}
-          </select>
-          {/* A claim that the session is gone starts only from a current list. The header's
-              presence and the transcript's line keep that fact through a failed read, from the
-              kept rows of the last read that returned a list; this line waits for a current one,
-              and while the list refills or is unreachable the header names why it has none. */}
-          {agent === undefined && current ? (
-            <span
-              className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
-              data-testid="agent-not-listed"
+            <select
+              aria-label="Delivery mode"
+              className={`min-h-8 shrink-0 rounded-lg px-2 py-1 text-xs ${inputClasses(false)}`}
+              data-testid="agent-delivery-picker"
+              onChange={(event) => setPicked(event.target.value as MessageDeliveryMode)}
+              value={mode}
             >
-              Not in the live session list — it may have ended.
-            </span>
-          ) : null}
-          {agent === undefined ? null : (
-            <>
+              {modes.map((candidate) => (
+                <option key={candidate} value={candidate}>
+                  {MODE_LABELS[candidate]}
+                </option>
+              ))}
+            </select>
+            {/* A claim that the session is gone starts only from a current list. The header's
+                presence and the transcript's line keep that fact through a failed read, from the
+                kept rows of the last read that returned a list; this line waits for a current
+                one, and while the list refills or is unreachable the header names why it has
+                none. */}
+            {agent === undefined && current ? (
               <span
                 className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
-                data-testid="agent-footer-machine"
-                title="The machine this session runs on"
+                data-testid="agent-not-listed"
               >
-                {agent.host}
+                Not in the live session list — it may have ended.
               </span>
-              {/* The flex item the ellipsis applies to is the span inside, not this one
-                  (`packages/dispatch/AGENTS.md`): a flex container never draws one on its own
-                  text. `min-w-24` keeps a shortened directory readable, so the row scrolls at a
-                  phone width rather than cutting it to nothing. */}
-              <span
-                className={`flex min-w-24 flex-1 items-center truncate ${textMutedOnCanvas}`}
-                data-testid="agent-footer-dir"
-              >
-                <TruncatedText className="min-w-0 flex-1" title={agent.dir}>
-                  {agent.dir}
-                </TruncatedText>
-              </span>
-            </>
-          )}
-          <SessionSettings onPick={onPick} pending={switchPending} view={settings} />
+            ) : null}
+            {agent === undefined ? null : (
+              <>
+                <span
+                  className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
+                  data-testid="agent-footer-machine"
+                  title="The machine this session runs on"
+                >
+                  {agent.host}
+                </span>
+                {/* The flex item the ellipsis applies to is the span inside, not this one
+                    (`packages/dispatch/AGENTS.md`): a flex container never draws one on its own
+                    text. `min-w-24` keeps a shortened directory readable, so the row scrolls at a
+                    phone width rather than cutting it to nothing. */}
+                <span
+                  className={`flex min-w-24 flex-1 items-center truncate ${textMutedOnCanvas}`}
+                  data-testid="agent-footer-dir"
+                >
+                  <TruncatedText className="min-w-0 flex-1" title={agent.dir}>
+                    {agent.dir}
+                  </TruncatedText>
+                </span>
+              </>
+            )}
+            <SessionSettings onPick={onPick} pending={switchPending} view={settings} />
+          </div>
+          <span className="flex shrink-0 items-center gap-1">
+            <ContextRing
+              onOpenChange={(next) => setPanel(next ? "context" : null)}
+              open={panel === "context"}
+              usage={conversation.context}
+            />
+            <MessageBoxHelp
+              onOpenChange={(next) => setPanel(next ? "help" : null)}
+              open={panel === "help"}
+            />
+          </span>
         </div>
-        <span className="flex shrink-0 items-center gap-1">
-          <ContextRing
-            onOpenChange={(next) => setPanel(next ? "context" : null)}
-            open={panel === "context"}
-            usage={conversation.context}
-          />
-          <MessageBoxHelp
-            onOpenChange={(next) => setPanel(next ? "help" : null)}
-            open={panel === "help"}
-          />
-        </span>
+        {/* Under the row, not in it: a line of prose in the row's sideways scroller shrinks to a
+            sliver beside the pickers (`SessionSwitchLines`). */}
+        <SessionSwitchLines notice={settings.notice} status={sessionSwitch.status} />
       </div>
-      {/* Under the row, not in it: a line of prose in the row's sideways scroller shrinks to a
-          sliver beside the pickers (`SessionSwitchLines`). */}
-      <SessionSwitchLines notice={settings.notice} status={sessionSwitch.status} />
     </div>
   );
 }

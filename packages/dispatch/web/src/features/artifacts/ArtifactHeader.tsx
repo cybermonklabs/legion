@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Artifact, Version } from "../../api/types";
@@ -67,6 +67,7 @@ export function formatArtifactBytes(bytes: number | undefined): string {
 }
 
 export function versionLabel(version: Version): string {
+  // A version's summary, as its writer gave it: the reading list's `artifact-version-summary`.
   return `Version ${version.number}${version.summary === null ? "" : ` — ${version.summary}`}`;
 }
 
@@ -111,6 +112,18 @@ export function ArtifactHeader({
   // documents: the removal is the issue document's alone. A `const` keeps the narrowing inside
   // the callback below.
   const issueKey = artifact.issue_key;
+  // The document the route names, or `undefined` once the header is gone: the issue's page draws
+  // this header for the document its route names, and none while the route names no document. A
+  // removal lands when Dispatch answers it, by when the reader may have moved on, so its way back
+  // reads this rather than the document the header drew when Remove was pressed (`onRemoved`).
+  const drawn = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    drawn.current = artifact.id;
+    return () => {
+      drawn.current = undefined;
+    };
+  }, [artifact.id]);
 
   useEffect(() => {
     if (!highlight) {
@@ -142,7 +155,7 @@ export function ArtifactHeader({
         className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
           highlighted ? highlightRing : ""
         }`}
-        data-highlighted={highlighted || undefined}
+        data-highlighted={highlighted ? "" : undefined}
         data-testid="artifact-header"
       >
         <div className="min-w-0">
@@ -178,7 +191,10 @@ export function ArtifactHeader({
           </div>
           {artifact.approval === undefined ? null : (
             <div className="mt-1">
-              <ApprovalChip artifact={artifact} variant="header" />
+              {/* Keyed by the document, as the correction and the removal below are: the chip
+                  holds the review it made and the change-request dialog, with the reason typed
+                  into it and what became of its last request, all of it this document's alone. */}
+              <ApprovalChip artifact={artifact} key={artifact.id} variant="header" />
             </div>
           )}
         </div>
@@ -244,25 +260,41 @@ export function ArtifactHeader({
               // — and travels with it instead of wrapping onto a line of its own.
               <div className="flex flex-wrap items-center gap-3">
                 {!correctionIsOffered(artifact) ? null : (
+                  // Keyed by the document, as Remove is below: the form holds the title typed
+                  // into it and what became of its last Save, both that document's alone. The
+                  // key names the control too: Remove beside it is keyed by the same document,
+                  // and siblings are told apart by their keys.
                   <CorrectTitle
                     artifact={artifact}
+                    key={`correction:${artifact.id}`}
                     refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
                   />
                 )}
                 {issueKey === null || !removalIsOffered(artifact) ? null : (
+                  // Keyed by the document: the issue's page draws this header for one document
+                  // after another as its route moves, and the control holds the removal it
+                  // made - `Removing…`, a refusal and its Retry - so each document is drawn
+                  // with a Remove of its own, never under another document's refusal with that
+                  // document's removal as its Retry.
                   <RemoveDocument
                     artifact={artifact}
-                    onRemoved={() =>
+                    key={artifact.id}
+                    onRemoved={(removed) => {
                       // The route stays on the document the issue no longer holds, so the
                       // artifacts panel's own branch says it is gone rather than failing to
                       // load. A version route is normalised away first: the version the person
-                      // was reading went with the document. Pushed, as this move always was, so
-                      // Back returns to the address the reader removed the document from.
-                      navigate(
-                        buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug }),
-                        { replace: false }
-                      )
-                    }
+                      // was reading went with the document. That is the way back only while the
+                      // route is still the removed document's (`drawn`): a removal that lands
+                      // after the reader moved on leaves them on the page they moved to. Pushed,
+                      // as this move always was, so Back returns to the address the reader
+                      // removed the document from.
+                      if (drawn.current === removed.id) {
+                        navigate(
+                          buildIssuePath({ key: issueKey, kind: "artifact", slug: removed.slug }),
+                          { replace: false }
+                        );
+                      }
+                    }}
                     refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
                   />
                 )}

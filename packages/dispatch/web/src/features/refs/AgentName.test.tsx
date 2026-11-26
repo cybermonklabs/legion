@@ -4,12 +4,19 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { ApiError, api } from "../../api/client";
+import { queryRetry } from "../../api/query-client";
 import type { Actor, Agent } from "../../api/types";
 import { liveDotBg, offlineDotBorder, unknownDotBorder } from "../../theme/classes";
 import { useAgents } from "../conversation/useAgents";
 import { AgentName, AskResolutionLine, askResolutionParts, useAgentText } from "./AgentName";
-import { AGENT_REGISTRY_POLL_MS, AgentRegistryPoller } from "./agent-registry";
+import {
+  AGENT_REGISTRY_POLL_MS,
+  AgentRegistryPoller,
+  agentRegistryPollMs,
+  useAgentRegistry,
+} from "./agent-registry";
 
 /** One live session, as `GET /api/v1/agents` lists it. */
 function listed(sessionId: string, title: string, lastSeen = Date.now() - 3 * 60_000): Agent {
@@ -263,6 +270,40 @@ test("a registry read that fails before any success leaves the state unknown", a
   }
 });
 
+// A page draws an agent's name in many places. With the registry's read failed, the first name
+// costs one run of the dashboard's tries, and the names that mount after it read the failure
+// that is there rather than ask again: the shell's poller asks it again on its own interval.
+test("names that mount on a failed registry read cost one run of tries, not one each", async () => {
+  const agents = spyOn(api, "listAgents").mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "listener down" })
+  );
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: 0 } },
+  });
+  // The tries of one read: the request and the two retries `queryRetry` allows a 503.
+  const oneRun = 3;
+  const name = (id: string) => <AgentName actor={{ id, kind: "session" }} key={id} />;
+  const { view } = renderWith(name("s-1"), client);
+  try {
+    await waitFor(() => expect(client.getQueryState(["agents"])?.status).toBe("error"));
+    expect(agents).toHaveBeenCalledTimes(oneRun);
+
+    // A name that asks starts the read as it mounts, inside the render's own `act`, so the read
+    // stands idle after names that ask nothing.
+    view.rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>{["s-1", "s-2", "s-3"].map(name)}</QueryClientProvider>
+      </MemoryRouter>
+    );
+    expect(client.getQueryState(["agents"])?.fetchStatus).toBe("idle");
+    expect(agents).toHaveBeenCalledTimes(oneRun);
+    expect(agentNode(view.container, "s-3").getAttribute("data-agent-state")).toBe("unknown");
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+  }
+});
+
 test("a listed session is running, an unlisted one not running, and a failed refresh unknown", async () => {
   const agents = spyOn(api, "listAgents").mockResolvedValue([listed(LISTED_ID, "Planner")]);
   const { client, view } = renderWith(
@@ -441,7 +482,9 @@ test("a withdrawal names the closer once, the Legion daemon by its whole id", as
   }
 });
 
-test("a resolution's description parts carry its reason, except a withdrawal's", () => {
+test("a resolution's description parts name who resolved it and leave the reason out", () => {
+  // The reason is the resolver's own stored text: a builder adds it as a part the one reader
+  // draws (`askResolvedParts`), never as words of the sentence.
   const actor: Actor = { id: LISTED_ID, kind: "session" };
   const at = "2026-10-25T00:00:00Z";
   expect(
@@ -455,12 +498,12 @@ test("a resolution's description parts carry its reason, except a withdrawal's",
   expect(askResolutionParts({ actor, at, kind: "retracted", reason: "Duplicate." })).toEqual([
     "Retracted by ",
     { actor },
-    " - Duplicate.",
+    "",
   ]);
   expect(askResolutionParts({ actor, at, kind: "resolved", reason: "Done." })).toEqual([
     "Resolved by ",
     { actor },
-    " - Done.",
+    "",
   ]);
 });
 
@@ -572,5 +615,263 @@ test("names mounted at staggered times plus a polled useAgents caller fetch at m
     jest.useRealTimers();
     environmentManager.setIsServer(() => wasServer);
     agents.mockRestore();
+  }
+});
+
+// The production cadence is 15 s, and the browser suite's seam (`__dispatchAgentRegistryPollMs`,
+// set before the page loads) is what moves it: unset, or set to nothing a timer can hold, the
+// poller keeps 15 s; set, it polls at that cadence, never closer.
+test("the poller keeps its 15 s cadence unless the browser suite set one of its own", async () => {
+  expect(AGENT_REGISTRY_POLL_MS).toBe(15_000);
+  window.__dispatchAgentRegistryPollMs = undefined;
+  expect(agentRegistryPollMs()).toBe(15_000);
+  for (const unusable of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    window.__dispatchAgentRegistryPollMs = unusable;
+    expect(agentRegistryPollMs()).toBe(15_000);
+  }
+
+  const wasServer = environmentManager.isServer();
+  environmentManager.setIsServer(() => false);
+  jest.useFakeTimers();
+  const start = Date.now();
+  jest.setSystemTime(start);
+  window.__dispatchAgentRegistryPollMs = 1_000;
+  const fetchedAt: number[] = [];
+  const agents = spyOn(api, "listAgents").mockImplementation(async () => {
+    fetchedAt.push(Date.now() - start);
+    return [listed(LISTED_ID, "Planner")];
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={newClient()}>
+        <AgentRegistryPoller />
+        <AgentName actor={{ id: LISTED_ID, kind: "session" }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await act(async () => {});
+    for (let second = 0; second < 10; second += 1) {
+      await act(async () => {
+        jest.advanceTimersByTime(1_000);
+      });
+    }
+    // A first load and a poll each second after it, none closer than the cadence set.
+    expect(fetchedAt.length).toBeGreaterThanOrEqual(10);
+    for (let index = 1; index < fetchedAt.length; index += 1) {
+      expect((fetchedAt[index] ?? 0) - (fetchedAt[index - 1] ?? 0)).toBeGreaterThanOrEqual(1_000);
+    }
+  } finally {
+    view.unmount();
+    window.__dispatchAgentRegistryPollMs = undefined;
+    jest.useRealTimers();
+    environmentManager.setIsServer(() => wasServer);
+    agents.mockRestore();
+  }
+});
+
+/** The 503 Dispatch answers `/agents` with while the Envoy listener refills its agent list. */
+const REFILLING = new ApiError(503, {
+  code: "ENVOY_REFILLING",
+  error: "The agent list is refilling. Try again in a moment.",
+});
+
+/** The 503 Dispatch answers `/agents` with while the Envoy listener does not answer. */
+const UNREACHABLE = new ApiError(503, { error: "Envoy listener unreachable" });
+
+/** What one client's registry says of its own list, for a reader of the cases below. */
+function RegistryReading({ name }: { name: string }): ReactNode {
+  const registry = useAgentRegistry(true);
+  return (
+    <p data-testid={name}>
+      {registry.refilling
+        ? "refilling"
+        : registry.isError
+          ? "unreachable"
+          : registry.known
+            ? "listed"
+            : "no answer yet"}
+    </p>
+  );
+}
+
+/** One `RegistryReading` per name, all on `client`. */
+function readings(client: QueryClient, names: readonly string[]): ReactNode {
+  return (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        {names.map((name) => (
+          <RegistryReading key={name} name={name} />
+        ))}
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 04:2xZ): the reason a failed agent
+// list gave is kept with that list's own query, in its own client, never in one value the module
+// holds for every client. The query clears its own error while a later read is out, so a page that
+// redraws in that window reads the kept reason - and two pages of the app, each with its own
+// client, must never read each other's. Here the second client's list failed as unreachable and
+// the first's as refilling after it: with one value for both, the second would call its own
+// failure a refilling list.
+test("the reason a failed agent list gave is its own client's", async () => {
+  const listAgents = spyOn(api, "listAgents");
+  const first = newClient();
+  const second = newClient();
+  try {
+    listAgents.mockRejectedValue(UNREACHABLE);
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={first}>
+          <RegistryReading name="first" />
+        </QueryClientProvider>
+        <QueryClientProvider client={second}>
+          <RegistryReading name="second" />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(screen.getByTestId("second").textContent).toBe("unreachable"));
+    // The first client's own list then fails as a refilling one.
+    listAgents.mockRejectedValue(REFILLING);
+    await act(async () => {
+      await first.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    await waitFor(() => expect(screen.getByTestId("first").textContent).toBe("refilling"));
+    // The second client reads again, and while that read is out its query holds no error of its
+    // own: what it says is its own list's failure, which was never a refilling one.
+    listAgents.mockReturnValue(new Promise(() => undefined));
+    act(() => {
+      void second.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    await waitFor(() => expect(screen.getByTestId("second").textContent).toBe("unreachable"));
+  } finally {
+    listAgents.mockRestore();
+    first.clear();
+    second.clear();
+  }
+});
+
+// INFRA-3135, the tester's browser row at 6bc4f99c (`e2e/table-controls.e2e.ts`: the List "still
+// says the list is refilling while a poll is out five minutes on"), by the architect's rule that
+// the reason lives as long as the list's own query and stands, whatever time passes, until a read
+// of it succeeds. A list that has only ever failed clears its own error while each later read is
+// out; a reason kept where the query client collects it on its own clock - an entry no view
+// observes goes five minutes after it was made - left a view that drew in that window, five
+// minutes on, naming the listener unreachable. The test preload makes TanStack take the run for a
+// server, whose cache collects nothing, so this case runs as a browser does, on the fake clock.
+test("a list that has only failed as refilling still says so while a read is out five minutes on", async () => {
+  const wasServer = environmentManager.isServer();
+  environmentManager.setIsServer(() => false);
+  jest.useFakeTimers();
+  const listAgents = spyOn(api, "listAgents").mockRejectedValue(REFILLING);
+  const client = newClient();
+  const view = render(readings(client, ["first"]));
+  try {
+    await tick(1);
+    expect(screen.getByTestId("first").textContent).toBe("refilling");
+    // A later read goes out and is not answered: the list's query holds no error of its own now.
+    listAgents.mockReturnValue(new Promise<Agent[]>(() => undefined));
+    act(() => {
+      void client.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    await tick(1);
+    expect(client.getQueryState(["agents"])?.status).toBe("pending");
+    expect(client.getQueryState(["agents"])?.error).toBeNull();
+    expect(screen.getByTestId("first").textContent).toBe("refilling");
+    // Five minutes and more pass with that read still out. The first view draws again and a
+    // second mounts beside it: each names the list refilling, not the listener unreachable.
+    await jump(5 * 60_000 + 1_000);
+    view.rerender(readings(client, ["first", "second"]));
+    await tick(1);
+    expect(client.getQueryState(["agents"])?.fetchStatus).toBe("fetching");
+    expect(screen.getByTestId("first").textContent).toBe("refilling");
+    expect(screen.getByTestId("second").textContent).toBe("refilling");
+  } finally {
+    view.unmount();
+    client.clear();
+    realClock();
+    environmentManager.setIsServer(() => wasServer);
+    listAgents.mockRestore();
+  }
+});
+
+// A read that succeeds ends the reason the failures before it gave: a later failure for another
+// reason is said as that reason, by a view that draws while it stands and by one that mounts while
+// a read after it is out.
+test("once a read of the list succeeds, a later failure names its own reason, not refilling", async () => {
+  const listAgents = spyOn(api, "listAgents").mockRejectedValue(REFILLING);
+  const client = newClient();
+  const view = render(readings(client, ["first"]));
+  try {
+    await waitFor(() => expect(screen.getByTestId("first").textContent).toBe("refilling"));
+    listAgents.mockResolvedValue([listed(LISTED_ID, "Planner")]);
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    await waitFor(() => expect(screen.getByTestId("first").textContent).toBe("listed"));
+    listAgents.mockRejectedValue(UNREACHABLE);
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    await waitFor(() => expect(screen.getByTestId("first").textContent).toBe("unreachable"));
+    // A read after that failure goes out and is not answered, and a second view mounts meanwhile.
+    listAgents.mockReturnValue(new Promise<Agent[]>(() => undefined));
+    act(() => {
+      void client.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    view.rerender(readings(client, ["first", "second"]));
+    await waitFor(() => expect(screen.getByTestId("second").textContent).toBe("unreachable"));
+    expect(client.getQueryState(["agents"])?.fetchStatus).toBe("fetching");
+    expect(screen.getByTestId("first").textContent).toBe("unreachable");
+  } finally {
+    view.unmount();
+    client.clear();
+    listAgents.mockRestore();
+  }
+});
+
+// The reason kept is the list's latest failure, whichever views were mounted when it came. The
+// shell's poller and a polled session list (`useAgents`) go on reading the list while no registry
+// view is mounted; a registry view that mounts while a later read is out names the failure that
+// read followed, never the one the last registry view saw.
+test("a registry view that mounts while a read is out names the latest failure, which no registry view saw", async () => {
+  const listAgents = spyOn(api, "listAgents").mockRejectedValue(UNREACHABLE);
+  const client = newClient();
+  const page = (views: readonly string[]) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <AgentRegistryPoller />
+        <PolledAgents />
+        {views.map((name) => (
+          <RegistryReading key={name} name={name} />
+        ))}
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(page(["first"]));
+  try {
+    await waitFor(() => expect(screen.getByTestId("first").textContent).toBe("unreachable"));
+    // The registry view goes, the poller and the session list stay, and the list fails again, as
+    // refilling this time, with no registry view to see it.
+    view.rerender(page([]));
+    listAgents.mockRejectedValue(REFILLING);
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    expect(client.getQueryState(["agents"])?.error).toBe(REFILLING);
+    // A later read goes out and is not answered, and a registry view mounts meanwhile.
+    listAgents.mockReturnValue(new Promise<Agent[]>(() => undefined));
+    act(() => {
+      void client.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    view.rerender(page(["second"]));
+    await waitFor(() => expect(client.getQueryState(["agents"])?.fetchStatus).toBe("fetching"));
+    expect(client.getQueryState(["agents"])?.error).toBeNull();
+    expect(screen.getByTestId("second").textContent).toBe("refilling");
+  } finally {
+    view.unmount();
+    client.clear();
+    listAgents.mockRestore();
   }
 });

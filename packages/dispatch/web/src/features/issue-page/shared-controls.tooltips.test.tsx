@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
@@ -8,7 +8,6 @@ import type { ReactNode } from "react";
 import * as ts from "typescript";
 
 import { graphNode } from "../../__tests__/graph-fixture";
-import { pickNamed } from "../../__tests__/list-picks";
 import { artifact as specDocument } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -63,6 +62,7 @@ import {
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { relativeTimeLabel, Timestamp } from "../refs/Timestamp";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS, STATE_LINES } from "./page-words";
@@ -211,13 +211,20 @@ interface Stubs {
   readonly listIssues: Mock<typeof api.listIssues>;
   readonly listPriorities: Mock<typeof api.listPriorities>;
   readonly listProjectArchitectureSources: Mock<typeof api.listProjectArchitectureSources>;
-  readonly listRepoProjects: Mock<typeof api.listRepoProjects>;
+  readonly listProjects: Mock<typeof api.listProjects>;
   readonly listUsers: Mock<typeof api.listUsers>;
   readonly putDocumentRead: Mock<typeof api.putDocumentRead>;
   readonly whoAmI: Mock<typeof api.whoAmI>;
 }
 
 let stubs: Stubs;
+
+// A control's stored words - a step's reason, a person's line - are drawn by the lazy Markdown
+// engine, and the rows read each element's marks as soon as the control mounts. The rows run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 beforeEach(() => {
   stubs = {
@@ -236,7 +243,7 @@ beforeEach(() => {
     listIssues: spyOn(api, "listIssues"),
     listPriorities: spyOn(api, "listPriorities"),
     listProjectArchitectureSources: spyOn(api, "listProjectArchitectureSources"),
-    listRepoProjects: spyOn(api, "listRepoProjects"),
+    listProjects: spyOn(api, "listProjects"),
     listUsers: spyOn(api, "listUsers"),
     putDocumentRead: spyOn(api, "putDocumentRead"),
     whoAmI: spyOn(api, "whoAmI"),
@@ -314,7 +321,7 @@ function answerDefaults(): void {
   stubs.listIssues.mockResolvedValue([]);
   stubs.listPriorities.mockResolvedValue(priorities);
   stubs.listProjectArchitectureSources.mockResolvedValue([]);
-  stubs.listRepoProjects.mockResolvedValue([]);
+  stubs.listProjects.mockResolvedValue([]);
   stubs.listUsers.mockResolvedValue([]);
   stubs.putDocumentRead.mockImplementation(async (id, version) => ({
     artifact_id: id,
@@ -692,13 +699,7 @@ const MOUNTS: readonly Mount[] = [
         issue={{ advances: [], advances_revision: 1, key: "CORE-1" }}
       />
     ),
-    settle: async (view, user) => {
-      await user.click(
-        within(view.container).getByRole("button", { name: "Add a priority to CORE-1" })
-      );
-      await within(view.container).findByRole("button", { name: pickNamed("Priority to advance") });
-      await settleReads();
-    },
+    settle: pressing(CONTROL_LABELS.edit_priorities),
   },
   {
     name: "IssuePriorityLine, in a row of Details",
@@ -1197,23 +1198,24 @@ const priorityLineLoading: Mount = {
   },
   settle: async (view, user) => {
     await user.click(
-      within(view.container).getByRole("button", { name: "Add a priority to CORE-1" })
+      within(view.container).getByRole("button", { name: CONTROL_LABELS.edit_priorities })
     );
-    await within(view.container).findByRole("button", { name: pickNamed("Priority to advance") });
+    await within(view.baseElement).findByText(ANSWER_LINES.loading_priorities);
   },
 };
 
 const repoNothingResolved: Mount = {
-  name: "RepoControl, nothing resolved in a project that maps a repository",
+  name: "RepoControl, nothing resolved in a project with a default repository",
   node: () => {
-    stubs.listRepoProjects.mockResolvedValue([
+    stubs.listProjects.mockResolvedValue([
       {
         created_at: "2026-10-01T00:00:00Z",
-        created_by: { id: "alice", kind: "user" },
-        default: true,
-        project: "CORE",
-        renamed_to: null,
-        repo: "acme/api",
+        default_repo: "acme/api",
+        gated_steps: [],
+        key: "CORE",
+        name: "Core",
+        open_asks: 0,
+        proven_sessions: false,
       },
     ]);
     return <RepoControl issueKey="CORE-5" project="CORE" repo={null} resolvedRepo={null} />;
@@ -1468,23 +1470,21 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Add a reason to send Request changes",
     ],
   ],
+  // The priorities' line draws each priority as its chip (`PriorityChip`), which carries the
+  // whole title as its `title`, and says so of one inherited from an issue above; while the
+  // picker is open its options carry theirs, as `MultiSelect` draws them.
   [
     mountNamed("IssuePriorityLine, its own priority and an inherited one"),
     [
-      "P2 Rocq and Lean speed work restarted",
-      "P1 Evals collecting data now",
-      "Add a priority to CORE-1",
+      "Rocq and Lean speed work restarted",
+      "Evals collecting data now, inherited from an issue above",
     ],
   ],
-  [mountNamed("IssuePriorityLine, adding a priority"), []],
   [
-    mountNamed("IssuePriorityLine, in a row of Details"),
-    [
-      "P2 Rocq and Lean speed work restarted",
-      "Add a priority to CORE-1",
-      "Add a priority to CORE-2",
-    ],
+    mountNamed("IssuePriorityLine, adding a priority"),
+    ["#1 Evals collecting data now", "#2 Rocq and Lean speed work restarted"],
   ],
+  [mountNamed("IssuePriorityLine, in a row of Details"), ["Rocq and Lean speed work restarted"]],
   [priorityLineAtCap, PRIORITIES_AT_CAP],
   [priorityLineLoading, []],
   [
@@ -1911,6 +1911,13 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
     ),
     values: [LONG.label],
   }),
+  // The priorities' picker, open, draws each priority's title in its options, which no mark finds.
+  withLongValues(mountNamed("IssuePriorityLine, adding a priority"), {
+    values: [
+      "Evals collecting data now-under-a-title-that-runs-on-past-its-row",
+      "Rocq and Lean speed work restarted-under-a-title-that-runs-on-past-its-row",
+    ],
+  }),
   withLongValues(labelsEmptyAndSaving, {
     node: () => (
       <>
@@ -2026,12 +2033,23 @@ function boxHolds(element: Element, value: string): boolean {
   );
 }
 
+/** The element a holder of a value draws it as: the holder itself, unless the holder is a
+ *  Markdown body's (`MarkdownBody`), which takes no class, so its caller draws the value as the
+ *  element with the author-text mark around the body, whose classes are the value's. A body
+ *  with no such element around it is read as itself. */
+function valueDrawnBy(holder: Element): Element {
+  return (
+    holder.closest(".dispatch-markdown")?.parentElement?.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) ??
+    holder
+  );
+}
+
 /**
  * Each value `mount` draws among `drawn`: every element with the author-text mark, and each
- * element holding one of `mount.values` in its own text, or a text box holding it as its value or
- * its placeholder. A value inside `sr-only` is read aloud and drawn in no row, and a native
- * `<option>` is drawn by the browser's own list, which no class wraps, so neither is read.
- * `missing` takes each value of `mount.values` that nothing draws.
+ * element holding one of `mount.values` in its own text (`valueDrawnBy`), or a text box holding
+ * it as its value or its placeholder. A value inside `sr-only` is read aloud and drawn in no row,
+ * and a native `<option>` is drawn by the browser's own list, which no class wraps, so neither is
+ * read. `missing` takes each value of `mount.values` that nothing draws.
  */
 function drawnValues(mount: Mount, drawn: readonly Element[], missing: string[]): Element[] {
   const shown = drawn.filter((element) => element.closest(".sr-only, select") === null);
@@ -2041,7 +2059,7 @@ function drawnValues(mount: Mount, drawn: readonly Element[], missing: string[])
       (element) => ownText(element).includes(value) || boxHolds(element, value)
     );
     if (holders.length === 0) missing.push(`${mount.name}: draws no ${value}`);
-    for (const holder of holders) values.add(holder);
+    for (const holder of holders) values.add(valueDrawnBy(holder));
   }
   return [...values];
 }
@@ -2314,43 +2332,53 @@ interface DrawnPair {
   readonly text: string;
 }
 
+/** Whether an attribute is a class an element is drawn with: its own `className`, or the class
+ *  a component it mounts draws one of its parts with (the shared text field's `fieldClassName`,
+ *  `labelClassName` and `hintClassName`), which is drawn where the component is. */
+const CLASS_ATTRIBUTE = /^(?:className|[a-z][A-Za-z]*ClassName)$/;
+
+/** The expression an attribute's value is: what its braces hold, or its string. */
+function attributeExpression(attribute: ts.JsxAttribute): ts.Expression | undefined {
+  const value = attribute.initializer;
+  return value === undefined
+    ? undefined
+    : ts.isJsxExpression(value)
+      ? value.expression
+      : ts.isStringLiteral(value)
+        ? value
+        : undefined;
+}
+
 /** Each page colour pair the elements of `file` that read an `ON_PAGE` entry draw, in each state
  *  of theirs and of the elements around them: the text an element's class gives it, else the
  *  nearest around it; on the ground its class gives it, else each ground of the nearest element
  *  around it that draws one in every look it can take, with the grounds of the looks on the way
- *  that draw one; else the page's grounds. */
+ *  that draw one; else the page's grounds. A component's class of one of its parts
+ *  (`CLASS_ATTRIBUTE`) is read as an element of its own where the component is drawn; only its
+ *  `className` is around what the component holds. */
 function onPagePairs(file: ParsedSource): DrawnPair[] {
   const pairs: DrawnPair[] = [];
   const visit = (node: ts.Node, around: readonly (readonly PageLook[])[]) => {
-    const opening = ts.isJsxElement(node)
-      ? node.openingElement
+    const attributes = ts.isJsxElement(node)
+      ? node.openingElement.attributes.properties
       : ts.isJsxSelfClosingElement(node)
-        ? node
-        : undefined;
-    const classAttribute = opening?.attributes.properties.find(
-      (attribute): attribute is ts.JsxAttribute =>
-        ts.isJsxAttribute(attribute) && attribute.name.getText() === "className"
-    );
-    const value = classAttribute?.initializer;
-    const expression =
-      value === undefined
-        ? undefined
-        : ts.isJsxExpression(value)
-          ? value.expression
-          : ts.isStringLiteral(value)
-            ? value
-            : undefined;
-    if (opening === undefined || expression === undefined) {
-      ts.forEachChild(node, (child) => visit(child, around));
-      return;
-    }
-    const looks = classStrings(expression, file).flatMap((className) => {
-      const look = pageLook(className);
-      return look === undefined ? [] : [look];
-    });
-    const entries = onPageEntries(expression, file);
-    if (entries.length > 0) {
-      const line = file.source.getLineAndCharacterOfPosition(opening.getStart()).line + 1;
+        ? node.attributes.properties
+        : [];
+    let held: readonly PageLook[] | undefined;
+    for (const attribute of attributes) {
+      if (!ts.isJsxAttribute(attribute) || !CLASS_ATTRIBUTE.test(attribute.name.getText())) {
+        continue;
+      }
+      const expression = attributeExpression(attribute);
+      if (expression === undefined) continue;
+      const looks = classStrings(expression, file).flatMap((className) => {
+        const look = pageLook(className);
+        return look === undefined ? [] : [look];
+      });
+      if (attribute.name.getText() === "className") held = looks;
+      const entries = onPageEntries(expression, file);
+      if (entries.length === 0) continue;
+      const line = file.source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
       const states = new Set(
         [...looks, ...around.flat()].flatMap((look) => ["", ...look.bg.keys(), ...look.text.keys()])
       );
@@ -2366,7 +2394,7 @@ function onPagePairs(file: ParsedSource): DrawnPair[] {
         }
       }
     }
-    ts.forEachChild(node, (child) => visit(child, [looks, ...around]));
+    ts.forEachChild(node, (child) => visit(child, held === undefined ? around : [held, ...around]));
   };
   visit(file.source, []);
   return pairs;
@@ -2609,7 +2637,7 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
       `, ${CONTROL_LABELS.takeable_now}`
     );
     // A registry that answered leaves no claim unjudged.
-    expect(scope.queryAllByTestId("issue-claim-unchecked")).toEqual([]);
+    expect(scope.queryAllByTestId("issue-claim-unchecked")).toHaveLength(0);
   });
   // ... and "· running state unknown" when the agent list cannot be read.
   await readDrawn(
@@ -2707,7 +2735,7 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
     const [removable, wider] = scope.getAllByRole("listitem");
     expect(removable?.textContent).not.toContain(STATE_LINES.subscription_wider);
     expect(wider?.textContent).toContain(STATE_LINES.subscription_wider);
-    expect(scope.queryAllByText(/\bvia\b|notifications\.dispatch/)).toEqual([]);
+    expect(scope.queryAllByText(/\bvia\b|notifications\.dispatch/)).toHaveLength(0);
   });
 });
 
@@ -2739,9 +2767,7 @@ test("inside NoTooltips the repository's clear control is described by what its 
     ).toBe(clear);
     expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
 
-    // The focus starts the mappings' read, which lands before the refusal is read.
     await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
-    await settleReads();
     const refusal = scope.getByRole("alert");
     expect(refusal.textContent).toBe("Write the repository as owner/name.");
     expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
@@ -2952,49 +2978,38 @@ test("inside NoTooltips the words come from the page's word list and carry their
     (view) => {
       expectMarks(view.container, [
         [PROPERTY_LABELS.advances, "page-chrome"],
-        ["P2 Rocq and Lean speed work restarted", "author-text"],
-        ["P1 Evals collecting data now", "author-text"],
+        ["#2 Rocq and Lean speed work restarted", "author-text"],
+        ["#1 Evals collecting data now", "author-text"],
         [CONTROL_LABELS.advances_inherited, "page-chrome"],
         ["+", "page-chrome"],
       ]);
-      // The Remove draws its cross as a shape, with no text to find it by, so it is read by its
-      // name.
-      const remove = within(view.container).getByRole("button", {
-        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
-      });
-      expect(markOf(remove)).toBe("page-chrome");
     }
   );
   await readDrawn(mountNamed("IssuePriorityLine, in a row of Details"), "inside", (view) => {
     // A row of Details draws the label, so the line draws none of its own.
     expectMarks(view.container, [
       [CONTROL_LABELS.add_priority, "page-chrome"],
-      ["P2 Rocq and Lean speed work restarted", "author-text"],
+      ["#2 Rocq and Lean speed work restarted", "author-text"],
     ]);
-    expect(within(view.container).queryAllByText(PROPERTY_LABELS.advances)).toEqual([]);
+    expect(within(view.container).queryAllByText(PROPERTY_LABELS.advances)).toHaveLength(0);
+    // The trigger of an issue that advances none is named by the words it draws, then the word
+    // list's joining word and the issue's key (WCAG 2.5.3).
+    const add = within(view.container).getByRole("button", {
+      name: `${CONTROL_LABELS.add_priority} ${CONTROL_LABELS.control_name_to} CORE-2`,
+    });
+    expect(add.textContent).toBe(CONTROL_LABELS.add_priority);
   });
   await readDrawn(mountNamed("IssuePriorityLine, adding a priority"), "inside", (view) => {
-    expectMarks(view.container, [
-      [CONTROL_LABELS.priority_to_advance, "page-chrome"],
-      [CONTROL_LABELS.add, "page-chrome"],
-      [CONTROL_LABELS.cancel, "page-chrome"],
-    ]);
+    expectMarks(view.container, [["+", "page-chrome"]]);
     expect(
-      within(view.container).getByRole("button", {
-        name: `${CONTROL_LABELS.priority_to_advance} ${CONTROL_LABELS.choose_priority}`,
-      })
+      within(view.baseElement).getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance })
     ).toBeTruthy();
   });
   await readDrawn(priorityLineLoading, "inside", (view) => {
-    expect(
-      within(view.container).getByRole("button", {
-        name: `${CONTROL_LABELS.priority_to_advance} ${ANSWER_LINES.loading_priorities}`,
-      })
-    ).toBeTruthy();
+    expect(within(view.baseElement).getByText(ANSWER_LINES.loading_priorities)).toBeTruthy();
   });
   await readDrawn(priorityLineAtCap, "inside", (view) => {
     expectMarks(view.container, [
-      [STATE_LINES.advances_at_cap, "page-chrome"],
       [ANSWER_LINES.priorities_unreadable, "page-chrome"],
       ["priority-1", "author-text"],
     ]);
@@ -3018,7 +3033,13 @@ test("inside NoTooltips the words come from the page's word list and carry their
     },
     settle: async (view, user) => {
       await within(view.container).findByRole("link", { name: /Rocq and Lean/ });
-      await user.click(within(view.container).getByRole("button", { name: /^Remove / }));
+      await user.click(
+        within(view.container).getByRole("button", { name: CONTROL_LABELS.edit_priorities })
+      );
+      await user.click(
+        await within(view.baseElement).findByRole("option", { name: /Rocq and Lean/ })
+      );
+      await user.keyboard("{Escape}");
       await within(view.container).findByRole("alert");
     },
   };
@@ -3149,7 +3170,7 @@ test("inside NoTooltips a stale chip draws its latest version", async () => {
       ["Approved v3 · changed since", "Approved at version 3; the latest version is 5"],
       ["Approved v3 · changed since", "Approved at version 3; the latest version is 5"],
     ]);
-    expect(within(view.container).queryAllByText(/latest v5/)).toEqual([]);
+    expect(within(view.container).queryAllByText(/latest v5/)).toHaveLength(0);
   });
 });
 
@@ -3367,8 +3388,8 @@ test("inside NoTooltips a session nothing names reads as An agent, never by its 
     expect(
       within(root)
         .getAllByText(word)
-        .map((name) => name.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`))
-    ).toEqual(forms.map(() => null));
+        .map((name) => name.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) === null)
+    ).toEqual(forms.map(() => true));
     expect(
       within(root).getAllByRole("link", { name: `Open live conversation with ${word}` })
     ).toHaveLength(2);

@@ -7,10 +7,11 @@
 // reads as no wait, so a reader could ask again at once.
 //
 // Its readers are Dispatch's GitHub client (internal/dispatch/githubapp, rateLimitWait), the
-// broker's mint (internal/broker/secrets, serverWait), the model loop's one retry (agentloop,
-// retryable) and the broker helper's refresh (internal/broker/helper, retryAfter). Each keeps its
-// own fallback for an answer that names no wait. It imports the standard library alone, so no
-// binary that links it links a module more.
+// broker's mint (internal/cipher/secrets, serverWait), the model loop's one retry (agentloop,
+// retryable), and the broker helper's refresh and its machine login's device code poll
+// (internal/cipher/helper, retryAfter, which names its readers there). Each keeps its own fallback
+// for an answer that names no wait. It imports the standard library alone, so no binary that
+// links it links a module more.
 package serverwait
 
 import (

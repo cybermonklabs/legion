@@ -2,7 +2,14 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
-import { DEFAULT_STALL_LIMITS, defaultCallBoundMs, stallLimits } from "./stall-limits";
+import {
+  DEFAULT_STALL_LIMITS,
+  defaultCallBoundMs,
+  STALL_SWEEP_MAX_MS,
+  STALL_SWEEP_MIN_MS,
+  stallLimits,
+  stallSweepMs,
+} from "./stall-limits";
 import { DECLARED_DEADLINE_MOST_MS } from "./stall-watchdog";
 
 /** Every role word a session's `LEGION_ROLE` can hold: the six issue roles and the controller,
@@ -34,6 +41,18 @@ test("an unset environment leaves every number at its default, none of them zero
     }
     expect(warn.warnings).toEqual([]);
   }
+});
+
+// The call watch's sweep period follows the step gap. Production's gap must still give the
+// 5 seconds the sweep always had, and the live proof's 4-second gap one second; a gap of 0 or a
+// gap of hours stays inside the two ends.
+test("the call watch sweeps every 5 s on production's step gap, and a quarter of a shorter gap", () => {
+  expect(stallSweepMs(stallLimits({}, log(), "implementer"))).toBe(5_000);
+  expect(stallSweepMs(DEFAULT_STALL_LIMITS)).toBe(STALL_SWEEP_MAX_MS);
+  expect(stallSweepMs({ stepMs: 4_000 })).toBe(1_000);
+  expect(stallSweepMs({ stepMs: 10_000 })).toBe(2_500);
+  expect(stallSweepMs({ stepMs: 0 })).toBe(STALL_SWEEP_MIN_MS);
+  expect(stallSweepMs({ stepMs: 3_600_000 })).toBe(STALL_SWEEP_MAX_MS);
 });
 
 test("the bound's default is four hours for an implementer and a reviewer and an hour for every other role", () => {

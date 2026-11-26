@@ -25,6 +25,7 @@ import {
   SAVED_CART,
   seedProject,
   setStatus,
+  statusOf,
   type Tracked,
   writeDesign,
 } from "./journey";
@@ -211,7 +212,7 @@ const legion: ShotSet<LegionJourney> = {
       prepare: (journey) => closeAtMerge(journey),
       ready: async (page) => {
         await expect(turns(page)).toContainText("Signed off.");
-        await expect(page.getByRole("combobox", { name: "Status" })).toHaveValue("done");
+        await expect(statusOf(page)).toHaveAttribute("data-issue-status", "done");
       },
       steps: headerOnTop,
     },
@@ -226,7 +227,7 @@ const legion: ShotSet<LegionJourney> = {
       },
       ready: async (page) => {
         await titled(page, "Legion daily report");
-        await expect(page.getByRole("combobox", { name: "Status" })).toHaveValue("icebox");
+        await expect(statusOf(page)).toHaveAttribute("data-issue-status", "icebox");
         await expect(turns(page)).toContainText("Finished:");
       },
     },

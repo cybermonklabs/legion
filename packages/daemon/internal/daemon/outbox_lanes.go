@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -19,8 +20,8 @@ import (
 // notices) or its role messages (the end of a role's phase), record.OutboxLane — run one at a time
 // in the order they are due, on a goroutine of its own that lives only while the issue has such
 // rows. A lane is woken by the write that commits one
-// of its rows (projectRecords, through intake.OnCommit), by the timer it arms for its next row due
-// later, and by the sweep, which every outboxLease lists the lanes with a row still in the outbox
+// of its rows (projectRecords, through store.OnCommit), by the timer it arms for its next row due
+// later, and by the sweep, which every sweepInterval lists the lanes with a row still in the outbox
 // (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its finish or retry
 // recorded — a lost database connection, a daemon that died mid-row — keeps its lease until it
 // lapses, and the sweep after the lapse wakes its lane, which lists it due again and runs it. The
@@ -35,6 +36,13 @@ type outboxLane struct {
 	key  record.LaneKey
 	wake chan struct{}
 }
+
+// outboxHoldRecheck is how soon a row the test's hold put back (outbox.hold) is due again, and
+// errOutboxRowHeld the last error such a row records. Neither is reached in production, where
+// nothing holds a row.
+const outboxHoldRecheck = 100 * time.Millisecond
+
+var errOutboxRowHeld = errors.New("held by the outbox's test hold until it lets the row through")
 
 // timers is the clock the lanes' timers are armed on: the outbox's, or the wall clock for an outbox
 // a test built by hand without one.
@@ -55,7 +63,7 @@ func nudge(wake chan struct{}) {
 
 // Run runs the lanes until ctx ends. It opens the registry, sweeps at once — a restart recovers
 // every unfinished row, and the rows written while the outbox was not yet attached, without waiting
-// for a wake — and then sweeps every outboxLease on the clock. A sweep whose read fails (a Postgres
+// for a wake — and then sweeps every sweepInterval on the clock. A sweep whose read fails (a Postgres
 // restart drops the pool's connections) is logged and tried again at the next tick, so the runner
 // outlives the failure instead of ending with it. Once ctx ends it closes the registry, so no wake
 // starts a lane, and waits for every lane to return: a row mid-run ends and settles first
@@ -74,7 +82,7 @@ func (r *outbox) Run(ctx context.Context) {
 	poke := make(chan struct{}, 1)
 	for {
 		r.sweep(ctx)
-		tick := clock.AfterFunc(outboxLease, func() { nudge(poke) })
+		tick := clock.AfterFunc(r.sweepInterval(), func() { nudge(poke) })
 		select {
 		case <-ctx.Done():
 			tick.Stop()
@@ -88,12 +96,38 @@ func (r *outbox) Run(ctx context.Context) {
 	}
 }
 
-// sweep wakes every lane of the project with a row still in the outbox: due, running, backing off
-// or held. A lane that has nothing to run goes back to waiting, so the sweep costs an idle lane one
-// list; a lane whose rows a lapsed lease held back is the one it is for.
+// sweepInterval is how often Run sweeps: the outbox's own sweepEvery, or outboxLease where it sets
+// none, which is every daemon's. An interval at most outboxLease finds a lapsed lease within one
+// interval of its lapse. A shorter one never finds a live row lapsed: a running row renews its
+// lease every third of outboxLease, whatever the sweep's interval.
+func (r *outbox) sweepInterval() time.Duration {
+	if r.sweepEvery > 0 {
+		return r.sweepEvery
+	}
+	return outboxLease
+}
+
+// sweep reads the project's pause into the daemon's flag (refreshPause, decision 18 of
+// dispatch://INFRA-3759) and wakes every lane of the project with a row still in the outbox
+// (wakeUnfinished). A pause read that fails is logged and the flag keeps what it held: the next
+// sweep reads it again, and the outbox's own claim reads the pause from the store at every row
+// regardless (record's outboxPauseFree).
 func (r *outbox) sweep(ctx context.Context) {
+	if r.refreshPause != nil {
+		if err := r.refreshPause(ctx); err != nil && ctx.Err() == nil {
+			r.log.Error("pause: the outbox sweep could not read whether the project is paused; the flag keeps what it held until the next sweep", "error", err)
+		}
+	}
+	r.wakeUnfinished(ctx)
+}
+
+// wakeUnfinished wakes every lane of the project with a row still in the outbox: due, running,
+// backing off or held. A lane that has nothing to run goes back to waiting, so it costs an idle
+// lane one list; a lane whose rows a lapsed lease held back is the one it is for, and so is every
+// lane a resume lets its held rows out on (decision 22).
+func (r *outbox) wakeUnfinished(ctx context.Context) {
 	var lanes []record.LaneKey
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		lanes, err = r.records.UnfinishedLanes(ctx, tx, r.dispatchProject)
 		return err
@@ -143,7 +177,7 @@ func (r *outbox) wakeLane(key record.LaneKey) {
 // wait for a wake. It exits once nothing is due, nothing is due later and no wake is pending — a
 // lane whose only rows another runner holds exits too, and the sweep starts it again once that
 // lease lapses. A lane whose list failed, or that left a due row behind on a failed claim, does not
-// exit: it waits for a wake or the sweep, which comes within outboxLease.
+// exit: it waits for a wake or the sweep, which comes within sweepInterval.
 func (r *outbox) runLane(ctx context.Context, lane *outboxLane) {
 	defer r.wg.Done()
 	// Lanes run beside each other and beside the sweep, each opening transactions of its own, so
@@ -244,7 +278,7 @@ func (r *outbox) drain(ctx context.Context, issue string, kinds []record.OutboxK
 // issue "" is every issue of the project, kinds nil every kind.
 func (r *outbox) listDue(ctx context.Context, issue string, kinds []record.OutboxKind, now time.Time) ([]record.OutboxRow, error) {
 	var rows []record.OutboxRow
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = r.records.DueRows(ctx, tx, r.dispatchProject, issue, kinds, now)
 		return err
@@ -258,7 +292,7 @@ func (r *outbox) listDue(ctx context.Context, issue string, kinds []record.Outbo
 func (r *outbox) nextDue(ctx context.Context, issue string, kinds []record.OutboxKind, now time.Time) (time.Time, bool, error) {
 	var at time.Time
 	var ok bool
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		at, ok, err = r.records.NextDue(ctx, tx, issue, kinds, now)
 		return err
@@ -281,7 +315,7 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	now := r.now().UTC()
 	var row record.OutboxRow
 	var claimed bool
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		row, claimed, err = r.records.ClaimRow(ctx, tx, listed.ID, now, outboxLease)
 		return err
@@ -301,6 +335,12 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 		}
 		return nil
 	}
+	if r.hold != nil && r.hold(row) {
+		if err := r.retryAt(ctx, row, r.now().UTC().Add(outboxHoldRecheck), errOutboxRowHeld); err != nil {
+			r.log.Error("outbox row hold not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
+		}
+		return nil
+	}
 	// The renewal's ticks run on timer goroutines of their own (renewLease), beside the row's
 	// effect, so they are a second caller of the pool and take a hold mark of their own
 	// (store.ForConcurrentWorker). On the lane's mark a tick that came while the effect was inside
@@ -312,7 +352,7 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	// mark is fresh for each row, so a tick still in flight when its row stops (renewOnce) shares
 	// none with the next row's ticks, and it is taken here, where the lane holds no connection: the
 	// claim's transaction has committed.
-	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row)
+	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row, now)
 	err := r.execute(ctx, row)
 	renewal.stop()
 	settleCtx := ctx
@@ -325,14 +365,16 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	return nil
 }
 
-// leaseRenewal keeps a running row's lease live (renewLease): the tick armed next, whether the run
-// has ended, and what the ticks have already said, so each is said once per run.
+// leaseRenewal keeps a running row's lease live (renewLease): when the run began, the tick armed
+// next, whether the run has ended, and what the ticks have already said, so each is said once per
+// run. began is set once, before the first tick, and read without the lock.
 type leaseRenewal struct {
-	mu      sync.Mutex
-	stopped bool
-	tick    supervise.Cancel
-	lost    bool
-	warned  map[int64]bool
+	began     time.Time
+	mu        sync.Mutex
+	stopped   bool
+	tick      supervise.Cancel
+	unrenewed bool
+	warned    map[int64]bool
 }
 
 // arm schedules the next tick unless the run has ended, so a tick in flight when stop is called
@@ -362,12 +404,13 @@ func (l *leaseRenewal) ended() bool {
 	return l.stopped
 }
 
-// lostOnce marks the lease lost and reports whether this is the first tick to find it so.
-func (l *leaseRenewal) lostOnce() bool {
+// unrenewedOnce marks the lease found no longer the row's, under another lane's lease or with the
+// row finished, and reports whether this is the first tick to find it so.
+func (l *leaseRenewal) unrenewedOnce() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	first := !l.lost
-	l.lost = true
+	first := !l.unrenewed
+	l.unrenewed = true
 	return first
 }
 
@@ -388,10 +431,11 @@ func (l *leaseRenewal) warnOnce(held int64) bool {
 // at the next tick; a lease found no longer the row's is logged once, and the run goes on to its
 // end, since nothing cancels a row mid-effect — the finish or retry then fences on the token and
 // records nothing. A lifecycle row's tick also reads the rows its issue holds behind it, and logs
-// each once it has waited heldWarnAfter: the lane runs one row at a time, so a row that runs long
-// is what an operator looks at when a stop or a start of the issue does not happen.
-func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow) *leaseRenewal {
-	renewal := &leaseRenewal{warned: map[int64]bool{}}
+// each once it has waited heldWarnAfter behind it (warnHeld): the lane runs one row at a time, so a
+// row that runs long is what an operator looks at when a stop or a start of the issue does not
+// happen. began is when the row's run began, the moment of its claim (runRow).
+func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow, began time.Time) *leaseRenewal {
+	renewal := &leaseRenewal{began: began, warned: map[int64]bool{}}
 	clock := r.timers()
 	lifecycle := record.LaneOf(row.Kind) == record.LaneLifecycle
 	var tick func()
@@ -413,12 +457,21 @@ func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow) *leaseRen
 
 // renewOnce is one tick's renewal of the row's lease. A tick that was in flight when the run ended
 // may find the row gone because its own settle finished it; that is no lost lease, so a renewal that
-// found nothing is reported only while the run is still on.
+// found nothing is reported only while the run is still on. While the run is on, a tick that finds
+// the lease no longer the row's says why, once per run:
+//   - a row another lane leases now is a lost lease, at Warn;
+//   - a row whose own effect finishes it inside its run (finishesItsOwnRow: a left pod's close
+//     check) found gone is that finish, at Info;
+//   - a status write or a notice found gone may have been deleted under its live lease by a newer
+//     write of its issue (record's DropStatusWrites, DropCatchUps), as well as finished by another
+//     lane after this lease lapsed, at Warn, and the line names both;
+//   - any other row found gone, the idle release's check included, which never finishes its own
+//     row, was finished by another lane after this lease lapsed, at Warn.
 func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
-	var held bool
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	var held, gone bool
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		held, err = r.records.RenewOutboxLease(ctx, tx, row.ID, row.LeaseToken, now.Add(outboxLease))
+		held, gone, err = r.records.RenewOutboxLease(ctx, tx, row.ID, row.LeaseToken, now.Add(outboxLease))
 		return err
 	}); err != nil {
 		if ctx.Err() == nil {
@@ -426,17 +479,44 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 		}
 		return
 	}
-	if !held && !renewal.ended() && renewal.lostOnce() {
-		r.log.Warn("outbox row lease lost; the row runs on to its end and its finish or retry fences on the token",
-			"row", row.ID, "kind", row.Kind, "issue", row.Issue)
+	if held || renewal.ended() || !renewal.unrenewedOnce() {
+		return
+	}
+	attrs := []any{"row", row.ID, "kind", row.Kind, "issue", row.Issue}
+	switch {
+	case !gone:
+		r.log.Warn("outbox row lease lost; the row runs on to its end and its finish or retry fences on the token", attrs...)
+	case finishesItsOwnRow(row):
+		r.log.Info("outbox row finished while its run goes on: a left pod's close check finishes its own row; the lane's finish then deletes nothing", attrs...)
+	case row.Kind == record.OutboxKindDispatchStatus || row.Kind == record.OutboxKindNotice:
+		r.log.Warn("outbox row gone while its run goes on: a newer write of its issue may have dropped it (DropStatusWrites, DropCatchUps), or another lane finished it after this lease lapsed; the run's finish or retry fences on the token", attrs...)
+	default:
+		r.log.Warn("outbox row gone while its run goes on: another lane finished it after this lease lapsed; the run's finish or retry fences on the token", attrs...)
 	}
 }
 
+// finishesItsOwnRow is whether row's own effect finishes the row inside its run: a left pod's close
+// check (record.IssueWorkspaceCheck.LeftPodClose: CloseRoles, or the launcher's check with Close
+// where no role runs in the pod), which finishes its row in the transaction that records what it
+// decided (checkLeftPodWorkspace). The idle release's check, and the launcher's check of a pod no
+// claim owns, are the same kind and never do.
+func finishesItsOwnRow(row record.OutboxRow) bool {
+	if row.Kind != record.OutboxKindIssueBundle {
+		return false
+	}
+	payload, err := record.DecodeOutboxPayload(row)
+	check, ok := payload.(record.IssueWorkspaceCheck)
+	return err == nil && ok && check.LeftPodClose()
+}
+
 // warnHeld is one tick's look at the lifecycle rows of the row's issue held behind it
-// (record.Store.HeldRows): each that has waited heldWarnAfter is logged, once per run of this row.
+// (record.Store.HeldRows): each that has waited heldWarnAfter behind it is logged, once per run of
+// this row. The wait is counted from the later of the held row's next_at and the moment this row's
+// run began: a row a project's pause held keeps the next_at it had, which can be hours old when the
+// resume lets it run, and the time before this row began is no wait behind it.
 func (r *outbox) warnHeld(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
 	var held []record.HeldRow
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		held, err = r.records.HeldRows(ctx, tx, r.dispatchProject, row.Issue, now)
 		return err
@@ -450,7 +530,11 @@ func (r *outbox) warnHeld(ctx context.Context, row record.OutboxRow, renewal *le
 		if waiting.WaitsOn != row.ID {
 			continue
 		}
-		waited := now.Sub(waiting.NextAt)
+		since := waiting.NextAt
+		if renewal.began.After(since) {
+			since = renewal.began
+		}
+		waited := now.Sub(since)
 		if waited < heldWarnAfter || renewal.ended() || !renewal.warnOnce(waiting.ID) {
 			continue
 		}

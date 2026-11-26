@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Agent, IssueCollaboratorAgent, IssueCollaborators } from "../../api/types";
 import { CollaboratorsTab, collaboratorSections } from "./CollaboratorsTab";
@@ -58,13 +58,12 @@ function live(sessionId: string): Agent {
   };
 }
 
-/** The tab on `collaborators`, with `agents` the registry's live sessions; `rescued` draws it in
- *  the shell's main content with the page's focus rescue mounted on it (`RescuedMain`), as the app
- *  shell mounts it. */
+/** The tab on `collaborators`, with `agents` the registry's live sessions; `inMain` draws it in
+ *  the shell's main content, as the app shell draws it. */
 function renderTab(
   collaborators: IssueCollaborators,
   agents: readonly Agent[] = [],
-  { rescued = false }: { rescued?: boolean } = {}
+  { inMain = false }: { inMain?: boolean } = {}
 ) {
   const read = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaborators);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([...agents]);
@@ -72,9 +71,7 @@ function renderTab(
   const tab = <CollaboratorsTab issueKey="CORE-1" />;
   const view = render(
     <MemoryRouter>
-      <QueryClientProvider client={client}>
-        {rescued ? <RescuedMain>{tab}</RescuedMain> : tab}
-      </QueryClientProvider>
+      <QueryClientProvider client={client}>{inMain ? <main>{tab}</main> : tab}</QueryClientProvider>
     </MemoryRouter>
   );
   return {
@@ -197,9 +194,9 @@ test("the Collaborators tab says when Legion's record could not be read, and whe
 // A collaborator's row is an `<li>` that carries no row marker: it is a row of its list by its
 // element alone (`row-marker.ts`'s `ROW_SELECTOR`). A refetch that takes the row holding the focus
 // away - a session the server no longer lists for the issue - is a loss the reader did not cause,
-// so the app shell's focus rescue, mounted here on the page's main content as the shell mounts it,
-// hands the focus into no other row of the list and scrolls nothing: the reader's next key opens
-// no conversation they did not pick.
+// so with the tab in the page's main content, as the shell draws it, the focus goes into no other
+// row of the list and nothing scrolls: the reader's next key opens no conversation they did not
+// pick.
 test("a collaborator's row a refetch takes away from under the focus hands it to no other row", async () => {
   const agents = [
     otherAgent("newer", "2026-10-26T02:00:00Z"),
@@ -213,7 +210,7 @@ test("a collaborator's row a refetch takes away from under the focus hands it to
     people: [],
   };
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
-  const tab = renderTab(collaborators, [], { rescued: true });
+  const tab = renderTab(collaborators, [], { inMain: true });
   try {
     const others = await screen.findByRole("region", { name: "Other agents" });
     const name = within(others).getByRole("link", { name: "older" });
@@ -227,7 +224,7 @@ test("a collaborator's row a refetch takes away from under the focus hands it to
       await tab.client.refetchQueries();
     });
     await waitFor(() => expect(name).not.toBeInTheDocument());
-    await afterRescue();
+    await afterFrameAndTasks();
 
     expect(sessionsIn(others)).toEqual(["newer", "quiet"]);
     const focused = document.activeElement;

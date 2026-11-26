@@ -49,10 +49,24 @@ const minutes = (value: number) => `${value}m`;
 const everyChange = (value: number) => `${value}m for every change`;
 const bare = (value: number) => `${value}`;
 const perDay = (value: number) => `${value}/day`;
-/** A rate's target as its percentage, to the twelve significant digits that keep every digit a
- *  person set and drop the floating-point noise of scaling it by 100: 0.755 as "75.5%", 0.07
- *  (7.000000000000001 once scaled) as "7%". */
-const share = (value: number) => `${Number((value * 100).toPrecision(12))}%`;
+
+/** A rate's target as its percentage, written exactly: the value's own shortest text
+ *  (`String(value)`) with its decimal point moved two places right as text, since scaling it by
+ *  100 in floating point can write another number (0.07 x 100 is 7.000000000000001). So 0.755 is
+ *  "75.5%", 0.07 "7%", 0.1 + 0.2 "30.000000000000004%" and 1e-7 "0.00001%". */
+function share(value: number): string {
+  const [mantissa = "", exponent = "0"] = String(Math.abs(value)).split("e");
+  const [whole = "", fraction = ""] = mantissa.split(".");
+  // The point once it moves, as the count of the value's digits before it: past their end, where
+  // zeros pad them, or before their first, where zeros lead them so one digit stands before it.
+  const point = whole.length + Number(exponent) + 2;
+  const lead = Math.max(1 - point, 0);
+  const digits = `${"0".repeat(lead)}${whole}${fraction}`.padEnd(point, "0");
+  const integer = digits.slice(0, point + lead).replace(/^0+(?=\d)/, "");
+  const decimals = digits.slice(point + lead);
+  return `${value < 0 ? "-" : ""}${integer}${decimals === "" ? "" : `.${decimals}`}%`;
+}
+
 const perDeploy = (value: number) => `${share(value)} per deploy`;
 const perPR = (value: number) => `${share(value)} per PR`;
 

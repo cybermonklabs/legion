@@ -48,6 +48,15 @@ export function rows(list: HTMLElement): string[] {
     .map((option) => option.textContent ?? "");
 }
 
+/** The open list's rows, each by the name it is read out as: its `aria-label` where it has one,
+ *  else its whole text, as a row with no detail beside it is named by its label alone (a picked
+ *  row's tick is in that text too). */
+export function optionNames(list: HTMLElement): string[] {
+  return within(list)
+    .getAllByRole("option")
+    .map((option) => option.getAttribute("aria-label") ?? option.textContent ?? "");
+}
+
 /** Opens the single pick labelled `label` and picks the row named `name` once it is listed. */
 export async function pick(user: UserEvent, label: string, name: string): Promise<void> {
   const list = await openList(user, label);

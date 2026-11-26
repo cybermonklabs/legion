@@ -7,7 +7,7 @@ import {
   tableFilterActive,
   textMutedOnCanvas,
 } from "../theme/classes";
-import { CONTROL } from "./control-names";
+import { CONTROL, type ControlSize } from "./control-names";
 import type { RowNoun } from "./DataTable";
 import { MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
@@ -21,17 +21,37 @@ function FunnelIcon(): ReactNode {
   );
 }
 
-const filterTrigger = (active: boolean) =>
-  `min-h-11 min-w-11 rounded p-1 md:min-h-8 md:min-w-8 ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
+/** The funnel's touch target at each size. The comfortable size keeps 44 px at every width. The
+ *  compact size keeps 44 px wherever a finger is the pointer and gives it up only from `md`,
+ *  where a mouse is, for 32 px. */
+const FILTER_TARGET: Record<ControlSize, string> = {
+  comfortable: "min-h-11 min-w-11",
+  compact: "min-h-11 min-w-11 md:min-h-8 md:min-w-8",
+  // A header's funnel is no toolbar's control: at the toolbar size it takes the compact target.
+  toolbar: "min-h-11 min-w-11 md:min-h-8 md:min-w-8",
+};
+
+const filterTrigger = (active: boolean, size: ControlSize) =>
+  `${FILTER_TARGET[size]} rounded p-1 ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
 
 export interface ColumnFilterProps<TData> {
   readonly column: Column<TData, unknown>;
   readonly counts: ReadonlyMap<string, number>;
+  /** Which values `counts` has counted for the rows the reader's narrowing lists: every value
+   *  (`true`, and a filter given none), no value (`false`), or each value the function answers
+   *  true for. A value is not counted while `counts` is the previous answer's, kept on screen
+   *  while the read for a new narrowing is out, or while a read that the value's count counts
+   *  has not answered. A value that is not counted draws no count beside it, never a 0 that
+   *  would say no row holds it; every other value draws its count. */
+  readonly counted?: boolean | ((value: string) => boolean);
   /** What one row of the table is, which a count of rows is read in: `3 issues` on the project
    *  List, `3 priorities` on the priorities table. */
   readonly noun: RowNoun;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
+  /** How much room the funnel takes (`ControlSize`): the table's own `size`, which is the
+   *  page's. */
+  readonly size?: ControlSize;
   /** The values whose rows are not loaded yet: each says `load` rather than count them as
    *  none, as Status does for Done before the closed issues are read. */
   readonly unloaded: readonly string[];
@@ -45,10 +65,12 @@ export interface ColumnFilterProps<TData> {
  */
 export function ColumnFilter<TData>({
   column,
+  counted = true,
   counts,
   noun,
   open,
   onOpenChange,
+  size = "comfortable",
   unloaded,
 }: ColumnFilterProps<TData>): ReactNode {
   const meta = column.columnDef.meta;
@@ -63,7 +85,7 @@ export function ColumnFilter<TData>({
         onOpenChange={onOpenChange}
         open={open}
         title={`Filter ${name}`}
-        triggerClassName={filterTrigger(value !== "")}
+        triggerClassName={filterTrigger(value !== "", size)}
       >
         {() => (
           <input
@@ -88,6 +110,26 @@ export function ColumnFilter<TData>({
         : order.indexOf(a) - order.indexOf(b)
   );
   const show = meta?.show ?? ((value: string) => value);
+  const countOf = (value: string) => counts.get(value) ?? 0;
+  const isCounted = typeof counted === "function" ? counted : () => counted;
+  const detail =
+    counted === false
+      ? undefined
+      : (value: string) =>
+          !isCounted(value)
+            ? undefined
+            : unloaded.includes(value)
+              ? "load"
+              : String(countOf(value));
+  const detailLabel =
+    counted === false
+      ? undefined
+      : (value: string) =>
+          !isCounted(value)
+            ? undefined
+            : unloaded.includes(value)
+              ? "not loaded"
+              : `${countOf(value)} ${countOf(value) === 1 ? noun.one : noun.many}`;
   return (
     <MultiSelect
       // The funnel is the sign that it opens a panel, as it is on the text filter's `PanelTrigger`
@@ -99,13 +141,10 @@ export function ColumnFilter<TData>({
       onChange={(next) => column.setFilterValue(next.length === 0 ? undefined : next)}
       onOpenChange={onOpenChange}
       open={open}
-      // An option whose rows are not read yet says so rather than claim a count of zero.
-      optionDetail={(value) => (unloaded.includes(value) ? "load" : String(counts.get(value) ?? 0))}
-      optionDetailLabel={(value) =>
-        unloaded.includes(value)
-          ? "not loaded"
-          : `${counts.get(value) ?? 0} ${(counts.get(value) ?? 0) === 1 ? noun.one : noun.many}`
-      }
+      // An option whose rows are not read yet says so rather than claim a count of zero, and one
+      // that is not counted yet draws no count at all.
+      optionDetail={detail}
+      optionDetailLabel={detailLabel}
       optionLabel={show}
       options={options}
       searchLabel={`Search ${name}`}
@@ -113,7 +152,7 @@ export function ColumnFilter<TData>({
       triggerAriaLabel={
         picks.length === 0 ? `Filter ${name}` : `Filter ${name}: ${picks.length} picked`
       }
-      triggerClassName={filterTrigger(picks.length > 0)}
+      triggerClassName={filterTrigger(picks.length > 0, size)}
     >
       <FunnelIcon />
     </MultiSelect>
