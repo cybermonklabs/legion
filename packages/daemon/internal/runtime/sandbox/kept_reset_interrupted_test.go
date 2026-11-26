@@ -129,10 +129,7 @@ func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 			t.Fatal(err)
 		}
 		first.editPod(name, "the pod store to see the failed workspace-init", edit)
-		g, copied := first.suspendedCopy(name, func(o *Options) {
-			keptVolumes(SandboxMicroVM)(o)
-			o.BootTimeout = testRigBootTimeout
-		})
+		g, copied := first.suspendedCopy(name, withOptions(keptVolumes(SandboxMicroVM)), withTestBootTimeout())
 		g.eventually("the pod store to hold the failed pod", func() bool { return g.r.storedPod(name) != nil })
 		var deletes atomic.Int32
 		g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {

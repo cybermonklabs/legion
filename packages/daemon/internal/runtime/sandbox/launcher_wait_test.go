@@ -313,9 +313,8 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedLog{}
 			g := newRig(t, nil, withOptions(func(o *Options) {
-				o.BootTimeout = boot
 				o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-			}))
+			}), withTestBootTimeout())
 			g.autoStart.Store(false)
 			spec := workerSpec(t)
 			name := SandboxName(spec.Claim)

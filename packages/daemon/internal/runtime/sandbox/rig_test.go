@@ -1215,11 +1215,11 @@ func (g *rig) editPod(name, what string, edit func(*corev1.Pod)) {
 	})
 }
 
-// suspendedCopy stops g and is a second rig, made with config, that runs no controller and holds
+// suspendedCopy stops g and is a second rig, made with options, that runs no controller and holds
 // copies of the Sandbox name and of its pod as g's API holds them, the Sandbox set Suspended. It
 // answers that rig and the copy of the Sandbox. The second rig's API stamps uids from its own
 // count, so the copies carry a uid of their own, which no Sandbox that rig creates holds.
-func (g *rig) suspendedCopy(name string, config func(*Options)) (*rig, *unstructured.Unstructured) {
+func (g *rig) suspendedCopy(name string, options ...rigOption) (*rig, *unstructured.Unstructured) {
 	g.t.Helper()
 	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
 	if err != nil {
@@ -1235,7 +1235,7 @@ func (g *rig) suspendedCopy(name string, config func(*Options)) (*rig, *unstruct
 	pod.ResourceVersion = ""
 	pod.OwnerReferences[0].UID = suspended.GetUID()
 	g.stop()
-	return newRig(g.t, []k8sruntime.Object{suspended, pod}, withoutController(), withOptions(config)), suspended
+	return newRig(g.t, []k8sruntime.Object{suspended, pod}, append([]rigOption{withoutController()}, options...)...), suspended
 }
 
 // sandbox is the Sandbox named name in the tracker, or nil.
