@@ -1119,8 +1119,10 @@ after a Firefox install. Its first reading on this runner: 76 s for its 20 rows,
 139500196866 at 8a3e562b. Its first run with the agent rows, job 139585382100 at 5da78ef4,
 passed the agent rows in 47 s of row time, and reached its 4 minutes after 46 rows, since the
 four rows of going-agent-answer-length.e2e.ts were red tests then, three of which waited 41 s
-for an answer that did not come, and once more on their retry. So (76 + 47) s x 1.15 = 141 s ->
-3 min, and 1 min more for those four rows until a run where they pass reads them: 4 min. The
+for an answer that did not come, and once more on their retry. With every row passing it read
+121 s and 122 s at 61e9cbf6 (jobs 140094660234 and 140094660196), still with those four rows;
+three of them went with the hold of a long answer they tested, and the fourth is now
+going-agent-list-total.e2e.ts. So 122 s x 1.15 = 140 s -> 3 min. The
 Firefox install is the Chromium install's figure, 4 min: one browser's archives, with no apt,
 for the reason
 .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
@@ -1129,8 +1131,8 @@ row, the one row of going-agent-place tagged `@firefox`: the `firefox` project s
 that tag (e2e/playwright.config.ts), so the file's four other rows, which the models step runs,
 are not run again here. The file's five rows ran in 3.5 s of row time on Chromium, so the step
 takes the 4 min of the step before the models step, whose two rows are as short, until its
-first runs give it a reading. 4 + 4 + 4 + 2 + 4 + 4 min plus 135 s and 120 s = 26 min 15 s ->
-27 min.
+first runs give it a reading. 4 + 4 + 3 + 2 + 4 + 4 min plus 135 s and 120 s = 25 min 15 s ->
+26 min.
 
 ## Why the embedder job builds contracts
 

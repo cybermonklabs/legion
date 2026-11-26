@@ -385,11 +385,11 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
-  # 4 + 4 + 4 + 2 + 4 + 4 min plus 135 s and 120 s = 26 min 15 s -> 27 min.
+  # 4 + 4 + 3 + 2 + 4 + 4 min plus 135 s and 120 s = 25 min 15 s -> 26 min.
   embedder:
     if: inputs.lane == 'pull-request' || inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 27
+    timeout-minutes: 26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -449,8 +449,8 @@ jobs:
         working-directory: packages/dispatch
       - name: Browser-test the bar's answers and its agent against fake models
         # why: .github/ci-notes/dispatch-browser.md#what-the-embedder-jobs-models-step-runs-and-why-it-calls-playwright-directly
-        # (76 s + 47 s) x 1.15 = 141 s -> 3 min, plus 1 min until a passing run reads the answer-length rows.
-        timeout-minutes: 4
+        # 122 s x 1.15 = 140 s -> 3 min, its reading at 61e9cbf6 with three rows more than it runs now.
+        timeout-minutes: 3
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
