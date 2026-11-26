@@ -6,6 +6,7 @@ body: |-
   issue's key, status and title, and a later link to the same issue, or a link to another item in
   words of its own, counted as its words, as the bar draws them; the system prompt says a second
   link to the same item adds its words and draws no chip.
+  Text next to a link counts separately, even when the answer has no space there.
   `packages/contracts/fixtures/drawn-words.json` holds answers with the words the bar draws of
   each, and a test of the server and one of the web each hold their side to it. A reply of 120
   words or more gets one more model turn, which tells the model that count and asks for the same

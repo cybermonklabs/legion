@@ -53,8 +53,11 @@ func RenderAnswer(answer string, items Items) string {
 // or its issue's chip, since the date on its hover is not drawn; then split on white space, each
 // piece that holds a letter or a digit one word. So the marks of markdown that stand alone, a
 // list's dash or a heading's hashes, and a chip's separators (·) are no words, and a word with
-// marks around it, **Done**, is one. packages/contracts/fixtures/drawn-words.json holds answers
-// with the words the bar draws of each, which a test of the web's MarkdownBody holds it to too.
+// marks around it, **Done**, is one. Each link stands in its own element in the bar's DOM, so a
+// link's drawn words are separated by space from adjacent text such as a possessive
+// ([DEMO-1](dispatch://DEMO-1)'s), as the DOM text-node counter joins them.
+// packages/contracts/fixtures/drawn-words.json holds answers with the words the bar draws of each,
+// which a test of the web's MarkdownBody holds it to too.
 func DrawnWords(answer string, items Items) int {
 	words := 0
 	for piece := range strings.FieldsSeq(render(answer, items, false)) {
@@ -67,24 +70,28 @@ func DrawnWords(answer string, items Items) int {
 
 // render is answer as RenderAnswer writes it where hover is set, each time link with the date its
 // hover shows. Where hover is not set, it is the answer as the bar draws it: each time link as its
-// words alone, and each link whose own words the bar draws (drawnLinks.ownWords) as those words.
+// words alone, each link whose own words the bar draws (drawnLinks.ownWords) as those words, and
+// space either side of every link so text directly beside it is not joined onto the link's words.
 func render(answer string, items Items, hover bool) string {
 	var drawn drawnLinks
 	return RewriteLinks(answer, func(out *strings.Builder, written, words, href string) {
+		if !hover {
+			out.WriteByte(' ')
+		}
 		if !hover && drawn.ownWords(words, href) {
 			out.WriteString(words)
-			return
-		}
-		if timed, ok := timeLinkWords(words, href, items, hover); ok {
+		} else if timed, ok := timeLinkWords(words, href, items, hover); ok {
 			out.WriteString(timed)
-			return
-		}
-		named, ok := ParseTarget(href)
-		if !ok {
+		} else if named, ok := ParseTarget(href); !ok {
 			out.WriteString(written)
-			return
+		} else {
+			out.WriteByte('[')
+			out.WriteString(named.Words(items))
+			out.WriteByte(']')
 		}
-		out.WriteString("[" + named.Words(items) + "]")
+		if !hover {
+			out.WriteByte(' ')
+		}
 	})
 }
 

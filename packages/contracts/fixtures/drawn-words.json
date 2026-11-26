@@ -50,6 +50,16 @@
       "name": "a list with dashes",
       "markdown": "Open work:\n\n- [DEMO-12](dispatch://DEMO-12), held by the implementer\n- [DEMO-17](dispatch://DEMO-17), which [DEMO-12](dispatch://DEMO-12) waits on",
       "words": 25
+    },
+    {
+      "name": "a first issue link followed by a possessive",
+      "markdown": "Five of [DEMO-12](dispatch://DEMO-12)'s exports are ready.",
+      "words": 13
+    },
+    {
+      "name": "a repeated issue link followed by a possessive",
+      "markdown": "[DEMO-7](dispatch://DEMO-7) landed; [DEMO-7](dispatch://DEMO-7)'s craters are mapped.",
+      "words": 12
     }
   ]
 }
