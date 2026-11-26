@@ -278,7 +278,7 @@ func TestCheckState(t *testing.T) {
 			c.files["spec.yaml"] = append(c.files["spec.yaml"], Term{ID: "message", Name: "message", Definition: "-"})
 		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-term"}},
 		{name: "the tree rules refuse a file that holds no check and no statement for a problem of a term", change: func(c *checkCase) {
-			c.files["terms.yaml"] = []specNode{Term{ID: "message", Name: "message", Definition: "-"}}
+			c.files["terms.yaml"] = []Node{Term{ID: "message", Name: "message", Definition: "-"}}
 		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-term"}},
 		{name: "v-state 18: a merge changes a file that the test reads", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/testdata/a.json")
@@ -318,7 +318,7 @@ func TestCheckState(t *testing.T) {
 			c.reapprove(checkStateRun.Add(2*time.Hour), changed)
 		}, want: CheckState{State: "unknown", Reason: "statement_changed", Detail: checkStateLeaf.ID}},
 		{name: "v-suspect 2: L moves to another file with the same text", change: func(c *checkCase) {
-			c.files = map[string][]specNode{"spec.yaml": {checkStateTop, checkStateCheck}, "restart.yaml": {checkStateLeaf}}
+			c.files = map[string][]Node{"spec.yaml": {checkStateTop, checkStateCheck}, "restart.yaml": {checkStateLeaf}}
 		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
 		{name: "T's text, above L's, is approved again after the pass", change: func(c *checkCase) {
 			changed := checkStateTop

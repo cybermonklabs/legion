@@ -196,18 +196,9 @@ func (v *validator) ids() {
 		id, kind string
 		pos      Position
 	}
-	var all []held
-	for _, s := range v.tree.Statements {
-		all = append(all, held{s.ID, "statement", s.Pos})
-	}
-	for _, c := range v.tree.Checks {
-		all = append(all, held{c.ID, "check", c.Pos})
-	}
-	for _, c := range v.tree.Components {
-		all = append(all, held{c.ID, c.KindName(), c.Pos})
-	}
-	for _, term := range v.tree.Terms {
-		all = append(all, held{term.ID, "term", term.Pos})
+	all := make([]held, 0, len(v.tree.Statements)+len(v.tree.Checks)+len(v.tree.Components)+len(v.tree.Terms))
+	for _, n := range Nodes(v.tree) {
+		all = append(all, held{n.NodeID(), n.KindName(), n.NodePos()})
 	}
 	slices.SortStableFunc(all, func(a, b held) int {
 		return cmp.Or(cmp.Compare(a.pos.File, b.pos.File), cmp.Compare(a.pos.Line, b.pos.Line))

@@ -93,13 +93,10 @@ var checkStateTie = []string{
 type checkCase struct {
 	t *testing.T
 	Input
-	check   string                // the id of C
-	files   map[string][]specNode // the nodes of each spec file, in their order
+	check   string            // the id of C
+	files   map[string][]Node // the nodes of each spec file, in their order
 	history *FixtureHistory
 }
-
-// specNode is a node of a spec file of a checkCase.
-type specNode = Node
 
 // newCheckCase is the base of TestCheckState.
 func newCheckCase(t *testing.T) *checkCase {
@@ -116,7 +113,7 @@ func newCheckCase(t *testing.T) *checkCase {
 	}}}}}
 	s.History = s.history
 	s.Approved = Approved{Nodes: map[string]ApprovedNode{}}
-	s.files = map[string][]specNode{"spec.yaml": {checkStateTop, checkStateLeaf, checkStateCheck}}
+	s.files = map[string][]Node{"spec.yaml": {checkStateTop, checkStateLeaf, checkStateCheck}}
 	s.approve(checkStateApproved, checkStateTop, checkStateLeaf, checkStateCheck)
 	if problems := Validate(s.parse(), Options{}); len(problems) != 0 {
 		t.Fatalf("the base is not a valid tree: %+v", problems)
@@ -200,7 +197,7 @@ func (s *checkCase) specFiles() map[string][]byte {
 
 // approve adds a version of each node to the approved spec, approved at at; a node that it adds
 // the approved spec keeps, and its checks decide all of it.
-func (s *checkCase) approve(at time.Time, nodes ...specNode) {
+func (s *checkCase) approve(at time.Time, nodes ...Node) {
 	s.t.Helper()
 	for _, n := range nodes {
 		block, err := n.Print()
@@ -219,7 +216,7 @@ func (s *checkCase) approve(at time.Time, nodes ...specNode) {
 
 // approveEarlier puts an earlier text of a node before each version that the approved spec holds
 // of it, approved at at.
-func (s *checkCase) approveEarlier(at time.Time, earlier specNode) {
+func (s *checkCase) approveEarlier(at time.Time, earlier Node) {
 	s.t.Helper()
 	id := earlier.NodeID()
 	later := s.Approved.Nodes[id].Versions
@@ -234,7 +231,7 @@ func (s *checkCase) approveEarlier(at time.Time, earlier specNode) {
 }
 
 // reapprove approves a new text of a node at at, and the files hold it in the place of the old one.
-func (s *checkCase) reapprove(at time.Time, n specNode) {
+func (s *checkCase) reapprove(at time.Time, n Node) {
 	s.t.Helper()
 	s.approve(at, n)
 	s.swap(n)
@@ -242,7 +239,7 @@ func (s *checkCase) reapprove(at time.Time, n specNode) {
 
 // replace makes n the only approved text of its node, approved when its node was, and the files
 // hold it in the place of the old one.
-func (s *checkCase) replace(n specNode) {
+func (s *checkCase) replace(n Node) {
 	s.t.Helper()
 	id := n.NodeID()
 	at := s.Approved.Nodes[id].Versions[0].At
@@ -273,7 +270,7 @@ func (s *checkCase) refuse(change func(c *Check)) {
 }
 
 // swap puts n in the files in the place of the node with its id.
-func (s *checkCase) swap(n specNode) {
+func (s *checkCase) swap(n Node) {
 	for name, nodes := range s.files {
 		for i, old := range nodes {
 			if old.NodeID() == n.NodeID() {

@@ -204,7 +204,7 @@ func TestPrintThenReadKeepsEveryText(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Parse(%q):\n got %+v\nwant %+v", document, got, want)
 			}
-			if nodeDigest(got) != nodeDigest(node) {
+			if got.Digest() != node.Digest() {
 				t.Errorf("Parse(%q) has another digest than the node it printed", document)
 			}
 		}
@@ -376,11 +376,6 @@ func sortedLists(node Node) Node {
 		return n
 	}
 	return node
-}
-
-// nodeDigest is the digest of node.
-func nodeDigest(node Node) string {
-	return node.Digest()
 }
 
 // typedPlain is each pattern by which a YAML reader reads a plain scalar as another type than a

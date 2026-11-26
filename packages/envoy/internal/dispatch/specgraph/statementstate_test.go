@@ -325,12 +325,12 @@ func TestStatementState(t *testing.T) {
 		}, want: []StatementState{held(T, "unknown", "refused", "bad-term", "unknown"), held(L1, "unknown", "refused", "bad-term", "unknown"),
 			held(L2, "unknown", "refused", "bad-term", "unknown"), held(P, "unknown", "refused", "bad-term", "unknown")}},
 		{name: "a problem of a component in a file of its own refuses each statement of the tree", change: func(s *checkCase) {
-			s.files["components.yaml"] = []specNode{Component{ID: "listener", Name: "the listener", Purpose: "-"}}
+			s.files["components.yaml"] = []Node{Component{ID: "listener", Name: "the listener", Purpose: "-"}}
 		}, want: []StatementState{held(T, "unknown", "refused", "bad-component", "unknown"), held(L1, "unknown", "refused", "bad-component", "unknown"),
 			held(L2, "unknown", "refused", "bad-component", "unknown"), held(P, "unknown", "refused", "bad-component", "unknown")}},
 		{name: "a problem of a term refuses P and its check in a file of their own too", change: func(s *checkCase) {
 			s.drop(P, CP)
-			s.files["p.yaml"] = []specNode{statementSupporter, statementSupporterCheck}
+			s.files["p.yaml"] = []Node{statementSupporter, statementSupporterCheck}
 			s.files["spec.yaml"] = append(s.files["spec.yaml"], Term{ID: "message", Name: "message", Definition: "-"})
 		}, want: []StatementState{held(T, "unknown", "refused", "bad-term", "unknown"), held(P, "unknown", "refused", "bad-term", "unknown")}},
 	} {
@@ -443,11 +443,11 @@ func TestNoTreeThatTheRulesRefuseReadsTrueOrMet(t *testing.T) {
 		}},
 		{"a term with no definition in another file than a statement and its check", func(s *checkCase) {
 			s.drop(statementSupporter.ID, statementSupporterCheck.ID)
-			s.files["p.yaml"] = []specNode{statementSupporter, statementSupporterCheck}
+			s.files["p.yaml"] = []Node{statementSupporter, statementSupporterCheck}
 			s.files["spec.yaml"] = append(s.files["spec.yaml"], Term{ID: "message", Name: "message", Definition: "-"})
 		}},
 		{"a component with no purpose in a file of its own", func(s *checkCase) {
-			s.files["components.yaml"] = []specNode{Component{ID: "listener", Name: "the listener", Purpose: "-"}}
+			s.files["components.yaml"] = []Node{Component{ID: "listener", Name: "the listener", Purpose: "-"}}
 		}},
 		// The entry refuses a loop of the approved spec (R5), so each loop is in the files alone.
 		{"a loop of a statement and the statement under it in the files", func(s *checkCase) {
@@ -580,7 +580,7 @@ func newStatementCase(t *testing.T) *checkCase {
 }
 
 // addNodes approves each node with the base's nodes and writes it at the end of spec.yaml.
-func (s *checkCase) addNodes(nodes ...specNode) {
+func (s *checkCase) addNodes(nodes ...Node) {
 	s.t.Helper()
 	for _, n := range nodes {
 		s.approve(checkStateApproved, n)
@@ -590,7 +590,7 @@ func (s *checkCase) addNodes(nodes ...specNode) {
 
 // addCheck adds the program check c, after the nodes before it, with the tie of C, a pass of its
 // job at c1 and a failing example planted on c1 on which its test failed.
-func (s *checkCase) addCheck(c Check, before ...specNode) {
+func (s *checkCase) addCheck(c Check, before ...Node) {
 	s.t.Helper()
 	s.addNodes(append(before, c)...)
 	s.tieLikeC(c.ID)
@@ -613,7 +613,7 @@ func (s *checkCase) runOutcome(id string, outcome Outcome) {
 // drop takes the nodes with the ids out of the files; the approved spec keeps them.
 func (s *checkCase) drop(ids ...string) {
 	for name, nodes := range s.files {
-		s.files[name] = slices.DeleteFunc(slices.Clone(nodes), func(n specNode) bool { return slices.Contains(ids, n.NodeID()) })
+		s.files[name] = slices.DeleteFunc(slices.Clone(nodes), func(n Node) bool { return slices.Contains(ids, n.NodeID()) })
 	}
 }
 

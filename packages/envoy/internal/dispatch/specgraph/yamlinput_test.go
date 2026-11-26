@@ -27,7 +27,7 @@ import (
 // fullNodes is one node of each kind, with each member of its document set: a statement with a
 // parent, a statement that it serves and a node that it is about; a program check with its test
 // and a time limit; a component with a parent; an interface; and a term.
-var fullNodes = []specNode{
+var fullNodes = []Node{
 	Statement{ID: "a-claim-survives-a-restart", Kind: KindBehavior, Parent: "legion-keeps-each-claim", Serves: []string{"legion-keeps-the-work"},
 		About: []string{"legion"}, Text: "Legion keeps each claim after it starts again."},
 	Check{ID: "a-restart-keeps-the-claim", Serves: "a-claim-survives-a-restart", Subject: SubjectCode, Procedure: ProcedureProgram,

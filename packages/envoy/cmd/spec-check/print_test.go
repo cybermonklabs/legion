@@ -437,7 +437,7 @@ func TestPrintNamesTheWayOutOfAFileThatIsNotPrinted(t *testing.T) {
 	}
 }
 
-// A run of print changes all of its files or none (B2). The case of the review: a directory named
+// A run of print changes all of its files or none: a directory named
 // components.yaml beside the file of a statement, and a run that changes the statement and adds
 // a component, which goes into components.yaml. print refuses before it writes anything, and the
 // directory is byte for byte as it was, so tree still takes it.
@@ -491,7 +491,7 @@ func TestPrintWritesNothingWhenOneFileCannotBeWritten(t *testing.T) {
 	}
 }
 
-// Two runs of print at one time into one directory each write their node (N1): print holds the
+// Two runs of print at one time into one directory each write their node: print holds the
 // lock of the directory for its whole run, so the second run waits for the first and reads the
 // files that the first wrote. Five trials of four runs, each with another term of about 12 KB, into
 // a directory that does not exist yet; after each trial the directory holds the four terms. A run

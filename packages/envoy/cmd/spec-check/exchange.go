@@ -232,7 +232,7 @@ func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[s
 
 // The words of the refusals of print where a system or a file system cannot do what print does,
 // each with its way out: noExchange, of a system that gives no call that exchanges two directories
-// (exchange_other.go); noFlock, of a system that gives no flock (lock_other.go); noExchangeWayOut,
+// (exchange_other.go); noFlock, of a system that gives no flock (sys_other.go); noExchangeWayOut,
 // after the refusal of the exchange by a file system that does not exchange two directories; and
 // mountPointWayOut, the way out of a spec directory that is a mount point.
 const (
