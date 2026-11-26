@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -313,9 +314,9 @@ func TestAnUnpromptedTurnsCyberPolicyCodeFailsTheClaimUnderItsOwnCause(t *testin
 	}
 }
 
-// The daemon reads one class off a report, `cyber_policy`; a report naming another is taken as one
-// that names none, as a status outside the HTTP range is, and the route warns naming it rather
-// than refusing the report, so the turn is still counted.
+// The daemon reads `cyber_policy` and `cost_cap` off a report; a report naming another word is
+// taken as one that names none, as a status outside the HTTP range is, and the route warns naming
+// it rather than refusing the report, so the turn is still counted.
 func TestATurnOutcomeWithAnUnknownCodeIsTakenAsNoCodeWithAWarning(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
@@ -324,7 +325,7 @@ func TestATurnOutcomeWithAnUnknownCodeIsTakenAsNoCodeWithAWarning(t *testing.T) 
 	recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
 		ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
 		Generation: 1, Sequence: 1, Outcome: claim.TurnRefused, Message: "the provider refused the reminder's turn",
-		Unprompted: true, Code: "cost_cap",
+		Unprompted: true, Code: "session_busy",
 	})
 
 	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 1}) {
@@ -333,7 +334,52 @@ func TestATurnOutcomeWithAnUnknownCodeIsTakenAsNoCodeWithAWarning(t *testing.T) 
 	if stored := h.stored(token); stored.State == supervise.StateFailed {
 		t.Fatalf("the claim failed (%q) on a code the daemon reads none of", stored.FailureCause)
 	}
-	if lines := h.serverLog.lines("level=WARN", "taken as no code", "code=cost_cap"); len(lines) != 1 {
+	if lines := h.serverLog.lines("level=WARN", "taken as no code", "code=session_busy"); len(lines) != 1 {
 		t.Fatalf("the route warned %q, want one line naming the code it took as none", h.serverLog.lines("code="))
+	}
+}
+
+// The route hands the cost cap and task number to the machine at the task-take contract.
+// Below that contract, it records the report but warns and drops the code.
+func TestATurnOutcomeCostCapCodeAtTaskTakeContractIsHandedToTheMachine(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		contract int
+		code     string
+		warnings int
+	}{
+		{"at task-take", TaskTakeContract(), "cost_cap", 0},
+		{"below task-take", TaskTakeContract() - 1, "", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarnessUnrelaunchable(t)
+			token, boot := h.launch("LEGION-208", claim.RoleImplementer)
+			registered := h.registerContract(boot, "ses_implementer", tc.contract, false)
+			refusal := "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent."
+
+			recorder := h.request(http.MethodPost, "/legion/v1/claims/turn-outcome", claim.TurnOutcomeRequest{
+				ClaimToken: token, SessionID: "ses_implementer", Secret: registered.Secret,
+				Generation: 1, Sequence: 1, Outcome: claim.TurnRefused, Message: refusal,
+				Task:          1,
+				ProviderError: &claim.ProviderError{Message: refusal},
+				Code:          "cost_cap",
+			}, http.Header{pluginContractHeader: {strconv.Itoa(tc.contract)}})
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("the cost_cap report = %d (body %s), want 200", recorder.Code, recorder.Body)
+			}
+			var answer claim.TurnOutcomeResponse
+			decodeInto(t, recorder, &answer)
+			if answer != (claim.TurnOutcomeResponse{RefusedRun: 1}) {
+				t.Fatalf("the cost_cap answer = %+v, want a run of 1 and no failure", answer)
+			}
+			stored := h.stored(token)
+			if outcomes := stored.TurnOutcomes; len(outcomes) != 1 || outcomes[0].Task != 1 || outcomes[0].ProviderErrorCode != tc.code {
+				t.Errorf("stored turn outcomes = %+v, want one outcome for task 1 with code %q", outcomes, tc.code)
+			}
+			if lines := h.serverLog.lines("level=WARN", "taken as no code", "code=cost_cap"); len(lines) != tc.warnings {
+				t.Errorf("the route warned %q, want %d warnings about taking cost_cap as no code", lines, tc.warnings)
+			}
+		})
 	}
 }

@@ -2377,6 +2377,38 @@ test("a turn outcome's held names a task number, and a report may leave it out",
   expect(LegionTurnOutcomeRequest.safeParse({ ...report, held: "4" }).success).toBeFalse();
 });
 
+// `code` carries the producer's class for a refused turn: `cyber_policy` (contract entry
+// 20261125174608) and `cost_cap` (this branch's task-take entry, 20261125171504). Any other word
+// is refused by the strict client contract.
+test("a turn outcome's code admits cost_cap beside cyber_policy and refuses unknown words", () => {
+  const report = {
+    claimToken: "legion-omp-LEGION-208-implementer",
+    sessionId: "ses_implementer_208",
+    secret: "sec-2",
+    generation: 5,
+    sequence: 3,
+    outcome: "refused",
+    message:
+      "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.",
+    task: 4,
+    providerError: {
+      status: 0,
+      provider: "",
+      model: "",
+      message:
+        "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.",
+      retryable: false,
+    },
+  } as const;
+  expect(LegionTurnOutcomeRequest.safeParse({ ...report, code: "cost_cap" }).success).toBeTrue();
+  expect(
+    LegionTurnOutcomeRequest.safeParse({ ...report, code: "cyber_policy" }).success
+  ).toBeTrue();
+  expect(
+    LegionTurnOutcomeRequest.safeParse({ ...report, code: "session_busy" }).success
+  ).toBeFalse();
+});
+
 test("an escalation rejects empty required fields", () => {
   const request = { grantId: "grant-208", issue: "LEGION-208", reason: "needs controller triage" };
   for (const field of ["grantId", "issue", "reason"] as const) {

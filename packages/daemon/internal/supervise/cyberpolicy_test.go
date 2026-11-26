@@ -427,9 +427,7 @@ func TestAStoredCauseReadsAsCyberPolicyOnlyBesideItsProviderError(t *testing.T) 
 // One classification decides both what a provider error is called and whether it fails the claim
 // (classifyProviderError), so the two cannot drift for a class. A cyber-policy refusal fails under
 // its own word whatever its status; a client error that is none of 401, 403, 408 and 429 fails
-// under provider_error, and every other error clears. No other class is read: a turn-outcome
-// report carries cyber_policy or nothing (the route takes any other word as none), so a word such
-// as Oh My Pi's `cost_cap` is judged by its status alone.
+// under provider_error, a cost cap among them, and every other error clears.
 func TestOneClassificationNamesAProviderErrorAndDecidesItsFailure(t *testing.T) {
 	for _, tc := range []struct {
 		status int
@@ -439,8 +437,8 @@ func TestOneClassificationNamesAProviderErrorAndDecidesItsFailure(t *testing.T) 
 	}{
 		{0, codeCyberPolicy, "OpenAI's cyber_policy refusal of this session's content", CauseCyberPolicy},
 		{503, codeCyberPolicy, "OpenAI's cyber_policy refusal of this session's content (HTTP 503)", CauseCyberPolicy},
-		{0, "cost_cap", "a provider error", ""},
-		{400, "cost_cap", "a provider error (HTTP 400)", CauseProviderError},
+		{0, "cost_cap", "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)", ""},
+		{400, "cost_cap", "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)", CauseProviderError},
 		{400, "", "a provider error (HTTP 400)", CauseProviderError},
 		{429, "", "a provider error (HTTP 429)", ""},
 		{401, "", "a provider error (HTTP 401)", ""},

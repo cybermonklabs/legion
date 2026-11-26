@@ -275,6 +275,37 @@ func TestACyberPolicyRefusalHoldsTheIssueWhateverItsStatus(t *testing.T) {
 	}
 }
 
+// A session past Oh My Pi's cost cap is the other class the daemon reads: it can clear when a
+// person raises the cap, and a refused take costs nothing, so the task climbs the ladder as a
+// statusless error does, and the cause is named rather than "a provider error", so the
+// controller's notice says what to raise.
+func TestACostCapClimbsTheLadderAndIsNamed(t *testing.T) {
+	var reasons []string
+	h := workingClaim(t, currentPlugin, func(d *Deps) {
+		d.ProviderErrorRunReached = func(_ Claim, reason string) { reasons = append(reasons, reason) }
+	})
+
+	takes := 1
+	for turn := range providerErrorRunTold {
+		number := h.pending().Number
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		if _, err := h.reportCostCap(number); err != nil {
+			t.Fatalf("report the cost cap: %v", err)
+		}
+		message := h.climbs(takes, promptRetryDelay(turn+1))
+		takes++
+		if !strings.Contains(message, "the session's cost cap") {
+			t.Fatalf("take %d is %q, want it to name the session's cost cap", takes, message)
+		}
+	}
+	if state := h.state(); state != StateWorking {
+		t.Fatalf("the claim is %s after %d cost-cap turns, want it working the task it took again", state, providerErrorRunTold)
+	}
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "cost_cap") {
+		t.Fatalf("the controller was told %q, want one notice naming cost_cap", reasons)
+	}
+}
+
 // R2: a newer daemon task for the claim replaces the task a provider error took back, and is
 // taken at once. Nothing works the owed task, the ladder's next step can be ten minutes away and
 // a run of errors has no end of its own, so a task that waited behind it would wait that long.
