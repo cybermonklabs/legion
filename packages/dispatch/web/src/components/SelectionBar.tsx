@@ -146,14 +146,10 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // How many readings one landing is given before it is let be: a landing nothing settles costs
   // these frames and no more.
   const readings = useRef(0);
-  // How many readings in a row have found the landing settled: the first owes one more, because an
-  // engine drops the focus as it paints the commit that reading was taken in.
-  const quiet = useRef(0);
   /** Forgets the landing owed a reading, with whatever waits on it. */
   const forget = useCallback(() => {
     landed.current = null;
     readings.current = 0;
-    quiet.current = 0;
     watch.current?.();
     watch.current = null;
     if (frame.current !== null) window.cancelAnimationFrame(frame.current);
@@ -214,12 +210,14 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // next action (`READER_ACTS`): a press, a key or a wheel of theirs means they have moved on, and
   // nothing of this follows them.
   //
-  // It is read after every commit and in the frame each reading paints, until the landing is both
-  // in the reader's sight and holding the focus, because neither host says when that is: the
-  // Inbox's write lets its rows go in a commit after the bar's and an engine can drop the focus
-  // in a frame after that, and the project List takes its rows and its bar away in the one commit
-  // the bar's going hands the focus in, which no commit of its own follows. Each reading is
-  // `READINGS` at most, so a landing nothing settles costs a known number of frames.
+  // It is read after every commit and in the frame each reading paints, because no host says when
+  // the going is over: the Inbox's write lets its rows go in a commit after the bar's and an engine
+  // can drop the focus in a frame after that, the project List takes its rows and its bar away in
+  // the one commit the bar's going hands the focus in, which no commit of its own follows, and the
+  // room a bar's foot had goes back to the box in a pass of its own at the frame after that
+  // (`hooks/useFootInset.ts`, `clearNextFrame`), which moves the box the reader sees the row
+  // through. A reading that finds nothing owed changes nothing, so the readings run to `READINGS`
+  // of them or to the reader's own next action, whichever comes first.
   const finish = useCallback((): void => {
     const landing = landed.current;
     if (landing === null) return;
@@ -244,19 +242,10 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       forget();
       return;
     }
-    // A reading that finds the landing holding the focus and whole in the reader's sight has
-    // nothing to do. It is the last, unless it is the first after the press's rows and bar went:
-    // an engine draws the row again as it paints that commit, and drops the focus then, so one
-    // reading of the frame after it is owed whatever this one finds.
-    if (!lost && inSightWhole(mark, new Map())) {
-      quiet.current += 1;
-      if (quiet.current >= 2) forget();
-      else again();
-      return;
-    }
-    quiet.current = 0;
+    // A landing in the reader's sight whole has nothing owed but the focus, which an engine can
+    // drop as it paints a commit that draws the row again.
     const head = list.head?.() ?? null;
-    if (inSightNow(mark, new Map())) {
+    if (inSightWhole(mark, new Map())) {
       if (lost) focusNoScroll(mark);
       again();
       return;
@@ -293,7 +282,6 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     forget();
     landed.current = { at: viewScrollOf(mark), id, last };
     readings.current = 0;
-    quiet.current = 0;
     const acted = () => forget();
     for (const kind of READER_ACTS) {
       document.addEventListener(kind, acted, { capture: true, passive: true });
@@ -340,9 +328,11 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
 }
 
 /** How many readings one landing of the bar's hand-off is given (`useLastMarkedPlace`): the rows
- *  and the bar of a press go within a few frames of each other, and an engine drops the focus in
- *  the frame it draws the row again, so a landing nothing settles is let be after these. */
-const READINGS = 12;
+ *  and the bar of a press go within a second of each other - the project List's box took its foot
+ *  back more than two frames after its marks cleared (builds Job
+ *  `infra-3135-infra-3135-r29r-probe-c6gtz`) - and an engine drops the focus in the frame it draws
+ *  the row again, so a landing nothing settles is let be after these. */
+const READINGS = 60;
 
 /** The bar's hand-off, as the hook answers it (`useLastMarkedPlace`). */
 export interface MarkedPlace {

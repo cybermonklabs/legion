@@ -1204,6 +1204,51 @@ test("a landing the view moved away from under the reader is shown whole again b
 // again from the rows the list holds now: the nearest row before it that the reader can see takes
 // the focus, shown whole by the least scroll. Here the window ends at 150 px, which leaves
 // CORE-14's mark below it and cuts CORE-11's.
+// INFRA-3135, round 28 (the tester's red row `4d4d86f3`): the box takes the room the bar's foot
+// had back from it several frames after the marks clear - at 390x664 the project List's box still
+// ended at 494 two frames after the landing and at 474 later (builds Jobs
+// `infra-3135-infra-3135-r29q-probe-7r2kg` and `-r29r-probe-c6gtz`) - so a reading whose sight is
+// not the one before it owes another, however whole the landing looks in it.
+test("a landing is read again while the sight around it is still moving", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(rowBox("CORE-14")).toHaveFocus();
+    // Two frames in which the landing stands whole, as the List's box did while it still held the
+    // bar's room, and then the sight the box leaves behind.
+    for (let frame = 0; frame < 2; frame++) {
+      const painted = Promise.withResolvers<void>();
+      requestAnimationFrame(() => painted.resolve());
+      await act(async () => {
+        await painted.promise;
+      });
+    }
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
+    const painted = Promise.withResolvers<void>();
+    requestAnimationFrame(() => painted.resolve());
+    await act(async () => {
+      await painted.promise;
+    });
+    // CORE-14's mark stands at 200 to 300 under a window that ends at 150, so the reading passes it
+    // over and hands the place off again: CORE-11, at 100 to 200, is the nearest before it in sight.
+    expect(focusedName()).toBe("Select CORE-11");
+  } finally {
+    answered();
+    disarm();
+    if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
+    else Object.defineProperty(window, "innerHeight", height);
+    view.unmount();
+    laidOut();
+  }
+});
+
 // INFRA-3135, round 28 (the tester's red row `4d4d86f3`): the project List takes its rows and its
 // bar away in the one commit whose going hands the focus on, and no commit of its own follows it,
 // so the reading is taken in the frame that commit paints. Measured in Chromium and WebKit at
