@@ -8,7 +8,9 @@
 // the gvisor runtime class (share_volumes_kind_test.go and burstable_kind_test.go build both). What
 // the proof stands in for lies outside the volume path, as the Burstable proof's does: the agent is
 // a sleep stub, the store answers as the daemon's does for an issue's first launch, the repository
-// is a public one, and the roles' gh files hold a placeholder token.
+// is a public one, the roles' gh files hold a placeholder token, and every case's providers Secret
+// holds a URL nothing dials (writeLiveProvidersSecret), the three cases the script only probes
+// included, since the probe pod of each mounts its own project's Secret.
 package daemon
 
 import (
@@ -23,6 +25,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -69,6 +72,17 @@ func TestShareVolumesMountInAnIssuePodLive(t *testing.T) {
 		}
 		fmt.Printf("== %s: %s loads %d volumes, %d mounts\n", tc.name, path, len(cfg.Runtime.Kubernetes.Pod.Volumes), len(cfg.Runtime.Kubernetes.Pod.VolumeMounts))
 		if tc.name != "shares" {
+			// The script's `legion probe-boot` runs on this file, and its probe pod mounts the case's
+			// own project's providers Secret, which the probe reads before any share.
+			rc, err := kubeClient(*cfg.Runtime.Kubernetes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clients, err := kubernetes.NewForConfig(rc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeLiveProvidersSecret(ctx, t, clients, cfg)
 			results = append(results, fmt.Sprintf("%s - %s", tc.name, path))
 			continue
 		}
@@ -91,16 +105,20 @@ func TestShareVolumesMountInAnIssuePodLive(t *testing.T) {
 			}
 		}
 		for _, c := range pod.Spec.Containers {
+			mounted := true
 			for _, mount := range want[tc.name].VolumeMounts {
 				found := false
 				for _, m := range c.VolumeMounts {
 					found = found || reflect.DeepEqual(m, mount)
 				}
 				if !found {
+					mounted = false
 					t.Errorf("container %s mounts %+v, want %+v among them", c.Name, c.VolumeMounts, mount)
 				}
 			}
-			fmt.Printf("   container %s mounts team at /mnt/team (read-only) and scratch at /mnt/scratch (writable)\n", c.Name)
+			if mounted {
+				fmt.Printf("   container %s mounts team at /mnt/team (read-only) and scratch at /mnt/scratch (writable)\n", c.Name)
+			}
 		}
 		for _, c := range pod.Spec.InitContainers {
 			for _, m := range c.VolumeMounts {
@@ -109,7 +127,11 @@ func TestShareVolumesMountInAnIssuePodLive(t *testing.T) {
 				}
 			}
 		}
-		fmt.Printf("ok %s launched in %s\n", tc.name, time.Since(started).Round(time.Second))
+		// `shares` is the first case and the only one launched, so the test has failed here only
+		// where this case's own checks above did.
+		if !t.Failed() {
+			fmt.Printf("ok %s launched in %s\n", tc.name, time.Since(started).Round(time.Second))
+		}
 		results = append(results, fmt.Sprintf("%s %s/%s %s", tc.name, pod.Namespace, pod.Name, path))
 	}
 	if err := os.WriteFile(env["LEGION_E2E_RESULT"], []byte(strings.Join(results, "\n")+"\n"), 0o600); err != nil {

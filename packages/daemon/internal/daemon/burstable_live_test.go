@@ -76,21 +76,31 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 			pod.Status.QOSClass, liveString(pod.Spec.RuntimeClassName), pod.Spec.NodeName, liveCondition(pod, corev1.PodScheduled))
 		fmt.Printf("   roles container: requests cpu %s memory %s; limits cpu %s memory %s\n",
 			roles.Resources.Requests.Cpu(), roles.Resources.Requests.Memory(), roles.Resources.Limits.Cpu(), roles.Resources.Limits.Memory())
+		// failed is this case's own errors: its checks report and go on, so its ok line is printed
+		// only for a case that held, and one failed case hides no other case's ok line.
+		failed := false
+		errorf := func(format string, args ...any) {
+			t.Helper()
+			failed = true
+			t.Errorf(format, args...)
+		}
 		if pod.Status.QOSClass != tc.qos {
-			t.Errorf("%s: pod %s is %q, want %s", tc.name, pod.Name, pod.Status.QOSClass, tc.qos)
+			errorf("%s: pod %s is %q, want %s", tc.name, pod.Name, pod.Status.QOSClass, tc.qos)
 		}
 		for _, kind := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory, corev1.ResourceEphemeralStorage} {
 			if got, want := roles.Resources.Requests[kind], tc.issue.Requests[kind]; got.Cmp(want) != 0 {
-				t.Errorf("%s: the roles container requests %s %s, want %s", tc.name, kind, got.String(), want.String())
+				errorf("%s: the roles container requests %s %s, want %s", tc.name, kind, got.String(), want.String())
 			}
 			if got, want := roles.Resources.Limits[kind], tc.issue.Limits[kind]; got.Cmp(want) != 0 {
-				t.Errorf("%s: the roles container is limited to %s %s, want %s", tc.name, kind, got.String(), want.String())
+				errorf("%s: the roles container is limited to %s %s, want %s", tc.name, kind, got.String(), want.String())
 			}
 		}
 		if scheduled := liveCondition(pod, corev1.PodScheduled); scheduled != corev1.ConditionTrue {
-			t.Errorf("%s: pod %s PodScheduled is %q, want True", tc.name, pod.Name, scheduled)
+			errorf("%s: pod %s PodScheduled is %q, want True", tc.name, pod.Name, scheduled)
 		}
-		fmt.Printf("ok %s in %s\n", tc.name, time.Since(started).Round(time.Second))
+		if !failed {
+			fmt.Printf("ok %s in %s\n", tc.name, time.Since(started).Round(time.Second))
+		}
 		results = append(results, fmt.Sprintf("%s %s/%s %s", tc.name, pod.Namespace, pod.Name, path))
 	}
 	if err := os.WriteFile(env["LEGION_E2E_RESULT"], []byte(strings.Join(results, "\n")+"\n"), 0o600); err != nil {
@@ -150,18 +160,7 @@ func startLiveRoots(ctx context.Context, t *testing.T, cfg config.Config, log *s
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Every pod mounts the providers Secret where the file names any of its keys (sandbox's
-	// providers): here the session database URL key of the postgres session store. An operator
-	// writes that Secret for a deployment; on the proof's throwaway cluster the driver writes it,
-	// with a URL nothing dials, since the agent is a sleep stub. Without it the kubelet mounts no
-	// volume of the pod, and no init container starts.
-	if key := k.SessionStore.DSNSecretKey(); key != "" {
-		providers := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: sandbox.ProvidersSecretName(project), Namespace: k.Namespace},
-			StringData: map[string]string{key: "postgres://legion:legion@127.0.0.1:1/sessions"}}
-		if _, err := clients.CoreV1().Secrets(k.Namespace).Create(ctx, providers, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			t.Fatalf("write the providers Secret %s: %v", providers.Name, err)
-		}
-	}
+	writeLiveProvidersSecret(ctx, t, clients, cfg)
 	l := &liveRoots{ctx: ctx, t: t, namespace: k.Namespace, project: project, repo: repo, defaultBranch: defaultBranch,
 		clients: clients, boots: map[string]claim.Token{}}
 	resolve := func(presented string) (claim.Token, uint64, bool, bool, error) {
@@ -189,6 +188,32 @@ func startLiveRoots(ctx context.Context, t *testing.T, cfg config.Config, log *s
 		t.Fatal(err)
 	}
 	return l
+}
+
+// writeLiveProvidersSecret writes cfg's providers Secret (sandbox.ProvidersSecretName) through
+// clients. Every pod mounts that Secret where the file names any of its keys (sandbox's providers):
+// here the session database URL key of the postgres session store. The image probe's pod mounts it
+// too, and the probe refuses a pod that cannot mount it before it reads any of the pod's other
+// volumes (sandbox's stuck). An operator writes that Secret for a deployment; on the proof's
+// throwaway cluster the driver writes it, with a URL nothing dials, since the agent is a sleep
+// stub. Without it the kubelet mounts no volume of the pod, and no init container starts.
+func writeLiveProvidersSecret(ctx context.Context, t *testing.T, clients kubernetes.Interface, cfg config.Config) {
+	t.Helper()
+	k := *cfg.Runtime.Kubernetes
+	key := k.SessionStore.DSNSecretKey()
+	if key == "" {
+		return
+	}
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providers := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: sandbox.ProvidersSecretName(project), Namespace: k.Namespace},
+		StringData: map[string]string{key: "postgres://legion:legion@127.0.0.1:1/sessions"}}
+	if _, err := clients.CoreV1().Secrets(k.Namespace).Create(ctx, providers, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("write the providers Secret %s: %v", providers.Name, err)
+	}
+	fmt.Printf("   providers Secret %s/%s: %s, a URL nothing dials\n", k.Namespace, providers.Name, key)
 }
 
 // launch launches the root architect of issue through the runtime's Spawn and returns the issue

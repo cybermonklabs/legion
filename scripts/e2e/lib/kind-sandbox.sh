@@ -27,10 +27,14 @@
 # that digest, so a pod's start never waits on a registry.
 # kind_sandbox_internal_kubeconfig FILE writes the kubeconfig a container on the kind network reads,
 # whose server is the node's address on that network.
-# kind_sandbox_teardown STATUS EVIDENCE writes, when STATUS is not 0, what the cluster held (pods,
+# kind_sandbox_evidence STATUS EVIDENCE writes, when STATUS is not 0, what the cluster holds (pods,
 # Sandboxes, volume claims, events and the legion namespace's container logs) to
-# EVIDENCE/cluster-at-failure.txt, then deletes the cluster. It does nothing before
-# kind_sandbox_create has named a cluster, or once the cluster is gone.
+# EVIDENCE/cluster-at-failure.txt, once: a caller that must release something of the cluster before
+# its teardown (share-volumes-kind.sh's pods, which mount an NFS share) calls it first, so the
+# evidence is what the failure left.
+# kind_sandbox_teardown STATUS EVIDENCE writes that evidence where no earlier call wrote it, then
+# deletes the cluster. Each does nothing before kind_sandbox_create has named a cluster, or once
+# the cluster is gone.
 #
 # LEGION_E2E_KIND names the kind binary when it is not on PATH.
 
@@ -39,6 +43,7 @@ kind_cluster=
 kind_context=
 kind_kubeconfig=
 kind_node=
+kind_evidence_written=
 kind_node_image=
 
 kind_busybox=ghcr.io/cybermonklabs/legion/ci@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
@@ -98,7 +103,12 @@ EOF
   kind_k run gvisor-check --image="$kind_busybox" --restart=Never \
     --overrides='{"spec":{"runtimeClassName":"gvisor"}}' -- dmesg
   kind_k wait --for=jsonpath='{.status.phase}'=Succeeded pod/gvisor-check --timeout=180s
-  kind_k logs gvisor-check | grep -q 'Starting gVisor' || fail "a gvisor pod's kernel is not gVisor's: $(kind_k logs gvisor-check)"
+  # The whole log is read before it is matched: under the caller's pipefail, a `grep -q` reading
+  # kubectl's output exits at its first match, and a kubectl still writing dies of SIGPIPE, which
+  # fails the check on a log that holds the line.
+  local kernel
+  kernel=$(kind_k logs gvisor-check) || fail "cannot read the gvisor-check pod's log"
+  [[ $kernel == *'Starting gVisor'* ]] || fail "a gvisor pod's kernel is not gVisor's: $kernel"
   note "a runtimeClassName: gvisor pod runs under $(docker exec "$kind_node" /usr/local/bin/runsc --version | head -1)"
   kind_k delete pod gvisor-check --wait=false
 }
@@ -113,20 +123,35 @@ kind_sandbox_internal_kubeconfig() {
   "$kind_bin" get kubeconfig --internal --name "$kind_cluster" >"$1"
 }
 
+# kind_sandbox_live says whether kind still lists the cluster kind_sandbox_create named. kind's
+# whole list is read before it is matched: kind writes one line per cluster, so a `grep -qx` that
+# matched before the last line leaves kind to die of SIGPIPE under pipefail, and a live cluster
+# would be taken for one already gone.
+kind_sandbox_live() {
+  [ -n "$kind_cluster" ] || return 1
+  local clusters
+  clusters=$("$kind_bin" get clusters 2>/dev/null) || return 1
+  grep -qx "$kind_cluster" <<<"$clusters"
+}
+
+kind_sandbox_evidence() {
+  local status=$1 evidence=$2
+  [ "$status" -ne 0 ] && [ -z "$kind_evidence_written" ] && kind_sandbox_live || return 0
+  {
+    kind_k get pods -A -o wide
+    kind_k -n legion get sandboxes,persistentvolumeclaims -o yaml
+    kind_k -n legion describe pods
+    kind_k -n legion get events --sort-by=.lastTimestamp
+    kind_k -n legion logs --all-containers --prefix --tail=200 -l legion.dev/project 2>&1
+  } >"$evidence/cluster-at-failure.txt" 2>&1 || true
+  kind_evidence_written=1
+  echo "the cluster's pods, Sandboxes, volume claims, events and container logs at the failure: $evidence/cluster-at-failure.txt" >&2
+}
+
 kind_sandbox_teardown() {
   local status=$1 evidence=$2
-  [ -n "$kind_cluster" ] || return 0
-  "$kind_bin" get clusters 2>/dev/null | grep -qx "$kind_cluster" || return 0
-  if [ "$status" -ne 0 ]; then
-    {
-      kind_k get pods -A -o wide
-      kind_k -n legion get sandboxes,persistentvolumeclaims -o yaml
-      kind_k -n legion describe pods
-      kind_k -n legion get events --sort-by=.lastTimestamp
-      kind_k -n legion logs --all-containers --prefix --tail=200 -l legion.dev/project 2>&1
-    } >"$evidence/cluster-at-failure.txt" 2>&1 || true
-    echo "the cluster's pods, Sandboxes, volume claims, events and container logs at the failure: $evidence/cluster-at-failure.txt" >&2
-  fi
+  kind_sandbox_live || return 0
+  kind_sandbox_evidence "$status" "$evidence"
   "$kind_bin" delete cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" >/dev/null 2>&1 ||
     echo "could not delete kind cluster $kind_cluster; delete it with: $kind_bin delete cluster --name $kind_cluster" >&2
 }

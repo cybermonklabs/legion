@@ -9,7 +9,9 @@
 // reconciliation retried while the keeper launches the controller reads them, and the store holds
 // the controller's claim launching, as the supervisor stores it before the launch begins. What the
 // proof stands in for lies outside the sweep: the agent is a sleep stub (no model, Dispatch or
-// NATS), the App tokens are placeholders, and no record names a repository.
+// NATS), the App tokens are placeholders, the project's providers Secret, which the controller's
+// pod mounts, holds a URL nothing dials (writeLiveProvidersSecret), and no record names a
+// repository.
 package daemon
 
 import (
@@ -124,6 +126,7 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeLiveProvidersSecret(ctx, t, clients, cfg)
 	st, err := store.Open(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatal(err)

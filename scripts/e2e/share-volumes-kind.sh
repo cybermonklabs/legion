@@ -55,37 +55,31 @@ note() { echo "   $*"; }
 pass() { echo "ok $check ($((SECONDS - check_started))s)"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 
-# release_shares STATUS lets the node go. On a pass every pod that mounts the run's share is
-# deleted while the NFS server still runs, so the node's kernel client unmounts it cleanly (on a
-# failure they are left for kind_sandbox_teardown's evidence). Then any NFS client the node's
-# network namespace still holds is shut down (/sys/fs/nfs/<client>/shutdown): a hard NFSv4 mount
-# whose server goes first leaves the kernel renewing its lease and closing its files forever, and
-# the node's container can never exit. Shutting a client fails its outstanding RPCs and touches
-# nothing outside that namespace. It needs passwordless sudo for the namespace; without it a
-# leftover node is named, with the command that frees it.
+# release_shares lets the node go: every pod that mounts the run's share is deleted while the NFS
+# server still runs, so the node's kernel client unmounts it cleanly, on a pass and on a failure
+# alike. A hard NFSv4 mount whose server goes first leaves the kernel renewing its lease and closing
+# its files forever, and the node's container can then never exit: `docker rm -f` gives up with
+# `did not receive an exit event`, and kind leaves the cluster. Shutting the node's NFS clients down
+# instead (/sys/fs/nfs/<client>/shutdown) cannot be done while the node runs: kind's node mounts
+# its sysfs read-only, and every sysfs mount of the node's network namespace shares that read-only
+# superblock, so the write is refused `Read-only file system`. On a failure the cleanup writes the
+# cluster's evidence before this (kind_sandbox_evidence), so what the failure left is kept.
 release_shares() {
   [ -n "$kind_node" ] && docker inspect "$kind_node" >/dev/null 2>&1 || return 0
-  if [ "$1" -eq 0 ]; then
-    kind_k delete sandboxes --all -n legion --wait=true --timeout=120s >/dev/null 2>&1 || true
-    kind_k delete pods --all -n legion --wait=true --timeout=120s >/dev/null 2>&1 || true
-  fi
-  local netns
-  netns=$(docker inspect -f '{{.NetworkSettings.SandboxKey}}' "$kind_node" 2>/dev/null) || return 0
-  # shellcheck disable=SC2016 # expanded by the namespace's shell
-  local shutdown='d=$(mktemp -d) && mount -t sysfs sysfs "$d" && for s in "$d"/fs/nfs/*/shutdown; do [ -e "$s" ] && echo 1 >"$s"; done; umount "$d"; rmdir "$d"'
-  if ! sudo -n nsenter --net="$netns" sh -c "$shutdown" 2>/dev/null; then
-    echo "could not shut the node's NFS clients down (no passwordless sudo?); if $kind_node will not stop, run: sudo nsenter --net=$netns sh -c '$shutdown'" >&2
-  fi
+  kind_k delete sandboxes --all -n legion --wait=true --timeout=120s >/dev/null 2>&1 || true
+  kind_k delete pods --all -n legion --wait=true --timeout=120s >/dev/null 2>&1 || true
 }
 
 # cleanup tears the run down and prints its last line through lib/run-verdict.sh: PASS only for a
-# run that reached run_end, the script's last statement. A run a signal ended reads FAIL, and
-# release_shares and the teardown treat it as a failure, keeping the pods and the cluster's evidence.
+# run that reached run_end, the script's last statement. A run a signal ended reads FAIL, and the
+# teardown treats it as a failure, writing the cluster's evidence before release_shares takes the
+# pods.
 cleanup() {
   local status=$? ended
   ended=$(run_status "$status")
   docker rm -f "$cluster-driver" "$cluster-probe" >/dev/null 2>&1 || true
-  release_shares "$ended"
+  kind_sandbox_evidence "$ended" "$evidence"
+  release_shares
   kind_sandbox_teardown "$ended" "$evidence"
   rm -rf "$work"
   run_verdict "$status" \

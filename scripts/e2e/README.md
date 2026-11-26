@@ -4077,7 +4077,10 @@ What the proof stands in for lies outside the reservation path:
 each role's agent is a sleep stub, so nothing dials a model, Dispatch or NATS (their addresses in the files are documentation placeholders);
 the store answers as the daemon's does for an issue's first launch;
 the runtime's cache set names one public repository, which GitHub clones for its cache without asking for the placeholder provisioning token;
-and the roles' gh files hold a placeholder token.
+the roles' gh files hold a placeholder token;
+and the project's providers Secret, `legion-<project>-providers`, which the driver writes before each launch as an operator writes it for a deployment (`writeLiveProvidersSecret`), holds under `SESSION_DSN` a session database URL nothing dials.
+`session_store: postgres` makes every pod mount that key, so a pod without the Secret waits at `Init` on `FailedMount … secret "legion-<project>-providers" not found` until its launch times out.
+The files name no `leak_check`, so no pod is pushed the shared public leak check and no launch waits on one.
 The pod's reservation, its admission, scheduling and QoS class, Agent Sandbox's pod and gVisor are the real ones.
 `burstable_kind_test.go`, untagged, builds both files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`, so a contract change that refuses either fails CI, not the next live run.
 `BURSTABLE_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, both `legion.yaml` files and each pod's manifest as the API server holds it.
@@ -4102,10 +4105,13 @@ its cluster is [`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s, `legion-controller
 
 What the proof stands in for lies outside the sweep:
 the controller's agent is a sleep stub, so nothing dials a model, Dispatch or NATS (their addresses in the file are documentation placeholders);
-its App tokens are placeholders; and no record names a repository, and its gh files name no owner.
+its App tokens are placeholders;
+the project's providers Secret, which the controller's pod mounts, is the driver's, as `burstable-kind.sh`'s is;
+and no record names a repository, and its gh files name no owner.
 The claim the supervisor would store is written to the store by the driver, as the supervisor writes it before a launch begins.
 The store, the runtime's sweep and launch, Agent Sandbox's controller, its foreground deletion of the volume claim, and gVisor are the real ones.
 `controller_sweep_kind_test.go`, untagged, builds the proof's `legion.yaml` through the loader and its runtime through boot's factory and `sandbox.New` on every `go test`, so a contract change that refuses either fails CI, not the next live run.
+What the cluster must hold, such as that Secret, only the live run sees, and no CI job makes the live run of this proof, `burstable-kind.sh` or `share-volumes-kind.sh`: `.github/e2e-scripts.json` lists all three under `elsewhere`, which `e2e.yaml` refuses by name (of the kind proofs, only `shared-clone-kind.sh` is a hosted one, run when it is dispatched).
 `CONTROLLER_SWEEP_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript and, on a failure, what the cluster held.
 
 ## share-volumes-kind.sh
@@ -4134,9 +4140,11 @@ The kind node's own `mount.nfs` mounts the share, as a GKE node's does.
 
 What the proof stands in for lies outside the volume path, as `burstable-kind.sh`'s does:
 the agents are sleep stubs, the store answers for an issue's first launch, the repository is public, and the roles' gh files hold a placeholder token.
+The driver writes the providers Secret of all four files' projects, the three it does not launch included, since the probe pod `legion probe-boot` starts on each file mounts its own project's Secret, and the probe refuses a pod that cannot mount it before it reads any share; without it `probe-missing-export` and `probe-silent-server` are refused on that Secret, not on the share they name.
 The loader, the runtime, the image probe, Agent Sandbox's pod, gVisor, the node's NFS client and the NFS server are the real ones.
 `share_volumes_kind_test.go`, untagged, builds all four files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`.
 `SHARE_VOLUMES_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the four `legion.yaml` files and the missing-image copy of the `shares` one, the issue pod's manifest and each `probe-boot`'s output.
+On any exit the run writes the cluster's evidence if it failed, then deletes every pod of the `legion` namespace while the NFS server still runs, then the cluster: a pod whose hard NFS mount outlives its server keeps the node's container from exiting, and kind then leaves the cluster behind, which every failed run did while the pods were kept for the evidence.
 
 ## shared-clone-kind.sh
 
@@ -7187,7 +7195,7 @@ Each item below names a function, then what it does.
 
 - `run_status STATUS`
 
-  prints STATUS, or 1 for a status of 0 the run did not reach its end with, for a teardown that keeps evidence for a failure ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_teardown`, `share-volumes-kind.sh`'s `release_shares`), so a killed run keeps its evidence too
+  prints STATUS, or 1 for a status of 0 the run did not reach its end with, for a teardown that keeps evidence for a failure ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_evidence` and `kind_sandbox_teardown`), so a killed run keeps its evidence too
 
 - `run_verdict STATUS PASSED FAILED`
 
@@ -8162,7 +8170,8 @@ Each item below names a function, then what it does.
 
 - `kind_sandbox_install_gvisor WORK`
 
-  installs gVisor's dated release, pinned by sha512, into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and fails unless a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor`
+  installs gVisor's dated release, pinned by sha512, into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and fails unless a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor`.
+  The pod's whole log is read before it is matched: kubectl writes a log in several writes, so under the caller's `pipefail` a `grep -q` that exits at its first match lets kubectl die of `SIGPIPE` and fails the check on a log that holds the line
 
 - `kind_sandbox_load_image IMAGE`
 
@@ -8172,10 +8181,17 @@ Each item below names a function, then what it does.
 
   writes the kubeconfig a container on the kind network reads, whose server is the node's address on that network
 
+- `kind_sandbox_evidence STATUS EVIDENCE`
+
+  when `STATUS` is not 0, writes the cluster's pods, the `legion` namespace's Sandboxes, volume claims, events and container logs to `EVIDENCE/cluster-at-failure.txt`, once.
+  A caller that must release something of the cluster before its teardown calls it first, so the evidence is what the failure left: `share-volumes-kind.sh` does, since it deletes its NFS-mounting pods before the cluster goes.
+  It does nothing before `kind_sandbox_create` named a cluster, or once the cluster is gone
+
 - `kind_sandbox_teardown STATUS EVIDENCE`
 
-  when `STATUS` is not 0, writes the cluster's pods, the `legion` namespace's Sandboxes, volume claims, events and container logs to `EVIDENCE/cluster-at-failure.txt`; then deletes the cluster.
-  It does nothing before `kind_sandbox_create` named a cluster, or once the cluster is gone
+  writes that evidence where no earlier `kind_sandbox_evidence` call did, then deletes the cluster.
+  It does nothing before `kind_sandbox_create` named a cluster, or once the cluster is gone.
+  kind's whole cluster list is read before the name is matched, for the reason the gvisor check's log is: kind writes a line per cluster, and a lookup that killed kind before its last line would leave the cluster running as one already gone
 
 ## lib/live-daemon-proof.sh
 
