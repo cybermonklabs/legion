@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -1220,7 +1221,8 @@ func TestAReconnectCatchesUpWhatTheListenerMissed(t *testing.T) {
 // lost by PostgreSQL, so a hub must reread delivery settings after it listens again.
 func TestAReconnectRereadsAReconcilePassItMissed(t *testing.T) {
 	t.Parallel()
-	var blind atomic.Bool
+	var blind, failFirstReread atomic.Bool
+	var failedRereads atomic.Int32
 	var dials listenerDials
 	rig := newHubRig(t, func(hub *deliveryHub) {
 		dial := hub.dial
@@ -1231,6 +1233,13 @@ func TestAReconnectRereadsAReconcilePassItMissed(t *testing.T) {
 			return dial(ctx)
 		})
 		hub.backoff = func(int) time.Duration { return 50 * time.Millisecond }
+		hub.getFreshness = func(ctx context.Context, pool *store.Pool) (delivery.DeliverySettings, error) {
+			if failFirstReread.CompareAndSwap(true, false) {
+				failedRereads.Add(1)
+				return delivery.DeliverySettings{}, errors.New("the listener's first freshness reread failed")
+			}
+			return delivery.GetSettings(ctx, pool)
+		}
 	})
 	seedHubSettings(t, rig.database)
 	initial := rig.clock.Now()
@@ -1245,6 +1254,7 @@ func TestAReconnectRereadsAReconcilePassItMissed(t *testing.T) {
 	rig.requireNothingSent(t, conn, "the initial snapshot and reconcile")
 	start := rig.mark()
 
+	failFirstReread.Store(true)
 	blind.Store(true)
 	terminateListener(t, rig.database, &dials)
 	passed := rig.clock.Now().Add(time.Minute).Truncate(time.Microsecond)
@@ -1255,6 +1265,9 @@ func TestAReconnectRereadsAReconcilePassItMissed(t *testing.T) {
 	rig.waitFor(t, start, "the listener's reconnection", func(note deliveryHubNote) bool { return note.what == "connected" })
 	rig.waitFreshnessHeard(t, "the reconcile pass the listener missed", reconciledAt(passed))
 	rig.requireNothingSent(t, conn, "the reconcile pass whose verdict did not change")
+	if got := failedRereads.Load(); got != 1 {
+		t.Fatalf("the reconnect's failed freshness rereads = %d, want 1", got)
+	}
 }
 
 // terminateListener ends the backend of every connection the hub's listener dialed (dials) that

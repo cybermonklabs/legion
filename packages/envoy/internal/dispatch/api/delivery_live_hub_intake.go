@@ -81,25 +81,71 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 	}
 }
 
-// refreshFreshness rereads the delivery-settings freshness recorded while the listener was
-// disconnected. PostgreSQL does not replay notifications after a LISTEN reconnect, so the listener
-// connection is the point where the hub must recover the last event and reconciliation times.
+// refreshFreshness starts the reread that recovers delivery freshness written while the listener
+// was disconnected. PostgreSQL does not replay those notifications after LISTEN reconnects. A
+// transient read failure retries on the listener's backoff until this generation ends.
 func (h *deliveryHub) refreshFreshness(g *hubGeneration) {
-	settings, err := delivery.GetSettings(g.readContext(), h.server.deps.Store.Pool)
+	h.mu.Lock()
+	if h.closed || h.generation != g {
+		h.mu.Unlock()
+		return
+	}
+	h.running.Add(1)
+	backoff := h.backoff
+	h.mu.Unlock()
+	if backoff == nil {
+		backoff = pglisten.RedialBackoff
+	}
+	go func() {
+		defer h.running.Done()
+		for attempt := 1; ; attempt++ {
+			if h.readFreshness(g) {
+				return
+			}
+			if !waitFor(g.ctx, backoff(attempt)) {
+				return
+			}
+		}
+	}()
+}
+
+// readFreshness reads settings without h.mu, then installs only fields that cannot move the
+// freshness record backward. A notification that lands while the read runs therefore keeps its
+// newer values.
+func (h *deliveryHub) readFreshness(g *hubGeneration) bool {
+	read := h.getFreshness
+	if read == nil {
+		read = delivery.GetSettings
+	}
+	settings, err := read(g.readContext(), h.server.deps.Store.Pool)
 	if err != nil {
 		if g.ctx.Err() == nil {
-			slog.Warn("dispatch: delivery live hub could not reread freshness after its listener connected", "error", err)
+			slog.Warn("dispatch: delivery live hub could not reread freshness after its listener connected; retrying", "error", err)
 		}
-		return
+		return false
 	}
 	now := h.clock.Now()
 	h.mu.Lock()
-	g.fresh.lastEventAt = settings.LastEventAt
-	g.fresh.lastReconcileAt = settings.LastReconcileAt
-	g.fresh.lastError = settings.LastError
+	if newerFreshness(settings.LastEventAt, g.fresh.lastEventAt) {
+		g.fresh.lastEventAt = settings.LastEventAt
+	}
+	if newerFreshness(settings.LastReconcileAt, g.fresh.lastReconcileAt) {
+		g.fresh.lastReconcileAt, g.fresh.lastError = settings.LastReconcileAt, settings.LastError
+	} else if sameFreshnessMoment(settings.LastReconcileAt, g.fresh.lastReconcileAt) && settings.LastError != nil && g.fresh.lastError == nil {
+		g.fresh.lastError = settings.LastError
+	}
 	h.judgeLocked(g, now)
 	h.mu.Unlock()
 	signal(g.wakeWork)
+	return true
+}
+
+func newerFreshness(read, held *time.Time) bool {
+	return read != nil && (held == nil || held.Before(*read))
+}
+
+func sameFreshnessMoment(a, b *time.Time) bool {
+	return a != nil && b != nil && a.Equal(*b)
 }
 
 // hubEventFeed is a relay subscription seedEvents took for the intake, with the open P0 issues as

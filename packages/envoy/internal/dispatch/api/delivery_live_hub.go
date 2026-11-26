@@ -224,6 +224,9 @@ type deliveryHub struct {
 	dial                    func(ctx context.Context) (*pgx.Conn, error)
 	listenIdle, pingTimeout time.Duration
 	backoff                 func(attempt int) time.Duration
+	// getFreshness reads delivery settings after a listener connection. Tests replace it to make a
+	// transient read failure recover through the same retry path production uses.
+	getFreshness func(context.Context, *store.Pool) (delivery.DeliverySettings, error)
 	// observe, when set, is told of each recompute, connection and event; tests set it.
 	observe func(deliveryHubNote)
 
