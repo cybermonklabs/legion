@@ -46,6 +46,7 @@ func drainingHelper(t *testing.T, drains int32) (string, *atomic.Int32) {
 // TestRegisterRetriesADrainingHelper: a helper that answers DRAINING is about to be restarted, so
 // register retries it and registers with the restarted helper rather than giving up at once.
 func TestRegisterRetriesADrainingHelper(t *testing.T) {
+	t.Parallel()
 	sock, calls := drainingHelper(t, 2)
 	resp, err := registerWithPatience(sock, helper.Request{WaitSeconds: 5}, 0)
 	if err != nil || !resp.OK || resp.State != "enrolled" || calls.Load() != 3 {
@@ -58,6 +59,7 @@ func TestRegisterRetriesADrainingHelper(t *testing.T) {
 // retry that never stops, or one that stops late, is caught by timing the call against its 1 s
 // wait, allowing for the time this process was held up (endsByItsDeadline).
 func TestRegisterStopsRetryingDrainingAtItsWait(t *testing.T) {
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	sock, _ := drainingHelper(t, 1<<30)
 	done := make(chan error, 1)
 	meter := startStallMeter(t)

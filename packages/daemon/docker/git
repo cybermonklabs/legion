@@ -5,8 +5,10 @@
 #
 # A commit goes to `legion git --real /usr/bin/git` (packages/daemon/cmd/legion/git.go), which
 # adds the commit's Omp-Session and Legion-Role trailers and then runs the real git. It adds each
-# line only when its value is valid and git alone would accept the message. The two lines name the
-# session and the role that made the commit.
+# line only when its value is valid and git alone would accept the message, and none when the
+# caller asks git for an isolated configuration, GIT_CONFIG_NOSYSTEM true or
+# GIT_CONFIG_GLOBAL=/dev/null, as hermetic tests do. The two lines name the session and the role
+# that made the commit.
 #
 # A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand and
 # with the push's own `--no-verify` taken out. So git itself computes the update lines, hands them

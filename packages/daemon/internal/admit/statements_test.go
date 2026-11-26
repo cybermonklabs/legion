@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"slices"
 	"strings"
@@ -50,20 +49,26 @@ func countedPool(t *testing.T, pool *pgxpool.Pool, counter *statementCounter) *p
 
 func slottedKey(i int) string { return fmt.Sprintf("LEGION-%d", 1000+i) }
 
-// Every fact runs admission under the one fact lock (intake.ApplyFact), the facts of the Dispatch
-// and GitHub consumers, the API and the boot's replay alike, so what admission asks the database
-// is paid by every fact. It asks the same number of statements however many slots the project
-// holds: a statement per slotted issue cost a project running hundreds of trees hundreds of round
-// trips on each fact, and the Dispatch consumer, whose events are mostly facts of recorded
-// issues, fell behind. Finished trees' slots are still released in slot order, whatever order the
-// records come in, and another project's slot in the shared table is neither released nor counted.
+// Every pass the pass rule runs (Admission.Apply) runs under the one fact lock (intake.ApplyFact),
+// the facts of the Dispatch and GitHub consumers, the API and the boot's replay alike, so what
+// admission asks the database is paid by each of them. It asks the same number of statements
+// however many slots the project holds: a statement per slotted issue cost a project running
+// hundreds of trees hundreds of round trips on each fact, and the Dispatch consumer, whose events
+// are mostly facts of recorded issues, fell behind. Each fact counted here writes a record — the
+// document version writes the first root's registered gate — and is held to having run the pass,
+// so its count is a pass's. Finished trees' slots are still released in slot order, by the next
+// pass — the tick's here, since the records below are seeded without a fact — whatever order the
+// records come in, and another project's slot in the shared table is neither released nor
+// counted.
 //
 // The count holds as well where every slotted root is stalled: each has stood at admitted past
 // the gate arm's bound with no step of its design gate registered, and an earlier fact has told
-// the project's controller so. The pass reads that arm over every root on every fact, asks once
-// whether a controller is registered to be told, and marks what it reads in one statement for the
-// whole pass (record.Store.TellArchitectsStalled), so a root that stays stalled costs no statement
-// of its own.
+// the project's controller so. The pass reads that arm over every root on every pass (the pass
+// rule, Admission.Apply), asks once whether a controller is registered to be told, and marks what
+// it reads in one statement for the whole pass (record.Store.TellArchitectsStalled), so a root
+// that stays stalled costs no statement of its own. The first root's spec is registered after it
+// was told, for the document version, so the smaller of the two stalled runs holds two roots: one
+// that stays stalled beside it.
 func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 	facts := []struct {
 		name string
@@ -83,7 +88,7 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 		}
 		counter := &statementCounter{}
 		counted := countedPool(t, pool, counter)
-		admission := newAdmission(t, 2*held+2, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		admission, reads := passCounted(t, 2*held+2)
 		handlers := []intake.Handler{blockers.NewMirror(record.NewStore(), testProject), admission.engine, admission}
 		if stalled {
 			registerController(t, pool)
@@ -99,11 +104,18 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 				}
 			}
 		}
+		// The document the version fact names is the first root's registered spec, at the
+		// version before the fact's, so the fact writes the gate and its pass is counted.
+		seedGate(t, pool, record.DesignGate{Issue: slottedKey(0), ArtifactID: "spec", LatestVersion: 1})
 		sent := make([]int64, len(facts))
 		for i, tc := range facts {
 			counter.sent.Store(0)
+			reads.live = 0
 			if _, err := intake.ApplyFact(context.Background(), counted, "dispatch", tc.name, tc.fact, handlers...); err != nil {
 				t.Fatalf("apply %s with %d slots held: %v", tc.name, held, err)
+			}
+			if reads.live == 0 {
+				t.Fatalf("apply %s with %d slots held: the fact ran no admission pass, so its count measures no pass", tc.name, held)
 			}
 			if sent[i] = counter.sent.Load(); sent[i] == 0 {
 				t.Fatalf("apply %s with %d slots held: the counted pool saw no statement", tc.name, held)
@@ -120,11 +132,11 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 			t.Errorf("%s: %d statements with %d slots held, %d with 1; want as many", tc.name, many[i], slotsHeld, few[i])
 		}
 	}
-	fewStalled, _ := run(t, 1, true)
+	fewStalled, _ := run(t, 2, true)
 	manyStalled, _ := run(t, slotsHeld, true)
 	for i, tc := range facts {
 		if manyStalled[i] != fewStalled[i] {
-			t.Errorf("%s: %d statements with %d stalled roots told already, %d with 1; want as many", tc.name, manyStalled[i], slotsHeld, fewStalled[i])
+			t.Errorf("%s: %d statements with %d stalled roots told already, %d with 2; want as many", tc.name, manyStalled[i], slotsHeld, fewStalled[i])
 		}
 	}
 
@@ -146,9 +158,9 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 	})
 	var logged bytes.Buffer
 	admission := newAdmission(t, 2*slotsHeld+2, slog.New(slog.NewTextHandler(&logged, nil)))
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "after-the-close", facts[0].fact,
+	if _, err := intake.ApplyFact(context.Background(), pool, "controller", "after-the-close", intake.ControllerTick{},
 		blockers.NewMirror(record.NewStore(), testProject), admission.engine, admission); err != nil {
-		t.Fatalf("apply a fact after %s and LEGION-100 finished: %v", slottedKey(7), err)
+		t.Fatalf("apply the tick after %s and LEGION-100 finished: %v", slottedKey(7), err)
 	}
 	var want []record.Slot
 	for i := range slotsHeld {
