@@ -646,7 +646,7 @@ func TestTheInitContainersPathNamesNoIssueVolumeDirectory(t *testing.T) {
 
 // An issue pod has one workspace-init container, which fills the clone on the
 // issue volume directly. The two disk shapes use the same container contract:
-// K1's provision argv, K2's environment, no feed mount, the provisioning
+// `workspace-init provision`'s argv and environment, no feed mount, the provisioning
 // Secret, the in-memory TMPDIR, the issue volume and the shared config home.
 func TestIssuePodHasOneWorkspaceInitAndNoFeedMount(t *testing.T) {
 	t.Parallel()

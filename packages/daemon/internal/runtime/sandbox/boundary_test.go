@@ -750,7 +750,7 @@ func newGitHubStandIn(t *testing.T, root string) *gitHubStandIn {
 const boundaryCacheToken = "the-repository-cache-token"
 
 // newCacheStandIn is the repository cache of boundaryRepo as workspace-init reaches it at the
-// address the runtime names: its /healthz answers K4, its /tar only the bearer boundaryCacheToken,
+// address the runtime names: its /healthz answers ready with defaultBranchOnly, its /tar only the bearer boundaryCacheToken,
 // it names sjawhar/legion-smoke on every answer it gives, is ready at once, and streams as its
 // /tar the refs and packs (workspace.CacheEntry) of a bare clone of remote's default branch.
 func newCacheStandIn(t *testing.T, remote string) *httptest.Server {
