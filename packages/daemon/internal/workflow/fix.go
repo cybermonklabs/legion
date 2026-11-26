@@ -1395,6 +1395,11 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
 		return err
 	}
+	if (way == wayAfterFix || way == wayOn) && fix.ClaimFailed == "" && fix.Result == string(ResultPassed) {
+		if err := e.queueBesideDelete(ctx, tx, issue, w.Task); err != nil {
+			return err
+		}
+	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return err
