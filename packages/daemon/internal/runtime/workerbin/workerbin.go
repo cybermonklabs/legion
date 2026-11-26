@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -148,25 +149,43 @@ func installScript(dir, name, contents string) error {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return fmt.Errorf("chmod %s: %w", dir, err)
 	}
-	temporary, err := os.CreateTemp(dir, "."+name+"-")
+	temporaryPath, err := writeTemporary(dir, name, contents)
+	if temporaryPath != "" {
+		defer func() { _ = os.Remove(temporaryPath) }()
+	}
 	if err != nil {
-		return fmt.Errorf("create %s script: %w", name, err)
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if _, err := temporary.WriteString(contents); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write %s script: %w", name, err)
-	}
-	if err := temporary.Chmod(0o700); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("chmod %s script: %w", name, err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close %s script: %w", name, err)
+		return err
 	}
 	if err := os.Rename(temporaryPath, filepath.Join(dir, name)); err != nil {
 		return fmt.Errorf("install %s script: %w", name, err)
 	}
 	return nil
+}
+
+// writeTemporary writes contents to a new 0700 file in dir and answers its path, which is set once
+// the file exists, a failure after that included. It holds syscall.ForkLock for reading from the
+// create to the close, which keeps every fork of this process out of that span: a child forked
+// then would hold the script's write descriptor until its own exec, and the kernel refuses to exec
+// a file open for writing (ETXTBSY, Go issue 22315), so a git or gh this process or another starts
+// through the installed wrapper could fail. internal/leakguard's writeCopyFile holds the lock the
+// same way.
+func writeTemporary(dir, name, contents string) (string, error) {
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	temporary, err := os.CreateTemp(dir, "."+name+"-")
+	if err != nil {
+		return "", fmt.Errorf("create %s script: %w", name, err)
+	}
+	if _, err := temporary.WriteString(contents); err != nil {
+		_ = temporary.Close()
+		return temporary.Name(), fmt.Errorf("write %s script: %w", name, err)
+	}
+	if err := temporary.Chmod(0o700); err != nil {
+		_ = temporary.Close()
+		return temporary.Name(), fmt.Errorf("chmod %s script: %w", name, err)
+	}
+	if err := temporary.Close(); err != nil {
+		return temporary.Name(), fmt.Errorf("close %s script: %w", name, err)
+	}
+	return temporary.Name(), nil
 }

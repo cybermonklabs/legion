@@ -29,6 +29,7 @@ import (
 // SIGHUP still ends Claude Code, and the bridge exits and removes its inbox, whether its input has
 // ended first or is still open.
 func TestClaudeBridgeEndsAClaudeCodeItIsBlockedWritingTo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		inputEnds bool
@@ -55,6 +56,7 @@ func TestClaudeBridgeEndsAClaudeCodeItIsBlockedWritingTo(t *testing.T) {
 // never reads and a daemon frame follows the prompt: the end of the bridge's input alone, with no
 // signal, ends Claude Code, and the bridge exits and removes its inbox.
 func TestClaudeBridgeEndsWithItsInputWhileBlockedWritingToClaudeCode(t *testing.T) {
+	t.Parallel()
 	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 86400\n", goneShim(t))
 	p.blockOnAPrompt()
 	p.send(shimwire.GetState{ID: "s1"})
@@ -72,6 +74,7 @@ func TestClaudeBridgeEndsWithItsInputWhileBlockedWritingToClaudeCode(t *testing.
 // The shim alive but no longer reading, a frame larger than a pipe holds unread: SIGHUP still ends
 // Claude Code, and the bridge exits and removes its inbox, saying it leaves that frame unwritten.
 func TestClaudeBridgeEndsWithItsFramesUnread(t *testing.T) {
+	t.Parallel()
 	shim, stdout, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -106,6 +109,7 @@ func TestClaudeBridgeEndsWithItsFramesUnread(t *testing.T) {
 // Claude Code waits on its own stdout and is never signalled, and once the shim reads again every
 // frame arrives, in order, and the session ends as Claude Code ends it.
 func TestClaudeBridgeHoldsClaudeCodeWhileTheShimPauses(t *testing.T) {
+	t.Parallel()
 	const frames = 2000
 	dir := t.TempDir()
 	stream, signals := filepath.Join(dir, "frames"), filepath.Join(dir, "signals")

@@ -5,6 +5,7 @@ import { BrowserRouter } from "react-router-dom";
 
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { App } from "./app";
+import { KeepNewIssuePage } from "./features/issue-page/new-page-parameter";
 import {
   DeploymentResilience,
   installChunkFailureRecovery,
@@ -44,7 +45,9 @@ createRoot(root).render(
       <BrowserRouter>
         <DeploymentResilience />
         <ErrorBoundary region="Dispatch">
-          <App />
+          <KeepNewIssuePage>
+            <App />
+          </KeepNewIssuePage>
         </ErrorBoundary>
       </BrowserRouter>
     </QueryClientProvider>

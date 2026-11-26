@@ -25,6 +25,7 @@ import (
 // holds, and the child held at admitted. The command is given it by a server of its own, as
 // every other plain-output test of this file is.
 func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	const (
 		startedLink  = "LEGION-210"
 		startedChild = "LEGION-211"
