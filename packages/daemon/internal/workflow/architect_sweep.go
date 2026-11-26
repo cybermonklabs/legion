@@ -292,17 +292,17 @@ func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.
 	if err != nil {
 		return err
 	}
-	return e.enqueueArchitectStart(ctx, tx, root, task, kept, row.Entry)
+	return e.enqueueArchitectStart(ctx, tx, root, task, kept, row.Entry, false)
 }
 
 // StartArchitect hands root's architect work it was not on, which two starts do: admission's
-// promotion of a queued root (admit's LineQueuedRoot branch) and the sweep's raise for an
-// architect whose phases row names no entry at all (admit's resumeSlottedWorkers). It derives
-// the architect's task from the record as it stands (architectStartWork), raises the architect's
-// phase entry with that task as the entry's work where the task is not empty (EnterArchitect),
-// and writes the start, carrying the task and the entry and claiming the kept decisions the task
-// names, all in the caller's transaction. Every other start of this file resumes the work an
-// entry already names and raises none.
+// promotion of a queued root (admit's LineQueuedRoot branch, through StartPromotedArchitect) and
+// the sweep's raise for an architect whose phases row names no entry at all (admit's
+// resumeSlottedWorkers). It derives the architect's task from the record as it stands
+// (architectStartWork), raises the architect's phase entry with that task as the entry's work
+// where the task is not empty (EnterArchitect), and writes the start, carrying the task and the
+// entry and claiming the kept decisions the task names, all in the caller's transaction. Every
+// other start of this file resumes the work an entry already names and raises none.
 //
 // The derivation is read once and the row and the start carry that one text, because a kept
 // decision is claimed by the outbox row that names it: deriving twice would compose a task from
@@ -321,6 +321,25 @@ func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.
 // StartOrOwe, and it marks no movement of its own: the promotion marks the movement of the tree it
 // opens, and the sweep's raise is the daemon sending work the record already owes.
 func (e *Engine) StartArchitect(ctx context.Context, tx pgx.Tx, root record.Issue) error {
+	return e.startArchitect(ctx, tx, root, false)
+}
+
+// StartPromotedArchitect is StartArchitect for admission's promotion of a queued root, whose start
+// is marked decided (record.SuperviseRequest.Decided). A root reaches the line only by a person's
+// or the controller's todo on it, which hands it to Legion or opens its tree again — the
+// controller's restart of a tree, a backlog and then a todo on its root, among them — so the start
+// of its architect is theirs, as the held phase's retry is (restart). It is the one start that
+// brings back a root architect held for OpenAI's cyber-policy refusal, which it starts in a new
+// session (supervise's freshSession): an ordinary restart of the tree, which asks nothing of the
+// agent that makes it but the restart. A root admitted for the first time has no claim, and the
+// mark changes nothing for it.
+func (e *Engine) StartPromotedArchitect(ctx context.Context, tx pgx.Tx, root record.Issue) error {
+	return e.startArchitect(ctx, tx, root, true)
+}
+
+// startArchitect is StartArchitect's and StartPromotedArchitect's one body, decided being the mark
+// the start carries.
+func (e *Engine) startArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, decided bool) error {
 	task, kept, err := e.architectStartWork(ctx, tx, root)
 	if err != nil {
 		return err
@@ -331,7 +350,7 @@ func (e *Engine) StartArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 			return err
 		}
 	}
-	return e.enqueueArchitectStart(ctx, tx, root, task, kept, entry)
+	return e.enqueueArchitectStart(ctx, tx, root, task, kept, entry, decided)
 }
 
 // architectStartWork is the task a root architect's start carries, derived from the record as it
@@ -351,10 +370,11 @@ func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.
 }
 
 // enqueueArchitectStart writes the start row of root's architect for entry, carrying task and
-// claiming the kept decisions that task names in this same transaction.
+// claiming the kept decisions that task names in this same transaction, marked decided where a
+// person or the controller asked for it (StartPromotedArchitect).
 func (e *Engine) enqueueArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, task string,
-	kept *record.KeptDecisions, entry int64,
+	kept *record.KeptDecisions, entry int64, decided bool,
 ) error {
 	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
-		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept}, kept, e.now())
+		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept, Decided: decided}, kept, e.now())
 }

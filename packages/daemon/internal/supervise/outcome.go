@@ -18,6 +18,8 @@ import (
 // its claim records with no file, from which process that was (endOutcome). An outcome is never
 // stored: what ended a failed claim is a FailureCause, a different type whose doc says how the
 // two differ, and failureCause is the one place a cause is derived from an outcome.
+// The provider classifier reads the refusal code separately to identify a policy hold
+// (classifyProviderError). That does not change the turn's outcome or its budget charge.
 
 // Charges is the one policy that decides whether an outcome charges the budget its site counts:
 // the prompt budget (chargePrompt), the death budget (chargeDeath) or the launch budget

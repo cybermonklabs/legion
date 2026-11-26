@@ -146,7 +146,7 @@ func TestEachRefusalFrameCarriesTheOutcomeItsCodeMints(t *testing.T) {
 		p.send(shimwire.PromptResult{ID: frame.ID, AgentInvoked: false})
 		p.send(shimwire.PromptResult{ID: frame.ID, AgentInvoked: true})
 		for _, want := range []Event{
-			PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: ompBusySentence, Outcome: runtime.OutcomeAgentBusy},
+			PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: ompBusySentence, Code: shimwire.CodeSessionBusy, Outcome: runtime.OutcomeAgentBusy},
 			PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: ompBusySentence, Outcome: runtime.OutcomeNoTurnRun},
 			PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: "the command ran locally", Outcome: runtime.OutcomeNoTurnRun},
 			PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Outcome: runtime.OutcomeNoTurnRun},

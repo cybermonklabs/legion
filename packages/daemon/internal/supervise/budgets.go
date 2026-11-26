@@ -88,12 +88,11 @@ func (b Budgets) OneAttemptLeft(l Limits) Budgets {
 // it can decide on and the sentence stays for the person behind it.
 //
 // It answers a different question than Outcome, which is why the two are two types. An Outcome is
-// one event and whether it charges a budget (Charges), and it is never stored; a FailureCause is
-// what ended a claim whose budget ran out, stored on the claim (Claim.FailureCause,
-// Claim.PendingCause), served as `failure.cause` and `pendingCause`, and pinned to the contracts
-// suite's enum. Many outcomes fail a claim under one cause — every prompt outcome under
-// prompt_retires_exhausted — and some charge nothing and fail none. A charge site names its
-// Outcome, and every cause but the prompt budget's is derived from it in one place (failureCause).
+// one event and whether it charges a budget (Charges), and it is never stored. A FailureCause is
+// what ended a claim, stored on the claim (Claim.FailureCause, Claim.PendingCause), and served as
+// `failure.cause` and `pendingCause`. Many prompt outcomes share prompt_retires_exhausted.
+// Other outcome-derived causes come from failureCause. The provider classifier reads the refusal
+// code separately to identify a policy hold (classifyProviderError).
 type FailureCause string
 
 const (
@@ -120,6 +119,17 @@ const (
 	// earlier daemon failed can carry it for a run of refused turns that reached the launch failure
 	// limit, which fails no claim now (turnOutcome); the sentence beside the word says which it was.
 	CauseProviderError FailureCause = "provider_error"
+	// CauseCyberPolicy: OpenAI refused the session's content for cyber policy, or Oh My Pi held a
+	// request after such a refusal, as the result of the prompt the turn ran says, or as the
+	// report of a turn that ran no prompt of the daemon's says (providerErrorTurnEnded, Oh My Pi's
+	// class `cyber_policy`). It is a provider error that cannot clear, and a word of its own because
+	// it is the one failure after which no retry of the daemon's own may launch the claim's agent
+	// again (Claim.HeldForCyberPolicy): every prompt the daemon sends is input from outside the
+	// session, which ends Oh My Pi's hold, so the refused content would go to OpenAI again and add
+	// a refusal to the organization's record. The architect's retry of the held phase and the
+	// operator's retry launch the agent again, each in a new session (freshSession), which holds
+	// none of that content.
+	CauseCyberPolicy FailureCause = "cyber_policy"
 	// CauseUnrecorded: the claim failed before the daemon recorded a cause. No live path writes
 	// it; the migration that adds the column writes it for every stored failure whose sentence
 	// does not say which event wrote it.
@@ -143,6 +153,7 @@ var FailureCauses = []FailureCause{
 	CauseStalePlugin,
 	CausePromptRetiresExhausted,
 	CauseProviderError,
+	CauseCyberPolicy,
 	CauseUnrecorded,
 }
 

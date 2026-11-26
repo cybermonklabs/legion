@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -38,6 +37,7 @@ import (
 // the copies bound for a session's own topic wait for it to settle, bounded by that attempt's own
 // lease, exactly as destinations.leftTo holds a copy back for a live attempt it can name.
 func TestACommentAnUnansweredRoleMentionNotYetPinnedReachesThatSessionOnce(t *testing.T) {
+	t.Parallel()
 	const role = "routed-to-the-session-its-mention-will-pin"
 	const holder = "ses_claims_the_issue_and_holds_the_role"
 	ctx := store.WithTransactionTracking(context.Background())
@@ -84,8 +84,7 @@ func TestACommentAnUnansweredRoleMentionNotYetPinnedReachesThatSessionOnce(t *te
 		t.Fatalf("the comment reached %s while its only mention's attempt was live and not yet pinned to that session; the mention is on its way to the same host, so this copy shows the comment twice (reached %v)",
 			subject, reached)
 	}
-	time.Sleep(2 * time.Second)
-	if got := claimant.received(); len(got) != 0 {
+	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while its own mention of %s was still live and unpinned, want nothing: that mention is on its way to the same host, so this copy shows it the comment twice",
 			holder, got, fmt.Sprintf("dispatch-%d", comment.ID))
 	}

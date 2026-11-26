@@ -1261,6 +1261,16 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true}},
 		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "no model", Outcome: runtime.OutcomeNoTurnRun},
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "no model", Outcome: runtime.OutcomeNoTurnRun}},
+		// Every member of the error object the machine decides on, Oh My Pi's class of the
+		// failure among them: a cyber_policy code dropped here is a refusal the ladder re-sends.
+		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+			HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"},
+			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+				HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"}},
+		// The class and the outcome the stream minted from it travel together: a prompt that ran
+		// no turn because the agent was busy carries both, and neither is dropped for the other.
+		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "Agent is busy", Code: shimwire.CodeSessionBusy, Outcome: runtime.OutcomeAgentBusy},
+			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "Agent is busy", Code: shimwire.CodeSessionBusy, Outcome: runtime.OutcomeAgentBusy}},
 		{stream.LateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
 			Outcome: runtime.OutcomeAgentBusy},
 			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",

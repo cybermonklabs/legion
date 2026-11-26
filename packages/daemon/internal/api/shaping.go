@@ -1788,9 +1788,8 @@ func (f fieldArrivals) heldBack(value string, restore int) bool {
 // arrivalsAt is the arrivals of the state's enumerated field at keyPath, which a value strip
 // reads: read once, when the registry is built, from that field's row of EnumeratedFields, so
 // the values an entry adds to the field are held back as the frozen ones are (contracts.go).
-// The strips read `strandedClaims.*.state`, `answeredBy`, the waiting line's `kind`, a capability
-// row's `source`, an issue's `holdReason` and a held row's `reason` (answers.go's strandedStates,
-// waitAnswers, lineKinds, capabilitySources, holdReasons and heldReasons). The state's row
+// Each strip names the field it reads where it calls this, the frozen ones in this file and an
+// entry's in its entry file, so no list here goes stale when an entry adds a strip. The state's row
 // answers for the record's too: an issue's field is one field at two key paths (answers.go's
 // enumeratedFields), both rows take the one list, and shapeIssue shapes the issue behind both
 // answers. A key path no row of the state declares is a strip reading nothing, and panics.
