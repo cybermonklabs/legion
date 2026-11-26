@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { act, type RenderResult, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useContext } from "react";
+import { type ReactNode, useContext, useEffect, useRef } from "react";
 import {
   Link,
   MemoryRouter,
@@ -205,27 +205,40 @@ test("a link to the address the reader is at adds no history entry, nor does a p
 const OPENED = "/issues/CORE-1?issue_page=new";
 
 /**
- * Dispatches a click of `init` (a plain one by default) on the link named `name`, and answers
- * whether it was left to the browser: whether no handler, the rule's among them, prevented it. A
- * listener added after the rule's then prevents it, since the unit suite's document loads no
- * page.
+ * Dispatches a click of `init` (a plain one by default) on `target`, and answers whether it was
+ * left to the browser: whether no handler, the rule's among them, prevented it. A listener added
+ * after the rule's then prevents it, since the unit suite's document loads no page. The click's
+ * path is the one it was dispatched along, as a browser fixes it: happy-dom reads the path again
+ * from the target's ancestors at each `composedPath()`, and a target a handler took out of the
+ * document would have none.
  */
-function press(name: string, init: MouseEventInit = {}): boolean {
-  const link = screen.getByRole("link", { name });
+function pressOn(target: Element, init: MouseEventInit = {}): boolean {
+  const event = new MouseEvent("click", { bubbles: true, cancelable: true, ...init });
+  const read = event.composedPath.bind(event);
+  let path: EventTarget[] | undefined;
+  event.composedPath = () => {
+    path ??= read();
+    return path;
+  };
   let left = false;
-  const stop = (event: Event) => {
-    left = !event.defaultPrevented;
-    event.preventDefault();
+  const stop = (heard: Event) => {
+    left = !heard.defaultPrevented;
+    heard.preventDefault();
   };
   document.addEventListener("click", stop);
   try {
     act(() => {
-      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init }));
+      target.dispatchEvent(event);
     });
   } finally {
     document.removeEventListener("click", stop);
   }
   return left;
+}
+
+/** `pressOn` the link named `name`. */
+function press(name: string, init: MouseEventInit = {}): boolean {
+  return pressOn(screen.getByRole("link", { name }), init);
 }
 
 // A rendered body's link is a plain `<a href>` the router never drew: its `href` lacks the
@@ -320,6 +333,75 @@ test("a link inside an editable text is left to the editor, and the router stays
     expect(press("Words"), "a click on a link in an editable text was followed in place").toBe(
       true
     );
+    expect(address()).toBe(OPENED);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** Draws `children` in a box that takes the pressed element out of its parent as a click goes
+ *  down through it, in the capture phase, as Details at phone width closes when a link in it is
+ *  pressed, and its words leave the link before the document hears the press. */
+function Detaching({ children }: { children: ReactNode }): ReactNode {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = box.current;
+    if (element === null) return;
+    const detach = (event: MouseEvent) => {
+      if (event.target instanceof Element) event.target.remove();
+    };
+    element.addEventListener("click", detach, true);
+    return () => element.removeEventListener("click", detach, true);
+  }, []);
+  return <div ref={box}>{children}</div>;
+}
+
+// The press's target stands in no link once a handler took it out of its link, and a browser left
+// it the click, which loaded the issue's address without the parameter: the rule reads the link
+// from the press's own path.
+test("a plain click on a link's inner element that a handler detaches before the document hears the press is still followed in place", () => {
+  const view = drawAt(
+    OPENED,
+    <Detaching>
+      <a href={ACTIVITY}>
+        <span>Words</span>
+      </a>
+    </Detaching>
+  );
+  try {
+    const words = screen.getByText("Words");
+    expect(pressOn(words), "the click was left to load the page").toBe(false);
+    expect(
+      words.isConnected,
+      "the handler left the words in their link, so the case proves nothing"
+    ).toBe(false);
+    expect(address()).toBe(`${ACTIVITY}?issue_page=new`);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a plain click on a link's inner element that a handler detaches, in a link inside an editable text, is left to the editor", () => {
+  const view = drawAt(
+    OPENED,
+    <Detaching>
+      {/* biome-ignore lint/a11y/useSemanticElements: the case draws the attribute the editor's text carries. */}
+      <div contentEditable role="textbox" suppressContentEditableWarning tabIndex={0}>
+        <a href={ACTIVITY}>
+          <span>Words</span>
+        </a>
+      </div>
+    </Detaching>
+  );
+  try {
+    const words = screen.getByText("Words");
+    expect(pressOn(words), "a click on a link in an editable text was followed in place").toBe(
+      true
+    );
+    expect(
+      words.isConnected,
+      "the handler left the words in their link, so the case proves nothing"
+    ).toBe(false);
     expect(address()).toBe(OPENED);
   } finally {
     view.unmount();
