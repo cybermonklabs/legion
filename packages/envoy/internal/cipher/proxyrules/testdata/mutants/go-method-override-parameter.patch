@@ -1,0 +1,19 @@
+# go-method-override-parameter: check drops the refusal of a "_method" query parameter under an
+# allow list, so an allow of {POST, /prefix} carries the value on a request whose query names
+# DELETE and a service that reads the parameter acts on that. Caught by the comparison fuzz
+# test: the model still answers "request carries a method override parameter". Applied with
+# patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -709,8 +709,8 @@
+ 		return nil, "not allowed by the profile's rule"
+ 	case listed && hasMethodOverride(r):
+ 		return nil, "request carries a method override header"
+-	case listed && hasMethodOverrideParameter(r.Query):
+-		return nil, "request carries a method override parameter"
++	// MUTANT: an allow of {POST, /prefix} alone now carries the value on a request whose query
++	// says _method=DELETE, which a Laravel or Symfony service acts on.
+ 	}
+ 	// A request that already carries the real value learnt it somewhere other than this
+ 	// swap, so the airlock refuses it rather than forwarding it. The scan reads every

@@ -572,6 +572,16 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // test alone would decline the retry's task and relaunch the worker with no prompt
 // (supervise.Machine.queue). Its task is told as start's is, from the standing it reads only for
 // a worker it starts.
+//
+// It is marked decided as well (record.SuperviseRequest.Decided), the one phase worker's start
+// that is: every road into it is a person's or the issue's architect's own request — the
+// architect's retry_or_escalate, the operator's `legion claims retry` of a phase worker
+// (intake.RestartPhase or the held phase's retry), a person's todo on a held root
+// (releaseHeldRoot). So it is the one start of a phase worker that launches again the agent of a
+// claim held for OpenAI's cyber-policy refusal, which it starts in a new session whether or not
+// freshSession asks for one (supervise's freshSession), since the recorded session would send the
+// refused content to OpenAI again. The other start so marked is a promoted root's architect's
+// (StartPromotedArchitect).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -588,7 +598,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession})
+	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, decided: true, freshSession: freshSession})
 }
 
 // SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim
@@ -688,8 +698,16 @@ type startMarks struct {
 	// (record.SuperviseRequest.ResendEntry). The held phase's retry sets it (restart), because
 	// the claim it reaches may hold that very entry as its given one; sendOwedEntry sends the
 	// entry its row names too and sets it not, because the claim it reaches is behind that entry
-	// and the entry test passes the task on its own.
+	// and the entry test passes the task on its own. It is the entry fence's mark alone, and says
+	// nothing of who asked for the start (decided).
 	resend bool
+	// decided says a person or the issue's architect asked for the start
+	// (record.SuperviseRequest.Decided), which makes it a start that launches again the agent of a
+	// claim held for OpenAI's cyber-policy refusal (supervise.RequestRetry.Decided). Of the phase
+	// workers' starts, restart alone sets it, the held phase's retry, which every such request
+	// comes through; no start the daemon makes by itself may, or it would send the refused content
+	// to OpenAI again.
+	decided bool
 	// resumeTask says the task is the phase's resume task (ResumeTask), so a claim that
 	// already holds a task of this generation and phase is given it once it is ready and the
 	// start delivers none (record.SuperviseRequest.ResumeTask). The promotion's start of a
@@ -769,8 +787,9 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		move = reassertion
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, Decided: marks.decided,
+		ResumeTask: marks.resumeTask, RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume,
+		FreshSession: marks.freshSession}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
