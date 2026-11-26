@@ -6,7 +6,7 @@ import { settle } from "../../../__tests__/fake-clock";
 import { keptTab } from "../../../__tests__/kept-sends-harness";
 import { api } from "../../../api/client";
 import type { ComposerAnchor, ReplyTarget } from "../../conversation/composer-model";
-import { heldOf } from "../../conversation/held-sends-fixture";
+import { heldOf, request } from "../../conversation/held-sends-fixture";
 import { type SentRequest, sendAttempt } from "../../conversation/send-request";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { GATES, type GateName } from "./gates";
@@ -67,20 +67,16 @@ function item(id: string): TextWriteTarget {
   return { author: [{ id: "alice", kind: "user" }], id, spec: "artifact-spec" };
 }
 
-/** The composer's send of `BODY` as `MentionComposer` freezes it at Send: its anchor and its reply
- *  target, on the issue's route. */
+/** The composer's send of `BODY` as `MentionComposer` freezes it at Send: the held sends' request
+ *  (`held-sends-fixture.ts`), on the issue's route, with its anchor and its reply target. */
 function composed(
   { anchor, replyTo }: { anchor?: ComposerAnchor; replyTo?: ReplyTarget | null },
   sendKey = "send-1"
 ): SentRequest {
   return {
+    ...request,
     anchor,
-    ask: { multiple: false, options: [], urgency: "med" },
     draft: { body: BODY, replacement: "" },
-    edit: undefined,
-    kind: "comment",
-    owner: { issueKey: ISSUE, kind: "issue" },
-    plainDelivery: "steer",
     replyTo: replyTo ?? null,
     sendKey,
   };

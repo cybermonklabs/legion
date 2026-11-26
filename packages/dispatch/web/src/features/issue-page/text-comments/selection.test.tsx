@@ -190,6 +190,31 @@ test("no selection, a selection made by a drag: no control while the button is d
   }
 });
 
+test("control shown, the button goes down on the control: the control stays until the button is released, and the press opens the composer", async () => {
+  const { client, row, view } = await drawn({ threads: [] });
+  try {
+    const user = userEvent.setup();
+    rangeEndsAt(rectOf(100, 200, 80, 20));
+    selectWords(row, "page");
+    const control = await controlDrawn(
+      view,
+      "a selection in the statement's words draws no control"
+    );
+    await user.pointer({ keys: "[MouseLeft>]", target: control });
+    // A frame passes with the button down on the control: the control is still there to be released
+    // on, or the click would never fire.
+    await new Promise<void>((done) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => done()))
+    );
+    expect(controlOf(view), "the control went while the button was down on it").toBe(control);
+    await user.pointer({ keys: "[/MouseLeft]", target: control });
+    await composerIn(view, "pressing the control");
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
 test("no selection, a selection across two rows, two blocks of one item, or into the row's margin: no control", async () => {
   stubs = answerSeededReads({ threads: [] });
   const client = newClient();

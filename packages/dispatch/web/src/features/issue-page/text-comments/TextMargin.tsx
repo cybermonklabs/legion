@@ -283,12 +283,11 @@ export function TextMargin({ issue, route }: SlotProps): ReactNode {
   now.current = { composer, view };
   useEffect(() => {
     const place: MarkComposePlace = (compose) => {
-      const { promise, reject, resolve } = Promise.withResolvers<void>();
       const nodeId = composeNodeOf(now.current.view, compose.anchor);
       if (nodeId === undefined) {
-        reject(new Error("no node of the page holds the editor's words"));
-        return promise;
+        return Promise.reject(new Error("no node of the page holds the editor's words"));
       }
+      const { promise, reject, resolve } = Promise.withResolvers<void>();
       now.current.composer.open({
         block: null,
         mark: { ...compose, reject, resolve },
@@ -369,7 +368,8 @@ function rowAmong(rows: readonly HTMLElement[], parent: string | undefined): HTM
 }
 
 /** The rows the stage draws, by the tree id of each one's node, each node's rows in the order the
- *  stage draws them, so `measure` reads the stage once for all its boxes. */
+ *  stage draws them, and the nodes in the order the stage first draws a row of each, so `measure`
+ *  reads the stage once for the rows' order and all its boxes. */
 function rowsByNode(stage: Element): Map<string, HTMLElement[]> {
   const rows = new Map<string, HTMLElement[]>();
   for (const row of stage.querySelectorAll<HTMLElement>("[data-node-id]")) {
@@ -380,16 +380,6 @@ function rowsByNode(stage: Element): Map<string, HTMLElement[]> {
     else held.push(row);
   }
   return rows;
-}
-
-/** The ids of the nodes that `holds` answers for, in the order the stage draws their rows. */
-function rowOrder(stage: Element, holds: (id: string) => boolean): string[] {
-  const order: string[] = [];
-  for (const row of stage.querySelectorAll<HTMLElement>("[data-node-id]")) {
-    const id = row.dataset.nodeId;
-    if (id !== undefined && holds(id) && !order.includes(id)) order.push(id);
-  }
-  return order;
 }
 
 /** One box the column stacks (`useCardStack`), by its key: a thread's card, or the composer of a
@@ -607,14 +597,14 @@ function Column({
     const list = region.current;
     const stage = stageOf(aside);
     if (column === null || list === null || stage === null) return;
-    const drawn = rowOrder(stage, (id) => view.threads.has(id) || id === request?.nodeId);
+    const rows = rowsByNode(stage);
+    const drawn = [...rows.keys()].filter((id) => view.threads.has(id) || id === request?.nodeId);
     setOrder((current) =>
       current.length === drawn.length && current.every((id, at) => drawn[at] === id)
         ? current
         : drawn
     );
     const origin = regionOrigin(list);
-    const rows = rowsByNode(stage);
     const tops = new Map<string, number>();
     const ranges: { key: string; range: Range }[] = [];
     let composerAway = false;
@@ -655,7 +645,8 @@ function Column({
     mark();
   }, [mark, region, request, view, words]);
 
-  // After each render.
+  // A render can draw other boxes, or other rows in the stage, so the column measures again after
+  // each one, before the page paints.
   useLayoutEffect(() => {
     measure();
   });
@@ -796,7 +787,7 @@ function Column({
           onFocus={onFocus}
           onKeyDown={onKeyDown}
           ref={listRef}
-          style={detailsOpen ? { minHeight: height, visibility: "hidden" } : { minHeight: height }}
+          style={{ minHeight: height, ...(detailsOpen ? { visibility: "hidden" } : {}) }}
         >
           {/* The threads' stored text is the authors' (R4), as `IssueMarginCards` marks the
               margin's cards. */}

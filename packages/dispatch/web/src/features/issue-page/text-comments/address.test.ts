@@ -7,7 +7,7 @@ import type { Anchor } from "../../../api/types";
 import { KEY, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { readComment } from "../outline-fixtures";
 import { inDocument, treeOf } from "../slots/stage-fixtures";
-import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import { commentNode, treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import {
   answerSeededReads,
@@ -242,15 +242,7 @@ test("an address of a comment anchored in an undrawn block under the issue opens
   stubs.push(
     spyOn(api, "getIssueTree").mockImplementation(async () =>
       treeOf(
-        [
-          ...seededNodes([]),
-          treeNode(unplaced.id, "comment", KEY, {
-            anchor: treeAnchorOf(anchor),
-            author: [unplaced.author],
-            made_at: unplaced.created_at,
-            text: unplaced.body,
-          }),
-        ],
+        [...seededNodes([]), { ...commentNode(unplaced, KEY), anchor: treeAnchorOf(anchor) }],
         SERVES
       )
     )
@@ -291,17 +283,15 @@ test("the address of a comment on a constraint's words opens Graph", async () =>
             attributes: { standard: "The standard holds." },
             text: "The standard holds where the standard is read.",
           }),
-          treeNode(comment.id, "comment", host, {
+          {
+            ...commentNode(comment, host),
             anchor: {
               node: { id: host, kind: "constraint", state: "live" },
               occurrence: 1,
               orphaned: false,
               quote: "standard",
             },
-            author: [comment.author],
-            made_at: comment.created_at,
-            text: comment.body,
-          }),
+          },
         ],
         SERVES
       )

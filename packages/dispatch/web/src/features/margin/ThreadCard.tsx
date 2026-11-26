@@ -680,7 +680,7 @@ export function ThreadCard({
                   <button
                     className={`font-medium ${linkText} ${linkHoverText}`}
                     onClick={() => onAction(root.id, "reopen")}
-                    hidden={rootActions ? undefined : true}
+                    hidden={!rootActions}
                     type="button"
                   >
                     Reopen
@@ -689,7 +689,7 @@ export function ThreadCard({
                   <button
                     className={`font-medium ${linkText} ${linkHoverText}`}
                     onClick={() => onAction(root.id, "resolve")}
-                    hidden={rootActions ? undefined : true}
+                    hidden={!rootActions}
                     type="button"
                   >
                     Resolve

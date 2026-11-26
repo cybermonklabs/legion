@@ -1,5 +1,6 @@
 import type { NodeType } from "../page-words";
 import { rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
+import { ITEM_PLACE_KINDS } from "./text-comment-write";
 
 /**
  * The caret of a read-only row (R6, decision 11): puts `contenteditable="true"`,
@@ -15,20 +16,6 @@ import { rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
  * puts none in (decision 420 (1)): it moves the focus to the row, as on any row that takes no
  * editor.
  */
-
-/** The kinds of node that are read-only in the room (R6, root R30): an ask, a comment, a message,
- *  a lens, a finding, a risk, a constraint and a result. Enter on such a row puts this caret in
- *  its text, where a block of a document takes its editor's caret instead. */
-const READ_ONLY_KINDS: Readonly<Partial<Record<NodeType, true>>> = {
-  ask: true,
-  comment: true,
-  constraint: true,
-  finding: true,
-  lens: true,
-  message: true,
-  result: true,
-  risk: true,
-};
 
 /** The input events that would change the text or start a composition, each cancelled while the
  *  caret is in the words element. */
@@ -64,19 +51,19 @@ function putCaretAtStart(words: HTMLElement, runs: TextRuns): void {
 
 /**
  * Enter on `row`, the focused row of a node of `kind` (R6): where the node is read-only in the
- * room (`READ_ONLY_KINDS`) and its row draws its text, puts the caret at the start of that text
+ * room (`ITEM_PLACE_KINDS`) and its row draws its text, puts the caret at the start of that text
  * (`caretIn`) and answers true. Answers false for any other row - a block of a document, whose
  * editor takes the caret, and a row that draws none of its node's text: a lens with no verdict,
  * a deleted post, an empty text, a row drawn on one line - which Enter reports as it always has.
  */
 export function caretOnEnter(row: Element | null, kind: NodeType): boolean {
-  return row !== null && READ_ONLY_KINDS[kind] === true && caretIn(row) !== null;
+  return row !== null && ITEM_PLACE_KINDS[kind] === true && caretIn(row) !== null;
 }
 
 /** Puts a read-only caret in `row`'s words element (`rowTextOf(row)`). Answers the function that
  *  takes the caret and its listeners away, or null where `row` has no words element or the
  *  element draws none of its node's text. */
-export function caretIn(row: Element): (() => void) | null {
+function caretIn(row: Element): (() => void) | null {
   const words = rowTextOf(row);
   if (words === null) return null;
   const runs = textRuns(words);

@@ -37,6 +37,7 @@ import {
   type TextThreadSeed,
 } from "./margin-fixtures";
 import type { QuotedReplyBlock } from "./on-text";
+import { cardIn as cardOf } from "./TextMargin";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
 import { type TextThread, textThreadsOf } from "./text-threads";
 
@@ -91,7 +92,7 @@ async function drawnColumn(reads: SeededReads): Promise<{
 /** The card the column draws for the thread rooted at `id`, once it is drawn. */
 async function cardIn(column: HTMLElement, id: string): Promise<HTMLElement> {
   return await waitFor(() => {
-    const card = column.querySelector<HTMLElement>(`[data-margin-item="${CSS.escape(id)}"]`);
+    const card = cardOf(column, id);
     if (card === null) throw new Error(`the column draws no card for ${id}`);
     return card;
   });

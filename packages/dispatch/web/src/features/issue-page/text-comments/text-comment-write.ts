@@ -133,8 +133,10 @@ export function writeFor(
 }
 
 /** The kinds that stand as items of their own: an ask, a comment, a message, and a lens with its
- *  findings, risks, constraints and results. */
-const ITEM_PLACE_KINDS: Readonly<Record<string, true>> = {
+ *  findings, risks, constraints and results. Each is read-only in the room (R6, root R30), so Enter
+ *  on its row puts the read-only caret in its text (`read-only-caret.ts`), where a block of a
+ *  document takes its editor's caret instead. */
+export const ITEM_PLACE_KINDS: Readonly<Record<string, true>> = {
   ask: true,
   comment: true,
   constraint: true,

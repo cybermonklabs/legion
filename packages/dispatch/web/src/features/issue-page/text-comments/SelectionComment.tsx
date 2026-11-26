@@ -7,6 +7,7 @@ import { rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
 import { type SelectedWords, sendTargetOf } from "./SelectionComposer";
 import { quoteOf } from "./selection-quote";
 import { quotedNodeOf, useTextComposer } from "./TextMargin";
+import { subjectOf, writeFor } from "./text-comment-write";
 import { useStageIssue, useTextThreads, type ViewThreads } from "./useTextThreads";
 
 /**
@@ -32,6 +33,9 @@ export function SelectionComment(): ReactNode {
   const stage = useStageIssue();
   return stage === undefined ? null : <Control issue={stage.issue} preset={stage.preset} />;
 }
+
+/** The mark of the control's box, which a press on the control is told apart by. */
+const CONTROL_ATTRIBUTE = "data-selection-comment";
 
 /** How far right of the selection's end the control stands, in px. */
 const GAP = 4;
@@ -70,10 +74,12 @@ function inOneTextBlock(range: Range, runs: TextRuns): boolean {
 
 /**
  * What the document's selection quotes in the row its start is in, on the page of `issue` drawn as
- * `view`, or null: no single range, a collapsed one, no row the view draws a node of, a selection
- * that is not inside that row's own words (`quoteOf`), one across two of their text blocks
- * (`inOneTextBlock`), or words no send is offered on (`sendTargetOf`). The control stands right of
- * the last rectangle of the range, at its top.
+ * `view`, or null: no single range, a collapsed one, no row the view draws a node of, a node no
+ * write is offered on (`writeFor`), a selection that is not inside that row's own words
+ * (`quoteOf`), one across two of their text blocks (`inOneTextBlock`), or words no send is offered
+ * on (`sendTargetOf`). The control stands right of the last rectangle of the range, at its top.
+ * The node's write is asked first, so a selection in a row that takes none reads none of the
+ * row's words in each frame it is read in.
  */
 function selectedIn(view: ViewThreads, issue: IssueDetails): Selected | null {
   const selection = document.getSelection();
@@ -84,6 +90,7 @@ function selectedIn(view: ViewThreads, issue: IssueDetails): Selected | null {
   const nodeId = row?.dataset.nodeId;
   const node = nodeId === undefined ? undefined : view.nodes.get(nodeId);
   if (row === null || row === undefined || nodeId === undefined || node === undefined) return null;
+  if (writeFor(subjectOf(node, issue.key)) === null) return null;
   const quoted = quotedNodeOf(view, nodeId);
   const words = rowTextOf(row);
   if (quoted === undefined || words === null) return null;
@@ -136,7 +143,10 @@ function Control({ issue, preset }: { readonly issue: IssueDetails; readonly pre
         setSelected(pressed ? null : find());
       });
     };
-    const press = () => {
+    const press = (event: Event) => {
+      // A press on the control itself keeps it: the click needs the button under the pointer at
+      // the release, and the control hides only for a drag that makes the selection.
+      if (event.target instanceof Element && event.target.closest(`[${CONTROL_ATTRIBUTE}]`)) return;
       pressed = true;
       changed();
     };
@@ -175,7 +185,11 @@ function Control({ issue, preset }: { readonly issue: IssueDetails; readonly pre
   return (
     <>
       {selected === null ? null : (
-        <div className="fixed z-30" style={{ left: selected.left, top: selected.top }}>
+        <div
+          className="fixed z-30"
+          style={{ left: selected.left, top: selected.top }}
+          {...{ [CONTROL_ATTRIBUTE]: "" }}
+        >
           <button
             className={`px-2 py-0.5 ${box}`}
             onClick={() => composer.open(selected.words)}

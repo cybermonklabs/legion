@@ -209,11 +209,17 @@ function useSendTarget({
         ? undefined
         : sendTargetOf(view, drawn, issue, words);
   // The target as it was while each read of the node builds it afresh with the same values, so
-  // the composer's anchor and reply keep their identity.
-  const [last, setLast] = useState<SendTarget | null>(null);
-  const same = target !== undefined && JSON.stringify(target) === JSON.stringify(last);
-  if (target !== undefined && !same) setLast(target);
-  return target === undefined || same ? last : target;
+  // the composer's anchor and reply keep their identity; beside it its serialized form, so each
+  // render serializes the new target alone.
+  const [last, setLast] = useState<{ readonly json: string; readonly target: SendTarget | null }>({
+    json: "null",
+    target: null,
+  });
+  if (target === undefined) return last.target;
+  const json = JSON.stringify(target);
+  if (json === last.json) return last.target;
+  setLast({ json, target });
+  return target;
 }
 
 /**
