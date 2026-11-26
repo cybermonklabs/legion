@@ -317,6 +317,11 @@ func (e *Engine) reportRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if len(runs) == 0 && len(statuses) == 0 {
 		return nil
 	}
+	if w.Stored {
+		if fix, err := e.store.RunningFix(ctx, tx, issue.Key, issue.Generation, w.Task); err != nil || fix != nil {
+			return err
+		}
+	}
 	readers, err := e.ciReaders(ctx, tx, issue, w)
 	if err != nil {
 		return err
