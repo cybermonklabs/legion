@@ -1410,8 +1410,8 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 // notice and ends, and in the finish's transaction the round's read moves onto the launch's record
 // where it is the read that tells of the two, by the rule of every notice (movedRead,
 // tellingRecord), and the round's record goes. The launch's record alone then stands for the one
-// act: its finish tells the architect from the read of the two that tells most once that act is
-// confirmed (the Legion reviewer's Medium 1 on #5285 at 4b123279), and where the
+// act: its finish tells the architect from the read that tells most of the records it takes once
+// that act is confirmed (the Legion reviewer's Medium 1 on #5285 at 4b123279), and where the
 // runtime shows the act not made, the record is forgotten and nothing is told of a call that took
 // nothing (the Legion reviewer's Medium 1 on #5285 at 18d81dad). The end is the round's end all
 // the same, so within one daemon run no later walk reads the round's pod as one that went without
