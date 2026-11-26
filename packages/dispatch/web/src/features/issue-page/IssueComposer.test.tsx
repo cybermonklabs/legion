@@ -1351,9 +1351,9 @@ test("a comment typed in the box is still there after an edit ends", async () =>
 
 // An empty criterion line's Send is refused and says what to type, on the line its description
 // names (`RefusableButton`); its press writes nothing. The line is drawn only once the issue's
-// tree read names its tree artifact, and the page reads no tree yet, so the room's facts stand in
-// for that read here; the line is aimed at bob's comment directly, since no row offers Write a
-// criterion until the page reads the tree.
+// tree read names its tree artifact, and this file's page caches no tree read, so the room's facts
+// stand in for that read here; the line is aimed at bob's comment directly, since no row offers
+// Write a criterion without that read.
 test("an empty criterion line's Send says why it sends nothing", async () => {
   const user = userEvent.setup();
   stub(

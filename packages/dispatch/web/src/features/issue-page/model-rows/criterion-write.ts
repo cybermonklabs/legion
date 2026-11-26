@@ -1,7 +1,9 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { ApiError, writeRequest } from "../../../api/client";
 import type { Body } from "../../../api/paths";
+import { issueTreeKey } from "../../../api/queries";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { type ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { RoomFacts } from "./room-target";
@@ -124,7 +126,7 @@ export function criterionAnswer(error: unknown): CriterionAnswer {
 
 /** Whether a node of this issue offers the act that writes a criterion: only where the issue's
  *  tree read answers a `tree` and no `view_of`. No facts - an issue whose tree read the cache
- *  does not hold, which is every issue while the page reads no tree - offer none. */
+ *  does not hold - offer none. */
 export function criterionOffered(facts: RoomFacts | undefined): boolean {
   return facts !== undefined && facts.tree !== null && facts.viewOf === null;
 }
@@ -146,10 +148,17 @@ export interface CriterionWriteOptions extends CriterionAim {
  * with every other criterion written under the same node of the same tree
  * (`criterion:<tree>:<parent>`), shown by the pending-writes indicator only while it is out,
  * since the line shows its refusal itself. It is told to `onOut` as it fires and as it settles,
- * and a landing then to `onLanded`. The landing refreshes no read: the page reads no tree yet,
- * and once it does the landing is to refresh the issue's tree read here, before `onLanded`.
+ * and a landing then refreshes the issue's tree read and is told to `onLanded`, so the outline
+ * draws the criterion from that read, also while the live feed is down.
  */
-export function useCriterionWrite({ onLanded, onOut, parent, tree }: CriterionWriteOptions) {
+export function useCriterionWrite({
+  issueKey,
+  onLanded,
+  onOut,
+  parent,
+  tree,
+}: CriterionWriteOptions) {
+  const queryClient = useQueryClient();
   return useKeyedWrite({
     inline: true,
     label: () => CONTROL_LABELS.write_criterion,
@@ -157,6 +166,12 @@ export function useCriterionWrite({ onLanded, onOut, parent, tree }: CriterionWr
     onMutate: () => onOut(true),
     onSuccess: () => {
       onOut(false);
+      // By prefix: every read of the issue's tree stands under `issueTreeKey` - Graph's,
+      // Conversation's (`conversationTreeKey`), the default outline, and each view's - and an
+      // invalidation refetches only the reads the page observes, so the send reads again the
+      // outline it draws, and a view where one is drawn. `exact` would reach Graph's read alone
+      // and leave Conversation's to the live feed, which may be down.
+      void queryClient.invalidateQueries({ queryKey: issueTreeKey(issueKey) });
       onLanded();
     },
     request: (markdown: string) => criterionRequest(tree, markdown),

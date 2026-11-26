@@ -728,6 +728,8 @@ export function RowMargin({
   tagTo?: string;
   tone: Tone;
 }): ReactNode {
+  // The issue the page is of, which tells a node of another issue from one of its own.
+  const writer = useOutlineWriter();
   const stateGlyphs: Readonly<Record<string, Readonly<Record<string, string>>>> =
     GLYPH_TOKENS.states;
   const stateGlyph = node.state === undefined ? undefined : stateGlyphs[node.type]?.[node.state];
@@ -759,9 +761,30 @@ export function RowMargin({
       </div>
     );
   }
+  // A node whose own address names another issue than the page's - a child's check or plan task
+  // under the statement it serves, and its result - names that issue by its key before its kind
+  // tag, a link to that issue's own page (R4). With no writer the page's issue is unknown.
+  const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
+  const otherIssue =
+    writer !== undefined && route !== undefined && "key" in route && route.key !== writer.issueKey
+      ? route.key
+      : undefined;
+  const otherIssueHref =
+    otherIssue === undefined ? undefined : referenceHref({ key: otherIssue, kind: "issue" });
   return (
     <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
       <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
+        {otherIssueHref === undefined ? null : (
+          <Link
+            className="dispatch-inline-link font-semibold whitespace-nowrap underline decoration-page-hair underline-offset-[3px] max-[1279px]:-my-[6px]"
+            data-node-issue=""
+            tabIndex={tabStops ? undefined : -1}
+            to={otherIssueHref}
+            {...authorText}
+          >
+            {otherIssue}
+          </Link>
+        )}
         {UNTYPED[node.type] === true ? null : (
           <span
             className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}

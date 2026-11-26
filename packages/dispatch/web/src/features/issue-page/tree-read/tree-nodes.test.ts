@@ -781,8 +781,8 @@ test("a block keeps F's id where the read names its document", () => {
 // R1 (plan's map, `id`): a block of another issue keeps the read's id even where its
 // document carries this issue's slug, as a child's Verification document does, so it is never
 // taken for this issue's block; and a check of an issue under this one, which the read reaches
-// through its `serves`, is out of this part's scope and draws no row, here or under the
-// requirement it serves.
+// through its `serves`, is drawn by that id under the requirement it serves, addressed in its
+// own issue, with its result under it (INFRA-4066 R4).
 test("another issue's block keeps the read's id where its document has this issue's slug", () => {
   const tree = answer(
     [
@@ -809,10 +809,14 @@ test("another issue's block keeps the read's id where its document has this issu
     [blockNodeId("spec", "r1"), `${KEY}/spec#r1`],
     [blockNodeId("verification-md", "c1"), `${KEY}/verification-md#c1`],
     ["CORE-2", "CORE-2"],
+    ["c9", "CORE-2/verification-md#c9"],
+    ["result-9", "result-9"],
   ]);
   expect(nodeOf(root, blockNodeId("spec", "r1"))?.children.map((child) => child.id)).toEqual([
     blockNodeId("verification-md", "c1"),
+    "c9",
   ]);
+  expect(drafts.get("c9")?.reference).toBe("dispatch://CORE-2/artifact/verification-md#b-c9");
 });
 
 // R3: a person's comment the read hangs under a decision node, made after the decision's words
@@ -1529,6 +1533,8 @@ test("this issue's plan task is not placed by a child's plan task of the same bl
     `${blockNodeId("spec", "r1")} requirement`,
     `-${blockNodeId("plan-md", "t1")} plan_task`,
     `${blockNodeId("spec", "r2")} requirement`,
+    // The child's own task stands there itself, by its read id (INFRA-4066 R4).
+    "-t1 plan_task",
     "CORE-2 child_issue",
   ]);
 });

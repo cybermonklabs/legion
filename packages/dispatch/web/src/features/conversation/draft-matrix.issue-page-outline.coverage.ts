@@ -21,7 +21,7 @@ const REASONS = {
   8: "8. The box is drawn whenever the writer edits a comment (`useComposerShown`), so this section never hides a mounted edit line: it hides the box only once the edit has ended, which takes the edit line off the page, the edit rows.",
   9: "9. `place` tells the edit line where to put the reader once the edit ends, and its placeholder's words; neither moves the edit's address, which its comment names (`edit`), nor its draft.",
   10: "10. A refused or stopped send holds the box on its own target (the writer's `redirectedReplyTarget` and `keptOnTarget`), so the box keeps nothing away for that target and has no kept line whose way back can go; only a typed draft is kept for a target the box moved away from, the typed cells of the gone rows.",
-  11: "11. While the box writes a criterion, this `div` hides the write line and unmounts nothing (`hidden`), so the write line's composer stays mounted at its address with its draft and its send, and shows again as it was once the criterion's line ends (`clear`). No row offers Write a criterion before the page reads the issue's tree (`takesCriterion`), so no row of this file can aim the box at one.",
+  11: "11. While the box writes a criterion, this `div` hides the write line and unmounts nothing (`hidden`), so the write line's composer stays mounted at its address with its draft and its send, and shows again as it was once the criterion's line ends (`clear`). No row offers Write a criterion where the cache holds no tree read of the issue (`takesCriterion`, `useRoomFacts`), and this file's page caches none, so no row of this file can aim the box at one.",
 } as const;
 
 const WRITE_MOUNT = "WriteLine <MentionComposer mutationKey={writer.sendKey}>";

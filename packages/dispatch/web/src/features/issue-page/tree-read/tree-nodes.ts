@@ -35,6 +35,7 @@ import {
   parentsIn,
 } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
+import { modelDraftSteps } from "../model-rows/model-drafts";
 import {
   blockAttributeLabel,
   coverageNotes,
@@ -85,7 +86,9 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  * step of this part's, makes no draft and stays in the answer, which the page keeps whole (R7);
  * a later part draws a kind of its own with one line in that list, and adds a member to another
  * step's draft with one line in `treeDraftMarks`. A check or a plan task of an issue under this
- * one is out of this part's scope and makes no draft either.
+ * one is out of this part's scope and makes no draft either. Part Y's steps, first in that list
+ * (`model-rows/model-drafts.ts`), draw a criterion and a check, a plan task and a result of an
+ * issue under this one.
  *
  * `buildIssueTree` builds the tree from these drafts, so this module imports no code of
  * `issue-tree.ts`, which would close an import cycle (`biome.json`'s `noImportCycles`): the word
@@ -209,6 +212,7 @@ export type TreeDraftMark = (
  * (`isPlainBlock`), a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
+  ...modelDraftSteps({ draftOf, isForeign, isStatementNode, madeBy }),
   draftRequirement,
   draftServing,
   draftResult,
@@ -869,16 +873,19 @@ function isPlainBlock(node: TreeAnswerNode, context: TreeDraftContext): boolean 
 }
 
 /** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn
- *  as the outline drew one, by its kind and its words and nothing more. It stands under the
- *  parent the read gives it, the ask or the decision its `part_of` reaches, as every draft whose
- *  step names no parent does (`placeOf`), and nowhere else. */
+ *  as the outline drew one, by its kind, its words, and the agent that wrote it and when, as the
+ *  read answers them (`madeBy`). It stands under the parent the read gives it, the ask or the
+ *  decision its `part_of` reaches, as every draft whose step names no parent does (`placeOf`),
+ *  and nowhere else. */
 function draftReading(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "reading") return undefined;
-  return draftOf(node, "reading", context);
+  const draft = draftOf(node, "reading", context);
+  madeBy(draft, node);
+  return draft;
 }
 
 /** A child issue, with its row as the issue read carries it (`TreeNode.child`). The issue itself

@@ -1,12 +1,15 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { notifyManager, type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 import { api } from "../../../api/client";
+import { conversationTreeKey, issueTreeKey, TREE_FILTERS } from "../../../api/queries";
 import type { Artifact } from "../../../api/types";
 import { isBlockItemKind } from "../../refs/block-reference";
 import { parseNodeReference } from "../../refs/routes";
 import type { DocumentAdmissions } from "../document-admission";
 import { documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
+import { type TreeAnswer, viewKey } from "../tree-read/tree-read";
 
 /**
  * The room a node's text is edited in.
@@ -122,15 +125,48 @@ export function takesCaret(
 
 /**
  * The room facts of an issue's tree read, by the issue's key, read from the query cache with no
- * fetch of its own: it answers `undefined` for an issue whose tree read the cache does not hold,
- * so its nodes are edited as `useNodeEditing.ts` edits them without a room.
- *
- * Since the page reads no tree yet, the cache holds none and this answers `undefined` for every
- * issue, whatever key it is given. It takes the cache's client already, so its place among its
- * caller's hooks is fixed before the page reads a tree.
+ * fetch of its own: the `converted`, `tree` and `view_of` the tree read of the issue answers,
+ * from any read of it the cache holds under `issueTreeKey` (`heldTreeRead`), and `undefined` for
+ * an issue whose tree read the cache does not hold, so its nodes are edited as
+ * `useNodeEditing.ts` edits them without a room. It draws its caller again as the cache changes,
+ * and answers the same object while the three facts stand, whatever else a new answer changed.
  */
-export function useRoomFacts(_issueKey: string | undefined): RoomFacts | undefined {
-  useQueryClient();
+export function useRoomFacts(issueKey: string | undefined): RoomFacts | undefined {
+  const client = useQueryClient();
+  const subscribe = useCallback(
+    (onChange: () => void) => client.getQueryCache().subscribe(notifyManager.batchCalls(onChange)),
+    [client]
+  );
+  const answer = useSyncExternalStore(subscribe, () =>
+    issueKey === undefined ? undefined : heldTreeRead(client, issueKey)
+  );
+  const converted = answer?.converted;
+  const tree = answer?.tree ?? null;
+  const viewOf = answer?.view_of ?? null;
+  return useMemo(
+    () =>
+      issueKey === undefined || converted === undefined
+        ? undefined
+        : { converted, issueKey, tree, viewOf },
+    [converted, issueKey, tree, viewOf]
+  );
+}
+
+/**
+ * The answer of a read of issue `key`'s tree the cache holds, which says how the issue stands
+ * whichever read it is: Graph's, else Conversation's, else a view's at no version, the one the
+ * page reads on Spec before the outline's (each under `issueTreeKey`). A view read at a version
+ * is the tree as it stood then, so it is never asked.
+ */
+function heldTreeRead(client: QueryClient, key: string): TreeAnswer | undefined {
+  const outline =
+    client.getQueryData<TreeAnswer>(issueTreeKey(key)) ??
+    client.getQueryData<TreeAnswer>(conversationTreeKey(key));
+  if (outline !== undefined) return outline;
+  for (const filter of TREE_FILTERS) {
+    const view = client.getQueryData<TreeAnswer>(viewKey(key, filter));
+    if (view !== undefined) return view;
+  }
   return undefined;
 }
 
