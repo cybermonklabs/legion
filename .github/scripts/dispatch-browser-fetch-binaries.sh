@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The second read of the binaries artifact in the shard and alone jobs of
+# The second read of the binaries artifact in the shard, real and alone jobs of
 # .github/workflows/dispatch-browser.yaml, run when actions/download-artifact's first read did
 # not complete within its step's limit.
 #
@@ -11,7 +11,7 @@
 # copies from. <job> is the id of the caller whose binaries job built the artifact: the
 # artifact is `<job>-binaries`, as the build job names it, and the step passes the name its
 # first read takes, `${{ inputs.build-job || inputs.job }}` in the shard job and
-# `${{ inputs.job }}` in the alone job. So each caller reads its own build, even when several
+# `${{ inputs.job }}` in the real and alone jobs. So each caller reads its own build, even when several
 # callers share a run, but the references lane where it takes the pull-request lane's, which
 # both reads then name. GH_TOKEN is the run's own `${{ github.token }}`, a key
 # of the step's `env:` and
@@ -42,7 +42,7 @@
 # them at a stand-in server's scale; the workflow sets none of them.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-fetch-binaries.sh <out-dir> <job>
-# CI runs it in dispatch-browser.yaml's shard and alone jobs, at the step "Download the binaries
+# CI runs it in dispatch-browser.yaml's shard, real and alone jobs, at the step "Download the binaries
 # again, after a first attempt that did not complete", and its tests in ci.yaml's test job.
 set -euo pipefail
 

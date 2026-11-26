@@ -216,7 +216,7 @@ export function duplicateRows<Row extends ListedRow>(
 export const stubProjectNames: readonly string[] = ["stub", "stub-phone"];
 
 /** The projects the pull-request lane runs, which is what
- *  `.github/workflows/dispatch-browser.yaml`'s shard job names for `lane: pull-request`. The
+ *  `.github/scripts/dispatch-browser-pr-suite.sh` names for its `real` and `stub` legs. The
  *  lane is these four and the `@pr` tag; every other project, and every row without the tag,
  *  runs on the full lane at the merge queue and on the nightly. */
 export const pullRequestLaneProjects: readonly string[] = [

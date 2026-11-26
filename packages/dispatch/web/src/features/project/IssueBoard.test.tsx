@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { stubFailedCopy } from "../../__tests__/clipboard";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -1622,13 +1623,7 @@ test("Shift+H of a card with an open child, its question's Move them with it lan
 // the board announces that the copy failed rather than saying it copied.
 test("y and Shift+Y announce copy failure rather than Copied when copying fails", async () => {
   const user = userEvent.setup();
-  const originalClipboard = navigator.clipboard;
-  const originalExecCommand = document.execCommand;
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: { writeText: async () => Promise.reject(new Error("denied")) },
-  });
-  Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  const restoreCopy = stubFailedCopy();
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
   try {
     const board = await screen.findByRole("region", { name: "Project board" });
@@ -1645,10 +1640,6 @@ test("y and Shift+Y announce copy failure rather than Copied when copying fails"
     expect(status.textContent).not.toContain("Copied");
   } finally {
     cleanup();
-    Object.defineProperty(document, "execCommand", {
-      configurable: true,
-      value: originalExecCommand,
-    });
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+    restoreCopy();
   }
 });

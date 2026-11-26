@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
+import { holdWithin } from "../../__tests__/content-drawn";
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { settle } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
@@ -436,17 +437,6 @@ test("ProofDocument reports connection status and pending edits through the tool
     view.unmount();
   }
 });
-
-/** "ended" if no hold on the shell's extras is on within `ms` from now, else "still on". */
-async function holdWithin(ms: number): Promise<"ended" | "still on"> {
-  const late = Promise.withResolvers<"still on">();
-  const timer = setTimeout(() => late.resolve("still on"), ms);
-  try {
-    return await Promise.race([whenContentDrawn().then(() => "ended" as const), late.promise]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 // A live connection that goes offline before its first sync - `/ws/doc` unreachable, for a reader
 // offline or a server that does not answer - leaves a document that does not draw until it can

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# The readiness wait for the S3-compatible server the shard job starts for its stacks' uploads:
+# The readiness wait for the S3-compatible server the shard and real jobs start for their stacks' uploads:
 # it waits for the filer to answer, makes the bucket, writes one object, reads it back and
 # deletes it, and prints the server's own log for whichever of those did not happen.
 #
 # Who runs it: the step "Wait for the S3-compatible server" of
-# .github/workflows/dispatch-browser.yaml's shard job;
+# .github/workflows/dispatch-browser.yaml's shard and real jobs;
 # .github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object
 # says why a bucket alone is not enough to wait for. It takes no argument. $RUNNER_TEMP is where
 # the step "Start an S3-compatible server for uploaded files", the first after the checkout,
@@ -12,7 +12,7 @@
 # The runner sets $RUNNER_TEMP for every step.
 #
 # Run from anywhere, with $RUNNER_TEMP set: .github/scripts/dispatch-browser-wait-for-store.sh
-# CI runs it in dispatch-browser.yaml's shard job, at the step "Wait for the S3-compatible
+# CI runs it in dispatch-browser.yaml's shard and real jobs, at the step "Wait for the S3-compatible
 # server".
 set -euo pipefail
 

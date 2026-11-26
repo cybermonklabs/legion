@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
+import { stubFailedCopy } from "../../__tests__/clipboard";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -156,13 +157,7 @@ test("Settings reports copy failure rather than Copied when copying a new token 
     name: "reviewer",
     token: plaintext,
   });
-  const originalClipboard = navigator.clipboard;
-  const originalExecCommand = document.execCommand;
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: { writeText: async () => Promise.reject(new Error("denied")) },
-  });
-  Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  const restoreCopy = stubFailedCopy();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
   try {
@@ -184,11 +179,7 @@ test("Settings reports copy failure rather than Copied when copying a new token 
     queryClient.clear();
     listAgentTokens.mockRestore();
     createAgentToken.mockRestore();
-    Object.defineProperty(document, "execCommand", {
-      configurable: true,
-      value: originalExecCommand,
-    });
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+    restoreCopy();
   }
 });
 

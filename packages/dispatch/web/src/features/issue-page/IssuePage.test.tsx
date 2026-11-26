@@ -4,6 +4,7 @@ import { act, render, screen } from "@testing-library/react";
 import { Suspense } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { holdWithin } from "../../__tests__/content-drawn";
 import { api } from "../../api/client";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import { issue } from "../margin/margin-fixture";
@@ -80,17 +81,6 @@ function answerPageReadsEmpty() {
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
   ];
-}
-
-/** "ended" if no hold is on within `ms` from now, else "still on". */
-async function holdWithin(ms: number): Promise<"ended" | "still on"> {
-  const late = Promise.withResolvers<"still on">();
-  const timer = setTimeout(() => late.resolve("still on"), ms);
-  try {
-    return await Promise.race([whenContentDrawn().then(() => "ended" as const), late.promise]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 test("a landing on the new issue page ends the shell's hold on its extras when the page draws, not at the hold's limit", async () => {

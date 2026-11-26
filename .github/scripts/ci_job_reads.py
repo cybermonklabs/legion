@@ -2081,10 +2081,12 @@ BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_MACHINE_TIME_STEP = "Reading five, the lane's machine time"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
-# One name, two steps: the shard job's and the alone job's second read of the binaries artifact.
+# One name, three steps: the shard job's, the real job's and the alone job's second read of the
+# binaries artifact.
 BROWSER_FETCH_STEP = "Download the binaries again, after a first attempt that did not complete"
-# One name, two steps: the shard job's and the alone job's, each running a script of its own,
-# since the shard job's machine also runs the file store whose log that job collects.
+# One name, three steps: the shard job's and the real job's, which run one script, and the alone
+# job's, which runs a script of its own, since the shard and real jobs' machines also run the
+# file store whose log those jobs collect.
 BROWSER_RECORD_STEP = "What the run left behind"
 # The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host and
 # then runs Playwright in the pinned container. Neither it nor e2e/run-server.sh builds a
@@ -2309,8 +2311,8 @@ def browser_gate(filter, job):
         (f"{ENVOY}/internal/dispatch/api/testdata/text-refusals.json", "read at `packages/dispatch/e2e/artifact-dry-run.e2e.ts#rows` and `packages/dispatch/e2e/artifact-dry-run.e2e.ts#textRefusalsFile`, from the new URL textRefusalsFile holds, for that spec's rows, which are the list's rows in each combination the spec runs"),
         ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds each stack's server port through it"),
         (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/run-broker.sh#$e2e_dir/../../envoy/scripts/lib/pg-url.sh` sources it, and `packages/dispatch/e2e/harness-listeners.ts#realBrokerListeners` "
-                                           f"starts that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)} and "
-                                           f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}"),
+                                           f"starts that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)}, "
+                                           f"{at_browser(BROWSER_REAL_SPECS, BROWSER_REAL)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
          f"{at_browser(BROWSER_REAL_SPECS, BROWSER_REAL)} and {at_browser(BROWSER_STUB_SPECS, BROWSER_STUB)} "

@@ -38,13 +38,13 @@ PostgreSQL. The shard, real and alone jobs use the same browser image. Their ste
 kept textually identical where they run the same commands, so a reader can diff them.
 
 That reason is a composite action's, and not a script's: a step that calls a script keeps its
-own timeout-minutes. So a body the shard and alone jobs really share is a script, written
-once and called from both, and that script's head is where what it does and why is written
+own timeout-minutes. So a body more than one of the shard, real, stub and alone jobs really
+share is a script, written once and called from each, and that script's head is where what it does and why is written
 down. There are two: .github/scripts/dispatch-browser-samples.sh for the memory and CPU
 sampler and its two readings, and .github/scripts/dispatch-browser-postgres.sh for the
 reading of the stacks' PostgreSQL, which stood as a copy in each job's own step list until a
 review read the two together. Two more stood beside them, the Playwright install and the key
-its apt archive cache was restored under: those two jobs run in the image this repository
+its apt archive cache was restored under: the shard and alone jobs run in the image this repository
 builds now, which carries the three browsers and every host package they need, so both of
 those scripts are gone with the steps that called them (dispatch://INFRA-1443).
 
@@ -247,12 +247,12 @@ Why the build is a job of this file rather than of each caller: an artifact is v
 inside the run that uploaded it, and every caller runs this file - ci.yaml's dispatch-browser,
 dispatch-browser-pr and dispatch-references jobs and dispatch-browser-nightly.yaml's
 dispatch-browser job. A build left in one caller would hand the others' runs nothing, and their
-shard and alone jobs would fail downloading an artifact their run never held. The two artifacts
+shard, real and alone jobs would fail downloading an artifact their run never held. The two artifacts
 are `<job>-binaries` and `<job>-dashboard`, named for the caller, so callers that share a run
 each download their own, but the references lane where it takes the pull-request lane's
 ([its section](#when-the-references-lane-takes-the-pull-request-lanes-build)).
 
-Why those two jobs do not build the binaries themselves: they run in a container, and
+Why the shard, real and alone jobs do not build the binaries themselves: they run in a container, and
 .github/scripts/ci_filter_coverage.py's shell_reason counts a `container:` as something that
 can move what a go command compiles, so a go command there would fall out of
 check-ci-filters.sh's reduction and be counted as reading every Go file of the repository,
@@ -431,14 +431,14 @@ One `go build -o <directory>/` writes one binary per package, each named after i
 dispatch, dev-oidc-issuer and requestseed; a second build names the broker's, from
 ./cmd/cipherd, broker. CGO_ENABLED=0 is pinned on the build
 rather than left to the runner's default, so each binary is static by construction: the
-shard and alone jobs run them in a container of this repository's own image, and a
+shard, real and alone jobs run them in a container of this repository's own image, and a
 binary with a PT_INTERP has a glibc there to disagree with. They are written under
 $RUNNER_TEMP, so the checkout stays clean.
 
 `-ldflags='-s -w'` leaves out the symbol table and the DWARF debug information, which no
 leg reads: a panic's stack trace still names each function, file and line (Go keeps its own
 line table for that), and `go version -m` still reads the build information. Without them the
-artifact every shard and alone leg downloads was 107,568,042 bytes zipped and 248,108,722
+artifact every shard, real and alone leg downloads was 107,568,042 bytes zipped and 248,108,722
 unzipped (run 45062410823); stripped, it was 55,287,947 bytes zipped (run 45081810035), 49%
 less, both as the run's artifact list gives `size_in_bytes`. The download is where a leg's run
 has failed on the network: on 2026-11-22 five leg downloads of about 4,330 stalled for the
@@ -474,7 +474,7 @@ Why the bundles are a script and the go builds are not. A `run:` body of more th
 a script (.github/ci-notes/README.md), and a body that held all four builds, each with its
 wait and its error line, would run past ten. The go builds cannot be the script's: a go
 command a script holds is a script Run of the dispatch_browser gate, and that gate can hold
-none, since around_job reads every job of this workflow and the shard and alone jobs'
+none, since around_job reads every job of this workflow and the shard, real and alone jobs'
 `container:` drops such a Run out of check-ci-filters.sh's reduction (ci_job_reads.py's
 comment on the gate says so). So the two go commands stay in the step's own pinned text, and
 the two bundle builds, which start no go command, are the script, with the same commands, the
@@ -857,7 +857,7 @@ slow. Its first read stays actions/download-artifact, which reads in seconds on 
 one leg in a thousand. The script runs in the step's 2 minutes, with the same directory of
 its own as the action's attempt, and reads the artifact the action reads, `<job>-binaries`,
 given the id the action's read in its job names: `${{ inputs.build-job || inputs.job }}` in
-the shard job and `${{ inputs.job }}` in the alone job. So callers that share a run - a pull
+the shard job and `${{ inputs.job }}` in the real and alone jobs. So callers that share a run - a pull
 request labelled full-ci runs dispatch-browser beside dispatch-browser-pr, and one that changes
 what the reference rows test runs dispatch-references beside it - each read their own build's
 binaries, but the references lane where it takes the pull-request lane's, which both of its
@@ -1174,7 +1174,7 @@ The three projects whose rows are read from the wall clock, on one machine. They
 after another at one worker, and a wall-clock project takes nothing else with it - it
 names no `dependencies` since dispatch://INFRA-1280 - so nothing else is on the machine
 while any of them measures. The full lane alone: a pull request runs no clock row,
-since a shard job's machine cannot hold one still enough to measure.
+since its real job's machine, like a shard job's, cannot hold one still enough to measure.
 
 One machine for the three, where this job had a matrix leg each
 (dispatch://INFRA-1109). What a leg bought was three machines reading the clock at once;
@@ -1341,7 +1341,7 @@ that project's `testMatch`), firefox-alone and webkit-alone run heavy-bodies alo
 And `packages/dispatch/e2e/harness-pool.ts#stackBucket` makes no bucket at one stack: it
 answers `undefined` on `count === 1`. A store serving nothing would be charged
 to the very reading these rows exist for, which is why the `weed` the image carries is
-started on the shard job's machines and not on this one. A clock spec that later
+started on the shard and real jobs' machines and not on this one. A clock spec that later
 uploads fails here by name rather than quietly.
 
 The memory and CPU sampler both this job and the shard job run is
@@ -1478,7 +1478,7 @@ So the stacks start their own, through e2e/harness-postgres.ts's image provider,
 the route the visual job already takes on the runner and not a new one: one
 `docker run` of the same pgvector digest per stack, published on a loopback port the OS
 chose, waited on by the harness's own `select 1` rather than by a ten-second health
-interval, and removed with the stack. The shard and alone jobs' route is no route here -
+interval, and removed with the stack. The shard, real and alone jobs' route is no route here -
 their PostgreSQL 18 with pgvector is in the image they run in, and this job runs on the
 runner, whose own PostgreSQL 16 carries no `vector` extension at all
 (actions/runner-images installs postgresql-16 and libpq-dev and nothing else), so
@@ -1592,9 +1592,9 @@ No browser cache here: it would save about 4 s, since the three archives - Chrom
 Testing, its headless shell and ffmpeg - download in 8 to 9 s, and it would add about
 250 MiB to a cache store already holding 18.6 GB in 162 entries, where each existing
 playwright-Linux- entry is 481 MiB. There is no browser cache anywhere in this
-workflow to join: the shard and alone jobs restored one until they moved into the
-image that carries the browsers, which took their restores and ci-caches.yaml's
-browsers job with them (dispatch://INFRA-1443). This job stays on the runner, because
+workflow to join: the shard and alone jobs restored one until they moved into the image
+that carries the browsers, which the real job runs in too, and that move took their restores
+and ci-caches.yaml's browsers job with them (dispatch://INFRA-1443). This job stays on the runner, because
 nothing can make it launch another engine, and so keeps this one download.
 
 ## Why the two-process job pulls its stack's Postgres image
@@ -1672,8 +1672,10 @@ first step's blob reporter. `--output="$RUNNER_TEMP/embedder-test-results"` keep
 output-directory cleanup from removing the first step's `test-results`.
 
 The 4-minute step timeout is unchanged. A failure after Playwright's retries fails the
-containing job and the merge verdict, even with a green blob from the first step. The
-failure upload uses a separate attempt-qualified `<caller>-embedder-test-results-<attempt>`
+containing job and the merge verdict, even with a green blob from the first step. The upload
+after it runs only when this step itself failed, not on a job failed by the first step alone:
+Playwright writes `.last-run.json` into the output directory on every run, a passing one too.
+It uploads a separate attempt-qualified `<caller>-embedder-test-results-<attempt>`
 artifact. The two embedder rows did not contribute to the merged report before the move
 and still do not, so the merge row counts and flake rate have the same scope.
 
@@ -1695,7 +1697,7 @@ is measured from zero rather than defaulted (packages/dispatch/e2e/visual.e2e.ts
 Why a `docker run` inside a step and not a job-level `container:`. A `container:` on any job
 of this file drops every `go build` the suite starts out of check-ci-filters.sh's reduction
 (`.github/scripts/ci_filter_coverage.py#shell_reason`, "the job runs in a container:"), which then counts
-each as reading every Go file of the repository. The shard and alone jobs do take one,
+each as reading every Go file of the repository. The shard, real and alone jobs do take one,
 since the browsers they run are in it, and the `dispatch_browser` gate answers for them by
 listing no script Run at all and pinning the binaries job's build whole instead
 (.github/scripts/ci_job_reads.py's gate says why). This job needs no container of its own:
@@ -1708,7 +1710,7 @@ shape as the shard job's browser step.
 The browser step's body, those exports included, is .github/scripts/dispatch-browser-visual-suite.sh.
 
 It writes no blob report. The merge job's row accounting reads legs out of the job names with
-a capture that knows `shard (N)` and the bare `alone` alone - `alone (P)` was a job name of
+a capture that knows `shard (N)`, `real`, `stub` and the bare `alone` alone - `alone (P)` was a job name of
 the matrix dispatch://INFRA-1109 removed, and no run produces one now - and it fails the run
 when the merged report holds rows no leg printed; the multiprocess job writes none for the
 same reason. This job joins `merge`'s `needs:` and the verdict step's pair list instead, which
@@ -2051,7 +2053,7 @@ and the step "Take the newest attempt of each leg's blob report" can tell the at
 apart. A run's artifact list holds every attempt's artifacts and this pattern matches
 them all; two attempts of one leg hold the same inner paths, so merging them into one
 directory let one attempt overwrite the other in an order nothing fixes.
-The pattern starts with the caller's id, the workflow's `job` input, as the shard and alone
+The pattern starts with the caller's id, the workflow's `job` input, as the shard, real, stub and alone
 jobs' upload names do: a references run beside a pull-request run in one workflow run must not
 join the other's legs.
 
@@ -2127,7 +2129,10 @@ different places.
 
 Reading three. A leg that ended red with no failed row in the report died outside the
 suite - a budget, a runner fault, a step before the browser step - and that is a different
-fault from a failing row, so it is named apart.
+fault from a failing row, so it is named apart. The real and alone legs run the
+counting-embedder step after the browser step their blob is from, and its rows are in no
+blob, so on those two legs the line names that step as the other place the leg can have
+failed.
 
 ## What reading four measures, and which rows it reads
 

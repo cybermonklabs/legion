@@ -5,6 +5,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { stubFailedCopy } from "../../__tests__/clipboard";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted } from "../../__tests__/kept-sends-harness";
 import { answerSends } from "../../__tests__/send-answers";
@@ -872,13 +873,7 @@ test("a conflict reads why, offers the reader's text to copy and Discard, and no
 // the button says so rather than claiming "Copied".
 test("a conflict's Copy your text button reports copy failure rather than Copied when copying fails", async () => {
   const user = userEvent.setup();
-  const clipboard = navigator.clipboard;
-  const originalExecCommand = document.execCommand;
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: { writeText: async () => Promise.reject(new Error("denied")) },
-  });
-  Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  const restoreCopy = stubFailedCopy();
   const { client, unmount } = mountIndicator();
   const writes = writesOf(client);
   const text = "My title,\n  on two lines";
@@ -908,11 +903,7 @@ test("a conflict's Copy your text button reports copy failure rather than Copied
     expect(within(indicator).queryByRole("button", { name: "Copied" })).toBeNull();
   } finally {
     unmount();
-    Object.defineProperty(document, "execCommand", {
-      configurable: true,
-      value: originalExecCommand,
-    });
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+    restoreCopy();
   }
 });
 

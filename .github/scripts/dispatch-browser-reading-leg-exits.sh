@@ -86,7 +86,15 @@ while IFS="$(printf '\t')" read -r id conclusion leg name; do
     else
       failed=$(jq '.stats.unexpected' "$work/report.json")
       if [ "$failed" -eq 0 ]; then
-        text="job $id ($name) ended $conclusion with no failed row in the merged report, so it died outside the suite"
+        # The real and alone legs run the counting-embedder step after the browser step their
+        # blob is from, and its rows are in no blob, so a red leg with no failed row there may
+        # have failed in that step.
+        case "$leg" in
+          real | alone)
+            text="job $id ($name) ended $conclusion with no failed row in the merged report, so it failed in its embedder step or outside the suite" ;;
+          *)
+            text="job $id ($name) ended $conclusion with no failed row in the merged report, so it died outside the suite" ;;
+        esac
       else
         text="job $id ($name) ended $conclusion with $failed failed rows in the merged report"
       fi

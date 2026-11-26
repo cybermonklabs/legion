@@ -2,13 +2,14 @@
 # The memory and CPU sampler of the Dispatch browser suite's browser steps, and the two readings
 # it ends with.
 #
-# Who runs it, and why it is a script: the "Browser-test dispatch dashboard" step of
-# .github/workflows/dispatch-browser.yaml's shard job and the step of that name in its alone
-# job. The two jobs repeat their step lists for the reason .github/ci-notes/dispatch-browser.md
+# Who runs it, and why it is a script: the browser step of .github/workflows/dispatch-browser.yaml's
+# shard, real, stub and alone jobs, through dispatch-browser-shard-suite.sh,
+# dispatch-browser-pr-suite.sh and dispatch-browser-alone-suite.sh. The jobs repeat their step
+# lists for the reason .github/ci-notes/dispatch-browser.md
 # gives - a composite action carries neither `timeout-minutes` nor `services:` - but that reason
 # is a composite action's and not a script's: a step that calls a script keeps its own
-# `timeout-minutes`. So this body is written once, the scripts of both steps call it, and a fix
-# here is a fix for both jobs.
+# `timeout-minutes`. So this body is written once, the scripts of those steps call it, and a fix
+# here is a fix for every one of those jobs.
 #
 # Two modes, the two halves of one reading:
 #
@@ -16,15 +17,15 @@
 #   .github/scripts/dispatch-browser-samples.sh report <dir> "<title>"
 #
 # `sample` truncates <dir>/memory-samples.txt and <dir>/cpu-samples.txt and then ticks until it
-# is killed, so the caller starts it with `&` and keeps its pid, as both browser steps do:
+# is killed, so the caller starts it with `&` and keeps its pid, as each step that runs it does:
 # `sampler=$!` and a `trap` that kills it. It runs in the foreground of its own process on
 # purpose - the caller's trap is what stops it, and a script that backgrounded the loop itself
 # would hand the caller a pid it did not start.
 #
 # `report` prints the two `::notice::` lines, titled with the leg the caller names (`shard 1`,
-# `alone`), and changes nothing else: the browser steps run it after the suite and before
-# their own `exit`, so a step still ends on the suite's status and not on this reading's.
-# <dir> is $RUNNER_TEMP in both jobs, beside the stacks' own run directory and under what the
+# `real`, `stub`, `alone`), and changes nothing else: the browser steps run it after the suite and
+# before their own `exit`, so a step still ends on the suite's status and not on this reading's.
+# <dir> is under $RUNNER_TEMP in every job, beside the stacks' own run directory and under what the
 # steps upload: a file written into the checkout would leave it dirty afterwards.
 #
 # What the tick records, every 5 s for the length of the browser step:
@@ -44,7 +45,7 @@
 # last seconds of one that died between ticks. `everything else` is the machine's own busy time
 # (/proc/stat) less the named groups, so a reader sees the whole step without downloading the
 # samples: it holds that loss, the runner's own work, any container on the machine (the shard
-# job's file store) and the sampler itself. On the alone job it is also the reading that says
+# and real jobs' file store) and the sampler itself. On the alone job it is also the reading that says
 # the machine was quiet, which is the claim those rows rest on.
 #
 # The two sample files are the readings' whole input, which is what its test asserts against

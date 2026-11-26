@@ -630,32 +630,33 @@ rule 9's second direction refuses, since every job of the pull-request lane woul
 change no row sees. It is a read of the ci_filters gate instead, so a change to it re-runs this
 check, which holds this filter and that gate together.
 
-## dispatch_browser: The memory and CPU sampler the shard and alone jobs'
+## dispatch_browser: The memory and CPU sampler the shard, real, stub and alone
 
-The memory and CPU sampler the shard and alone jobs' browser steps start and read
-back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
-the script the merge job runs to take each leg's newest attempt, and the script
+The memory and CPU sampler the shard, real, stub and alone jobs' browser steps start
+and read back, the reading of the lanes' PostgreSQL the shard, real and alone jobs run
+before the suite, the script the merge job runs to take each leg's newest attempt, and the script
 that makes the merge job's three reads of its own run, which reads this run's own
 attempt's jobs, says a refused blob download was a refused read and sums the
 lane's machine time against its budget. Beside them,
-the thirteen scripts that hold the bodies of the binaries, the shard, the alone, the
-visual and the merge jobs' steps: the binaries job's build of the dashboard bundles beside
-its go build, the shard job's wait for the file store it starts, its
-browser step and the record of what that run left behind, the alone job's
+the fourteen scripts that hold the bodies of the binaries, the shard, the real, the stub,
+the alone, the visual and the merge jobs' steps: the binaries job's build of the dashboard
+bundles beside its go build, the shard job's wait for the file store it starts, its
+browser step and the record of what that run left behind, the wait and the record of which
+the real job runs too, the real and stub jobs' one browser step, the alone job's
 browser step and its own record step, whose text differs from the shard job's
 because no file store runs on that machine, the visual job's run against the
 baselines, and the merge job's merge of the legs' blob reports, its four
 readings - the rows, the flake rate, the leg exits and the row durations - and
 the verdict that fails the job on a red leg or a failed row. The Playwright
-install both jobs ran stood here too, with the pinned apt list it installed, the
+install the shard and alone jobs ran stood here too, with the pinned apt list it installed, the
 key their apt archive cache was read under and the check that the list had not
 fallen behind Playwright: those two jobs run in the image this repository builds
 now, which carries the browsers and their host packages, so all four files are
 gone (dispatch://INFRA-1443).
 
-## dispatch_browser: The container image the shard and alone jobs run in and
+## dispatch_browser: The container image the shard, real and alone jobs run in
 
-The container image the shard and alone jobs run in and everything that decides
+The container image the shard, real and alone jobs run in and everything that decides
 which bytes it is: the row that pins its digest, the Dockerfile it is built from
 and the workflow that builds it. A change to any of them changes what those jobs
 run inside, so they run (dispatch://INFRA-1443). The row is named as the whole
@@ -1380,7 +1381,7 @@ ubuntu-24.04, each a reason of its own machine and not of the job's code:
     daemon-go, plugin-pack, pi-envoy and pi-legion (pi-legion-build installs none, and runs on
     arm64);
   * a browser: dispatch-browser, dispatch-browser-pr and dispatch-references (the container of
-    their shard and alone legs is an image built for linux/amd64 alone), dispatch-two-builds and
+    their shard, real and alone legs is an image built for linux/amd64 alone), dispatch-two-builds and
     docs (Playwright's Chromium on the runner's own libraries);
   * an image of this repository built for linux/amd64: worker-image, browser-image, and
     envoy-smoke;
@@ -3066,7 +3067,7 @@ step) and its `attest` job's id-token and attestations: write. A pull request ru
 The browser image's build: browser-image.yaml builds .github/docker/browser.Dockerfile and
 pushes it when the package does not already hold an image built from it. Unlike the worker-image
 job, this job has no `pull_request` term: it runs on a merge group too, so the image a
-merged head's `container:` jobs pin — the shard and alone jobs of
+merged head's `container:` jobs pin — the shard, real and alone jobs of
 .github/workflows/dispatch-browser.yaml — is built from that head.
 
 ## Why the browser-image job grants every scope the called workflow declares

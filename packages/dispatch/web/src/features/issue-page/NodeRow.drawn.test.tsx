@@ -12,6 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 
+import { stubFailedCopy } from "../../__tests__/clipboard";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
@@ -3236,13 +3237,7 @@ test("a press on Keep open or Let close leaves the focus where it is", async () 
 // `ANSWER_LINES.copy_failed` and never `ANSWER_LINES.copied`.
 test("NodeFacts shows Copy failed and not Copied when copying a command fails", async () => {
   const user = userEvent.setup();
-  const originalClipboard = navigator.clipboard;
-  const originalExecCommand = document.execCommand;
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: { writeText: async () => Promise.reject(new Error("denied")) },
-  });
-  Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  const restoreCopy = stubFailedCopy();
   const view = renderRow(
     node({
       facts: [{ draw: "command", name: "run", value: "bun run test:web" }],
@@ -3256,11 +3251,7 @@ test("NodeFacts shows Copy failed and not Copied when copying a command fails", 
     expect(view.queryByText(ANSWER_LINES.copied)).not.toBeInTheDocument();
   } finally {
     view.unmount();
-    Object.defineProperty(document, "execCommand", {
-      configurable: true,
-      value: originalExecCommand,
-    });
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+    restoreCopy();
   }
 });
 
@@ -3268,13 +3259,7 @@ test("NodeFacts shows Copy failed and not Copied when copying a command fails", 
 // `ANSWER_LINES.copy_failed` and never `ANSWER_LINES.copied`.
 test("NodeRow Copy reference shows Copy failed and not Copied when copying fails", async () => {
   const user = userEvent.setup();
-  const originalClipboard = navigator.clipboard;
-  const originalExecCommand = document.execCommand;
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: { writeText: async () => Promise.reject(new Error("denied")) },
-  });
-  Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  const restoreCopy = stubFailedCopy();
   const view = renderRow(
     node({
       author: { id: "bob", kind: "user" },
@@ -3290,10 +3275,6 @@ test("NodeRow Copy reference shows Copy failed and not Copied when copying fails
     expect(view.queryByText(ANSWER_LINES.copied)).not.toBeInTheDocument();
   } finally {
     view.unmount();
-    Object.defineProperty(document, "execCommand", {
-      configurable: true,
-      value: originalExecCommand,
-    });
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+    restoreCopy();
   }
 });
