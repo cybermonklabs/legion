@@ -67,9 +67,10 @@ tree came from, under ~/go/pkg/mod/cache/download/<module>/@v/, is read only to 
 again when it is missing, and by `go mod download` and `go mod verify`, which no job that
 restores these entries runs: a build checks that the tree and its .ziphash exist
 (cmd/go/internal/modfetch/fetch.go, DownloadDir), and the .info, .mod and .ziphash files beside
-the zip stay. So every fill that saves a module cache deletes its zips before the save:
-go-cache-working-set.sh's `end` does it for go-daemon, go-notices, go-envoy and go-envoy-test,
-and its `zips` alone for go-envoy-infra, which builds from nothing and has no `begin`. A job that
+the zip stay. So every fill that saves a module cache deletes its zips before the save: the end
+command of .github/scripts/go-cache-working-set.sh does it for go-daemon, go-notices, go-envoy and
+go-envoy-test, and its zips command alone for go-envoy-infra, which builds from nothing and runs
+no begin. A job that
 does need a zip downloads it again, as it downloads a module the entry never held.
 
 go-envoy-test's were measured first, in its scratch runs above: 160 zips and 272 MB of the arm64
