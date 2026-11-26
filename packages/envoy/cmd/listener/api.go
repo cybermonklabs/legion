@@ -3747,3 +3747,5 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		writeJSONError(w, http.StatusNotFound, "not found")
 	})
 }
+
+// R5 timing probe 1 of INFRA-5794: this pull request measures an unlabelled run and is closed unmerged.
