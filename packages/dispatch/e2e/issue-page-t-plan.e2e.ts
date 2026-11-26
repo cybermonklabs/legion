@@ -222,13 +222,19 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
       );
 
       // A need and a statement are named by the words the batched names read gives, which lands
-      // after the blocks are read: the chart is read once c names a, and a, b and c each name
-      // the one statement they serve, by its words.
+      // after the blocks are read: the chart is read once c names a and the child's xb names xa,
+      // each by the needed task's first line, and a, b and c each name the one statement they
+      // serve, by its words.
       await expect
         .poll(async () => (await chartSteps(page)).find((step) => step.id === c)?.needs, {
           message: `c does not name a, which it needs, by a's first line ${where}`,
         })
         .toEqual([{ id: a, words: W.a }]);
+      await expect
+        .poll(async () => (await chartSteps(page)).find((step) => step.id === xb)?.needs, {
+          message: `the child's xb does not name xa, which it needs, by xa's first line ${where}`,
+        })
+        .toEqual([{ id: xa, words: W.childFirst }]);
       await expect
         .poll(
           async () =>
@@ -329,6 +335,11 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
           message: `c's needs chip ${where} does not name a by a's first line`,
         })
         .toEqual([W.a]);
+      await expect
+        .poll(async () => (await stepRows(page)).find((row) => row.id === xb)?.needs, {
+          message: `the child's xb's needs chip ${where} does not name xa by xa's first line`,
+        })
+        .toEqual([W.childFirst]);
       const steps = await stepRows(page);
       const { issue: issueLabel, size: sizeLabel } = STEP_FACT_LABELS;
       expect(
@@ -356,16 +367,23 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
         `the steps ${where} do not link the child's key on each of its steps, and on none of the issue's own`
       ).toEqual([[], [], [], childKey, childKey]);
 
-      // The child's own plan: its two tasks in the same order, with no key mark.
+      // The child's own plan: its two tasks in the same order, xb naming xa as it needs it, with
+      // no key mark.
       const childOrder = [CHILD_TASKS.first, CHILD_TASKS.second].map((id) =>
         blockNodeId(childSlug, id)
       );
+      const [ownXa, ownXb] = childOrder;
       await gotoIssue(page, presetPath(seeded.child, "plan"));
       await expect
         .poll(async () => (await chartSteps(page)).map((one) => one.id), {
           message: `the child's chart ${where} does not draw its two tasks in their order`,
         })
         .toEqual(childOrder);
+      await expect
+        .poll(async () => (await chartSteps(page)).find((one) => one.id === ownXb)?.needs, {
+          message: `on the child's own chart ${where} xb does not name xa by xa's first line`,
+        })
+        .toEqual([{ id: ownXa, words: W.childFirst }]);
       const childChart = await chartSteps(page);
       expect(
         childChart.map((one) => one.size),
@@ -381,6 +399,11 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
           message: `the child's steps ${where} do not stand in the order of its parent's plan`,
         })
         .toEqual(childOrder);
+      await expect
+        .poll(async () => (await stepRows(page)).find((row) => row.id === ownXb)?.needs, {
+          message: `on the child's own steps ${where} xb's needs chip does not name xa by xa's first line`,
+        })
+        .toEqual([W.childFirst]);
       const childSteps = await stepRows(page);
       expect(
         childSteps.map((row) => row.facts),
