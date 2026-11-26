@@ -26,24 +26,28 @@ import { messageSse, responseSse, sseResponse } from "./recorder";
 import {
   callPart,
   caseAct,
+  FurtherRoundLimit,
   LOAD_RULE,
   MAX_BREAKPOINTS,
   MAX_CHECKOUT_ROUNDS,
   MAX_SKILL_ROUNDS,
   MIXED_UNDECIDED,
   type MixedRule,
+  NotResumable,
   READS_PAST_LAST_ROUND,
   ReadsPastLastRound,
   type Replayed,
   readOnlyCommand,
   replayInterleaved,
   replayOnce,
+  resumeReplay,
   sendOrder,
   UNANSWERED_READ,
   UnansweredRead,
   UndecidedReply,
   withCacheBreakpoint,
 } from "./replay";
+import { FURTHER_ROUND_LIMIT } from "./score";
 import { pinNatives } from "./test-natives";
 import { detachedCommit, f9Completed, fixtureReply, writeTree } from "./testdata/fixtures";
 
@@ -2262,7 +2266,7 @@ test("in a case that read its skill by skill:// only, a read of a directory unde
   expect(failed.replayed.checkoutRounds).toBe(0);
 });
 
-// The mixed-reply rule (the architect, 2026-11-26T06:16:45Z and 06:20:08Z): a reply that
+// The mixed-reply rule (the runner's architect, 2026-11-26T06:16:45Z and 06:20:08Z): a reply that
 // reads a skill file beside other calls is sorted with no model call, by the case's act (its two
 // steps' calls and their argument tokens) or by the load test's read-only rule. Catches: a batch
 // of a reference read and the calls that prepare the act judged as the agent's attempt at it; a
@@ -2693,6 +2697,203 @@ test("on a Responses body: a mixed reply whose other calls only prepare goes bac
   ]);
 });
 
+// The resume of a saved run (the runner's architect, 2026-11-26T08:08Z: "Rebuild each next request
+// with the live replay's own code. Use the saved reply whole, with its thinking signatures or
+// encrypted reasoning, and the run's own session id and routing id"): resumeReplay runs through
+// the one function replayOnce runs through, from a saved first reply.
+
+/** The headers of a request as the gateway sent them, less the key, which the two gateways of a
+ *  row draw alike but each from its own key file. */
+const sentHeaders = (headers: Headers | undefined) =>
+  Object.fromEntries([...(headers ?? [])].filter(([name]) => name !== "x-api-key"));
+
+// Catches: a continuation built by a second body builder that drifts from the live replay's: a
+// first request that is not replayOnce's (no cache breakpoint, a fresh session id in place of the
+// run's), a saved reply sent back less its thinking or its text, or with the call it left out, or
+// a request without the run's routing id or the capture's headers.
+test("resumeReplay of a saved Messages run sends, as its one request, the live replay's second: replayOnce's first body with the run's own session id, the saved reply whole but for its left-out call, its thinking and text kept, and one answer, with the run's routing id", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const thinking = {
+    type: "thinking",
+    thinking: "Read the reference, then look.",
+    signature: "sig",
+  };
+  const note = { type: "text", text: "Reading the reference first." };
+  const saved = [thinking, note, X_READ, DOCKER_PS];
+  const body = { ...BODY, stream: false };
+  const shared = { mixed: { kind: "case", act: DOCKER_ACT } as const, headers: CAPTURED_HEADERS };
+  const routingId = randomUUID();
+  const live = scripted([saved, [WHICH_PSQL]]);
+  const replayed = await replayOnce(body, arm, live.gateway, { ...shared, routingId });
+  expect(live.bodies).toHaveLength(2);
+
+  const resumed = scripted([[WHICH_PSQL]]);
+  const continued = await resumeReplay(
+    body,
+    { userId: replayed.userId, routingId: replayed.routingId, content: saved },
+    arm,
+    resumed.gateway,
+    shared
+  );
+  expect(resumed.bodies).toEqual([live.bodies[1] as MessagesBody]);
+  const first = resumed.bodies[0] as MessagesBody;
+  // The body before the saved reply is replayOnce's first, its breakpoint and the run's id in it.
+  const before: MessagesBody = { ...first, messages: first.messages.slice(0, -2) };
+  expect(before).toEqual(live.bodies[0] as MessagesBody);
+  expect(first.messages.at(-2)).toEqual({ role: "assistant", content: [thinking, note, X_READ] });
+  expect(first.messages.at(-1)).toEqual({
+    role: "user",
+    content: [toolResult("toolu_x", X_ANSWER, false)],
+  });
+  expect(bodyIdentity(first)).toBe(replayed.userId);
+  expect(sentHeaders(resumed.headers[0])).toEqual(sentHeaders(live.headers[1]));
+  expect(resumed.headers[0]?.get("x-litellm-session-id")).toBe(routingId);
+  // The run as the live replay ends it: the saved round answered, its call left out, the act.
+  expect({
+    rounds: continued.rounds,
+    reads: continued.reads,
+    leftOut: continued.leftOut,
+    step: continued.step.message.content,
+    userId: continued.userId,
+    routingId: continued.routingId,
+    sends: continued.usage.length,
+  }).toEqual({
+    rounds: replayed.rounds,
+    reads: replayed.reads,
+    leftOut: replayed.leftOut,
+    step: replayed.step.message.content,
+    userId: replayed.userId,
+    routingId: replayed.routingId,
+    sends: 1,
+  });
+});
+
+// Catches: a Responses continuation that drops the saved reply's encrypted reasoning or its
+// message item, reorders them, sends the call it left out, draws a fresh prompt_cache_key, or
+// sends a routing header the Responses route refuses.
+test("resumeReplay of a saved Responses run sends the live replay's second request: the saved output items in order, the reasoning's encrypted content kept, less the left-out call, with one output, and no routing header", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const mixedReply = () =>
+    sseResponse(
+      responseSse({
+        id: "resp_mixed",
+        model: "gpt-6.1-sol",
+        output: [
+          { type: "reasoning", encryptedContent: "enc-mixed" },
+          { type: "message", text: "Reading the reference, and running the tests." },
+          {
+            type: "function_call",
+            callId: "call_x",
+            name: "read",
+            arguments: { path: "skill://alpha/references/x.md" },
+          },
+          {
+            type: "function_call",
+            callId: "call_go",
+            name: "bash",
+            arguments: { command: "go test ./..." },
+          },
+        ],
+      })
+    );
+  const done = () =>
+    sseResponse(
+      responseSse({
+        id: "resp_after",
+        model: "gpt-6.1-sol",
+        output: [{ type: "message", text: "Done." }],
+      })
+    );
+  const mixed: MixedRule = { kind: "case", act: TASK_ACT };
+  // The reply as a run saves it: the output items the gateway read, whole.
+  const saved = (await world(mixedReply).gateway.send(RESPONSES_BODY)).message.content;
+  const live = world((n) => (n === 1 ? mixedReply() : done()));
+  const replayed = await replayOnce(RESPONSES_BODY, arm, live.gateway, {
+    mixed,
+    routingId: randomUUID(),
+  });
+  const resumed = world(done);
+  const continued = await resumeReplay(
+    RESPONSES_BODY,
+    { userId: replayed.userId, routingId: replayed.routingId, content: saved },
+    arm,
+    resumed.gateway,
+    { mixed }
+  );
+  const sent = resumed.bodies as readonly unknown[] as readonly ResponsesBody[];
+  expect(sent).toEqual([live.bodies[1] as unknown as ResponsesBody]);
+  const first = sent[0] as ResponsesBody;
+  const before: ResponsesBody = {
+    ...first,
+    input: first.input.slice(0, RESPONSES_BODY.input.length),
+  };
+  expect(before).toEqual(live.bodies[0] as unknown as ResponsesBody);
+  const added = first.input.slice(RESPONSES_BODY.input.length) as Record<string, unknown>[];
+  expect(added.map((item) => [item.type, item.name ?? item.call_id ?? null])).toEqual([
+    ["reasoning", null],
+    ["message", null],
+    ["function_call", "read"],
+    ["function_call_output", "call_x"],
+  ]);
+  expect(added[0]?.encrypted_content).toBe("enc-mixed");
+  expect(bodyIdentity(first)).toBe(replayed.userId);
+  expect(replayed.routingId).toBeNull();
+  expect(resumed.headers[0]?.get("x-litellm-session-id")).toBeNull();
+  expect(continued.leftOut).toEqual(replayed.leftOut);
+  expect(continued.step.message.content).toEqual(replayed.step.message.content);
+});
+
+// Catches: a resume that sends a request for a saved reply the live replay would never have sent
+// back (one that acts, one with no read it answers), so a continuation is paid that no run made.
+test("resumeReplay refuses, before any send, a saved reply no replay sends back", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const mixed: MixedRule = { kind: "case", act: DOCKER_ACT };
+  for (const content of [[X_READ, WHICH_PSQL], [ACT], [X_READ, PSQL_VERSION]]) {
+    const { gateway, bodies } = scripted([[WHICH_PSQL]]);
+    const refused = await refusalOf(
+      resumeReplay(BODY, { userId: null, routingId: null, content }, arm, gateway, { mixed })
+    );
+    expect(refused).toBeInstanceOf(NotResumable);
+    expect(bodies).toHaveLength(0);
+  }
+});
+
+// Catches: a continuation that runs every further round the live rule allows when one is asked
+// for, so the next round is paid before it is priced; or one stopped at the limit whose record
+// lacks what it read and spent, or that is stopped though its reply acts.
+test("resumeReplay with furtherRounds 1 stops a run whose reply after that round would be continued again, with no verdict, its reads and spend kept, and ends one that acts as the live rules say", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const mixed: MixedRule = { kind: "case", act: DOCKER_ACT };
+  const saved = { userId: null, routingId: null, content: [X_READ, DOCKER_PS] };
+  const again = scripted([[X_READ, DOCKER_PS], [WHICH_PSQL]]);
+  const stopped = await refusalOf(
+    resumeReplay({ ...BODY, stream: false }, saved, arm, again.gateway, {
+      mixed,
+      furtherRounds: 1,
+    })
+  );
+  expect(again.bodies).toHaveLength(1);
+  expect(stopped).toBeInstanceOf(FurtherRoundLimit);
+  const limit = stopped as FurtherRoundLimit;
+  expect(limit.message.startsWith(`${FURTHER_ROUND_LIMIT}: after 1 further rounds`)).toBe(true);
+  expect({
+    rounds: limit.replayed.rounds,
+    reads: limit.replayed.reads.length,
+    sends: limit.replayed.usage.length,
+    step: limit.replayed.step.message.content,
+  }).toEqual({ rounds: 1, reads: 1, sends: 1, step: [X_READ, X_READ, DOCKER_PS] });
+  const acts = scripted([[WHICH_PSQL]]);
+  const judged = await resumeReplay({ ...BODY, stream: false }, saved, arm, acts.gateway, {
+    mixed,
+    furtherRounds: 1,
+  });
+  expect(judged.step.message.content).toEqual([X_READ, WHICH_PSQL]);
+  // Without a limit the live rule continues it past that reply.
+  const live = scripted([[X_READ, DOCKER_PS], [WHICH_PSQL]]);
+  const ran = await resumeReplay({ ...BODY, stream: false }, saved, arm, live.gateway, { mixed });
+  expect({ sends: live.bodies.length, rounds: ran.rounds }).toEqual({ sends: 2, rounds: 2 });
+});
+
 test.each([
   ["ls -la references", true],
   ["cat SKILL.md | head -20", true],
@@ -2717,6 +2918,122 @@ test.each([
   ["go test ./...", false],
   ["jj squash --from @ --into @- -m 'Squash the stack'", false],
   ["docker exec sessionspg-pg16 which psql", false],
+  // The additions of the runner's architect's ruling of 2026-11-26T10:10:22Z, each with the
+  // observed commands that only read, and each flag or form that takes a command off the list.
+  // Catches: a `gh api` GET, which only reads GitHub, left undecided.
+  ["gh api repos/acme/widgets/issues/comments/6979847986 --jq .body", true],
+  // Catches: gh api's flags with no value, or a quoted endpoint, read as a POST.
+  [
+    "gh api --paginate --slurp 'repos/acme/widgets/actions/workflows/ci.yml/runs?per_page=100' --jq '[.[]]'",
+    true,
+  ],
+  // Catches: an explicit GET in lower case read as another method.
+  ["gh api -X get repos/acme/widgets/pulls --jq '.[].number'", true],
+  // Catches: a `gh api` POST taken for a read.
+  ["gh api -X POST repos/acme/widgets/issues", false],
+  // Catches: a `--method` with its value in the next word taken for a read.
+  ["gh api --method PATCH repos/acme/widgets/issues/1", false],
+  // Catches: a method joined to `-X` missed.
+  ["gh api -XDELETE repos/acme/widgets/git/refs/heads/x", false],
+  // Catches: a method joined to `--method` by `=` missed.
+  ["gh api --method=PUT repos/acme/widgets/pulls/1/merge", false],
+  // Catches: a `-f` field, which makes gh api a POST, missed.
+  ["gh api repos/acme/widgets/issues -f title=x", false],
+  // Catches: a `-F` field, which makes gh api a POST, missed.
+  ["gh api repos/acme/widgets/issues -F title=x", false],
+  // Catches: a `--field` field, which makes gh api a POST, missed.
+  ["gh api repos/acme/widgets/issues --field title=x", false],
+  // Catches: a `--raw-field` field, which makes gh api a POST, missed.
+  ["gh api repos/acme/widgets/issues --raw-field body=x", false],
+  // Catches: an `--input` body, which makes gh api a POST, missed.
+  ["gh api repos/acme/widgets/issues --input body.json", false],
+  // Catches: a field joined to `-f` missed.
+  ["gh api repos/acme/widgets/issues -ftitle=x", false],
+  // Catches: a field joined to `-F` missed.
+  ["gh api repos/acme/widgets/issues -Ftitle=x", false],
+  // Catches: a field joined to `--field` by `=` missed.
+  ["gh api repos/acme/widgets/issues --field=title=x", false],
+  // Catches: a field joined to `--raw-field` by `=` missed.
+  ["gh api repos/acme/widgets/issues --raw-field=body=x", false],
+  // Catches: a body file joined to `--input` by `=` missed.
+  ["gh api repos/acme/widgets/issues --input=body.json", false],
+  // Catches: a `-X POST` inside a cluster of short flags missed.
+  ["gh api -iXPOST repos/acme/widgets/issues", false],
+  // Catches: a GraphQL call, which gh always sends as a POST, taken for a read.
+  ["gh api graphql --jq .data", false],
+  // Catches: a leading slash on graphql slipping past the endpoint check.
+  ["gh api /graphql --jq .data", false],
+  // Catches: a field beside an explicit GET taken for a read: the ruling refuses the flag.
+  ["gh api -X GET -f q=x search/issues", false],
+  // Catches: `gh pr view`, which prints a pull request, left undecided.
+  ["gh pr view 1804 -R acme/widgets --json headRefName,headRefOid,state", true],
+  // Catches: `gh pr list`, which prints a list of pull requests, left undecided.
+  [
+    "gh pr list --repo acme/widgets --head legion/ACME-876 --state all --json number,state,url",
+    true,
+  ],
+  // Catches: `gh run view`, which prints a run, left undecided.
+  ["gh run view 41692557611 --repo acme/widgets --json headSha,conclusion,jobs", true],
+  // Catches: `gh run view` of a job's log left undecided.
+  ["gh run view 41692557715 --repo acme/widgets --job 126114596559 --log", true],
+  // Catches: `gh stack view`, which prints a stack, left undecided.
+  ["gh stack view 2>&1 | cat", true],
+  // Catches: `gh pr merge`, which merges a pull request, taken for a read.
+  ["gh pr merge 1804 -R acme/widgets --squash", false],
+  // Catches: `gh run rerun`, which starts a run, taken for a read.
+  ["gh run rerun 41692557611 --repo acme/widgets", false],
+  // Catches: `gh stack push`, which pushes branches, taken for a read.
+  ["gh stack push", false],
+  // Catches: `--help` of a subcommand, whose program is otherwise on the list, left undecided.
+  ["git status --short --branch && git log --oneline -5 && gh stack --help 2>&1 | head -40", true],
+  // Catches: `--help` of a program with no subcommand left undecided.
+  ["jj --help", true],
+  // Catches: `--help` of a dispatch subcommand left undecided.
+  ["dispatch doc-read --help", true],
+  // Catches: `--help` of a program that is not otherwise on the list left undecided.
+  ["make --help", true],
+  // Catches: a last word `--help` behind a flag and its text, which bash runs, taken for a read.
+  ["bash -c 'rm -rf x' --help", false],
+  // Catches: `-h` taken for `--help`.
+  ["rm -rf x -h", false],
+  // Catches: `git worktree list`, which lists the worktrees, left undecided.
+  ["git status -sb && git branch --show-current && git worktree list", true],
+  // Catches: `git worktree add`, which makes a worktree, taken for a read.
+  ["git worktree add ../widgets-876 legion/ACME-876", false],
+  // Catches: `git fetch`, which writes the remote-tracking refs, taken for a read.
+  ["git fetch origin", false],
+  // Catches: `dispatch doc-read` of an issue's document left undecided.
+  ["dispatch doc-read --issue ACME-147", true],
+  // Catches: `dispatch doc-read` of a project's document left undecided.
+  ["dispatch doc-read --project ACME --artifact goals-md", true],
+  // Catches: `dispatch read`, which prints an issue or a comment, left undecided.
+  ["dispatch read --ref dispatch://ACME-30/comment/7c3676be-23bf-4602-b956-907e96e14486", true],
+  // Catches: `dispatch comment`, which writes a comment, taken for a read.
+  ["dispatch comment --issue ACME-147 --body 'Looks right.'", false],
+  // Catches: `env` with no argument, which prints the environment, left undecided.
+  ["env | grep -E '^(LEGION_|DISPATCH_)'", true],
+  // Catches: `env` with an assignment, which runs the command after it, taken for a read.
+  ["env NAME=value make", false],
+  // Catches: `env -i`, which runs the command after it, taken for a read.
+  ["env -i bash", false],
+  // Catches: `ps`, which lists processes, left undecided.
+  ["ps -o pid,ppid,stat,args -p $$", true],
+  // Catches: `jj diff` behind jj's valued `-R` left undecided.
+  ["jj -R . diff -r @ --stat", true],
+  // Catches: `jj status` left undecided.
+  ["jj -R . status", true],
+  // Catches: `jj log` behind a global flag with no value left undecided.
+  ["jj --ignore-working-copy log -r @ --no-graph -T 'commit_id.short()'", true],
+  // Catches: `jj diff --tool`, which runs an external program, taken for a read.
+  ["jj diff --tool meld", false],
+  // Catches: a tool joined to `--tool` by `=` missed.
+  ["jj diff --tool=meld", false],
+  // Catches: `jj log --tool`, which runs an external program for each diff, taken for a read.
+  ["jj log -p --tool meld", false],
+  // Catches: `jj new`, which makes a change, taken for a read.
+  ["jj new", false],
+  // Catches: the alias `jj st` taken for `jj status`.
+  ["jj st", false],
 ])("the load rule: the bash command %p only reads or looks: %p", (command, want) => {
   expect(readOnlyCommand(command)).toBe(want);
 });
@@ -2825,4 +3142,21 @@ test("in a written case's run under a mixed rule, a reply whose every call is re
     leftOut: [{ round: 1, tool: "bash", argument: "go test ./..." }],
     step: [X_READ, WRITE_ACT],
   });
+});
+
+// The ruling of 2026-11-26T10:10:22Z widens the read-only list through `onlyLooks`, so a
+// behaviour case's rule and a load test's take it alike.
+test("the read-only list's additions: a bash call of one is preparation by the load rule and by a case's rule whose act makes no bash call that only looks, and the same call with an off-list flag is undecided", () => {
+  // Catches: a load test's `gh api` GET left undecided, or the same call as a PATCH continued
+  // past as preparation.
+  const get = "gh api repos/acme/widgets/pulls/1804 --jq .head.sha";
+  expect(callPart(LOAD_RULE, "bash", { command: get })).toBe("preparation");
+  const patch = "gh api -X PATCH repos/acme/widgets/pulls/1804 --jq .head.sha";
+  expect(callPart(LOAD_RULE, "bash", { command: patch })).toBe("undecided");
+  // Catches: a case's `jj diff` left undecided, or the same call that runs an external tool
+  // continued past as preparation.
+  const docker: MixedRule = { kind: "case", act: DOCKER_ACT };
+  expect(DOCKER_ACT.calls.some((call) => call.tool === "bash" && call.looks)).toBe(false);
+  expect(callPart(docker, "bash", { command: "jj -R . diff -r @ --stat" })).toBe("preparation");
+  expect(callPart(docker, "bash", { command: "jj -R . diff -r @ --tool meld" })).toBe("undecided");
 });

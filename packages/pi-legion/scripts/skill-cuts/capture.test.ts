@@ -580,17 +580,25 @@ function systemBlocks(body: { readonly [field: string]: unknown }): string[] {
 /** The Envoy and Legion plugins as the worker image ships them: each one's bundle, built from this
  *  checkout into the made-up repository acme/legion at COMMIT, its manifest naming the bundle. */
 const PLUGINS = [
-  {
-    name: "pi-envoy",
-    entry: "envoy",
-    externals: ["pi-ai", "pi-coding-agent", "pi-tui", "pi-utils"],
-  },
-  {
-    name: "pi-legion",
-    entry: "legion",
-    externals: ["pi-coding-agent", "pi-tui", "pi-utils"],
-  },
+  { name: "pi-envoy", entry: "envoy" },
+  { name: "pi-legion", entry: "legion" },
 ];
+
+/** The packages the build script of the plugin package in `packageDir` leaves out of its bundle:
+ *  each `--external <name>` of its package.json's `build`. The test's bundle leaves out the same
+ *  ones, read here and never copied: a copy went stale when the package's build left out one more
+ *  (CI, which tests the merge with main, could not resolve a module only Oh My Pi holds). */
+function buildExternals(packageDir: string): string[] {
+  const build: unknown = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8"))
+    .scripts?.build;
+  if (typeof build !== "string") throw new Error(`${packageDir}/package.json has no build script`);
+  const externals = [...build.matchAll(/--external[= ](\S+)/g)].map((match) => match[1] ?? "");
+  if (externals.length === 0) {
+    throw new Error(`${packageDir}/package.json's build script names no --external package`);
+  }
+  return externals;
+}
+
 /** The profile's entry of the dispatch-first skill, which the Envoy plugin reads from its skills
  *  at load. */
 const DISPATCH_FIRST = {
@@ -650,7 +658,7 @@ if (!built.success) {
           buildStamped,
           `extensions/${plugin.entry}.ts`,
           dist,
-          JSON.stringify(plugin.externals.map((name) => `@oh-my-pi/${name}`)),
+          JSON.stringify(buildExternals(path.join(packages, plugin.name))),
         ],
         { cwd: path.join(packages, plugin.name), stderr: "pipe" }
       );

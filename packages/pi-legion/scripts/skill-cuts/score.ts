@@ -166,16 +166,27 @@ type FixedArm<S extends Stage> = S extends "control"
 export type Passes<S extends Stage> = Record<FixedArm<S>, number> &
   Partial<Record<StageArm<S>, number>>;
 /** Where a case stands in a stage: every arm has its judged runs (`counted`, with each arm's
- *  passes); some arm can still start the runs it lacks (`running`, with how many to start per
- *  arm); or some arm lacks its runs and has used its extra runs (`unscreened`). */
+ *  passes); some arm can still start the runs it lacks, or holds a run that waits
+ *  (FURTHER_ROUND_LIMIT), with how many to start per arm (`running`; none to start anywhere is a
+ *  stage that only waits); or some arm lacks its runs and has used its extra runs
+ *  (`unscreened`). */
 export type StageOutcome<S extends Stage> =
   | { state: "counted"; passes: Passes<S> }
   | { state: "running"; toStart: Partial<Record<StageArm<S>, number>> }
   | { state: "unscreened" };
 
+/** How the reason begins of a run that waits for the next decision (cli.ts's `behaviour
+ *  continue-mixed --further-rounds`, replay.ts's FurtherRoundLimit): a saved run continued as far
+ *  as its further rounds allowed, whose reply would be continued again. It has no verdict, and no
+ *  fresh run takes its place: it holds its slot until that decision, and its stage is not counted
+ *  while it waits (`stageOutcome`). */
+export const FURTHER_ROUND_LIMIT = "further-round-limit";
+
 /** Where case `caseId` stands in `stage`, the old text compared with `compared` (STAGE_ARMS's cut
- *  unless given; `stageArms`), from the run records so far (StageOutcome). An arm with more judged
- *  runs than the stage runs is the runner's fault, and throws. */
+ *  unless given; `stageArms`), from the run records so far (StageOutcome). A run that waits (its
+ *  reason begins FURTHER_ROUND_LIMIT) is counted among its arm's runs, as any run, but is not a
+ *  run the extra-run rule replaces: it holds a slot of its arm's judged runs, and keeps its stage
+ *  running. An arm with more judged runs than the stage runs is the runner's fault, and throws. */
 export function stageOutcome<S extends Stage>(
   records: readonly RunRecord[],
   caseId: string,
@@ -191,22 +202,24 @@ export function stageOutcome<S extends Stage>(
     let attempts = 0;
     let judged = 0;
     let passed = 0;
+    let waiting = 0;
     for (const record of records) {
       if (record.caseId !== caseId || record.stage !== stage || record.arm !== arm) continue;
       attempts++;
       if (record.verdict !== null) judged++;
+      else if (record.reason.startsWith(FURTHER_ROUND_LIMIT)) waiting++;
       if (record.verdict === "pass") passed++;
     }
     if (judged > required)
       throw new Error(
         `case ${caseId}: the ${stage} arm ${arm} holds ${judged} judged runs, more than its ${required}`
       );
-    const lacking = required - judged;
+    const lacking = required - judged - waiting;
     const left = required + MAX_EXTRA_RUNS - attempts;
     if (lacking > 0 && left <= 0) return { state: "unscreened" };
     passes[arm] = passed;
     toStart[arm] = lacking > 0 ? Math.min(lacking, left) : 0;
-    running ||= lacking > 0;
+    running ||= lacking > 0 || waiting > 0;
   }
   return running
     ? { state: "running", toStart: toStart as Partial<Record<StageArm<S>, number>> }

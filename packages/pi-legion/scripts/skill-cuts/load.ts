@@ -125,7 +125,7 @@
  * it does not install with Oh My Pi's unknown-skill result, and a read of another file of the
  * tested skill from its directory. Then the body goes again with the reply and the answers, at
  * most MAX_SKILL_ROUNDS times. A reply that reads skill files beside other calls, and does not
- * read the tested skill, is sorted with no model by replay.ts's LOAD_RULE (the architect,
+ * read the tested skill, is sorted with no model by replay.ts's LOAD_RULE (the runner's architect,
  * 2026-11-26T06:20:08Z): each other call is preparation when it only reads or looks (a `read`,
  * `grep`, `glob`, `find` or LSP lookup, a `write` to the `xd://lsp` device, a `bash` call each
  * of whose commands starts with a program of replay.ts's read-only list), an action when it

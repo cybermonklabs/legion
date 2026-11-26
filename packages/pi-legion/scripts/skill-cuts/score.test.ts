@@ -7,6 +7,7 @@ import {
   controlOrder,
   descriptionFault,
   dropFigures,
+  FURTHER_ROUND_LIMIT,
   isControlLoss,
   isFalseLoss,
   isFlagged,
@@ -66,6 +67,10 @@ function unjudged(caseId: string, stage: Stage, arm: Arm, count: number): RunRec
     verdict: null,
     reason: "timed out",
   }));
+}
+/** A run of `arm` that waits at continue-mixed's further-round limit for the next decision. */
+function waiting(caseId: string, stage: Stage, arm: Arm): RunRecord {
+  return { caseId, stage, arm, verdict: null, reason: `${FURTHER_ROUND_LIMIT}: planted` };
 }
 /** A case's 10 screen runs of each arm of `passes`, in its order, each arm passing that many. */
 const screenRuns = (caseId: string, passes: Partial<Record<Arm, number>>): RunRecord[] =>
@@ -252,6 +257,32 @@ const rows: [string, () => unknown, unknown][] = [
         "control"
       ),
     { state: "running", toStart: { old: 0, minus: 0, twin: 40 } },
+  ],
+  // Catches: a run that waits at continue-mixed's further-round limit replaced by a fresh run,
+  // so the next round's decision finds its slot taken; or a stage counted while a run waits.
+  [
+    "a run that waits at the further-round limit holds its slot: 9 judged and 1 waiting start no run, and the stage stays running",
+    () =>
+      stageOutcome(
+        [...screen("c1", 7, 6, 5).slice(1), waiting("c1", "screen", "old")],
+        "c1",
+        "screen"
+      ),
+    { state: "running", toStart: { old: 0, new: 0, none: 0 } },
+  ],
+  [
+    "beside a waiting run, a run with no verdict is run again as ever",
+    () =>
+      stageOutcome(
+        [
+          ...screen("c1", 7, 6, 5).slice(2),
+          waiting("c1", "screen", "old"),
+          ...unjudged("c1", "screen", "old", 1),
+        ],
+        "c1",
+        "screen"
+      ),
+    { state: "running", toStart: { old: 1, new: 0, none: 0 } },
   ],
 
   // informative: old passes - none passes >= 2, of 10 each.

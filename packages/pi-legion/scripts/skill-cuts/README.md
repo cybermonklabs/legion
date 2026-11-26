@@ -55,7 +55,7 @@ read it: GET calls, and GraphQL queries that read file contents in batches.
 
 ## Commands
 
-### `behaviour screen|confirm|control|report|audit-mixed`
+### `behaviour screen|confirm|control|report|audit-mixed|continue-mixed`
 
 ```
 bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
@@ -74,6 +74,13 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
                                   --route-id: screen, confirm and control only)
 bun scripts/skill-cuts/cli.ts behaviour audit-mixed --config <skill-cuts.json> --out <dir> \
   --old <dir> [--new <dir> | --ours <dir>] --cases <case file> [--cache-dir <dir>] [--scratch <dir>]
+bun scripts/skill-cuts/cli.ts behaviour continue-mixed --config <skill-cuts.json> --key-file <file> \
+  --from <saved out> --out <new dir> --old <dir> [--new <dir> | --ours <dir>] --cases <case file> \
+  [--allow-runners <digest>[,<digest>...]] [--only <file>] [--further-rounds <n>] \
+  [--probe <case id>/<arm>/<run number>] [--budget-usd <n>] [--concurrency <n, default 8>] \
+  [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>] [--after-case <command>] \
+  [--repos <dir>] [--models <models.yml>] [--omp <binary>]
+                                 (--probe takes no --only and no --further-rounds)
 ```
 
 One skill per run: `--old` is that skill's own directory (the old text: the skill at the cut's
@@ -358,26 +365,86 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   Without `--store-only`, the report says nothing of the transcript store.
 - `audit-mixed` (no model call, no capture, no network, no key): the mixed-reply rule below,
   applied to the judged reply of each saved run of each stage, earlier confirms included (the
-  run's `reply` less its answered rounds' calls, the first N blocks for N the answers its
-  `skillReads` holds). It takes `--new` or `--ours` as the stage commands do: give the one the
-  stages were run with, or neither for a skill compared with no skill. Each stage's arms are the
-  ones it ran (old, the compared arm and none in a screen, old and the compared arm in a confirm,
-  old, `minus` and `twin` in a control), each built from `--old` and the compared arm's directory
-  (and a control's planted line from its stage) in a scratch directory of its own under
-  `--scratch`, removed after, and a read of another skill is answered from the copy its stage's
-  saved capture names under `--cache-dir`, which the audit never restores: give it the cache the
-  stages ran with. A stage run with other texts than those given (`--old`'s, and `--new`'s or
-  `--ours`'s, the texts the stage records) is skipped and named. Per case, stage and arm it
-  prints, and
-  writes as JSON to `<out>/audit-mixed.json`, which it names: the runs and the judged runs; the
-  runs judged at a mixed reply with an act (`acts`), those it would continue now (`continues`),
-  those it would leave with no verdict past the last round (`pastLastRound`) and those with an
-  undecided call (`unresolved`), each with its run number, blind id, session id, verdict and the
-  tools that decided it; and the runs whose judged reply only reads skill files, holds no mixed
-  reply, or was not saved, and, in a written case, those whose judged reply reads skill files
-  beside read-only calls alone (`checkoutRound`), which the replay answers as a round of its
-  checkout, or refuses as `unanswered-read`, before the mixed-reply rule would sort it (printed
-  where there are any). It holds ids, counts and tool names, never a request's or a reply's text.
+  run's `reply` less the first N blocks, where N is the number of answers in `skillReads`).
+  Use the same comparison options as the saved stage: `--new`, `--ours`, or neither for no
+  skill. The audit builds only the arms the stage ran, with its recorded planted line in a
+  control. It skips and names stages whose texts differ. Under `--cache-dir` it reads the
+  installed copies named by each arm's saved capture without restoring them. If the capture is
+  missing, it uses the copies that a capture of the case's profile would install
+  (`<cache-dir>/skills/<key>`, under each listed name). If a profile copy is missing or
+  unreadable, it lists that case and reason under `skipped` and audits the other cases.
+  For each case, stage and arm it prints and writes to `<out>/audit-mixed.json` where the copies
+  came from (`copiesFrom`), the runs and judged runs, and the mixed replies that act (`acts`),
+  would continue (`continues`), are past the last round (`pastLastRound`), or are undecided
+  (`unresolved`). Each entry has a run number, blind id, session id, verdict and the tools that
+  decided it. The audit also counts skill-only replies, replies with no mixed calls, missing
+  replies, and written replies that read a skill beside only read-only calls (`checkoutRound`).
+  Those written replies go to the checkout before the mixed rule. The audit contains ids,
+  counts, tool names and paths, never request or reply text.
+- `continue-mixed` continues the saved runs of `--from`, a saved `--out`, that `audit-mixed`
+  sorts `continues`, into a new `--out` (the architect, 2026-11-26T08:08Z and 08:09:54Z): the rule
+  counts a saved case only once those runs are continued. It never writes `--from`, and refuses an
+  `--out` that is `--from`.
+  Give `--new` or `--ours` as the stage ran with, or neither for no skill. The command skips
+  and names stages whose recorded texts differ.
+  - Before any model call it refuses a saved stage of another runner unless `--allow-runners`
+    names its runner, as the stage commands do, and an `--only` line that names a stage no saved
+    result holds.
+  - A judged run the rule continues is continued only when its record holds every part its next
+    request needs: a session id, its arm's saved capture, the whole earlier answered replies
+    where it had any (`answeredReplies`), and the deployment that answered its saved reply.
+    A record with only earlier tool calls lacks the thinking and text needed to rebuild them.
+    That deployment is the run's last `deployments` entry, or, for a run saved before runs
+    recorded one, the one deployment that answered every request of the run's session id in
+    `<from>/requests.jsonl`; a log that is missing, holds no such request or names more than one
+    deployment gives none, and a per-arm `--route-id` is never read for one.
+  - The continuation is the live replay's own code (`replay.ts`'s `resumeReplay`): the first
+    body `replayOnce` sends for the arm's capture, with the run's own session id; then the saved
+    reply whole (its thinking signatures, or its reasoning items' encrypted content and its
+    message items, in order) less the calls it left out, and one answer per read. It goes with the
+    capture's headers and the run's own routing id (`x-litellm-session-id`; a run saved before
+    routing ids, and every Responses run, go with none). It rebuilds saved rounds from the
+    same checkout copy, including knives blocks and the pinned Oh My Pi's answers. Saved and
+    later rounds follow the live rules: skill reads first, then all-read-only checkout rounds
+    for written cases, then the mixed rule. Rebuilt rounds count toward the live round limits.
+  - Each continuation request must be answered by the deployment that answered the saved reply
+    (`x-litellm-model-id`). A run that lacks a part, one a request of which another deployment
+    answers, and one whose request is refused or fails, get no verdict, and the stage's extra-run
+    rule runs them again fresh; so does a judged run the rule leaves undecided, and a judged run
+    past the last round gets no verdict as `reads-past-last-round`. A run with no verdict already
+    is kept: its stage ran it again live.
+  - Each stage's continued replies are judged blind by the case's judge, under a new seed that is
+    the stage's next round.
+  - `--only <file>` selects stages: each line is `<case id>`, a tab, and `screen`, `control` or
+    `confirm <n>` (a case's confirms numbered from 1, oldest first, as `audit-mixed` numbers
+    them). Only the selected stages' runs are continued or run again fresh; every run of the
+    others is kept as saved. Without it every stage is selected.
+  - `--further-rounds <n>` lets a continuation send at most n requests: a run whose reply after
+    them would be continued again stops there with no verdict, its reason beginning
+    `further-round-limit`, its reads and spend kept so the next round can be priced. The
+    extra-run rule does not replace it with a fresh run, and its stage stays running until that
+    decision. A reply that acts, has no read the replay answers, or is undecided ends the run as
+    the live rules say. Without it a continuation goes as far as the live rule does.
+  - Each case result in `--out` holds every stage its saved result holds. A stage keeps its
+    unchanged runs as saved. Each continued run takes its saved run's place and number, and its
+    `continueMixed` names the saved run (number, blind id, round, verdict and runner), this
+    runner, the deployment and where it came from (the run's record, or the request log with its
+    path and SHA-256), the continuation's request ids and its dollars. The fresh runs follow in
+    later rounds. Each stage's `continued` names `--from`, the rounds it held, and whether it was
+    selected.
+  - The saved captures of a stage that gets fresh runs are copied to `--out`, so `screen`,
+    `confirm`, `control` and `report` work on it; a later confirm of a case the new counts flag is
+    the usual `confirm`. A command started again goes on from the results in `--out`.
+  - `report` on `--out` counts, by stage and arm, the continued runs, the runs waiting at the
+    further-round limit, the runs run again fresh, the fresh runs and the unchanged runs, apart,
+    and gives the continuations' spend and the fresh runs' spend apart. It says which stages were
+    selected.
+  - `--probe <case id>/<arm>/<run number>` rebuilds that one run's continuation and sends only its
+    next request: one call, no later round, no judgement, logged as `probe`. It prints and writes
+    to `<out>/probe.json` the request's ids, its status (`ok` for an answer) or its error, the
+    deployment that answered it and whether it is the saved reply's, its usage and its cost at
+    list price, and exits 1 unless that deployment answered. It refuses (exit 2), before any call,
+    a run the rule does not continue and one whose record lacks a part, saying which.
 
 The report's spend at list price is the sum of what the case results in `<out>/cases` record
 their calls cost, each call once, and the report prints each part of it: the judge controls (the
@@ -560,7 +627,7 @@ as `reads-past-last-round`, listed with its counts. Each run records each answer
 (`skillReads`: the skill, the file, by `skill://` or by path, and whether the arm, the installed
 copy or no copy answered it).
 
-The mixed-reply rule (the architect, 2026-11-26T06:16:45Z). A mixed reply reads a
+The mixed-reply rule (the runner's architect, 2026-11-26T06:16:45Z). A mixed reply reads a
 skill file the replay answers and makes a call it does not: the agent reads the reference the text
 sends it to beside the calls that prepare its act, and that batch is not its attempt at the act.
 It is sorted with no model call (`replay.ts`'s `replyBoundary`), by the case's act (`caseAct`),
@@ -1532,8 +1599,8 @@ My Pi's unknown-skill answer, a read of another file of the tested skill from it
 the request goes again with the answers, at most 3 rounds.
 
 A reply that reads skill files beside other calls, and does not load the tested skill, takes the
-behaviour replay's mixed-reply rule with the load test's own sorting (the runner's architect,
-2026-11-26T06:20:08Z; `replay.ts`'s LOAD_RULE), since a load has no steps to read an
+behaviour replay's mixed-reply rule with the load test's own sorting (the runner's
+architect, 2026-11-26T06:20:08Z; `replay.ts`'s LOAD_RULE), since a load has no steps to read an
 act from and its question stays whether the agent loaded the skill before it started the task.
 Each other call is preparation when it only reads or looks (a `read` of any path, `grep`, `glob`,
 `find`, `lsp`, `ast_grep`, a `write` to the `xd://lsp` device, which is a query, or a `bash` call
@@ -1552,6 +1619,38 @@ call gets no verdict. One whose other calls only prepare is a round of its own, 
 `behaviour`: its reads are answered, it goes back holding only those calls, and the run records
 each call left out (`leftOut`), never run; after the third round it reads past the last round.
 Claude Code's runs are not changed: they end at their first message.
+
+The read-only list also holds these commands (the runner's architect, 2026-11-26T10:10:22Z),
+because each one only reads: a mixed reply that runs one of them beside its skill reads is no
+longer undecided for that call. Both mixed-reply rules (a behaviour case's and a load test's) use
+the list. Each addition, with its reason:
+
+- `gh api` as a GET: it reads GitHub and writes nothing. A `-X` or `--method` other than GET (in
+  any letter case, joined forms such as `-XDELETE` and `--method=PUT` too), any of `-f`, `-F`,
+  `--field`, `--raw-field` and `--input` (they make it a POST; the list refuses them even beside
+  an explicit GET), and the endpoint `graphql` (gh always sends it as a POST) take it off the
+  list.
+- `gh pr view`, `gh pr list`, `gh run view` and `gh stack view`: they print a pull request, a
+  list, a run or a stack. Each other `gh` subcommand is off the list (`gh pr merge`,
+  `gh run rerun`, `gh stack push`).
+- `--help` of any program: it prints the program's help. Its last word is `--help`, and each
+  word between the program and it is a plain subcommand word (`gh stack --help`, `jj --help`). A
+  flag, a path or a text with spaces there takes it off the list, because
+  `bash -c 'rm -rf x' --help` runs its `-c` text. `-h` is not `--help`.
+- `git worktree list`: it lists the worktrees. Each other `git worktree` subcommand is off the
+  list (`add`, `remove`, `prune`).
+- `dispatch read` and `dispatch doc-read`: they print an issue or a document. Each other
+  `dispatch` subcommand is off the list (`comment`, `doc-edit`, `result`).
+- `env` with no argument: it prints the environment. `env` with an argument runs a command
+  (`env NAME=value make`, `env -i bash`), so it is off the list.
+- `ps`: it lists processes.
+- `jj log`, `jj diff` and `jj status`: they print history, a diff or the status. Their snapshot
+  of the working copy into jj's operation log is bookkeeping, not the task's work. `--tool`
+  runs an external program, so it takes them off the list. Each other `jj` subcommand is off the
+  list too (`jj new`, `jj squash`, the alias `jj st`).
+
+`git fetch` stays off the list, because it writes the remote-tracking refs.
+
 Each run comes to one of five outcomes:
 
 - `loaded`: a reply reads the skill, the first message or one after answered rounds, before any
@@ -3504,7 +3603,10 @@ id, its request id and the provider's request id, the gateway's headers of it (`
 `x-litellm-model-id`, `x-litellm-model-group`, `x-litellm-attempted-fallbacks`,
 `x-litellm-attempted-retries` and the provider's request-id headers, each it came with), its
 cache read and write tokens, usage and dollars at list price. It never holds the key or a
-message's text.
+message's text. What a call was for (`kind`) is `judge`, `replay` or `hint` for a stage command,
+`continuation` for a request of `behaviour continue-mixed`, and `probe` for its `--probe`;
+`continue-mixed` reads the `userId` and `gateway` of each line of a saved `--out`'s log to find the
+deployment that answered a run saved before runs recorded one.
 
 ## Usage records
 

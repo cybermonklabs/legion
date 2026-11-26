@@ -54,9 +54,9 @@
  * read would fail in every arm. Each answered round's reads are recorded (`Replayed.reads`: the
  * skill, the file, how it was read, and where the answer came from).
  *
- * A mixed reply holds a read the replay answers and a call it does not (the architect,
- * 2026-11-26: the agent batches a read of a reference the text sends it to with the calls that
- * prepare its act, and that batch is not its attempt at the act). Without a rule
+ * A mixed reply holds a read the replay answers and a call it does not (the runner's
+ * architect, 2026-11-26: the agent batches a read of a reference the text sends it to with the
+ * calls that prepare its act, and that batch is not its attempt at the act). Without a rule
  * (`ReplayOptions.mixed`) it ends the run as any reply with another call does. With one, its
  * other calls (and, for a case whose act is text, its text) are sorted with no model call
  * (`replyBoundary`, `callPart`): a behaviour case's rule (`caseAct`) sorts each by the tokens of
@@ -139,6 +139,17 @@
  * one from the task and the run number. A Responses body goes with none (`Replayed.routingId`
  * null). Each run records the deployment that answered each of its replies
  * (`Replayed.deployments`, gateway.ts's `deploymentOf`).
+ *
+ * A saved run is resumed from its saved reply (`resumeReplay`; cli.ts's `behaviour
+ * continue-mixed`). The same replay loop runs it from the body `replayOnce` sends first, with
+ * the saved session id and routing id. Where earlier rounds are available whole, that loop
+ * rebuilds their answers without sending requests, including checkout artifacts, before it
+ * answers the saved reply. Its first send is the resulting body with those rounds and their
+ * answers. Later replies follow the same rules and round limits as a live run. A resume given
+ * the most requests it sends
+ * (`furtherRounds`) stops a run whose reply after them would be sent on again with no verdict
+ * (FurtherRoundLimit, score.ts's FURTHER_ROUND_LIMIT), so the next round can be priced before it
+ * runs. A saved reply no replay sends back is refused before any send (NotResumable).
  */
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
@@ -184,6 +195,7 @@ import {
   type ToolCall,
   toolCalls,
 } from "./gateway";
+import { FURTHER_ROUND_LIMIT } from "./score";
 
 /** The most rounds of skill reads a replay answers before a reply that holds another call or none.
  *  Three: of 3,680 posted runs of the behaviour test, 137 had one round answered and none had two;
@@ -342,6 +354,8 @@ export interface Replayed {
   readonly rounds: number;
   readonly checkoutRounds: number;
   readonly reads: readonly (readonly RoundRead[])[];
+  /** Whole replies of the answered rounds in order, recorded for written cases. */
+  readonly answeredReplies: readonly (readonly ContentBlock[])[];
   readonly leftOut: readonly LeftOutCall[];
   readonly mixedAct: boolean;
   readonly usage: Spent[];
@@ -412,18 +426,35 @@ export class UndecidedReply extends Error {
   }
 }
 
-/** What a written case's replay rejects with when a reply's every call is read-only and the
- *  checkout copy answers one of them in no form (checkout.ts's `answerCall`), or the case has no
- *  checkout and one of them is no skill read: the run gets no verdict, never judged on a call
- *  every arm would take alike (see the file's header).
- *  `replayed` is the run as it stood, its `step` that reply after the answered rounds' calls. Its
- *  message begins UNANSWERED_READ, and names the call and why. */
+/** What a written case's replay rejects with when its checkout cannot answer a read-only call.
+ *  The run gets no verdict; `replayed` keeps the reply and the preceding answered rounds. */
 export class UnansweredRead extends Error {
   constructor(
     readonly replayed: Replayed,
     why: string
   ) {
     super(`${UNANSWERED_READ}: ${why}`);
+  }
+}
+
+/** A continued run waits when it reaches its further-request limit and the next reply would
+ *  otherwise be sent back. Its answered rounds, final reply and spend are kept. */
+export class FurtherRoundLimit extends Error {
+  constructor(
+    readonly replayed: Replayed,
+    furtherRounds: number,
+    last: readonly RoundRead[],
+    beside: readonly SortedCall[]
+  ) {
+    const checkout = last.some((read) => read.from === "checkout");
+    const files = last.map(readWords).join(", ");
+    const others =
+      beside.length === 0
+        ? ""
+        : ` beside calls that only prepare (${beside.map(callWords).join(", ")})`;
+    super(
+      `${FURTHER_ROUND_LIMIT}: after ${furtherRounds} further rounds of the continued run (${replayed.rounds + replayed.checkoutRounds} answered rounds in all), its reply still ${checkout ? "makes read-only calls" : "reads skill files"} (${files})${others}, so it would be continued again: it stops with no verdict until the next round is decided`
+    );
   }
 }
 
@@ -438,13 +469,14 @@ export class UnansweredRead extends Error {
  *  sorts a mixed reply's other calls (`mixed`, MixedRule; without one a mixed reply ends the
  *  run, as any reply with another call); and `endsAt`, which is told each reply's content and the
  *  answers the replay would make to its reads (`round`; undefined unless `replyBoundary` makes it
- *  a skill round or continues it), before the reply after the last answered round is refused.
+ *  a skill round or continues it), before the reply after the last answered round is refused:
+ *  each reply a send got, never the saved reply a resumed run starts from (`resumeReplay`).
  *  When it gives true, the run ends at that reply: the reply is the judged step, its answers are
  *  not sent, and they are in no round of `reads`. Without it, a run ends only as the file's
- *  header says. load.ts's load test uses it. A written case's run gives `checkout`, the copy of
- *  its checkout its read-only calls are answered from, at most MAX_CHECKOUT_ROUNDS rounds of
- *  them, or, for a written case with no checkout, why none is answered (see the file's header); a
- *  run without one answers none, and is judged on them. */
+ *  header says. The load test and the continue-mixed probe use it. A written case's run gives
+ *  `checkout`, the copy of its checkout its read-only calls are answered from, at most
+ *  MAX_CHECKOUT_ROUNDS rounds, or why none is answered. A run without it does not answer a
+ *  checkout round. */
 export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
   readonly copies?: readonly InstalledCopy[];
@@ -675,7 +707,11 @@ export function caseAct(c: Pick<Case, "realStep" | "violatingStep">): Act {
 
 /** The programs whose words a `bash` command's simple command may start with and still only read
  *  or look (LOAD_RULE), each with the test its arguments must pass for that: any other program,
- *  and one whose arguments fail its test, leaves the call undecided. */
+ *  and one whose arguments fail its test, leaves the call undecided. `gh api` as a GET, `gh pr
+ *  view`, `pr list`, `run view`, `stack view`, `git worktree list`, `dispatch read`, `doc-read`,
+ *  `env` with no argument, `ps`, and `jj log`, `diff`, `status` with no `--tool` are on it by the
+ *  runner's architect's ruling of 2026-11-26T10:10:22Z: jj's snapshot of the working copy into
+ *  its operation log is bookkeeping, not the task's work. */
 const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boolean>> = (() => {
   const any = () => true;
   /** Where in `args` its subcommand is: the first argument that is no flag nor the value of one
@@ -693,6 +729,60 @@ const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boo
     (looks: readonly string[], valued: readonly string[]) => (args: readonly string[]) =>
       looks.includes(args[subcommandAt(args, valued)] ?? "");
   const listing = ["-a", "-r", "-v", "-vv", "-l", "--all", "--remotes", "--list", "--show-current"];
+  /** Whether the arguments `args` of `gh api` make it a GET: no `-X`/`--method` but GET (in any
+   *  letter case), none of the flags that send fields or a body and so make it a POST (`-f`, `-F`,
+   *  `--field`, `--raw-field`, `--input`, joined forms too, even beside an explicit GET), and an
+   *  endpoint (the first argument that is no flag nor a flag's value) other than `graphql`, which
+   *  gh always sends as a POST. A cluster of short flags is read as gh reads it: a flag that takes
+   *  a value takes the rest of the cluster, or else the next argument. */
+  const getOnly = (args: readonly string[]): boolean => {
+    const sends = ["--field", "--raw-field", "--input"];
+    const valued = [
+      "--method",
+      "--header",
+      "--jq",
+      "--template",
+      "--hostname",
+      "--cache",
+      "--preview",
+    ];
+    let endpoint: string | undefined;
+    for (let at = 0; at < args.length; at += 1) {
+      const arg = args[at] ?? "";
+      if (arg === "--") {
+        endpoint ??= args[at + 1];
+        break;
+      }
+      if (!arg.startsWith("-")) {
+        endpoint ??= arg;
+      } else if (arg.startsWith("--")) {
+        const equals = arg.indexOf("=");
+        const name = equals < 0 ? arg : arg.slice(0, equals);
+        const value = equals < 0 ? undefined : arg.slice(equals + 1);
+        if (sends.includes(name)) return false;
+        if (value === undefined && valued.includes(name)) at += 1;
+        if (name === "--method" && (value ?? args[at] ?? "").toUpperCase() !== "GET") return false;
+      } else {
+        for (let char = 1; char < arg.length; char += 1) {
+          const flag = arg[char] ?? "";
+          if (flag === "f" || flag === "F") return false;
+          if (!"XHqtp".includes(flag)) continue;
+          const joined = arg.slice(char + 1);
+          if (joined === "") at += 1;
+          const value = joined === "" ? (args[at] ?? "") : joined.replace(/^=/, "");
+          if (flag === "X" && value.toUpperCase() !== "GET") return false;
+          break;
+        }
+      }
+    }
+    return endpoint?.replace(/^\/+/, "") !== "graphql";
+  };
+  const shown = [
+    ["pr", "view"],
+    ["pr", "list"],
+    ["run", "view"],
+    ["stack", "view"],
+  ];
   const runs = [
     "-delete",
     "-exec",
@@ -708,7 +798,7 @@ const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boo
     ...["ls", "cat", "head", "tail", "wc", "pwd", "cd", "grep", "egrep", "fgrep", "rg", "fd"],
     ...["jq", "tree", "stat", "file", "du", "df", "which", "type", "realpath", "readlink"],
     ...["basename", "dirname", "date", "whoami", "id", "hostname", "uname", "echo", "printf"],
-    ...["true", "test", "[", "nl", "cut", "tr", "diff", "cmp", "comm", "printenv"],
+    ...["true", "test", "[", "nl", "cut", "tr", "diff", "cmp", "comm", "printenv", "ps"],
   ];
   return {
     ...Object.fromEntries(plain.map((program) => [program, any])),
@@ -723,6 +813,7 @@ const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boo
       if (at < 0 || rest.some((arg) => arg.startsWith("--output"))) return false;
       if (args[at] === "branch") return rest.every((arg) => listing.includes(arg));
       if (args[at] === "remote") return rest.every((arg) => arg === "-v");
+      if (args[at] === "worktree") return rest[0] === "list";
       const looks = ["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "grep"];
       return looks.includes(args[at] ?? "");
     },
@@ -734,6 +825,17 @@ const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boo
       ["get", "describe", "logs"],
       ["-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user"]
     ),
+    gh: (args) =>
+      args[0] === "api"
+        ? getOnly(args.slice(1))
+        : shown.some(([command, sub]) => args[0] === command && args[1] === sub),
+    dispatch: looksBy(["read", "doc-read"], []),
+    env: (args) => args.length === 0,
+    jj: (args) =>
+      looksBy(
+        ["log", "diff", "status"],
+        ["-R", "--repository", "--at-operation", "--at-op", "--color", "--config", "--config-file"]
+      )(args) && !args.some((arg) => arg === "--tool" || arg.startsWith("--tool=")),
   };
 })();
 
@@ -795,7 +897,10 @@ export function simpleCommands(command: string): string[][] | undefined {
 
 /** Whether the shell command line `command` only reads or looks (LOAD_RULE): each of its simple
  *  commands (`simpleCommands`), past its variable assignments, starts with a program of
- *  LOOKING_PROGRAMS whose arguments pass that program's test. */
+ *  LOOKING_PROGRAMS whose arguments pass that program's test, or asks any program for its help:
+ *  its last word is `--help` and each word between the program and it is a plain subcommand word
+ *  (no flag, no path, no text with spaces), so `bash -c 'rm -rf x' --help`, which runs the `-c`
+ *  text, is not (the runner's architect, 2026-11-26T10:10:22Z). */
 export function readOnlyCommand(command: string): boolean {
   const commands = simpleCommands(command);
   if (commands === undefined || commands.length === 0) return false;
@@ -804,7 +909,11 @@ export function readOnlyCommand(command: string): boolean {
     while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[at] ?? "")) at += 1;
     const program = words[at];
     if (program === undefined) return true;
-    return LOOKING_PROGRAMS[path.posix.basename(program)]?.(words.slice(at + 1)) === true;
+    const args = words.slice(at + 1);
+    const help =
+      args[args.length - 1] === "--help" &&
+      args.slice(0, -1).every((word) => /^[a-z][a-z0-9-]*$/.test(word));
+    return help || LOOKING_PROGRAMS[path.posix.basename(program)]?.(args) === true;
   });
 }
 
@@ -1117,18 +1226,47 @@ function answered(
   };
 }
 
-/** Sends `sent` for `arm`, the body with its cache breakpoint as `replayOnce` makes it (see the
- *  file's header), the run's own session id `userId` (`freshIdentity`) and its routing id
- *  `routingId` (`routingFor`; none when null), which every round of the run keeps; answers its
- *  skill reads as `replyBoundary` says under `options.mixed`, and, with `checkout`, its rounds of
- *  read-only calls, and returns the judged step, or rejects with ReadsPastLastRound,
- *  UndecidedReply or, with `checkout`, UnansweredRead (see the file's header). `sent` is never
- *  changed, and every round's body shares its parts. `firstSettled` is told once the run's first
- *  send has its reply or its failure. */
-async function replaySent(
+/** The body every run of `body` sends first, before its session id: a Messages body with its
+ *  cache breakpoint (`withCacheBreakpoint`), a Responses body as it is (see the file's header).
+ *  `replayInterleaved` makes it once for all the runs of an arm. */
+function sendable(body: RequestBody): RequestBody {
+  return isResponsesBody(body) ? body : withCacheBreakpoint(body);
+}
+
+/** `sent` (a body as `sendable` makes it) with a run's session id, and that id: a fresh one
+ *  (`freshIdentity`) when `userId` is undefined; else `userId` itself, a saved run's own, in the
+ *  field `freshIdentity` draws one in (a Messages body's `metadata.user_id`, a Responses body's
+ *  `prompt_cache_key`), its other fields and their order kept; and for null the body as it is,
+ *  with none. */
+function withIdentity(
   sent: RequestBody,
-  userId: string | null,
-  routingId: string | null,
+  userId?: string | null
+): { readonly body: RequestBody; readonly id: string | null } {
+  if (userId === undefined) return freshIdentity(sent);
+  if (userId === null) return { body: sent, id: null };
+  if (isResponsesBody(sent)) return { body: { ...sent, prompt_cache_key: userId }, id: userId };
+  const kept = isObject(sent.metadata) ? sent.metadata : {};
+  return { body: { ...sent, metadata: { ...kept, user_id: userId } }, id: userId };
+}
+
+/** The first body with the run's ids. A resume also has the saved replies to answer locally
+ *  before the first send, and may limit how many further requests it sends. */
+interface RunStart {
+  readonly sent: RequestBody;
+  readonly userId: string | null;
+  readonly routingId: string | null;
+  readonly saved?: SavedReply;
+  readonly furtherRounds?: number;
+}
+
+/** Before any send, the saved replies cannot be rebuilt as answered rounds of this replay. */
+export class NotResumable extends Error {}
+
+/** Runs live and saved replies through the same loop. The saved replies build up the request
+ *  without a send. Only replies to actual sends reach `endsAt`, and `firstSettled` is told
+ *  when the first send settles. Checkout answers and knives use one artifact state per run. */
+async function replaySent(
+  start: RunStart,
   arm: Arm,
   gateway: Gateway,
   {
@@ -1141,8 +1279,9 @@ async function replaySent(
   }: ReplayOptions,
   firstSettled?: () => void
 ): Promise<Replayed> {
+  const { userId, routingId } = start;
   const sendHeaders = routingId === null ? headers : { ...headers, [ROUTING_HEADER]: routingId };
-  let body = sent;
+  let body = start.sent;
   const usage: Spent[] = [];
   const deployments: string[] = [];
   const reads: RoundRead[][] = [];
@@ -1150,91 +1289,112 @@ async function replaySent(
   // The answered rounds' answered calls (their reads, and the read-only calls the checkout copy
   // answered), which the judged step holds before the reply that ends it.
   const calls: ContentBlock[] = [];
+  const answeredReplies: (readonly ContentBlock[])[] = [];
   let rounds = 0;
   let checkoutRounds = 0;
-  // The pinned Oh My Pi's artifacts this run's answers make, numbered past the case's history's.
+  let sends = 0;
   const artifacts =
     checkout === undefined || "why" in checkout ? undefined : runArtifacts(checkout);
-  for (let sends = 0; ; sends += 1) {
-    let reply: Reply;
-    try {
-      reply = await gateway.send(body, { headers: sendHeaders });
-    } finally {
-      if (sends === 0) firstSettled?.();
+  const prior = start.saved?.answeredReplies ?? [];
+  for (let index = 0; ; index += 1) {
+    const saved =
+      index < prior.length
+        ? prior[index]
+        : index === prior.length
+          ? start.saved?.content
+          : undefined;
+    let reply: Reply | undefined;
+    if (saved === undefined) {
+      try {
+        reply = await gateway.send(body, { headers: sendHeaders });
+      } finally {
+        if (sends === 0) firstSettled?.();
+      }
+      sends += 1;
+      usage.push(reply.spent);
+      deployments.push(deploymentOf(reply));
     }
-    usage.push(reply.spent);
-    deployments.push(deploymentOf(reply));
-    const content = reply.message.content;
-    const boundary = replyBoundary(content, arm, copies, mixed);
-    const round =
-      boundary.kind === "skill round" || boundary.kind === "continue" ? boundary.reads : undefined;
-    const step = { ...reply, message: { ...reply.message, content: [...calls, ...content] } };
-    const mixedAct = boundary.kind === "acts";
-    const replayed = {
-      step,
-      rounds,
-      checkoutRounds,
-      reads,
-      leftOut,
-      mixedAct,
-      usage,
-      userId,
-      routingId,
-      deployments,
+    const content = reply?.message.content ?? saved ?? [];
+    const tools = checkout === undefined ? [] : toolCalls(content);
+    const readOnly =
+      tools.length > 0 &&
+      tools.every(({ id, name, input }) => id !== undefined && readOnlyCall(name, input));
+    // A skill round comes first. Otherwise the checkout gets an all-read-only reply and the
+    // mixed rule never sorts its calls.
+    const boundary = replyBoundary(content, arm, copies, readOnly ? undefined : mixed);
+    const skill = boundary.kind === "skill round";
+    const checked = !skill && readOnly && checkout !== undefined;
+    const others = boundary.kind === "continue" ? boundary.others : [];
+    const replayed = (): Replayed => {
+      if (reply === undefined) throw new NotResumable("a saved round could not be rebuilt");
+      const step = { ...reply, message: { ...reply.message, content: [...calls, ...content] } };
+      return {
+        step,
+        rounds,
+        checkoutRounds,
+        reads,
+        answeredReplies,
+        leftOut,
+        mixedAct: boundary.kind === "acts",
+        usage,
+        userId,
+        routingId,
+        deployments,
+      };
     };
-    if (endsAt?.(content, round) === true) return replayed;
-    const responses = isResponsesBody(body);
-    let answers: readonly AnsweredCall[];
-    // A reply whose every call is a skill read is a round of skill reads; one whose every call is
-    // read-only, in a written case's run, a round of the checkout; only any other reply is sorted
-    // by the mixed rule (see the file's header).
-    const looked =
-      boundary.kind === "skill round" || checkout === undefined
-        ? undefined
-        : await checkoutRound(content, arm, copies, checkout, artifacts, responses);
-    if (boundary.kind === "skill round") {
-      if (rounds >= maxSkillRounds) {
-        throw new ReadsPastLastRound(
-          replayed,
-          boundary.reads.map(({ read }) => read)
+    const round = skill || boundary.kind === "continue" ? boundary.reads : undefined;
+    if (reply !== undefined && endsAt?.(content, round) === true) return replayed();
+    if (!checked && (boundary.kind === "ends" || boundary.kind === "acts")) {
+      if (reply === undefined) {
+        throw new NotResumable(
+          `the saved reply is not one a replay sends back: the rule makes it ${boundary.kind === "ends" ? "the end of the run" : "a mixed reply that acts"}`
         );
       }
-      rounds += 1;
-      const given = knivesReads(boundary.reads, content, checkout, artifacts, responses);
-      if ("why" in given) throw new UnansweredRead(replayed, given.why);
-      answers = given;
-    } else if (looked !== undefined) {
-      if ("why" in looked) throw new UnansweredRead(replayed, looked.why);
-      if (checkoutRounds >= MAX_CHECKOUT_ROUNDS) {
-        throw new ReadsPastLastRound(
-          replayed,
-          looked.map(({ read }) => read)
-        );
-      }
-      checkoutRounds += 1;
-      answers = looked;
-    } else {
-      if (boundary.kind === "ends" || boundary.kind === "acts") return replayed;
-      const last = boundary.reads.map(({ read }) => read);
-      if (boundary.kind === "undecided") {
-        const undecided = boundary.others.filter((call) => call.part === "undecided");
-        throw new UndecidedReply(replayed, last, undecided, boundary.text === "undecided");
-      }
-      if (rounds >= maxSkillRounds) throw new ReadsPastLastRound(replayed, last, boundary.others);
-      rounds += 1;
-      const given = knivesReads(boundary.reads, content, checkout, artifacts, responses);
-      if ("why" in given) throw new UnansweredRead(replayed, given.why);
-      leftOut.push(
-        ...boundary.others.map(({ tool, argument }) => ({
-          round: reads.length + 1,
-          tool,
-          argument,
-        }))
-      );
-      answers = given;
+      return replayed();
     }
-    reads.push(answers.map(({ read }) => read));
-    // The reply holding only the calls the replay answers: no other call goes back.
+    if (boundary.kind === "undecided") {
+      if (reply === undefined) throw new NotResumable("the saved reply is undecided");
+      throw new UndecidedReply(
+        replayed(),
+        boundary.reads.map(({ read }) => read),
+        boundary.others.filter((call) => call.part === "undecided"),
+        boundary.text === "undecided"
+      );
+    }
+
+    if (!checked && rounds >= maxSkillRounds) {
+      if (reply === undefined)
+        throw new NotResumable("the saved reply is past the last skill round");
+      throw new ReadsPastLastRound(
+        replayed(),
+        (round ?? []).map(({ read }) => read),
+        others
+      );
+    }
+    const responses = isResponsesBody(body);
+    const answers = checked
+      ? await checkoutRound(content, arm, copies, checkout, artifacts, responses)
+      : knivesReads(round ?? [], content, checkout, artifacts, responses);
+    if (answers === undefined || "why" in answers) {
+      const why = answers?.why ?? "no checkout answers for the reply";
+      if (reply === undefined) throw new NotResumable(why);
+      throw new UnansweredRead(replayed(), why);
+    }
+    const last = answers.map(({ read }) => read);
+    if (checked && checkoutRounds >= MAX_CHECKOUT_ROUNDS) {
+      if (reply === undefined) throw new NotResumable("the saved reply is past the last round");
+      throw new ReadsPastLastRound(replayed(), last, others);
+    }
+    if (reply !== undefined && start.furtherRounds !== undefined && sends >= start.furtherRounds) {
+      throw new FurtherRoundLimit(replayed(), start.furtherRounds, last, others);
+    }
+    if (checked) checkoutRounds += 1;
+    else rounds += 1;
+    leftOut.push(
+      ...others.map(({ tool, argument }) => ({ round: reads.length + 1, tool, argument }))
+    );
+    reads.push(last);
+    if (checkout !== undefined) answeredReplies.push(content);
     const answeredIds = new Set(answers.map(({ id }) => id));
     const kept = content.filter(
       (block) => !isToolCallBlock(block) || answeredIds.has(toolCalls([block])[0]?.id ?? "")
@@ -1259,9 +1419,65 @@ export function replayOnce(
   options: ReplayOptions = {},
   firstSettled?: () => void
 ): Promise<Replayed> {
-  const own = freshIdentity(isResponsesBody(body) ? body : withCacheBreakpoint(body));
+  const own = withIdentity(sendable(body));
   const routingId = routingFor(body, options.routingId);
-  return replaySent(own.body, own.id, routingId, arm, gateway, options, firstSettled);
+  return replaySent(
+    { sent: own.body, userId: own.id, routingId },
+    arm,
+    gateway,
+    options,
+    firstSettled
+  );
+}
+
+/** A saved reply whole, with the run's ids and any earlier answered replies saved whole too.
+ *  Earlier tool calls alone cannot reconstruct the original requests. */
+export interface SavedReply {
+  readonly userId: string | null;
+  readonly routingId: string | null;
+  readonly content: readonly ContentBlock[];
+  readonly answeredReplies?: readonly (readonly ContentBlock[])[];
+}
+
+/**
+ * Goes on with the saved run `saved` of `body` for `arm` from its saved reply, as the live replay
+ * of the run would have (`replaySent`): the body before that reply is the one `replayOnce` sends
+ * first (`sendable`), with the run's own session id in place of a fresh one (`withIdentity`), and
+ * every request goes with the run's own routing id (`routingFor`) and `options.headers`.
+ * Any earlier saved replies and the saved reply are answered in order through that same loop:
+ * skill rounds, all-read-only checkout rounds for written cases, then the mixed rule. They
+ * count toward the live limits, and are included in the judged step and the recorded reads.
+ * `options.furtherRounds` limits new requests only; a reply that would be sent after that many
+ * stops with FurtherRoundLimit. `usage` and `deployments` are the new sends' alone.
+ * Rejects as `replayOnce` does, and with NotResumable before any send for a saved reply the
+ * replay cannot rebuild. `options.endsAt` is told each reply a send got: true ends the run there.
+ */
+export function resumeReplay(
+  body: RequestBody,
+  saved: SavedReply,
+  arm: Arm,
+  gateway: Gateway,
+  {
+    furtherRounds,
+    ...options
+  }: Omit<ReplayOptions, "routingId"> & {
+    readonly furtherRounds?: number;
+  } = {}
+): Promise<Replayed> {
+  const own = withIdentity(sendable(body), saved.userId);
+  const routingId = routingFor(body, saved.routingId ?? undefined);
+  return replaySent(
+    {
+      sent: own.body,
+      userId: own.id,
+      routingId,
+      saved,
+      ...(furtherRounds === undefined ? {} : { furtherRounds }),
+    },
+    arm,
+    gateway,
+    options
+  );
 }
 
 /** One arm's runs in a round: its arm, its captured body, the headers that go with it (its
@@ -1351,8 +1567,7 @@ export async function replayInterleaved(
         `the arm ${each.arm.name} makes ${each.runs} runs and is given ${each.routingIds.length} routing ids`
       );
     }
-    const sent = isResponsesBody(each.body) ? each.body : withCacheBreakpoint(each.body);
-    byName.set(each.arm.name, { ...each, sent });
+    byName.set(each.arm.name, { ...each, sent: sendable(each.body) });
   }
   const order: Slot[] = sendOrder(
     arms.map((each) => ({ key: each.arm.name, runs: each.runs })),
@@ -1373,12 +1588,10 @@ export async function replayInterleaved(
     const nth = started.get(slot.arm) ?? 0;
     started.set(slot.arm, nth + 1);
     const settled = Promise.withResolvers<void>();
-    const own = freshIdentity(each.sent);
+    const own = withIdentity(each.sent);
     const routingId = routingFor(each.sent, each.routingIds?.[nth]);
     const replayed = replaySent(
-      own.body,
-      own.id,
-      routingId,
+      { sent: own.body, userId: own.id, routingId },
       each.arm,
       gateway,
       {
