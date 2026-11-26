@@ -134,7 +134,7 @@ import {
   tree,
   unfoldEveryBranch,
 } from "./issue-page-g";
-import { marginSlot, TWENTY_LABELS } from "./issue-page-h";
+import { marginSection, marginSlot, TWENTY_LABELS } from "./issue-page-h";
 import {
   activePreset,
   caretInNode,
@@ -170,6 +170,7 @@ import {
   AWAITING_THREADS,
   assertInventoryCarried,
   assertNoSidewaysScroll,
+  COLOUR_STATES,
   chromeTexts,
   dashboardView,
   documentLink,
@@ -210,6 +211,7 @@ import {
   openVersionControl,
   PART_ADDRESSES,
   type ParentRowMapping,
+  pageOffThePalette,
   REFLOW_STATES,
   rowsWithoutAuthorScrollers,
   scrollersOutsideAuthorText,
@@ -6717,4 +6719,166 @@ test("a reference to a block of a document the outline does not draw opens that 
       }
     }
   );
+});
+
+/** Holds the Verification view's reads (`slots/view-verification.tsx`: what serves each
+ *  statement, the checks' results and the Verification document's blocks), as c-view-waiting's
+ *  row holds them, so the view draws its loading line in their place, until the function it
+ *  answers lets them go. */
+async function holdVerificationReads(
+  page: Page,
+  seeded: WholeIssueSeed
+): Promise<() => Promise<void>> {
+  const issue = `/api/v1/issues/${seeded.key}`;
+  const reads = [
+    `${issue}/coverage`,
+    `${issue}/results`,
+    `/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`,
+  ];
+  const released = Promise.withResolvers<void>();
+  const matchReads = ({ pathname }: URL) => reads.includes(pathname);
+  const hold = async (route: Route) => {
+    await released.promise;
+    await route.continue();
+  };
+  await page.route(matchReads, hold);
+  return async () => {
+    released.resolve();
+    await page.unroute(matchReads, hold);
+  };
+}
+
+/**
+ * Opens `state` of `COLOUR_STATES` on R7's seed and waits until it is drawn whole (part N's R13):
+ * Conversation, at `/conversation`, with Details open at the facts of the answered question and
+ * what references it, its people's two lists, its Referenced by list, which holds the issue's
+ * children, and its history; Dashboard, at the issue's bare address; Documents' list; and the
+ * Verification view, whose reads the caller holds (`holdVerificationReads`), with its loading line.
+ */
+async function openColourState(
+  page: Page,
+  seeded: AdvancingIssueSeed,
+  state: (typeof COLOUR_STATES)[number],
+  where: string
+): Promise<void> {
+  if (state === "dashboard") {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectDashboardDrawn(page, where);
+    return;
+  }
+  if (state === "documents") {
+    await gotoIssue(page, presetPath(seeded.key, "documents"));
+    await expect(
+      documentsRows(page).first(),
+      `${where} draws no row of Documents' list`
+    ).toBeVisible();
+    return;
+  }
+  if (state === "loading") {
+    await gotoIssue(page, presetPath(seeded.key, "verification"));
+    const body = issuePage(page).locator("[data-verification-body]");
+    await expect(
+      body.getByRole("status").and(body.locator(VIEW_LOADING)),
+      `${where} draws no loading line while the view's reads are out`
+    ).toBeVisible();
+    return;
+  }
+  const facts = await rowFacts(page, seeded.key, seeded.answeredAskId);
+  const references = facts.locator("[data-node-references]");
+  await references
+    .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
+    .click();
+  await expect(
+    references
+      .getByRole("listitem")
+      .or(references.getByText(CONTROL_LABELS.none, { exact: true }))
+      .first(),
+    `${where}: what references the answered question is never drawn`
+  ).toBeVisible();
+  const people = marginSection(page, "people");
+  await people
+    .getByRole("button", { name: new RegExp(`^${PROPERTY_LABELS.subscribers}`, "u") })
+    .click();
+  await expect(
+    people.getByRole("region", { exact: true, name: "Subscribed agents" }),
+    `${where}: Details draws no subscribed agent`
+  ).toBeVisible();
+  await people.getByRole("button", { exact: true, name: PROPERTY_LABELS.collaborators }).click();
+  await expect(
+    people.getByRole("region", { exact: true, name: PROPERTY_LABELS.collaborators }),
+    `${where}: Details draws no list of collaborators`
+  ).toBeVisible();
+  const referencedBy = marginSection(page, "references").getByRole("button", {
+    name: new RegExp(`^${PROPERTY_LABELS.referenced_by}`, "u"),
+  });
+  await referencedBy.click();
+  await expect(
+    page
+      .locator(`[id="${await referencedBy.getAttribute("aria-controls")}"]`)
+      .getByRole("listitem")
+      .first(),
+    `${where}: Referenced by lists none of the issue's children`
+  ).toBeVisible();
+  await expect(
+    historyEntries(page).first(),
+    `${where}: Details draws no entry of the history`
+  ).toBeVisible();
+}
+
+// R13 (c-page-colours, INV-3): every colour an element of the new page or of Details computes -
+// its text, its ground and each border it draws - is one of B's `PAGE_COLORS` in the scheme
+// drawn, a transparent one, or one a person or an agent chose (`CHOSEN_COLOURS`, none), on R7's
+// seed with the header's pull request link, in each of `COLOUR_STATES` at 1440 px and at 390 px,
+// in light and in dark (`pageOffThePalette`). Each reading is soft, so one run names every
+// element and colour off the palette in every state. `styles.css` eases a control's colours over
+// 150 ms, so each load turns transitions off before its scheme changes, as
+// `e2e/accessibility.e2e.ts` does, and the pointer rests in the window's top left corner, so no
+// element is read in its hover colours.
+// SLOW(>=2s): R7's seed, eight loads, four of Details' lists opened at each width, and sixteen
+// readings of every element of the page and of Details.
+test("every colour of the page and of Details is a page colour", async ({ browser }) => {
+  // Not measured in a browser yet: eight loads, at the 1.7 s a load that "the filter row is one
+  // line at every width" measured (27 loads in 47.0 s), and Details' four lists opened at each
+  // width; the bound is several times that, for a slow leg.
+  test.setTimeout(180_000);
+  await phase(browser, seedWholeIssueAdvancing, async (page, seeded) => {
+    await writePullRequestHead({
+      event: "2026-11-10T10:00:00Z",
+      issue: seeded.key,
+      number: 101,
+      state: "open",
+      url: `https://github.com/${PULL_REQUEST_REPOSITORY}/pull/101`,
+    });
+    for (const size of [DESKTOP, PHONE]) {
+      await page.setViewportSize({ height: size.height, width: size.width });
+      for (const state of COLOUR_STATES) {
+        const where = `${state} at ${size.width} px`;
+        const release = state === "loading" ? await holdVerificationReads(page, seeded) : undefined;
+        try {
+          await openColourState(page, seeded, state, where);
+          await expect(
+            page.getByTestId("issue-pull-request"),
+            `${where}: the header draws no pull request link`
+          ).toBeVisible();
+          await page.addStyleTag({
+            content: "*, *::before, *::after { transition: none !important; }",
+          });
+          for (const scheme of ["light", "dark"] as const) {
+            await page.emulateMedia({ colorScheme: scheme });
+            await nextFrames(page);
+            await page.mouse.move(0, 0);
+            expect
+              .soft(
+                await pageOffThePalette(page, scheme),
+                `${where} in the ${scheme} scheme draws a colour that is no page colour`
+              )
+              .toEqual([]);
+          }
+        } finally {
+          await page.emulateMedia({ colorScheme: "light" });
+          await release?.();
+        }
+      }
+    }
+  });
 });

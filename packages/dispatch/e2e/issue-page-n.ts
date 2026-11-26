@@ -95,6 +95,9 @@ const SELECTORS = {
   authorText: "[data-author-text]",
   branchMore: "[data-branch-more]",
   details: '[data-testid="desktop-margin-shell"]',
+  /** Details' drawer by the mark R13 names it with (`margin-slot.tsx`'s `DETAILS_ATTRIBUTE`): the
+   *  element `details` finds, whose every colour c-page-colours reads. */
+  detailsDrawer: "aside[data-details]",
   childRow: "[data-child-row]",
   /** One crumb of the line a zoomed outline draws above its rows; none while it is not zoomed. */
   crumb: "[data-crumb]",
@@ -468,48 +471,69 @@ export function filterRowReading(page: Page): Promise<FilterRowReading | null> {
   }, SELECTORS);
 }
 
-/** One colour the filter row draws: where, and the value the browser computed for it. */
+/** One colour an element draws: where, and the value the browser computed for it. */
 interface DrawnColour {
-  /** The element and the property, as a failure names them: `button "Keys" color`. */
+  /** The element and the property, as a failure names them: `button "Keys" color`, and an element
+   *  by its test id where it has one, `aside[data-testid="desktop-margin-shell"] "…" color`, or by
+   *  the nearest one around it, `span "Draft" in [data-testid="issue-header"] color`. */
   readonly drawn: string;
   /** The computed value, as `getComputedStyle` gives it. */
   readonly value: string;
 }
 
-/** Every colour the filter row draws, as the browser computed it, over the row and each of its
- *  visible elements: the text colour of each that draws words or a shape of its own (an `svg`
- *  fills with its `currentColor`), each background, and each border that has a width. An element
- *  that draws no word and no shape draws no text colour, though it computes one. */
-function filterRowColours(page: Page): Promise<DrawnColour[]> {
-  return page.evaluate((selectors) => {
-    const row = document.querySelector<HTMLElement>(selectors.filterRow);
-    if (row === null) return [];
-    const found: { drawn: string; value: string }[] = [];
-    for (const element of [row, ...row.querySelectorAll<Element>("*")]) {
-      if (element.closest("[hidden]") !== null || !element.checkVisibility()) continue;
-      const style = getComputedStyle(element);
-      const name =
-        element.getAttribute("aria-label") ??
-        (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
-      const at = `${element.tagName.toLowerCase()} "${name}"`;
-      const drawsWords = [...element.childNodes].some(
-        (child) => child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim() !== ""
-      );
-      if (drawsWords || element instanceof SVGSVGElement || element instanceof HTMLInputElement) {
-        found.push({ drawn: `${at} color`, value: style.color });
+/** Every colour the first element each of `roots` selects draws, as the browser computed it, over
+ *  that element and each of its visible elements: the text colour of each that draws words or a
+ *  shape of its own (an `svg` fills with its `currentColor`), each background, and each border
+ *  that has a width. An element that draws no word and no shape draws no text colour, though it
+ *  computes one. An element inside one that `chosen` selects is left out. */
+function drawnColours(
+  page: Page,
+  roots: readonly string[],
+  chosen: readonly string[] = []
+): Promise<DrawnColour[]> {
+  return page.evaluate(
+    (asked) => {
+      const found: { drawn: string; value: string }[] = [];
+      for (const root of asked.roots.map((selector) => document.querySelector(selector))) {
+        if (root === null) continue;
+        for (const element of [root, ...root.querySelectorAll<Element>("*")]) {
+          if (element.closest("[hidden]") !== null || !element.checkVisibility()) continue;
+          if (asked.chosen.some((selector) => element.closest(selector) !== null)) continue;
+          const style = getComputedStyle(element);
+          const name =
+            element.getAttribute("aria-label") ??
+            (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+          const testId = element.getAttribute("data-testid");
+          const around =
+            element.parentElement?.closest("[data-testid]")?.getAttribute("data-testid") ?? null;
+          const own = testId === null ? "" : `[data-testid="${testId}"]`;
+          const near = testId !== null || around === null ? "" : ` in [data-testid="${around}"]`;
+          const at = `${element.tagName.toLowerCase()}${own} "${name}"${near}`;
+          const drawsWords = [...element.childNodes].some(
+            (child) => child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim() !== ""
+          );
+          if (
+            drawsWords ||
+            element instanceof SVGSVGElement ||
+            element instanceof HTMLInputElement
+          ) {
+            found.push({ drawn: `${at} color`, value: style.color });
+          }
+          found.push({ drawn: `${at} background-color`, value: style.backgroundColor });
+          for (const side of ["top", "right", "bottom", "left"] as const) {
+            if (style.getPropertyValue(`border-${side}-style`) === "none") continue;
+            if (Number.parseFloat(style.getPropertyValue(`border-${side}-width`)) === 0) continue;
+            found.push({
+              drawn: `${at} border-${side}-color`,
+              value: style.getPropertyValue(`border-${side}-color`),
+            });
+          }
+        }
       }
-      found.push({ drawn: `${at} background-color`, value: style.backgroundColor });
-      for (const side of ["top", "right", "bottom", "left"] as const) {
-        if (style.getPropertyValue(`border-${side}-style`) === "none") continue;
-        if (Number.parseFloat(style.getPropertyValue(`border-${side}-width`)) === 0) continue;
-        found.push({
-          drawn: `${at} border-${side}-color`,
-          value: style.getPropertyValue(`border-${side}-color`),
-        });
-      }
-    }
-    return found;
-  }, SELECTORS);
+      return found;
+    },
+    { chosen, roots }
+  );
 }
 
 /** A computed colour as Chromium writes one - `rgb(…)`, `rgba(…)` or `oklch(…)`, the last when
@@ -527,20 +551,54 @@ function srgbOf(value: string): readonly [number, number, number, number] | unde
   return [r, g, b, Number(oklch[5] ?? 1)];
 }
 
-/** Each colour the filter row draws that is none of B's `PAGE_COLORS` in `scheme` and not
- *  transparent (part N's R4: the row is drawn in none but those, the prototype's colours), named
+/** Each of `colours` that is none of B's `PAGE_COLORS` in `scheme` and not transparent, named
  *  with where it is drawn. Each page colour is computed from its swatch as
- *  `e2e/theme.stub.e2e.ts` computes a swatch's 8-bit value (`oklchToSrgb8`). */
-export async function offThePalette(page: Page, scheme: "dark" | "light"): Promise<string[]> {
+ *  `e2e/theme.stub.e2e.ts` computes a swatch's 8-bit value (`oklchToSrgb8`); a colour drawn part
+ *  transparent, or in a form `srgbOf` does not read, is none. */
+function offPalette(colours: readonly DrawnColour[], scheme: "dark" | "light"): string[] {
   const palette = new Set(
     Object.values(PAGE_COLORS).map((pair) => oklchToSrgb8(pair[scheme].oklch).join(", "))
   );
-  return (await filterRowColours(page)).flatMap(({ drawn, value }) => {
+  return colours.flatMap(({ drawn, value }) => {
     const srgb = srgbOf(value);
     if (srgb?.[3] === 0) return [];
     if (srgb?.[3] === 1 && palette.has(srgb.slice(0, 3).join(", "))) return [];
     return [`${drawn} is ${value}`];
   });
+}
+
+/** Each colour the filter row draws that is none of B's `PAGE_COLORS` in `scheme` and not
+ *  transparent (part N's R4: the row is drawn in none but those, the prototype's colours), named
+ *  with where it is drawn (`offPalette`). */
+export async function offThePalette(page: Page, scheme: "dark" | "light"): Promise<string[]> {
+  return offPalette(await drawnColours(page, [SELECTORS.filterRow]), scheme);
+}
+
+/** INV-3 (part N's R13, c-page-colours): the states of R7's seed whose every colour the row
+ *  "every colour of the page and of Details is a page colour" reads, each at 1440 px and at
+ *  390 px, in light and in dark, with the header's pull request link drawn in each: Conversation,
+ *  with Details open at its history, its people's two lists, the facts of a focused row with what
+ *  references it, and its Referenced by list; Dashboard, which the issue's bare address draws;
+ *  Documents' list; and a view's loading line, Verification's while its reads are held. */
+export const COLOUR_STATES = ["conversation", "dashboard", "documents", "loading"] as const;
+
+/** The elements drawn in a colour a person or an agent chose, which R13 lets the page draw (a
+ *  label's or a project's own colour, a picture): none. Dispatch stores no colour of a label or
+ *  of a project - no read of its API carries one, and the page draws every label in its own
+ *  `pageLabelChip` - and a picture's pixels are no colour the browser computes for its element,
+ *  so no element is left out. A part that lets a person choose a colour names the element it
+ *  draws that colour on here, by its selector. */
+const CHOSEN_COLOURS: readonly string[] = [];
+
+/** Each colour an element of the new page (`[data-issue-page]`) or of Details' drawer
+ *  (`aside[data-details]`) draws that is none of B's `PAGE_COLORS` in `scheme`, not transparent,
+ *  and on no element of `CHOSEN_COLOURS` (part N's R13), named with the element and the property
+ *  it is drawn in (`offPalette`). A closed Details is hidden and draws nothing. */
+export async function pageOffThePalette(page: Page, scheme: "dark" | "light"): Promise<string[]> {
+  return offPalette(
+    await drawnColours(page, [SELECTORS.issuePage, SELECTORS.detailsDrawer], CHOSEN_COLOURS),
+    scheme
+  );
 }
 
 /** How a small control of the filter row is drawn, as the prototype draws Keys (part N's R4): its
