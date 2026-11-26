@@ -173,9 +173,8 @@ const writeReleasedLine = "legion intake: a write or a delete of the project's L
 // WARN, as it acknowledges the message, naming the hand-backs the cursor counted (handBacks) and
 // how many times this durable has delivered the message (delivery). The cursor names no holder
 // from then on, and the read stays owed for the project's next message, boot, settings change or
-// take-over. On the project's runner that delivery makes the read first where it is due
-// (cursor.readFor), and on its crowded key it makes none (judgeCrowded); a good read that leaves
-// nothing owed clears the holder with no such line (cursor.afterRead).
+// take-over. What that delivery reads is stateMaxHolds' rule; a good read that leaves nothing owed
+// clears the holder with no such line (cursor.afterRead).
 const releasedLine = "legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed"
 
 // dropLogEvery bounds how often one line of reportEvery is logged for one project, and pruneEvery

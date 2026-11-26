@@ -16,9 +16,8 @@ import (
 // question of its tree still with the person, or `gate` with GateVersion and ArtifactID, the spec
 // version of its registered document a person has not reviewed. Since is Dispatch's time of the
 // hand-back the wait began at, absent when unknown. AnsweredAt and AnsweredBy are absent until a
-// person's act answers the wait; the answered root then stands in admission's waiting line as
-// well, within its priority, among the issues whose work came back, oldest first, until the pass
-// that resumes it.
+// person's act answers the wait; the answered root then waits in admission's line as well until
+// the pass that resumes it (Waiting, WaitingLineBand).
 // AnsweredBy is every value of Answer, `declined` — a person who closed an ask of the root rather
 // than answer it (contract 68) — among them, and it names how the wait was answered, not always by
 // a person.

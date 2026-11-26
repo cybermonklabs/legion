@@ -18,19 +18,18 @@ import (
 // (record.OutboxLane names each lane and the kinds it runs), run one at a time in the order they
 // are due, on a goroutine of its own that lives only while the issue has such rows. The project's
 // state events (record.LaneState) are one lane more, keyed by the bare Dispatch project key that
-// every state row carries as its issue, so a wake of that key and any state kind, the sweep and
-// the timer start and run it as they do an issue's: its rows run one message at a time
-// (stateEvents), in the order record.OutboxLane's comment holds LaneState to. A lane is woken by
-// the write that
-// commits one of its rows (projectRecords, through store.OnCommit), by the timer it arms for its
-// next row due later, and by the sweep, which every sweepInterval lists the lanes with a row still
-// in the outbox (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its
-// finish or retry recorded — a lost database connection, a daemon that died mid-row — keeps its
-// lease until it lapses, and the sweep after the lapse wakes its lane, which lists it due again
-// and runs it. The registry lock (outbox.mu) guards only the lane map and the running flag, and is
-// never held across a database call or an executor: a wake comes from inside a committed fact's
-// hook, on the intake's goroutine, and the API's, and must return at once whatever a lane is
-// doing; a lane blocked on GitHub must hold up nothing but its own issue.
+// every state row carries as its issue, so a wake of that key and any state kind, the sweep and the
+// timer start and run it as they do an issue's: its rows run one message at a time (stateEvents),
+// strictly in sequence order (record's outboxInOrder). A lane is woken by the write that commits
+// one of its rows (projectRecords, through store.OnCommit), by the timer it arms for its next row
+// due later, and by the sweep, which every sweepInterval lists the lanes with a row still in the
+// outbox (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its finish or
+// retry recorded — a lost database connection, a daemon that died mid-row — keeps its lease until
+// it lapses, and the sweep after the lapse wakes its lane, which lists it due again and runs it.
+// The registry lock (outbox.mu) guards only the lane map and the running flag, and is never held
+// across a database call or an executor: a wake comes from inside a committed fact's hook, on the
+// intake's goroutine, and the API's, and must return at once whatever a lane is doing; a lane
+// blocked on GitHub must hold up nothing but its own issue.
 
 // outboxLane is one issue's lane as the registry runs it: the goroutine that drains its due rows
 // (runLane) and the one-slot wake that tells it a row of its kinds was written or came due.

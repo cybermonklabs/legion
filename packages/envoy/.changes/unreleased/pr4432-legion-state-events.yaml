@@ -3,22 +3,19 @@ body: |-
   Dispatch takes each Legion daemon's state events from the held durable `legion-state-events` on
   `notifications.legion.*.state` and writes its Legion observations from them, so a change is
   recorded when its message is applied, not at the next read. Dispatch no longer reads a daemon's
-  state every minute, and no recurring timer reads it. It reads a daemon's
-  `GET /legion/v1/state?view=observed` whole only where the events cannot carry the state, for the
-  reasons legion's `ReadReason` constants name, and the whole reads of one project start at least
-  a minute apart. The Dispatch README describes the rule (`cmd/dispatch/README.md`, "The Legion
-  state intake"): when a read is owed, which message holds it and for how long, how many messages
-  of the consumer's window one project can hold, what a `PUT` or a `DELETE` of a project's Legion
-  setting does to the project's cursor, and the intake's log lines; legion's `cursor.readFor`,
-  `cursor.afterRead`, `resetCursor` and `cursor.reset`, and its `judgeCrowded` and
-  `stateMaxWaiting`, hold it in code. A daemon of an earlier build
-  ignores the `view` query and serves its whole state, which Dispatch reads the same way. A whole
-  read reads at most 64 MiB and one byte of the answer, not 32 MiB, and an answer over 64 MiB is a
-  failed read.
-  When Dispatch has NATS, a `PUT` of a project's Legion setting, of the same URL too, calls for a
-  whole read of the daemon the setting names; the README says when the `PUT`'s wake makes that read
-  and when a read already owed or in flight stands for it. Dispatch takes no starting point while a
-  Dispatch process of an earlier build is in the fleet.
+  state every minute, and no recurring timer reads it. It reads a daemon's `GET
+  /legion/v1/state?view=observed` whole only where the events cannot carry the state, for the
+  reasons legion's `ReadReason` constants name, and the whole reads of one project start at least a
+  minute apart. The Dispatch README describes the rule (`cmd/dispatch/README.md`, "The Legion state
+  intake"): when a read is owed, which message holds it and for how long, how many messages of the
+  consumer's window one project can hold, what a `PUT` or a `DELETE` of a project's Legion setting
+  does to the project's cursor, and the intake's log lines. A daemon of an earlier build ignores the
+  `view` query and serves its whole state, which Dispatch reads the same way. A whole read's cap is
+  64 MiB, not 32 MiB: it reads one byte past the cap at the most, and an answer over the cap is a
+  failed read. When Dispatch has NATS, a `PUT` of a project's Legion setting, of the same URL too,
+  calls for a whole read of the daemon the setting names; the README says when the `PUT`'s wake
+  makes that read and when a read already owed or in flight stands for it. Dispatch takes no
+  starting point while a Dispatch process of an earlier build is in the fleet.
   `legion_reads` records each transaction the intake applies as a row of kind `events` at the
   daemon's commit time. `legion_event_cursors` records how far the observations of each project
   follow its daemon and the whole read it owes, with the reasons for that read, the stream

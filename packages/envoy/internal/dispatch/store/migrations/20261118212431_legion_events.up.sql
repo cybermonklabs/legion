@@ -72,11 +72,11 @@
 --   row keeps it (state_url above), so the starting reads of two writes within a minute start a
 --   minute apart, with a delete between them or none. Null only while no whole read has begun
 --   since the row was created.
--- - read_holder is the stream sequence of the state message that holds the owed read: the
---   message the intake sent back to the stream unacknowledged until the read is due, whose
---   redelivery makes the read, whatever store the message is of. Null where no message holds it.
---   Which message holds it is the rule of legion's cursor.readFor, and what a read leaves of it
---   the rule of cursor.afterRead.
+-- - read_holder is the stream sequence of the state message that holds the owed read: the message
+--   the intake sent back to the stream unacknowledged until the read is due, whose redelivery on
+--   the project's runner makes the read, whatever store the message is of. Null where no message
+--   holds it. Which message holds it is the rule of legion's cursor.readFor, and what a read leaves
+--   of it the rule of cursor.afterRead.
 -- - read_holds is how many times the message read_holder names has gone back to the stream
 --   holding the read: 1 when the intake records it as the holder, one more at each hand-back after
 --   it, and 0 where no message holds it. A lease take-over, which starts the message's own
@@ -110,14 +110,13 @@
 --   as a message of previous_state_id (above). Empty for none.
 -- - released_holders is the stream sequence of each state message whose hold of the owed read a
 --   reset of the row ended (read-rule-cases rows 6.3b and 6.5), the newest last. At such a
---   message's next delivery while the project has a setting, the intake acknowledges it
---   unapplied, it holds no read, its store goes into foreign_state_ids as above, and the intake
---   takes its sequence out of the array, and no other. So a write that names another URL ends the
---   hold of the message before it within the holder's remaining hand-back delay (60 s at most)
---   plus one read's 60 s and a second, however many such writes
---   come before that message comes back, and a message of the newly named daemon may hold the
---   read from a count of 1. When an entry is added and when it goes is the rule of legion's
---   cursor.reset. Empty for none.
+--   message's next delivery while the project has a setting, the intake acknowledges it unapplied,
+--   it holds no read, its store goes into foreign_state_ids as above, and the intake takes its
+--   sequence out of the array, and no other. So a write that names another URL ends the hold of the
+--   message before it within the holder's remaining hand-back delay (60 s at most) plus one read's
+--   60 s and a second, however many such writes come before that message comes back, and a message
+--   of the newly named daemon may hold the read from a count of 1. When an entry is added and when
+--   it goes is the rule of legion's cursor.reset. Empty for none.
 -- - skipped_state_ids and skipped_seqs are, pair by pair (the check holds them to one length), a
 --   store and the highest seq of a state message of that store that the intake acknowledged
 --   unapplied because it arrived while legion's stateMaxWaiting messages of the project waited,
