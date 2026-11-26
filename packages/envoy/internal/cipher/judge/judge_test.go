@@ -392,38 +392,54 @@ func TestWhatDispatchDoesNotHoldIsShownAsNotFound(t *testing.T) {
 	theOneRefusal(t, machine)
 }
 
-// TestTheSystemPromptIsBuiltOnGuidance: the one model call of a one-key request carries
-// systemPrompt, whole, as its system message, and that key's guidance in the user message beside
-// it: the guidance the key's tags give it (testGuidance, planted by testPolicy) reaches the model
-// as the data the system prompt points it at, and the system prompt itself is the constant, never
-// a text built from a request.
+// TestTheSystemPromptIsBuiltOnGuidance: every model call carries systemPrompt, whole, as its one
+// system message, and the guidance of the one key it decides in the user message beside it. A
+// request for two judge keys makes two calls, and each holds both: the guidance each key's tags
+// give it (testGuidance and shortGuidance, planted by testPolicy) reaches the model as the data the
+// system prompt points it at, and the system prompt itself is the constant, never a text built from
+// a request.
 func TestTheSystemPromptIsBuiltOnGuidance(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
-	New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
+	request := pending()
+	request.Secrets, request.Decided, request.LifetimeSeconds = []string{testSecret, shortJudgeSecret}, []string{testSecret, shortJudgeSecret}, new(300)
+	New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), request)
 
-	if data := model.data(t); len(data.Keys) != 1 || data.Keys[0].Name != testSecret || data.Keys[0].Guidance != testGuidance {
-		t.Errorf("the keys in front of the model are %+v; want %s with its guidance %q", data.Keys, testSecret, testGuidance)
+	bodies := model.callBodies()
+	if len(bodies) != 2 {
+		t.Fatalf("the model was asked %d times; want one call for each of the two judge keys", len(bodies))
 	}
-	model.mu.Lock()
-	body := model.bodies[0]
-	model.mu.Unlock()
-	var call struct {
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &call); err != nil {
-		t.Fatalf("the model call is no JSON object: %v\n%s", err, body)
-	}
-	var system []string
-	for _, message := range call.Messages {
-		if message.Role == "system" {
-			system = append(system, contentText(t, message.Content))
+	unseen := map[string]string{testSecret: testGuidance, shortJudgeSecret: shortGuidance}
+	for _, body := range bodies {
+		data, err := callData(body)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, body)
 		}
-	}
-	if len(system) != 1 || system[0] != systemPrompt {
-		t.Errorf("the model call's system messages are %q; want systemPrompt alone, whole", system)
+		if len(data.Keys) != 1 {
+			t.Fatalf("a call's keys are %+v; want the one judge key it decides", data.Keys)
+		}
+		name := data.Keys[0].Name
+		if want, ok := unseen[name]; !ok || data.Keys[0].Guidance != want {
+			t.Errorf("the call for %s shows guidance %q; want that key's own, in one call only", name, data.Keys[0].Guidance)
+		}
+		delete(unseen, name)
+		var call struct {
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &call); err != nil {
+			t.Fatalf("the model call is no JSON object: %v\n%s", err, body)
+		}
+		var system []string
+		for _, message := range call.Messages {
+			if message.Role == "system" {
+				system = append(system, contentText(t, message.Content))
+			}
+		}
+		if len(system) != 1 || system[0] != systemPrompt {
+			t.Errorf("the call for %s has system messages %q; want systemPrompt alone, whole", name, system)
+		}
 	}
 }
 
