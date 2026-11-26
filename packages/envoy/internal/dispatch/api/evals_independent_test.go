@@ -21,15 +21,17 @@ import (
 const legionIssueFloor = 200
 
 // TestTheLegionEvalsEqualTheIndependentReading is k6 over the Go API (R6, D3, A4): over the
-// history `evalfixture -legion` loads, whose observations start partway through, the six Legion
-// evals of GET /api/v1/projects/{key}/evals?kind=legion, each series in its three cuts and each
-// statistic, equal the independent reading (package independent, written from the words of R6, D3
-// and INFRA-1077's rules) for a window that starts before the project's first observation and one
-// that starts after it: hours to 0.1, counts exactly, shares to 0.001, and "no data" on both sides
-// alike. Idle time and slot wait read "no data" over the first window on both sides and hold
-// values over the second. The negative controls are k6's two, which the comparison must each find
-// differing: the reading's window shifted 7 days, and the reading counting the hours of a claim in
-// `working` as idle, which moves idle time by role over the second window.
+// history `evalfixture -legion` loads, whose observations start partway through and hold two drops
+// and a child in design, the six Legion evals of GET /api/v1/projects/{key}/evals?kind=legion, each
+// series in its three cuts and each statistic, equal the independent reading (package independent,
+// written from the words of R6, the evals' method texts and INFRA-1077's rules) for a window that
+// starts before the project's first observation and one that starts after it: hours to 0.1, counts
+// exactly, shares to 0.001, and "no data" on both sides alike. Idle time and slot wait read "no
+// data" over the first window on both sides and hold values over the second, which holds the
+// issues of the drops and of the child in design. The negative controls, which the comparison must
+// each find differing: the reading's window shifted 7 days; the reading counting the hours of a
+// claim in `working` as idle, which moves idle time by role over the second window; and the
+// reading taking each drop for a release, which moves slot wait and idle time over it.
 func TestTheLegionEvalsEqualTheIndependentReading(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -131,38 +133,72 @@ func TestTheLegionEvalsEqualTheIndependentReading(t *testing.T) {
 			window.From.Format(time.DateOnly), len(differences), compared, differences[0])
 	}
 
-	// The second negative control: the reading reads every claim observation of `working` as
-	// `idle`, inside a transaction rolled back after, so it counts the hours of R's claim in
-	// `working` as R's idle hours and the route does not. Idle time by role holds values over the
-	// window after the first observation alone, so the control reads that window.
+	// The drops and the child in design that evalfixture writes (observedCases) are of issues that
+	// finished in the window after the first observation, so its comparison holds them.
 	after := loaded.Windows.After
+	var cased int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(distinct o.issue_key) from legion_observations o join issues i on i.key = o.issue_key
+		where o.project = $1 and o.field = 'phase' and i.status = 'done' and i.closed_at >= $2 and i.closed_at < $3
+			and (o.value = 'null' or (o.value = '"admitted"' and i.parent_key is not null))`,
+		loaded.Project, after.From, after.To).Scan(&cased); err != nil {
+		t.Fatalf("count the issues of the drops and of the child in design: %v", err)
+	}
+	if cased < 2 {
+		t.Errorf("%d issues that finished in %s..%s hold a drop or are a child in design, want the two evalfixture writes",
+			cased, after.From.Format(time.DateOnly), after.To.Format(time.DateOnly))
+	}
+
+	// The other negative controls change what the reading reads: statement, run with the project
+	// in a transaction rolled back after, changes the history the reading reads and not the one
+	// the route answered from, and the reading over the window after the first observation, where
+	// idle time and slot wait hold values, must then differ from the route in each of slugs.
 	route, _ := read(after)
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	turned, err := tx.Exec(ctx, `update legion_observations set value = '"idle"' where project = $1 and field like 'claim.%' and value = '"working"'`, loaded.Project)
-	if err != nil {
-		t.Fatalf("read the claims in `working` as `idle`: %v", err)
-	}
-	reading, err := independent.Read(ctx, tx, loaded.Project, independent.Window{From: after.From, To: after.To})
-	if err != nil {
-		t.Fatalf("read %s independently with its claims in `working` read as `idle`: %v", loaded.Project, err)
-	}
-	compared, _, differences := compareLegionEvals(route, reading)
-	var idle []string
-	for _, difference := range differences {
-		if strings.HasPrefix(difference, independent.SlugIdleTime+" ") {
-			idle = append(idle, difference)
+	control := func(what, statement string, slugs ...string) {
+		t.Helper()
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		changed, err := tx.Exec(ctx, statement, loaded.Project)
+		if err != nil {
+			t.Fatalf("negative control, %s: %v", what, err)
+		}
+		reading, err := independent.Read(ctx, tx, loaded.Project, independent.Window{From: after.From, To: after.To})
+		if err != nil {
+			t.Fatalf("negative control, %s: read %s independently: %v", what, loaded.Project, err)
+		}
+		compared, _, differences := compareLegionEvals(route, reading)
+		for _, slug := range slugs {
+			var of []string
+			for _, difference := range differences {
+				if strings.HasPrefix(difference, slug+" ") {
+					of = append(of, difference)
+				}
+			}
+			if changed.RowsAffected() == 0 || len(of) == 0 {
+				t.Errorf("negative control, %s (%d rows): the reading over %s..%s differs from the route in %d of %d values, none of %s; want %s to differ",
+					what, changed.RowsAffected(), after.From.Format(time.DateOnly), after.To.Format(time.DateOnly), len(differences), compared, slug, slug)
+				continue
+			}
+			t.Logf("negative control, %s (%d rows): the reading differs from the route in %d of %d values, %d of them of %s, the first: %s",
+				what, changed.RowsAffected(), len(differences), compared, len(of), slug, of[0])
 		}
 	}
-	if turned.RowsAffected() == 0 || len(idle) == 0 {
-		t.Fatalf("with %d claim observations of `working` read as `idle`, the reading over %s..%s differs from the route in %d of %d values, none of %s; want idle time to differ",
-			turned.RowsAffected(), after.From.Format(time.DateOnly), after.To.Format(time.DateOnly), len(differences), compared, independent.SlugIdleTime)
-	}
-	t.Logf("negative control: with %d claim observations of `working` read as `idle`, the reading differs from the route in %d of %d values, %d of them of %s, the first: %s",
-		turned.RowsAffected(), len(differences), compared, len(idle), independent.SlugIdleTime, idle[0])
+	control("every claim observation of `working` read as `idle`",
+		`update legion_observations set value = '"idle"' where project = $1 and field like 'claim.%' and value = '"working"'`,
+		independent.SlugIdleTime)
+	// A drop is a `null` phase observation; naming in it the phase the issue held makes it a read
+	// that carries the issue with no slot, which releases the slot.
+	control("each drop read as a release", `
+		update legion_observations d set value = (
+			select p.value from legion_observations p
+			where p.project = d.project and p.issue_key = d.issue_key and p.field = 'phase'
+				and p.observed_at < d.observed_at and p.value <> 'null'::jsonb
+			order by p.observed_at desc, p.id desc limit 1)
+		where d.project = $1 and d.field = 'phase' and d.value = 'null'::jsonb`,
+		independent.SlugSlotWait, independent.SlugIdleTime)
 }
 
 // compareLegionEvals holds every Legion eval of route (a list read of one project) to reading,
