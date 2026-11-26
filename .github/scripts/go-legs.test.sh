@@ -247,12 +247,27 @@ check "so is a job" "$(contains "$(legs "$root" other 1)" '^exit=2$')"
 check "and elsewhere is no job" "$(contains "$(legs "$root" elsewhere 1)" '^exit=2$')"
 
 echo "case: a go list that fails"
+# Only the go.mod fails it: under -e an import no cache holds is a package error the listing
+# keeps (the next case), so this one breaks the module file alone.
 root=$(tree broken "$whole")
-printf 'package a\n\nimport "example.com/missing/dep"\n' > "$root/mod/a/a.go"
 printf 'not a go.mod\n' > "$root/mod/go.mod"
 out=$(legs "$root" job 1)
 check "fails rather than compare with nothing" "$(contains "$out" '^exit=1$')"
 check "saying the packages are unknown" "$(contains "$(err)" 'failed (its errors are above), so which packages the legs must run is unknown')"
+
+echo "case: a package importing a module no cache holds is listed with no network"
+# The changes job runs go_legs.py on a cold module cache. A plain `go list ./...` resolves every
+# import and, with a proxy that answers nothing, fails on this one; the listing must still print
+# every package, a's among them, and download nothing. GOPROXY here is a closed local port, as a
+# machine whose network or proxy is down sees it, and the module cache is empty, so a listing that
+# tried to resolve the import through the proxy, or did not keep its error, would fail.
+root=$(tree offline "$whole")
+printf 'module example.com/mod\n\ngo 1.21\n\nrequire example.com/notcached v1.0.0\n' > "$root/mod/go.mod"
+printf 'package a\n\nimport _ "example.com/notcached/pkg"\n' > "$root/mod/a/a.go"
+out=$(GOPROXY=http://127.0.0.1:9 GOMODCACHE="$work/offline-modcache" legs "$root" job 1)
+check "the leg passes" "$(contains "$out" '^exit=0$')"
+check "printing the package that imports it" "$(contains "$out" '^\./a/$')"
+check "and downloads nothing into the module cache" "$(is "$(find "$work/offline-modcache" -type f 2>/dev/null | wc -l | tr -d ' ')" 0)"
 
 echo "case: the leg's step, a pipe to xargs under pipefail, fails when the check fails"
 root=$(tree step 'mod:

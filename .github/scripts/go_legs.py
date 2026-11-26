@@ -302,11 +302,13 @@ def problems(module: str, entry: dict, packages: list, legs_path: str = LEGS) ->
 def go_packages(module: str) -> list:
     """The packages `go list ./...` prints in the module, as directories under it. It lists them as
     `go list -e -find -f {{.Dir}} ./...` with GOPROXY=off and GOFLAGS empty, as
-    go_build_tags.compiled does: `-find` names each package without loading what it imports, so no
-    module is resolved or downloaded, no go.work.sum is written, and a cold machine, the changes
-    job's, lists the module in a second with no network; -e keeps a package whose import is not in
-    the cache, which plain `go list ./...` would fail on. The directories are the same: a directory
-    whose every file a constraint excludes is no package either way."""
+    go_build_tags.compiled does. `-find` skips building each import's package, but module mode
+    still resolves every import, so GOPROXY=off is what keeps the listing from downloading a module
+    the cache lacks (and from writing go.work.sum), and -e keeps the import errors that follow from
+    failing it: a cold machine, the changes job's, lists the module with no network.
+    go-legs.test.sh holds that with a module importing one no cache holds, under a GOPROXY that
+    answers nothing. The directories are the same as plain `go list ./...` prints: a directory whose
+    every file a constraint excludes is no package either way."""
     directory = ROOT / module
     listing = subprocess.run(["go", "list", "-e", "-find", "-f", "{{.Dir}}", "./..."], cwd=directory,
                              capture_output=True, text=True, env={**os.environ, "GOPROXY": "off", "GOFLAGS": ""})

@@ -2607,11 +2607,11 @@ request and fail every leg of both jobs in the merge group; the gate's Run for t
 built from the module's `go list ./...` rather than from the file
 (`.github/scripts/ci_job_reads.py#leg_run_packages`), so a change to only such a package's test
 files still starts envoy-go; a package added under one of the race lane's trees
-(`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) is refused
-unlisted by `.github/scripts/ci_job_reads.py#hold_envoy_legs` as that file is imported, which
-fails the ci-filters and lint jobs naming it (the changes job's generation falls open and selects
-every job), since leg 5 would run it without the race detector that `./<tree>/...` gave it on
-main; each leg runs in its step's mode;
+(`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) with no race leg
+line would run in leg 5 without the race detector that `./<tree>/...` gave it on main, so
+`.github/scripts/ci_job_reads.py#hold_envoy_legs` refuses it as that file is imported: the
+ci-filters job fails naming it, and the changes job's generation falls open and selects every
+job, which the lint job fails on without naming the package; each leg runs in its step's mode;
 the jobs envoy-go and envoy-go-race keep their check-run names, wait for the jobs their `needs:`
 names and pass only when every one passed, reading the results once, through
 `needs.*.result`, and writing the words

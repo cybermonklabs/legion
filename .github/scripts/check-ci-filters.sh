@@ -468,14 +468,15 @@
 # ci_job_reads.py runs go_build_tags' tag_sets and compiled as it is imported, to give each
 # darwin vet step one Run per tag set and to read which test files a runner compiles, and
 # go_legs' go_packages, to hold the legs and name a package no legs line names in the plain gates'
-# Runs; rule 20 runs go_build_tags' platforms. A `go list -find` still resolves every import, so under the machine's GOPROXY it
-# fetched every module a cold runner's cache lacks, about half of the changes job's generation,
-# and in a workspace wrote into go.work.sum the checksum of each go.mod the committed files lacked
-# (packages/envoy/infra/go.work.sum lacked two). Each runs with GOPROXY=off (go_legs' with GOFLAGS
-# empty too), so it fetches nothing. A run of any mode that
-# changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS workflows, and
-# generate's output and the .inputs file beside it, below), still fails naming each: for a
-# go.work.sum, commit what the run wrote. The tree is read before the first go
+# Runs; rule 20 runs go_build_tags' platforms. A `go list -find` still resolves every import, so
+# under the machine's GOPROXY it fetched every module a cold runner's cache lacks, about half of
+# the changes job's generation, and in a workspace wrote into go.work.sum the checksum of each
+# go.mod the committed files lacked (packages/envoy/infra/go.work.sum lacked two). Each runs with
+# GOPROXY=off (go_legs' listing and declared_tests' calls of compiled with GOFLAGS empty too), so
+# it fetches nothing. A run of any mode that changes a file of the tree, but those its mode writes
+# (the PUSH_WORKFLOWS workflows, and generate's output and the .inputs file beside it, below),
+# still fails naming each: for a go.work.sum, commit what the run wrote. The tree is read before
+# the first go
 # command and after the last: each file git lists, tracked or untracked and not ignored (the files
 # the engine reads), by its bytes and execute bit, read off the file rather than taken as unchanged
 # because git says so (an assume-unchanged mark, a normalized line ending), so a file edited before
