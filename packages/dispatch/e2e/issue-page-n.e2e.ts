@@ -11,9 +11,7 @@
  * files of those rows do not change: they read today's page.
  */
 
-import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import type { Artifact, ArtifactUploadResponse } from "../web/src/api/types";
@@ -6421,26 +6419,4 @@ test("a dialog opened from a row's act gives the focus back to the row", async (
       "the dialog's close left the focus off the row that held the act"
     ).toBeFocused();
   });
-});
-
-/** Where part T's view read stands (decision 477): a version of a converted issue's view is read
- *  through it, so the row below is built where this file is, and owed where it is not. */
-const hasTreeRead = existsSync(
-  resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    "../web/src/features/issue-page/tree-read/tree-read.ts"
-  )
-);
-
-// R3 on a converted issue (decisions 463 and 466 (2), g22): owed on part T while this branch holds
-// no `tree-read/tree-read.ts`, which the version of the view is read through. It imports nothing
-// of part T's. Where T is on the branch the row is to be built, and it fails until it is.
-test("on a converted issue a version of the view opens as that version stood @phone", async () => {
-  test.skip(
-    !hasTreeRead,
-    "owed on part T (dispatch://INFRA-4062): branch holds no tree-read/tree-read.ts"
-  );
-  throw new Error(
-    "part T's tree-read/tree-read.ts is on this branch: build this row (g22, decision 477)"
-  );
 });
