@@ -176,13 +176,17 @@ func TestTheTitleReadsSkipTheLegionDaemonsSession(t *testing.T) {
 	if blind := sent.Blind(); len(blind) != 0 {
 		t.Fatalf("the recorder could not read %v, so a title read may be unseen", blind)
 	}
-	mergerTitleReads := 0
+	// An enumeration of nothing is not a pass: the daemon rule is only exercised when both reads
+	// handed the resolver a session, so a run that recorded no title read at all says so rather
+	// than reading as clean.
+	mergerTitleReads, titleReads, statementsSeen := 0, 0, len(sent.Statements())
 	const merger = "s-Legion merger · INFRA-2"
 	var titleReadDetails []string
 	for _, statement := range sent.Statements() {
 		if !strings.Contains(statement.SQL, "from unnest($1::text[]) s(id)") {
 			continue
 		}
+		titleReads++
 		ids, ok := statement.Text(0)
 		if !ok {
 			ids = "<no first parameter>"
@@ -195,9 +199,13 @@ func TestTheTitleReadsSkipTheLegionDaemonsSession(t *testing.T) {
 			mergerTitleReads++
 		}
 	}
-	if mergerTitleReads != 2 {
-		t.Fatalf("the read sent %d title reads that name %q, want readRoleEvents' and phase work's two; title reads: %v",
-			mergerTitleReads, merger, titleReadDetails)
+	if titleReads == 0 {
+		t.Fatalf("UNKNOWN: the recorder saw %d statements and no title read, so this run exercised nothing; population keys %v",
+			statementsSeen, population.Keys)
+	}
+	if mergerTitleReads != titleReads {
+		t.Fatalf("%d of %d title reads name %q, want every one of them; title reads: %v",
+			mergerTitleReads, titleReads, merger, titleReadDetails)
 	}
 }
 
