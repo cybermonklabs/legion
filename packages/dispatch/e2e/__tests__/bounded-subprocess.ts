@@ -1303,6 +1303,8 @@ function wroteTo(pipe: "stderr" | "stdout", text: string): string {
  *  heading, or says that the pipe was empty. */
 export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   const { after, argv, bound, cwd, env, from, relaysLines = false } = options;
+  // Before the spawn: an empty `after.line` throws here, so options it refuses start no child.
+  const stderrLine = after === undefined ? undefined : stderrArrival(after.line);
   const started = performance.now();
   const token = crypto.randomUUID();
   const ancestors = process.env[tokensVariable];
@@ -1328,7 +1330,6 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   const stderrReader = child.stderr.getReader();
   const stdoutChunks: string[] = [];
   const stderrChunks: string[] = [];
-  const stderrLine = after === undefined ? undefined : stderrArrival(after.line);
   const whole = Promise.all([
     child.exited,
     drain(stdoutReader, stdoutChunks),
