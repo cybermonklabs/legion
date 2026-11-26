@@ -1,0 +1,61 @@
+{
+  "description": "Answers of the command bar's agent in markdown, as the server stores them, with the issues and project documents they link and the text the bar draws of each answer. The bar draws an answer with chips (MarkdownBody with chips in packages/dispatch/web/src/features/refs/MarkdownBody.tsx): the first link to each issue, a time link whose words are the issue's key included, is the issue's chip, its key, its status and its title (ItemChip, whose status a screen reader reads); a later link to the same issue keeps the words it was written with (takeIssueLinks); a link to another item, such as an issue's spec or a project document, is its own words where they are not its address, and the item's name where they are (RefLink); a time link shows its words with its instant on hover, and its words alone where its address names no instant (dispatch-time.tsx); and an issue the store does not hold draws as its bare key. Written by hand from the bar's rules, not from either side's code. In Go, chips.RenderAnswer (packages/envoy/going/chips/render.go) writes each chip and each address-worded item name in square brackets and each hover date in UTC; render_test.go holds RenderAnswer to rendered verbatim, and MarkdownBody.rendered-answers.test.tsx holds the drawn DOM to rendered after verifying each actual hover date against its instant and dropping RenderAnswer's structural square brackets.",
+  "issues": [
+    { "key": "DEMO-7", "status": "done", "title": "Map the lunar craters" },
+    { "key": "DEMO-12", "status": "in_progress", "title": "Export: CSV and PDF" },
+    { "key": "DEMO-17", "status": "backlog", "title": "PDF export: fonts missing on mobile" }
+  ],
+  "documents": [{ "owner": "DEMO", "slug": "oncall-handbook", "name": "On-call handbook" }],
+  "answers": [
+    {
+      "name": "one issue linked once",
+      "markdown": "The craters are mapped: [DEMO-7](dispatch://DEMO-7) is done.",
+      "rendered": "The craters are mapped: [DEMO-7 · Done · Map the lunar craters] is done."
+    },
+    {
+      "name": "the same issue linked twice, the later link as its words",
+      "markdown": "[DEMO-7](dispatch://DEMO-7) mapped the craters, and [the crater work](dispatch://DEMO-7) is done.",
+      "rendered": "[DEMO-7 · Done · Map the lunar craters] mapped the craters, and the crater work is done."
+    },
+    {
+      "name": "the same issue linked again by dashboard path and by a time link whose words are its key",
+      "markdown": "[DEMO-7](dispatch://DEMO-7) moved [DEMO-7](dispatch-time:2026-10-10T09:00:00Z), and [the crater map](/issues/DEMO-7) waits.",
+      "rendered": "[DEMO-7 · Done · Map the lunar craters] moved DEMO-7 (10 Oct 2026, 09:00 UTC), and the crater map waits."
+    },
+    {
+      "name": "a time link whose words are an issue's key as the first link to that issue, then a plain link to it",
+      "markdown": "Nothing has moved on [DEMO-12](dispatch-time:2026-10-10T09:00:00Z); [DEMO-12](dispatch://DEMO-12) waits on export.",
+      "rendered": "Nothing has moved on [DEMO-12 · In progress · Export: CSV and PDF] (10 Oct 2026, 09:00 UTC); DEMO-12 waits on export."
+    },
+    {
+      "name": "a plain time link with its hover date and a non-instant time link with its words alone",
+      "markdown": "Updated [5 days ago](dispatch-time:2026-11-18T11:35:00Z), then checked [again](dispatch-time:last-week).",
+      "rendered": "Updated 5 days ago (18 Nov 2026, 11:35 UTC), then checked again."
+    },
+    {
+      "name": "a time link with seconds and a zone offset",
+      "markdown": "Retried [earlier](dispatch-time:2026-11-18T12:35:09+01:00).",
+      "rendered": "Retried earlier (18 Nov 2026, 11:35:09 UTC)."
+    },
+    {
+      "name": "an issue's spec linked with words of its own, as an autolink, then the issue itself",
+      "markdown": "Read [its spec](dispatch://DEMO-12/spec) or <dispatch://DEMO-12/spec> before [DEMO-12](dispatch://DEMO-12).",
+      "rendered": "Read its spec or [Export: CSV and PDF] before [DEMO-12 · In progress · Export: CSV and PDF]."
+    },
+    {
+      "name": "a project document linked with words of its own and with its address as its words",
+      "markdown": "See [the handbook](dispatch://DEMO/artifact/oncall-handbook) or [dispatch://DEMO/artifact/oncall-handbook](dispatch://DEMO/artifact/oncall-handbook).",
+      "rendered": "See the handbook or [On-call handbook]."
+    },
+    {
+      "name": "two different issues, one linked twice, and a time link",
+      "markdown": "[DEMO-12](dispatch://DEMO-12) waits on [DEMO-17](/issues/DEMO-17), which broke [5 days ago](dispatch-time:2026-11-18T11:35:00Z); once [the font fix](dispatch://DEMO-17) lands, the export ships.",
+      "rendered": "[DEMO-12 · In progress · Export: CSV and PDF] waits on [DEMO-17 · Backlog · PDF export: fonts missing on mobile], which broke 5 days ago (18 Nov 2026, 11:35 UTC); once the font fix lands, the export ships."
+    },
+    {
+      "name": "an issue the store does not hold",
+      "markdown": "[DEMO-404, closed last week](dispatch://DEMO-404) is gone.",
+      "rendered": "[DEMO-404] is gone."
+    }
+  ]
+}

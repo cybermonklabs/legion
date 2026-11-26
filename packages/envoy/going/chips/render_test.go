@@ -1,9 +1,66 @@
 package chips
 
+//ci:reads packages/contracts/fixtures/rendered-answers.json os.ReadFile (../../../contracts/fixtures/rendered-answers.json): TestRenderAnswerRendersEachAnswerOfTheFixtureAsTheBarDrawsIt holds RenderAnswer to the text the web's MarkdownBody draws
+
 import (
+	"encoding/json"
+	"os"
 	"reflect"
 	"testing"
 )
+
+// TestRenderAnswerRendersEachAnswerOfTheFixtureAsTheBarDrawsIt: the eval's judge reads an answer
+// through RenderAnswer, while the person reads the same answer through the web's MarkdownBody with
+// chips. packages/contracts/fixtures/rendered-answers.json holds answers with the issues and
+// project documents they link and the rendered text each produces, and
+// MarkdownBody.rendered-answers.test.tsx holds the web's rendered DOM to the same fixture, so a
+// change to either side fails a test until the fixture and the other side agree.
+func TestRenderAnswerRendersEachAnswerOfTheFixtureAsTheBarDrawsIt(t *testing.T) {
+	raw, err := os.ReadFile("../../../contracts/fixtures/rendered-answers.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Issues []struct {
+			Key    string `json:"key"`
+			Status string `json:"status"`
+			Title  string `json:"title"`
+		} `json:"issues"`
+		Documents []struct {
+			Owner string `json:"owner"`
+			Slug  string `json:"slug"`
+			Name  string `json:"name"`
+		} `json:"documents"`
+		Answers []struct {
+			Name     string `json:"name"`
+			Markdown string `json:"markdown"`
+			Rendered string `json:"rendered"`
+		} `json:"answers"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Answers) == 0 {
+		t.Fatal("the fixture holds no answers")
+	}
+	items := held{
+		issues:    map[string][2]string{},
+		documents: map[[2]string]string{},
+	}
+	for _, issue := range fixture.Issues {
+		items.issues[issue.Key] = [2]string{issue.Status, issue.Title}
+	}
+	for _, doc := range fixture.Documents {
+		items.documents[[2]string{doc.Owner, doc.Slug}] = doc.Name
+	}
+	for _, answer := range fixture.Answers {
+		t.Run(answer.Name, func(t *testing.T) {
+			if got := RenderAnswer(answer.Markdown, items); got != answer.Rendered {
+				t.Errorf("RenderAnswer(%q)\n= %q\nwant %q", answer.Markdown, got, answer.Rendered)
+			}
+		})
+	}
+}
 
 // TestRenderAnswerWritesEachLinkAsTheBarDrawsIt: the judge reads an answer as the bar draws it:
 // the first link to an issue is the issue's chip, and a link to another item with words of its
