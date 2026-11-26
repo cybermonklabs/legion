@@ -68,6 +68,13 @@ type SignInTrade struct {
 	// Account is the account the person's own Google identity token was minted for: its `iss`,
 	// as oidc.CanonicalIssuer spells it, and its `sub`. Every trade names one.
 	Account IssuerSubject
+	// EndUnrecorded is whether a live row of this person and key from before migration 0045,
+	// which records no account, is ended so this trade writes a row of its own: true where the
+	// broker asks Dispatch (BROKER_PROJECT_ACCESS_URL), whose binding of an address to one account
+	// is what a row's account is for. False keeps that row, records no account on it and ends
+	// nothing, as before the release; a revoke of any account at the address still ends it
+	// (SubjectSignInsTx), since it records none.
+	EndUnrecorded bool
 }
 
 // PersonSignIn is one live person_signins row as a person reads it on their own list.
@@ -99,12 +106,14 @@ type PersonSignIn struct {
 // (TestTheDatabaseRefusesAnyChangeOfARecordedAccount). The first trade of a person and a box key
 // inserts the row, recording the account; every later trade of that pair by that account is the
 // same sign-in, so it moves last_used_at and nothing else. A live row from
-// before migration 0045 records none, and might be any account's, so a trade under its key ends
-// it rather than adopting it: the row is deleted, which frees the pair's slot for the new row,
-// and every live access token of that person bound to that key ends in this same transaction
-// (endSignInTokensSQL), as revoking the sign-in ends them. The caller ends the launcher credential
-// the deleted row held, and every session enrolled under it, in this transaction too
-// (enroll.RecordPersonSignIn), which is what the answer is for. The token this trade mints is
+// before migration 0045 records none, and might be any account's. With in.EndUnrecorded a trade
+// under its key ends it rather than adopting it: the row is deleted, which frees the pair's slot
+// for the new row, and every live access token of that person bound to that key ends in this same
+// transaction (endSignInTokensSQL), as revoking the sign-in ends them. The caller ends the launcher
+// credential the deleted row held, and every session enrolled under it, in this transaction too
+// (enroll.RecordPersonSignIn), which is what the answer is for. Without it the trade is that row's,
+// which goes on recording no account: it moves last_used_at and nothing else, and ends nothing.
+// The token this trade mints is
 // written after this returns (oauth.Provider.exchangeGrant's NewAccessResponse), so it is not
 // among those ended. It takes tx rather than the pool because the exchange must write this and the
 // access token it is minting together: a revoke that commits first refuses the trade, and one that
@@ -148,8 +157,8 @@ func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in SignInTrade) (bool, e
 		return false, ErrSignInSubjectReplaced
 	}
 	deleted, err := tx.Exec(ctx, `delete from person_signins
-		where person = $1 and thumbprint = $2 and revoked_at is null and subject is null and machine_account = lower($3)`,
-		in.Person, in.Thumbprint, in.MachineAccount)
+		where $4 and person = $1 and thumbprint = $2 and revoked_at is null and subject is null and machine_account = lower($3)`,
+		in.Person, in.Thumbprint, in.MachineAccount, in.EndUnrecorded)
 	if err != nil {
 		return false, err
 	}
@@ -166,8 +175,9 @@ func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in SignInTrade) (bool, e
 			set last_used_at = now()
 			where person_signins.revoked_at is null
 				and person_signins.machine_account = excluded.machine_account
-				and (person_signins.issuer, person_signins.subject) = (excluded.issuer, excluded.subject)
-		returning 1`, in.Person, in.Thumbprint, in.MachineAccount, in.Account.Issuer, in.Account.Subject).Scan(&recorded)
+				and ((person_signins.issuer, person_signins.subject) = (excluded.issuer, excluded.subject)
+					or (not $6 and person_signins.subject is null))
+		returning 1`, in.Person, in.Thumbprint, in.MachineAccount, in.Account.Issuer, in.Account.Subject, in.EndUnrecorded).Scan(&recorded)
 	if err == nil {
 		return ended, nil
 	}

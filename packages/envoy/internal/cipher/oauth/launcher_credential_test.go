@@ -189,7 +189,7 @@ func recordSignIn(t *testing.T, f *signInFixture, person, thumbprint, machine st
 	defer tx.Rollback(ctx)
 	if err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: person, Thumbprint: thumbprint, MachineAccount: machine,
-		Account: store.IssuerSubject{Issuer: f.google.URL(), Subject: "109" + person},
+		Account: store.IssuerSubject{Issuer: f.google.URL(), Subject: "109" + person}, EndUnrecorded: true,
 	}); err != nil {
 		t.Fatalf("RecordPersonSignIn: %v", err)
 	}

@@ -46,7 +46,7 @@ func tradeSignIn(ctx context.Context, svc *Service, person string, account store
 	}
 	defer tx.Rollback(ctx)
 	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
-		Person: person, Thumbprint: thumbprint, MachineAccount: raceMachine, Account: account,
+		Person: person, Thumbprint: thumbprint, MachineAccount: raceMachine, Account: account, EndUnrecorded: true,
 	}); err != nil {
 		return thumbprint, err
 	}

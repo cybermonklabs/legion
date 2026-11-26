@@ -10,7 +10,9 @@ import (
 
 // TestATradeUnderASignInRecordingNoAccountEndsItsCredentialAndSessions: a sign-in from before
 // migration 0045 records no account, so the sessions enrolled under its launcher credential might
-// be any account's. A trade under its key ends that sign-in (store.RecordPersonSignIn) and, in
+// be any account's. Where the broker asks Dispatch (store.SignInTrade.EndUnrecorded, which
+// cmd/cipherd sets with BROKER_PROJECT_ACCESS_URL), a trade under its key ends that sign-in
+// (store.RecordPersonSignIn) and, in
 // the same transaction, the credential it held and every session enrolled under it, the grant
 // revoked and the pending request cancelled, as revoking the sign-in does, each naming
 // NoAccountSignInActor; the trade's own sign-in records its account. Left live, those sessions
@@ -49,6 +51,7 @@ func TestATradeUnderASignInRecordingNoAccountEndsItsCredentialAndSessions(t *tes
 	defer tx.Rollback(ctx)
 	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: person, Thumbprint: thumbprint, MachineAccount: "fleet@example.iam.gserviceaccount.com", Account: account,
+		EndUnrecorded: true,
 	}); err != nil {
 		t.Fatalf("the trade under the sign-in: %v", err)
 	}
@@ -74,6 +77,73 @@ func TestATradeUnderASignInRecordingNoAccountEndsItsCredentialAndSessions(t *tes
 	}
 	if state, by, _, _ := requestState(t, svc, pending); state != "cancelled" || by != NoAccountSignInActor {
 		t.Errorf("its pending request is %s by %s, want cancelled by %s", state, by, NoAccountSignInActor)
+	}
+}
+
+// TestATradeUnderASignInRecordingNoAccountKeepsItWithoutDispatch: where the broker does not ask
+// Dispatch (store.SignInTrade.EndUnrecorded false, BROKER_PROJECT_ACCESS_URL unset), a trade under
+// the key of a sign-in from before migration 0045 is that sign-in's, as before the release: the
+// row stays, recording no account, and the credential it held, its session, the session's grant
+// and its pending request all stay live. A revoke of any account at the address still ends that
+// row, since it records none (store.SubjectSignInsTx).
+//
+// Control: end the row whatever EndUnrecorded says (store.RecordPersonSignIn's delete without
+// its `$4`); the credential is revoked and this test fails.
+func TestATradeUnderASignInRecordingNoAccountKeepsItWithoutDispatch(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+	const person = "ada@example.com"
+	cred := mintCredential(t, svc, str(person), str("example-fleet"), "signin-box")
+	insertSignIn(t, svc, cred, person)
+	enr, err := svc.Create(ctx, cred, Enrollment{Kind: "session", RuntimeID: "before-the-account",
+		Thumbprint: "tp-before-the-account", SessionID: str("before-the-account")})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	insertLiveGrant(t, svc, enr.ID)
+	pending := insertPendingRequest(t, svc, enr.ID)
+	var thumbprint string
+	if err := svc.Store.Pool.QueryRow(ctx, `select key_thumbprint from launcher_credentials where id = $1`, cred.ID).Scan(&thumbprint); err != nil {
+		t.Fatalf("read the credential's key: %v", err)
+	}
+	if _, err := svc.Store.Pool.Exec(ctx, `update launcher_credentials set subject = $1 where id = $2`,
+		exchange.PersonSubject(person, "fleet@example.iam.gserviceaccount.com", thumbprint), cred.ID); err != nil {
+		t.Fatalf("key the credential by the sign-in's subject: %v", err)
+	}
+	tx, err := svc.Store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
+		Person: person, Thumbprint: thumbprint, MachineAccount: "fleet@example.iam.gserviceaccount.com",
+		Account: store.IssuerSubject{Issuer: raceIssuer, Subject: "109" + person},
+	}); err != nil {
+		t.Fatalf("the trade under the sign-in: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	var credentialRevoked, recordsNone bool
+	var rows int
+	if err := svc.Store.Pool.QueryRow(ctx, `select
+		(select revoked_at is not null from launcher_credentials where id = $1),
+		(select count(*) from person_signins where person = $2 and thumbprint = $3 and revoked_at is null),
+		coalesce((select subject is null from person_signins where person = $2 and thumbprint = $3 and revoked_at is null), false)`,
+		cred.ID, person, thumbprint).Scan(&credentialRevoked, &rows, &recordsNone); err != nil {
+		t.Fatalf("read the credential and the sign-in: %v", err)
+	}
+	if credentialRevoked {
+		t.Error("the launcher credential of the sign-in that recorded no account was ended by a trade on a broker that asks no Dispatch")
+	}
+	if rows != 1 || !recordsNone {
+		t.Errorf("the key has %d live sign-ins after the trade (recording no account: %t), want the one it had, still recording none", rows, recordsNone)
+	}
+	if got := readCarryState(t, svc, enr.ID); got.Ended || got.LiveGrants != 1 || got.Pending != 1 {
+		t.Errorf("the session enrolled under that credential is %+v after the trade, want it live with its grant and its pending request", got)
+	}
+	if state, _, _, _ := requestState(t, svc, pending); state != "pending" {
+		t.Errorf("its pending request is %s after the trade, want pending", state)
 	}
 }
 
@@ -110,7 +180,7 @@ func TestATradeUnderASignInRecordingNoAccountLeavesAnotherCredentialOfItsKey(t *
 	defer tx.Rollback(ctx)
 	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: person, Thumbprint: thumbprint, MachineAccount: "fleet@example.iam.gserviceaccount.com",
-		Account: store.IssuerSubject{Issuer: raceIssuer, Subject: "109" + person},
+		Account: store.IssuerSubject{Issuer: raceIssuer, Subject: "109" + person}, EndUnrecorded: true,
 	}); err != nil {
 		t.Fatalf("the trade under the sign-in: %v", err)
 	}

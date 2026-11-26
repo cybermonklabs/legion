@@ -51,7 +51,7 @@ func recordAs(t *testing.T, st *store.Store, person, thumbprint, machine string,
 	}
 	defer tx.Rollback(ctx)
 	if _, err := store.RecordPersonSignIn(ctx, tx, store.SignInTrade{
-		Person: person, Thumbprint: thumbprint, MachineAccount: machine, Account: account,
+		Person: person, Thumbprint: thumbprint, MachineAccount: machine, Account: account, EndUnrecorded: true,
 	}); err != nil {
 		return err
 	}
@@ -278,7 +278,7 @@ func TestATradeUnderARowRecordingNoAccountEndsItAndRecordsItsOwn(t *testing.T) {
 		}
 		defer tx.Rollback(ctx)
 		ended, err := store.RecordPersonSignIn(ctx, tx, store.SignInTrade{
-			Person: signInPerson, Thumbprint: signInBoxOne, MachineAccount: signInMachine, Account: newcomer,
+			Person: signInPerson, Thumbprint: signInBoxOne, MachineAccount: signInMachine, Account: newcomer, EndUnrecorded: true,
 		})
 		if err != nil {
 			t.Fatalf("the trade under the row: %v", err)
@@ -597,7 +597,7 @@ func TestATradeRacingTheRevokeThatCommitsFirstIsRefused(t *testing.T) {
 		}
 		defer trading.Rollback(ctx)
 		if _, err := store.RecordPersonSignIn(ctx, trading, store.SignInTrade{
-			Person: signInPerson, Thumbprint: signInBoxOne, MachineAccount: signInMachine, Account: accountOf(signInPerson),
+			Person: signInPerson, Thumbprint: signInBoxOne, MachineAccount: signInMachine, Account: accountOf(signInPerson), EndUnrecorded: true,
 		}); err != nil {
 			traded <- err
 			return

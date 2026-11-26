@@ -590,9 +590,11 @@ func main() {
 		// A person signs in through Google, which is also the issuer of the machine's actor
 		// token, so BROKER_SIGNIN_DEVICE_AUDIENCE needs BROKER_GOOGLE_OIDC_AUDIENCE and the two
 		// share the key set read above. What a person may be is BROKER_SIGNIN_DOMAIN's to say,
-		// which the exchange's policy already holds.
+		// which the exchange's policy already holds. A trade ends a sign-in from before migration
+		// 0045, which records no account, only where BROKER_PROJECT_ACCESS_URL is set
+		// (store.SignInTrade.EndUnrecorded); unset, such a sign-in goes on as before.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
-		exchangeConfig.PersonSignIns = enroll.PersonSignIns()
+		exchangeConfig.PersonSignIns = enroll.PersonSignIns(projectAccess != nil)
 		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
 	}
 	if cfg.ExchangeGitHubIssuer != "" {

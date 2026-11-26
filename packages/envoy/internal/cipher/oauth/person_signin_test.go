@@ -560,9 +560,10 @@ func recordCredential(ctx context.Context, cred oauth.MachineCredential) (string
 }
 
 // realSignIns is oauth.ExchangeConfig.PersonSignIns over the broker's own person_signins table, as
-// cmd/cipherd wires it (enroll.PersonSignIns): the sign-in recorded in the exchange's transaction,
-// which holds the sign-in's row locked until the trade commits.
-var realSignIns = enroll.PersonSignIns()
+// cmd/cipherd wires it where BROKER_PROJECT_ACCESS_URL is set (enroll.PersonSignIns(true)): the
+// sign-in recorded in the exchange's transaction, which holds the sign-in's row locked until the
+// trade commits.
+var realSignIns = enroll.PersonSignIns(true)
 
 // enrollments is the enrollment service over f's database, which ends a sign-in and a credential
 // as the broker's routes do.
