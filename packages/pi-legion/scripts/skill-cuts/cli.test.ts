@@ -4017,6 +4017,25 @@ describe("refusals before any model call", () => {
     expect(requestsSince(from)).toHaveLength(0);
   }, 60_000);
 
+  // Catches: the top-level load command rejecting the flag as unknown or accepting an unpinned
+  // ref as the inventory commit.
+  test("load parses --test-setup and refuses a branch in place of the inventory commit", async () => {
+    const { config, keyFile } = setup();
+    const s = scenario("invalid-test-setup", LOSS_SKILL(), [{ id: "c04" }]);
+    const before = recorder.requests.length;
+    const ran = await cli([
+      "load",
+      ...["--config", config, "--key-file", keyFile, "--skill", s.old],
+      ...["--tasks", path.join(s.dir, "tasks.jsonl"), "--host", "omp", "--out", s.out],
+      ...["--test-setup", "acme/widgets@main:skills/alpha"],
+    ]);
+    expect(ran.code).toBe(2);
+    expect(ran.stderr).toContain(
+      '--test-setup "acme/widgets@main:skills/alpha" is not <owner/repo>@<40 hex commit>'
+    );
+    expect(requestsSince(before)).toHaveLength(0);
+  }, 60_000);
+
   test("behaviour and load refuse an --out inside a git or jj checkout (exit 2), since they write session text there", async () => {
     const { config, keyFile } = setup();
     const s = scenario("in-checkout", LOSS_SKILL(), [{ id: "c04" }]);

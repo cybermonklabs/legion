@@ -26,7 +26,8 @@
  *       --out <new cases.jsonl>
  *   bun scripts/skill-cuts/build.ts build-tasks --config <skill-cuts.json> --key-file <file>
  *       --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir>
- *       --copies <copies out dir> --count <count dir> --context-session <store>:<hash>]
+ *       --copies <copies out dir> --count <count dir> --context-session <store>:<hash>
+ *       [--test-setup <owner/repo>@<commit>:<path>]]
  *       [--max-candidates <n>] [--max-search-minutes <m>]
  *   bun scripts/skill-cuts/build.ts build-tasks --config <skill-cuts.json> --copies <copies out dir>
  *       --count <count dir> --reprofile <tasks.jsonl> --profiles-out <new dir>
@@ -619,6 +620,12 @@
  * (`skillNotListed`); and a `--context-session` whose context does not list it fails the build
  * (exit 1, found after its store read).
  *
+ * **--test-setup <owner/repo>@<commit>:<path>** (the runner's architect, 2026-11-26T08:52Z):
+ * with `--profiles-out`, add only the inventory copy to the rebuilt `--context-session` profile.
+ * Read its name from SKILL.md at that commit. Refuse a copy already installed or one that cannot
+ * be read. Each task and the summary record the copy and "test setup, not observed use".
+ * Give `load` the same flag. The listing measure and recorded lines still describe the session.
+ *
  * **build-tasks --reprofile <tasks.jsonl> --profiles-out <new dir>** builds the profile of each task
  * of a tasks file again as `--profiles-out` builds one now, with no candidate search and no reader
  * call: a task from a session takes its session's, found in its store by its path hash
@@ -861,7 +868,19 @@ import {
   skillReadResults,
   stepText,
 } from "./judge";
-import { EvidenceItem, messageLoad, type RecordedListing, Task } from "./load";
+import {
+  EvidenceItem,
+  isSetupCopy,
+  messageLoad,
+  type RecordedListing,
+  resolveTestSetup,
+  type SetupLocation,
+  setupLocation,
+  Task,
+  TEST_SETUP_LABEL,
+  type TestSetup,
+  testSetupOption,
+} from "./load";
 import { mib, procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
 import {
   builtOn,
@@ -7025,7 +7044,7 @@ const BUILD_CASES_OPTIONS = {
 /** build-cases' options as `parse` reads them. */
 type BuildCasesValues = OptionValues<typeof BUILD_CASES_OPTIONS>;
 const BUILD_TASKS_USAGE =
-  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]\n       build.ts build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
+  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash> [--test-setup <owner/repo>@<commit>:<path>]] [--max-candidates <n>] [--max-search-minutes <m>]\n       build.ts build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
 
 /** One candidate session of the sessions file. */
 const Candidate = z.strictObject({
@@ -7483,6 +7502,8 @@ interface SessionProfileOptions {
     | { readonly unspawned: string };
   readonly read?: SubagentRead;
   readonly digestRow?: (pathHash: string) => Promise<DigestRow | undefined>;
+  /** A setup context keeps every observed copy, including a different copy of the same name. */
+  readonly keepTestedName?: boolean;
 }
 
 /**
@@ -7595,7 +7616,9 @@ async function sessionProfile(
   const profile = {
     ...profiled.profile,
     ...recorded,
-    skills: profiled.profile.skills.filter((each) => !tested(each)),
+    skills: options.keepTestedName
+      ? profiled.profile.skills
+      : profiled.profile.skills.filter((each) => !tested(each)),
     context,
   };
   // A profile the readers would refuse is never written (load reads it with cases.ts's Profile
@@ -11261,6 +11284,8 @@ const TasksInputs = z.strictObject({
   stores: z.array(z.string()),
   window: z.strictObject({ start: z.string(), end: z.string() }),
   model: z.string().optional(),
+  testSetup: z.string().optional(),
+  setupSession: z.string().optional(),
 });
 type TasksInputs = z.infer<typeof TasksInputs>;
 
@@ -11313,6 +11338,11 @@ function priorTasks(
   if (was.model !== inputs.model) {
     differ.push(`--model was ${was.model ?? "not given"}, now ${inputs.model ?? "not given"}`);
   }
+  if (was.testSetup !== inputs.testSetup || was.setupSession !== inputs.setupSession) {
+    differ.push(
+      `test setup was ${was.testSetup ?? "not given"}${was.setupSession === undefined ? "" : ` in ${was.setupSession}`}, now ${inputs.testSetup ?? "not given"}${inputs.setupSession === undefined ? "" : ` in ${inputs.setupSession}`}`
+    );
+  }
   if (differ.length > 0) {
     throw new Refused(
       `--out ${out} holds a build of other inputs, so this one does not go on from it: ${differ.join("; ")}`
@@ -11362,7 +11392,7 @@ function profilesPlan(
 ): ProfilesPlan | undefined {
   const dir = values["profiles-out"];
   if (typeof dir !== "string") {
-    for (const flag of ["copies", "count", "context-session"]) {
+    for (const flag of ["copies", "count", "context-session", "test-setup"]) {
       if (values[flag] !== undefined) {
         throw new Refused(`--${flag} goes with --profiles-out only. ${BUILD_TASKS_USAGE}`);
       }
@@ -11453,6 +11483,7 @@ interface ContextProfile {
   readonly store: string;
   readonly hash: string;
   readonly built: SessionProfile;
+  readonly testSetup?: TestSetup;
 }
 
 /** The context session's profile, rebuilt before any reader call, or undefined when the plan
@@ -11461,12 +11492,13 @@ interface ContextProfile {
 async function contextProfile(
   plan: ProfilesPlan,
   spool: string,
-  skill: string
+  skill: string,
+  setup?: SetupLocation
 ): Promise<ContextProfile | undefined> {
   if (plan.contextSession === undefined) return undefined;
   const { store, hash } = plan.contextSession;
   const named = `--context-session ${store}:${hash}`;
-  const built = await rebuiltContext(plan.run, plan.contextSession, named, spool, skill);
+  const built = await rebuiltContext(plan.run, plan.contextSession, named, spool, skill, setup);
   if (built === undefined) throw new Error(`${named}: sessions.sql gives no file of this hash`);
   return built;
 }
@@ -11484,7 +11516,8 @@ async function rebuiltContext(
   session: { readonly store: string; readonly hash: string },
   named: string,
   spool: string,
-  skill: string
+  skill: string,
+  setup?: SetupLocation
 ): Promise<ContextProfile | undefined> {
   const { store, hash } = session;
   const { paths } = await resolvePaths(run.config.psqlCommand, store, [hash]);
@@ -11516,11 +11549,12 @@ async function rebuiltContext(
                 : `none of its ${found.subagents} subagents records a skill listing (subagents.sql, asked for those spawned at any time)`),
           },
       read: unplaced === undefined ? { found } : { unread: unplaced },
+      ...(setup === undefined ? {} : { keepTestedName: true }),
     });
   } catch (error) {
     throw new Error(`${named}: ${messageFor(error)}`);
   }
-  if (!built.listed) {
+  if (!built.listed && setup === undefined) {
     // Found after a store read and a pull, so it fails the run (exit 1): exit 2 is a refusal
     // before any store read.
     throw new Error(
@@ -11528,7 +11562,30 @@ async function rebuiltContext(
     );
   }
   built.evidence.push(listingMeasure(built.listing, built.read));
-  return { store, hash, built: withRecordedListing(built, built.read) };
+  const listed = withRecordedListing(built, built.read);
+  if (setup === undefined) return { store, hash, built: listed };
+  const where = `--test-setup ${setupLocation(setup)}`;
+  if (listed.profile.skills.some((each) => isSetupCopy(each, setup))) {
+    throw new Refused(`${where}: ${named} already installs that copy`);
+  }
+  const testSetup = await resolveTestSetup(setup, skill, async () => {
+    const text = await run.github.text(
+      setup.repo,
+      setup.commit,
+      path.posix.join(setup.path, "SKILL.md")
+    );
+    return text === undefined ? undefined : ompText(Buffer.from(text));
+  });
+  return {
+    store,
+    hash,
+    testSetup,
+    built: {
+      ...listed,
+      listed: true,
+      profile: { ...listed.profile, skills: [...listed.profile.skills, testSetup.copy] },
+    },
+  };
 }
 
 /** A task line as build-tasks writes it, with the profile `--profiles-out` gives it. */
@@ -12221,6 +12278,11 @@ async function reprofileTasks(
   }
   const { skill, profiles: before } = parsed.data;
   const tasks = tasksToReprofile(from);
+  if (tasks.some((task) => task.testSetup !== undefined)) {
+    throw new Refused(
+      `${from} records "${TEST_SETUP_LABEL}"; rebuild it with --test-setup instead`
+    );
+  }
   // Each task's old profile, read before any store read, and the evidence the summary gives it.
   const noted = new Map((before?.tasks ?? []).map((note) => [note.task, note.evidence ?? []]));
   const recorded = before?.contextSession ?? undefined;
@@ -12502,6 +12564,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       copies: { type: "string" },
       count: { type: "string" },
       "context-session": { type: "string" },
+      "test-setup": { type: "string" },
       model: { type: "string" },
       "max-candidates": { type: "string" },
       "max-search-minutes": { type: "string" },
@@ -12509,6 +12572,14 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
     },
     BUILD_TASKS_USAGE
   );
+  if (
+    values["test-setup"] !== undefined &&
+    (values.reprofile !== undefined || values["first-read"])
+  ) {
+    throw new Refused(
+      "--test-setup needs the reader's build-tasks mode with --profiles-out and --context-session"
+    );
+  }
   if (values.reprofile !== undefined) return reprofileTasks(values, io);
   if (values["first-read"] === true) return buildControlTasks(values, io);
   for (const flag of ["sessions", "seed", "max"] as const) {
@@ -12531,6 +12602,8 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   const skill = taskSkill(given.skill);
   const model = modelOption(values.model);
   const plan = profilesPlan(values, config, io, true);
+  const setup =
+    values["test-setup"] === undefined ? undefined : testSetupOption(values["test-setup"]);
   const bounds = searchBounds(values, plan !== undefined || model !== undefined);
   // An earlier run of the same inputs at --out: its terms and every query it recorded are kept,
   // with the messages those queries found (`<out>.found.jsonl`), and the build goes on from the
@@ -12542,6 +12615,9 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
     stores,
     window: { start: config.windowStart, end: config.windowEnd },
     ...(model === undefined ? {} : { model }),
+    ...(setup === undefined
+      ? {}
+      : { testSetup: setupLocation(setup), setupSession: values["context-session"] }),
   };
   const prior = priorTasks(given.out, summaryFile, inputs);
   if (prior?.done === true) {
@@ -12578,7 +12654,9 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   // stops the build here. With --model or --profiles-out each candidate session is pulled too.
   const spools = plan === undefined && model === undefined ? undefined : spoolDir(given.out, io);
   const spool = spools === undefined ? "" : path.join(spools, "profile.jsonl");
-  const context = plan === undefined ? undefined : await contextProfile(plan, spool, skill.name);
+  const context =
+    plan === undefined ? undefined : await contextProfile(plan, spool, skill.name, setup);
+  const setupNote = context?.testSetup === undefined ? {} : { testSetup: context.testSetup };
   const gateway = readerGateway(config, given["key-file"], io.spendRecorder);
   const spend = () => addSpend(priorSpend, gateway.spend());
   let terms = prior?.terms;
@@ -12589,6 +12667,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       json({
         command: "build-tasks",
         skill: skill.name,
+        ...setupNote,
         inputs,
         done: false,
         terms: terms ?? null,
@@ -12711,7 +12790,10 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       : await writeProfiles(plan, tasks, sessions, known, context, spool, skill.name, io);
   if (spools !== undefined) rmSync(spools, { recursive: true, force: true });
   const lines = profiled?.tasks ?? tasks;
-  writeWhole(given.out, lines.map((task) => `${JSON.stringify(task)}\n`).join(""));
+  writeWhole(
+    given.out,
+    lines.map((task) => `${JSON.stringify({ ...task, ...setupNote })}\n`).join("")
+  );
   const count = (label: string, source: string) =>
     lines.filter((task) => task.label === label && task.source === source).length;
   writeWhole(
@@ -12719,6 +12801,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
     json({
       command: "build-tasks",
       skill: skill.name,
+      ...setupNote,
       inputs,
       done: true,
       stores,
@@ -12731,6 +12814,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       messagesOffered: offered.length,
       tasks: kept.map((task, n) => ({
         id: `t${n + 1}`,
+        ...setupNote,
         label: task.label,
         source: task.from,
         why: task.why,

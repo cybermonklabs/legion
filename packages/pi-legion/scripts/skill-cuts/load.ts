@@ -4,7 +4,7 @@
  *
  *     bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
  *         [--name <name>] --tasks <file> --host omp|claude --profile <file> [--runs 3] --out <dir>
- *         [--hint-draw <n>]
+ *         [--hint-draw <n>] [--test-setup <owner/repo>@<commit>:<path>]
  *
  * - `--skill` is the skill's directory as written: its description is the one tested. The skill
  *   is tested under `--name` when one is given, else under its frontmatter `name` (its
@@ -30,6 +30,11 @@
  *   `namespace` (a copy of another source that Oh My Pi lists as `<namespace>/<name>`) is that
  *   name in every check, so it may share the tested skill's name; a Claude Code profile that
  *   holds one is refused, since its layout places skills by their bare name.
+ * - `--test-setup` reads the tested copy from its inventory commit and installs only that
+ *   additional copy. A labelled task may already stage it. Otherwise a profile that installs it
+ *   is refused, as is an unreadable copy. The flag is required for labelled tasks.
+ *   The run records, summary and verdict say "test setup, not observed use". Oh My Pi draws
+ *   the tested name's hint on each draw instead of giving it a recorded line.
  *
  * For each task the host's first request is captured once, in the rebuilt context of the task's
  * own profile (its skills, its plugins with capture.ts's stand-ins, its context files, its
@@ -267,6 +272,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
@@ -335,6 +341,7 @@ import {
   daemonCommit,
   installedCopies,
   LOCAL_SKILL_REPO,
+  linkTargetPath,
   NoSuchFile,
   type RepoSource,
   skillFrontmatter,
@@ -441,6 +448,85 @@ const Name = z.string().regex(NAME, { error: "a name of letters, digits, '.', '_
 /** A SHA-256 in hex. */
 const Sha256 = z.string().regex(/^[0-9a-f]{64}$/, { error: "a SHA-256 in hex" });
 
+/** The provenance of a load that installs an inventory copy absent from its rebuilt context. */
+export const TEST_SETUP_LABEL = "test setup, not observed use";
+const TestSetup = z.strictObject({
+  label: z.literal(TEST_SETUP_LABEL),
+  copy: ProfileSkill,
+});
+export type TestSetup = z.infer<typeof TestSetup>;
+export type SetupLocation = Pick<ProfileSkill, "repo" | "commit" | "path">;
+
+export function setupLocation({ repo, commit, path }: SetupLocation): string {
+  return `${repo}@${commit}:${path}`;
+}
+
+/** The inventory commit and directory named by `--test-setup`, not a branch or tag. */
+export function testSetupOption(value: string): SetupLocation {
+  const match = /^([a-z0-9][a-z0-9-]*\/[a-z0-9._-]+)@([a-f0-9]{40}):([^\r\n\\\0]+)$/i.exec(value);
+  const [, repo = "", commit = "", dir = ""] = match ?? [];
+  if (
+    match === null ||
+    /\/\.{1,2}$/.test(repo) ||
+    (dir !== "." && dir.split("/").some((part) => part === "" || part === "." || part === ".."))
+  ) {
+    throw new Refused(
+      `--test-setup ${JSON.stringify(value)} is not <owner/repo>@<40 hex commit>:<path inside the repository>`
+    );
+  }
+  return { repo, commit: commit.toLowerCase(), path: dir };
+}
+
+/** Whether `skill` is the inventory copy, regardless of the name it is installed under. */
+export function isSetupCopy(skill: ProfileSkill, at: SetupLocation): boolean {
+  return (
+    skill.repo.toLowerCase() === at.repo.toLowerCase() &&
+    skill.commit.toLowerCase() === at.commit &&
+    skill.path === at.path
+  );
+}
+
+/** Reads the copy's name the same way the inventory does, without recording it as observed. */
+export async function resolveTestSetup(
+  at: SetupLocation,
+  ownName: string,
+  read: () => Promise<string | undefined>
+): Promise<TestSetup> {
+  const where = `--test-setup ${setupLocation(at)}`;
+  let text: string | undefined;
+  try {
+    text = await read();
+  } catch (error) {
+    throw new Refused(`${where}: cannot read the copy: ${messageFor(error)}`);
+  }
+  if (text === undefined) throw new Refused(`${where}: cannot read the copy's SKILL.md`);
+  const frontmatter = readFrontmatter(text);
+  const name = ompSkillName(frontmatter, path.posix.basename(at.path === "." ? at.repo : at.path));
+  if (name !== ownName) {
+    throw new Refused(`${where}: its skill is named ${name}, not ${ownName} as --skill is`);
+  }
+  if (skillTextFrontmatter(text).hidden) {
+    throw new Refused(`${where}: ${name} is hidden from the skill listing`);
+  }
+  return { label: TEST_SETUP_LABEL, copy: { ...at, name } };
+}
+
+/** Materializes the inventory directory for the arm. `--skill` alone does not pin its bytes. */
+async function setupDirectory(at: SetupLocation, source: RepoSource, dest: string): Promise<void> {
+  let dir = at.path;
+  const seen = new Set<string>();
+  for (;;) {
+    if (seen.has(dir)) throw new Error(`symbolic link loop at ${dir}`);
+    seen.add(dir);
+    const target = await source.link?.(at.repo, at.commit, dir);
+    if (target === undefined) break;
+    const next = linkTargetPath(dir, target);
+    if (next === undefined) throw new Error(`${dir} links outside the repository to ${target}`);
+    dir = next === "" ? "." : next;
+  }
+  await source.tree(at.repo, at.commit, dir, dest);
+}
+
 /** Where a task comes from. */
 const TaskSource = z.enum(["session", "written"]);
 
@@ -451,6 +537,7 @@ const TaskFields = {
   /** The profile file of the session the task came from (loadProfile): absolute, or relative to
    *  the tasks file's directory. A task that names none runs under `--profile`. */
   profile: z.string().min(1).optional(),
+  testSetup: TestSetup.optional(),
 };
 /** One task of a tasks file: a real session's first request, with its store and the hash of its
  *  transcript's path, or a task the reader wrote. */
@@ -603,6 +690,7 @@ export const LoadRun = z.strictObject({
   run: z.int().positive(),
   label: TaskLabel,
   source: TaskSource,
+  testSetup: TestSetup.optional(),
   host: Host,
   name: z.string().min(1),
   outcome: RunOutcome,
@@ -656,6 +744,7 @@ export function loadRoutingId(seed: string, task: string, run: number): string {
  *  that the task's and the test's spend count what it used. */
 export const FailedRun = z.strictObject({
   task: z.string().min(1),
+  testSetup: TestSetup.optional(),
   error: z.string(),
   usage: z.array(SpentRecord).min(1),
 });
@@ -723,6 +812,7 @@ interface TaskSpend {
 interface LoadVerdict {
   readonly descriptionFault: boolean | null;
   readonly reason: string;
+  readonly testSetup?: TestSetup;
 }
 
 /** The tasks of `file`. Throws one refusal that names each line it refuses and why (a line
@@ -870,7 +960,13 @@ interface TaskProfile {
  *  name, and Claude Code has no namespace), or a layout that puts a skill that goes in a plugin
  *  (`claudeKind`) in no plugin or in two, puts a project skill in a plugin, names a skill the
  *  profile does not install, or names a plugin twice. */
-export function loadProfile(file: string, host: Host, name: string): TaskProfile {
+export function loadProfile(
+  file: string,
+  host: Host,
+  name: string,
+  setup?: TestSetup,
+  marked?: TestSetup
+): TaskProfile {
   let bytes: Uint8Array;
   let raw: unknown;
   try {
@@ -884,6 +980,24 @@ export function loadProfile(file: string, host: Host, name: string): TaskProfile
     throw new Refused(`the profile ${file} is refused: ${schemaFaults(parsed.error)}`);
   }
   const profile = parsed.data;
+  if (setup !== undefined) {
+    const installed = profile.skills.filter((skill) => isSetupCopy(skill, setup.copy));
+    if (installed.length !== 0) {
+      const [entry] = installed;
+      if (
+        marked === undefined ||
+        installed.length !== 1 ||
+        entry?.name !== setup.copy.name ||
+        entry.namespace !== undefined
+      ) {
+        throw new Refused(
+          `--test-setup ${setupLocation(setup.copy)}: ${file} already installs that copy`
+        );
+      }
+      // The arm installs the staged entry once, under the name tested by this command.
+      profile.skills = profile.skills.filter((skill) => skill !== entry);
+    }
+  }
   const faults: string[] = [];
   const names = profile.skills.map((skill) => listedName(skill));
   if (names.includes(name)) {
@@ -948,7 +1062,8 @@ interface ProfiledTask {
 function taskProfiles(
   tasks: readonly Task[],
   o: Pick<LoadOptions, "tasksFile" | "profileFile" | "host">,
-  name: string
+  name: string,
+  setup?: TestSetup
 ): ProfiledTask[] {
   const fallback = o.profileFile === undefined ? undefined : path.resolve(o.profileFile);
   const read = new Map<string, TaskProfile>();
@@ -961,10 +1076,11 @@ function taskProfiles(
       lacking.push(task.id);
       continue;
     }
-    let profile = read.get(file);
+    const key = setup === undefined ? file : `${file}\0${task.testSetup !== undefined}`;
+    let profile = read.get(key);
     if (profile === undefined) {
-      profile = loadProfile(file, o.host, name);
-      read.set(file, profile);
+      profile = loadProfile(file, o.host, name, setup, task.testSetup);
+      read.set(key, profile);
     }
     profiled.push({ task, profile });
   }
@@ -1650,6 +1766,8 @@ interface LoadOptions {
   /** The session a written task stands for (`--context-session`): the session whose context
    *  its profile was rebuilt from. */
   readonly contextSession?: { readonly store: string; readonly pathHash: string };
+  /** The inventory copy to install as test setup, when given. */
+  readonly testSetup?: SetupLocation;
   /** The seed each run's routing id is derived from (`--route-seed`, `loadRoutingId`); empty
    *  when not given. */
   readonly routeSeed?: string;
@@ -1691,6 +1809,7 @@ interface Settings {
   readonly hints?: { readonly listed: typeof LISTED_LINES; readonly draw: number };
   readonly sends: typeof SENDS;
   readonly skillReads: typeof SKILL_READS;
+  readonly testSetup?: TestSetup;
 }
 
 /** A test's summary, as `summary.json` holds it. Only what a later command checks is read back:
@@ -1855,6 +1974,19 @@ class LoadTest {
     return read;
   }
 
+  /** Adds only the tested line to a recorded prompt when it was absent. The capture substitutes
+   *  the drawn hint using its normal recorded-prompt rule. */
+  private setupPrompt(blocks: string[], name: string): string[] {
+    if (listingOf(blocks).has(name)) return blocks;
+    const listing = /(<skills>\n[\s\S]*?)<\/skills>/;
+    const index = blocks.findIndex((block) => listing.test(block));
+    const line = `- ${name}: \n`;
+    if (index === -1) return [...blocks, `<skills>\n${line}</skills>`];
+    return blocks.map((block, at) =>
+      at === index ? block.replace(listing, `$1${line}</skills>`) : block
+    );
+  }
+
   /** The case a capture of `id` reads in the context of `profile`, and the arm it installs: the
    *  profile's skills and the tested skill from its directory, with `text` as the one message,
    *  and the rest of the profile as it is (its plugins, context files, appended prompt, and a
@@ -1881,9 +2013,13 @@ class LoadTest {
     // The recorded listing goes to the capture as lines (`recordedLines`), not in the profile.
     const { context, claude: _claude, systemPrompt, recordedListing: _listing, ...rest } = profile;
     const recorded =
-      systemPrompt === undefined || renamedFrom === null
-        ? systemPrompt
-        : renamedListingBlocks(systemPrompt, renamedFrom, name);
+      systemPrompt === undefined
+        ? undefined
+        : this.settings.testSetup !== undefined
+          ? this.setupPrompt(systemPrompt, name)
+          : renamedFrom === null
+            ? systemPrompt
+            : renamedListingBlocks(systemPrompt, renamedFrom, name);
     const caseProfile: Profile = {
       ...rest,
       ...(recorded === undefined ? {} : { systemPrompt: recorded }),
@@ -2002,13 +2138,13 @@ class LoadTest {
       const listing = profile.profile.recordedListing;
       const tested = {
         name,
-        ownName: renamedFrom ?? name,
+        ownName: this.settings.testSetup === undefined ? (renamedFrom ?? name) : name,
         description: skillFrontmatter(this.skillDir).description,
       };
       const lines = recordedLines(
         listing,
         tested,
-        readsSessionDescription(listing, tested)
+        this.settings.testSetup === undefined && readsSessionDescription(listing, tested)
           ? await this.sessionDescription(profile)
           : undefined
       );
@@ -2602,6 +2738,7 @@ class LoadTest {
           task: each.task.id,
           run: made.length + 1,
           label: each.task.label,
+          ...(this.settings.testSetup === undefined ? {} : { testSetup: this.settings.testSetup }),
           source: each.task.source,
           host: this.o.host,
           name: each.profile.tested.name,
@@ -2620,7 +2757,14 @@ class LoadTest {
         const cause = reason instanceof RunFailed ? reason.cause : reason;
         const usage = reason instanceof RunFailed ? reason.usage : [];
         if (usage.length > 0) {
-          failed.get(id)?.push({ task: id, error: messageFor(cause), usage: [...usage] });
+          failed.get(id)?.push({
+            task: id,
+            ...(this.settings.testSetup === undefined
+              ? {}
+              : { testSetup: this.settings.testSetup }),
+            error: messageFor(cause),
+            usage: [...usage],
+          });
         }
         if (cause instanceof BudgetSpent) budgetSpent = true;
         else failures.push(`task ${id}: a run failed: ${messageFor(cause)}`);
@@ -2738,7 +2882,43 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     );
   }
   const tasks = loadTasks(o.tasksFile);
-  const profiled = taskProfiles(tasks, o, name);
+  const marked = tasks.flatMap((task) =>
+    task.testSetup === undefined ? [] : [{ id: task.id, copy: task.testSetup.copy }]
+  );
+  if (o.testSetup === undefined && marked.length > 0) {
+    throw new Refused(
+      `${o.tasksFile}: tasks ${marked.map((task) => task.id).join(", ")} record "${TEST_SETUP_LABEL}"; give the matching --test-setup`
+    );
+  }
+  const at = o.testSetup;
+  let testSetup: TestSetup | undefined;
+  let setupDir: string | undefined;
+  // Remove the temporary inventory checkout on every exit.
+  using inventory = {
+    root: undefined as string | undefined,
+    [Symbol.dispose]() {
+      if (this.root !== undefined) rmSync(this.root, { recursive: true, force: true });
+    },
+  };
+  if (at !== undefined) {
+    for (const task of marked) {
+      if (!isSetupCopy(task.copy, at)) {
+        throw new Refused(
+          `task ${task.id} records "${TEST_SETUP_LABEL}" with ${setupLocation(task.copy)}, not --test-setup ${setupLocation(at)}`
+        );
+      }
+    }
+    // Read the complete directory even when the task file already staged the profile entry.
+    testSetup = await resolveTestSetup(at, own, async () => {
+      mkdirSync(o.scratch, { recursive: true });
+      inventory.root = mkdtempSync(path.join(o.scratch, "inventory-"));
+      setupDir = path.join(inventory.root, "skill");
+      await setupDirectory(at, o.source, setupDir);
+      return ompText(readFileSync(path.join(setupDir, "SKILL.md")));
+    });
+  }
+  const setupNote = testSetup === undefined ? {} : { testSetup };
+  const profiled = taskProfiles(tasks, o, name, testSetup);
   const injected = await injectedRefusal(profiled, o, own, name);
   if (injected !== undefined) throw new Refused(injected);
   // Each task's standing by its listing measure, and the tasks the listing rule drops: never run.
@@ -2820,6 +3000,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     ...(o.host === "omp" ? { hints: { listed: LISTED_LINES, draw: o.hintDraw } } : {}),
     sends: SENDS,
     skillReads: SKILL_READS,
+    ...setupNote,
   };
 
   const summaryFile = path.join(o.out, "summary.json");
@@ -2827,6 +3008,20 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   // directory of its context no read can give, which an earlier command dropped under this
   // profile and which is not tried again.
   const dropped = new Map<string, string>(listingDrops);
+  if (
+    testSetup !== undefined &&
+    !existsSync(summaryFile) &&
+    tasks.some(
+      (task) =>
+        existsSync(loadCapturePaths(o.out, o.host, task.id).body) ||
+        existsSync(loadRunFile(o.out, task.id)) ||
+        existsSync(loadFailedRunFile(o.out, task.id))
+    )
+  ) {
+    throw new Refused(
+      `${o.out} holds captures or runs but no summary to confirm "${TEST_SETUP_LABEL}"; use another --out`
+    );
+  }
   if (existsSync(summaryFile)) {
     let raw: unknown;
     try {
@@ -2894,7 +3089,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     o,
     settings,
     root,
-    settings.renamedFrom === null ? given : renamedSkill(given, name, path.join(root, "skill")),
+    settings.renamedFrom === null
+      ? (setupDir ?? given)
+      : renamedSkill(setupDir ?? given, name, path.join(root, "skill")),
     daemonImages
   );
   const runsOf = new Map(
@@ -2995,7 +3192,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       ),
       o.runs
     );
-    const verdict = listed.verdict;
+    const verdict = { ...listed.verdict, ...setupNote };
     // The runs of the tasks whose capture sends their session's recorded system prompt whole that
     // read a skill outside the recorded listing, from the reads each run records: a count only,
     // which drops no task and changes no verdict.
@@ -3029,6 +3226,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       summaryFile,
       json({
         settings,
+        ...setupNote,
         skillDir: given,
         tested: {
           name,
@@ -3041,6 +3239,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         listed: runs[0]?.listed ?? null,
         tasks: profiled.map(({ task, profile }) => ({
           ...task,
+          ...setupNote,
           profile: profile.file,
           profileDigest: profile.digest,
           ...outcomeOf(task),
@@ -3061,8 +3260,8 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         },
         verdict,
         verdicts: {
-          withUnmeasured: listed.withUnmeasured,
-          withoutUnmeasured: listed.withoutUnmeasured,
+          withUnmeasured: { ...listed.withUnmeasured, ...setupNote },
+          withoutUnmeasured: { ...listed.withoutUnmeasured, ...setupNote },
         },
         routeSeed: o.routeSeed ?? "",
         deployments: {
@@ -3281,7 +3480,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       ? ` (a load test has at least ${MIN_TASKS_PER_LABEL} need and ${MIN_TASKS_PER_LABEL} near-miss tasks; this one has ${count("need")} and ${count("near-miss")})`
       : "";
   test.say(
-    `the skill ${name}: ${verdict.reason}${small}; the test's runs, its failed runs and its hints so far cost $${usd.toFixed(4)} at list price; written to ${summaryFile}`
+    `the skill ${name}: ${verdict.reason}${testSetup === undefined ? "" : ` (${TEST_SETUP_LABEL})`}${small}; the test's runs, its failed runs and its hints so far cost $${usd.toFixed(4)} at list price; written to ${summaryFile}`
   );
   return { failures };
 }
@@ -3384,7 +3583,9 @@ export function auditLoadMixed(o: {
         }
         copies = installedCopies(capture.record.context, o.cacheDir);
       }
-      const profile = profiles.get(run.profile) ?? loadProfile(run.profile, "omp", run.name);
+      const profile =
+        profiles.get(run.profile) ??
+        loadProfile(run.profile, "omp", run.name, run.testSetup, run.testSetup);
       profiles.set(run.profile, profile);
       const arm: Arm = {
         name: ARM,
