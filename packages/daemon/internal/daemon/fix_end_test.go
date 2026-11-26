@@ -601,9 +601,6 @@ func (e *fixEnd) walkToTheEndWhileTheJobRuns() api.Issue {
 //   - The records: each record of each task holds its start and end commits, each fix's record
 //     names k-ci, the record of E's fix ends at Y, and the project's read gives each finished
 //     issue's fixes, B's one among them.
-//
-// Its red is the hold for CI taken out of the workflow's retroHold: A's walk then reaches its retro
-// while unit runs at X, and A's first assertion, held for its CI, fails.
 func TestVFixEnd(t *testing.T) {
 	t.Parallel()
 	r := newFixRig(t, nil, fixEndIssues...)
