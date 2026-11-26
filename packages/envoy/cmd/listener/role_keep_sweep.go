@@ -270,7 +270,11 @@ func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, 
 		if now.Sub(stored.Time) > roleKeepWakeAge {
 			continue
 		}
-		if frame, err := readRoleFrame(stored.Data); err == nil && !isOutboxCopy(frame.envelope()) && !isWithdrawnFrame(frame.envelope(), stored.MsgID, role) {
+		frame, err := readRoleFrame(stored.Data)
+		if err != nil {
+			continue
+		}
+		if item := frame.envelope(); !isOutboxCopy(item) && !isWithdrawnFrame(item, stored.MsgID, role) {
 			return true, nil
 		}
 	}

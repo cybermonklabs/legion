@@ -51,15 +51,15 @@ func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (sessi
 
 // leaderHolderSessions is roleHolderSessions for the one resolution that reads the leaders: a role
 // send that asks to be kept and names no source session, which the route refuses with nothing kept
-// when its role has no live holder (roleSend.noHolder), where it used to keep it. A `keep: false`
-// send and a send whose keep failed are refused on a "no live holder" too, and read the cache as
-// they did before that refusal; roleSend.resolve says why they need no read of the leaders. Its
-// holder is always read from the session bucket stream's leader (bucketSessionEntry), never from
-// the cache and never by a direct get. A cached record read live can pass its live deadline before
-// the resolution judges it (roles.ResolveHolder reads the holder's state again), and on a
-// replicated bucket a copy that has not applied a registration made a moment ago answers that the
-// session has no record; either would refuse the send for a holder that can take it.
-// nats.ErrKeyNotFound is the leader's word that no record stands, as it is Holder's.
+// when its role has no live holder (roleSend.noHolder). A `keep: false` send and a send whose keep
+// failed are refused on a "no live holder" too, and read the cache; roleSend.resolve says why
+// they need no read of the leaders. Its holder is always read from the session bucket stream's
+// leader (bucketSessionEntry), never from the cache and never by a direct get. A cached record
+// read live can pass its live deadline before the resolution judges it (roles.ResolveHolder reads
+// the holder's state again), and on a replicated bucket a copy that has not applied a
+// registration made a moment ago answers that the session has no record; either would refuse the
+// send for a holder that can take it. nats.ErrKeyNotFound is the leader's word that no record
+// stands, as it is Holder's.
 type leaderHolderSessions struct{ *session.SessionRegistry }
 
 func (s leaderHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {

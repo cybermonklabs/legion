@@ -2,12 +2,18 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -198,6 +204,117 @@ func TestAHookPromptRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 	if err := runner.execute(ctx, row); !errors.Is(err, errHookPromptPastItsHour) || errors.Is(err, wait.ErrWaiting) || !permanentRefusal(row, err) {
 		t.Fatalf("the hook prompt past its hour = %v, want a failure no retry repairs, which ends the row", err)
 	}
+}
+
+// storingListener is the listener's publish route as a stream that stores a message once per
+// dedupe key meets it: the first key it stores is answered 503 maybe_stored with Retry-After, as
+// the route answers a forward whose acknowledgement it did not read, and any later new key is
+// stored and answered 200; a repeat of a stored key is the stream's duplicate, stores nothing and
+// is answered 200. stored is the set of copies the holder would read.
+type storingListener struct {
+	mu       sync.Mutex
+	keys     []string
+	stored   map[string]bool
+	answered []int
+}
+
+func (l *storingListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var request listenerwire.PublishRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.keys = append(l.keys, request.DedupeKey)
+	if l.stored[request.DedupeKey] {
+		l.answered = append(l.answered, http.StatusOK)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"duplicate":true}`))
+		return
+	}
+	l.stored[request.DedupeKey] = true
+	if len(l.stored) == 1 {
+		l.answered = append(l.answered, http.StatusServiceUnavailable)
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(listenerwire.APIError{Code: listenerwire.CodeMaybeStored,
+			Error: "envoy: the message bus did not acknowledge the publish; it may have been stored"})
+		return
+	}
+	l.answered = append(l.answered, http.StatusOK)
+	w.WriteHeader(http.StatusOK)
+}
+
+// rekeyingPublisher is a daemon whose retry carries a message id of its own, the control of
+// TestAHookPromptAnswered503MaybeStoredReachesItsHolderOnce: each publish goes out under the row's
+// key with the attempt's number after it.
+type rekeyingPublisher struct {
+	notify.Publisher
+	attempts int
+}
+
+func (p *rekeyingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
+	p.attempts++
+	return p.Publisher.PublishKept(ctx, topic, message, payload, fmt.Sprintf("%s:attempt-%d", key, p.attempts))
+}
+
+// maybeStoredRow drives one hook-prompt row against a listener that stores its first publish and
+// answers it 503 maybe_stored, through the daemon's own publisher over HTTP (notify.HTTPPublisher)
+// wrapped by wrap, and answers why the holder did not receive the prompt once, or "".
+func maybeStoredRow(t *testing.T, wrap func(notify.Publisher) notify.Publisher) string {
+	t.Helper()
+	listener := &storingListener{stored: map[string]bool{}}
+	server := httptest.NewServer(listener)
+	t.Cleanup(server.Close)
+	runner, _, pool := hookRunner(t, wrap(notify.New(server.URL, "")))
+	hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-time.Minute))
+	id := noticeRowID(t, pool)
+
+	drainAt(t, runner, 0, "the first publish, which the listener stores and answers 503 maybe_stored")
+	if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 1 {
+		t.Fatalf("UNKNOWN: hook-prompt rows left = %d after the 503, want the row waiting for its retry, so the retry tests nothing", left)
+	}
+	drainAt(t, runner, 2*time.Minute, "the retry the 503 invites")
+
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
+	if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 0 {
+		return fmt.Sprintf("hook-prompt rows left = %d after the retry, want the row finished", left)
+	}
+	if len(listener.keys) != 2 || listener.answered[0] != http.StatusServiceUnavailable {
+		return fmt.Sprintf("the listener was sent keys %q and answered %v, want two publishes, the first answered 503", listener.keys, listener.answered)
+	}
+	if len(listener.stored) != 1 {
+		return fmt.Sprintf("the stream stored %d copies under keys %q, want one: the holder receives the work-back %d times", len(listener.stored), listener.keys, len(listener.stored))
+	}
+	if listener.keys[0] != record.OutboxKey(id) {
+		return fmt.Sprintf("the publishes carried %q, want the row's own key %q", listener.keys, record.OutboxKey(id))
+	}
+	return ""
+}
+
+// A hook prompt whose first publish the stream stored and the listener answered 503 maybe_stored
+// is retried, as any failure that is not permanent is, and the retry carries the first publish's
+// message id, the row's own key (record.OutboxKey): the stream drops the second copy as a
+// duplicate, so the holder receives the work-back once. The control is a daemon whose retry
+// carries a new id: the stream stores a second copy, and the row fails.
+func TestAHookPromptAnswered503MaybeStoredReachesItsHolderOnce(t *testing.T) {
+	t.Parallel()
+	t.Run("the retry carries the first publish's key", func(t *testing.T) {
+		t.Parallel()
+		if failure := maybeStoredRow(t, func(p notify.Publisher) notify.Publisher { return p }); failure != "" {
+			t.Fatal(failure)
+		}
+	})
+	t.Run("control: a retry under a new key", func(t *testing.T) {
+		t.Parallel()
+		failure := maybeStoredRow(t, func(p notify.Publisher) notify.Publisher { return &rekeyingPublisher{Publisher: p} })
+		if failure == "" {
+			t.Fatal("the row passed with each retry under a new key, so it does not show the retry's key keeps the holder to one copy")
+		}
+		t.Logf("the control fails, as it must: %s", failure)
+	})
 }
 
 // A relaunch the wake pacing parks over a process the claim still records holds no row: the

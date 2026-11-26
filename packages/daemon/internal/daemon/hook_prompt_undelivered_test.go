@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -147,8 +148,8 @@ func requireSays(t *testing.T, body string, words ...string) {
 // A hook prompt the listener refuses because no live session holds its role (a listener that keeps
 // nothing for a publish naming no source session, as the daemon's prompts name none) waits for a
 // session to hold the role while the hour after its row was made runs: retried on the row's
-// backoff, nothing posted on the issue. The listener used to keep the prompt for that hour; the row
-// is its keeper now.
+// backoff, nothing posted on the issue. The listener keeps nothing for such a publish, so the row
+// is the prompt's keeper.
 func TestAHookPromptNoSessionHoldsWaitsForTheRoleInsideTheHour(t *testing.T) {
 	t.Parallel()
 	runner, _, pool, publisher, _ := unheldHookRunner(t)
@@ -372,5 +373,190 @@ func TestAHookPromptReachesItsWokenRoleAfterAClaimSlowerThanTwoRetries(t *testin
 	}
 	if resumes := podResumes(t, pool, "LEGION-208"); resumes != 1 {
 		t.Fatalf("recorded resumes = %d, want the one wake the row's first attempt took", resumes)
+	}
+}
+
+// undeliveredNotices is the reason of every hook-prompt-undelivered notice for LEGION-208's
+// architect, in order: a notice the drain that wrote it has already published is in the
+// listener's record (publisher), and one it has not published is still an outbox row.
+func undeliveredNotices(t *testing.T, pool *store.Pool, publisher *holderPublisher) []string {
+	t.Helper()
+	reasons := noticeReasons(t, pool, string(record.HookPromptUndeliveredNotice))
+	_, delivered := publisher.snapshot()
+	for _, published := range delivered {
+		if notice, ok := published.payload.(record.Notice); ok && notice.Kind == record.HookPromptUndeliveredNotice {
+			reasons = append(reasons, notice.Reason)
+		}
+	}
+	return reasons
+}
+
+// A hook prompt that ends undelivered tells the issue's architect, once for each message on the
+// issue that names such prompts: the prompt that opens a role's message writes the notice in the
+// same transaction. A second prompt of that role that ends inside the message's hour joins the
+// message and writes no notice, a prompt to another role opens a message and a notice of its own,
+// and a prompt of the first role that ends after the hour opens a new message and a new notice. So
+// a role that is not coming makes one notice an hour, as it makes one message. The control is the
+// head before the notice, which wrote none: the first check fails there with two notices wanted
+// and none found.
+func TestAnUndeliveredHookPromptTellsTheIssuesArchitectOnceForEachMessage(t *testing.T) {
+	t.Parallel()
+	publisher := &holderPublisher{}
+	runner, sup, pool := hookRunner(t, publisher)
+	failedClaim(t, sup, claim.RoleImplementer)
+	failedClaim(t, sup, claim.RoleTester)
+	testerHook := firedHook
+	testerHook.Role, testerHook.Hook, testerHook.Prompt = claim.RoleTester, "tester-loop", "Run the failing case first."
+	againHook := firedHook
+	againHook.Hook, againHook.Prompt = "back-again", "Start from the failing test."
+
+	hookRowMadeAt(t, runner, pool, firedHook, time.Now())
+	hookRowMadeAt(t, runner, pool, loopHook, time.Now())
+	hookRowMadeAt(t, runner, pool, testerHook, time.Now())
+	drainAt(t, runner, 0, "the ends of three prompts, two to the implementer and one to the tester")
+	if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 0 {
+		t.Fatalf("UNKNOWN: hook-prompt rows left = %d, want all three ended, so the notices test nothing", left)
+	}
+	told := undeliveredNotices(t, pool, publisher)
+	if len(told) != 2 {
+		t.Fatalf("the architect's hook-prompt-undelivered notices = %q, want two: one for the implementer's message and one for the tester's", told)
+	}
+	byRole := map[claim.Role]string{}
+	for _, reason := range told {
+		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+			if strings.Contains(reason, "to the "+string(role)+" of LEGION-208") {
+				byRole[role] = reason
+			}
+		}
+	}
+	requireSays(t, byRole[claim.RoleImplementer], firedHook.Hook, "the implementer's claim is failed", "posts at")
+	requireSays(t, byRole[claim.RoleTester], testerHook.Hook, "the tester's claim is failed")
+	if strings.Contains(strings.Join(told, "\n"), loopHook.Hook) {
+		t.Fatalf("a notice names %s, whose prompt joined the implementer's open message: %q", loopHook.Hook, told)
+	}
+
+	hookRowMadeAt(t, runner, pool, againHook, time.Now())
+	drainAt(t, runner, 70*time.Minute, "a prompt to the implementer that ends after its message's hour")
+	// A notice the drain published is in the listener's record and one it has not is still a row,
+	// so the three are not read in the order they were written.
+	told = undeliveredNotices(t, pool, publisher)
+	if len(told) != 3 || !strings.Contains(strings.Join(told, "\n"), againHook.Hook) {
+		t.Fatalf("the architect's notices = %q, want a third, for the implementer's new message, naming %s", told, againHook.Hook)
+	}
+}
+
+// restartRow is one row of TestARestartedDaemonKeepsARefusedWorkBackInsideItsHour.
+type restartRow struct {
+	name string
+	// after drives the restarted daemon (runner) over its database (pool) and answers why the row
+	// failed, or "" for a row that passed.
+	after func(t *testing.T, runner *outbox, pool *store.Pool, publisher *holderPublisher, topic string) string
+}
+
+// restartRows are the three rows c-r18-daemon names for a daemon that restarts while a refused
+// work-back waits inside its hour. The work-back was made ten minutes before the restart, so its
+// hour ends fifty minutes after it.
+var restartRows = []restartRow{
+	{name: "a session holds the role after the restart", after: func(t *testing.T, runner *outbox, pool *store.Pool, publisher *holderPublisher, topic string) string {
+		publisher.setAbsent()
+		drainAt(t, runner, 2*time.Minute, "the restarted daemon's attempt once a session holds the role")
+		if reached := deliveriesTo(publisher, topic); reached != 1 {
+			return fmt.Sprintf("the work-back reached the role's session %d times after the restart, want once", reached)
+		}
+		if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 0 {
+			return fmt.Sprintf("hook-prompt rows left = %d after the delivery, want the row finished", left)
+		}
+		if held := heldMessages(t, pool); len(held) != 0 {
+			return fmt.Sprintf("the issue holds messages %+v, want none: the work-back was delivered", held)
+		}
+		return ""
+	}},
+	{name: "no session holds the role before the hour ends", after: func(t *testing.T, runner *outbox, pool *store.Pool, publisher *holderPublisher, topic string) string {
+		drainAt(t, runner, 2*time.Minute, "the restarted daemon's attempt inside the hour")
+		if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 1 {
+			return fmt.Sprintf("hook-prompt rows left = %d inside the hour after the restart, want the row waiting", left)
+		}
+		drainAt(t, runner, 51*time.Minute, "the restarted daemon's attempt past the hour")
+		return endedWithTheMessage(t, pool, publisher, topic)
+	}},
+	{name: "the daemon stays down past the hour", after: func(t *testing.T, runner *outbox, pool *store.Pool, publisher *holderPublisher, topic string) string {
+		drainAt(t, runner, 51*time.Minute, "the restarted daemon's first attempt, past the hour")
+		return endedWithTheMessage(t, pool, publisher, topic)
+	}},
+}
+
+// deliveriesTo is how many publishes publisher delivered to topic.
+func deliveriesTo(publisher *holderPublisher, topic string) int {
+	_, delivered := publisher.snapshot()
+	reached := 0
+	for _, published := range delivered {
+		if published.topic == topic {
+			reached++
+		}
+	}
+	return reached
+}
+
+// endedWithTheMessage is why a work-back's row did not end undelivered with the message on the
+// issue that names it, or "" when it did.
+func endedWithTheMessage(t *testing.T, pool *store.Pool, publisher *holderPublisher, topic string) string {
+	t.Helper()
+	if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 0 {
+		return fmt.Sprintf("hook-prompt rows left = %d past the hour, want the row ended undelivered", left)
+	}
+	if reached := deliveriesTo(publisher, topic); reached != 0 {
+		return fmt.Sprintf("the work-back reached the role %d times, want none: no session held it", reached)
+	}
+	held := heldMessages(t, pool)
+	if len(held) != 1 || !strings.Contains(held[0].body, firedHook.Prompt) {
+		return fmt.Sprintf("the issue holds messages %+v, want one naming the work-back's words", held)
+	}
+	return ""
+}
+
+// A daemon that restarts while a refused work-back waits inside its hour keeps it: the row is the
+// work-back's keeper, in the daemon's own database, so the restarted daemon, with a new outbox and
+// a new supervisor and only the database carried over, delivers it once to a session that holds
+// the role after the restart, ends it at the hour with the message on the issue when none does,
+// and ends it at its first attempt when it stays down past the hour. The control runs each row
+// again with the restarted daemon given a new database that holds the issue's record and no
+// outbox row, which is what a daemon that kept the wait in its process memory alone would leave
+// after the restart, and each must fail. At the base the row ends at the first refusal with a log
+// line and no message, so each row fails there as well.
+func TestARestartedDaemonKeepsARefusedWorkBackInsideItsHour(t *testing.T) {
+	t.Parallel()
+	for _, row := range restartRows {
+		for _, empty := range []bool{false, true} {
+			name := row.name
+			if empty {
+				name = "control: " + row.name + ", over a new empty database"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				runner, _, pool, publisher, topic := unheldHookRunner(t)
+				hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-10*time.Minute))
+				drainAt(t, runner, 0, "the first daemon's attempt, which the listener refuses")
+				if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 1 || deliveriesTo(publisher, topic) != 0 {
+					t.Fatalf("before the restart %d hook-prompt rows wait and %d deliveries were made, want the one refused work-back waiting: a daemon that ends the row at the listener's refusal leaves the restart nothing to keep",
+						left, deliveriesTo(publisher, topic))
+				}
+				// The restart: a new outbox and a new supervisor with no claim, and only the
+				// database carried over, or, for the control, a new database.
+				restartedPool := pool
+				if empty {
+					_, _, restartedPool = hookRunner(t, publisher)
+				}
+				restarted, _ := restartedHookRunner(t, restartedPool, publisher, &outboxDispatch{})
+				failure := row.after(t, restarted, restartedPool, publisher, topic)
+				switch {
+				case !empty && failure != "":
+					t.Fatal(failure)
+				case empty && failure == "":
+					t.Fatal("the row passed with the restarted daemon given a new empty database, so it does not show the database keeps the work-back")
+				case empty:
+					t.Logf("the control fails, as it must: %s", failure)
+				}
+			})
+		}
 	}
 }

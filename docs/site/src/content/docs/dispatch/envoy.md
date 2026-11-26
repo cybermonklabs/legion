@@ -243,10 +243,13 @@ again, and the listener reads the holder again. A forward stored so long after t
 the role's holder that the holder may have lost the role meanwhile is answered by what the
 listener finds: `200` when the role's claim still names that holder, which reads the forward
 itself; `504` when the claim names another session or none and the listener withdrew the
-forward, so send it again; `200` when the role's next holder already has a
-copy on its way; and `503` with `code: "maybe_stored"` when the listener could not read the claim
-or make the withdrawal, where a retry may give the holder the message twice under two event ids.
-A role
+forward, so send it again; `200` when the role's next holder already has a copy on its way; and
+`503` with `code: "maybe_stored"` when the listener could not read the claim or make the
+withdrawal, where a retry may give the holder the message twice under two event ids. One case is
+still lost: a retry under the same key after a `504` that resolves the forward's first holder
+again meets the withdrawn forward as a duplicate and is answered `200`, and if the listener took
+the forward off that holder's subject while another session, or none, held the role, nobody
+receives the message. A later release of the listener closes that case. A role
 message published straight onto NATS, not through the API, is kept the same way when no live
 session holds the role, and also when the listener could not read the role's claim, in which
 case it is forwarded once a later read finds a `live` holder inside the message's hour, with no

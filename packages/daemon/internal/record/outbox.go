@@ -294,10 +294,10 @@ type MessagePost struct {
 }
 
 // UndeliveredHookPrompts is what the message on an issue that names its undelivered hook prompts
-// to one role holds as data (the daemon's tellHookPromptUndelivered): the role, which is how that
-// role's open message is found (Store.HookPromptsMessage), and one paragraph for each prompt it
-// names, in the order they ended. The daemon renders the message's Body from it each time it
-// writes the row, so the row posts as any message posts.
+// to one role holds as data (Store.NameUndeliveredHookPrompt): the role, which is how that role's
+// open message is found, and one paragraph for each prompt it names (HookPrompt.Undelivered), in
+// the order they ended. Message renders the row's Body from it each time the row is written, so
+// the row posts as any message posts.
 type UndeliveredHookPrompts struct {
 	Role       claim.Role `json:"role"`
 	Paragraphs []string   `json:"paragraphs"`
@@ -1814,6 +1814,29 @@ func (p HookPrompt) Message(issue string) string {
 		p.Hook, issue, p.From, p.To, p.Prompt, p.Count, counts, pull)
 }
 
+// Undelivered is the paragraph of the message on the issue that names this prompt, which ended
+// undelivered for why (UndeliveredHookPrompts): written in the form of the message the hook's
+// firing posts (workflow's Engine.fireHook: "Legion hook <name> fired at <n> moves back: <from> to
+// <to>."), so the two read as a pair, then why it was not delivered and the words it carried, so a
+// person or the issue's architect can give them to the role another way.
+func (p HookPrompt) Undelivered(why string) string {
+	return fmt.Sprintf("Legion hook %s fired at %d moves back: %s to %s. Its prompt for that round was not delivered, because %s. The prompt told the %s: %q",
+		p.Hook, p.Count, p.From, p.To, why, p.Role, p.Prompt)
+}
+
+// Message is the message on issue that names these prompts: the data it is found and added to by
+// (Store.NameUndeliveredHookPrompt), and the body rendered from it, which is an opening, each
+// prompt's paragraph (HookPrompt.Undelivered) in the order they ended, and a closing, a blank line
+// between each. The body is rendered at each write, so the row posts as any message posts, and a
+// row whose data a rollback stripped posts the body it holds.
+func (p UndeliveredHookPrompts) Message(issue string) MessagePost {
+	opening := fmt.Sprintf("Legion hook prompts to the %s of %s were not delivered. This message names every prompt to the %s that ended undelivered in the hour after the first of them did.",
+		p.Role, issue, p.Role)
+	closing := fmt.Sprintf("No session of the %s received these words, and the daemon will not send them again.", p.Role)
+	body := opening + "\n\n" + strings.Join(p.Paragraphs, "\n\n") + "\n\n" + closing
+	return MessagePost{Body: body, HookPrompts: &p}
+}
+
 // UpdateAsk is an update round's ask to one role of the issue, on that role's own Envoy topic:
 // the daemon opened Round over Pod and will replace that pod, and Text is the whole ask, as the
 // sweep built it with supervise.UpdateTask from the round's recorded reasons and its recorded
@@ -2420,8 +2443,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
 			}
 		}
-		// The role is how the message is found again (Store.HookPromptsMessage), and a message
-		// that names no prompt names nothing.
+		// The role is how the message is found again (Store.NameUndeliveredHookPrompt), and a
+		// message that names no prompt names nothing.
 		if prompts := value.HookPrompts; prompts != nil {
 			if prompts.Role == "" || len(prompts.Paragraphs) == 0 || value.Artifact != nil {
 				return fmt.Errorf("a message of undelivered hook prompts requires its role and at least one prompt, and carries no artifact")
@@ -2829,6 +2852,17 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `hook-prompt-undelivered` is a hook's prompt to a role of the issue that ended with no session of
+// that role handed it: the role's claim failed or was retired, or no session of it held the role
+// within the prompt's hour (internal/daemon's hookPromptEnded, finishRefused). The issue's
+// architect is told once for each message on the issue that names such prompts, when the first of
+// them opens that message (Store.NameUndeliveredHookPrompt), so a role that is not coming makes
+// one notice an hour, as it makes one message. The reason names the role, the hook, why the
+// prompt was not delivered, and when the message that names every prompt of that hour posts,
+// with the words, which the architect can give to the role another way. No earlier release
+// decodes it, so a rollback deletes its unsent rows first (docs/kubernetes.md, "Rolling back the
+// release that names undelivered hook prompts on the issue").
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2836,7 +2870,12 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
+	HookPromptUndeliveredNotice,
 }
+
+// HookPromptUndeliveredNotice is the architect's notice of a hook's prompt that ended undelivered
+// (validNoticeKinds says when it is written).
+const HookPromptUndeliveredNotice NoticeKind = "hook-prompt-undelivered"
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
 // that volume still above its low mark, or of the trimmer having switched itself off: the one

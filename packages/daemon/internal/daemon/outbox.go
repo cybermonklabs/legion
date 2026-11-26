@@ -288,12 +288,12 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // controller notice would reach a process working under another claim's session, or one no claim
 // holds (review rounds 13 to 16 of #4220). Such a publish is not made and answers
 // notify.ErrNoHolder, which every executor already answers its own way: a notice is held for its
-// architect; a merge-queue removal, a merge forward's message, a controller notice and a role
-// message a project's pause still owes its role (heldMessageOwed) wait; and any other role
-// message, a hook's prompt and an update ask finish undelivered. So an operator's settle of the
-// name lets a waiting row's next attempt through, while a row that finished undelivered is not
-// sent again (review round 13 of #4220, note 36). A store that does not answer publishes nothing
-// and fails the attempt, which the row's backoff retries.
+// architect; a merge-queue removal, a merge forward's message, a controller notice, a hook's
+// prompt inside its hour (hookPromptUnheld) and a role message a project's pause still owes its
+// role (heldMessageOwed) wait; and any other role message and an update ask finish undelivered.
+// So an operator's settle of the name lets a waiting row's next attempt through, while a row that
+// finished undelivered is not sent again (review round 13 of #4220, note 36). A store that does
+// not answer publishes nothing and fails the attempt, which the row's backoff retries.
 //
 // HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
 // relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher
@@ -607,9 +607,12 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// each role and each hour (tellHookPromptUndelivered): the first prompt of the role that
 		// ends undelivered writes a message held to the end of hookPromptMessageWindow, and every
 		// later one of that role on the issue that ends before then is added to it, so a role that
-		// is not coming posts one message an hour rather than one per prompt. The message row is
-		// written in the finish's own transaction, so the prompt ends and the message names it
-		// together, or neither.
+		// is not coming posts one message an hour rather than one per prompt. The prompt that
+		// opens the message also tells the issue's architect, once a message. The message row and
+		// the notice are written in the finish's own transaction, so the prompt ends and the
+		// message names it together, or neither.
+		// permanentRefusal ended a hook prompt's row only on a *hookPromptUndelivered, so
+		// undelivered is set.
 		var undelivered *hookPromptUndelivered
 		errors.As(cause, &undelivered)
 		var posts time.Time
@@ -2239,7 +2242,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	// A prompt past its hour, or to a role whose claim failed or was retired, is ended before
 	// anything wakes or publishes, so no session is handed a prompt the hour has passed for and
 	// no parked wake holds the row past its hour (hookPromptEnded).
-	if ended := r.hookPromptEnded(row, payload, token); ended != nil {
+	if ended, err := r.hookPromptEnded(ctx, row, payload, token); err != nil {
+		return err
+	} else if ended != nil {
 		return ended
 	}
 	// A role whose pod was released is not "no live session holds the role": its session is

@@ -25,7 +25,16 @@ body: |-
   the holder a second copy under a new event id if a later pass copies the forward and the sender
   retries. The kept lane's walk ends a mark and forwards it to no one. A mark is told by the
   takeover-copy message id that only the listener sets, so no dedupe key a sender chooses makes
-  one.
+  one. One loss remains: a retry under the same key that resolves the withdrawn forward's holder
+  again meets the withdrawn frame as a duplicate and is answered `200`, and if that holder's relay
+  acknowledged the frame while another session, or none, held the role, no session receives the
+  message. A later change closes that.
+  Ship order: the Legion daemon's hook prompts name no source session, and a daemon before this
+  change ends a hook prompt at this listener's 404, so the prompt is lost. Run this listener only
+  after every Legion daemon that publishes to it runs this change's daemon part. Before a listener
+  pin moves, run
+  `packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>`
+  with the commit that carries that daemon, and move the pin only when it prints `GATE OPEN`.
 time: 2026-11-24T17:39:19Z
 custom:
     Issue: pr5412

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -42,9 +43,10 @@ func TestAHookPromptPastItsHourOrToARoleNotComingIsNeverPublished(t *testing.T) 
 
 			drainAt(t, runner, 0, "drain the hook prompt")
 
-			attempts, delivered := publisher.snapshot()
-			if len(delivered) != tc.delivered || (tc.delivered == 0 && attempts != 0) {
-				t.Fatalf("publish attempts = %d with %d delivered, want %d delivered and no attempt for a prompt that ended", attempts, len(delivered), tc.delivered)
+			// The architect's notice of an ended prompt is published to the architect's own topic,
+			// so only the implementer's topic is counted here.
+			if reached := deliveriesTo(publisher, notify.RoleTopicPrefix+string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))); reached != tc.delivered {
+				t.Fatalf("the prompt reached the implementer %d times, want %d, and no publish at all of a prompt that ended", reached, tc.delivered)
 			}
 			if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 0 {
 				t.Fatalf("hook-prompt rows left = %d, want the row finished", left)
@@ -104,32 +106,33 @@ func TestAMessageRowAPostTriedIsNoOpenWindow(t *testing.T) {
 	}
 }
 
-// heldMessageBarrier stops the first HookPromptsMessage call that finds no open window until
-// release is closed, after its own store call returned, and signals arrived for each such call.
+// heldMessageBarrier stops each NameUndeliveredHookPrompt call that opened a window until release
+// is closed, after its own store call returned and while its transaction still holds the
+// window's lock, and signals arrived for each such call.
 type heldMessageBarrier struct {
 	record.Store
 	arrived chan struct{}
 	release chan struct{}
 }
 
-func (s *heldMessageBarrier) HookPromptsMessage(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, now, since time.Time) (record.OutboxRow, bool, error) {
-	row, found, err := s.Store.HookPromptsMessage(ctx, tx, issue, role, now, since)
-	if err != nil || found {
-		return row, found, err
+func (s *heldMessageBarrier) NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (time.Time, bool, error) {
+	posts, opened, err := s.Store.NameUndeliveredHookPrompt(ctx, tx, issue, role, paragraph, now, window)
+	if err != nil || !opened {
+		return posts, opened, err
 	}
 	s.arrived <- struct{}{}
 	select {
 	case <-s.release:
 	case <-ctx.Done():
-		return row, false, ctx.Err()
+		return time.Time{}, false, ctx.Err()
 	}
-	return row, found, nil
+	return posts, opened, nil
 }
 
 // Two prompts of one role on one issue that end at the same moment, each in its own transaction,
 // open one message window, not two: the first transaction's look for a window holds that window's
-// lock until it commits, so the second looks after it and finds the first's row. The first look
-// finds no window and waits at the barrier; the second must not reach the barrier while it waits.
+// lock until it commits, so the second looks after it and finds the first's row. The first opens
+// the window and waits at the barrier; the second must not reach the barrier while it waits.
 // The control is the same two finishes one after the other, which open one window.
 func TestTwoPromptsThatEndTogetherOpenOneWindow(t *testing.T) {
 	t.Parallel()
@@ -232,5 +235,67 @@ func TestAHookPromptWindowIsFoundByItsDataAndNotByItsWords(t *testing.T) {
 	var named int
 	if err := pool.QueryRow(ctx, `select coalesce(jsonb_array_length(payload->'hook_prompts'->'paragraphs'), 0) from outbox where id = $1`, window).Scan(&named); err != nil || named != 2 {
 		t.Fatalf("the window's data names %d prompts (%v), want both", named, err)
+	}
+}
+
+// A hook prompt to a released role waits past its hour only while a wake of that role can come or
+// is under way. While the issue is in the workflow and its tree does not linger, the row's attempt
+// wakes the role (wakeForDelivery), and the row waits for the woken session, also past its hour,
+// through the launch the wake's resume opened. An issue that has left the workflow gets no wake,
+// so its prompt is held to the hour as any other: past it, the row ends undelivered with the
+// message on the issue and wakes nothing. Each row is the other's control: a rule that let every
+// released role wait would fail the second, which is the head before this bound (its row waited,
+// about once a minute, for as long as the issue stayed out), and one that ended every row past
+// its hour would fail the first.
+func TestAHookPromptToAReleasedRoleWaitsPastItsHourOnlyWhileAWakeCanCome(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status string
+		ends   bool
+	}{
+		{name: "the workflow still wakes the role", status: "in_progress"},
+		{name: "the issue has left the workflow", status: "backlog", ends: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			publisher := &holderPublisher{}
+			runner, sup, pool := runnerIn(t, phase.Implementing, tc.status, publisher, quietLogger())
+			holdSlot(t, pool, "LEGION-208")
+			topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
+			publisher.setAbsent(topic)
+			machine := releasedClaim(t, sup, claim.RoleImplementer)
+			hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-2*time.Hour))
+
+			drainAt(t, runner, 0, "the row's first attempt, past its hour")
+			if tc.ends {
+				if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 0 {
+					t.Fatalf("hook-prompt rows left = %d, want the row ended at its hour: no wake comes to a role of an issue out of the workflow", left)
+				}
+				if held := machine.Claim(); !held.Released() {
+					t.Fatalf("the implementer is %s by %s, want it left released: the issue is out of the workflow", held.State, held.SuspendedBy)
+				}
+				held := heldMessages(t, pool)
+				if len(held) != 1 {
+					t.Fatalf("messages on the issue = %+v, want one naming the prompt", held)
+				}
+				requireSays(t, held[0].body, "the hour after the hook fired passed and no session of the implementer took it", firedHook.Prompt)
+				return
+			}
+			if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 1 {
+				t.Fatalf("hook-prompt rows left = %d after the first attempt, want the row waiting while its released role is woken, past its hour", left)
+			}
+			if held := machine.Claim(); held.Released() {
+				t.Fatalf("UNKNOWN: the implementer is still %s by %s after the first attempt, so the row woke nothing and the wait tests nothing", held.State, held.SuspendedBy)
+			}
+			drainAt(t, runner, 2*time.Minute, "the row's attempt while the woken role launches")
+			t.Logf("the woken implementer is %s at the row's second attempt", machine.View().State)
+			if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 1 {
+				t.Fatalf("hook-prompt rows left = %d, want the row waiting for the woken session past its hour", left)
+			}
+			if held := heldMessages(t, pool); len(held) != 0 {
+				t.Fatalf("messages on the issue = %+v, want none while the role's wake is under way", held)
+			}
+		})
 	}
 }

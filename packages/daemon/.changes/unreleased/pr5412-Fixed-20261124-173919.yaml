@@ -4,27 +4,35 @@ body: |-
   keep a publish that names no source session, as the daemon's prompts name none, and the prompt's
   outbox row retries on its backoff until a session holds the role. A released role's woken
   session, which claims its role a few attempts after the daemon's wake, gets the prompt once. The
-  row waits while its role's wake is in flight. Otherwise it waits for one hour from the later of
-  the hook's firing and the role's last ready, and a role that held the role all along is not
-  handed the prompt after that hour. A role whose claim failed or was retired is never published
-  to: the row ends at once. The waiting row holds the issue's pod from idle release only while its
-  role has a claim on the issue that runs, is starting, or was suspended by an idle release; a role
-  with no claim, or one suspended for another cause, comes back only by a start or a person's
-  resume, each of which brings a pod of its own. The row tries again about once a minute either
-  way, and the listener logs each refusal. A prompt that ends undelivered is named in a Dispatch
-  message on the issue: the hook, the move back it was written for, why it ended, its words, and
-  that no session received them. The message is held for one hour from the first such end, and
-  every prompt to the same role on the same issue that ends in that hour is added to it, so a role
-  that is not coming gets one message an hour. The held message is the outbox row, which names its
-  role and prompts as data (`hook_prompts`) and is found by them, so a restart inside the hour adds
-  to it. A row a post already tried is no longer an open window, and a lock on the window keeps
-  two prompts that end together from opening two messages.
+  row waits while its role is being woken: its claim is released and its issue is in the workflow,
+  or its claim is launching under that wake or the wake pacing's hold. Otherwise it waits for one
+  hour from the later of the hook's firing and the role's last ready, so a released role of an
+  issue that has left the workflow, which no wake reaches, ends at that hour, and a role that held
+  the role all along is not handed the prompt after it. A role whose claim failed or was retired is
+  never published to: the row ends at once. The row is kept in the daemon's database, so a daemon
+  that restarts inside the hour still delivers the prompt or ends it at the hour. A prompt answered
+  503 maybe_stored is retried under the row's own key, so the stream stores it once. The waiting
+  row holds the issue's pod from idle release only while its role has a claim on the issue that
+  runs, is starting, or was suspended by an idle release; a role with no claim, or one suspended
+  for another cause, comes back only by a start or a person's resume, each of which brings a pod of
+  its own. The row tries again about once a minute either way, and the listener logs each refusal.
+  A prompt that ends undelivered is named in a Dispatch message on the issue: the hook, the move
+  back it was written for, why it ended, its words, and that no session received them. The message
+  is held for one hour from the first such end, and every prompt to the same role on the same issue
+  that ends in that hour is added to it, so a role that is not coming gets one message an hour. The
+  prompt that opens a message also sends the issue's architect a `hook-prompt-undelivered` notice,
+  one an hour as well. The held message is the outbox row, which names its role and prompts as
+  data (`hook_prompts`) and is found by them, so a restart inside the hour adds to it. A row a post
+  already tried is no longer an open window, and a lock on the window keeps two prompts that end
+  together from opening two messages.
   Ship this daemon to every deployment that publishes to a listener before that listener runs the
   release that refuses such a keep: an earlier daemon ends the row at the listener's 404 and the
-  prompt is lost (`scripts/e2e/hook-prompt-two-builds.sh`). To roll back, roll the listener back
-  first, and strip `hook_prompts` from the held messages before the earlier daemon runs
-  (docs/kubernetes.md, "Rolling back the release that names undelivered hook prompts on the
-  issue").
+  prompt is lost (`scripts/e2e/hook-prompt-two-builds.sh`). Before a listener pin moves, run
+  `packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>` and move the
+  pin only when it prints `GATE OPEN`. To roll back, roll the listener back first, then strip
+  `hook_prompts` from the held messages and delete the unsent `hook-prompt-undelivered` notices
+  before the earlier daemon runs (docs/kubernetes.md, "Rolling back the release that names
+  undelivered hook prompts on the issue").
 time: 2026-11-24T17:39:19Z
 custom:
     Issue: pr5412

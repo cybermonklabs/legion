@@ -132,7 +132,11 @@ func TestAPublishForwardStoredPastItsFenceIsAnsweredByWhatItsWithdrawalFinds(t *
 					break
 				}
 				next = stored.Sequence + 1
-				if frame, err := readRoleFrame(stored.Data); err == nil && frame.envelope().EventID == eventID && isWithdrawnFrame(frame.envelope(), stored.MsgID, role) {
+				frame, err := readRoleFrame(stored.Data)
+				if err != nil {
+					continue
+				}
+				if item := frame.envelope(); item.EventID == eventID && isWithdrawnFrame(item, stored.MsgID, role) {
 					marks++
 				}
 			}

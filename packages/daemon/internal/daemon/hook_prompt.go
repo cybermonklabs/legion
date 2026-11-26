@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,8 +23,8 @@ const hookPromptHoldBound = time.Hour
 
 // hookPromptUndelivered is a hook prompt's row ending undelivered (hookPromptEnded): why is the
 // clause that says why no session of its role will be handed it, which the message on the issue
-// carries (hookPromptParagraph). It is a failure no retry repairs (permanentRefusal), so the row
-// is finished with that message rather than retried.
+// carries (record.HookPrompt.Undelivered). It is a failure no retry repairs (permanentRefusal), so
+// the row is finished with that message rather than retried.
 type hookPromptUndelivered struct {
 	why   string
 	cause error
@@ -66,24 +65,24 @@ var (
 //   - A role whose claim has failed or was retired gets no session that holds the role again.
 //   - A prompt whose hour has passed: hookPromptHoldBound from the later of the row's making and
 //     the role's last ready (supervise.Claim.LastReady). So the hour a woken session has is its
-//     own, as the kept copy's was counted from its publish. While the role's wake is in flight
-//     (its claim released, or launching with the wake pacing holding the launch), the row waits
-//     for the woken session, as the architect's ruling has it: the row waits while the role is
-//     being woken, and the hour does not end it then.
+//     own, as the kept copy's was counted from its publish. While the role is being woken
+//     (wakeInFlight), the row waits for the woken session, as the architect's ruling has it: the
+//     row waits while the role is being woken, and the hour does not end it then.
 //
 // Either way the row ends undelivered (hookPromptUndelivered) with the message on the issue. So a
 // session that held the role all along is not handed a prompt past its hour, and a failed or
 // retired role is never published to.
-func (r *outbox) hookPromptEnded(row record.OutboxRow, payload record.HookPrompt, token claim.Token) *hookPromptUndelivered {
+func (r *outbox) hookPromptEnded(ctx context.Context, row record.OutboxRow, payload record.HookPrompt, token claim.Token) (*hookPromptUndelivered, error) {
 	start := row.CreatedAt
 	if r.supervisor != nil {
 		held := r.supervisedClaim(token)
 		if supervise.FailedOrRetired(held.State) {
 			return &hookPromptUndelivered{cause: errHookPromptRoleNotComing,
-				why: fmt.Sprintf("the %s's claim is %s, so no session of it will hold the role again", payload.Role, held.State)}
+				why: fmt.Sprintf("the %s's claim is %s, so no session of it will hold the role again", payload.Role, held.State)}, nil
 		}
-		if held.Released() || held.State == supervise.StateLaunching {
-			return nil
+		woken, err := r.wakeInFlight(ctx, row.Issue, held)
+		if err != nil || woken {
+			return nil, err
 		}
 		if held.LastReady.After(start) {
 			start = held.LastReady
@@ -91,9 +90,33 @@ func (r *outbox) hookPromptEnded(row record.OutboxRow, payload record.HookPrompt
 	}
 	if r.now().Sub(start) >= hookPromptHoldBound {
 		return &hookPromptUndelivered{cause: errHookPromptPastItsHour,
-			why: fmt.Sprintf("the hour after the hook fired passed and no session of the %s took it", payload.Role)}
+			why: fmt.Sprintf("the hour after the hook fired passed and no session of the %s took it", payload.Role)}, nil
 	}
-	return nil
+	return nil, nil
+}
+
+// wakeInFlight is whether held's role on issue is being woken, which holds its hook prompt's row
+// past the row's hour (hookPromptEnded): a released claim of an issue a wake can still reach
+// (wakeableIssue), which the row's own attempt wakes (wakeForDelivery); a launch the wake pacing
+// parked over no process (parkedLaunch); or a launch under a resume of the role that has had no
+// first turn yet (store.Store.OpenPodResume), which a wake opened. A released claim of an issue
+// that has left the workflow, or whose tree lingers, is a close's to stop and no wake comes to it,
+// and a launch no wake opened is the role starting as any role starts, so the hour holds for both:
+// without it, a row of an issue moved out of the workflow would be tried about once a minute for
+// as long as the issue stayed out, and its message would never post.
+func (r *outbox) wakeInFlight(ctx context.Context, issue string, held supervise.ClaimView) (bool, error) {
+	switch {
+	case held.Released():
+		_, wakeable, err := r.wakeableIssue(ctx, issue)
+		return wakeable, err
+	case held.State != supervise.StateLaunching:
+		return false, nil
+	}
+	if _, parked := parkedLaunch(held); parked {
+		return true, nil
+	}
+	_, _, open, err := r.trees.OpenPodResume(ctx, r.project, issue, held.Role)
+	return open, err
 }
 
 // hookPromptMessageWindow is how long the message on an issue that names its undelivered hook
@@ -103,65 +126,34 @@ func (r *outbox) hookPromptEnded(row record.OutboxRow, payload record.HookPrompt
 const hookPromptMessageWindow = time.Hour
 
 // tellHookPromptUndelivered names prompt, which ended undelivered for why, in the message on issue
-// for its role's undelivered prompts, inside tx, and answers when that message posts. The Dispatch
-// message row of issue that is that role's open window (record.Store.HookPromptsMessage: its
-// payload names the role's undelivered prompts, no post has tried it, and it was made in the last
-// hookPromptMessageWindow) gets the prompt's paragraph added to its data and its body rendered
-// again (hookPromptsMessage). With none, a new message row is written, made now on the daemon's
-// clock and due hookPromptMessageWindow from now, which opens the role's window. The row is the
-// window's whole state, so a daemon that restarts inside the window adds to the same message, and
-// the window's lock, which HookPromptsMessage takes first, keeps two finishes from opening two. A
-// row a post already tried is closed, even while it is held for its retry, since that retry may
-// find the post made.
+// for its role's undelivered prompts, inside tx, and answers when that message posts
+// (record.Store.NameUndeliveredHookPrompt, on the daemon's clock, over hookPromptMessageWindow).
+// The message row is the window's whole state, so a daemon that restarts inside the window adds to
+// the same message. The prompt that opens a message also tells the issue's architect, in the same
+// transaction (record.HookPromptUndeliveredNotice, hookPromptUndeliveredNotice), so a role that is
+// not coming makes one notice an hour, as it makes one message, and the architect can give the
+// words to the role another way.
 func (r *outbox) tellHookPromptUndelivered(ctx context.Context, tx pgx.Tx, issue string, prompt record.HookPrompt, why string) (time.Time, error) {
 	now := r.now().UTC()
-	paragraph := hookPromptParagraph(prompt, why)
-	held, open, err := r.records.HookPromptsMessage(ctx, tx, issue, prompt.Role, now, now.Add(-hookPromptMessageWindow))
+	posts, opened, err := r.records.NameUndeliveredHookPrompt(ctx, tx, issue, prompt.Role, prompt.Undelivered(why), now, hookPromptMessageWindow)
+	if err != nil || !opened {
+		return posts, err
+	}
+	notice, err := record.NewOutboxRow(issue, hookPromptUndeliveredNotice(issue, prompt, why, posts), now)
 	if err != nil {
 		return time.Time{}, err
 	}
-	if open {
-		payload, err := record.DecodeOutboxPayload(held)
-		if err != nil {
-			return time.Time{}, err
-		}
-		message, ok := payload.(record.MessagePost)
-		if !ok || message.HookPrompts == nil {
-			return time.Time{}, fmt.Errorf("outbox row %d names no undelivered hook prompts of the %s on %s", held.ID, prompt.Role, issue)
-		}
-		prompts := *message.HookPrompts
-		prompts.Paragraphs = append(prompts.Paragraphs, paragraph)
-		return held.NextAt, r.records.ReplaceMessage(ctx, tx, held.ID, issue, hookPromptsMessage(issue, prompts))
-	}
-	row, err := record.NewOutboxRow(issue, hookPromptsMessage(issue, record.UndeliveredHookPrompts{Role: prompt.Role, Paragraphs: []string{paragraph}}),
-		now.Add(hookPromptMessageWindow))
-	if err != nil {
-		return time.Time{}, err
-	}
-	row.CreatedAt = now
-	return row.NextAt, r.records.Enqueue(ctx, tx, row)
+	return posts, r.records.Enqueue(ctx, tx, notice)
 }
 
-// hookPromptsMessage is the message on issue that names prompts, one role's undelivered hook
-// prompts: the data the message is found and added to by (record.UndeliveredHookPrompts), and the
-// body rendered from it, which is an opening, each prompt's paragraph (hookPromptParagraph) in the
-// order they ended, and a closing, a blank line between each. The body is rendered at each write,
-// so the row posts as any message posts, and a row whose data a rollback stripped posts the body
-// it holds.
-func hookPromptsMessage(issue string, prompts record.UndeliveredHookPrompts) record.MessagePost {
-	opening := fmt.Sprintf("Legion hook prompts to the %s of %s were not delivered. This message names every prompt to the %s that ended undelivered in the hour after the first of them did.",
-		prompts.Role, issue, prompts.Role)
-	closing := fmt.Sprintf("No session of the %s received these words, and the daemon will not send them again.", prompts.Role)
-	body := opening + "\n\n" + strings.Join(prompts.Paragraphs, "\n\n") + "\n\n" + closing
-	return record.MessagePost{Body: body, HookPrompts: &prompts}
-}
-
-// hookPromptParagraph is the paragraph of the message on an issue that names one undelivered
-// prompt: written in the form of the message the hook's firing posts (workflow's Engine.fireHook:
-// "Legion hook <name> fired at <n> moves back: <from> to <to>."), so the two read as a pair, then
-// why it was not delivered and the words it carried, so a person or the issue's architect can give
-// them to the role another way.
-func hookPromptParagraph(prompt record.HookPrompt, why string) string {
-	return fmt.Sprintf("Legion hook %s fired at %d moves back: %s to %s. Its prompt for that round was not delivered, because %s. The prompt told the %s: %q",
-		prompt.Hook, prompt.Count, prompt.From, prompt.To, why, prompt.Role, prompt.Prompt)
+// hookPromptUndeliveredNotice is the architect's notice of prompt, a hook's prompt to a role of
+// issue that ended undelivered for why and opened the message on issue that posts at posts: which
+// hook and role, why, and where its words are, which the architect can give to the role another
+// way.
+func hookPromptUndeliveredNotice(issue string, prompt record.HookPrompt, why string, posts time.Time) record.Notice {
+	return record.Notice{Kind: record.HookPromptUndeliveredNotice, Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("Legion hook %s's prompt to the %s of %s was not delivered, because %s. "+
+			"A message on %s names it with its words, with every other prompt to the %s that ends undelivered before that message posts at %s. "+
+			"Give the words to the %s another way if its round still needs them.",
+			prompt.Hook, prompt.Role, issue, why, issue, prompt.Role, posts.UTC().Format(time.RFC3339), prompt.Role)}
 }

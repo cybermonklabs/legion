@@ -317,22 +317,21 @@ func (s *roleSend) keepTellsNobody() bool {
 
 // resolve resolves the role's holder within ctx (roles.ResolveHolder). Only a send whose keep
 // would tell nobody (keepTellsNobody: it asks to be kept and names no source session) reads the
-// leaders: a resolution that finds no live holder refuses it with nothing kept (noHolder), where
-// this route used to keep it, so it reads the role's claim from the role bucket stream's leader
-// (leaderRoleClaims, the read store.Registry.ReadLaneHolders makes) and the holder's record
-// through leaderHolderSessions: never from the registry's watched copy of either bucket, and never
-// by a direct get, which on a replicated bucket a copy that has not applied the newest claim or
-// registration answers, and which would refuse a message a live holder can take.
+// leaders: such a send asks the route to hold the message, and a resolution that finds no live
+// holder refuses it with nothing kept (noHolder). So it reads the role's claim from the role bucket
+// stream's leader (leaderRoleClaims, the read store.Registry.ReadLaneHolders makes) and the
+// holder's record through leaderHolderSessions: never from the registry's watched copy of either
+// bucket, and never by a direct get, which on a replicated bucket a copy that has not applied the
+// newest claim or registration answers, and which would refuse a message a live holder can take.
 //
-// Every other send reads as GET /v1/roles/<role> reads, as it did before that refusal. A send that
-// asks to be kept and names a session is kept when that read finds no live holder, and the keep
-// hands the role's kept lane to the session that holds the role live (keepForNextHolder), so a
-// copy of a bucket that is behind costs the message a pass through the lane and loses it nothing.
-// A `keep: false` send, and a send whose keep failed, get the 404 with nothing kept on that read,
-// as they did before: the first is a sender that keeps the message itself and sends it again from
-// its own queue, and the second is a keep the bus did not store, whose 404 tells the sender to run
-// its own fallback as every 404 of this route does. This change refuses neither one where it was
-// served before, so neither pays a read of the leaders on every send.
+// Every other send reads as GET /v1/roles/<role> reads. A send that asks to be kept and names a
+// session is kept when that read finds no live holder, and the keep hands the role's kept lane to
+// the session that holds the role live (keepForNextHolder), so a copy of a bucket that is behind
+// costs the message a pass through the lane and loses it nothing. A `keep: false` send and a send
+// whose keep failed get the 404 with nothing kept on that read: the first asked for no keep and
+// holds the message itself, so a copy that is behind costs it one more send from its own queue,
+// and the second is a keep the bus did not store, whose 404 tells the sender to run its own
+// fallback as every 404 of this route does. So neither pays a read of the leaders on every send.
 func (s *roleSend) resolve(ctx context.Context) (roles.Resolution, error) {
 	if s.keepTellsNobody() {
 		return roles.ResolveHolder(ctx, leaderRoleClaims{s.d.registry}, leaderHolderSessions{s.d.sessions}, s.role)
@@ -495,7 +494,7 @@ func (s *roleSend) shownForwardError(line string, err error) error {
 // deliveryFailed answers the 504 delivery_failed of a send no forward of which the route counts as
 // delivered to its holder, with message as its error: the body names the event, its dedupe key,
 // the holder the send may show (shown) and the attempts it made, and the request's record names
-// the holder its forwards went to. timedOut and storedTooLate are its two causes.
+// the holder its forwards went to. timedOut and answeredLateForward are its two callers.
 func (s *roleSend) deliveryFailed(message string) {
 	s.record.holder = s.holder
 	s.record.refuseWith(s.w, http.StatusGatewayTimeout, outcomeDeliveryFailed, listenerwire.RoleSendFailure{
@@ -521,30 +520,36 @@ func (s *roleSend) timedOut() {
 		s.role, s.item.EventID, cmp.Or(s.shown.Holder, "(none)"), publishDeliveryWindow, sendDeliveryFailed))
 }
 
-// storedTooLate answers a forward the stream acknowledged storing for its holder later than the
-// fence and this route's budget after the resolution that chose that holder, after being how long
-// after (roles.ForwardStoredTooLate), once its stored copy has been withdrawn from a holder that
-// lost the role before any takeover took it (withdrawLateForward): no delivery, and the withdrawal
-// leaves no takeover a copy of it to hand the role's next holder. It is the 504 delivery_failed a
-// send whose window ended gets (deliveryFailed), its error wrapping roles.ErrForwardStoredTooLate,
-// so every client that retries a 504 sends the message again, and the retry resolves the holder
-// afresh. The forward stored a copy, which marked the charge (sendToRole), and the route's record
-// holds no forward for it (confirm), so the retry is judged as a first send.
-func (s *roleSend) storedTooLate(after time.Duration) {
-	s.deliveryFailed(fmt.Errorf("role %s: event %s was stored for its holder %s %s after that holder was resolved: %w",
-		s.role, s.item.EventID, cmp.Or(s.shown.Holder, "(none)"), after.Round(time.Second), roles.ErrForwardStoredTooLate).Error())
-}
-
-// notWithdrawn is the error of a forward stored past its fence (roles.ForwardStoredTooLate), after
-// being how long after the resolution that chose its holder, that withdrawLateForward could neither
-// withdraw nor leave standing (err): the role's claim could not be read, or no withdrawal mark could
-// be published at all. A takeover may still copy the forward to the role's holder, or no pass may
-// ever copy it, so the send is answered as one that may have been stored (maybeStored). Its
-// sender's retry gives the role's holder a second copy, under a new event id, if a later pass
-// does copy the forward. That duplicate is accepted in place of a loss nothing reports.
-func (s *roleSend) notWithdrawn(after time.Duration, err error) error {
-	return fmt.Errorf("%w: role %s: event %s was stored for its holder %s %s after that holder was resolved (%w), and it could not be withdrawn, so a takeover may still copy it: %w",
-		bus.ErrUnacknowledged, s.role, s.item.EventID, cmp.Or(s.shown.Holder, "(none)"), after.Round(time.Second), roles.ErrForwardStoredTooLate, err)
+// answeredLateForward answers forwarded, which the stream stored at seq for the send's holder, when
+// the stream stored it later than the fence and this route's budget after resolvedAt, the
+// resolution that chose that holder (roles.ForwardStoredTooLate), and reports whether it answered.
+// A forward stored in time answers nothing here. A late one is answered by what its withdrawal
+// finds (withdrawLateForward says the rule): a withdrawn forward is the 504 delivery_failed a send
+// whose window ended gets (deliveryFailed), its error wrapping roles.ErrForwardStoredTooLate, so
+// every client that retries a 504 sends the message again and the retry resolves the holder
+// afresh; a forward that could be neither withdrawn nor left standing is the 503 maybe_stored
+// (maybeStored), since a takeover may still copy it or no pass may ever copy it; and a forward its
+// holder still holds the role for, or that a takeover's copy already carries, answers nothing
+// here, and the send is answered as delivered. The forward stored a copy, which marked the charge
+// (sendToRole), and the route's record holds no forward for an answered one (confirm), so its
+// retry is judged as a first send.
+func (s *roleSend) answeredLateForward(ctx context.Context, resolvedAt time.Time, forwarded contracts.Envelope, seq uint64) bool {
+	stored := s.d.delivery.now()
+	if !roles.ForwardStoredTooLate(resolvedAt, stored, sendRequestBudget) {
+		return false
+	}
+	late := fmt.Errorf("role %s: event %s was stored for its holder %s %s after that holder was resolved: %w",
+		s.role, s.item.EventID, cmp.Or(s.shown.Holder, "(none)"), stored.Sub(resolvedAt).Round(time.Second), roles.ErrForwardStoredTooLate)
+	withdrawn, err := withdrawLateForward(ctx, *s.d.delivery, s.role, s.holder, forwarded, seq)
+	switch {
+	case err != nil:
+		s.maybeStored(fmt.Errorf("%w: %w, and it could not be withdrawn, so a takeover may still copy it: %w", bus.ErrUnacknowledged, late, err))
+	case withdrawn:
+		s.deliveryFailed(late.Error())
+	default:
+		return false
+	}
+	return true
 }
 
 // maybeStored answers a send whose forward the stream may yet hold for its holder, with err: the
@@ -558,8 +563,9 @@ func (s *roleSend) notWithdrawn(after time.Duration, err error) error {
 //     window ends otherwise is the 504 (timedOut). err is the error as sendToRole kept it, already
 //     judged by the holder its forward went to (shownForwardError), so a holder the send resolved
 //     since judges nothing.
-//   - A forward stored past its fence that could not be withdrawn (notWithdrawn). The route's
-//     record holds no forward for the send (confirm), so the retry is judged as a first send.
+//   - A forward stored past its fence that could not be withdrawn (answeredLateForward). The
+//     route's record holds no forward for the send (confirm), so the retry is judged as a first
+//     send.
 func (s *roleSend) maybeStored(err error) {
 	s.record.holder = s.holder
 	s.record.refuseBusUnavailable(s.w, err)
@@ -746,25 +752,8 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 			ack, err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
 				send.record.charge.stored()
-				// The fence above bounds when the forward starts, not when the stream stores
-				// it: a forward stored past the fence and this route's own budget after the
-				// resolution that chose its holder may sit on a holder that lost the role. It is
-				// answered by what its withdrawal finds (withdrawLateForward): 200 below when the
-				// role's claim, read from the leader, still names the holder, which reads the
-				// forward from its own subject; 504 when the withdrawal mark landed first; 200
-				// below when a takeover's copy landed first, as that copy is on the role's kept
-				// lane; and 503 maybe_stored when the claim could not be read or no mark could be
-				// published.
-				if stored := d.delivery.now(); roles.ForwardStoredTooLate(resolvedAt, stored, sendRequestBudget) {
-					withdrawn, err := withdrawLateForward(ctx, *d.delivery, send.role, send.holder, forwarded, ack.Sequence)
-					switch {
-					case err != nil:
-						send.maybeStored(send.notWithdrawn(stored.Sub(resolvedAt), err))
-						return
-					case withdrawn:
-						send.storedTooLate(stored.Sub(resolvedAt))
-						return
-					}
+				if send.answeredLateForward(ctx, resolvedAt, forwarded, ack.Sequence) {
+					return
 				}
 				d.confirm(item, send.holder, ack.Sequence)
 				if ack.Duplicate {

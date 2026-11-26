@@ -2679,19 +2679,18 @@ type Store interface {
 	// finish: a stale lease is ErrOutboxLeaseLost, so the caller rolls that effect back rather than
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
-	// HookPromptsMessage takes tx's lock on the window of role's undelivered hook prompts on issue,
-	// held until tx ends, then reads and locks the Dispatch message row of issue whose payload
-	// names role's undelivered hook prompts (MessagePost.HookPrompts) and that is an open window:
-	// never attempted, made after since, due after now, and under no live lease, so no run has it.
-	// It answers the oldest such row and true, or false when the outbox holds none. A row a post
-	// already tried is no open window, though it is held for its retry: the retry may find the
-	// post made and add nothing it carries. A row it answers can be rewritten in the same tx
-	// (ReplaceMessage) before it runs, and a transaction that finds none and writes one commits
-	// before the next look at that window, so two finishes never both find none.
-	HookPromptsMessage(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, now, since time.Time) (OutboxRow, bool, error)
-	// ReplaceMessage writes message, validated as a message of issue, as the payload of the
-	// Dispatch message row id, leaving when it is due as it is.
-	ReplaceMessage(ctx context.Context, tx pgx.Tx, id int64, issue string, message MessagePost) error
+	// NameUndeliveredHookPrompt names paragraph (HookPrompt.Undelivered) in the message on issue
+	// that names role's undelivered hook prompts, inside tx, and answers when that message posts
+	// and whether this call opened it. It takes tx's lock on that role's window of issue first,
+	// held until tx ends, so two prompts that end together never both open one. The window it
+	// joins is the oldest Dispatch message row of issue whose payload names role's undelivered
+	// prompts (MessagePost.HookPrompts) and that no run has had: never attempted, made after
+	// now less window, due after now, and under no live lease. A row a post already tried is no
+	// open window, though it is held for its retry, since that retry may find the post made and
+	// add nothing it carries. Joining appends paragraph to the row's data and renders its body
+	// again (UndeliveredHookPrompts.Message), leaving when it is due as it is. With no window to
+	// join it opens one: a new row made at now and due window after now.
+	NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (posts time.Time, opened bool, err error)
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
 	Handover(ctx context.Context, tx pgx.Tx, issue string) (*Handover, error)
