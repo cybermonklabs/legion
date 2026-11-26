@@ -54,6 +54,9 @@ type metricsSources struct {
 	// Heartbeats is the API server's socket heartbeat counts (api.Deps.Heartbeats); nil reads
 	// zero.
 	Heartbeats *api.HeartbeatCounts
+	// TreeStores is the API server's count of the display-tree stores its reads skipped
+	// (api.Deps.TreeStores); nil reads zero.
+	TreeStores *api.TreeStoreCounts
 	Docs       *docs.Service
 	Logs       *logging.Handler
 	// Conns is the API server's connection watch (conn_age.go), nil in a test that serves no
@@ -292,7 +295,7 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 	registry.NewGaugeFunc(metricPrefix+"http_admitted_reserved_read_units", "Admission units of the combined cap writes leave to the reads while a read waits for room.", func() int64 {
 		return int64(sources.Admission.Totals().ReservedReads)
 	})
-	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_in_use", "Places of the request pool's share admission leaves that work outside admission holds now: DPoP decisions, the sockets' heartbeat checks that read the pool, and document sockets' admission reads.", func() int64 {
+	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_in_use", "Places of the request pool's share admission leaves that work outside admission holds now: DPoP decisions, the sockets' heartbeat checks that read the pool, document sockets' admission reads, live sockets' upgrades that read the pool, and streams' reads and polls.", func() int64 {
 		return int64(sources.Admission.Outside().Stats().InUse)
 	})
 	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_limit", "Places of the request pool's share admission leaves: the pool's connections less admission's combined cap.", func() int64 {
@@ -304,7 +307,7 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_queued_max", "The most work outside admission that has waited for a place at once since the process started.", func() int64 {
 		return int64(sources.Admission.Outside().Stats().MaxQueued)
 	})
-	registry.NewCounterVecFunc(metricPrefix+"http_outside_admission_refused_total", "Work outside admission refused a place of the request pool's share, by user and reason: a DPoP decision answered 429 OVERLOADED, a heartbeat check skipped, a document socket's admission answered 503; queue_full where the queue for a place was full, wait_exceeded where no place came free within the second it waited.", func() []metrics.Sample {
+	registry.NewCounterVecFunc(metricPrefix+"http_outside_admission_refused_total", "Work outside admission refused a place of the request pool's share, by user and reason: a DPoP decision answered 429 OVERLOADED, a heartbeat check skipped, a document socket's admission answered 503, a live socket's upgrade or a stream's reads before its answer answered 503 DATABASE_BUSY; queue_full where the queue for a place was full, wait_exceeded where no place came free within the second it waited.", func() []metrics.Sample {
 		stats := sources.Admission.Outside().Stats()
 		users := admission.OutsideUsers()
 		samples := make([]metrics.Sample, 0, 2*len(users))
@@ -316,11 +319,23 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 		}
 		return samples
 	})
+	registry.NewCounterVecFunc(metricPrefix+"http_outside_admission_skipped_total", "Work outside admission that takes a place of the request pool's share only where one is free at once and found none, so skipped what it was to do, by user: a stream's poll, which polls again at its next tick, so a stream that stops moving under overload shows here. A user that waits for its place skips nothing.", func() []metrics.Sample {
+		stats := sources.Admission.Outside().Stats()
+		users := admission.OutsideUsers()
+		samples := make([]metrics.Sample, 0, len(users))
+		for _, user := range users {
+			samples = append(samples, metrics.Sample{Labels: [][2]string{{"user", user.String()}}, Value: float64(stats.Skipped[user])})
+		}
+		return samples
+	})
 	registry.NewCounterVecFunc(metricPrefix+"socket_heartbeat_transient_failures_total", "Socket heartbeat checks that failed for a transient reason, a busy pool, the check's own bound or a place of the request pool's share outside admission refused it, the one that closed its socket at the ceiling included.", func() []metrics.Sample {
 		return []metrics.Sample{{Value: float64(sources.Heartbeats.TransientFailures())}}
 	})
 	registry.NewCounterVecFunc(metricPrefix+"socket_heartbeat_ceiling_closes_total", "Sockets closed because their heartbeat check failed for a transient reason three times in a row.", func() []metrics.Sample {
 		return []metrics.Sample{{Value: float64(sources.Heartbeats.ClosesAtCeiling())}}
+	})
+	registry.NewCounterVecFunc(metricPrefix+"display_tree_stores_skipped_total", "Stores of the display trees a read built that the read skipped because as many stores as half the background pool's connections already ran; the next reader of those texts reads them again.", func() []metrics.Sample {
+		return []metrics.Sample{{Value: float64(sources.TreeStores.Skipped())}}
 	})
 
 	registry.NewGaugeFunc(metricPrefix+"doc_writer_queued", "Writers waiting for a document's writer gate now.", sources.Docs.QueuedDocumentWriters)

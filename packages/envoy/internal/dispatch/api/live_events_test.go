@@ -1035,3 +1035,32 @@ func TestAnEventFrameCarriesTheEventsOwnBytes(t *testing.T) {
 		t.Fatalf("fixtures/live/event.json holds %s, want the frame %s", fixture, written)
 	}
 }
+
+// An events subscription's head check, which counts a resume's backlog in the same statement,
+// reads the live pool, as the replay after it does (eventSubscriptionCheck, replayThrough): with
+// every connection of the request pool held, a resume's check still answers its head, the row at
+// its cursor and what it stands behind, and its statement takes one live-pool connection. On the
+// request pool it waited behind the requests for one, and here is refused at the pool's bound.
+func TestAnEventsSubscriptionsHeadCheckReadsTheLivePool(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{
+		requestPoolSize: 4, acquireBound: partitionAcquireBound,
+	})
+	served := directServer(deps)
+	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")
+	since := appendEventOn(t, database.Pool, issue.Key)
+	cursor := appendEventOn(t, database.Pool, issue.Key)
+	live := settledAcquires(t, database, store.LivePool)
+
+	holdEveryConnection(t, database.Pool)
+	head, cursorAt, behind, err := served.eventSubscriptionCheck(t.Context(), cursor, &since)
+	if err != nil {
+		t.Fatalf("check a resume from %d against the cursor %d with the request pool held: %v", since, cursor, err)
+	}
+	if head < cursor || cursorAt == nil || behind < 1 {
+		t.Fatalf("the check answered head %d, the cursor's row at %v and %d behind, want a head at or past %d, the cursor's row and the event after %d", head, cursorAt, behind, cursor, since)
+	}
+	if got := poolAcquires(database, store.LivePool); got != live+1 {
+		t.Fatalf("live-pool acquires = %d, want %d: the check's one statement", got, live+1)
+	}
+}

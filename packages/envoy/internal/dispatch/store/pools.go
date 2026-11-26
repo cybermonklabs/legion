@@ -781,11 +781,12 @@ func (p *Pool) Background() (*Pool, error) {
 // livePoolSize bounds the pool for the live-update readers, which are the event stream relay's
 // one read loop and the first cursor of each generation it starts, the delivery hub's intake
 // (one statement at a time), its worker's recompute (at most concurrentReadWeight at once) and
-// its seed of the open P0 issues at a generation's start, and an events subscription's bounded
-// replay, its backlog count and its page (api/live_events.go). Four is their share of the budget
-// SharedPoolSize describes: the relay's read and the hub's intake and recompute are what read
-// continuously, while the seed runs once per generation and a replay once per resume, each one
-// statement waiting at most requestAcquireBound for a connection.
+// its seed of the open P0 issues at a generation's start, and an events subscription's head check
+// (eventSubscriptionCheck), bounded replay, backlog count and page (api/live_events.go). Four is
+// their share of the budget SharedPoolSize describes: the relay's read and the hub's intake and
+// recompute are what read continuously, while the seed runs once per generation, a head check once
+// per subscription or resume and a replay once per resume, each one statement waiting at most
+// requestAcquireBound for a connection.
 const livePoolSize = 4
 
 // Live is the pool for the live-update readers, so an event reaches the open streams while the

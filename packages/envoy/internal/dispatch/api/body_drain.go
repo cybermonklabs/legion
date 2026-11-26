@@ -91,7 +91,8 @@ func (b transferBounds) orDefault() transferBounds {
 }
 
 // movingDeadline is the deadline a transfer keeps on its connection: set at its first bytes and
-// pushed out at every read or write after them (arm), taken off at its end (lift). One type serves
+// pushed out at every read or write after them (arm), taken off at its end - a body's here (lift),
+// an answer's by net/http once its own last writes are done (servedAsRead). One type serves
 // both directions - the read deadline a request's body arrives under (drainedBody) and the write
 // deadline its answer goes out under (boundedAnswer) - differing only in which deadline set is and
 // in whether the kernel holds what has already been handed over (buffered). A writer with no
@@ -222,9 +223,10 @@ func (d *movingDeadline) tooSlow(now time.Time) bool {
 	return d.bounds.belowFloor(d.moved, elapsed)
 }
 
-// lift takes the bound off, which a transfer does at its end. Lifted, the connection carries no
-// deadline, which is what it carries between requests on this server, whose http.Server sets
-// neither ReadTimeout nor WriteTimeout (cmd/dispatch): a deadline left in place there would end
+// lift takes the bound off, which a body does at its end (an answer leaves it to net/http).
+// Lifted, the connection carries no deadline, which is what it carries between requests on this
+// server, whose http.Server sets neither ReadTimeout nor WriteTimeout (cmd/dispatch): a deadline
+// left in place there would end
 // the read net/http keeps on an idle connection, and cancel the request's context under its
 // answer, or fail a later answer on the same keep-alive connection.
 func (d *movingDeadline) lift() {
@@ -838,11 +840,17 @@ func (w *drainingWriter) Write(p []byte) (int, error) {
 
 // Flush flushes the answer once the body is drained, so a handler that flushes early cannot send
 // the answer ahead of it.
-func (w *drainingWriter) Flush() {
+func (w *drainingWriter) Flush() { _ = w.FlushError() }
+
+// FlushError is Flush answering what the flush met, as every writer between a handler and the
+// connection does (typedWriter.FlushError says why): a write's answer flows through this one.
+// A replaced answer has nothing of the layer's to flush.
+func (w *drainingWriter) FlushError() error {
 	w.begin(http.StatusOK)
-	if !w.replaced {
-		_ = http.NewResponseController(w.ResponseWriter).Flush()
+	if w.replaced {
+		return nil
 	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 // Unwrap is the connection's own writer, for http.ResponseController.
@@ -851,12 +859,13 @@ func (w *drainingWriter) Unwrap() http.ResponseWriter {
 }
 
 // boundedAnswer is a read's answer written under bounds of its own: its first byte arms a write
-// deadline, pushed out at every byte after it and lifted when the handler returns
-// (movingDeadline), past which a Write fails. A handler whose answer is larger than the sockets
-// between it and its client buffer blocks in Write until the client reads, and a pinned read
-// blocked there holds its request-pool connection - and the admission unit around it - for as
-// long as that client cares to take. Past the bound the write fails, the handler returns, the pin
-// and the unit go back and net/http closes the connection.
+// deadline, pushed out at every byte after it and armed once more when the handler returns, for
+// net/http's own last writes, which take it off (movingDeadline, servedAsRead), past which a Write
+// fails. A handler whose answer is larger than the sockets between it and its client buffer blocks
+// in Write until the client reads, and a pinned read blocked there holds its request-pool
+// connection - and the admission unit around it - for as long as that client cares to take. Past
+// the bound the write fails, the handler returns, the pin and the unit go back and net/http closes
+// the connection.
 //
 // The bound is the silence between the answer's bytes and the rate they keep, not the answer's
 // length, as it is for the body a request arrives with (drainedBody): a client reading a large
@@ -1019,10 +1028,11 @@ const answerSniffed = 2 << 10
 
 // sent writes out what net/http still holds of the answer, under the bound, and answers what the
 // flush answered. Without it the response buffer (answerSniffed) and the connection's 4 KiB went
-// out after the bound was lifted, with no deadline on the connection and no WriteTimeout on the
-// server, so a download whose reader stopped before its last bytes held that reader's connection
-// and this goroutine until TCP gave up. servedAsRead calls it after its handler has returned
-// normally, so a panic unwinding - a download's own abort - leaves the connection to net/http.
+// out after the handler returned, where no failure of theirs reached the answer, so a download
+// whose reader stopped before its last bytes held that reader's connection and this goroutine
+// until TCP gave up, and its access line read status=200. servedAsRead calls it after its handler
+// has returned normally and the layer outside that holds the answer's last bytes has ended it
+// (answerEnder), so a panic unwinding - a download's own abort - leaves the connection to net/http.
 //
 // Only an answer past what net/http measures is flushed. One inside it has nothing on the
 // connection to block on, and flushing it would send it chunked where net/http would have

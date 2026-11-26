@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"testing/iotest"
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1217,4 +1219,161 @@ func TestAKeyedBodyWhoseSpoolCannotBeReadBackIsTheServersFault(t *testing.T) {
 	if got := recorder.Header().Get(contracts.IdempotencyKeyHeader); got != "spoilt-spool" {
 		t.Fatalf("the answer echoed the key %q, want the request's own: nothing claimed it, so the client asks again under it", got)
 	}
+}
+
+// A write the server has no room for reads its whole body before it waits for room
+// (drainedBody.readWhole) - before any layer resolves its caller, and an upload's spooled to disk
+// past its first MiB. Two such writes can only be refused, and each is refused before a byte of
+// its body is read (readBeforeQueueing): one whose class's queue already holds its cap, answered
+// admission's 429 OVERLOADED with Retry-After: 1 and counted queue_full, and one that presents no
+// credential, answered its resolution's 401 NO_IDENTITY as it was after the read. Neither joins
+// the write queue.
+//
+// Each sends a 1 MiB upload body through a reader that counts what is read of it, while the write
+// class's one unit is held: into admission as the drain hands it on, where nothing reads a byte of
+// it, and through the upload route's whole chain, where the full queue's refusal is counted before
+// the first byte is read and the drain then reads the body off the connection and discards it, as
+// every early answer's is, before the answer goes out.
+func TestAWriteThatCanOnlyBeRefusedIsRefusedBeforeItsBodyIsRead(t *testing.T) {
+	t.Parallel()
+	const size = 1 << 20
+	for _, write := range []struct {
+		name, login, code, retryAfter string
+		// full fills the write queue to its cap behind the held unit; wait is the write
+		// class's wait, past any run where the queue is filled.
+		full   bool
+		wait   time.Duration
+		status int
+	}{
+		{name: "into a full write queue", login: "alice", full: true, wait: time.Hour,
+			status: http.StatusTooManyRequests, code: admission.CodeOverloaded, retryAfter: admission.RetryAfter},
+		{name: "with no credential", wait: 250 * time.Millisecond, status: http.StatusUnauthorized, code: "NO_IDENTITY"},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			limiter := admission.New(admission.Limits{Read: 4, Write: 1, WriteWait: write.wait})
+			handler, _, _, served := newRegisteredTestServer(t, testServerOptions{admission: limiter})
+			held, err := limiter.Admit(context.Background(), admission.Write, 1)
+			if err != nil {
+				t.Fatalf("hold the write class's one unit: %v", err)
+			}
+			testcleanup.Add(t, held.Release)
+			if write.full {
+				fillTheWriteQueue(t, limiter)
+			}
+			answered := func(response *httptest.ResponseRecorder, at string) {
+				t.Helper()
+				if code, _ := refusalOf(t, response); response.Code != write.status || code != write.code || response.Header().Get("Retry-After") != write.retryAfter {
+					t.Fatalf("%s: status=%d Retry-After=%q body=%s, want %d %s with Retry-After %q",
+						at, response.Code, response.Header().Get("Retry-After"), response.Body.String(), write.status, write.code, write.retryAfter)
+				}
+			}
+			request := func(body io.Reader) *http.Request {
+				request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/TEST-1/artifacts", body)
+				request.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+				if write.login != "" {
+					request.Header.Set("X-Dispatch-User", write.login)
+				}
+				return request
+			}
+			before := writeClassStats(limiter)
+
+			// Admission, handed the body as the drain hands it on, reads none of it.
+			sent := endlessBody(size)
+			unit := request(nil)
+			response := httptest.NewRecorder()
+			unit.Body = &drainedBody{
+				ReadCloser: io.NopCloser(sent),
+				movingDeadline: movingDeadline{
+					control: connectionControl(response), set: (*http.ResponseController).SetReadDeadline,
+					bounds: defaultTransferBounds,
+				},
+				ctx: unit.Context(), length: -1, limit: maxUploadRequestBytes,
+			}
+			served.admitted(limiter, 1, admission.NoLane, false, func(context.Context, http.ResponseWriter, *http.Request) {
+				t.Error("the write ran with no room for it")
+			})(response, unit)
+			answered(response, "admission")
+			if read := sent.read.Load(); read != 0 {
+				t.Fatalf("admission read %d bytes of the %d-byte body, want none: a write that can only be refused is refused before its body is read", read, size)
+			}
+
+			// The route's whole chain answers the same, and reads the body only once the refusal
+			// is decided, to discard it.
+			ordered := &refusalOrderedBody{Reader: io.LimitReader(repeatedByte('a'), size), limiter: limiter, refusedAtStart: writeClassStats(limiter).QueueFull}
+			response = httptest.NewRecorder()
+			handler.ServeHTTP(response, request(ordered))
+			answered(response, "the route")
+			if write.full {
+				if early := ordered.beforeRefusal.Load(); early != 0 {
+					t.Fatalf("the route read %d bytes of the body before admission refused it for a full queue, want none", early)
+				}
+			}
+			if read := ordered.read.Load(); read != size {
+				t.Fatalf("the drain read %d bytes of the refused body off the connection, want all %d, discarded before the answer", read, size)
+			}
+
+			after := writeClassStats(limiter)
+			if after.Queued != before.Queued || after.WaitExceeded != before.WaitExceeded {
+				t.Fatalf("the write queue went from %+v to %+v, want neither refused write to have joined it", before, after)
+			}
+			if refused, want := after.QueueFull-before.QueueFull, map[bool]uint64{true: 2, false: 0}[write.full]; refused != want {
+				t.Fatalf("%d writes refused queue_full, want %d", refused, want)
+			}
+		})
+	}
+}
+
+// fillTheWriteQueue queues as many writes behind limiter's held write unit as its write queue
+// holds, its cap - admission.WriteBurstFactor times a write limit of one - and keeps them queued
+// until the test ends.
+func fillTheWriteQueue(t *testing.T, limiter *admission.Limiter) {
+	t.Helper()
+	waiting, stop := context.WithCancel(context.Background())
+	var queued sync.WaitGroup
+	for range admission.WriteBurstFactor {
+		queued.Go(func() {
+			if ticket, err := limiter.Admit(waiting, admission.Write, 1); err == nil {
+				ticket.Release()
+			}
+		})
+	}
+	testcleanup.Add(t, func() {
+		stop()
+		queued.Wait()
+	})
+	testwait.Until(t, "the write queue at its cap", func() (int, bool) {
+		queued := writeClassStats(limiter).Queued
+		return queued, queued == admission.WriteBurstFactor
+	})
+}
+
+// writeClassStats is limiter's write class's counts.
+func writeClassStats(limiter *admission.Limiter) admission.ClassStats {
+	for _, class := range limiter.Stats() {
+		if class.Class == admission.Write {
+			return class
+		}
+	}
+	return admission.ClassStats{}
+}
+
+// refusalOrderedBody is a request body that counts the bytes read of it, and of those the bytes
+// read before limiter's write class had refused a write for a full queue since the body was made
+// (refusedAtStart is the count it had then).
+type refusalOrderedBody struct {
+	io.Reader
+	limiter        *admission.Limiter
+	refusedAtStart uint64
+	read           atomic.Int64
+	beforeRefusal  atomic.Int64
+}
+
+func (b *refusalOrderedBody) Read(p []byte) (int, error) {
+	refused := writeClassStats(b.limiter).QueueFull > b.refusedAtStart
+	n, err := b.Reader.Read(p)
+	b.read.Add(int64(n))
+	if !refused {
+		b.beforeRefusal.Add(int64(n))
+	}
+	return n, err
 }

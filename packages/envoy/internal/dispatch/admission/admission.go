@@ -479,6 +479,25 @@ func (a *Arrival) AdmitNow() *Ticket {
 	return a.admitted()
 }
 
+// RefusedAtOnce is the refusal Admit would answer the arrival at once, before any wait: QueueFull
+// where its class's queue already holds its burst cap (ReadBurstFactor, WriteBurstFactor), counted
+// as Admit counts that refusal, and nil where Admit would admit it or queue it. A write with no
+// room reads its whole body before it queues (api's admitted, drainedBody.readWhole), so it asks
+// this first, and a write the queue has no place for is refused before a byte of its body is
+// read rather than after the whole of it. The queue may move between this and Admit, which judges
+// again.
+func (a *Arrival) RefusedAtOnce() *Refusal {
+	g := a.limiter.classes[a.class]
+	a.limiter.mu.Lock()
+	full := g.waiters.Len() >= g.burstCap
+	a.limiter.mu.Unlock()
+	if !full {
+		return nil
+	}
+	g.queueFull.Add(1)
+	return &Refusal{Class: a.class, Reason: QueueFull}
+}
+
 // Admit takes weight units of class for a request arriving now, waiting in the class's queue
 // when it has no room: Arrive and Arrival.Admit in one, for a caller with nothing to do between
 // the two.
@@ -740,7 +759,7 @@ type Away struct {
 //     cap (Ticket.Park). Units parked already - a write's body still arriving (api's drainedBody) -
 //     are left to whoever parked them, and TakeBack takes nothing for them;
 //   - a place of the request pool's share outside admission (PlaceFrom): a document socket's
-//     admission, a heartbeat check (Place.Release);
+//     admission, a live socket's upgrade, a stream's reads, a heartbeat check (Place.Release);
 //   - and the request-pool connection a pinned read holds (store.LetGoOfPinnedConnection), which
 //     its unit stands for: the read's next statement takes one again.
 func GiveBack(ctx context.Context) Away {
@@ -812,8 +831,8 @@ func (a Away) TakeBack(ctx context.Context) error {
 // and is never refused, records no refusal and puts none on the request's store mark. Its one
 // error is ctx's own, where ctx ends first, and the ticket then stays parked, holding nothing, so
 // the request's statements after it fail on that same ended context. A place comes back as
-// TakeBack takes one: only a document socket's admission and a heartbeat check hold one, and
-// neither makes such a call.
+// TakeBack takes one: only a document socket's admission, a live socket's upgrade, a stream's
+// reads and a heartbeat check hold one, and none of them makes such a call.
 func (a Away) TakeBackNeverRefused(ctx context.Context) error {
 	if err := a.ticket.resume(ctx, false); err != nil {
 		return err

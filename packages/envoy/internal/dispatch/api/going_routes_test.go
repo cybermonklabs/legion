@@ -13,8 +13,10 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -853,4 +855,58 @@ func TestGoingRequestAnswersTheFailureWhenItsRunCannotBeDetached(t *testing.T) {
 	if questions, _, _ := answerer.read(); len(questions) != 0 {
 		t.Fatalf("the failed ask reached the model with %q, want nothing asked of it", questions)
 	}
+}
+
+// A going stream's poll takes a place of the request pool's share outside admission only where
+// one is free at once (pollGoingStream): with every place held, a frame its run stores is not
+// read - each poll skips its tick, counted, and takes nothing of the pool - and it is delivered
+// once a place frees. The stream's own reads before its answer took a place and gave it back before
+// the headers (underOutsidePlace, streamGoingAnswer), or the share could not be taken whole here.
+func TestAGoingStreamsPollSkipsWhileEveryPlaceOfTheShareIsHeld(t *testing.T) {
+	t.Parallel()
+	limiter := admission.New(admission.DefaultLimits())
+	handler, _, deps, _ := newRegisteredTestServer(t, testServerOptions{admission: limiter})
+	recorder := directServer(deps)
+	ctx := context.Background()
+	run, err := recorder.recordGoingRequest(ctx, goingAsker, "", "is anybody answering?")
+	if err != nil {
+		t.Fatalf("record the run: %v", err)
+	}
+
+	sink := &goingStreamSink{header: http.Header{}, flushed: make(chan struct{}, 4)}
+	reading, stop := context.WithCancel(ctx)
+	request := httptest.NewRequestWithContext(reading, http.MethodGet, "/api/v1/going/requests/"+run.ID+"/stream", nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		handler.ServeHTTP(sink, request)
+	}()
+	testcleanup.Add(t, func() {
+		stop()
+		<-served
+	})
+	testwait.Receive(t, "the stream's headers (its first flush)", sink.flushed)
+
+	release := holdTheShareOutsideAdmission(t, limiter.Outside())
+	testcleanup.Add(t, release)
+	skipped := limiter.Outside().Stats().Skipped[admission.Stream]
+	if _, err := recorder.appendGoingEvent(ctx, run.ID, going.Text("held back")); err != nil {
+		t.Fatalf("append the frame: %v", err)
+	}
+	// Two skips after the frame was stored, so a whole tick read nothing; or the frame, where a
+	// poll read it with every place held.
+	testwait.Until(t, "two polls skipped after the frame was stored", func() (uint64, bool) {
+		now := limiter.Outside().Stats().Skipped[admission.Stream]
+		return now, now >= skipped+2 || strings.Contains(sink.text(), "held back")
+	})
+	if strings.Contains(sink.text(), "held back") {
+		t.Fatalf("the stream wrote %q with every place of the share held: its poll read the request pool without one", sink.text())
+	}
+
+	release()
+	testwait.Until(t, "the held-back frame once a place freed", func() (string, bool) {
+		text := sink.text()
+		return text, strings.Contains(text, "held back")
+	})
 }

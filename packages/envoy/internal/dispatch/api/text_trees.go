@@ -1,12 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -342,6 +346,15 @@ func (r *displayTreeReader) storedTrees(sums [][32]byte) map[[32]byte]json.RawMe
 // which costs the next reader of these texts a reading and nothing else. A server with no
 // background pool - one whose store cannot open it - stores nothing, for the same reason.
 //
+// Nothing waits for a store, so nothing bounded how many ran: each read that found trees missing
+// started one goroutine, every one of them waiting up to its 30 s on the background pool's six
+// connections, ahead of the delivery sweep's resume workers, which are sized to hold half that
+// pool (resumeWorkers), and of the mention sender's claims. A server runs at most half the
+// background pool's connections of them at once (treeStores), and a read that finds that many
+// running skips its store, counted (TreeStoreCounts): a skipped store costs the next reader of
+// those texts a reading, as a refused one does. A read of the texts a store is already storing
+// starts none.
+//
 // It runs on the request's context detached from its cancellation (context.WithoutCancel), since
 // a reader who goes away must not leave the saving to the next one, and bounded by
 // storeTreesTimeout, which is what bounds it once cancellation no longer does. The hold mark is
@@ -373,8 +386,13 @@ func (r *displayTreeReader) storeOf(missing []int) {
 		slog.Warn("dispatch: store display trees failed", "mode", int(r.mode), "texts", len(built), "error", err)
 		return
 	}
+	key := treeStoreKeyOf(r.mode, built)
+	if !r.server.treeStores.begin(key, background, r.server.deps.TreeStores) {
+		return
+	}
 	storing := store.ForConcurrentWorker(context.WithoutCancel(r.ctx))
 	r.server.detached.goDetached(func() {
+		defer r.server.treeStores.end(key)
 		ctx, cancel := context.WithTimeout(storing, storeTreesTimeout)
 		defer cancel()
 		if err := texttrees.New(background).StoreTrees(ctx, r.mode, built); err != nil {
@@ -386,6 +404,106 @@ func (r *displayTreeReader) storeOf(missing []int) {
 				"mode", int(r.mode), "texts", len(built), "error", err)
 		}
 	})
+}
+
+// treeStores is a server's bound on the stores of display trees its reads leave running behind
+// them (storeOf), all of which go to its one store's background pool.
+//
+// At most limit run at once: half the background pool's connections, three of its six
+// (store.Pool.Background), read off the pool itself as the delivery sweep's resume workers read
+// their half of it (resumeWorkers). Each store holds one connection at a time, so the stores
+// together hold at most that half and every other loop sharing the pool - the sweep's workers, the
+// mention sender's claims, the background loops - keeps the other. A store that finds limit
+// running is skipped rather than queued: the tree it would store is a saving for the next reader,
+// who reads the text again where it is missing, and a queue of them would be the unbounded wait
+// this bound is here to end.
+//
+// One store runs for each set of texts at a time, keyed by the mode they were read in and the
+// sorted sums of the texts (treeStoreKeyOf): readers of the same answer at once - a list a page
+// and its neighbours read together after a restart - each find the same trees missing, and only
+// the first stores them; the others store nothing and are not counted as skipped, since their
+// trees are being stored. The zero value is ready to use.
+type treeStores struct {
+	mu sync.Mutex
+	// limit is half the background pool's connections, read off the pool on the first store.
+	limit    int
+	running  int
+	inFlight map[treeStoreKey]struct{}
+}
+
+// treeStoreKey names one store's set of texts (treeStoreKeyOf).
+type treeStoreKey struct {
+	mode pmdoc.DisplayMode
+	// sums is the texts' sums, sorted and laid end to end.
+	sums string
+}
+
+// treeStoreKeyOf is the key of a store of trees read in mode: the mode and the trees' sums,
+// sorted, so two readers that found the same texts missing in any order name one store. It sorts
+// trees, the store's own list, by sum, which the store does not mind.
+func treeStoreKeyOf(mode pmdoc.DisplayMode, trees []texttrees.Tree) treeStoreKey {
+	slices.SortFunc(trees, func(a, b texttrees.Tree) int { return bytes.Compare(a.Sum[:], b.Sum[:]) })
+	sums := make([]byte, 0, len(trees)*len(texttrees.Tree{}.Sum))
+	for _, tree := range trees {
+		sums = append(sums, tree.Sum[:]...)
+	}
+	return treeStoreKey{mode: mode, sums: string(sums)}
+}
+
+// begin answers whether the store keyed by key may start now, and counts it running where it may:
+// false where a store of the same texts runs already, and false, counting a skip in skips, where
+// half background's connections' worth of stores run already. A store that began ends with end.
+func (t *treeStores) begin(key treeStoreKey, background *store.Pool, skips *TreeStoreCounts) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, storing := t.inFlight[key]; storing {
+		return false
+	}
+	if t.limit == 0 {
+		t.limit = max(1, int(background.Stat().MaxConns())/2)
+	}
+	if t.running >= t.limit {
+		skips.noteSkip()
+		return false
+	}
+	if t.inFlight == nil {
+		t.inFlight = make(map[treeStoreKey]struct{})
+	}
+	t.inFlight[key] = struct{}{}
+	t.running++
+	return true
+}
+
+// end is the end of a store that began (begin), whatever it answered.
+func (t *treeStores) end(key treeStoreKey) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.inFlight, key)
+	t.running--
+}
+
+// TreeStoreCounts counts the stores of display trees one API server's reads skipped because as
+// many as treeStores allows already ran: the dispatch_display_tree_stores_skipped_total counter
+// of the metrics endpoint. cmd/dispatch makes one, hands it to its API server (Deps.TreeStores)
+// and reads it there, as it reads HeartbeatCounts, so two servers in one process - a test's -
+// count apart. A nil TreeStoreCounts counts nothing and reads zero.
+type TreeStoreCounts struct {
+	skipped atomic.Uint64
+}
+
+// Skipped is how many stores of display trees the server's reads skipped.
+func (c *TreeStoreCounts) Skipped() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.skipped.Load()
+}
+
+// noteSkip counts one store skipped.
+func (c *TreeStoreCounts) noteSkip() {
+	if c != nil {
+		c.skipped.Add(1)
+	}
 }
 
 // treeStorePool is the pool a read's own store of the trees it built runs on: the background

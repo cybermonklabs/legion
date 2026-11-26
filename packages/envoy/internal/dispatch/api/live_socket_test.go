@@ -21,7 +21,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1334,4 +1338,119 @@ func TestAnIdleDeliverySocketIsSentAHeartbeat(t *testing.T) {
 	if data := client.take(t, "the heartbeat"); string(data) != `{"type":"heartbeat"}` {
 		t.Fatalf("an idle socket's first frame = %s, want {\"type\":\"heartbeat\"} alone", data)
 	}
+}
+
+// A live socket's upgrade whose caller's resolution reads the request pool resolves it under a
+// place of that pool's share outside admission, and gives the place back before the upgrade's
+// answer (liveSocketHandler, underOutsidePlace, serveLiveSocket). The caller here is the header
+// identity's, whose resolution records the person on the request pool. With every place held the
+// upgrade waits its wait for one and is refused before the upgrade, 503 DATABASE_BUSY with
+// Retry-After, its resolution never made, so it read nothing of the pool; with the places free it
+// upgrades, and at the moment the server writes the upgrade's answer on the connection its place
+// is free again, so the open socket holds none.
+func TestALiveSocketUpgradeResolvesItsCallerUnderAPlaceGivenBackBeforeItsAnswer(t *testing.T) {
+	t.Parallel()
+	limits := admission.DefaultLimits()
+	limits.OutsideWait = 100 * time.Millisecond
+	limiter := admission.New(limits)
+	database := storetest.Open(t)
+	resolutions := &countedIdentity{Identity: headerIdentity(database)}
+	atAnswer := &placesAtFirstWrite{outside: limiter.Outside()}
+	rig := newLiveSocketRig(t, testServerOptions{store: database, identity: resolutions, admission: limiter}, atAnswer.listen)
+
+	release := holdTheShareOutsideAdmission(t, limiter.Outside())
+	testcleanup.Add(t, release)
+	conn, response, err := dialLive(t, gws.DefaultDialer, rig.url, asUser("alice"))
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("the upgrade went through with every place of the share outside admission held")
+	}
+	if response == nil || response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != admission.RetryAfter {
+		t.Fatalf("the upgrade refused a place was answered %v (err %v), want 503 with Retry-After: %s", response, err, admission.RetryAfter)
+	}
+	if made := resolutions.logins.Load(); made != 0 {
+		t.Fatalf("the refused upgrade resolved its caller %d times, want none: it read the request pool with no place", made)
+	}
+	if refused := limiter.Outside().Stats().Refused[admission.LiveSocketAdmission]; refused != (admission.OutsideRefusals{WaitExceeded: 1}) {
+		t.Fatalf("live socket upgrades refused %+v, want the one whose wait ran out", refused)
+	}
+
+	release()
+	rig.dial(t, asUser("alice"))
+	if made := resolutions.logins.Load(); made != 1 {
+		t.Fatalf("the upgrade resolved its caller %d times, want once", made)
+	}
+	if held := atAnswer.at(t, 1); held != 0 {
+		t.Fatalf("%d places of the share were held when the server wrote the upgrade's answer, want none: the socket's resolution keeps its place past the upgrade", held)
+	}
+}
+
+// countedIdentity is an identity that counts the resolutions it was asked for.
+type countedIdentity struct {
+	identity.Identity
+	logins atomic.Int32
+}
+
+func (i *countedIdentity) Login(r *http.Request) (string, error) {
+	i.logins.Add(1)
+	return i.Identity.Login(r)
+}
+
+// placesAtFirstWrite wraps the server's listener so a test reads, for each connection the server
+// accepts, in the order it accepts them, how many places of outside were held at the server's
+// first write on it: its answer's first bytes, the 101 of an upgrade among them.
+type placesAtFirstWrite struct {
+	outside *admission.Outside
+	mu      sync.Mutex
+	held    []int
+}
+
+func (p *placesAtFirstWrite) listen(listener net.Listener) net.Listener {
+	return placesListener{Listener: listener, places: p}
+}
+
+// at waits for the nth connection's first write and answers the places held at it.
+func (p *placesAtFirstWrite) at(t *testing.T, n int) int {
+	t.Helper()
+	return testwait.Until(t, fmt.Sprintf("the server's first write on connection %d", n), func() (int, bool) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if n >= len(p.held) || p.held[n] < 0 {
+			return -1, false
+		}
+		return p.held[n], true
+	})
+}
+
+type placesListener struct {
+	net.Listener
+	places *placesAtFirstWrite
+}
+
+func (l placesListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return conn, err
+	}
+	l.places.mu.Lock()
+	defer l.places.mu.Unlock()
+	l.places.held = append(l.places.held, -1)
+	return &placesConn{Conn: conn, places: l.places, index: len(l.places.held) - 1}, nil
+}
+
+type placesConn struct {
+	net.Conn
+	places *placesAtFirstWrite
+	index  int
+	once   sync.Once
+}
+
+func (c *placesConn) Write(p []byte) (int, error) {
+	c.once.Do(func() {
+		held := c.places.outside.Stats().InUse
+		c.places.mu.Lock()
+		defer c.places.mu.Unlock()
+		c.places.held[c.index] = held
+	})
+	return c.Conn.Write(p)
 }

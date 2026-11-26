@@ -121,10 +121,13 @@ func (rec *recorder) ReadFrom(body io.Reader) (int64, error) {
 // writerOnly hides every method of its writer but Write.
 type writerOnly struct{ io.Writer }
 
-func (rec *recorder) Flush() {
-	if flusher, ok := rec.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
+func (rec *recorder) Flush() { _ = rec.FlushError() }
+
+// FlushError is Flush answering what the flush met, so a layer inside that flushes the last of an
+// answer under a bound of its own learns that its reader did not take it (api's servedAsRead):
+// http.ResponseController stops at the first writer that only flushes, and answers nil.
+func (rec *recorder) FlushError() error {
+	return http.NewResponseController(rec.ResponseWriter).Flush()
 }
 
 // Hijack serves the websocket upgrade, which writes its own answer on the connection it takes.

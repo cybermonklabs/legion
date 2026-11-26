@@ -180,6 +180,11 @@ type Deps struct {
 	// Heartbeats counts what those checks met (HeartbeatCounts), which cmd/dispatch reads on its
 	// metrics endpoint; nil counts nothing.
 	Heartbeats *HeartbeatCounts
+	// TreeStores counts the stores of display trees a read left to run behind it that were
+	// skipped because as many as the background pool's half already ran (TreeStoreCounts,
+	// displayTreeReader.storeOf), which cmd/dispatch reads on its metrics endpoint; nil counts
+	// nothing.
+	TreeStores *TreeStoreCounts
 	// Admission admits every table route's request but the test hooks' (register); nil is a
 	// Limiter at admission.DefaultLimits. A test sets a small one to fill it.
 	Admission *admission.Limiter
@@ -367,6 +372,8 @@ type DepsInput struct {
 	StreamHeartbeat time.Duration
 	// Heartbeats is Deps.Heartbeats.
 	Heartbeats *HeartbeatCounts
+	// TreeStores is Deps.TreeStores.
+	TreeStores *TreeStoreCounts
 	// Admission, ReadDeadline and DownloadDeadline are Deps.Admission, Deps.ReadDeadline and
 	// Deps.DownloadDeadline.
 	Admission        *admission.Limiter
@@ -512,6 +519,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
 		Heartbeats:             input.Heartbeats,
+		TreeStores:             input.TreeStores,
 		Admission:              input.Admission,
 		ReadDeadline:           input.ReadDeadline,
 		DownloadDeadline:       input.DownloadDeadline,
@@ -546,7 +554,11 @@ type server struct {
 	routeIndex []routeIndexEntry
 	// outside is the request pool's share admission does not hand out, the places of which the
 	// work outside admission that reads the pool takes before it does (admission.Outside): a DPoP
-	// decision (decideBrokerToken) and a socket's heartbeat check (whileCallerResolves). register
+	// decision (decideBrokerToken), a socket's heartbeat check (whileCallerResolves), a document
+	// socket's admission reads (docs.Service.ServeHTTP, on the same limiter's share), a live
+	// socket's upgrade where resolving its caller reads the pool and a stream's caller and run
+	// before its answer (underOutsidePlace), and each poll of a stream after, which takes its
+	// place without waiting and skips its tick where none is free (streamGoingAnswer). register
 	// takes it from the limiter every row is admitted by; a server a test builds directly has
 	// none, and a nil Outside limits nothing.
 	outside *admission.Outside
@@ -720,6 +732,9 @@ type server struct {
 	// http.Server.Shutdown finishes the requests in flight. A send bound to lifetime instead
 	// was cut off by SIGTERM, which cancels that context before the HTTP drain even begins.
 	detached backgroundWork
+	// treeStores bounds the stores of display trees this server's reads leave running behind
+	// them, and starts one store for each set of texts at a time (displayTreeReader.storeOf).
+	treeStores treeStores
 	// requestKeyLease, requestKeyRenewal and requestKeyRunLimit replace a keyed request's lease
 	// (IdempotencyLease, a minute), how often a running handler renews it (keyedLeaseRenewal) and
 	// how long a handler runs (keyedHandlerLimit); zero, which every server the deployment builds
@@ -1112,10 +1127,13 @@ const defaultReadDeadline = 20 * time.Second
 // and the drain is outside admission so that admission's own 429 waits for the body as every other
 // early answer does (drainBeforeAnswer), rather than draining it a second way. The drain is also
 // where a write's body gets the bounds it arrives under (drainedBody): a write with no room to
-// run in reads its body there before it waits for room (admitted), and one admitted at once
-// parks its units at that body's first read, so a body a client trickles holds none of them
-// either way. A test hook is neither admitted nor bounded: it is a test's own; nor is a stream
-// (apiRoute.Streams), which its reader holds open for the run behind it. The broker token's
+// run in reads its body there before it waits for room (admitted), unless it presents no
+// credential or its class's queue has no place for it, either of which is answered before a byte
+// of the body is read, and one admitted at once parks its units at that body's first read, so a
+// body a client trickles holds none of them either way. A test hook is neither admitted nor
+// bounded: it is a test's own; nor is a stream admitted (apiRoute.Streams), which its reader holds
+// open for the run behind it: its reads of the request pool take places of the pool's share
+// admission leaves instead (underOutsidePlace, streamGoingAnswer). The broker token's
 // decision is outside admission too, and writes on the request pool, so it takes a place of that
 // pool's share admission leaves instead, waiting up to a second for one, and is refused
 // admission's own 429 where it is refused one (decideBrokerToken, admission.Outside); it is inside
@@ -1205,12 +1223,15 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 		// A stream takes no admission unit (apiRoute.Streams): its reader holds it open for
 		// the run behind it, and a unit of the read class held for all of that would be held
 		// against every other read, where the polls that fill it take a request-pool
-		// connection only while each one runs. The live socket register mounts outside the
-		// table is served the same way.
+		// connection only while each one runs. Its reads of the request pool before its answer -
+		// its caller's resolution and its run's - hold one place of the pool's share admission
+		// leaves instead, given back before the answer begins, and each poll after takes one
+		// without waiting (underOutsidePlace, streamGoingAnswer). The live socket register
+		// mounts outside the table is served the same way (liveSocketHandler).
 		if route.Streams {
-			handler = inside.ServeHTTP
+			handler = s.underOutsidePlace(admission.Stream, s.presentsCredential, inside.ServeHTTP)
 		} else {
-			handler = admitted(limiter, route.Weight, route.Lane, inside)
+			handler = s.admitted(limiter, route.Weight, route.Lane, route.Auth == authPublic, inside)
 		}
 	}
 	// Outside admission, which it comes before, and inside the drain, so its refusal for room
@@ -1279,6 +1300,17 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 // either way the wait it then has is the one wait the queue costs it, so no write is refused for
 // waiting twice.
 //
+// Two writes with no room are answered before a byte of their body is read (readBeforeQueueing),
+// since the body is read before any layer that resolves the caller runs and before the queue can
+// refuse it, and an upload's is spooled to disk past its first MiB (spoolBody): while the write
+// class was busy, clients that sent no credential and trickled 25 MiB bodies each held 25 MiB of
+// disk to be answered 429. A write that presents no credential (presentsCredential) is refused as
+// its resolution refuses it, 401, as it would be after the read; no row of the table takes a
+// write from nobody - its two public rows are reads - and public keeps the read for a row that
+// would. A write whose class's queue already holds its cap is refused as Admit would refuse it,
+// 429 OVERLOADED with Retry-After: 1 (admission.Arrival.RefusedAtOnce). Either body is then
+// drained and discarded, as every early answer's is (drainBeforeAnswer).
+//
 // The ticket goes to the drain's body as well as to the context: a body still arriving after its
 // request was admitted parks it, so a client still sending holds none of the units
 // (drainedBody.park). A body that did not arrive is answered by the drain
@@ -1317,7 +1349,7 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 // it arrived, and in one that has stood a whole wait as its newest waiter, rather than behind
 // everything that arrived while it waited: before that a lane route cost up to two whole waits,
 // one in the lane and a fresh one in its class (INFRA-592).
-func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handler contextHandler) http.HandlerFunc {
+func (s *server) admitted(limiter *admission.Limiter, weight int, lane admission.Lane, public bool, handler contextHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrival := limiter.Arrive(admission.ClassOf(r.Method), weight)
 		if lane != admission.NoLane {
@@ -1335,7 +1367,7 @@ func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handl
 		}
 		ticket := arrival.AdmitNow()
 		if ticket == nil {
-			if body, drained := r.Body.(*drainedBody); drained && !body.readWhole() {
+			if body, drained := r.Body.(*drainedBody); drained && !s.readBeforeQueueing(w, r, body, arrival, public) {
 				return
 			}
 			var err error
@@ -1360,6 +1392,26 @@ func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handl
 		}
 		handler(ctx, w, r)
 	}
+}
+
+// readBeforeQueueing reads a write's body whole before the write waits for room
+// (drainedBody.readWhole) and reports whether it goes on to wait, having answered it where it
+// does not. A write that presents no credential, on a row that is not public, is answered as its
+// resolution answers it - 401, read off the request alone (presentsCredential) - and one whose
+// class's queue has no place left is answered admission's 429 (admission.Arrival.RefusedAtOnce),
+// each with nothing of its body read (admitted says why).
+func (s *server) readBeforeQueueing(w http.ResponseWriter, r *http.Request, body *drainedBody, arrival *admission.Arrival, public bool) bool {
+	if !public && !s.presentsCredential(r) {
+		if _, _, err := s.optionalActor(r); err != nil {
+			s.writeAuthenticationError(w, r, err)
+			return false
+		}
+	}
+	if refusal := arrival.RefusedAtOnce(); refusal != nil {
+		admission.WriteRefused(w, refusal)
+		return false
+	}
+	return body.readWhole()
 }
 
 // contextHandler is a layer handed the context its request is to run under beside the request,
@@ -1445,12 +1497,21 @@ func answerRefusedTakeBack(w http.ResponseWriter, ticket *admission.Ticket) {
 // (boundsAnswerFloor, leaveOutOfAnswerFloor): the time its reads of the file store take is the
 // store's pace, not its reader's, and the store is held to a floor of its own (storeBody).
 //
-// The last of an answer leaves under the bound as the rest of it did: net/http holds what the
-// handler wrote last in its response buffer and the connection's, and writes them after the
-// handler returns, over a connection whose deadline was lifted and a server that sets no
-// WriteTimeout, so a reader that stopped just before the end held the goroutine and the
-// connection until TCP gave up and the access line read status=200 with every byte accounted
-// for. The flush sends them here instead, armed as every other write is (boundedAnswer.sent).
+// The last of an answer leaves under the bound as the rest of it did. net/http holds what the
+// handler wrote last in its response buffer and the connection's and writes them after the
+// handler returns, on a server that sets no WriteTimeout, so a reader that stopped just before the
+// end held the goroutine and the connection until TCP gave up, and the access line read
+// status=200 with every byte accounted for. The flush sends them here instead, armed as every
+// other write is (boundedAnswer.sent). The compression layer, which sits outside this one, holds
+// the last bytes of a gzipped answer, its final block and trailer, until the answer is over: the
+// answer is ended here, before that flush (answerEnder, compressingWriter.finish), where it was
+// ended once the chain had returned to the compression layer, past the bound, and its trailer went
+// out after the flush with no deadline on the connection. What net/http writes after the handler
+// returns - a chunked answer's terminator, and an answer net/http still measures - goes out under
+// the bound too: it is armed once more as the handler returns and left on the connection, which
+// net/http takes it off itself once its own last writes are done (go1.27's conn.serve sets the
+// write deadline to zero after finishRequest), so a deadline left here reaches no later request on
+// the connection.
 //
 // An answer any of whose writes failed or fell short, the flush of its last bytes included, is
 // cut: the header is already on the wire, so the client cannot be told the connection is
@@ -1484,7 +1545,8 @@ func (s *server) servedAsRead(deadline time.Duration, untilAnswer bool, pin bool
 			},
 			beginsAnswer: beginsAnswer,
 		}
-		defer answer.lift()
+		// No lift: the handler's return arms the bound once more for net/http's own last writes
+		// (below), and net/http takes it off after them.
 		ctx = boundsAnswerFloor(ctx, answer)
 		unpin := func() {}
 		if pin {
@@ -1493,12 +1555,16 @@ func (s *server) servedAsRead(deadline time.Duration, untilAnswer bool, pin bool
 		}
 		handler(answer, r.WithContext(ctx))
 		unpin()
+		if ender, ok := w.(answerEnder); ok && answer.failure == nil {
+			ender.finish()
+		}
 		answer.cut(answer.sent())
 		if answer.failure != nil {
 			slog.Info("dispatch: a read's answer was cut: its reader did not take all of it",
 				"path", r.URL.Path, "written", answer.moved, "until_answer", untilAnswer, "error", answer.failure)
 			panic(http.ErrAbortHandler)
 		}
+		answer.arm()
 	}
 }
 
@@ -1516,10 +1582,17 @@ const liveSocketPattern = "/ws/live"
 // is admitted by whichever credential optionalActor resolves - a bearer, a broker-issued token or
 // a sign-in cookie - so its heartbeat resolves that same credential again
 // (callerStillResolves).
+//
+// The upgrade's resolution of its caller is request-pool work outside admission where it reads
+// that pool - a personal token's row, which the read-only gate resolves, and a sign-in cookie's
+// session, which serveLiveSocket does - so it holds a place of the pool's share admission leaves
+// from before the gate to just before the upgrade's answer (underOutsidePlace), and an open
+// socket holds none. A restart's reconnect sends every page's socket through here at once.
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
-		s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
-			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock())
+		s.underOutsidePlace(admission.LiveSocketAdmission, s.resolutionReadsRequestPool,
+			s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
+				trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve)))))), s.clock())
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1710,6 +1783,38 @@ func (s *server) takeHeartbeatPlace(r *http.Request) (*http.Request, *admission.
 		return nil, nil, err
 	}
 	return r.WithContext(admission.WithPlace(r.Context(), place)), place, nil
+}
+
+// underOutsidePlace serves handler holding a place of the request pool's share outside admission
+// for user (admission.Outside.Hold), where needs says r's work reads that pool: work admission
+// does not count - a live socket's upgrade, a stream - whose reads of the request pool before its
+// answer otherwise waited on the pool with nothing bounding how many did. The place rides on r's
+// context (admission.WithPlace), so the caller's resolution gives it back while it waits on an
+// issuer and takes it again after (admission.GiveBack; identity.Membership.Confirm,
+// identity.IAPIdentity.Login), as a document socket's does. handler gives it back where its reads
+// end, before its answer is written (serveLiveSocket, streamGoingAnswer), and this gives it back
+// as handler returns, on every other way out.
+//
+// A request that finds every place held waits for one, behind the work that asked before it, for
+// at most a second (Limits.OutsideWait). One refused a place - the queue for one full, or its
+// second run out - reads nothing and is answered as a request the pool had no room for, 503
+// DATABASE_BUSY with Retry-After, as a document socket refused a place is answered 503 with
+// Retry-After before its upgrade; one whose client left while it waited is answered nothing
+// (writeHandlerError). A request whose work reads no pool takes none.
+func (s *server) underOutsidePlace(user admission.OutsideUser, needs func(*http.Request) bool, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !needs(r) {
+			handler(w, r)
+			return
+		}
+		place, err := s.outside.Hold(r.Context(), user)
+		defer place.Release()
+		if err != nil {
+			s.writeHandlerError(w, r, fmt.Errorf("%w: %w", store.ErrPoolBusy, err))
+			return
+		}
+		handler(w, r.WithContext(admission.WithPlace(r.Context(), place)))
+	}
 }
 
 // HeartbeatCounts counts what the heartbeat checks of one API server's sockets met
@@ -1961,6 +2066,50 @@ func (s *server) requestCredential(r *http.Request) (credentialKind, string) {
 		return serviceTokenCredential, token
 	}
 	return personalTokenCredential, token
+}
+
+// presentsCredential reports whether r presents a credential its caller could be resolved by at
+// all, judged on r alone with nothing read: every credential requestCredential names but a blank
+// bearer, and for a request with no Authorization header a browser credential the identity
+// service could resolve (identity.Presents). A request that presents none is refused by its
+// resolution - 401, or 500 on a server with no identity service - before that resolution reads
+// anything, so work that holds something of the server's for a request before its caller is
+// resolved - a write's body read before it waits for room (admitted), a stream's place of the
+// request pool's share (underOutsidePlace) - asks this first, and such a request costs none of it.
+func (s *server) presentsCredential(r *http.Request) bool {
+	switch kind, _ := s.requestCredential(r); kind {
+	case emptyBearerCredential:
+		return false
+	case signInCookieCredential:
+		return s.presentsBrowserCredential(r)
+	}
+	return true
+}
+
+// resolutionReadsRequestPool reports whether resolving r's caller reads the request pool, where
+// nothing has decided that caller yet: a personal token's row, and a browser credential's session,
+// or the person record an IAP assertion's Login writes (readsRequestPool). A broker-issued token
+// is decided before (decideBrokerToken), under a place of its own, the shared token and a
+// service-account token read no pool, and a request that presents nothing to resolve reads
+// nothing (presentsCredential).
+func (s *server) resolutionReadsRequestPool(r *http.Request) bool {
+	if _, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided {
+		return false
+	}
+	kind, _ := s.requestCredential(r)
+	switch {
+	case !kind.readsRequestPool(), kind == emptyBearerCredential:
+		return false
+	case kind == signInCookieCredential:
+		return s.presentsBrowserCredential(r)
+	}
+	return true
+}
+
+// presentsBrowserCredential reports whether r presents a browser credential this server's
+// identity service could resolve (identity.Presents); a server with none resolves no browser.
+func (s *server) presentsBrowserCredential(r *http.Request) bool {
+	return s.deps.Identity != nil && identity.Presents(s.deps.Identity, r)
 }
 
 // optionalActor resolves the request's caller by the credential it presents (requestCredential),

@@ -503,7 +503,7 @@ func (g *hubGeneration) readContext() context.Context {
 // hold every connection of theirs. The intake reads one statement at a time, the worker's
 // recompute at most concurrentReadWeight at once and the seed one statement at a generation's
 // start (seedEvents), which with the event stream relay's one read and an events subscription's
-// replay (replayThrough) are the live pool's readers.
+// head check (eventSubscriptionCheck) and replay (replayThrough) are the live pool's readers.
 func (h *deliveryHub) liveRead(g *hubGeneration) (context.Context, *store.Pool, error) {
 	live, err := h.server.deps.Store.Pool.Live()
 	if err != nil {

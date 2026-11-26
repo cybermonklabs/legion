@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -423,12 +424,19 @@ func (socket *liveSocket) writeFrame(frame any) bool {
 // proved here is what each of its views is answered against (liveSocket.credential). The upgrade
 // keeps gorilla's same-origin check, so another site's page cannot open the socket with a
 // person's cookie.
+//
+// The caller's resolution, and the read-only gate's before it, hold a place of the request pool's
+// share outside admission where they read the pool (liveSocketHandler); it goes back once the
+// caller is resolved, before the upgrade's answer is written, so an open socket holds none of the
+// share however long it lives. A place given back is held by nothing: a give-back the socket's
+// work makes later on its context gives back nothing (admission.GiveBack).
 func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, r, err)
 		return
 	}
+	admission.PlaceFrom(r.Context()).Release()
 	upgrader := gws.Upgrader{EnableCompression: true, ReadBufferSize: liveSocketReadBuffer}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {

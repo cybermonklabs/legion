@@ -581,8 +581,10 @@ func main() {
 	// heartbeat checks take theirs (admission.Outside, docs.Deps.Outside).
 	limiter := admission.New(admission.DefaultLimits())
 	// The API server's socket heartbeat counts, which the metrics endpoint reads as well
-	// (dispatch_socket_heartbeat_transient_failures_total, ..._ceiling_closes_total).
+	// (dispatch_socket_heartbeat_transient_failures_total, ..._ceiling_closes_total), and its
+	// count of the display-tree stores its reads skipped (dispatch_display_tree_stores_skipped_total).
 	heartbeats := &api.HeartbeatCounts{}
+	treeStores := &api.TreeStoreCounts{}
 	documentService := newDocumentService(boot, docs.Deps{
 		Store:       database,
 		Events:      broker,
@@ -662,6 +664,7 @@ func main() {
 		Lifetime:       ctx,
 		Admission:      limiter,
 		Heartbeats:     heartbeats,
+		TreeStores:     treeStores,
 		AnswersLatency: answersLatency,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
@@ -1429,6 +1432,7 @@ func main() {
 		Events:     broker,
 		Admission:  limiter,
 		Heartbeats: heartbeats,
+		TreeStores: treeStores,
 		Docs:       documentService,
 		Logs:       logs,
 		Conns:      watchedConns,

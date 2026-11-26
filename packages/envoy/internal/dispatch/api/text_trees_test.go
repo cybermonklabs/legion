@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // requireStoredTree fails unless the table holds the display tree of text, in the mode a read
@@ -336,4 +340,108 @@ func TestNoReadOfADeletedPostServesTheTreeOfItsOldText(t *testing.T) {
 	if strings.Contains(answer.Body.String(), oldWord) {
 		t.Errorf("the event log after the delete carries the old text: %s", answer.Body.String())
 	}
+}
+
+// A server runs at most half its background pool's connections of the display-tree stores its
+// reads leave behind them - three of six - and a read that finds that many running skips its
+// store, counted, and is answered all the same (treeStores, storeOf). A read of the texts a store
+// is already storing starts none and is no skip: one store a set of texts. The stores are held at
+// the table, which the test locks against every insert and leaves open to reads, so every store
+// that starts is still running when the next read comes, and the three are seen waiting on the
+// lock at once. Without the bound each read started one more, each to wait its 30 s on the
+// background pool's acquire ahead of the delivery sweep's resume workers.
+func TestAtMostHalfTheBackgroundPoolOfTreeStoresRunAtOnce(t *testing.T) {
+	t.Parallel()
+	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	skips := &TreeStoreCounts{}
+	served.deps.TreeStores = skips
+	background, err := database.Pool.Background()
+	if err != nil {
+		t.Fatalf("open the background pool: %v", err)
+	}
+	limit := int(background.Stat().MaxConns()) / 2
+	// The lock's transaction and the reads run on marks of their own: a read under a mark that
+	// holds a connection stores nothing (store.HoldsPooledConnection).
+	locking := store.WithTransactionTracking(context.Background())
+	ctx := store.WithTransactionTracking(context.Background())
+	held, err := database.Pool.Begin(locking)
+	if err != nil {
+		t.Fatalf("open the transaction that holds the stores: %v", err)
+	}
+	rolledBack := false
+	letGo := func() {
+		if !rolledBack {
+			rolledBack = true
+			_ = held.Rollback(context.Background())
+		}
+	}
+	testcleanup.Add(t, letGo)
+	if _, err := held.Exec(locking, `lock table text_trees in exclusive mode`); err != nil {
+		t.Fatalf("lock text_trees against inserts: %v", err)
+	}
+
+	texts := make([]string, limit+4)
+	for index := range texts {
+		texts[index] = fmt.Sprintf("Tree store %d of **%s** at %d.", index, t.Name(), time.Now().UnixNano())
+	}
+	read := func(text string) {
+		t.Helper()
+		reader := served.readDisplayTrees(ctx, true)
+		var field model.DisplayTree
+		reader.text(&field, text)
+		reader.resolve()
+		if len(field) == 0 {
+			t.Fatalf("the read of %q was answered no tree", text)
+		}
+	}
+
+	read(texts[0])
+	// The same texts again, while the first store runs: the display cache now holds their tree,
+	// so a fresh read would not reach the store at all, and the store is handed it directly.
+	again := served.readDisplayTrees(ctx, true)
+	var field model.DisplayTree
+	again.text(&field, texts[0])
+	tree, built := pmdoc.HeldDisplayTree(pmdoc.TextSum(texts[0]), pmdoc.DisplayLatest)
+	if !built {
+		t.Fatal("the first read left no tree of its text in the display cache")
+	}
+	again.texts[0].tree = tree
+	again.storeOf([]int{0})
+	if running, skipped := treeStoresRunning(&served.treeStores), skips.Skipped(); running != 1 || skipped != 0 {
+		t.Fatalf("a second store of the texts a store is storing left %d stores running and %d skipped, want 1 and 0: it started none", running, skipped)
+	}
+
+	for _, text := range texts[1:] {
+		read(text)
+	}
+	if running, skipped := treeStoresRunning(&served.treeStores), skips.Skipped(); running != limit || skipped != uint64(len(texts)-limit) {
+		t.Fatalf("%d reads that each found their tree missing left %d stores running and %d skipped, want %d running, half the background pool's %d connections, and the other %d skipped",
+			len(texts), running, skipped, limit, background.Stat().MaxConns(), len(texts)-limit)
+	}
+	testwait.Until(t, fmt.Sprintf("%d stores waiting on the lock at once", limit), func() (int, bool) {
+		var waiting int
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*) from pg_locks where relation = 'text_trees'::regclass and not granted
+			  and database = (select oid from pg_database where datname = current_database())
+		`).Scan(&waiting); err != nil {
+			t.Fatalf("read what waits on text_trees: %v", err)
+		}
+		return waiting, waiting == limit
+	})
+
+	letGo()
+	testwait.Until(t, "every store to end once the lock is let go", func() (int, bool) {
+		running := treeStoresRunning(&served.treeStores)
+		return running, running == 0
+	})
+	for _, text := range texts[:limit] {
+		requireStoredTree(t, database, "a store that ran", text)
+	}
+}
+
+// treeStoresRunning is how many stores stores counts running now.
+func treeStoresRunning(stores *treeStores) int {
+	stores.mu.Lock()
+	defer stores.mu.Unlock()
+	return stores.running
 }

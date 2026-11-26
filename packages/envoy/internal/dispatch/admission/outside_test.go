@@ -262,3 +262,26 @@ func TestWorkOutsideAdmissionIsRefusedOnceItsWaitRunsOut(t *testing.T) {
 		t.Fatalf("work a place came free for within its wait: %v, want it taken", err)
 	}
 }
+
+// TryTake takes a place only where one is free at once and nobody waits for one: with every place
+// held it returns false without waiting and counts a skip under its user, leaving the refusal
+// counts alone; once a place frees it takes it. A nil Outside takes every place it asks for.
+func TestTryTakeSkipsAndCountsWhenNoPlaceIsFree(t *testing.T) {
+	outside := New(Limits{OutsideWait: time.Minute}).Outside()
+	takeEveryPlace(t, outside)
+	if outside.TryTake(Stream) {
+		t.Fatal("TryTake took a place with every place held")
+	}
+	if got := outside.Stats(); got.Skipped[Stream] != 1 || got.Refused[Stream] != (OutsideRefusals{}) {
+		t.Fatalf("stats %+v, want one stream skip and no refusal", got)
+	}
+	outside.Release()
+	if !outside.TryTake(Stream) {
+		t.Fatal("TryTake found no place after one was released")
+	}
+	outside.Release()
+	var none *Outside
+	if !none.TryTake(Stream) {
+		t.Fatal("a nil Outside refused TryTake")
+	}
+}

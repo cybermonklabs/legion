@@ -143,12 +143,18 @@ func deletedPostError(kind refs.ItemKind) *apiError {
 // its calls before the database answered it, or admission refused the units it asked back - and a
 // call it never got an answer to, whose outcome is unknown, are both admission.WriteUnserved's to
 // answer, and it is asked first: a retryable 503, a 429, nothing for a client that is gone, or the
-// 500 naming the unknown outcome. Whether this request can have written is what that answer turns
-// on, and the route's method is what says so (admission.Reads): no GET of the table writes. A
-// write that waited for a document's writer gate gave its admission units back while it waited
-// (docs.Service.AcquireDocumentWriter) and found no room to take them back is one of those, its
-// refusal err itself, and is answered as admission refuses a request. Only then is err mapped to
-// the failure it names.
+// 500 naming the unknown outcome. A write that waited for a document's writer gate gave its
+// admission units back while it waited (docs.Service.AcquireDocumentWriter) and found no room to
+// take them back is one of those, its refusal err itself, and is answered as admission refuses a
+// request. Only then is err mapped to the failure it names.
+//
+// Whether this request can have written is what WriteUnserved's answer turns on, and the route's
+// method is what says so (admission.Reads), the four GET rows that write included (readClasses'
+// readWritesState): none of them hands a write's error here. The three delivery reads' insert of
+// a run's configuration warning fails open, logged, and the read answers on (firstToWarn); the
+// going stream writes its run's ending only once its answer has begun, where a failure is logged
+// and ends the stream (streamGoingAnswer, pollGoingStream). So a GET's call the database never
+// answered is a read's, and is answered as one, 503 DATABASE_BUSY.
 func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err error) {
 	if admission.WriteUnserved(w, r.Context(), err, !admission.Reads(r.Method)) {
 		return

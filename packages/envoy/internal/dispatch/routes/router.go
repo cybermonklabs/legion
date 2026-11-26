@@ -173,6 +173,9 @@ type AppContextOptions struct {
 	// Heartbeats counts what the API's socket heartbeat checks met, which main also reads for the
 	// metrics endpoint; nil counts nothing. See api.Deps.Heartbeats.
 	Heartbeats *api.HeartbeatCounts
+	// TreeStores counts the display-tree stores the API's reads skipped, which main also reads for
+	// the metrics endpoint; nil counts nothing. See api.Deps.TreeStores.
+	TreeStores *api.TreeStoreCounts
 	// RouteRosterTTL replaces how long a stored listener answer serves issue reads; zero keeps the
 	// server's five seconds. See api.Deps.RouteRosterTTL.
 	RouteRosterTTL time.Duration
@@ -269,6 +272,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		Admission:              opts.Admission,
 		Heartbeats:             opts.Heartbeats,
+		TreeStores:             opts.TreeStores,
 		OutboxPublishes:        opts.OutboxPublishes,
 		Metrics:                opts.Metrics,
 		AnswersLatency:         opts.AnswersLatency,

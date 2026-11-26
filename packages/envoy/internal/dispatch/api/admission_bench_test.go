@@ -16,7 +16,7 @@ import (
 // admitted around a handler that does nothing, on a request whose context is cancellable and
 // carries the store's mark, as net/http's and trackTransactions make every request's.
 func BenchmarkAnAdmittedRequest(b *testing.B) {
-	handler := admitted(admission.New(admission.DefaultLimits()), 1, admission.NoLane, withContext(func(http.ResponseWriter, *http.Request) {}))
+	handler := (&server{}).admitted(admission.New(admission.DefaultLimits()), 1, admission.NoLane, false, withContext(func(http.ResponseWriter, *http.Request) {}))
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil).WithContext(store.WithTransactionTracking(parent))
@@ -46,7 +46,7 @@ func BenchmarkAnAdmittedRead(b *testing.B) {
 			body := &struct {
 				Status string `json:"status"`
 			}{Status: "ok"}
-			handler := admitted(admission.New(admission.DefaultLimits()), 1, admission.NoLane,
+			handler := served.admitted(admission.New(admission.DefaultLimits()), 1, admission.NoLane, false,
 				served.servedAsRead(defaultReadDeadline, false, read.pin, func(w http.ResponseWriter, _ *http.Request) {
 					WriteJSON(w, http.StatusOK, body)
 				}))
@@ -72,7 +72,7 @@ func BenchmarkAnAdmittedRead(b *testing.B) {
 // writers registry, so the service is the zero one and no database is asked anything.
 func BenchmarkAnAdmittedWriteThroughTheWriterGate(b *testing.B) {
 	documents := new(docs.Service)
-	handler := admitted(admission.New(admission.DefaultLimits()), 1, admission.NoLane, withContext(func(_ http.ResponseWriter, r *http.Request) {
+	handler := (&server{}).admitted(admission.New(admission.DefaultLimits()), 1, admission.NoLane, false, withContext(func(_ http.ResponseWriter, r *http.Request) {
 		_, release, err := documents.AcquireDocumentWriter(r.Context(), "art-bench")
 		if err != nil {
 			b.Fatalf("take a writer gate nobody holds: %v", err)

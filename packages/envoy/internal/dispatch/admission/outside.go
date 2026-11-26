@@ -9,7 +9,7 @@ import (
 )
 
 // The request pool's work outside admission. Admission hands out MaxAdmittedUnits of the request
-// pool's store.SharedPoolSize connections; the rest are the work it does not admit, and three kinds
+// pool's store.SharedPoolSize connections; the rest are the work it does not admit, and five kinds
 // of that work take a place of OutsideLimit before they read the pool, so they hold at most that
 // share of it however many of them arrive at once:
 //
@@ -36,20 +36,33 @@ import (
 //     the first and given back before the recovery wait and the document's load, neither of which
 //     reads the request pool, and long before the hand-off, after which the handler holds its
 //     request for the socket's whole life; a socket refused a place is refused as the document
-//     service refuses a socket it cannot serve now, 503 with Retry-After.
+//     service refuses a socket it cannot serve now, 503 with Retry-After;
+//   - a live socket's upgrade, where resolving its caller reads the request pool (api's
+//     liveSocketHandler: a personal token's row, a sign-in cookie's session). It holds one place
+//     for that resolution and gives it back before the upgrade's answer is written, so an open
+//     socket holds none. A broker-issued token's upgrade is decided under its DPoP decision's own
+//     place, and the shared token and a service-account token read no pool, so none of those
+//     takes one. An upgrade refused a place is refused before the upgrade as the document socket
+//     is, 503 with Retry-After (api's 503 DATABASE_BUSY, a pool that had no room for it);
+//   - a stream's reads of the request pool (api's streamGoingAnswer, the one stream row of the
+//     table). Its caller's resolution and its run's read hold one place between them, given back
+//     before the stream's answer begins and refused as the live socket's upgrade is; each poll of
+//     the run after takes one place for its read, and for the ending that read may make it write,
+//     only where one is free at once (TryTake), and a poll that finds none skips its tick and is
+//     counted (OutsideStats.Skipped), so no stream waits on the pool, however many a run has.
 //
-// The pool's other users outside admission take none, each for a reason of its own: the live
-// socket's upgrade and an events subscription's head check are one statement for each socket
-// opened and each subscription started, where a socket's heartbeat checks every 15 s for as long as
-// the socket lives; the /auth routes and the GitHub proxy are a person's sign-in and page loads,
-// and the sign-in callback's code is single use; the going run's stream polls, and its run's
-// writes, are one person's question, one statement at a time; a broadcast's deliveries run after
-// their request's answer, four at a time for each broadcast (api's broadcastDeliveryWorkers); the
-// dashboard's assets of other builds are read through a cache that keeps them, one read in flight
-// for each. The test hooks never run in production.
+// The pool's other users outside admission take none, each for a reason of its own: an events
+// subscription's head check reads the live pool, as its replay does (api's
+// eventSubscriptionCheck); the /auth routes and the GitHub proxy are a person's sign-in and page
+// loads, and the sign-in callback's code is single use; the going run's writes are one person's
+// question, one statement at a time; a broadcast's deliveries run after their request's answer,
+// four at a time for each broadcast (api's broadcastDeliveryWorkers); the dashboard's assets of
+// other builds are read through a cache that keeps them, one read in flight for each. The test
+// hooks never run in production.
 //
-// Work that finds every place held waits for one as a heavy read waits in its lane's queue - first
-// in, first out, however long the queue has stood non-empty (fifoGate) - in a queue of at most
+// Work that finds every place held - all of it but a stream's poll, which never waits (TryTake) -
+// waits for one as a heavy read waits in its lane's queue - first in, first out, however long the
+// queue has stood non-empty (fifoGate) - in a queue of at most
 // OutsideQueueLimit, for at most a second counted from when it asked (Limits.OutsideWait). It was
 // refused at once before, and on INFRA-592's stress step (ten times the load, 1,000 editors, a
 // restart) that refused 47,962 of the 48,580 refused document sockets, skipped 4,136 heartbeat
@@ -85,9 +98,10 @@ import (
 // OutsideLimit is how many places the work outside admission may hold at once: the request
 // pool's connections admission does not hand out, unadmittedConnections, 8 of the 48. Admission's
 // own cap is the pool's size less those (MaxAdmittedUnits), so the 8 stay the 8 whatever the
-// pool's size, and admission's 40 is what moves with it. The DPoP decisions, the heartbeat checks
-// and the document sockets' admission reads together then hold no more of the pool than admission
-// leaves, however long the queue for a place. Nothing bounded them before, and the 8 did not last:
+// pool's size, and admission's 40 is what moves with it. The work above - the DPoP decisions, the
+// heartbeat checks, the document sockets' admission reads, the live sockets' upgrades and the
+// streams' reads - together then holds no more of the pool than admission leaves, however long
+// the queue for a place. Nothing bounded them before, and the 8 did not last:
 // at ten times the load with bearer tokens alone the request pool's connections in use reached 48
 // in all four of the head's steps, with up to 15 callers waiting (INFRA-592, tester round 38).
 const OutsideLimit = unadmittedConnections
@@ -99,8 +113,8 @@ const OutsideLimit = unadmittedConnections
 // (QueueFull), and work below it waits its second.
 const OutsideQueueLimit = ReadBurstFactor * OutsideLimit
 
-// OutsideUser is a kind of work that takes a place of OutsideLimit, which the refusals are counted
-// by (OutsideStats.Refused).
+// OutsideUser is a kind of work that takes a place of OutsideLimit, which the refusals and the
+// skips are counted by (OutsideStats.Refused, OutsideStats.Skipped).
 type OutsideUser int
 
 const (
@@ -114,11 +128,21 @@ const (
 	// the live server processes (docs' Service.ServeHTTP); one refused a place is answered 503
 	// with Retry-After.
 	SocketAdmission
+	// LiveSocketAdmission is a live socket's upgrade resolving its caller where that reads the
+	// request pool (api's liveSocketHandler); one refused a place is answered 503 with
+	// Retry-After before the upgrade.
+	LiveSocketAdmission
+	// Stream is a stream's reads of the request pool (api's streamGoingAnswer): its caller's
+	// resolution and its run's read before its answer begins, one place between them, refused
+	// as LiveSocketAdmission is; and each poll of its run after, which takes its place without
+	// waiting (TryTake) and skips its tick where none is free.
+	Stream
 	outsideUserCount
 )
 
 var outsideUserNames = [outsideUserCount]string{
 	DPoPDecision: "dpop_decision", HeartbeatCheck: "heartbeat_check", SocketAdmission: "socket_admission",
+	LiveSocketAdmission: "live_socket_admission", Stream: "stream",
 }
 
 func (u OutsideUser) String() string { return outsideUserNames[u] }
@@ -126,7 +150,7 @@ func (u OutsideUser) String() string { return outsideUserNames[u] }
 // OutsideUsers are the users in order, for a caller that reports on each of them (the metrics
 // endpoint).
 func OutsideUsers() []OutsideUser {
-	return []OutsideUser{DPoPDecision, HeartbeatCheck, SocketAdmission}
+	return []OutsideUser{DPoPDecision, HeartbeatCheck, SocketAdmission, LiveSocketAdmission, Stream}
 }
 
 // OutsideRefusal is work Outside gave no place: Reason is QueueFull, the queue for a place held
@@ -142,19 +166,51 @@ func (r *OutsideRefusal) Error() string {
 
 // Outside is a Limiter's places for the request-pool work outside admission (OutsideLimit), and
 // the queue the work waits in for one: a fifoGate, as a heavy read's lane is, with its own wait,
-// the one each work waits, counted from when it asks (Take), and its refusals counted by user. A
-// nil Outside limits nothing, so a server a test builds without a Limiter takes every place it
-// asks for.
+// the one each work waits, counted from when it asks (Take), and its refusals and skips counted by
+// user. A nil Outside limits nothing, so a server a test builds without a Limiter takes every
+// place it asks for.
 type Outside struct {
 	// fifoGate's limit is OutsideLimit and its wait Limits.OutsideWait, set once by New.
 	fifoGate
 
 	refused [outsideUserCount]outsideRefusalCounts
+	// skipped counts, by user, the takes that would not wait and found no place (TryTake).
+	skipped [outsideUserCount]atomic.Uint64
 }
 
 // outsideRefusalCounts counts one user's refusals by reason.
 type outsideRefusalCounts struct {
 	queueFull, waitExceeded atomic.Uint64
+}
+
+// TryTake takes a place for user's work only where one is free at once and no work waits for one,
+// and reports whether it did: a stream's poll of its run, which must not wait on the pool and
+// tries again at its next tick (api's streamGoingAnswer). It never joins the queue, so it never
+// takes a place ahead of the work waiting there, and a take that finds no place is counted as
+// skipped (OutsideStats.Skipped) rather than refused: nothing was refused an answer, and a stream
+// that stops moving under overload shows there. A caller that took a place gives it back with
+// Release.
+func (o *Outside) TryTake(user OutsideUser) bool {
+	if o == nil {
+		return true
+	}
+	if o.tryEnter() {
+		return true
+	}
+	o.skipped[user].Add(1)
+	return false
+}
+
+// tryEnter is fifoGate.enter for a caller that will not wait: it takes a place where one is free
+// and nothing waits, and reports whether it did, joining no queue either way.
+func (g *fifoGate) tryEnter() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.waiters.Len() != 0 || g.used >= g.limit {
+		return false
+	}
+	g.used++
+	return true
 }
 
 // Take takes a place for user's work and answers nil once it holds one. Where every place is held
@@ -203,9 +259,10 @@ func (o *Outside) Release() {
 
 // Hold is Take for work that gives its place back at a point of its own and must give it back on
 // every other way out as well: a document socket's admission reads, whose place goes back before
-// the socket is handed to ygo, and as the handler returns where the socket was refused, and a
-// heartbeat check. It answers the place, held, and Take's answer; where Take refused one it answers
-// a nil Place, which holds nothing.
+// the socket is handed to ygo, and as the handler returns where the socket was refused; a live
+// socket's upgrade and a stream's reads before its answer, whose place goes back before the
+// upgrade's or the stream's answer is written; and a heartbeat check. It answers the place, held,
+// and Take's answer; where Take refused one it answers a nil Place, which holds nothing.
 func (o *Outside) Hold(ctx context.Context, user OutsideUser) (*Place, error) {
 	if err := o.Take(ctx, user); err != nil {
 		return nil, err
@@ -214,8 +271,9 @@ func (o *Outside) Hold(ctx context.Context, user OutsideUser) (*Place, error) {
 }
 
 // Place is a place of Outside one work holds (Hold), which the work gives back for a wait inside
-// it on another server and takes again for what reads the pool after (GiveBack, Away.TakeBack). A
-// document socket's admission and a heartbeat check resolve their caller, and the resolution may
+// it on another server and takes again for what reads the pool after (GiveBack, Away.TakeBack).
+// Each holder resolves its caller (a document socket's admission, a live socket's upgrade, a
+// stream's reads, a heartbeat check), and the resolution may
 // wait on an issuer - a cookie whose person's confirmation has lapsed is renewed with the sign-in
 // issuer first (identity.Membership.Confirm), a round trip of up to 15 s, and an IAP assertion's
 // verification may read IAP's key set (identity.IAPIdentity.Login), one of up to 10 s - that reads
@@ -235,7 +293,9 @@ type Place struct {
 // RefusedTakeBack is the refusal of the place its work asked back after a wait on the network
 // (Away.TakeBack), and nil where none was refused, and for a nil Place. A document socket answers
 // it 429 OVERLOADED with Retry-After before its upgrade (WriteOutsideRefused,
-// docs.Service.ServeHTTP); a heartbeat check has no answer to give and skips.
+// docs.Service.ServeHTTP); a heartbeat check has no answer to give and skips. A live socket's
+// upgrade and a stream read the busy pool TakeBack answered (store.ErrPoolBusy) as every other
+// unserved read, 503 DATABASE_BUSY with Retry-After.
 func (p *Place) RefusedTakeBack() *OutsideRefusal {
 	if p == nil {
 		return nil
@@ -298,14 +358,19 @@ func PlaceFrom(ctx context.Context) *Place {
 	return place
 }
 
-// OutsideStats is what an Outside holds, queues and has refused.
+// OutsideStats is what an Outside holds, queues, has refused and has skipped.
 type OutsideStats struct {
 	// Limit is OutsideLimit, InUse the places held now, Queued the work waiting for one now and
 	// MaxQueued the most that has waited at once since the Limiter was made.
 	Limit, InUse, Queued, MaxQueued int
 	// Refused counts, by user, the work refused a place since the Limiter was made: a DPoP
-	// decision answered 429 OVERLOADED, a heartbeat check skipped, a document socket answered 503.
+	// decision answered 429 OVERLOADED, a heartbeat check skipped, a document socket answered 503,
+	// a live socket's upgrade and a stream's reads before its answer answered 503.
 	Refused [outsideUserCount]OutsideRefusals
+	// Skipped counts, by user, the takes that would not wait and found no place free (TryTake)
+	// since the Limiter was made: a stream's poll that skipped its tick. A user that waits for
+	// its place skips nothing.
+	Skipped [outsideUserCount]uint64
 }
 
 // OutsideRefusals is one user's refusals by reason.
@@ -314,8 +379,8 @@ type OutsideRefusals struct {
 }
 
 // Stats reads the counts: the places, the queue and its longest length together, and each refusal
-// count on its own, so a scrape that races a refusal may see it in one count and not yet in
-// another.
+// and skip count on its own, so a scrape that races a refusal may see it in one count and not yet
+// in another.
 func (o *Outside) Stats() OutsideStats {
 	used, queued, maxQueued := o.counts()
 	stats := OutsideStats{Limit: o.limit, InUse: used, Queued: queued, MaxQueued: maxQueued}
@@ -323,6 +388,7 @@ func (o *Outside) Stats() OutsideStats {
 		stats.Refused[user] = OutsideRefusals{
 			QueueFull: o.refused[user].queueFull.Load(), WaitExceeded: o.refused[user].waitExceeded.Load(),
 		}
+		stats.Skipped[user] = o.skipped[user].Load()
 	}
 	return stats
 }
