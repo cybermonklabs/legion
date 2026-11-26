@@ -129,7 +129,7 @@ func TestALateMentionOfASessionThatClaimedARoleGivesItNoPageOfItsOwn(t *testing.
 	}
 	// The claim store names the session and its record was written now, so every resolution of
 	// the role reads it live and holding.
-	claim := roleClaimStub{holder: holder, lastSeen: time.Now().UnixMilli()}
+	claim := liveClaim(holder)
 	outbox := holding(t, Deps{Store: database, Publisher: &recordingPublisher{}, Broker: broker,
 		RoleClaims: claim, Sessions: claim})
 	alice := model.Actor{Kind: "user", ID: "alice"}

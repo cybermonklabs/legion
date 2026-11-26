@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // webhookRedeliveryLease is the name the running sweep takes its lease under, written here as the
@@ -43,6 +45,25 @@ const webhookRedeliveryLease = "webhook-redelivery"
 func redeliverTestLeases(t *testing.T) duty.Leases {
 	t.Helper()
 	return storetest.Leases(t, storetest.Open(t).Pool)
+}
+
+// startSweep runs sweeper's loop (Sweeper.Run) every interval under leases, on a goroutine of its
+// own and a context of its own, and returns its stop: the cancel of that context, then the shared
+// wait for the loop to return. The test's cleanup cancels the context too, so a row that fails
+// before it stops the loop leaves no sweep running past it.
+func startSweep(t *testing.T, sweeper *redeliver.Sweeper, interval time.Duration, leases duty.Leases) (stop func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sweeper.Run(ctx, interval, leases)
+	}()
+	return func() {
+		cancel()
+		testwait.Receive(t, "the running sweep to return once its context ended", done)
+	}
 }
 
 // captureDefaultLogs collects what the lease itself logs, which goes to the default logger rather
@@ -75,9 +96,6 @@ func (g *countingGitHub) Redeliver(context.Context, int64) error {
 func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 	leases := redeliverTestLeases(t)
 	logs := captureDefaultLogs(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// 0: this caller stands for the other process's sweep while it is inside it, which is all
 	// this row is about, and records no sweep of its own -- so the running sweep below skips for
 	// the lease and for nothing else. It holds the lease on a context of its own, not the test's:
@@ -85,6 +103,9 @@ func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 	// inside it is one shutdown cut short, which reports false whether or not it held the lease
 	// (duty.Exclusive). The other process this caller stands for is not shutting down.
 	taken, release := make(chan struct{}), make(chan struct{})
+	// Registered before any wait or check below, so a failure there still lets the holder go.
+	releaseHolder := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseHolder)
 	held := make(chan bool, 1)
 	go func() {
 		held <- duty.Exclusive(context.Background(), leases, webhookRedeliveryLease, time.Time{}, 0, func(context.Context) {
@@ -92,32 +113,19 @@ func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 			<-release
 		})
 	}()
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other caller never took the webhook-redelivery lease")
-	}
+	testwait.Receive(t, "the other caller to take the webhook-redelivery lease", taken)
 
 	github := &countingGitHub{}
 	// State is the zero KV: a sweep that ran would reach into it for its cursor and panic,
 	// which fails this test louder still than the count below.
 	sweeper := &redeliver.Sweeper{GitHub: github, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		sweeper.Run(ctx, time.Hour, leases)
-	}()
-	for deadline := time.Now().Add(20 * time.Second); logs.count("dispatch duty: leased pass skipped", "lease="+webhookRedeliveryLease) == 0; {
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("the running sweep never reported skipping the %s lease:\n%s", webhookRedeliveryLease, logs)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-	<-done
-	close(release)
-	if !<-held {
+	stop := startSweep(t, sweeper, time.Hour, leases)
+	testwait.Until(t, "the running sweep to report skipping the "+webhookRedeliveryLease+" lease", func() (*lockedBuffer, bool) {
+		return logs, logs.count("dispatch duty: leased pass skipped", "lease="+webhookRedeliveryLease) > 0
+	})
+	stop()
+	releaseHolder()
+	if !testwait.Receive(t, "the other caller's pass to return", held) {
 		t.Fatal("the other caller never held the lease, so the sweep was free to list")
 	}
 	if calls := github.calls.Load(); calls != 0 {
@@ -213,6 +221,8 @@ func (l *sweepLease) exclusive(ctx context.Context, _ duty.Leases, name string, 
 	l.periods = append(l.periods, period)
 	l.mu.Unlock()
 	pass(ctx)
+	// The bubble's own clock, not a wait: this is where a real sweep's listing, records and
+	// lease statements would be, and the gap between two sweeps is read against it.
 	time.Sleep(sweepTime)
 	l.mu.Lock()
 	l.gave = append(l.gave, time.Now())
@@ -304,14 +314,25 @@ func TestTheRunningSweepSweepsAtStartThenWaitsMoreThanNineTenthsAndAtMostOneInte
 				}()
 				// The fourth sweep ends after four sweeps' time and the three waits between
 				// them; the fifth is due more than 0.9 of an interval later, so half of one
-				// after the fourth ends is after the fourth sweep and before the fifth.
+				// after the fourth ends is after the fourth sweep and before the fifth. The sleep
+				// is the bubble's clock moving, not a wait: nothing here runs on the machine's own.
 				fourthEnds := sweeps * sweepTime
 				for _, drawn := range tc.draws[:sweeps-1] {
 					fourthEnds += interval - drawn
 				}
 				time.Sleep(fourthEnds + interval/2)
 				cancel()
-				<-done
+				// done is read once, after every goroutine of the bubble is durably blocked
+				// (synctest.Wait), and is not waited for: a loop that ignored its cancel keeps its
+				// next sweep's timer armed, so a receive that waited for done would run the
+				// bubble's clock through that loop's sweeps until go test's alarm. The read fails
+				// such a loop by name.
+				synctest.Wait()
+				select {
+				case <-done:
+				default:
+					t.Fatal("RunUnderLease had not returned once its context ended")
+				}
 
 				took, gave := lease.times()
 				if len(took) < sweeps || len(gave) < sweeps {
@@ -366,10 +387,6 @@ func TestNoSweepOfALoneProcessIsSkippedAsAPeriodAlreadyServed(t *testing.T) {
 	const (
 		interval = 100 * time.Millisecond
 		sweeps   = 4
-		// Far longer than four sweeps of this interval take on a database that answers, so it
-		// bounds this row's liveness and measures nothing: a run that reaches it prints the
-		// lease's own log, which names what was not coming.
-		deadline = 30 * time.Second
 	)
 	leases := redeliverTestLeases(t)
 	logs := captureDefaultLogs(t)
@@ -387,22 +404,11 @@ func TestNoSweepOfALoneProcessIsSkippedAsAPeriodAlreadyServed(t *testing.T) {
 		Open:   func(context.Context) (bus.KeyValue, error) { return h.state, nil },
 		Logger: slog.New(slog.NewTextHandler(io.MultiWriter(events, swept), nil)),
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		sweeper.Run(ctx, interval, leases)
-	}()
-	for until := time.Now().Add(deadline); events.count("end") < sweeps; {
-		if time.Now().After(until) {
-			cancel()
-			<-done
-			t.Fatalf("%d sweeps in %v at an interval of %v, want %d: the running sweep did %q\n%s", events.count("end"), deadline, interval, sweeps, events.list(), logs)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-	<-done
+	stop := startSweep(t, sweeper, interval, leases)
+	testwait.Until(t, fmt.Sprintf("%d sweeps of the running sweep to end", sweeps), func() (string, bool) {
+		return fmt.Sprintf("%q with the lease's log %s", events.list(), logs), events.count("end") >= sweeps
+	})
+	stop()
 
 	// Each attempt either swept or is one of these, and each of these is a fixture of this row
 	// failing rather than the loop choosing: such an attempt ran no sweep and still left a wait,

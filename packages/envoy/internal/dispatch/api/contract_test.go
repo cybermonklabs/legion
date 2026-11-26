@@ -43,7 +43,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -81,11 +83,21 @@ type contractRig struct {
 	// machine.Service.ExpirePending) as the broker's sweeper does.
 	requestMachine *requests.Machine
 	machineLogins  *machine.Service
+	// clock is the fake both services stamp each pending deadline from (requests.Machine.Now,
+	// machine.Service.Now), PendingTTL after its moment. It stands still at the broker database's
+	// own moment as the rig was made, in whole seconds: the database judges each deadline
+	// against its now(), so a live row reads pending, and a row requires the stamp exact.
+	clock *clocktest.Fake
 }
 
 func newContractRig(t *testing.T) *contractRig {
 	t.Helper()
 	brokerStore := brokerstoretest.Open(t)
+	var start time.Time
+	if err := brokerStore.Pool.QueryRow(context.Background(), `select date_trunc('second', clock_timestamp())`).Scan(&start); err != nil {
+		t.Fatalf("read the broker database's clock: %v", err)
+	}
+	stamps := clocktest.New(start)
 
 	local := secrets.NewLocal(
 		policytest.Secret("DEEL_API_KEY", contractApprover, policy.TierHuman, "deel-v1"),
@@ -107,20 +119,20 @@ func newContractRig(t *testing.T) *contractRig {
 		t.Fatalf("oidc.New: %v", err)
 	}
 	enr := &enroll.Service{
-		Store: brokerStore, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: tokenVerifier},
+		Store: brokerStore, Lease: stagedAhead, Pod: enroll.K8sPodVerifier{Verifier: tokenVerifier},
 		ServiceLogins: map[string]string{contractDaemonAccount: "legion-daemon"},
 	}
 	enr.Chain = enroll.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute)
 	reqMachine := &requests.Machine{
 		Store: brokerStore, Policy: cur, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
-		Audience:   brokerServer.URL, Skew: time.Minute, Replay: enr.Replay,
+		Audience:   brokerServer.URL, Skew: time.Minute, Replay: enr.Replay, Now: stamps.Now,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute, reqMachine.Airlock)
 	provider := ciphertest.NewOAuthProvider(t, brokerStore, issuer)
 	mach := &machine.Service{
 		Store: brokerStore, Enroll: enr, Policy: cur,
-		Audience: brokerServer.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
+		Audience: brokerServer.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, Now: stamps.Now, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
 	}
 	// Dispatch calls the broker as its own listed caller: a projected ServiceAccount token of the
@@ -146,7 +158,7 @@ func newContractRig(t *testing.T) *contractRig {
 	documentService := docs.New(docs.Deps{
 		Store: dispatchDB, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
 	})
-	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 	seedPeople(t, dispatchDB, contractApprover, contractOther)
 	deps, err := NewDeps(DepsInput{
 		Store: dispatchDB, Identity: headerIdentity(dispatchDB),
@@ -157,11 +169,11 @@ func newContractRig(t *testing.T) *contractRig {
 		t.Fatalf("new dispatch API dependencies: %v", err)
 	}
 	dispatchMux := http.NewServeMux()
-	t.Cleanup(Register(dispatchMux, t.Context(), deps).Wait)
+	registerJoined(t, dispatchMux, deps)
 
 	return &contractRig{
 		Dispatch: dispatchMux, BrokerURL: brokerServer.URL, brokerStore: brokerStore, issuer: issuer, issuerKey: issuerKey,
-		requestMachine: reqMachine, machineLogins: mach,
+		requestMachine: reqMachine, machineLogins: mach, clock: stamps,
 	}
 }
 
@@ -194,7 +206,7 @@ func (rig *contractRig) newSessionEnrollment(t *testing.T, operator string) (enr
 	}
 	enrollmentID = uuid.NewString()
 	if _, err := rig.brokerStore.Pool.Exec(ctx, `insert into enrollments (id, kind, runtime_id, operator, thumbprint, launcher_credential_id, lease_expires_at)
-		values ($1,'session',$2,$3,$4,$5, now() + interval '1 hour')`, enrollmentID, "session-"+t.Name(), operator, thumbprint, credentialID); err != nil {
+		values ($1,'session',$2,$3,$4,$5, now() + make_interval(secs => $6))`, enrollmentID, "session-"+t.Name(), operator, thumbprint, credentialID, stagedAhead.Seconds()); err != nil {
 		t.Fatalf("insert enrollments: %v", err)
 	}
 	return enrollmentID, key
@@ -836,6 +848,9 @@ func (rig *contractRig) tokenLogin(t *testing.T) (string, *ecdsa.PrivateKey) {
 	t.Helper()
 	claims := rig.issuer.Claims(contractDaemonAccount, contractTokenAudience)
 	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
+	// An hour from its issue, the longest a token login takes (machine.MaxTokenLoginLifetime), and
+	// the launcher credential the login issues expires with it: the product caps this value, so it
+	// stays an hour rather than stagedAhead.
 	claims["exp"] = time.Now().Add(time.Hour).Unix()
 	key := contractSigningKey(t)
 	compact, err := record.Sign(key, rig.BrokerURL,
@@ -1002,7 +1017,8 @@ func (rig *contractRig) overdue(t *testing.T, requestID string) time.Time {
 }
 
 // expiredMachineLogin writes a machine login of contractApprover's for host whose deadline
-// passed an hour ago, with the typed code code, as the broker's device authorization writes one.
+// passed an hour before the rig's clock (contractRig.clock, the broker database's moment as the
+// rig was made), with the typed code code, as the broker's device authorization writes one.
 // A machine login's record is append-only, so its deadline is set as it is written. It answers
 // the record's id and its deadline.
 func (rig *contractRig) expiredMachineLogin(t *testing.T, host, code string) (string, time.Time) {
@@ -1018,7 +1034,7 @@ func (rig *contractRig) expiredMachineLogin(t *testing.T, host, code string) (st
 		Enrollment:      record.Enrollment{Kind: "-", RuntimeID: "-"},
 		LifetimeSeconds: new(3600),
 		RulesVersion:    "rules-v1",
-		ExpiresAt:       time.Now().Add(-time.Hour).UTC().Truncate(time.Second),
+		ExpiresAt:       rig.clock.Now().Add(-time.Hour).UTC(),
 		Code:            code,
 	}
 	if _, err := rig.brokerStore.Pool.Exec(context.Background(), `insert into credential_requests (id, body, kind, approver, code, expires_at)
@@ -1045,20 +1061,26 @@ func (rig *contractRig) dismissThroughDispatch(t *testing.T, recordID, login str
 // deadline with no sweep run: the approver's inbox holds both, the live one pending and first, the
 // overdue one expired with its deadline. Dispatch's approve and deny of the overdue one are still
 // the broker's 403 DECIDE_ON_BROKER_PAGE. After the broker's sweep ends the overdue request the
-// inbox still holds both, as they were. Another person's dismissal is refused whatever their
-// browser's body names; the approver's dismissal answers 200, and the inbox then holds the live
-// request alone.
+// inbox still holds both, as they were, and a sweep a microsecond before the live request's own
+// deadline expires nothing more. Another person's dismissal is refused whatever their browser's
+// body names; the approver's dismissal answers 200, and the inbox then holds the live request
+// alone.
 func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T) {
 	t.Parallel()
 	rig := newContractRig(t)
 	late := rig.createPendingAgentSecretRecord(t, "needed before its deadline", "DEEL_API_KEY")
 	live := rig.createPendingAgentSecretRecord(t, "needed now", "DEEL_API_KEY")
+	// The broker stamps a request's deadline PendingTTL after its clock's moment
+	// (requests.Machine.Now), the rig's fake, which stands still.
+	ttl := rig.requestMachine.PendingTTL
+	due := rig.clock.Now().Add(ttl)
 	deadline := rig.overdue(t, late.RequestID)
 	both := []string{live.RecordID + "=pending", late.RecordID + "=expired"}
 
 	rows := rig.inboxFor(t, contractApprover, both...)
-	if !rows[0].ExpiresAt.After(time.Now()) || rows[0].ApproveURL != rig.BrokerURL+"/approve/"+live.RecordID {
-		t.Fatalf("the live row = %+v, want a deadline still ahead and its page on the broker", rows[0])
+	if !rows[0].ExpiresAt.Equal(due) || rows[0].ApproveURL != rig.BrokerURL+"/approve/"+live.RecordID {
+		t.Fatalf("the live row = %+v, want the deadline %s, PendingTTL (%s) after the moment the broker's clock stood at as it recorded the request, and its page on the broker",
+			rows[0], due, ttl)
 	}
 	if !rows[1].ExpiresAt.Equal(deadline) || rows[1].Kind != "agent_secret" || !slices.Equal(rows[1].Identifiers, []string{"DEEL_API_KEY"}) {
 		t.Fatalf("the overdue row = %+v, want the DEEL_API_KEY request with its deadline %s", rows[1], deadline)
@@ -1074,10 +1096,20 @@ func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T)
 		t.Fatalf("the overdue request has %d decisions after Dispatch's approve and deny, want none", n)
 	}
 
-	if n, err := rig.requestMachine.ExpirePending(context.Background(), time.Now()); err != nil || n != 1 {
+	// The sweep runs at the overdue request's own stored deadline and a microsecond past it, the
+	// least moment it expires at (store.RequestsPastDeadline: a deadline before the sweep's), and
+	// an hour before the database's now(), so the live request, PendingTTL ahead, is not due.
+	if n, err := rig.requestMachine.ExpirePending(context.Background(), deadline.Add(time.Microsecond)); err != nil || n != 1 {
 		t.Fatalf("the broker's sweep = %d, %v; want the overdue request alone expired", n, err)
 	}
 	rig.inboxFor(t, contractApprover, both...)
+	// A sweep a microsecond before the live request's own deadline, the latest moment it is not
+	// yet due at, expires nothing more: a sweep that ended a request before its deadline ends the
+	// live one here, where the sweep above, an hour and PendingTTL before that deadline, reaches
+	// it only once it ends requests that much early.
+	if n, err := rig.requestMachine.ExpirePending(context.Background(), due.Add(-time.Microsecond)); err != nil || n != 0 {
+		t.Fatalf("the broker's sweep a microsecond before the live request's deadline %s = %d, %v; want nothing more expired", due, n, err)
+	}
 
 	refused := dispatchRequest(t, rig.Dispatch, http.MethodPost, "/api/v1/credential-requests/"+late.RecordID+"/dismiss",
 		map[string]any{"approver": contractApprover}, contractOther)
@@ -1095,8 +1127,9 @@ func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T)
 // the broker's device authorization. The approver's inbox holds both, the live one pending and
 // first, the overdue one expired with its machine and its deadline and no page. Dispatch's approve
 // and deny of the overdue one, with its own code, are the broker's 409 RECORD_TERMINAL and write
-// nothing. After the broker's machine-login sweep records it expired, the inbox still holds both;
-// the approver's dismissal answers 200, and the inbox then holds the live login alone.
+// nothing. After the broker's machine-login sweep records it expired, the inbox still holds both,
+// and after a sweep a microsecond before the live login's own deadline it still does; the
+// approver's dismissal answers 200, and the inbox then holds the live login alone.
 func TestContractExpiredMachineLoginStaysInTheInboxUntilDismissed(t *testing.T) {
 	t.Parallel()
 	rig := newContractRig(t)
@@ -1109,11 +1142,16 @@ func TestContractExpiredMachineLoginStaysInTheInboxUntilDismissed(t *testing.T) 
 		t.Fatalf("record.Sign: %v", err)
 	}
 	_, live := rig.startMachineLogin(t, machineKey, compact, contractApprover)
+	// The broker stamps a machine login's deadline PendingTTL after its clock's moment, truncated
+	// to the second (machine.Service.Now), the rig's fake, which stands still on a whole second.
+	ttl := rig.machineLogins.PendingTTL
+	due := rig.clock.Now().Add(ttl)
 	both := []string{live + "=pending", expired + "=expired"}
 
 	rows := rig.inboxFor(t, contractApprover, both...)
-	if !rows[0].ExpiresAt.After(time.Now()) {
-		t.Fatalf("the live row = %+v, want a deadline still ahead", rows[0])
+	if !rows[0].ExpiresAt.Equal(due) {
+		t.Fatalf("the live row = %+v, want the deadline %s, PendingTTL (%s) after the moment the broker's clock stood at as it recorded the login",
+			rows[0], due, ttl)
 	}
 	if !rows[1].ExpiresAt.Equal(deadline) || rows[1].Kind != record.KindLauncherCredential ||
 		!slices.Equal(rows[1].Identifiers, []string{"contract-expired-host"}) || rows[1].ApproveURL != "" {
@@ -1129,13 +1167,24 @@ func TestContractExpiredMachineLoginStaysInTheInboxUntilDismissed(t *testing.T) 
 		t.Fatalf("the overdue machine login has %d decisions after Dispatch's approve and deny, want none", n)
 	}
 
-	if err := rig.machineLogins.ExpirePending(context.Background(), time.Now()); err != nil {
+	// The sweep runs a microsecond past the overdue login's own deadline, the least moment it
+	// expires at (expires_at before the sweep's), and an hour before the database's now(), so the
+	// live login, PendingTTL ahead, is not due.
+	if err := rig.machineLogins.ExpirePending(context.Background(), deadline.Add(time.Microsecond)); err != nil {
 		t.Fatalf("the broker's machine-login sweep: %v", err)
 	}
 	var swept int
 	if err := rig.brokerStore.Pool.QueryRow(context.Background(),
 		`select count(*) from credential_request_events where record_id=$1 and event='expired'`, expired).Scan(&swept); err != nil || swept != 1 {
 		t.Fatalf("the sweep wrote %d expired events for the overdue login (%v), want one", swept, err)
+	}
+	rig.inboxFor(t, contractApprover, both...)
+	// A sweep a microsecond before the live login's own deadline, the latest moment it is not yet
+	// due at, expires nothing more, so the inbox still reads it pending: a sweep that ended a login
+	// before its deadline ends the live one here, where the sweep above, an hour and PendingTTL
+	// before that deadline, reaches it only once it ends logins that much early.
+	if err := rig.machineLogins.ExpirePending(context.Background(), due.Add(-time.Microsecond)); err != nil {
+		t.Fatalf("the broker's machine-login sweep a microsecond before the live login's deadline %s: %v", due, err)
 	}
 	rig.inboxFor(t, contractApprover, both...)
 

@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
@@ -62,30 +65,32 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 	})
 
 	process.waitHealthy(t)
-	if status, health := process.health(t); status != http.StatusOK || !health.OK || health.NATS == nil || *health.NATS {
+	if status, health := process.health(t, testwait.Context(t)); status != http.StatusOK || !health.OK || health.NATS == nil || *health.NATS {
 		t.Fatalf("/healthz while NATS is down = %d %+v, want 200 with ok true and nats false", status, health)
 	}
 	process.call(t, http.MethodGet, "/api/v1/projects", "", http.StatusOK)
 	if frame := process.openAgentView(t); frame.Type != "ended" || frame.Reason != "dropped" {
 		t.Fatalf("an agent view while NATS is down first sent %+v, want it ended as dropped", frame)
 	}
-	process.waitForLog(t, 30*time.Second, `msg="webhook redelivery sweep failed"`, "NATS is not connected")
+	process.waitForLog(t, `msg="webhook redelivery sweep failed"`, "NATS is not connected")
 
 	srv.Start(t)
-	process.waitForHealth(t, 30*time.Second, "nats true", func(health healthBody) bool {
+	process.waitForHealth(t, "nats true", func(health healthBody) bool {
 		return health.OK && health.NATS != nil && *health.NATS
 	})
-	js, err := testnats.Connect(t, natsURL).JetStream()
+
+	js, err := testnats.Connect(t, natsURL).JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
-	waitUntil(t, 30*time.Second, "the stream the process owns", func() bool {
+	testwait.Until(t, "the stream the process owns", func() (error, bool) {
 		_, err := js.StreamInfo(bus.Stream)
-		return err == nil
+		return err, err == nil
 	})
+
 	key, _ := process.createIssue(t)
 	issueTopic := "notifications.dispatch.issue." + key + "."
-	waitUntil(t, 30*time.Second, "the issue's event and the build's announcement on the stream", func() bool {
+	testwait.Eventually(t, "the issue's event and the build's announcement on the stream", func() bool {
 		var issued, announced bool
 		for _, item := range readStreamFrom(t, js, 0) {
 			if strings.HasPrefix(item.Topic, issueTopic) {
@@ -98,8 +103,9 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 		}
 		return issued && announced
 	})
+
 	for _, durable := range deliveryDurables {
-		process.waitForLog(t, 30*time.Second, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
+		process.waitForLog(t, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
 	}
 	process.requireAgentViewRelays(t, testnats.Connect(t, natsURL))
 }
@@ -108,14 +114,69 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 // lost within seconds, so /healthz reports `nats` false within five seconds of a silent cut, with
 // 200 throughout, and true again once the traffic moves. The deploy's measuring job counts its
 // limits from the cut; with nats.go's default pings the probe read true for minutes into it.
+func TestAProcessReportsASilentNATSCut(t *testing.T) {
+	t.Logf("/healthz reported the cut %s after it began", reportedSilentNATSCut(t))
+}
+
+// TestAProcessReportsASilentNATSCutWithinSeconds is the service level the probe promises: a cut
+// nothing closes is reported within seconds, not within the minutes nats.go's default pings took
+// before the probe had a read of its own. The probe's timer is inside a child process, which no
+// clock of ours reaches, so the reading is of the machine's clock and the row runs only in
+// benchtime's timing lane; that the cut is reported at all, with the process answering 200 ok
+// throughout, is TestAProcessReportsASilentNATSCut, which every run proves.
 func TestAProcessReportsASilentNATSCutWithinSeconds(t *testing.T) {
 	// Not parallel: it holds a step to a wall-clock bound load could break (the 5 s within which
 	// /healthz must report the cut).
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	if reported := reportedSilentNATSCut(t); reported > 5*time.Second {
+		t.Fatalf("/healthz took %s to report a silent cut; want it within seconds", reported)
+	}
+}
+
+// The server's NATS clients are the ones that declare a silent cut lost within seconds: serverBus,
+// the options every NATS client of the server dials with (serverClient), carries
+// bus.WithSilentCutDetection, whose pings are tighter than nats.go's own. Without it /healthz
+// reads nats true for minutes into a silent cut, which TestAProcessReportsASilentNATSCut, waiting
+// through the shared wait, still passes, since how soon the cut is reported is held only in
+// benchtime's timing lane (TestAProcessReportsASilentNATSCutWithinSeconds). This is the row of
+// every run that fails on that defect: it reads the pings a connection dialled with serverBus
+// keeps against one dialled with the detection alone.
+func TestTheServersNATSClientsDetectASilentCut(t *testing.T) {
+	_, natsURL := testnats.Start(t)
+	noEnvironment := func(string) (string, bool) { return "", false }
+	dial := func(name string, options ...bus.DialOption) *natsgo.Conn {
+		t.Helper()
+		conn, err := bus.Dial(name, []string{natsURL}, noEnvironment, options...)
+		if err != nil {
+			t.Fatalf("dial NATS as %s: %v", name, err)
+		}
+		t.Cleanup(conn.Close)
+		return conn
+	}
+	server := dial("serverBus", serverBus()...)
+	detecting := dial("silent-cut-detection", bus.WithSilentCutDetection())
+	plain := dial("no-options")
+	if detecting.Opts.PingInterval == plain.Opts.PingInterval && detecting.Opts.MaxPingsOut == plain.Opts.MaxPingsOut {
+		t.Fatalf("bus.WithSilentCutDetection pings every %v with at most %d out, as a connection without it does, so this row would tell nothing",
+			detecting.Opts.PingInterval, detecting.Opts.MaxPingsOut)
+	}
+	if server.Opts.PingInterval != detecting.Opts.PingInterval || server.Opts.MaxPingsOut != detecting.Opts.MaxPingsOut {
+		t.Errorf("a connection dialled with serverBus pings every %v with at most %d out, want bus.WithSilentCutDetection's %v and %d: without it a silent cut reads as connected for minutes",
+			server.Opts.PingInterval, server.Opts.MaxPingsOut, detecting.Opts.PingInterval, detecting.Opts.MaxPingsOut)
+	}
+}
+
+// reportedSilentNATSCut freezes the NATS server under a process, leaving its TCP connection open
+// and answering nothing, and answers how long after the freeze /healthz first reported nats
+// false. It fails t if the process ever answers anything but 200 ok while the cut is on, and
+// requires the probe to read true again once the server is thawed.
+func reportedSilentNATSCut(t *testing.T) time.Duration {
+	t.Helper()
 	database := storetest.Open(t)
 	srv, natsURL := testnats.Start(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{NATSURL: natsURL})
 	process.waitHealthy(t)
-	process.waitForHealth(t, 30*time.Second, "nats true", func(health healthBody) bool {
+	process.waitForHealth(t, "nats true", func(health healthBody) bool {
 		return health.NATS != nil && *health.NATS
 	})
 
@@ -123,25 +184,20 @@ func TestAProcessReportsASilentNATSCutWithinSeconds(t *testing.T) {
 	// Cleanups run last-in first-out, so this thaw precedes the server's shutdown.
 	t.Cleanup(thaw)
 	cut := time.Now()
-	for {
-		status, health := process.health(t)
+	reading := testwait.Context(t)
+	reported := testwait.Until(t, "/healthz to report nats false inside a silent cut", func() (time.Duration, bool) {
+		status, health := process.health(t, reading)
 		if status != http.StatusOK || !health.OK {
 			t.Fatalf("/healthz %s into a silent cut = %d %+v, want 200 with ok true", time.Since(cut), status, health)
 		}
-		if health.NATS != nil && !*health.NATS {
-			break
-		}
-		if time.Since(cut) > 5*time.Second {
-			t.Fatalf("/healthz still reports nats true %s into a silent cut", time.Since(cut))
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Logf("/healthz reported the cut %s after it began", time.Since(cut))
+		return time.Since(cut), health.NATS != nil && !*health.NATS
+	})
 
 	thaw()
-	process.waitForHealth(t, 30*time.Second, "nats true after the cut heals", func(health healthBody) bool {
+	process.waitForHealth(t, "nats true after the cut heals", func(health healthBody) bool {
 		return health.OK && health.NATS != nil && *health.NATS
 	})
+	return reported
 }
 
 // healthBody is the part of /healthz these tests read.
@@ -153,11 +209,11 @@ type healthBody struct {
 	ServiceTokens *bool `json:"service_tokens"`
 }
 
-// health reads /healthz once, bounded so a probe that hangs fails the test.
-func (p *dispatchProcess) health(t *testing.T) (int, healthBody) {
+// health reads /healthz once, under ctx: the shared wait's (testwait.Context), so a probe that
+// hangs fails the test rather than hanging it. A wait that reads it on every attempt makes ctx
+// once, before the wait.
+func (p *dispatchProcess) health(t *testing.T, ctx context.Context) (int, healthBody) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
 	if err != nil {
 		t.Fatalf("build the /healthz request: %v", err)
@@ -174,28 +230,21 @@ func (p *dispatchProcess) health(t *testing.T) (int, healthBody) {
 	return response.StatusCode, health
 }
 
-// waitForHealth waits up to within for /healthz to answer 200 with a body ready accepts.
-func (p *dispatchProcess) waitForHealth(t *testing.T, within time.Duration, what string, ready func(healthBody) bool) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		status, health := p.health(t)
-		if status == http.StatusOK && ready(health) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("/healthz never reported %s within %v; last %d %+v:\n%s", what, within, status, health, p.Output.String())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+// healthRead is one read of /healthz, as waitForHealth's reading: the status and the body.
+type healthRead struct {
+	status int
+	body   healthBody
 }
 
-// waitUntil polls done until it holds, failing the test once within has passed.
-func waitUntil(t *testing.T, within time.Duration, what string, done func() bool) {
+// waitForHealth waits for /healthz to answer 200 with a body ready accepts. Its failure prints the
+// last status and body read, and the process's output.
+func (p *dispatchProcess) waitForHealth(t *testing.T, what string, ready func(healthBody) bool) {
 	t.Helper()
-	if !testwait.Holds(within, 200*time.Millisecond, done) {
-		t.Fatalf("timed out after %v waiting for %s", within, what)
-	}
+	reading := testwait.Context(t)
+	testwait.Until(t, "/healthz to report "+what, func() (withOutput[healthRead], bool) {
+		status, health := p.health(t, reading)
+		return readWith(healthRead{status, health}, p.Output), status == http.StatusOK && ready(health)
+	})
 }
 
 // agentViewFrame is a frame the live socket sends an agent view: an agent frame (Event, Data), the
@@ -230,12 +279,12 @@ func (p *dispatchProcess) startAgentView(t *testing.T) *gws.Conn {
 	return conn
 }
 
-// nextAgentViewFrame reads conn up to the next frame of its agent view, passing over heartbeats, and
-// fails the test when none arrives within ten seconds, so a view held open with nothing in it fails
-// rather than hangs.
-func (p *dispatchProcess) nextAgentViewFrame(t *testing.T, conn *gws.Conn) agentViewFrame {
+// nextAgentViewFrame reads conn up to the next frame of its agent view, passing over heartbeats,
+// and fails the test when none arrives by deadline, the shared wait's (testwait.Context; zero for
+// none), so a view held open with nothing in it fails rather than hangs.
+func (p *dispatchProcess) nextAgentViewFrame(t *testing.T, conn *gws.Conn, deadline time.Time) agentViewFrame {
 	t.Helper()
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetReadDeadline(deadline)
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 	for {
 		var frame agentViewFrame
@@ -252,7 +301,8 @@ func (p *dispatchProcess) nextAgentViewFrame(t *testing.T, conn *gws.Conn) agent
 func (p *dispatchProcess) openAgentView(t *testing.T) agentViewFrame {
 	t.Helper()
 	conn := p.startAgentView(t)
-	frame := p.nextAgentViewFrame(t, conn)
+	deadline, _ := testwait.GiveUpAt(t)
+	frame := p.nextAgentViewFrame(t, conn, deadline)
 	_ = conn.Close()
 	return frame
 }
@@ -262,25 +312,27 @@ func (p *dispatchProcess) openAgentView(t *testing.T) agentViewFrame {
 // requires a frame the session publishes on conn to reach that view.
 func (p *dispatchProcess) requireAgentViewRelays(t *testing.T, conn *natsgo.Conn) {
 	t.Helper()
+	deadline, _ := testwait.GiveUpAt(t)
 	var view *gws.Conn
-	waitUntil(t, 30*time.Second, "an agent view to open with the session's responder verdict", func() bool {
+	testwait.Eventually(t, "an agent view to open with the session's responder verdict", func() bool {
 		view = p.startAgentView(t)
-		frame := p.nextAgentViewFrame(t, view)
+		frame := p.nextAgentViewFrame(t, view, deadline)
 		if frame.Type == "agent" && frame.Event == "responder" {
 			return true
 		}
 		_ = view.Close()
 		return false
 	})
+
 	const frame = `{"v":1,"kind":"message","seq":1}`
 	if err := conn.Publish(contracts.AgentStreamFramesSubject(streamedSessionID), []byte(frame)); err != nil {
 		t.Fatalf("publish the session's frame: %v", err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the session's frame: %v", err)
 	}
 	for {
-		got := p.nextAgentViewFrame(t, view)
+		got := p.nextAgentViewFrame(t, view, deadline)
 		if got.Type == "agent" && got.Event == "replay" {
 			continue
 		}
@@ -319,27 +371,26 @@ func (p *dispatchProcess) logged(parts ...string) bool {
 	return len(p.logLines(parts...)) > 0
 }
 
-// waitForLog waits up to within for a line holding all of parts, polling rather than sleeping a
-// fixed time, and fails the test with the process's whole output when none arrives, at once when
-// the process exits without it: a process that has exited writes no more lines.
-func (p *dispatchProcess) waitForLog(t *testing.T, within time.Duration, parts ...string) {
+// waitForLog waits for a line holding all of parts, and fails the test with the process's whole
+// output at once when the process exits without it: a process that has exited writes no more
+// lines.
+func (p *dispatchProcess) waitForLog(t *testing.T, parts ...string) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !p.logged(parts...) {
+	testwait.Until(t, fmt.Sprintf("a line holding %v", parts), func() (fmt.Stringer, bool) {
+		if p.logged(parts...) {
+			return p.Output, true
+		}
 		select {
 		case <-p.Exited:
 			// Exited closes only once the output is whole, so this read is final.
 			if p.logged(parts...) {
-				return
+				return p.Output, true
 			}
 			t.Fatalf("the process exited without a line holding %v:\n%s", parts, p.Output.String())
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no line holding %v within %v:\n%s", parts, within, p.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return p.Output, false
+	})
 }
 
 // readStreamFrom is every envelope the stream retains past head, in sequence order

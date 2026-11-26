@@ -65,9 +65,8 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 	}
 	dueNow(t, rig.database, comment.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
 	_, _, reached = eventState(t, rig.database, comment.ID)
-	t.Logf("R17 SECOND PASS: reached=%v published=%v ses-u copies=%d ses-r copies=%d",
+	t.Logf("R17 SECOND PASS: reached=%v published=%v ses-u copies received so far=%d ses-r copies received so far=%d",
 		reached, publishedAt(t, rig.database, comment.ID) != nil, len(u.received()), len(r.received()))
 	if !sentFirst {
 		t.Errorf("ses-u's author copy was not sent in the first pass: it waited for the re-read (%v)", reread.Round(10*time.Millisecond))
@@ -108,16 +107,19 @@ func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
 	})
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(500 * time.Millisecond)
-	// The sender finds no holder and fails the attempt, as it does within a round trip.
+	// The sender finds no holder and fails the attempt.
 	if _, err := rig.database.Pool.Exec(ctx, `update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1 and target = $2`,
 		firstID, target); err != nil {
 		t.Fatal(err)
 	}
 	dueNow(t, rig.database, first.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	// Both scans have run to their end, so every copy they sent ses-u is handed on before the
+	// marker settle sends after them: a third copy, or a second of either event, is read too.
+	u.settle(t)
+	received := u.received()
 	var order []string
-	for _, item := range u.receivedNow(t, rig.client) {
+	for _, item := range received {
 		order = append(order, item.DedupeKey)
 	}
 	t.Logf("R17 ORDER: event N=%d N+1=%d; ses-u received dedupe keys in order %v", first.ID, second.ID, order)

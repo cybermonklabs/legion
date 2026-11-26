@@ -14,20 +14,25 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // limitGitHub is a GitHub App API that records every request it is sent ("METHOD path
 // Authorization"): one repository (acme/web) and the installation covering it, token mints, the
 // App's installation list, and any other path answered as a read. A request to limitPath is
 // answered as GitHub answers an exhausted rate limit: 403, X-RateLimit-Remaining: 0 and a
-// Retry-After of a minute.
+// Retry-After of an hour, serverwait.MaxWait, the longest wait the client records from an answer.
+// The limit it leaves is staged state for the database's clock, not a wait, and is still in force
+// when the row reads another request under it however slow the row is: no `go test -timeout` CI
+// gives this package reaches an hour.
 type limitGitHub struct {
 	server *httptest.Server
 
@@ -88,15 +93,17 @@ func (f *limitGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	query := f.graphQL
 	f.mu.Unlock()
 	if held != nil {
-		// A client that sends fewer mints than awaited is answered anyway, a little later.
+		// The mint waits for the last of the mints awaited, or for its request to end; a client
+		// that sends fewer is held, and the test's wait for its answers names that.
 		select {
 		case <-held:
-		case <-time.After(2 * time.Second):
+		case <-r.Context().Done():
+			return
 		}
 	}
 	if limited {
 		w.Header().Set("X-RateLimit-Remaining", "0")
-		w.Header().Set("Retry-After", "60")
+		w.Header().Set("Retry-After", "3600")
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
 		return
@@ -183,13 +190,14 @@ func twoProcesses(t *testing.T, fake *limitGitHub) (database *store.Store, a, b 
 	return database, a, b
 }
 
-// passLimits moves every recorded limit's end into the past, as waiting GitHub's wait out would.
-func passLimits(t *testing.T, database *store.Store) {
-	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `update github_rate_limits set until = now() - interval '1 second'`); err != nil {
-		t.Fatalf("move the recorded limits back: %v", err)
-	}
-}
+// stagedAhead is how far past the database's clock a row of this package stages the end of a
+// rate limit the client judges against that clock (github_rate_limits.until): a limit a row
+// records itself (ratelimit.Store.Record) or holds on (githubapptest.HoldLimits). It is staged
+// state for the product's clock, not a wait: longer than any `go test -timeout` CI gives this
+// package, so the limit is still in force when the row's later request is made however slow the
+// row is. A wait GitHub's answer names is held to serverwait.MaxWait, an hour, so no answer the
+// fake gives can stage a limit longer than that.
+const stagedAhead = 24 * time.Hour
 
 // requireHeld requires err to be a limit recorded by the other process: no request was sent.
 func requireHeld(t *testing.T, err error, what string) {
@@ -209,9 +217,14 @@ func requireHeld(t *testing.T, err error, what string) {
 // REST reads and all, and it is recorded with the doubling backoff GitHub asks of a client that
 // keeps meeting one (a strike), where a primary limit ends at GitHub's own reset.
 //
-// Each shape here is one GitHub answers a limited query with, at either status.
+// Each shape here is one GitHub answers a limited query with, at either status. A wait GitHub
+// names is an hour, serverwait.MaxWait, the longest the client records, so the limit is still in
+// force when the other process's requests are read however slow the row is (no
+// `go test -timeout` CI gives this package reaches an hour); where GitHub names none, the limit is
+// its minute, which the row reads as recorded and then holds stagedAhead on
+// (githubapptest.HoldLimits).
 func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
-	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
+	reset := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
 	primary := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`
 	wording := `{"data":null,"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`
 	// GitHub answers a secondary limit at 403 with its REST-shaped body as readily, the wording
@@ -222,6 +235,8 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 		name      string
 		answer    graphQLAnswer
 		secondary bool
+		// unnamed is an answer that names no wait, which GitHub's minute stands for.
+		unnamed bool
 	}{{
 		name:   "the budget spent, at 200",
 		answer: graphQLAnswer{status: http.StatusOK, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, body: primary},
@@ -230,16 +245,18 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 		answer: graphQLAnswer{status: http.StatusForbidden, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, body: primary},
 	}, {
 		name:      "a secondary limit with a retry-after, at 200",
-		answer:    graphQLAnswer{status: http.StatusOK, header: map[string]string{"Retry-After": "60"}, body: wording},
+		answer:    graphQLAnswer{status: http.StatusOK, header: map[string]string{"Retry-After": "3600"}, body: wording},
 		secondary: true,
 	}, {
 		name:      "a secondary limit worded alone, at 403",
 		answer:    graphQLAnswer{status: http.StatusForbidden, body: wording},
 		secondary: true,
+		unnamed:   true,
 	}, {
 		name:      "a secondary limit in the body's own message, at 403",
 		answer:    graphQLAnswer{status: http.StatusForbidden, body: restWording},
 		secondary: true,
+		unnamed:   true,
 	}}
 	for _, shape := range cases {
 		t.Run(shape.name, func(t *testing.T) {
@@ -275,8 +292,8 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("github_rate_limits holds no limit under %s: %v, %v", want, found, err)
 			}
-			if recorded.Wait <= 0 {
-				t.Errorf("the limit under %s has %s left, want GitHub's own wait still in force", want, recorded.Wait)
+			if wait := githubapptest.RecordedWait(t, database, want); wait <= 0 {
+				t.Errorf("the limit under %s was recorded for %s, want GitHub's own wait", want, wait)
 			}
 			wantStrikes := 0
 			if shape.secondary {
@@ -293,6 +310,9 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 			} else if _, found, err := limits.Get(ctx, installation); err != nil || found {
 				t.Errorf("a primary GraphQL limit was recorded under %s as well: %v, %v; the GraphQL budget is not the installation's REST budget",
 					installation, found, err)
+			}
+			if shape.unnamed {
+				githubapptest.HoldLimits(t, database, stagedAhead)
 			}
 
 			// What the other process may still do under that installation: its REST reads go on
@@ -376,9 +396,11 @@ func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 		// absent is text of GitHub's answer the cause must not hold.
 		absent []string
 	}{{
+		// The limit is recorded for stagedAhead, so it is still in force when the request is
+		// made however slow the row is.
 		name: "a REST request a recorded limit holds",
 		prepare: func(t *testing.T, limits *ratelimit.Store, _ *limitGitHub) {
-			if err := limits.Record(context.Background(), InstallationScope(7), time.Minute); err != nil {
+			if err := limits.Record(context.Background(), InstallationScope(7), stagedAhead); err != nil {
 				t.Fatalf("record the installation's limit: %v", err)
 			}
 		},
@@ -387,7 +409,7 @@ func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 	}, {
 		name: "a query a recorded GraphQL limit holds before it is sent",
 		prepare: func(t *testing.T, limits *ratelimit.Store, _ *limitGitHub) {
-			if err := limits.Record(context.Background(), GraphQLScope, time.Minute); err != nil {
+			if err := limits.Record(context.Background(), GraphQLScope, stagedAhead); err != nil {
 				t.Fatalf("record the GraphQL limit: %v", err)
 			}
 		},
@@ -683,7 +705,7 @@ func TestAnInstallationsLimitMetByOneProcessHoldsTheOthersReads(t *testing.T) {
 	}
 
 	fake.limit("")
-	passLimits(t, database)
+	githubapptest.PassLimits(t, database)
 	if _, status, _, err := b.Read(ctx, tokenB, "/repos/acme/web/issues/2"); err != nil || status != http.StatusOK {
 		t.Fatalf("B's read once the limit passed: status %d, %v; want GitHub's 200", status, err)
 	}
@@ -743,7 +765,12 @@ func TestTwoConcurrentFirstMintsForOneInstallationAreBothUnderItsLimit(t *testin
 	for i := range tokens {
 		minting.Go(func() { tokens[i], errs[i] = a.Token(ctx, 7) })
 	}
-	minting.Wait()
+	minted := make(chan struct{})
+	go func() {
+		minting.Wait()
+		close(minted)
+	}()
+	testwait.Receive(t, "both of A's concurrent mints to answer, which GitHub holds until two have arrived", minted)
 	for i, err := range errs {
 		if err != nil {
 			t.Fatalf("A's concurrent mint %d: %v", i, err)
@@ -816,8 +843,8 @@ func TestTheAppsLimitMetByOneProcessHoldsTheOthersAppCalls(t *testing.T) {
 
 	fake.limit("/app/installations/9/access_tokens")
 	_, err = a.Token(ctx, 9)
-	if limited, ok := AsRateLimit(err); !ok || limited.Held || limited.Status != http.StatusForbidden || limited.Wait != time.Minute {
-		t.Fatalf("A's limited mint: err = %v, want GitHub's own 403 as a *RateLimitError of a minute", err)
+	if limited, ok := AsRateLimit(err); !ok || limited.Held || limited.Status != http.StatusForbidden || limited.Wait != time.Hour {
+		t.Fatalf("A's limited mint: err = %v, want GitHub's own 403 as a *RateLimitError of an hour", err)
 	}
 	requests := fake.count()
 	_, err = b.Token(ctx, 9)
@@ -834,7 +861,7 @@ func TestTheAppsLimitMetByOneProcessHoldsTheOthersAppCalls(t *testing.T) {
 	}
 
 	fake.limit("")
-	passLimits(t, database)
+	githubapptest.PassLimits(t, database)
 	if _, err := b.Token(ctx, 9); err != nil {
 		t.Fatalf("B's token mint once the limit passed: %v", err)
 	}
@@ -909,7 +936,7 @@ func TestARedeliveryStrikeDoesNotHoldATokenMint(t *testing.T) {
 func TestAnUnreadableLimitLetsTheRequestGo(t *testing.T) {
 	fake := startLimitGitHub(t)
 	gone := storetest.SecondProcess(t, storetest.Open(t))
-	gone.Pool.Close()
+	testwait.Returns(t, "every connection of the second process's pool to come back, so the pool closes", gone.Pool.Close)
 	client := fake.newClient(t, WithLimits(ratelimit.New(gone.Pool)))
 	if _, err := client.Token(context.Background(), 7); err != nil {
 		t.Fatalf("token mint with the limits unreadable: %v", err)

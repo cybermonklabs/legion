@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -203,8 +205,8 @@ func TestApprovalHandBackFollowsItsActorWithoutChangingTheRequester(t *testing.T
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Approval hand-back followers", "A spec")
@@ -268,7 +270,7 @@ func TestAskBlockWrittenBySessionFollowsThatSession(t *testing.T) {
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Ask block followers", "Context\n")
@@ -283,17 +285,26 @@ func TestAskBlockWrittenBySessionFollowsThatSession(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	askID := testwait.UntilPolling(t, 10*time.Millisecond, "the typed ask block to settle into the inbox", func() (string, bool) {
+	// A try that does not find the ask reads the blocks the inbox's asks name.
+	var askID string
+	testwait.Until(t, "the typed ask block to settle into the inbox", func() (string, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
+		var blocks []string
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
-			if ask.BlockID != nil && *ask.BlockID == "block-ask" {
-				return ask.ID, true
+			if ask.BlockID == nil {
+				blocks = append(blocks, "<none>")
+				continue
 			}
+			if *ask.BlockID == "block-ask" {
+				askID = ask.ID
+				return "ask " + ask.ID, true
+			}
+			blocks = append(blocks, *ask.BlockID)
 		}
-		return "", false
+		return fmt.Sprintf("the inbox holds %d asks, naming blocks %v", len(blocks), blocks), false
 	})
 	if got := readAskFollowers(t, handler, askID); strings.Join(got, ",") != "s-writer" {
 		t.Fatalf("ask block followers = %v, want [s-writer]", got)

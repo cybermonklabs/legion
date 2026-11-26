@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -296,7 +295,7 @@ func TestSearchReadsOnlyTheLatestDocumentVersion(t *testing.T) {
 		t.Fatalf("edit document: status=%d body=%s", edit.Code, edit.Body.String())
 	}
 
-	testwait.UntilPolling(t, 10*time.Millisecond, "the edit's second version of the document (the versions last counted)", func() (int, bool) {
+	testwait.Until(t, "the edit's second version of the document (the versions last counted)", func() (int, bool) {
 		var versions int
 		if err := database.Pool.QueryRow(context.Background(), "select count(*) from artifact_versions where artifact_id = $1", issue.PrimaryArtifactID).Scan(&versions); err != nil {
 			t.Fatalf("count artifact versions: %v", err)

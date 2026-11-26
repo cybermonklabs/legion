@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -55,6 +56,17 @@ type Reconcile struct {
 	// gitHubReads is what RecordGitHubReads set: each leased pass's attempt at reading GitHub
 	// goes through it, and nil records nothing.
 	gitHubReads githubreads.Recorder
+	// clock is what a pass reads its moment from (runOnce), the moment it stamps on the rows it
+	// writes; nil is the real clock, as in production, and a test sets a fake to name the moment.
+	clock clock.Clock
+}
+
+// now is the moment of a pass, on r.clock.
+func (r *Reconcile) now() time.Time {
+	if r.clock == nil {
+		return time.Now()
+	}
+	return r.clock.Now()
 }
 
 // NewReconcile builds a Reconcile, which attributes pull requests and keys their head rows with
@@ -196,7 +208,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	caller := ctx
 	ctx, attempt := githubreads.Begin(ctx)
 	defer githubreads.Finish(caller, githubreads.DeliveryReconcile, attempt, r.gitHubReads, nil)
-	now := time.Now()
+	now := r.now()
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
 	// logged. At the GetSettings arm there is no delivery_settings row to write it in, or none

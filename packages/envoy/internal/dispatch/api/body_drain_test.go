@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
@@ -111,180 +112,159 @@ func (b *heldBackBody) closedByServer() bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)
 }
 
-// deadlineListener is a test server's listener whose connections record the read deadline in
-// effect each time a read on them ended at its deadline (deadlineConn).
-type deadlineListener struct {
+// drainListener is a test server's listener whose connections record each read deadline the
+// server sets and keep it off the socket until the test says the server's clock has reached it
+// (drainConn.reach): the deadline is computed from the server's clock, which the test drives, and a
+// socket's deadline runs on the wall clock, which no test drives.
+type drainListener struct {
 	net.Listener
 	mu    sync.Mutex
-	conns map[string]*deadlineConn
+	conns map[string]*drainConn
 }
 
-func (l *deadlineListener) Accept() (net.Conn, error) {
+func (l *drainListener) Accept() (net.Conn, error) {
 	conn, err := l.Listener.Accept()
 	if err != nil {
 		return nil, err
 	}
-	recorded := &deadlineConn{Conn: conn, sent: -1}
+	held := &drainConn{Conn: conn}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.conns == nil {
-		l.conns = map[string]*deadlineConn{}
+		l.conns = map[string]*drainConn{}
 	}
-	l.conns[conn.RemoteAddr().String()] = recorded
-	return recorded, nil
+	l.conns[conn.RemoteAddr().String()] = held
+	return held, nil
 }
 
-// of is the server's end of the connection whose client end is at local, once it is accepted.
-func (l *deadlineListener) of(t *testing.T, local net.Addr) *deadlineConn {
+// of is the server's end of the connection whose client end is at local, once it is accepted. A
+// try that finds it not yet accepted reads the client ends of the connections the server has
+// accepted.
+func (l *drainListener) of(t *testing.T, local net.Addr) *drainConn {
 	t.Helper()
-	return testwait.Until(t, "the server to accept the connection from "+local.String(), func() (*deadlineConn, bool) {
+	var conn *drainConn
+	testwait.Until(t, "the server to accept the connection from "+local.String(), func() (string, bool) {
 		l.mu.Lock()
 		defer l.mu.Unlock()
-		conn, accepted := l.conns[local.String()]
-		return conn, accepted
+		if accepted, ok := l.conns[local.String()]; ok {
+			conn = accepted
+			return "accepted", true
+		}
+		clients := make([]string, 0, len(l.conns))
+		for client := range l.conns {
+			clients = append(clients, client)
+		}
+		slices.Sort(clients)
+		return fmt.Sprintf("the server has accepted %d connections, from %v", len(clients), clients), false
 	})
+	return conn
 }
 
-// deadlineConn is a server connection that keeps the read deadline last set on it and, each time a
-// read ends at its deadline, records the deadline then in effect: whatever was set before it, and
-// whatever replaced it before the read ended, the deadline that ended the read.
-//
-// It also keeps a deadline the server sets off the socket until the server has read every byte the
-// client sent (sentAll), then puts that same deadline on it. A drain then reads all of a prefix the
-// client sent, however slowly a loaded machine runs the read, and a deadline already passed by then
-// ends the next read, the one that waits for bytes that never come, at once. Without it a 413 row's
-// verdict depended on reading a megabyte before a 1 s deadline expired.
-type deadlineConn struct {
+// drainConn is a server connection that records the read deadlines the server sets, and keeps each
+// off the socket until reach. Each time a read on it ends at its deadline, it records the deadline
+// then in effect: whatever was set before it, and whatever replaced it before the read ended, the
+// deadline that ended the read.
+type drainConn struct {
 	net.Conn
 	mu sync.Mutex
-	// current is the read deadline last set on the connection; ended is current at each read that
-	// ended at its deadline, in the order they ended.
-	current time.Time
-	ended   []time.Time
-	// read is how many bytes the server has read; sent is how many the client sent, -1 until the
-	// test says (sentAll); held says current is kept off the socket until read reaches sent.
+	// set is every read deadline but the zero one that the server has set, deadline the last;
+	// ended is deadline at each read that ended at its deadline, in the order they ended.
+	set      []time.Time
+	deadline time.Time
+	ended    []time.Time
+	// read is how many bytes the server has read; reached says reach has run, for a client that
+	// sent sent bytes.
 	read, sent int
-	held       bool
+	reached    bool
 }
 
-func (c *deadlineConn) Read(p []byte) (int, error) {
+func (c *drainConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	c.passLocked()
+	c.mu.Unlock()
 	n, err := c.Conn.Read(p)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.read += n
 	if errors.Is(err, os.ErrDeadlineExceeded) {
-		c.ended = append(c.ended, c.current)
+		c.ended = append(c.ended, c.deadline)
 	}
-	c.releaseLocked()
+	c.mu.Unlock()
 	return n, err
 }
 
-func (c *deadlineConn) SetReadDeadline(at time.Time) error {
+func (c *drainConn) SetReadDeadline(at time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.current = at
-	if at.IsZero() || c.prefixReadLocked() {
-		c.held = false
+	c.deadline = at
+	if at.IsZero() {
 		return c.Conn.SetReadDeadline(at)
 	}
-	c.held = true
-	return c.Conn.SetReadDeadline(time.Time{})
+	c.set = append(c.set, at)
+	c.passLocked()
+	return nil
 }
 
-func (c *deadlineConn) SetDeadline(at time.Time) error {
+func (c *drainConn) SetDeadline(at time.Time) error {
 	if err := c.SetReadDeadline(at); err != nil {
 		return err
 	}
 	return c.Conn.SetWriteDeadline(at)
 }
 
-// sentAll says the client sent n bytes on the connection, and puts a held deadline on the socket
-// if the server has read them all.
-func (c *deadlineConn) sentAll(n int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.sent = n
-	c.releaseLocked()
-}
-
-// prefixReadLocked reports whether the server has read every byte the client sent.
-func (c *deadlineConn) prefixReadLocked() bool {
-	return c.sent >= 0 && c.read >= c.sent
-}
-
-// releaseLocked puts a held deadline on the socket once the server has read every byte the client
-// sent; a read pending on the socket takes it at once.
-func (c *deadlineConn) releaseLocked() {
-	if c.held && c.prefixReadLocked() {
-		c.held = false
-		_ = c.Conn.SetReadDeadline(c.current)
+// passLocked puts a deadline the clock has reached on the socket as one already passed, once the
+// server has read every byte the client sent: from there its next read would wait for bytes that
+// do not come, and fails at once instead.
+func (c *drainConn) passLocked() {
+	if c.reached && !c.deadline.IsZero() && c.read >= c.sent {
+		_ = c.Conn.SetReadDeadline(time.Now())
 	}
 }
 
-// endedUnder is the deadline in effect at each read that ended at its deadline.
-func (c *deadlineConn) endedUnder() []time.Time {
+// deadlines waits until the server has set a read deadline on the connection, and answers every
+// one it has set.
+func (c *drainConn) deadlines(t *testing.T) []time.Time {
+	t.Helper()
+	return testwait.Until(t, "the server to set a read deadline on the connection", func() ([]time.Time, bool) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return slices.Clone(c.set), len(c.set) > 0
+	})
+}
+
+// judge says what is wrong with the deadlines that ended the connection's reads, or "" when nothing
+// is: at least one read ended under want, the deadline the drain computed, and none ended under a
+// deadline the drain did not compute. A read ended under no deadline, or under net/http's own of
+// 1970 (its abort of a read it keeps in the background), is net/http's and is passed over. A
+// deadline that replaced the drain's before a read ended there fails, though the drain set want.
+func (c *drainConn) judge(want time.Time) string {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return slices.Clone(c.ended)
-}
-
-// computedDeadline is a read deadline a drain computed, and the moment it began.
-type computedDeadline struct{ began, deadline time.Time }
-
-// drainDeadlines records each deadline the server's drains compute (server.drainDeadlineSet).
-type drainDeadlines struct {
-	mu       sync.Mutex
-	computed []computedDeadline
-}
-
-func (d *drainDeadlines) set(began, deadline time.Time) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.computed = append(d.computed, computedDeadline{began: began, deadline: deadline})
-}
-
-// judge says what is wrong with the deadlines that ended conn's reads, or "" when nothing is: every
-// deadline a drain computed lies limit past the moment the drain began, at least one read ended
-// under such a deadline, and none ended under a deadline no drain computed. A read ended under no
-// deadline, or under net/http's own of 1970 (its abort of a read it keeps in the background), is
-// net/http's and is passed over. Each comparison is between values, not with a clock read when the
-// test looks: a deadline replaced after the drain set it, or a drain that chose another bound, fails
-// however long the machine took to run either.
-func (d *drainDeadlines) judge(conn *deadlineConn, limit time.Duration) string {
-	d.mu.Lock()
-	computed := slices.Clone(d.computed)
-	d.mu.Unlock()
-	for _, drain := range computed {
-		if span := drain.deadline.Sub(drain.began); span != limit {
-			return fmt.Sprintf("a drain computed its deadline %v past the moment it began, want %v", span, limit)
-		}
-	}
-	ended := conn.endedUnder()
+	ended := slices.Clone(c.ended)
+	c.mu.Unlock()
 	drained := 0
 	for _, at := range ended {
 		switch {
 		case at.IsZero() || at.Equal(time.Unix(1, 0)):
-		case slices.ContainsFunc(computed, func(drain computedDeadline) bool { return drain.deadline.Equal(at) }):
+		case at.Equal(want):
 			drained++
 		default:
-			return fmt.Sprintf("a read ended under the deadline %s, which no drain computed (the drains computed %s)",
-				at.UTC().Format(time.StampMicro), deadlineStamps(computed))
+			return fmt.Sprintf("a read ended under the deadline %s, which the drain did not compute (it computed %s)",
+				at.UTC().Format(time.StampMicro), want.UTC().Format(time.StampMicro))
 		}
 	}
 	if drained == 0 {
-		return fmt.Sprintf("no read ended under a deadline a drain computed: %d reads ended at a deadline, and the drains computed %s",
-			len(ended), deadlineStamps(computed))
+		return fmt.Sprintf("no read ended under the drain's deadline %s: %d reads ended at a deadline",
+			want.UTC().Format(time.StampMicro), len(ended))
 	}
 	return ""
 }
 
-// deadlineStamps writes each computed deadline as its clock time.
-func deadlineStamps(computed []computedDeadline) string {
-	stamps := make([]string, 0, len(computed))
-	for _, drain := range computed {
-		stamps = append(stamps, drain.deadline.UTC().Format(time.StampMicro))
-	}
-	return "[" + strings.Join(stamps, ", ") + "]"
+// reach is the server's clock reaching the connection's read deadline while the client, which has
+// sent sent bytes, sends nothing more: a read that would wait for the next byte fails at once.
+func (c *drainConn) reach(sent int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reached, c.sent = true, sent
+	c.passLocked()
 }
 
 // refusalCode is the code of a JSON refusal's body, or "" for any other body.
@@ -625,7 +605,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 			// (TestAKeyedPostBegunPastItsBoundEndsAtOnce).
 			ctx := testwait.Context(t)
 			go func() {
-				status, body, _, err := keyedPostContext(ctx, server, path, `{"n":1}`, judged.key)
+				status, body, _, err := keyedPost(ctx, server, path, `{"n":1}`, judged.key)
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
 			testwait.Receive(t, "the first request to run", first.running)
@@ -671,7 +651,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 				if firstGot.status != http.StatusServiceUnavailable {
 					t.Fatalf("the first request answered %d %s, want its 503", firstGot.status, firstGot.body)
 				}
-				status, again, header, err := keyedPostContext(ctx, server, path, judged.repeat, judged.key)
+				status, again, header, err := keyedPost(ctx, server, path, judged.repeat, judged.key)
 				if err != nil || status != http.StatusCreated || header.Get(contracts.IdempotencyReplayedHeader) != "" {
 					t.Fatalf("the ask after the 409: %d %s replayed=%q (%v), want the request run",
 						status, again, header.Get(contracts.IdempotencyReplayedHeader), err)
@@ -703,7 +683,7 @@ func TestAKeyedPostBegunPastItsBoundEndsAtOnce(t *testing.T) {
 	defer cancel()
 	ended := make(chan error, 1)
 	go func() {
-		_, _, _, err := keyedPostContext(past, server, "/test/a/writes", `{"n":1}`, "past-its-bound")
+		_, _, _, err := keyedPost(past, server, "/test/a/writes", `{"n":1}`, "past-its-bound")
 		ended <- err
 	}()
 	if err := testwait.Receive(t, "a keyed post begun past its bound to end", ended); !errors.Is(err, context.DeadlineExceeded) {
@@ -716,6 +696,10 @@ func TestAKeyedPostBegunPastItsBoundEndsAtOnce(t *testing.T) {
 // after it, rather than the request held open for as long as its client cares to. Both drains: the
 // one every early answer waits behind (drainBeforeAnswer), here an upload to a closed issue and a
 // message pressed by another login, and the keyed layer's reading of a repeat found in flight.
+// The drain's deadline is production's, since this server leaves drainDeadline at its zero value:
+// bodyDrainLimit from the moment the drain begins on the server's clock, which stands still here.
+// The test reads the deadline the server set on its connection, then moves the clock to it
+// (drainConn.reach).
 //
 // The drain's deadline stays on the connection once a drain ends short of the body's end, whether
 // its read failed or the body ran past the route's limit: net/http itself reads on after the
@@ -726,24 +710,20 @@ func TestAKeyedPostBegunPastItsBoundEndsAtOnce(t *testing.T) {
 // soon as its answer is out, and a body that stalls just past the limit is answered 413 within the
 // deadline and closed after it, as a 4 MiB body, of which net/http reads nothing more, always was.
 //
-// The drain's bound is judged by value, not by how long the answer took: the server's drains report
-// each deadline they compute and the moment they began (server.drainDeadlineSet), the connection
-// records the deadline in effect each time a read on it ends at its deadline (deadlineConn), and
-// every such deadline must be one a drain computed, drainLimit past its beginning. A deadline
-// replaced after the drain set it, or a drain that chose another bound, fails however loaded the
-// machine is, and a right one passes however long the machine took. A 409 answered before
-// drainLimit had passed still fails too: load only lengthens a step. The connection keeps each
-// deadline off its socket until the server has read every byte the client sent (deadlineConn), so
-// a row that sends a megabyte past the JSON limit is answered 413 however slowly the drain reads it.
+// The drain's bound is judged by value, not by how long the answer took: the connection records the
+// deadline in effect each time a read on it ends at its deadline (drainConn), and every such
+// deadline must be the one the drain computed, bodyDrainLimit past the server's clock
+// (drainConn.judge). A deadline replaced after the drain set it, or a drain that chose another
+// bound, fails however loaded the machine is, and a right one passes however long the machine
+// took. The connection keeps each deadline off its socket until the server has read every byte
+// the client sent (drainConn.reach), so a row that sends a megabyte past the JSON limit is
+// answered 413 however slowly the drain reads it.
 func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
 	t.Parallel()
-	const drainLimit = time.Second
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{files: filestest.NewMemory()})
-	served.drainReadLimit = drainLimit
-	drains := &drainDeadlines{}
-	served.drainDeadlineSet = drains.set
+	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory(), clock: clocktest.New(start)})
 	server := httptest.NewUnstartedServer(handler)
-	listener := &deadlineListener{Listener: server.Listener}
+	listener := &drainListener{Listener: server.Listener}
 	server.Listener = listener
 	server.Start()
 	t.Cleanup(server.Close)
@@ -802,16 +782,17 @@ func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
 			if stalled.login != "" {
 				header.Set(contracts.DispatchLoginHeader, stalled.login)
 			}
-			started := time.Now()
 			body := sendPartOfBody(t, server.Listener.Addr().String(), stalled.target, header, stalled.size, stalled.sent)
-			listener.of(t, body.connection.LocalAddr()).sentAll(body.sent)
+			conn := listener.of(t, body.connection.LocalAddr())
+			// The server's clock stands at start, so a drain that waits its whole limit sets the
+			// deadline bodyDrainLimit past it; a drain that waits for nothing sets none.
+			if set, want := conn.deadlines(t), start.Add(bodyDrainLimit); !slices.Contains(set, want) {
+				t.Fatalf("the server set read deadlines %v on the stalled body's connection, want the drain's %v", set, want)
+			}
+			conn.reach(body.sent)
 			response, answer := body.answer()
-			elapsed := time.Since(started)
 			if response.StatusCode != stalled.status || refusalCode(answer) != stalled.code {
 				t.Fatalf("status=%d body=%s, want %d %s", response.StatusCode, answer, stalled.status, stalled.code)
-			}
-			if stalled.status == http.StatusConflict && elapsed < drainLimit {
-				t.Fatalf("answered %v after the body stalled, want once the drain's second was up", elapsed)
 			}
 			if !response.Close {
 				t.Fatal("the answer to a stalled body did not say Connection: close")
@@ -819,7 +800,7 @@ func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
 			if !body.closedByServer() {
 				t.Fatalf("the connection stayed open after the answer to a stalled %d-byte body", stalled.size)
 			}
-			if wrong := drains.judge(listener.of(t, body.connection.LocalAddr()), drainLimit); wrong != "" {
+			if wrong := conn.judge(start.Add(bodyDrainLimit)); wrong != "" {
 				t.Fatalf("the stalled %d-byte body's drain: %s", stalled.size, wrong)
 			}
 		})

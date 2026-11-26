@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -37,18 +38,18 @@ func pooledDocumentHandlerWith(
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		config := database.Pool.Config().Copy()
 		config.MaxConns = maxConns
-		database.Pool.Close()
+		testwait.Returns(t, "every connection of the test database's first pool to come back, so the pool closes", database.Pool.Close)
 		pool, err := pgxpool.NewWithConfig(context.Background(), config)
 		if err != nil {
 			t.Fatalf("open test pool: %v", err)
 		}
 		database.Pool = store.NewPool(pool)
-		t.Cleanup(pool.Close)
+		t.Cleanup(func() {
+			testwait.Returns(t, "every connection of the "+fmt.Sprint(maxConns)+"-connection pool to come back, so the pool closes", pool.Close)
+		})
 		service = docs.New(docs.Deps{Store: database, Settle: settle})
 		t.Cleanup(func() {
-			shut := make(chan error, 1)
-			go func() { shut <- service.Shutdown(context.Background()) }()
-			if err := testwait.Receive(t, "the document service's shutdown", shut); err != nil {
+			if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
@@ -62,7 +63,7 @@ func pooledDocumentHandlerWith(
 
 func TestConditionalEditFloodDoesNotStarveSmallPool(t *testing.T) {
 	t.Parallel()
-	handler, _ := pooledDocumentHandler(t, 2, time.Hour)
+	handler, _ := pooledDocumentHandler(t, 2, stagedAhead)
 	issue := createInteractionIssue(t, handler, "TEST", "Conditional flood", "alpha")
 	for round := range 40 {
 		read := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID)
@@ -96,7 +97,7 @@ func TestConcurrentConditionalAndUnconditionalEditsDoNotWedge(t *testing.T) {
 	t.Parallel()
 	// Unconditional edits hold a transaction connection before warm-up and wedge
 	// at pool_max_conns≈3 even on c34767d4; the follow-up fix owns that baseline.
-	handler, _ := pooledDocumentHandler(t, 8, time.Hour)
+	handler, _ := pooledDocumentHandler(t, 8, stagedAhead)
 	issue := createInteractionIssue(t, handler, "TEST", "Mixed concurrency", "alpha")
 	for round := range 40 {
 		read := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID)

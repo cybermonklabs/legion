@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // backfillRun is one deploy run the backfill fake serves, created at created.
@@ -76,7 +78,11 @@ func (f *backfillFake) list(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
 		return
 	}
-	since, until := parseCreatedWindow(f.t, created)
+	since, until, err := parseCreatedWindow(created)
+	if err != nil {
+		refuseRequest(f.t, w, "%v", err)
+		return
+	}
 	var inWindow []map[string]any
 	for _, run := range f.runs {
 		at, _ := time.Parse(time.RFC3339, run["created_at"].(string))
@@ -245,7 +251,11 @@ func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 	// The regular step lists from 28 days ago in one window the fake answers empty; every one of
 	// the backfill's one-hour windows is refused.
 	github.handle("GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fdeploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
-		since, until := parseCreatedWindow(t, r.URL.Query().Get("created"))
+		since, until, err := parseCreatedWindow(r.URL.Query().Get("created"))
+		if err != nil {
+			refuseRequest(t, w, "%v", err)
+			return
+		}
 		if until.Sub(since) < 2*time.Hour {
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			w.Header().Set("Retry-After", "60")
@@ -259,10 +269,12 @@ func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 		mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
 	})
 	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker(), unrenamed())
+	// The pass runs at a moment the row names, on a whole second, so each stamp it writes reads
+	// back exactly.
+	pass := time.Now().UTC().Truncate(time.Second)
+	reconcile.clock = clocktest.New(pass)
 
-	before := time.Now()
 	reconcile.runOnce(ctx)
-	after := time.Now()
 
 	settings, err := GetSettings(ctx, pool)
 	if err != nil {
@@ -271,16 +283,16 @@ func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 	if settings.LastError != nil {
 		t.Fatalf("last_error = %q, want nil: a backfill failure stays out of the health state", *settings.LastError)
 	}
-	if settings.LastReconcileAt == nil || settings.LastReconcileAt.Before(before.Add(-time.Second)) || settings.LastReconcileAt.After(after.Add(time.Second)) {
-		t.Fatalf("last_reconcile_at = %v, want this pass's time, between %v and %v", settings.LastReconcileAt, before, after)
+	if settings.LastReconcileAt == nil || !settings.LastReconcileAt.Equal(pass) {
+		t.Fatalf("last_reconcile_at = %v, want this pass's moment %v", settings.LastReconcileAt, pass)
 	}
 	through, beganAt, found := deployBackfill(t, reconcile)
-	if !found || through.Before(before.Add(-BackfillWindow-time.Second)) || beganAt.Before(before.Add(-time.Second)) || beganAt.After(after.Add(time.Second)) {
-		t.Fatalf("backfill row = {%v, %v, %t}, want began at this pass and through 28 days before it", through, beganAt, found)
+	if !found || through.Before(pass.Add(-BackfillWindow)) || !beganAt.Equal(pass) {
+		t.Fatalf("backfill row = {%v, %v, %t}, want began at this pass, %v, and through 28 days before it", through, beganAt, found, pass)
 	}
 	created, err := readBackfillProgress(ctx, pool, createdAtBackfillStep, runsProgressScope("acme/widgets", backfillWorkflow))
-	if err != nil || !created.found || created.beganAt.Before(before.Add(-time.Second)) || created.beganAt.After(after.Add(time.Second)) {
-		t.Fatalf("created_at backfill row = %+v, %v, want one begun at this pass", created, err)
+	if err != nil || !created.found || !created.beganAt.Equal(pass) {
+		t.Fatalf("created_at backfill row = %+v, %v, want one begun at this pass, %v", created, err, pass)
 	}
 }
 
@@ -394,7 +406,7 @@ func TestStartBackfillProgressRacesToOneRow(t *testing.T) {
 		}
 		started.Wait()
 		close(release)
-		done.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d: both reconciles' starts of the backfill and their reads of it to return", round), done.Wait)
 		for i, err := range errs {
 			if err != nil {
 				t.Fatalf("round %d: start %d: %v", round, i, err)
@@ -553,7 +565,10 @@ func TestBackfillRunsLeavesTheRegularStepAlone(t *testing.T) {
 	if len(calls) == 0 {
 		t.Fatal("the regular step listed nothing")
 	}
-	since, _ := parseCreatedWindow(t, calls[0][:len(calls[0])-len(" page 1")])
+	since, _, err := parseCreatedWindow(calls[0][:len(calls[0])-len(" page 1")])
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !since.Equal(regularThrough.Add(-reconcileOverlap)) {
 		t.Fatalf("the regular step listed from %v, want its own progress minus the overlap, %v", since, regularThrough.Add(-reconcileOverlap))
 	}

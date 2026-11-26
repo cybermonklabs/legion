@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,7 +18,9 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -47,6 +51,13 @@ func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
 		})
 	}
 	waitForDocumentUpdate(t, f.persistence)
+	// The room holds both edits before the row reads what is armed, so the second edit's re-arm
+	// of the settlement is done: a move made between that re-arm's stop of the first timer and its
+	// arm of the next would fire nothing.
+	peer.barrier(t)
+	// The document's settlement, armed on the fixture's clock, runs as the row moves the clock to
+	// it, and queues behind the held edit's transaction for the issue's owner lock.
+	joinSettlement := f.startArmedSettlement(t)
 	f.waitForLockWaiter(t)
 	f.assertArtifactKeyShareLockAvailable(t)
 	// A settlement pending when the transactional write starts must not version it either
@@ -59,6 +70,7 @@ func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
 	f.assertVersionCount(t, 1)
 	closeTestGate(f.failure.release)
 	f.expectFailedResponse(t, responses)
+	joinSettlement(t)
 	f.assertLiveText(t, "before\n")
 	f.assertVersionCount(t, 1)
 	f.assertDurableText(t, "before\n")
@@ -271,7 +283,10 @@ func TestDocumentUploadRollbackNeverReachesTheRoom(t *testing.T) {
 // heldWriteFixture is an issue whose document edits fail after their live write, behind gates
 // the test opens.
 type heldWriteFixture struct {
-	settle      time.Duration
+	// settles is the document service's clock (docs.Deps.Clock), which moves only as
+	// waitOutSettlement, startArmedSettlement and waitForVersionHolding move it: a settlement the
+	// room arms runs once one of them moves the clock to it.
+	settles     *clocktest.Fake
 	handler     http.Handler
 	docs        *docs.Service
 	failure     *postApplyFailureDocs
@@ -289,7 +304,7 @@ type heldWriteFixture struct {
 
 func newHeldWriteFixture(t *testing.T, settle time.Duration, configure ...func(*postApplyFailureDocs)) *heldWriteFixture {
 	t.Helper()
-	f := &heldWriteFixture{settle: settle, headers: http.Header{"X-Dispatch-User": []string{"alice"}}}
+	f := &heldWriteFixture{settles: clocktest.New(time.Now()), headers: http.Header{"X-Dispatch-User": []string{"alice"}}}
 	f.handler, f.database = newInteractionHandler(t, func(database *store.Store) docs.API {
 		f.persistence = &recordingVersionedStore{
 			PgVersioned: docs.NewPgVersioned(database),
@@ -300,8 +315,16 @@ func newHeldWriteFixture(t *testing.T, settle time.Duration, configure ...func(*
 			Persistence: f.persistence,
 			Identity:    headerIdentity(database),
 			Settle:      settle,
+			Clock:       f.settles,
 		})
-		t.Cleanup(func() { _ = f.docs.Shutdown(context.Background()) })
+		// The shutdown's drain budget runs on f.settles too, which nothing moves past it, so the
+		// shared wait's context ends a shutdown that waits. The call runs through the shared wait
+		// as well (docstest.Shutdown): Shutdown's last steps wait on no context.
+		t.Cleanup(func() {
+			if err := docstest.Shutdown(t, testwait.Context(t), f.docs); err != nil {
+				t.Errorf("shutdown document service: %v", err)
+			}
+		})
 		f.failure = &postApplyFailureDocs{
 			API:                f.docs,
 			beforeApply:        make(chan struct{}),
@@ -426,12 +449,30 @@ func waitForLiveText(t *testing.T, documentService *docs.Service, artifactID, wa
 	})
 }
 
-// waitOutSettlement gives a settlement armed by now time to run: three settle intervals, when
-// the fixture settles at all within the test.
-func (f *heldWriteFixture) waitOutSettlement() {
-	if f.settle < time.Second {
-		time.Sleep(3 * f.settle)
+// waitOutSettlement runs every settlement the room has armed within reach of the fixture's clock
+// (awaitSettledOn): a settlement armed by now has run when it returns, and one armed a settle
+// interval of an hour ahead, in a fixture that does not settle within its test, has not.
+func (f *heldWriteFixture) waitOutSettlement(t *testing.T) {
+	t.Helper()
+	awaitSettledOn(t, "every settlement armed on the held edit's document to have run",
+		func() ([]string, bool) { return f.versions(t), true }, f.settles)
+}
+
+// startArmedSettlement moves the fixture's clock off the test goroutine (clocktest.Fake.StartMove)
+// to the first deadline armed on it, which runs the settlement armed for then, and answers the
+// move's join, which waits for the move to return, which is once that settlement has (clocktest),
+// and fails the test naming the move and the settlement it waits for when that settlement never
+// returns. It is for a settlement that waits on what the test holds - the issue's owner lock, under
+// a held edit's transaction - for which a move on the test's own goroutine would wait for ever. The
+// deadline must stand within a settlement's reach (documentSettleReach).
+func (f *heldWriteFixture) startArmedSettlement(t *testing.T) (join func(testing.TB)) {
+	t.Helper()
+	armed := f.settles.AwaitArmed(t, "the settlement the room armed", 1)
+	if ahead := armed[0].Sub(f.settles.Now()); ahead >= documentSettleReach {
+		t.Fatalf("the first deadline armed on the document service's clock stands %s ahead, past a settlement's reach of %s (every deadline armed: %v)",
+			ahead, documentSettleReach, armed)
 	}
+	return f.settles.StartMove("the move that ran the settlement armed at "+armed[0].Format(time.RFC3339Nano)+", queued behind the held edit's transaction", armed[0])
 }
 
 // versions lists the document's versions as "number: markdown".
@@ -459,25 +500,20 @@ func (f *heldWriteFixture) versions(t *testing.T) []string {
 	return versions
 }
 
-// waitForVersionHolding waits until a version of the document holds text. Its one bound is the
-// test binary's deadline (testwait.UntilPolling), whose failure prints the versions last read.
+// waitForVersionHolding waits until a version of the document holds text, moving the fixture's
+// clock through the settlements armed on it (awaitSettledOn): none runs but as the clock moves.
 func (f *heldWriteFixture) waitForVersionHolding(t *testing.T, text string) {
 	t.Helper()
-	testwait.UntilPolling(t, 20*time.Millisecond, "a version of the document to hold "+strconv.Quote(text)+" (the versions last read)", func() ([]string, bool) {
+	awaitSettledOn(t, fmt.Sprintf("a version holding %q", text), func() ([]string, bool) {
 		versions := f.versions(t)
-		for _, version := range versions {
-			if strings.Contains(version, text) {
-				return versions, true
-			}
-		}
-		return versions, false
-	})
+		return versions, slices.ContainsFunc(versions, func(version string) bool { return strings.Contains(version, text) })
+	}, f.settles)
 }
 
 // assertVersionCount waits out settlement, then counts the document's versions.
 func (f *heldWriteFixture) assertVersionCount(t *testing.T, want int) {
 	t.Helper()
-	f.waitOutSettlement()
+	f.waitOutSettlement(t)
 	if versions := f.versions(t); len(versions) != want {
 		t.Fatalf("document versions = %q, want %d", versions, want)
 	}
@@ -487,7 +523,7 @@ func (f *heldWriteFixture) assertVersionCount(t *testing.T, want int) {
 // text.
 func (f *heldWriteFixture) assertNoVersionHolds(t *testing.T, text string) {
 	t.Helper()
-	f.waitOutSettlement()
+	f.waitOutSettlement(t)
 	for _, version := range f.versions(t) {
 		if strings.Contains(version, text) {
 			t.Fatalf("version %s holds the rolled-back %q", version, text)
@@ -496,11 +532,11 @@ func (f *heldWriteFixture) assertNoVersionHolds(t *testing.T, text string) {
 }
 
 // assertDurableText waits until the document the store would load, rendered update by update, is
-// want. Its one bound is the test binary's deadline (testwait.UntilPolling), whose failure prints
+// want. Its one bound is the test binary's deadline (testwait.Until), whose failure prints
 // the durable text last read.
 func (f *heldWriteFixture) assertDurableText(t *testing.T, want string) {
 	t.Helper()
-	testwait.UntilPolling(t, 20*time.Millisecond, "the durable document to be "+strconv.Quote(want)+" (the durable text last read)", func() (string, bool) {
+	testwait.Until(t, "the durable document to be "+strconv.Quote(want)+" (the durable text last read)", func() (string, bool) {
 		got := f.durableText(t)
 		return got, got == want
 	})
@@ -532,10 +568,10 @@ func (f *heldWriteFixture) durableText(t *testing.T) string {
 }
 
 // waitForLockWaiter returns once a session of this database waits on a lock: a request queued
-// behind the held transaction. Its one bound is the test binary's deadline (testwait.UntilPolling).
+// behind the held transaction. Its one bound is the test binary's deadline (testwait.Until).
 func (f *heldWriteFixture) waitForLockWaiter(t *testing.T) {
 	t.Helper()
-	testwait.UntilPolling(t, 5*time.Millisecond, "a request queued behind the held transaction (the sessions of this database last read waiting on a lock)", func() (int, bool) {
+	testwait.Until(t, "a request queued behind the held transaction (the sessions of this database last read waiting on a lock)", func() (int, bool) {
 		var waiting int
 		if err := f.probe.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity

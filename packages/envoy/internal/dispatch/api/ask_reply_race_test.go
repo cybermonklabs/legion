@@ -2,10 +2,13 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A reply and an answer race on the same ask. Both take the owner row before either reads the
@@ -42,7 +45,7 @@ func TestReplyRacingAnAnswerLandsOnOneSideOfTheTransition(t *testing.T) {
 			}, "alice")
 		}()
 		close(start)
-		wait.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d's reply and answer to both answer", round), wait.Wait)
 
 		if reply.Code != http.StatusCreated {
 			t.Fatalf("round %d: reply: status=%d body=%s", round, reply.Code, reply.Body.String())

@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -295,7 +294,7 @@ func TestBroadcastRepeatResumesEveryOwedRecipientAndDeliversEachOnce(t *testing.
 		return states
 	}
 	want := []string{"archivist 1 pending", "planner 1 sent", "reviewer 1 sent", "tester 1 sent"}
-	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the recipients to settle as %v (their states)", want), func() ([]string, bool) {
+	testwait.Until(t, fmt.Sprintf("the recipients to settle as %v", want), func() ([]string, bool) {
 		settled := settledStates()
 		return settled, equalStrings(settled, want)
 	})

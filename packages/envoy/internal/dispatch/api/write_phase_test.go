@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -55,7 +56,7 @@ func (g *gatedProjectMark) ProjectMark(ctx context.Context, artifactID, markID s
 func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	t.Parallel()
 	// The seeded spec's settlement takes the owner lock this test holds; keep it out of the queue.
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while waiting", "A spec")
 	// Creating the issue starts the project's term-statistics refresh, which commits its rows
 	// whenever it finishes: waited out here, it cannot read as a write of the refused ask.
@@ -105,7 +106,7 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 	t.Parallel()
 	gate := &gatedProjectMark{entered: make(chan struct{}), release: make(chan struct{})}
-	handler, _, database := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
+	handler, _, database := pooledDocumentHandlerWith(t, 8, stagedAhead, func(service *docs.Service) docs.API {
 		gate.API = service
 		return gate
 	})
@@ -127,18 +128,9 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 			"body": "Yes.", "reply_to": root.ID, "actor": sessionActor(),
 		})
 	}()
-	testwait.Until(t, "the reply to reach its thread's projection", func() (bool, bool) {
-		select {
-		case <-gate.entered:
-			return true, true
-		case response := <-replies:
-			t.Fatalf("the reply answered %d %s before projecting its thread", response.Code, response.Body.String())
-		default:
-		}
-		return false, false
-	})
+	awaitEntered(t, "its thread's projection", gate.entered, replies)
 
-	mark := time.Now()
+	mark := databaseNow(t, database.Pool)
 	marks := make(chan *httptest.ResponseRecorder, 1)
 	go func() { marks <- markThreadRead(t, handler, "alice", root.ID, mark) }()
 	if response, early, _ := storetest.AwaitOwnerLockWaiter(t, database, "the thread read", marks); early {
@@ -167,6 +159,28 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 	}
 }
 
+// awaitEntered waits for a gated document call to be entered (entered closes), and fails with the
+// request's answer when the request answers on responses first: such a request never reached step,
+// the call the gate holds. The wait has no bound of its own (testwait.Until). A try that finds
+// neither reads that both channels were empty.
+func awaitEntered(t *testing.T, step string, entered <-chan struct{}, responses <-chan *httptest.ResponseRecorder) {
+	t.Helper()
+	var early *httptest.ResponseRecorder
+	testwait.Until(t, "the request to reach "+step+", or to answer", func() (string, bool) {
+		select {
+		case <-entered:
+			return step + " entered", true
+		case early = <-responses:
+			return "the request answered", true
+		default:
+			return step + "'s gate not entered and no answer from the request", false
+		}
+	})
+	if early != nil {
+		t.Fatalf("the request answered %d %s before it reached %s", early.Code, early.Body.String(), step)
+	}
+}
+
 // transactionIDHolders is how many backends of this test's database hold a transaction id, and
 // what each of them is running, so a holder this test does not drive is named rather than
 // counted alone.
@@ -183,29 +197,33 @@ func transactionIDHolders(t *testing.T, database *store.Store) (int, string) {
 	return holders, running
 }
 
-// awaitNoTransactionIDHolder waits until the TEST project's search term statistics are committed
-// and then until no backend holds a transaction id. An issue create leaves one write running past
-// its answer: the refresh of the project's search term statistics its related-item check starts
-// for a project that has none (ensureSearchTermStats), a background write with an id of its own.
-// That refresh can begin after the create answers, and its rebuild takes its id only once it
-// inserts, so a moment with no holder does not show it has ended; its row of search_term_totals,
-// written in the same transaction, does. A test that counts every backend waits it out first, as
-// the refusal tests wait it out, so what it counts afterwards is the writers it drives. Each of its
-// two waits has one bound, the test binary's deadline (testwait.UntilPolling).
-func awaitNoTransactionIDHolder(t *testing.T, database *store.Store) {
+// awaitNoTransactionIDHolder waits until the search term statistics of each of projects are
+// committed and then until no backend holds a transaction id. An issue create leaves one write
+// running past its answer: the refresh of the project's search term statistics its related-item
+// check starts for a project that has none (ensureSearchTermStats), a background write with an id
+// of its own. That refresh can begin after the create answers, and its rebuild takes its id only
+// once it inserts, so a moment with no holder does not show it has ended; its row of
+// search_term_totals, written in the same transaction, does. A test that counts every backend
+// waits it out first, as the refusal tests wait it out, so what it counts afterwards is the
+// writers it drives.
+func awaitNoTransactionIDHolder(t *testing.T, database *store.Store, projects ...string) {
 	t.Helper()
-	testwait.UntilPolling(t, 5*time.Millisecond, "the TEST project's search term statistics to be refreshed (its search_term_totals row)", func() (bool, bool) {
-		var refreshed bool
+	testwait.Eventually(t, fmt.Sprintf("the search term statistics of %v to be refreshed", projects), func() bool {
+		var refreshed int
 		if err := database.Pool.QueryRow(context.Background(), `
-			select exists (select 1 from search_term_totals where project_key = 'TEST')
-		`).Scan(&refreshed); err != nil {
+			select count(distinct project_key) from search_term_totals where project_key = any($1)
+		`, projects).Scan(&refreshed); err != nil {
 			t.Fatalf("read search_term_totals: %v", err)
 		}
-		return refreshed, refreshed
+		return refreshed == len(projects)
 	})
-	testwait.UntilPolling(t, 5*time.Millisecond, "no backend to hold a transaction id (the holders and what they run)", func() (string, bool) {
+	type reading struct {
+		Holders int
+		Running string
+	}
+	testwait.Until(t, "no backend to hold a transaction id", func() (reading, bool) {
 		holders, running := transactionIDHolders(t, database)
-		return fmt.Sprintf("%d: %s", holders, running), holders == 0
+		return reading{Holders: holders, Running: running}, holders == 0
 	})
 }
 
@@ -216,7 +234,7 @@ func awaitNoTransactionIDHolder(t *testing.T, database *store.Store) {
 func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	t.Parallel()
 	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
-	handler, _, database := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
+	handler, _, database := pooledDocumentHandlerWith(t, 8, stagedAhead, func(service *docs.Service) docs.API {
 		gate.API = service
 		return gate
 	})
@@ -225,7 +243,7 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	release := func() { released.Do(func() { close(gate.release) }) }
 	defer release()
 	issue := createInteractionIssue(t, handler, "TEST", "Serialized writers", "alpha bravo charlie delta")
-	awaitNoTransactionIDHolder(t, database)
+	awaitNoTransactionIDHolder(t, database, "TEST")
 
 	comment := func(quote, body string) *httptest.ResponseRecorder {
 		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -234,16 +252,7 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	}
 	firsts := make(chan *httptest.ResponseRecorder, 1)
 	go func() { firsts <- comment("alpha", "first") }()
-	testwait.Until(t, "the first comment to reach its quote's mark", func() (bool, bool) {
-		select {
-		case <-gate.entered:
-			return true, true
-		case response := <-firsts:
-			t.Fatalf("the first comment answered %d %s before marking its quote", response.Code, response.Body.String())
-		default:
-		}
-		return false, false
-	})
+	awaitEntered(t, "its quote's mark", gate.entered, firsts)
 	holders, running := transactionIDHolders(t, database)
 	if holders != 0 {
 		t.Fatalf("%d backends hold a transaction id while the first comment is in its read phase, want none: %s", holders, running)
@@ -313,9 +322,9 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 // what the one before it committed: both labels land, and the issue's sequence has no gap.
 func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "TEST", "Two patches", "A spec")
-	awaitNoTransactionIDHolder(t, database)
+	awaitNoTransactionIDHolder(t, database, "TEST")
 
 	holder, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -333,7 +342,7 @@ func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T
 	answers := make(chan *httptest.ResponseRecorder, 2)
 	go addLabel("alpha", answers)
 	go addLabel("bravo", answers)
-	testwait.UntilPolling(t, 5*time.Millisecond, "two PATCHes to wait on the issue's owner lock (the waiters)", func() (int, bool) {
+	testwait.Until(t, "two PATCHes to wait on the issue's owner lock (the waiters)", func() (int, bool) {
 		select {
 		case response := <-answers:
 			t.Fatalf("a PATCH answered %d %s while another transaction held the issue's owner lock", response.Code, response.Body.String())
@@ -423,8 +432,8 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		var service *docs.Service
 		var gate *firstReplaceGate
 		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
-			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+			service = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			gate = &firstReplaceGate{
 				API: service, firstEntered: make(chan struct{}), releaseFirst: make(chan struct{}), secondEntered: make(chan struct{}),
 			}
@@ -443,16 +452,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		go func() {
 			responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 		}()
-		testwait.Until(t, "the accept to reach the replacement", func() (bool, bool) {
-			select {
-			case <-gate.firstEntered:
-				return true, true
-			case response := <-responses:
-				t.Fatalf("the accept answered %d %s before replacing the quote", response.Code, response.Body.String())
-			default:
-			}
-			return false, false
-		})
+		awaitEntered(t, "the replacement of the quote", gate.firstEntered, responses)
 		// The update takes no lock the accept holds in its read phase. It runs on a goroutine of its
 		// own, so that the wait for it ends on its answer, bounded by the test binary's deadline.
 		decided := make(chan error, 1)
@@ -484,8 +484,8 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	t.Run("a unique violation", func(t *testing.T) {
 		var service *docs.Service
 		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
-			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+			service = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			return service
 		})
 		handler = withDeadline(t, handler)
@@ -527,8 +527,8 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	t.Run("a comment whose event collides", func(t *testing.T) {
 		var service *docs.Service
 		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
-			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+			service = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			return service
 		})
 		handler = withDeadline(t, handler)
@@ -555,8 +555,8 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	// of their own (store.RunWrite): the event's collision takes the message's row with it.
 	t.Run("a message whose event collides", func(t *testing.T) {
 		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
-			service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+			service := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			return service
 		})
 		handler = withDeadline(t, handler)

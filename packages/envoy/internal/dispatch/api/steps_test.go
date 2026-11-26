@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The step records of an issue. The Legion daemon writes each run of each step twice, at its
@@ -498,7 +499,7 @@ func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
 			})
 		}
 		close(release)
-		sent.Wait()
+		testwait.Returns(t, "round "+strconv.Itoa(round)+"'s start and end of one run, sent at once, to answer", sent.Wait)
 		for index, response := range responses {
 			if response.Code != http.StatusOK {
 				t.Fatalf("round %d, write %d: status=%d body=%s, want 200", round, index, response.Code, response.Body.String())

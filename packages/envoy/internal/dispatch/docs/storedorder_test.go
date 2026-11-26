@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"weak"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -27,6 +26,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // storedOrderRounds is how many rounds TestStoredOrderSoak runs. The default fits the package in
@@ -294,7 +295,7 @@ func TestStoredOrderChecker(t *testing.T) {
 
 	t.Run("versions on both sides of a base compacted inside the window", func(t *testing.T) {
 		history := newCraftedHistory(t, seed)
-		since := time.Now().Add(-time.Minute)
+		since := testdb.Now(history.t, history.database.Pool).Add(-time.Minute)
 		history.version(history.markdown(), 1)
 		edited := history.store(history.edit(replaceRun("Second.", "Second, edited.")), true)
 		history.version(history.markdown(), edited)
@@ -312,7 +313,7 @@ func TestStoredOrderChecker(t *testing.T) {
 
 	t.Run("every version inside the window below the base", func(t *testing.T) {
 		history := newCraftedHistory(t, seed)
-		since := time.Now().Add(-time.Minute)
+		since := testdb.Now(history.t, history.database.Pool).Add(-time.Minute)
 		history.version(history.markdown(), 1)
 		folded := history.store(history.edit(replaceRun("Second.", "Second, edited.")), true)
 		history.store(history.edit(replaceRun("First.", "First, edited.")), true)
@@ -395,7 +396,7 @@ func assertStoredOrder(t *testing.T, service *Service, artifactID string) Stored
 func storedOrderService(t *testing.T) (*Service, string) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	return service, artifactID
@@ -416,7 +417,7 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
 	})
 	release = func() {
 		if held.released.CompareAndSwap(false, true) {
@@ -425,7 +426,7 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 	}
 	testcleanup.Add(t, release)
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -437,11 +438,7 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 // awaitHeldAppend returns once the held append has reached the store.
 func awaitHeldAppend(t *testing.T, entered <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("bob's append never reached the store")
-	}
+	testwait.Receive(t, "bob's append to reach the store", entered)
 }
 
 // onFirst returns a hook for room that runs do the first time it is called for it.
@@ -636,7 +633,7 @@ func TestStoredOrderTwoBrowsersOutOfOrder(t *testing.T) {
 	before := head()
 	releaseFirst := holdPeerEdit(t, service, artifactID, &service.beforeObserveUpdate, replaceRun("Second.", "Second, bob."))
 	editAsPeer(t, service, artifactID, replaceRun("bob", "bob and carol"))
-	waitFor(t, roomWait(t), "the second peer's update to be stored", func() bool { return head() > before })
+	waitFor(t, "the second peer's update to be stored", func() bool { return head() > before })
 	releaseFirst()
 	assertStoredOrder(t, service, artifactID)
 }
@@ -696,6 +693,12 @@ func TestStoredOrderRemeasuredClassMovesCreditAndSettlement(t *testing.T) {
 // lead of the room - that sends nothing while paused is set. Every stored row costs the check
 // more than the one before it, so a soak pauses its peers while it checks, and the rows a round
 // stores do not grow with the time its checks take.
+//
+// gap is the stand-in's own cadence, not a bound on any wait: it is how fast a person types into
+// the editor, as typeIntoDocument's typingGap is, and its caller passes the pace the soak wants
+// its rooms worked at. A paused peer looks again every millisecond for the same reason: it stands
+// in for a browser that is not typing, and nothing of the product reports when the soak's check
+// has finished.
 func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, gap time.Duration, paused *atomic.Bool) {
 	t.Helper()
 	peer := connectPeer(t, serverURL, artifactID, "alice")
@@ -758,7 +761,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 		done.Wait()
 		client := peer.Doc.ClientID()
 		sent := peer.Doc.StateVector().Clock(client)
-		waitFor(t, 30*time.Second, "the room to apply the peer's last update", func() bool {
+		waitFor(t, "the room to apply the peer's last update", func() bool {
 			room := service.srv.GetDoc(artifactID)
 			return room == nil || room.StateVector().Clock(client) >= sent
 		})
@@ -766,8 +769,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 			return
 		}
 		typists.Delete(artifactID)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 			t.Errorf("wait for the peer's updates to reach persistence: %v", err)
 		}
@@ -793,25 +795,6 @@ func (s *soakStore) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, 
 		s.unstored.Store(true)
 	}
 	return s.VersionedStore.AppendUpdateTx(ctx, tx, room, update, contentChanged)
-}
-
-// unstoredRoomUpdates counts the room's updates not yet stored: committed and not yet classified
-// (its replica's log), classified and not handed to the store (pendingUpdates), and handed and not
-// yet committed (durableAppends).
-func (s *Service) unstoredRoomUpdates(room string) int {
-	state := s.room(room)
-	state.mu.Lock()
-	unstored := state.pendingUpdates
-	state.mu.Unlock()
-	unstored += int(state.durableAppends.Load())
-	if live := s.srv.GetDoc(room); live != nil {
-		if listed, ok := s.replicas.Load(weak.Make(live)); ok {
-			if replica := listed.(weak.Pointer[renderedReplica]).Value(); replica != nil {
-				unstored += replica.log.Pending()
-			}
-		}
-	}
-	return unstored
 }
 
 // soakWrite runs write as joinedWrite does, its context marked for soakStore.
@@ -850,7 +833,7 @@ func TestStoredOrderSoak(t *testing.T) {
 	})
 	watched.service.Store(service)
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -923,8 +906,16 @@ func TestStoredOrderSoak(t *testing.T) {
 	for round := range rounds {
 		watched.unstored.Store(false)
 		paused.Store(false)
-		// The peers' first keystrokes are in flight when the round's first write starts.
-		time.Sleep(5 * time.Millisecond)
+		// The peers' first keystrokes are in flight when the round's first write starts: the
+		// round waits for a keystroke the rooms hold unstored, which is what a write must meet.
+		waitFor(t, fmt.Sprintf("round %d: the peers' keystrokes to reach the rooms", round), func() bool {
+			for _, document := range documents {
+				if service.unstoredRoomUpdates(document.id) > 0 {
+					return true
+				}
+			}
+			return false
+		})
 		for index, document := range documents {
 			switch round % 4 {
 			case 0:

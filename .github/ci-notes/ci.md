@@ -2628,9 +2628,9 @@ own.
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
 kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
 Dispatch store's tests take their databases from
-`packages/envoy/internal/dispatch/store/store_test.go#testDatabaseURL` and delivery's from storetest.Open
-(`packages/envoy/internal/dispatch/store/storetest/storetest.go#Open`), each of which reads
-DISPATCH_TEST_DATABASE_URL and skips without it, and
+`packages/envoy/internal/dispatch/store/store_test.go#openEmptyTestStore` and delivery's from storetest.Open
+(`packages/envoy/internal/dispatch/store/storetest/storetest.go#Open`), each through testdb, on the
+server DISPATCH_TEST_DATABASE_URL names, and each skips without it, and
 `packages/envoy/cmd/listener/dispatch_resolution_test.go#migratedDispatchDatabase` gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
 natscred's, the auth service's and the code flow's tests open no store, so they need none.

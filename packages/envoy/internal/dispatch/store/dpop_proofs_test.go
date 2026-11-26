@@ -2,9 +2,12 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // proofFixture is a migrated database of the test's own and the replay store on it.
@@ -21,7 +24,7 @@ func TestADPoPProofIsUsedOncePerTargetURI(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	proofs := proofFixture(t)
-	exp := time.Now().Add(time.Minute)
+	exp := time.Now().Add(stagedAhead)
 
 	used, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-1", "jkt", "", "GET", "https://dispatch.test/a", exp)
 	if err != nil || used {
@@ -43,7 +46,7 @@ func TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	proofs := proofFixture(t)
-	exp := time.Now().Add(time.Minute)
+	exp := time.Now().Add(stagedAhead)
 
 	const presentations = 8
 	outcomes := make([]bool, presentations)
@@ -60,7 +63,7 @@ func TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused(t *testing.T) {
 		}()
 	}
 	start.Done()
-	done.Wait()
+	testwait.Returns(t, fmt.Sprintf("the %d presentations of one proof to be answered", presentations), done.Wait)
 
 	unused := 0
 	for i, err := range failures {
@@ -106,7 +109,7 @@ func TestSweepDeletesOnlyTheRecordsThatCanNoLongerBePresented(t *testing.T) {
 			t.Fatalf("record %s: %v", jti, err)
 		}
 	}
-	if _, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-live", "jkt", "", "GET", "https://dispatch.test/a", time.Now().Add(time.Minute)); err != nil {
+	if _, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-live", "jkt", "", "GET", "https://dispatch.test/a", time.Now().Add(stagedAhead)); err != nil {
 		t.Fatalf("record the live proof: %v", err)
 	}
 

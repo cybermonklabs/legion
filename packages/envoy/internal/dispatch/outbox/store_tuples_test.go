@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -54,7 +53,7 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 
 	// A resolution that reads a live holder: the claim store names it, and its record was
 	// written now, so the holder is live by every window the resolution judges it with.
-	held := roleClaimStub{holder: holder, lastSeen: time.Now().UnixMilli()}
+	held := liveClaim(holder)
 	deps := Deps{Store: database, Publisher: &recordingPublisher{}, Broker: broker,
 		RoleClaims: held, Sessions: held}
 	appendEvent(t, database, broker, model.Event{
@@ -75,7 +74,7 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 
 	// A resolution that reads the role unclaimed ends the claim. The holder is gone from the
 	// claim store, which is what a session that stopped leaves behind it.
-	unheld := roleClaimStub{lastSeen: time.Now().UnixMilli()}
+	unheld := liveClaim("")
 	deps = Deps{Store: database, Publisher: &recordingPublisher{}, Broker: broker,
 		RoleClaims: unheld, Sessions: unheld}
 	appendEvent(t, database, broker, model.Event{

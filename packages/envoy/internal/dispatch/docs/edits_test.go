@@ -162,7 +162,7 @@ func TestVerifyTableAnchorSnapshotsRejectsMarkAddedAfterPrevalidation(t *testing
 func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "| Key | Value |\n| --- | --- |\n| delete | row |\n| retain | row |\n")
 	const commentID = "00000000-0000-4000-8000-000000000009"
 	anchored, err := joinedMarkQuote(service, artifactID, MarkSpec{
@@ -266,19 +266,16 @@ func TestConditionalEditAdmissionBoundsQueuedRequests(t *testing.T) {
 	}
 	gate := gateValue.(*conditionalEditGate)
 	// Each admission is a short transaction under the queue's advisory lock (admitConditionalEdit),
-	// so 31 of them queue one after another; the wait is the room wait, not a fixed second.
-	deadline := time.Now().Add(roomWait(t))
-	for queueDepth(gate) != maxQueuedConditionalEdits && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := queueDepth(gate); got != maxQueuedConditionalEdits {
-		t.Fatalf("queued conditional edits = %d, want %d", got, maxQueuedConditionalEdits)
-	}
+	// so 31 of them queue one after another.
+	testwait.Until(t, fmt.Sprintf("%d conditional edits to be queued", maxQueuedConditionalEdits), func() (int, bool) {
+		depth := queueDepth(gate)
+		return depth, depth == maxQueuedConditionalEdits
+	})
 	if _, err := service.AcquireConditionalEdit(context.Background(), artifactID); !errors.Is(err, ErrPreconditionBusy) {
 		t.Fatalf("overflow conditional edit = %v, want ErrPreconditionBusy", err)
 	}
 	cancel()
-	queued.Wait()
+	testwait.Returns(t, fmt.Sprintf("the %d queued conditional edits to return once their context was cancelled", maxQueuedConditionalEdits-1), queued.Wait)
 	release()
 	if _, exists := service.conditionalGates.Load(artifactID); exists {
 		t.Fatal("idle conditional edit gate was retained")
@@ -386,7 +383,7 @@ func TestApplyOperationLabelsInvalidRetypeFields(t *testing.T) {
 func TestSetBlockAttributesWritesTypedBlockState(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::ask{#ask-1 multiple=\"false\" state=\"open\" urgency=\"med\"}\nShip it?\n:::\n")
 	actor := model.Actor{Kind: "user", ID: "alice"}
 
@@ -422,7 +419,7 @@ func TestApplyOpsRejectsAmbiguousTargetWithoutChangingDocument(t *testing.T) {
 func TestApplyOpsResolvesAgainstDocumentInsideApply(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "# First")
 	if _, err := joinedReplaceText(service, artifactID, "base", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("prepare document: %v", err)
@@ -434,6 +431,10 @@ func TestApplyOpsResolvesAgainstDocumentInsideApply(t *testing.T) {
 	}
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	// A failure below still lets the held apply go: registered after newTestService's shutdown, this
+	// cleanup runs first, so the apply never stays parked in the hook while the shutdown waits.
+	letApply := sync.OnceFunc(func() { close(release) })
+	testcleanup.Add(t, letApply)
 	service.srv.OnInject = func(ctx context.Context, info ygws.InjectInfo) error {
 		select {
 		case <-entered:
@@ -449,10 +450,10 @@ func TestApplyOpsResolvesAgainstDocumentInsideApply(t *testing.T) {
 		_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "insert", Markdown: "!", After: "end"}}, model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil)
 		result <- err
 	}()
-	<-entered
+	testwait.Receive(t, "joinedApplyOps to reach the inject hook", entered)
 	editLiveTree(t, service, artifactID, replaceRun("base", "base browser"))
-	close(release)
-	if err := <-result; err != nil {
+	letApply()
+	if err := testwait.Receive(t, "joinedApplyOps to return once it was released", result); err != nil {
 		t.Fatalf("apply operation: %v", err)
 	}
 	waitForDocumentText(t, service, artifactID, "base browser\n\n!\n")
@@ -1739,7 +1740,7 @@ func TestSettlementVersionsCodeWithAPipeAfterABackslashInATableCellWithThePipeAf
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "| Cmd | Count |\n| --- | --- |\n| run | n |\n")
 			editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 				tree.Children[0].Children[1].Children[1].Children[0].Children = []*pmdoc.Node{{Type: "text", Text: test.code, Marks: []pmdoc.Mark{{Type: "inlineCode"}}}}
@@ -2768,7 +2769,7 @@ func blocksCarryingComment(tree *pmdoc.Node, id string) []string {
 func TestApplyOpsReplaceWithAListKeepsAnOpenCommentsQuote(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Intro.\n\nBody text here.\n")
 	commentID := insertAnchoredComment(t, service, artifactID, "Body text here.")
 
@@ -3507,7 +3508,7 @@ func TestApplyOperationsJudgesTableRowsAgainstTheirTable(t *testing.T) {
 func blockAskHarness(t *testing.T) (*Service, string, string, func(), func() int) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n")
 	service.settleRoom(artifactID, 0)
 	var askID string
@@ -3655,7 +3656,7 @@ func TestAnEditIsRefusedForTheOpenAsksOfTheBlocksItDropsItself(t *testing.T) {
 	t.Parallel()
 	const second = ":::ask{#second urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich store?\n:::\n"
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, askFixture+"\n"+second+"\nContext ends with no drift.\n")
 	service.settleRoom(artifactID, 0)
 	// The row of the second ask is made an orphan: it stays open, pointing at a block the

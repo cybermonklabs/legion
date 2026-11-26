@@ -1,9 +1,6 @@
 package docs
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
 // A peer that sends frame after frame of invented awareness clients - some announced and taken
 // away again, some sent as null states straight away - must not grow a room's awareness without
@@ -17,8 +14,8 @@ func TestRepeatedAwarenessFloodsDoNotGrowARoomsAwarenessWithoutLimit(t *testing.
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
-	pair.openReader(t, pair.serverA, "alice")
-	pair.openReader(t, pair.serverB, "bob")
+	alice := pair.openReader(t, pair.serverA, "alice")
+	bob := pair.openReader(t, pair.serverB, "bob")
 	aw, resident := pair.taskA.srv.GetAwareness(pair.artifactID)
 	if !resident {
 		t.Fatal("task A's room is not resident, so it has no awareness to flood")
@@ -41,8 +38,8 @@ func TestRepeatedAwarenessFloodsDoNotGrowARoomsAwarenessWithoutLimit(t *testing.
 	}
 
 	bound := 2 * maxAwarenessClientsPerRoom
-	waitFor(t, roomWait(t), "task A's relay to have sent what it relays of the frames", func() bool {
-		return relayedClients(pair.taskA, pair.artifactID) == 0
+	waitFor(t, "task A's relay to have sent every batch of the frames", func() bool {
+		return relayedClients(pair.taskA, pair.artifactID) == 0 && relaySentAll(pair.taskA, pair.artifactID)
 	})
 	onA, err := pair.taskA.heldAwarenessClients(pair.artifactID)
 	if err != nil {
@@ -52,17 +49,14 @@ func TestRepeatedAwarenessFloodsDoNotGrowARoomsAwarenessWithoutLimit(t *testing.
 		t.Errorf("after %d frames of %d invented awareness clients, task A's room tracks %d client entries, want at most %d: each frame grows the room by its clients until a purge two expiries later",
 			frames, perFrame, onA, bound)
 	}
-	// What task B takes in arrives through room sync: read its room until it passes the bound or
-	// the relay has had three seconds, sixty coalescing windows, to land.
-	var onB int
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		onB, err = pair.taskB.heldAwarenessClients(pair.artifactID)
-		if err != nil {
-			t.Fatalf("read the awareness task B's room holds: %v", err)
-		}
-		if onB > bound {
-			break
-		}
+	// What task B takes in arrives through room sync, on one lane, in the order task A's relay
+	// sent it: alice's cursor, set on task A once every batch of the frames has been sent, reaches
+	// bob on task B only after task B has applied every one of them.
+	setAwareness(t, alice, aliceClient, cursorOf("alice", 1))
+	requireAwareness(t, bob, holdsAwareness(aliceClient, cursorOf("alice", 1)), "alice's cursor, set on task A after every batch of the frames, reaching bob on task B")
+	onB, err := pair.taskB.heldAwarenessClients(pair.artifactID)
+	if err != nil {
+		t.Fatalf("read the awareness task B's room holds: %v", err)
 	}
 	if onB > bound {
 		t.Errorf("after %d frames of %d invented awareness clients on task A, task B's room tracks %d client entries, want at most %d: every relayed removal of a client B never held is stored as a tombstone",

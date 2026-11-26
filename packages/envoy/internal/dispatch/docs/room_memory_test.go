@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"sync"
 	"testing"
-	"time"
 	"weak"
 
 	gws "github.com/gorilla/websocket"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // What a room holds in memory beyond its document: the record of each update its persistence has
@@ -30,7 +30,7 @@ import (
 func TestAnUpdateClassHoldsNoCopyAndMatchesByIdentity(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	// Durable classes, so the room's record holds them (pendingUpdates) until each is taken.
 	recordClass := func(update []byte) *UpdateCredit {
 		credit := &UpdateCredit{}
@@ -125,11 +125,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 		}()
 	}
 	for range 2 {
-		select {
-		case <-arrived:
-		case <-time.After(roomWait(t)):
-			t.Fatal("two cold sockets of one document never both offered what they loaded")
-		}
+		testwait.Receive(t, "both cold sockets of one document to offer what they loaded", arrived)
 	}
 	mu.Lock()
 	loser := losingPreload(t, service, artifactID, offered)
@@ -137,14 +133,14 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	releaseSockets()
 	var connections []*gws.Conn
 	for range 2 {
-		socket := <-sockets
+		socket := testwait.Receive(t, "a cold socket's dial to answer once the preloads were released", sockets)
 		if socket.err != nil {
 			t.Fatalf("open a cold socket: %v", socket.err)
 		}
 		connections = append(connections, socket.connection)
 		testcleanup.Add(t, func() { _ = socket.connection.Close() })
 	}
-	waitFor(t, roomWait(t), "both sockets to join the loaded room", func() bool {
+	waitFor(t, "both sockets to join the loaded room", func() bool {
 		return service.srv.GetDoc(artifactID) != nil && registeredConnections(service) == 2
 	})
 
@@ -157,9 +153,9 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	// Once both sockets have left, whatever still holds the losing history is something other than
 	// the sockets, and the check above proves nothing.
 	for _, connection := range connections {
-		leaveDocument(connection)
+		leaveDocument(t, connection)
 	}
-	waitFor(t, roomWait(t), "both sockets to be forgotten", func() bool {
+	waitFor(t, "both sockets to be forgotten", func() bool {
 		return registeredConnections(service) == 0
 	})
 	runtime.GC()

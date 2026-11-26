@@ -23,6 +23,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // mentionsOf is a payload's mentions as the scan decodes them from JSON, each resolved to its
@@ -44,22 +46,45 @@ func seedMentionDelivery(t *testing.T, database *store.Store, commentID, session
 	seedDelivery(t, database, commentID, "session:"+sessionID, sessionID, outcome)
 }
 
+// stagedAhead is how far a row of this package stages a time the product judges against the
+// database's clock, and the bound a row gives the product to judge such a time by. A live attempt
+// is dated stagedAhead ahead of the database's clock - its creation, and its claim when it has
+// one (seedDelivery, keepLive) - since an attempt reads live only until model.DeliveryClaimLapse
+// past its creation and claim (model.MentionLiveSQL, model.DeliveryClaimFreeSQL), so one dated
+// now reads resumed, or its claim free, once a row has taken a minute to read it. A back-off, a
+// fallback copy's next attempt (notDueAhead) and a killed holder's hold row lapse stagedAhead on,
+// and a hold a row's verdict reads held throughout lasts stagedAhead (holdPastTheRun).
+// stagedAhead is also the bound a row gives a role route's forward's wait for an unnamed mention
+// (Deps.forwardBound, roleRig.forwardBound) when it stages an attempt past its lease that must
+// read within that bound: seedDelivery's resumed attempt, or one agedUnnamedAttempts ages. Such
+// an attempt reads past its lease from model.DeliveryClaimLapse after its creation, and
+// unnamedForwardBound is two of those leases, so no age a row stages it at leaves it within
+// unnamedForwardBound for longer than one lease of the row's own run. And it is how long a role
+// forward waits on the real clock for an acknowledgement a row makes sure never comes
+// (Deps.forwardAckWait). It is staged state for the product's clock, not a wait of the row's:
+// longer than any `go test -timeout` CI gives this package, so what a row staged reads as not yet
+// passed however long the run takes.
+const stagedAhead = 24 * time.Hour
+
 // seedDelivery records an attempt of commentID's mention of target, as the comment handler and
 // its sender leave it, inserting the comment and the mention row first when no test seeded them.
 // sessionID is the session the attempt names, "" for none: an unanswered mention's attempt names
 // none until its sender resolves it. outcome is the attempt's state - "sent", "failed", or
-// "pending" for a send its sender claimed just now - or "resumed" for a pending attempt whose
-// sender's claim lapsed half a lease ago (its sender died with the send in flight; the API's
-// delivery sweep resends it), "queued" for a pending attempt created just now that no sender has
-// claimed yet, and "backlogged" or "abandoned" for one created past model.MentionSweepWindow ago
-// that no sender ever claimed, which the delivery sweep will never send. "" records no attempt.
+// "pending" for a send its sender has claimed - or "resumed" for a pending attempt whose sender's
+// claim lapsed half a lease ago (its sender died with the send in flight; the API's delivery
+// sweep resends it), "queued" for a pending attempt no sender has claimed yet, and "backlogged"
+// or "abandoned" for one created past model.MentionSweepWindow ago that no sender ever claimed,
+// which the delivery sweep will never send. "" records no attempt.
 //
-// A resumed attempt is staged past the lease the outbox waits a send out for
-// (model.MentionResumedSQL) and within unnamedForwardBound, the bound a role route's forward
-// waits an unnamed mention out for: that is the state these tests name, and a fixture sitting
-// on the bound itself would read one side of it or the other by how long the test took to get
-// there. The past-bound case is staged by the one test that pins it (agedUnnamedAttempts,
-// TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents).
+// A pending or queued attempt is live (model.MentionLiveSQL), and is dated stagedAhead ahead of
+// the database's clock, its claim too when it has one, so that it stays live however long the
+// row takes to read it. A resumed attempt is staged past the lease the outbox waits a send out
+// for (model.MentionResumedSQL), which only grows with the row's run, and half a lease within
+// unnamedForwardBound, the bound a role route's forward waits an unnamed mention out for, which
+// a slow row can pass: a row whose verdict reads an unnamed one within that bound gives its
+// outbox stagedAhead as that bound. The past-bound case is staged by the rows that pin the bound
+// (agedUnnamedAttempts, TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents,
+// TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound).
 func seedDelivery(t *testing.T, database *store.Store, commentID, target, sessionID, outcome string) {
 	t.Helper()
 	if outcome == "" {
@@ -67,10 +92,12 @@ func seedDelivery(t *testing.T, database *store.Store, commentID, target, sessio
 	}
 	state, age, claimed := outcome, time.Duration(0), true
 	switch outcome {
+	case "pending":
+		age = -stagedAhead
 	case "resumed":
 		state, age = "pending", model.DeliveryClaimLapse+model.DeliveryClaimLapse/2
 	case "queued":
-		state, claimed = "pending", false
+		state, age, claimed = "pending", -stagedAhead, false
 	case "backlogged", "abandoned":
 		state, age, claimed = "pending", model.MentionSweepWindow+time.Minute, false
 	}
@@ -420,14 +447,16 @@ func nextAttempt(t *testing.T, database *store.Store, eventID int64) (attempts i
 	return attempts, due
 }
 
-// waitsFromScan reports whether due is mentionPendingDelay after a moment between before and
-// after, the times read either side of the scan that wrote it: recordBatch writes a blocked
-// event's next_attempt_at as least(now() + delay, until), now() is read inside the scan, and a
-// blocker that waits on a mention is written in the same statement. A bound read from the
-// test's clock after the scan instead moves with the time the test takes to reach the check,
-// which a loaded machine can stretch past the whole wait.
-func waitsFromScan(due *time.Time, before, after time.Time) bool {
-	return due != nil && !due.Before(before.Add(mentionPendingDelay)) && !due.After(after.Add(mentionPendingDelay))
+// requireBlockedByPass fails t unless due is mentionPendingDelay after the moment the pass that
+// blocked the event recorded it: a moment between before and after, read around that pass on the
+// database's own clock (testdb.ClockTimestamp). Load can only widen the two, never put a correct
+// due outside them.
+func requireBlockedByPass(t *testing.T, what string, due *time.Time, before, after time.Time) {
+	t.Helper()
+	if due == nil || due.Before(before.Add(mentionPendingDelay)) || due.After(after.Add(mentionPendingDelay)) {
+		t.Fatalf("%s: next_attempt_at = %v, want mentionPendingDelay = %s after the pass that ran from %s to %s, the wait a blocked event takes",
+			what, due, mentionPendingDelay, before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+	}
 }
 
 // TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent drives the scan itself: a new comment
@@ -469,9 +498,9 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			publisher := &recordingPublisher{}
 			outbox := holding(t, Deps{Store: database, Publisher: publisher})
 
-			before := time.Now()
+			before := testdb.ClockTimestamp(t, database.Pool)
 			outbox.scan(ctx, unfenced{})
-			after := time.Now()
+			after := testdb.ClockTimestamp(t, database.Pool)
 			if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, []string{issueTopic}) {
 				t.Fatalf("topics while the mention is pending = %#v, want the issue topic alone", got)
 			}
@@ -482,9 +511,7 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			if attempts != 0 {
 				t.Fatalf("attempt_count = %d after a deferral, want 0", attempts)
 			}
-			if !waitsFromScan(due, before, after) {
-				t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan", due, mentionPendingDelay)
-			}
+			requireBlockedByPass(t, "the deferred event", due, before, after)
 			if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, []string{issueTopic}) {
 				t.Fatalf("published_destinations = %#v, want the issue topic alone", destinations)
 			}
@@ -542,15 +569,15 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 	event := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{
 		ID: commentID, Anchor: &model.Anchor{ArtifactID: notes}, Body: "@session-writer look at this.",
 	}, writer.ID)
-	// A send a sender claimed just now, which is the state that holds a session's own copy back
-	// and blocks its event while it lasts (destinations.leftTo, mentionSending).
+	// A send a sender has claimed and is sending, which is the state that holds a session's own
+	// copy back and blocks its event while it lasts (destinations.leftTo, mentionSending).
 	seedMentionDelivery(t, database, commentID, writer.ID, "pending")
 
 	publisher := &recordingPublisher{}
 	outbox := holding(t, Deps{Store: database, Publisher: publisher})
-	before := time.Now()
+	before := testdb.ClockTimestamp(t, database.Pool)
 	outbox.scan(ctx, unfenced{})
-	after := time.Now()
+	after := testdb.ClockTimestamp(t, database.Pool)
 
 	want := []string{issueTopic, claimantTopic}
 	if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, want) {
@@ -563,9 +590,7 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d after a deferral, want 0", attempts)
 	}
-	if !waitsFromScan(due, before, after) {
-		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan", due, mentionPendingDelay)
-	}
+	requireBlockedByPass(t, "the deferred event", due, before, after)
 	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, want) {
 		t.Fatalf("published_destinations = %#v, want %#v", destinations, want)
 	}
@@ -697,9 +722,9 @@ func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
 			seedMentionDelivery(t, database, commentID, "session-claimant", "pending")
 			publisher := &countingPublisher{failTopics: tc.failTopics}
 
-			before := time.Now()
+			before := testdb.ClockTimestamp(t, database.Pool)
 			holding(t, withHeldRoles(Deps{Store: database, Publisher: publisher})).scan(ctx, unfenced{})
-			after := time.Now()
+			after := testdb.ClockTimestamp(t, database.Pool)
 			if got := publisher.attempted(); !reflect.DeepEqual(got, []string{issueTopic, roleTopic, authorTopic}) {
 				t.Fatalf("topics sent = %#v, want every destination but the held-back claimant copy", got)
 			}
@@ -809,7 +834,9 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 		// claimFirst takes the attempt's claim, as a sender's claim transaction does - the
 		// comment's owner lock (the api's lockedCommentAllowingClosed), then the attempt's update -
 		// and commits it only once the outbox waits on that owner lock to settle it, holding no
-		// transaction id (settleAbandoned takes the lock before its update).
+		// transaction id (settleAbandoned takes the lock before its update). The claim is dated
+		// stagedAhead past the transaction's start, so it is still live when the outbox reads the
+		// attempt after the commit, however long that commit is in coming.
 		claimFirst bool
 		wantTopics []string
 		// wantHeld is the destination of each fallback row the publish leaves behind.
@@ -861,8 +888,8 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 					t.Fatalf("take the comment's owner lock: %v", err)
 				}
 				if _, err := claim.Exec(context.Background(), `
-					update comment_deliveries set claimed_at = now() where comment_id = $1
-				`, commentID); err != nil {
+					update comment_deliveries set claimed_at = now() + $2::interval where comment_id = $1
+				`, commentID, stagedAhead); err != nil {
 					t.Fatalf("claim the attempt: %v", err)
 				}
 				published := make(chan error, 1)
@@ -877,7 +904,7 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 				if err := claim.Commit(context.Background()); err != nil {
 					t.Fatalf("commit the claim: %v", err)
 				}
-				err = <-published
+				err = testwait.Receive(t, "the outbox's publish to return once the claim committed", published)
 			} else {
 				err = publishing()
 			}
@@ -1156,6 +1183,25 @@ func readHeldCopy(t *testing.T, database *store.Store, commentID, destination st
 	return row
 }
 
+// notDueAhead puts commentID's fallback row at destination stagedAhead past the database's clock
+// and returns the moment it falls due then, for a row that runs a pass the row must find not due:
+// the wait a pass writes on a row it leaves (mentionPendingDelay, retry.Delay) is seconds long,
+// so a pass the row runs next could come after it on a slow machine and claim the row. A pass
+// that claims the row writes a next_attempt_at of its own, so a row still due at the returned
+// moment is one no pass claimed.
+func notDueAhead(t *testing.T, database *store.Store, commentID, destination string) time.Time {
+	t.Helper()
+	var due time.Time
+	if err := database.Pool.QueryRow(context.Background(), `
+		update comment_fallback_copies set next_attempt_at = now() + $3::interval
+		where comment_id = $1 and destination = $2
+		returning next_attempt_at
+	`, commentID, destination, stagedAhead).Scan(&due); err != nil {
+		t.Fatalf("put the held copy at %s off by %s: %v", destination, stagedAhead, err)
+	}
+	return due
+}
+
 // TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitHasPassed: a pass that
 // finds the row's mention still in flight leaves the row to a later pass, counting no attempt, and
 // the row waits mentionPendingDelay rather than falling due at once: a second pass that follows it
@@ -1181,9 +1227,9 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 		t.Fatalf("put the mention back in flight: %v", err)
 	}
 
-	before := time.Now()
+	before := testdb.ClockTimestamp(t, database.Pool)
 	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-	after := time.Now()
+	after := testdb.ClockTimestamp(t, database.Pool)
 	row := readHeldCopy(t, database, commentID, sessionTopic)
 	if row.attempts != 0 || row.settled || row.published || row.due == nil {
 		t.Fatalf("the held copy has attempts=%d settled=%v published=%v next_attempt_at=%v, want no attempt "+
@@ -1195,12 +1241,14 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 	}
 
 	// A pass inside that wait claims the row again, and so reads it again, only if it is due: the
-	// claim it would take is a next_attempt_at of its own.
+	// claim it would take is a next_attempt_at of its own. The wait is put a day off first
+	// (stagedAhead), so the pass runs inside it however late it comes (notDueAhead).
+	wait := notDueAhead(t, database, commentID, sessionTopic)
 	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 	if again := readHeldCopy(t, database, commentID, sessionTopic); again.attempts != 0 || again.due == nil ||
-		!again.due.Equal(*row.due) {
+		!again.due.Equal(wait) {
 		t.Fatalf("a pass inside the wait left the held copy attempts=%d next_attempt_at=%v, want 0 and %v: "+
-			"a row that is not due is not claimed", again.attempts, again.due, *row.due)
+			"a row that is not due is not claimed", again.attempts, again.due, wait)
 	}
 	if published := topicsOf(publisher.all()); !reflect.DeepEqual(published, []string{issueTopic}) {
 		t.Fatalf("the passes published %#v, want the scan's issue topic alone while the mention is in flight", published)
@@ -1264,13 +1312,13 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 
 	denied := retry.DeadLetterAttempts + 2
 	for want := 1; want <= denied; want++ {
-		before := time.Now()
+		before := testdb.ClockTimestamp(t, database.Pool)
 		if want == 1 {
 			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 		} else {
 			pass()
 		}
-		after := time.Now()
+		after := testdb.ClockTimestamp(t, database.Pool)
 		row := readHeldCopy(t, database, commentID, sessionTopic)
 		if row.attempts != want || row.settled || row.published || row.due == nil {
 			t.Fatalf("after %d denied passes the held copy has attempts=%d settled=%v published=%v next_attempt_at=%v, "+
@@ -1281,11 +1329,13 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 				want, *row.due, want, retry.Delay(want))
 		}
 		if want == 1 {
-			// A pass before the backoff has passed leaves the row alone.
+			// A pass before the backoff has passed leaves the row alone. The backoff is put a day
+			// off first (stagedAhead), so the pass runs before it however late it comes (notDueAhead).
+			backoff := notDueAhead(t, database, commentID, sessionTopic)
 			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-			if again := readHeldCopy(t, database, commentID, sessionTopic); again.attempts != 1 || !again.due.Equal(*row.due) {
+			if again := readHeldCopy(t, database, commentID, sessionTopic); again.attempts != 1 || again.due == nil || !again.due.Equal(backoff) {
 				t.Fatalf("a pass inside the backoff left the held copy attempts=%d next_attempt_at=%v, want 1 and %v",
-					again.attempts, again.due, *row.due)
+					again.attempts, again.due, backoff)
 			}
 		}
 	}
@@ -1355,9 +1405,9 @@ func TestAFallbackCopyOutlivesANATSOutageLongerThanTheDeadLetterThreshold(t *tes
 
 	outage := retry.DeadLetterAttempts + 2
 	for down := 1; down <= outage; down++ {
-		before := time.Now()
+		before := testdb.ClockTimestamp(t, database.Pool)
 		pass()
-		after := time.Now()
+		after := testdb.ClockTimestamp(t, database.Pool)
 		row := readHeldCopy(t, database, commentID, sessionTopic)
 		if row.attempts != 0 || row.settled || row.published || row.due == nil {
 			t.Fatalf("after %d passes with NATS unreachable the held copy has attempts=%d settled=%v published=%v "+

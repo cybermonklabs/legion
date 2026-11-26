@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A read is never older than the stored head, nor than the room (plan D8): a resident room whose
@@ -78,11 +81,7 @@ func (g *catchUpGate) open() {
 // awaitHeld waits until a catch-up of the gate's room has read the store and is held.
 func (g *catchUpGate) awaitHeld(t *testing.T, what string) {
 	t.Helper()
-	select {
-	case <-g.entered:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("no catch-up of the reader's room read the store after %s within %v", what, roomWait(t))
-	}
+	testwait.Receive(t, "a catch-up of the reader's room to read the store after "+what, g.entered)
 }
 
 // readPair is one document served by two processes: writer, which holds no room for it to begin
@@ -100,12 +99,28 @@ type readPair struct {
 
 func newReadPair(t *testing.T) readPair {
 	t.Helper()
+	return newReadPairOn(t, nil)
+}
+
+// awaitReaderCaughtUp waits through the shared wait until the reader's room no longer stands
+// behind the document's head (roomBehind): its catch-up, let go, has applied what it read.
+func (pair readPair) awaitReaderCaughtUp(t *testing.T) {
+	t.Helper()
+	waitFor(t, "the reader's room to catch up", func() bool {
+		return !roomBehind(t, pair.reader, pair.artifactID)
+	})
+}
+
+// newReadPairOn is newReadPair with readerClock as the reader's clock (Deps.Clock), the real one
+// when nil.
+func newReadPairOn(t *testing.T, readerClock clock.Clock) readPair {
+	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	writer, _ := newTestServiceInstance(t, database)
 	second := storetest.SecondProcess(t, database)
 	loads := &loadCountingStore{VersionedStore: NewPgVersioned(second)}
-	reader := newReadCacheService(t, second, loads)
+	reader := newReadCacheServiceOn(t, second, loads, readerClock)
 	seedServiceText(t, writer, artifactID, "The quick brown fox.\n\nSecond.\n")
 	settleCurrentGeneration(t, writer, artifactID)
 
@@ -118,7 +133,7 @@ func newReadPair(t *testing.T) readPair {
 	// Runs before the room sync stops and the services shut down: a catch-up held then would
 	// keep the lane, and so both, from returning.
 	testcleanup.Add(t, gate.open)
-	waitFor(t, roomWait(t), "the reader's room to stand at the head", func() bool {
+	waitFor(t, "the reader's room to stand at the head", func() bool {
 		return !roomBehind(t, reader, artifactID)
 	})
 	return readPair{database: database, artifactID: artifactID, writer: writer, reader: reader, loads: loads, gate: gate}
@@ -142,7 +157,7 @@ func (pair readPair) leaveReaderBehind(t *testing.T, what string, write func()) 
 // transaction is refused (store.ErrNestedAcquire), not merely slow.
 func (pair readPair) joinedRead(t *testing.T, read func(ctx context.Context) error) error {
 	t.Helper()
-	ctx := store.WithTransactionTracking(context.Background())
+	ctx := store.WithTransactionTracking(testwait.Context(t))
 	tx, err := pair.reader.store.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the read's transaction: %v", err)
@@ -241,9 +256,7 @@ func TestAReadOfARoomBehindTheStoredHeadReadsTheStoreAndOfACurrentOneReadsTheRoo
 	}
 
 	pair.gate.open()
-	waitFor(t, roomWait(t), "the reader's room to catch up", func() bool {
-		return !roomBehind(t, pair.reader, pair.artifactID)
-	})
+	pair.awaitReaderCaughtUp(t)
 	before = pair.loads.loads.Load()
 	if text, err := pair.reader.Text(ctx, pair.artifactID); err != nil || !strings.Contains(text, written) {
 		t.Fatalf("the reader's read once caught up = %q, %v; want the edit", text, err)
@@ -323,27 +336,25 @@ func TestAReadOfARoomBehindTheHeadHoldingItsOwnUpdateReadsTheStoreAndThatUpdate(
 // inside a joined transaction as an anchored comment's is, while the reader's catch-up of it is
 // held: the look reads the store, so it neither waits out MarkWait nor answers ErrAnchorMissing.
 // A mark stored while VerifyMark waits wakes it through the reader's room once the catch-up
-// applies it.
+// applies it. The reader's clock is a fake the test never moves, so MarkWait never ends: a
+// VerifyMark that waited it out rather than reading the store would still be waiting when the
+// read's context ends.
 func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 	t.Parallel()
-	pair := newReadPair(t)
-	pair.reader.markWait = roomWait(t)
+	readerClock := clocktest.New(time.Now())
+	pair := newReadPairOn(t, readerClock)
 
 	pair.leaveReaderBehind(t, "the writer's mark", func() {
 		browserMark(t, pair.writer, pair.artifactID, "proofComment", "held-mark", "quick")
 		waitForLandedAppends(t, pair.writer, pair.artifactID)
 	})
 	before := pair.loads.loads.Load()
-	started := time.Now()
 	var anchored Anchored
 	if err := pair.joinedRead(t, func(ctx context.Context) (err error) {
 		anchored, err = pair.reader.VerifyMark(ctx, pair.artifactID, MarkComment, "held-mark")
 		return err
 	}); err != nil || anchored.Quote != "quick" {
-		t.Fatalf("VerifyMark on the reader of the mark the writer stored = %q, %v; want %q", anchored.Quote, err, "quick")
-	}
-	if waited := time.Since(started); waited >= pair.reader.markWait {
-		t.Fatalf("VerifyMark took %v, its whole MarkWait: it waited rather than read the store", waited)
+		t.Fatalf("VerifyMark on the reader of the mark the writer stored = %q, %v; want %q, found without its MarkWait ending", anchored.Quote, err, "quick")
 	}
 	if pair.loads.loads.Load() == before {
 		t.Fatal("VerifyMark on a room behind the head did not read the store")
@@ -353,9 +364,7 @@ func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 	}
 
 	pair.gate.open()
-	waitFor(t, roomWait(t), "the reader's room to catch up", func() bool {
-		return !roomBehind(t, pair.reader, pair.artifactID)
-	})
+	pair.awaitReaderCaughtUp(t)
 	warmed := make(chan struct{}, 1)
 	pair.reader.afterReadWarm = func(string) {
 		select {
@@ -372,14 +381,11 @@ func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 		anchored, err := pair.reader.VerifyMark(context.Background(), pair.artifactID, MarkComment, "late-mark")
 		result <- verified{anchored, err}
 	}()
-	select {
-	case <-warmed:
-	case <-time.After(roomWait(t)):
-		t.Fatal("VerifyMark never subscribed to the reader's room")
-	}
+	testwait.Receive(t, "VerifyMark to subscribe to the reader's room", warmed)
+	readerClock.AwaitArmedAt(t, "VerifyMark's MarkWait on the reader's clock", readerClock.Now().Add(pair.reader.markWait))
 	browserMark(t, pair.writer, pair.artifactID, "proofComment", "late-mark", "fox")
 	waitForLandedAppends(t, pair.writer, pair.artifactID)
-	got := <-result
+	got := testwait.Receive(t, "VerifyMark to find the mark the writer stored while it waited, its MarkWait never ending", result)
 	if got.err != nil || got.anchored.Quote != "fox" {
 		t.Fatalf("VerifyMark on the reader, waiting while the writer stored the mark = %q, %v; want %q", got.anchored.Quote, got.err, "fox")
 	}
@@ -389,11 +395,11 @@ func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 // other process placed and stored: the look reads the stored document, which holds that mark,
 // merged with the room's own update. Reading the room alone would leave the mark unfound until
 // the catch-up landed, so the look would wait out its whole MarkWait and answer ErrAnchorMissing,
-// while the mark has been durable all along (the comment at VerifyMark).
+// while the mark has been durable all along (the comment at VerifyMark). The reader's clock is a
+// fake the test never moves, so that MarkWait never ends.
 func TestVerifyMarkOnARoomBehindTheHeadHoldingItsOwnUpdateFindsTheStoredMark(t *testing.T) {
 	t.Parallel()
-	pair := newReadPair(t)
-	pair.reader.markWait = roomWait(t)
+	pair := newReadPairOn(t, clocktest.New(time.Now()))
 	const typed = "Typed into the room behind the head."
 
 	pair.leaveReaderBehind(t, "the writer's mark", func() {
@@ -403,16 +409,12 @@ func TestVerifyMarkOnARoomBehindTheHeadHoldingItsOwnUpdateFindsTheStoredMark(t *
 	land := pair.typeIntoTheRoomBehindTheHead(t, typed)
 	defer land()
 
-	started := time.Now()
 	var anchored Anchored
 	if err := pair.joinedRead(t, func(ctx context.Context) (err error) {
 		anchored, err = pair.reader.VerifyMark(ctx, pair.artifactID, MarkComment, "held-mark")
 		return err
 	}); err != nil || anchored.Quote != "quick" {
-		t.Fatalf("VerifyMark on the reader, its room behind the head and holding an unstored keystroke = %q, %v; want %q", anchored.Quote, err, "quick")
-	}
-	if waited := time.Since(started); waited >= pair.reader.markWait {
-		t.Fatalf("VerifyMark took %v, its whole MarkWait: it waited rather than read the store", waited)
+		t.Fatalf("VerifyMark on the reader, its room behind the head and holding an unstored keystroke = %q, %v; want %q, found without its MarkWait ending", anchored.Quote, err, "quick")
 	}
 	if text, err := pair.reader.Text(context.Background(), pair.artifactID); err != nil || !strings.Contains(text, typed) {
 		t.Fatalf("the reader's read beside that VerifyMark = %q, %v; want the room's own unstored keystroke", text, err)
@@ -455,9 +457,7 @@ func TestTheTokenOfARoomBehindTheHeadHoldingItsOwnUpdateIsTheWholeDocuments(t *t
 	// stands is the one that token was taken over, and nothing else has written it.
 	land()
 	pair.gate.open()
-	waitFor(t, roomWait(t), "the reader's room to catch up", func() bool {
-		return !roomBehind(t, pair.reader, pair.artifactID)
-	})
+	pair.awaitReaderCaughtUp(t)
 	outcome, err := joinedApplyOps(pair.reader, pair.artifactID, nil, actor, &model.EditPrecondition{Document: token})
 	if err != nil {
 		t.Fatalf("a conditional edit on the reader with the token read while its room was behind the head: %v; want it accepted: that token is the document's", err)

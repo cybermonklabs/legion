@@ -455,6 +455,16 @@ func (s *server) writeBroadcast(
 	if err != nil {
 		return broadcastRead{}, nil, err
 	}
+	// Every copy stores this body as it is (the insert below writes it unchanged, and no trigger
+	// rewrites a message's body), so its blocks are one reading for all of them: the body is split
+	// here, once, before the transaction writes anything, and each copy's index below only binds
+	// that plan to the id and time its insert made. A write holds its transaction id only for its
+	// database statements (INFRA-636), so no parse runs once the broadcast's insert has taken one.
+	// Each copy is a direct message, which holds no mention, so the plan extracts none.
+	plan, err := refs.PlanNewItemIndex(refs.ItemMessage, body, s.deps.ServerURL, nil)
+	if err != nil {
+		return broadcastRead{}, nil, err
+	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return broadcastRead{}, nil, err
@@ -501,10 +511,14 @@ func (s *server) writeBroadcast(
 			return broadcastRead{}, nil, err
 		}
 		// Each copy is a direct message: its blocks are indexed, and it writes no mention, so
-		// its blocks hold none either and the write moves nothing. The copy is inserted above,
-		// so its body is read here rather than planned before the insert, as every other
-		// message write plans it (api.planItemWrite).
-		if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, s.deps.ServerURL, message.CreatedAt, nil, nil); err != nil {
+		// its blocks hold none either and the write moves nothing. Its index is the plan made
+		// before the transaction began, bound to the id and time the copy's insert returned: the
+		// copy holds no index yet, which is the index that plan was made against.
+		indexing := plan.For(message.ID, message.CreatedAt)
+		if err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
+			indexing.Queue(batch)
+			return nil
+		}); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		// A broadcast message is a thread root that answers nothing, so its event says what

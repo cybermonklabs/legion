@@ -42,7 +42,7 @@ func TestAReleasedConnectionKeepsNoLargeArguments(t *testing.T) {
 	for _, row := range largeArgumentRows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := context.Background()
-			pool, err := openTestStore(t).Pool.healthPool()
+			pool, err := openEmptyTestStore(t).Pool.healthPool()
 			if err != nil {
 				t.Fatalf("open the health probe's pool: %v", err)
 			}

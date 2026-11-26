@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // CalloutAuthTimeout is how long a server CalloutConfig describes waits for the auth service's
@@ -272,25 +274,21 @@ func StartClusterWithCallout(t testing.TB, n int, keys CalloutKeys, static ...St
 	return cluster
 }
 
-// awaitSeed waits, until testDeadline, for the server at uri to admit the nkey user whose seed is
-// seed, each connect's dials cut to what is left (waitEnd): the proof it speaks the client
-// protocol and enforces its configured users. A server with an auth callout cannot be probed with a
-// client that has no credential, as awaitAuth probes one, because the server holds such a client
-// for its authorization timeout while it waits for an answer no service gives yet.
+// awaitSeed waits for the server at uri to admit the nkey user whose seed is seed: the proof it
+// speaks the client protocol and enforces its configured users. A server with an auth callout
+// cannot be probed with a client that has no credential, as awaitAuth probes one, because the
+// server holds such a client for its authorization timeout while it waits for an answer no
+// service gives yet. A server can answer a dial before the NATS protocol handshake, so a refused
+// connect is tried again through the shared wait, whose reading is the last refusal; each
+// connect's dial carries the wait's give-up (giveUpDial).
 func awaitSeed(t testing.TB, uri, seed string) {
 	t.Helper()
-	bound := boundOf(t)
-	for {
-		options, retire := bound.dial()
-		conn, connectErr := ConnectSeed(t, uri, seed, options...)
-		if connectErr == nil {
-			retire()
-			conn.Close()
-			return
+	testwait.Until(t, fmt.Sprintf("NATS at %s to admit the auth service's user", uri), func() (error, bool) {
+		conn, err := ConnectSeed(t, uri, seed, giveUpDial(t))
+		if err != nil {
+			return err, false
 		}
-		if bound.over() {
-			t.Fatalf("NATS at %s did not admit the auth service's user by %s, short of the test's deadline: %v", uri, bound, connectErr)
-		}
-		bound.pause()
-	}
+		conn.Close()
+		return nil, true
+	})
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -285,23 +286,20 @@ var earlierBuildArrivals = []earlierBuildArrival{
 	}},
 }
 
-// fleetLockMargin is how long before the test binary's deadline a fleet test's own transaction
-// stops waiting for a lock (setFleetLockTimeout). It is shorter than testwait's own margin, so a
-// wait of the test that waits on such a transaction gives up first and names what it waited for;
-// a transaction no wait of the test watches still ends before Go's alarm panics the binary.
-const fleetLockMargin = 10 * time.Second
-
-// setFleetLockTimeout bounds tx's lock waits by the test binary's deadline less fleetLockMargin, so
-// a lock wait that is merely slow is never refused by a span of the clock, and one that never ends
-// still fails rather than hangs. Under -timeout 0 the binary has no deadline and the waits no
-// bound. A deadline already less than the margin away leaves a bound of 1 ms, since 0 would turn
-// the bound off.
+// setFleetLockTimeout bounds tx's lock waits by the moment every wait of the test gives up
+// (testwait.GiveUpAt), so a lock wait that is merely slow is never refused by a span of the clock,
+// and one that never ends still fails rather than hangs. Postgres counts lock_timeout from the
+// start of each lock wait, which comes after this call, so no lock wait ends before the shared wait
+// gives up: a wait of the test that waits on such a transaction gives up first and names what it
+// waited for, and a transaction no wait of the test watches still ends before Go's alarm panics the
+// binary. Under -timeout 0 the shared wait has no end, and the lock waits no bound. A moment
+// already passed leaves a bound of 1 ms, since 0 would turn the bound off.
 func setFleetLockTimeout(ctx context.Context, t *testing.T, tx pgx.Tx) error {
-	deadline, ok := t.Deadline()
-	if !ok {
+	end, bounded := testwait.GiveUpAt(t)
+	if !bounded {
 		return nil
 	}
-	left := max(time.Until(deadline)-fleetLockMargin, time.Millisecond)
+	left := max(time.Until(end), time.Millisecond)
 	_, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", left.Milliseconds()))
 	return err
 }
@@ -313,9 +311,9 @@ func setFleetLockTimeout(ctx context.Context, t *testing.T, tx pgx.Tx) error {
 // hold it longer than the function's 5 s, the function's own bound would refuse the registration
 // and fail the row by the clock. Without it, a registration waits as long as its own transaction
 // allows, and arriveOn bounds that when the transaction starts (setFleetLockTimeout): every
-// registration, however late in the row it starts, gives up fleetLockMargin before the test binary's
-// deadline, and fails the row by name rather than on Go's alarm. A bound written into the function
-// once, when the row starts, ends a registration that starts later past that deadline.
+// registration, however late in the row it starts, gives up no sooner than the shared wait does,
+// and fails the row by name rather than on Go's alarm. A bound written into the function once,
+// when the row starts, ends a registration that starts later past that moment.
 // TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound keeps the bound.
 func waitRegistrationsOut(ctx context.Context, t *testing.T, s *Store) {
 	t.Helper()
@@ -325,7 +323,7 @@ func waitRegistrationsOut(ctx context.Context, t *testing.T, s *Store) {
 }
 
 // arriveOn runs arrival for key in a transaction of its own on conn, its lock waits bounded by the
-// test binary's deadline (setFleetLockTimeout), and commits it.
+// moment the shared wait gives up (setFleetLockTimeout), and commits it.
 func arriveOn(ctx context.Context, t *testing.T, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -420,9 +418,9 @@ const (
 // earlier build in the fleet (fleetModeWriter alone; false for the others), and the transaction's
 // error. This build's writers take their write phase's row locks in touch's order, an order of the
 // handler's appends, which no rule fixes since the advisory locks they hold already exclude each
-// other; the earlier build's take theirs sorted by `<kind>:<key>` up front. Its lock waits end only
-// fleetLockMargin before the test binary's deadline (setFleetLockTimeout), so a writer that is
-// merely slow behind another is never counted a failure by the clock.
+// other; the earlier build's take theirs sorted by `<kind>:<key>` up front. Its lock waits end no
+// sooner than the shared wait gives up (setFleetLockTimeout), so a writer that is merely slow
+// behind another is never counted a failure by the clock.
 func raceWriter(ctx context.Context, t *testing.T, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -601,8 +599,8 @@ func randomOwners(all []Owner) (subset, touch []Owner) {
 }
 
 // heartbeatAsThisBuild stamps instance's heartbeat as processes' heartbeat does: under the
-// registry's lock, in a transaction of its own whose lock waits are bounded by the test binary's
-// deadline (setFleetLockTimeout).
+// registry's lock, in a transaction of its own whose lock waits are bounded by the moment the
+// shared wait gives up (setFleetLockTimeout).
 func heartbeatAsThisBuild(ctx context.Context, t *testing.T, s *Store, instance string) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -713,32 +711,34 @@ func holdRowAsAnEarlierBuild(t *testing.T, s *Store, owner Owner) pgx.Tx {
 	return holder
 }
 
-// awaitRowLockWaiter waits up to ten seconds for a backend to wait on a row lock in a statement
-// of lockOwnerRows (an owner row's lock taken beside the advisory lock), or for answered.
+// awaitRowLockWaiter waits for a backend to wait on a row lock in a statement of lockOwnerRows
+// (an owner row's lock taken beside the advisory lock), or for answered. The wait has no bound of
+// its own (testwait.Until). A try that finds neither reads each backend whose statement is one
+// of lockOwnerRows': its pid, state and wait event. The pattern is spelled in two halves so the
+// read's own text, which pg_stat_activity shows too, does not match it.
 func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	var answer error
+	var early bool
+	testwait.Until(t, "an owner lock to wait on the owner's row, or to answer", func() (string, bool) {
 		select {
 		case err := <-answered:
-			return err, true
+			answer, early = err, true
+			return fmt.Sprintf("answered: %v", err), true
 		default:
 		}
 		var waiting int
+		var backends string
 		if err := s.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-			  and query like '%= any($1::%order by%for %'`).Scan(&waiting); err != nil {
+			select count(*) filter (where wait_event_type = 'Lock'),
+				coalesce(string_agg(format('%s %s (wait %s/%s)', pid, state, wait_event_type, wait_event), '; ' order by pid), 'none')
+			from pg_stat_activity
+			where datname = current_database() and query like '%= any($1' || '::%order by%for %'`).Scan(&waiting, &backends); err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
-			return nil, false
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no owner lock waited on the owner's row within 10s")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return "not answered; the backends in a statement of lockOwnerRows: " + backends, waiting > 0
+	})
+	return answer, early
 }
 
 // The read a lock guards sees what a writer of an earlier build committed while it held the row:
@@ -761,6 +761,7 @@ func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *test
 			go func() {
 				tx, err := s.Pool.Begin(ctx)
 				if err != nil {
+					read <- ""
 					answered <- err
 					return
 				}
@@ -772,16 +773,16 @@ func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *test
 			}()
 			if state.legacy {
 				if err, early := awaitRowLockWaiter(t, s, answered); early {
-					t.Fatalf("LockOwnerAndRead answered (%v, %q) while a writer of an earlier build held the row; want it to wait for that row", err, <-read)
+					t.Fatalf("LockOwnerAndRead answered (%v, %q) while a writer of an earlier build held the row; want it to wait for that row", err, testwait.Receive(t, "the guarded read's title, sent before its answer", read))
 				}
-			} else if err := <-answered; err != nil {
+			} else if err := testwait.Receive(t, "LockOwnerAndRead to answer beside a writer that holds no row", answered); err != nil {
 				t.Fatal(err)
 			}
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if state.legacy {
-				if err := <-answered; err != nil {
+				if err := testwait.Receive(t, "LockOwnerAndRead to answer once the earlier build's writer committed", answered); err != nil {
 					t.Fatal(err)
 				}
 			}

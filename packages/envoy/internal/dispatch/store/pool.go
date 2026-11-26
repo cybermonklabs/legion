@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -16,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // ErrNestedAcquire is the shared pool refusing a second connection to a caller that already
@@ -47,9 +50,12 @@ var ErrNestedAcquire = errors.New(
 
 // holding records whether the context's caller holds a connection of this pool: its
 // transaction, or one it acquired directly. One writer sets it and one reader tests it, so a
-// flag is the whole state - a transaction never opens a second transaction of its own.
+// flag is the whole state - a transaction never opens a second transaction of its own. wrote
+// records that a test's statement tracer saw the transaction write (OpenXidWindow), which is what
+// gives it its transaction id; the release that clears connection clears it too.
 type holding struct {
 	connection atomic.Bool
+	wrote      atomic.Bool
 }
 
 type holdingKey struct{}
@@ -84,7 +90,10 @@ func hold(ctx context.Context) func() {
 		return nil
 	}
 	state.connection.Store(true)
-	return sync.OnceFunc(func() { state.connection.Store(false) })
+	return sync.OnceFunc(func() {
+		state.connection.Store(false)
+		state.wrote.Store(false)
+	})
 }
 
 func holdsConnection(ctx context.Context) bool {
@@ -99,6 +108,30 @@ func holdsConnection(ctx context.Context) bool {
 // ErrNestedAcquire refuses, and for optional work a quiet skip is better than that refusal, whose
 // stack names a call site that is working as intended.
 func HoldsPooledConnection(ctx context.Context) bool { return holdsConnection(ctx) }
+
+// InXidWindow reports whether ctx's caller holds one of this pool's connections and its
+// transaction is inside its xid window: a test's statement tracer saw a statement of it write
+// (OpenXidWindow), so it holds a transaction id from there until it ends. The xid window rigs'
+// collaborator and document-work checks (storetest/collabtest, storetest.XidTracer) read it. Nothing
+// in production opens a window, so there it is always false, and nothing in production reads it.
+func InXidWindow(ctx context.Context) bool {
+	state, ok := ctx.Value(holdingKey{}).(*holding)
+	return ok && state.connection.Load() && state.wrote.Load()
+}
+
+// OpenXidWindow is the xid window rigs' hook: storetest.XidTracer, a pgx tracer a test installs on
+// its pool, calls it with the context of the first statement whose own result says it wrote, inline
+// or in a batch, and from then until the transaction ends InXidWindow answers true for that context
+// and every context derived from it. It reports whether it marked anything: a context the pool
+// cannot see, or one that holds no connection, has nothing to mark. No production code calls it.
+func OpenXidWindow(ctx context.Context) bool {
+	state, ok := ctx.Value(holdingKey{}).(*holding)
+	if !ok || !state.connection.Load() {
+		return false
+	}
+	state.wrote.Store(true)
+	return true
+}
 
 // ForConcurrentRead returns a context for one of a caller's reads that run side by side: ctx's
 // deadline, cancellation and values, with a hold mark of its own, so that read takes one
@@ -298,7 +331,33 @@ func (p *Pool) RoomAppends() (*pgxpool.Pool, error) {
 // answering; once Close has closed every other pool it closes this one and Healthy refuses
 // (ErrPoolClosed).
 func (p *Pool) Healthy(ctx context.Context) (int, error) {
-	return p.HealthyWithin(ctx, healthProbeTimeout)
+	return p.HealthyOn(ctx, clock.Real())
+}
+
+// HealthyOn is Healthy with healthProbeTimeout armed on c, for a caller whose own waits run on a
+// clock a test moves: cmd/dispatch's shutdown counts failed probes toward its decision to exit,
+// and its test ends each probe by moving a clocktest.Fake to the bound. The bound is c's alone,
+// with no wall-clock bound beneath it, so a probe on a fake ends when the test moves the fake
+// there and never because the test was slow to; on clock.Real it is Healthy, and so it is on a nil
+// c.
+func (p *Pool) HealthyOn(ctx context.Context, c clock.Clock) (int, error) {
+	return p.HealthyOnBy(ctx, c, clock.Deadline{})
+}
+
+// HealthyOnBy is HealthyOn with its bound the end a test process gave it (d, a clock.Deadline) in
+// healthProbeTimeout's place: the zero value keeps healthProbeTimeout, a moment bounds the read
+// there on c, and no end bounds it not at all. cmd/dispatch's shutdown passes its probes' deadline
+// (DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE), the zero value in a deployment.
+func (p *Pool) HealthyOnBy(ctx context.Context, c clock.Clock, d clock.Deadline) (int, error) {
+	if c == nil {
+		c = clock.Real()
+	}
+	bound, bounded := d.Within(c, healthProbeTimeout)
+	if !bounded {
+		// No end: a bound past any read, as clock.WithShownDeadline shows one.
+		bound = time.Duration(math.MaxInt64)
+	}
+	return p.healthyWithin(ctx, c, bound)
 }
 
 // HealthyWithin is Healthy with a bound the caller names, for the one caller whose read is not
@@ -311,13 +370,18 @@ func (p *Pool) Healthy(ctx context.Context) (int, error) {
 // (healthPool), so that read always pays a fresh dial, and two seconds bounds the query where it
 // has to bound the dial as well. A caller that is always cold names a bound that covers one.
 func (p *Pool) HealthyWithin(ctx context.Context, bound time.Duration) (int, error) {
+	return p.healthyWithin(ctx, clock.Real(), bound)
+}
+
+// healthyWithin is HealthyWithin with bound armed on c.
+func (p *Pool) healthyWithin(ctx context.Context, c clock.Clock, bound time.Duration) (int, error) {
 	health, err := p.healthPool()
 	if err != nil {
 		return 0, err
 	}
 	// Derived from the caller's context, so a request the client already gave up on ends with
 	// it instead of holding the probe's one connection for the full bound.
-	ctx, cancel := context.WithTimeout(ctx, bound)
+	ctx, cancel := c.WithTimeout(ctx, bound)
 	defer cancel()
 	// The cast holds the result at bigint whichever type the column has: a connection that
 	// prepared this read while schema_migrations.version was an integer would otherwise fail it

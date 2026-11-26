@@ -1775,10 +1775,11 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 }
 
 // embedQuery embeds q for meaning search (embed.InputQuery - Cohere's embed-v4 asymmetric mode
-// embeds a query differently from a stored document), bounded by searchEmbedTimeout so one
-// degraded request never holds the whole search handler open on a slow or wedged model service.
+// embeds a query differently from a stored document), bounded by searchEmbedTimeout on the
+// server's clock so one degraded request never holds the whole search handler open on a slow or
+// wedged model service, and a test that holds the embedder moves its own fake to that bound.
 func (s *server) embedQuery(ctx context.Context, q string) ([]float32, error) {
-	ctx, cancel := context.WithTimeout(ctx, searchEmbedTimeout)
+	ctx, cancel := s.clock().WithTimeout(ctx, searchEmbedTimeout)
 	defer cancel()
 	vectors, err := s.deps.Embedder.Embed(ctx, []string{q}, embed.InputQuery)
 	if err != nil {

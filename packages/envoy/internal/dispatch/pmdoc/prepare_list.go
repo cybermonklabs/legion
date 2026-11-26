@@ -569,7 +569,7 @@ func (m *lineMachine) exitBare(keep, line int) {
 // thousands of such exits would otherwise move the stream and walk every line's marks once per
 // exit, which is quadratic in its lines (a 1 MiB body of 4,000 bare exits took 7.7 s that way,
 // and 0.08 s this way). The patched mdast-util-from-markdown collects prepareList's own
-// insertions the same way and rebuilds the events once.
+// insertions the same way and rebuilds the events once. Every stream insert goes through here.
 func (m *lineMachine) insertEvents(index int, added []spreadEvent) {
 	if len(added) == 0 {
 		return

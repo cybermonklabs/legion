@@ -76,11 +76,11 @@ func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 // words of Dispatch's own, so this function writes model.DeclineDispatchWords under that kind and
 // leaves DispatchWords empty under every other: no caller can put the words elsewhere. It is the
 // one place that says what resolving an ask stores; each caller writes a block ask's own state
-// and appends the ask.resolved event its path owns. The resolution is decided here and its
-// update is a write (write): queued on ctx's ledger when the caller joined one, so it runs in
-// the transaction's write phase in the order the caller made it.
-func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor) (model.Ask, error) {
-	resolved, encoded, err := askResolution(ask, kind, reason, actor)
+// and appends the ask.resolved event its path owns. The resolution is decided here, at at, the
+// moment the caller takes it, and its update is a write (write): queued on ctx's ledger when the
+// caller joined one, so it runs in the transaction's write phase in the order the caller made it.
+func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor, at time.Time) (model.Ask, error) {
+	resolved, encoded, err := askResolution(ask, kind, reason, actor, at)
 	if err != nil {
 		return model.Ask{}, err
 	}
@@ -93,10 +93,11 @@ func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, rea
 	return resolved, nil
 }
 
-// askResolution is ask as WriteAskResolution leaves it, with the resolution as the row stores it,
-// decided before anything is written so a writer that queues the update knows the row it leaves.
-func askResolution(ask model.Ask, kind, reason string, actor model.Actor) (model.Ask, []byte, error) {
-	resolution := model.AskResolution{Kind: kind, Reason: reason, Actor: actor, At: time.Now().UTC()}
+// askResolution is ask as WriteAskResolution leaves it, with the resolution made at at as the row
+// stores it, decided before anything is written so a writer that queues the update knows the row
+// it leaves.
+func askResolution(ask model.Ask, kind, reason string, actor model.Actor, at time.Time) (model.Ask, []byte, error) {
+	resolution := model.AskResolution{Kind: kind, Reason: reason, Actor: actor, At: at.UTC()}
 	if kind == model.AskResolutionDeclined {
 		resolution.DispatchWords = model.DeclineDispatchWords
 	}

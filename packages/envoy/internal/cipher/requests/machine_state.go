@@ -284,6 +284,9 @@ type Machine struct {
 	Policy     *policy.Current
 	Secrets    secrets.Reader
 	PendingTTL time.Duration
+	// Now is the moment a pending request's deadline is stamped from (PendingTTL after it): time.Now
+	// unless a test replaces it.
+	Now func() time.Time
 	// Audience is BROKER_PUBLIC_URL: the aud a new request object is held to exactly (Create), and
 	// the origin a stored record's object is read back by (record.VerifyStoredRequestObject).
 	Audience string
@@ -467,6 +470,14 @@ type Machine struct {
 	testCommitCut  func() error
 	testHoldCommit func(backend uint32) error
 	testLandedRead func(backend uint32) error
+}
+
+// now is Now's moment, or the wall clock's where Now is nil, as every production caller leaves it.
+func (m *Machine) now() time.Time {
+	if m.Now == nil {
+		return time.Now()
+	}
+	return m.Now()
 }
 
 // missRereadLimiter is the per-enrollment buckets MissRereads names, built on the first miss.
@@ -1033,7 +1044,7 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 			req.GrantID = &grantID
 		}
 	} else {
-		r.pendingExpiresAt = time.Now().Add(m.PendingTTL)
+		r.pendingExpiresAt = m.now().Add(m.PendingTTL)
 		r.judgeHolds = judgeHolds
 		pending, err := m.createPending(ctx, tx, enr, r, obj)
 		if err != nil {

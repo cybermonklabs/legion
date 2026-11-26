@@ -393,7 +393,7 @@ func relayHoldingOneMessage(t *testing.T, prefix string) (*relayRig, string, *se
 // in it, so a row reads what else the run wrote from the same log.
 func requireHandOverOfAGoneSession(t *testing.T, rig *relayRig, sessionID, went string) string {
 	t.Helper()
-	awaitLogLine(t, rig, "session relay stopped;", 15*time.Second)
+	awaitLogLine(t, rig, "session relay stopped;")
 	logs := rig.harness.logs.String()
 	report := handOverLineNaming(t, logs, sessionID)
 	if report["msg"] != handOverRecordGoneLine {

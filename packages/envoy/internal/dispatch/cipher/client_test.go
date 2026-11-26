@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -35,7 +35,7 @@ func serveCapturing(t *testing.T, status int, response string) (*httptest.Server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("read request body: %v", err)
+			t.Errorf("read request body: %v", err)
 		}
 		captured.Method = r.Method
 		captured.Path = r.URL.RequestURI()
@@ -255,12 +255,16 @@ func TestTransportFailureIsNotATypedError(t *testing.T) {
 
 // A projected token is rewritten in place by the kubelet, so the client sends what the file
 // holds now: the copy it cached stands until the cache lapses, and the next call after that
-// reads the file again.
+// reads the file again. The cache's life is staged at a day for the product's clock, not as a
+// wait: longer than any `go test -timeout` CI gives this package, so the call inside it reads the
+// cached copy however long the machine takes between the two calls, where the production
+// ciphertoken.AccountTokenCacheTTL would lapse on a loaded one. The row lapses it itself.
 func TestARewrittenTokenFileReachesTheBrokerOnceTheCacheLapses(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"requests":[]}`)
 	defer server.Close()
 	path := tokenFile(t, "first-token")
 	client := New(server.URL, path)
+	client.Account.TTL = 24 * time.Hour
 
 	if _, err := client.Pending(context.Background(), "sjawhar"); err != nil {
 		t.Fatalf("the first call: %v", err)
@@ -275,7 +279,7 @@ func TestARewrittenTokenFileReachesTheBrokerOnceTheCacheLapses(t *testing.T) {
 		t.Fatalf("the call inside the cache window: %v", err)
 	}
 	if captured.Auth != "Bearer first-token" {
-		t.Fatalf("Authorization = %q within %v of the read, want the cached Bearer first-token", captured.Auth, ciphertoken.AccountTokenCacheTTL)
+		t.Fatalf("Authorization = %q within %v of the read, want the cached Bearer first-token", captured.Auth, client.Account.TTL)
 	}
 
 	client.Account.TTL = 0
@@ -367,20 +371,24 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 			_, _ = w.Write([]byte(body))
 		}))
 		defer server.Close()
-		client := New(server.URL, tokenFile(t, "account-token"))
+		// The window runs on a fake the row moves, so the second ask is inside it however long the
+		// first took, and the window lapses at deviceGrantTTL and not before.
+		fake := clocktest.New(time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC))
+		client := New(server.URL, tokenFile(t, "account-token"), WithClock(fake))
 
 		if !client.ServesDeviceGrant(context.Background()) {
 			t.Fatalf("the first ask answered false, want true: the document names the device code")
 		}
+		fake.Advance(deviceGrantTTL - time.Nanosecond)
 		if !client.ServesDeviceGrant(context.Background()) || reads != 1 {
-			t.Fatalf("the broker was read %d times for two asks, want 1", reads)
+			t.Fatalf("the broker was read %d times for two asks inside deviceGrantTTL, want 1", reads)
 		}
 
-		// The window run out, as it does seconds later in a live process.
+		// The window runs out, as it does seconds later in a live process.
 		body = withoutDevice
-		client.deviceGrant.until = time.Now().Add(-time.Second)
+		fake.Advance(time.Nanosecond)
 		if client.ServesDeviceGrant(context.Background()) {
-			t.Fatalf("a lapsed answer was kept, want the document read again")
+			t.Fatalf("an answer deviceGrantTTL old was kept, want the document read again")
 		}
 		if reads != 2 {
 			t.Fatalf("the broker was read %d times, want 2", reads)

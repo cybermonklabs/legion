@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // settingsWake runs a pglisten.Hub on pool's listener connection until the test ends, as the
@@ -39,13 +40,9 @@ func settingsWake(t *testing.T, pool *store.Pool) <-chan struct{} {
 	}()
 	t.Cleanup(func() {
 		stop()
-		<-done
+		testwait.Receive(t, "the settings hub's Run to return once its context ended", done)
 	})
-	select {
-	case <-connected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the settings hub did not listen within 10s")
-	}
+	testwait.Receive(t, "the settings hub to listen", connected)
 	return wake
 }
 
@@ -61,7 +58,7 @@ func runSettingsCache(t *testing.T, cache *SettingsCache) {
 	}()
 	t.Cleanup(func() {
 		stop()
-		<-done
+		testwait.Receive(t, "the settings cache's Run to return once its context ended", done)
 	})
 }
 
@@ -109,16 +106,16 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 		stop()
 	})
 	awaitBoundDurable(t, publisher)
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchJobDurable)
 		return err == nil && info.PushBound
 	}, func() string { return "the job intake never bound its durable" })
-	waitFor(t, 5*time.Second, func() bool { return counter.reads.Load() >= 2 }, func() string {
+	waitFor(t, func() bool { return counter.reads.Load() >= 2 }, func() string {
 		return fmt.Sprintf("delivery_settings was read %d times, want the start's read and the hub signal's", counter.reads.Load())
 	})
 
 	before := counter.reads.Load()
-	time.Sleep(3 * time.Second)
+	testwait.Span(t, 3*time.Second, "a read no timer makes shows only as a statement that does not come: the cache keeps no state of a timer it does not have, the intakes do real NATS and Postgres I/O, which synctest cannot hold, and no later action's effect orders against a read a timer would make")
 	if read := counter.reads.Load() - before; read != 0 || before != 2 {
 		t.Fatalf("delivery_settings read %d times before the idle window and %d times over 3s of it; want 2 and none", before, read)
 	}
@@ -142,7 +139,7 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 	if read := counter.reads.Load() - before; read != 0 {
 		t.Fatalf("10 job events read delivery_settings %d times, want none", read)
 	}
-	if armed := clock.armed(); armed != 1 {
+	if armed := len(clock.Armed()); armed != 1 {
 		t.Fatalf("10 job events of a tracked run armed %d reads, want 1: they did not pass the settings check", armed)
 	}
 }

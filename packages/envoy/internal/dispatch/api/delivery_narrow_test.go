@@ -286,7 +286,8 @@ func TestANarrowedPipelinePopulationComputesWhatAFreshReadReturns(t *testing.T) 
 }
 
 // TestNextExpiryIsTheOldestMergeLeaving: with nothing else leaving sooner, a preset window's next
-// expiry is just past the oldest pull request's merge plus the window's length.
+// expiry is the first instant whose truncated window start (presetWindow) lies past the oldest pull
+// request's merge: the end of the microsecond of its merge plus the window's length.
 func TestNextExpiryIsTheOldestMergeLeaving(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
@@ -296,14 +297,35 @@ func TestNextExpiryIsTheOldestMergeLeaving(t *testing.T) {
 		{Repo: "acme/widgets", Number: 1, MergedAt: &oldest},
 		{Repo: "acme/widgets", Number: 2, MergedAt: new(now.Add(-time.Hour))},
 	}}
-	want := oldest.Add(n).Add(time.Nanosecond)
+	want := oldest.Add(n).Add(time.Microsecond)
 	if got := nextExpiry(pop, n, now); !got.Equal(want) {
 		t.Fatalf("nextExpiry = %v, want %v (the oldest merge leaving)", got, want)
 	}
 }
 
+// TestNextExpiryArmsTheLeavingOfARowReadInsideItsLastMicrosecond: a view read less than a
+// microsecond after a row's merge plus the window's length starts its window on that microsecond
+// (presetWindow), as a GET over it reads from PostgreSQL, so it holds the row, and its next expiry
+// is that microsecond's end, when the row leaves. A leaving moment inside the microsecond is
+// already past at that read and was skipped, which left the row in the view until the next
+// midnight.
+func TestNextExpiryArmsTheLeavingOfARowReadInsideItsLastMicrosecond(t *testing.T) {
+	n := 7 * 24 * time.Hour
+	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	now := merged.Add(n).Add(500 * time.Nanosecond)
+	if from, to := presetWindow(now, n); !from.Equal(merged) || !to.Equal(merged.Add(n)) {
+		t.Fatalf("the window read at %v is [%v, %v), want it to start on the merge's own microsecond %v",
+			now, from, to, merged)
+	}
+	pop := deliveryPopulation{prs: []delivery.DeliveryPullRequest{{Repo: "acme/widgets", Number: 1, MergedAt: &merged}}}
+	want := merged.Add(n).Add(time.Microsecond)
+	if got := nextExpiry(pop, n, now); !got.Equal(want) {
+		t.Fatalf("nextExpiry at %v = %v, want %v (the row the window holds leaving at its microsecond's end)", now, got, want)
+	}
+}
+
 // TestNextExpiryIsMidnightWhenNothingLeavesSooner: with every row well inside the window, the next
-// expiry is the next UTC midnight, when the daily series moves.
+// expiry is the first instant past the next UTC midnight, when the daily series has moved.
 func TestNextExpiryIsMidnightWhenNothingLeavesSooner(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
@@ -313,9 +335,15 @@ func TestNextExpiryIsMidnightWhenNothingLeavesSooner(t *testing.T) {
 		prs:        []delivery.DeliveryPullRequest{{Repo: "acme/widgets", Number: 1, MergedAt: &recent}},
 		windowRuns: []delivery.DeliveryRun{{RunID: 9, StartedAt: recent, HeadCommitAt: recent}},
 	}
-	want := time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)
+	want := time.Date(2026, 9, 11, 0, 0, 0, 1000, time.UTC)
 	if got := nextExpiry(pop, n, now); !got.Equal(want) {
-		t.Fatalf("nextExpiry = %v, want %v (the next UTC midnight)", got, want)
+		t.Fatalf("nextExpiry = %v, want %v (the first instant past the next UTC midnight)", got, want)
+	}
+	// Read inside the midnight's own microsecond, the window ends on the midnight and holds none of
+	// the new day, so the series moves at that microsecond's end, not at the next midnight.
+	inside := time.Date(2026, 9, 11, 0, 0, 0, 500, time.UTC)
+	if got := nextExpiry(pop, n, inside); !got.Equal(want) {
+		t.Fatalf("nextExpiry at %v = %v, want %v (the end of the midnight's microsecond)", inside, got, want)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -13,9 +14,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -203,6 +206,103 @@ func TestBroadcastSendsOneMessagePerRecipientAndExcludesTheRest(t *testing.T) {
 			t.Fatalf("%s stored attempts = %#v", recipient.SessionID, recipient.Message.Deliveries)
 		}
 	}
+}
+
+// Every copy of a broadcast holds the block index refs.IndexItem writes of the same body for a
+// direct message of its own, row for row: its blocks (message_blocks), their mentions
+// (message_block_refs), its own references (refs) and the state that records it indexed
+// (message_block_state). The copies' index is planned once, before the broadcast's transaction
+// begins (refs.PlanNewItemIndex), where IndexItem plans each message's after its insert, as
+// writeBroadcast did until INFRA-3149; what either writes must be the same. The body cites two
+// issues and holds a list, code, a table and a quote, so it splits into blocks of several types.
+func TestABroadcastIndexesEveryCopyAsIndexItemIndexesItsBody(t *testing.T) {
+	listener, _ := newBroadcastListener(t, broadcastSessions)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
+	const body = "Report on dispatch://CORE-1 and https://example.com/a.\n\n" +
+		"- first\n- second, citing dispatch://CORE-2\n\n```go\nfmt.Println(1)\n```\n\n" +
+		"| a | b |\n| - | - |\n| 1 | 2 |\n\n> quoted\n"
+	response := postBroadcast(t, handler, map[string]any{
+		"body": body, "delivery": "steer", "session_ids": []string{"planner", "tester"},
+	}, "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create broadcast: status=%d body=%s", response.Code, response.Body.String())
+	}
+	created := decodeBody[broadcastResponse](t, response)
+	if len(created.Recipients) != 2 {
+		t.Fatalf("recipients = %#v, want planner and tester", created.Recipients)
+	}
+
+	ctx := testwait.Context(t)
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reference message: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var reference string
+	var at time.Time
+	if err := tx.QueryRow(ctx, `
+		insert into messages (issue_key, author, body, target)
+		values (null, '{"kind":"user","id":"alice"}', $1, 'session:planner')
+		returning id::text, created_at
+	`, body).Scan(&reference, &at); err != nil {
+		t.Fatalf("insert the reference message: %v", err)
+	}
+	if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, reference, body, testServerURL, at, nil, nil); err != nil {
+		t.Fatalf("index the reference message: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the reference message: %v", err)
+	}
+	want := messageIndexRows(t, database, reference)
+	if blocks := slices.IndexFunc(want, func(row string) bool { return strings.HasPrefix(row, "block b5 ") }); blocks < 0 {
+		t.Fatalf("IndexItem indexed the body to %q, want its five blocks", want)
+	}
+	for _, recipient := range created.Recipients {
+		if got := messageIndexRows(t, database, recipient.Message.ID); !slices.Equal(got, want) {
+			t.Errorf("%s's copy holds the index\n%s\nwant the one IndexItem writes of its body\n%s",
+				recipient.SessionID, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}
+	t.Logf("each copy's index, as IndexItem writes it:\n%s", strings.Join(want, "\n"))
+}
+
+// messageIndexRows is every row message id's block index holds - its blocks, their mentions, its
+// own references and its state row - each as one line, the message's id written M and a time
+// equal to the message's created_at written AT, sorted, so the indexes of two messages compare
+// row for row.
+func messageIndexRows(t *testing.T, database *store.Store, id string) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(testwait.Context(t), `
+		with m as (select id, id::text as text, created_at from messages where id = $1::uuid)
+		select 'block ' || b.block_id || ' ' || replace(b.node_id, m.text, 'M') || ' ' || coalesce(b.position::text, '-') ||
+		       ' ' || b.type || ' ' || b.text_sha256 || ' ' || b.excerpt ||
+		       ' created ' || case when b.created_at = m.created_at then 'AT' else b.created_at::text end ||
+		       ' made ' || case when b.made_at = m.created_at then 'AT' else b.made_at::text end ||
+		       ' changed ' || case when b.changed_at = m.created_at then 'AT' else b.changed_at::text end ||
+		       ' removed ' || coalesce(b.removed_at::text, '-')
+		from message_blocks b join m on m.id = b.message_id
+		union all
+		select 'mention ' || r.block_id || ' ' || replace(r.from_node, m.text, 'M') || ' ' || r.to_kind || ' ' || r.to_id ||
+		       ' ' || r.kind || ' created ' || case when r.created_at = m.created_at then 'AT' else r.created_at::text end ||
+		       ' seq ' || coalesce(r.source_seq::text, '-')
+		from message_block_refs r join m on m.id = r.message_id
+		union all
+		select 'ref ' || r.to_kind || ' ' || r.to_id
+		from refs r join m on r.from_kind = 'message' and r.from_id = m.text
+		union all
+		select 'state ' || coalesce(s.body_sha256, '-') || ' owed ' || coalesce(s.owed_at::text, '-') ||
+		       ' windows owed ' || (s.windows_owed_at is not null)::text
+		from message_block_state s join m on m.id = s.message_id
+	`, id)
+	if err != nil {
+		t.Fatalf("read the block index of message %s: %v", id, err)
+	}
+	index, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the block index of message %s: %v", id, err)
+	}
+	slices.Sort(index)
+	return index
 }
 
 func sendTargets(response broadcastResponse) []string {
@@ -691,7 +791,7 @@ func TestBroadcastRejectsMalformedInput(t *testing.T) {
 // The wait's one bound is the test binary's deadline less testwait's margin.
 func awaitBroadcastDeliveries(t *testing.T, handler http.Handler, id string) broadcastResponse {
 	t.Helper()
-	return testwait.UntilPolling(t, 20*time.Millisecond, "every recipient of the broadcast to hold a settled attempt (the broadcast last read)", func() (broadcastResponse, bool) {
+	return testwait.Until(t, "every recipient of broadcast "+id+" to have a settled attempt", func() (broadcastResponse, bool) {
 		read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts/"+id, nil, "alice")
 		if read.Code != http.StatusOK {
 			t.Fatalf("read broadcast: status=%d body=%s", read.Code, read.Body.String())
@@ -736,13 +836,22 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 		}
 	}))
 	defer listener.Close()
+	// Deferred after the listener's Close, so it runs first: a row that fails while a send is held
+	// lets it go, and the Close, which waits for every handler in flight, returns.
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 
 	// Every listener send is blocked, so a handler that delivered inside the request could not
-	// answer at all.
-	response := postBroadcast(t, handler, map[string]any{
+	// answer at all. The request is built here, on the test goroutine, and only the serving of it
+	// runs inside the wait.
+	request := newKeyedRequest(t, http.MethodPost, "/api/v1/broadcasts", map[string]any{
 		"body": "Status?", "delivery": "btw", "session_ids": []string{"planner", "tester"},
-	}, "alice")
+	}, "alice", uuid.NewString())
+	response := httptest.NewRecorder()
+	testwait.Returns(t, "the create to answer while every listener send is held (a create that delivered inside its request never does)", func() {
+		handler.ServeHTTP(response, request)
+	})
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create broadcast: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -769,7 +878,7 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 		}
 	}
 
-	close(release)
+	letGo()
 	delivered := awaitBroadcastDeliveries(t, handler, created.ID)
 	if len(delivered.Recipients) != 2 {
 		t.Fatalf("recipients = %#v", delivered.Recipients)
@@ -792,6 +901,7 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
 	// The worker announces itself when it parks, so the takeover below happens while it is
 	// held rather than at a moment this test guessed.
 	parked := make(chan struct{}, 1)
@@ -833,6 +943,9 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
+	// Deferred after the listener's Close, so it runs first: a failure below lets the parked
+	// handler go before Close waits for it.
+	defer releaseOnce()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 
 	created := decodeBody[broadcastResponse](t, postBroadcast(t, handler, map[string]any{
@@ -840,7 +953,7 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	}, "alice"))
 	message := created.Recipients[0].Message.ID
 
-	testwait.Receive(t, "the broadcast's worker to park on its attempt", parked)
+	testwait.Receive(t, "the broadcast worker to read the registry", parked)
 	// The worker is held. From here the listener answers everyone else at once, so the human's
 	// own send is never the one being held.
 	listenerState.Lock()
@@ -855,7 +968,7 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	if change.Code != http.StatusCreated {
 		t.Fatalf("mode change: status=%d body=%s", change.Code, change.Body.String())
 	}
-	close(release)
+	releaseOnce()
 
 	// The broadcast's delivery runs as the server's detached work (broadcasts.go): once that has
 	// returned, the worker has done all it will, a send of an attempt it wrongly opened included.

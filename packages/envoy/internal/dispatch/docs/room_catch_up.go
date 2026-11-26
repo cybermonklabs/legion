@@ -371,15 +371,26 @@ func (c *roomCatchUps) schedule(room string, live *crdt.Doc) {
 	}
 	c.loading[room] = loadingRoom{instance: weak.Make(live), until: c.now().Add(catchUpLoadingTimeout)}
 	c.mu.Unlock()
-	c.request(room)
+	c.request(room, catchUpAsked)
 }
 
 // request queues one catch-up of room on the lane, unless one is queued already. Before room sync
 // is registered there is no lane, and nothing is queued: the sweep after its first LISTEN catches
-// up every room this process has loaded.
-func (c *roomCatchUps) request(room string) {
+// up every room this process has loaded. cause is what asks for it: another process's
+// notification (headNotified, changed), this process itself (schedule), or the causes of the
+// catch-up it is asked again in place of (closeReplaced). The test hooks carry cause to the next
+// catch-up of room to start (testHooks.carryCatchUpCause), under c.mu, so a queued one this finds
+// pending has not started yet: that one or the one this queues takes cause on, unless another
+// catch-up of the room starts first. The one this queues also takes on the causes a catch-up that
+// found the room loading kept for that load (testHooks.takeKeptForLoad).
+func (c *roomCatchUps) request(room string, cause catchUpCause) {
 	c.mu.Lock()
-	if c.pending[room] || c.lane == nil {
+	if c.lane == nil {
+		c.mu.Unlock()
+		return
+	}
+	c.service.hooks.carryCatchUpCause(room, cause)
+	if c.pending[room] {
 		c.mu.Unlock()
 		return
 	}
@@ -390,7 +401,7 @@ func (c *roomCatchUps) request(room string) {
 		c.mu.Lock()
 		delete(c.pending, room)
 		c.mu.Unlock()
-		c.catchUp(ctx, room)
+		c.catchUp(ctx, room, c.service.hooks.takeKeptForLoad(c.service, room))
 	})
 }
 
@@ -413,7 +424,7 @@ func (c *roomCatchUps) headNotified(_ context.Context, payload string) {
 			return
 		}
 	}
-	c.request(head.R)
+	c.request(head.R, catchUpNotified)
 }
 
 // changed is documentChangedChannel's handler: the bare artifact id. It is the twin of the
@@ -428,7 +439,7 @@ func (c *roomCatchUps) changed(_ context.Context, room string) {
 	if own {
 		return
 	}
-	c.request(room)
+	c.request(room, catchUpNotified)
 }
 
 func (c *roomCatchUps) noteDecided(room string) {
@@ -438,36 +449,71 @@ func (c *roomCatchUps) noteDecided(room string) {
 }
 
 // sweep catches up every room this process has loaded; it runs after each LISTEN stands
-// (roomSync.connected). service.roomLoads is every room loaded since its document was last
-// collected (keepInstance), so this ranges over every resident room; an entry whose room has gone
-// costs a lookup and no database read.
+// (roomSync.connected), which the test hooks count (RoomCounters.ListenStands).
+// service.roomLoads is every room loaded since its document was last collected (keepInstance), so
+// this ranges over every resident room; an entry whose room has gone costs a lookup and no
+// database read.
 func (c *roomCatchUps) sweep(ctx context.Context) {
+	c.service.hooks.countListenStand()
 	c.service.roomLoads.Range(func(room, _ any) bool {
-		c.catchUp(ctx, room.(string))
+		c.catchUp(ctx, room.(string), catchUpSwept)
 		return true
 	})
 }
 
-// woke is the lane's wake (roomSyncHandler.woke, asked of wakeIn): each room whose retry is due,
-// caught up again.
+// woke is the lane's wake (roomSyncHandler.woke, asked of wakeIn): each room whose retry is due -
+// after a try that reached no verdict, or a look again for a room still loading - caught up again.
+// The catch-up takes on the causes the try it retries carried on (catchUp).
 func (c *roomCatchUps) woke(ctx context.Context) {
 	for _, room := range c.dueRooms() {
-		c.catchUp(ctx, room)
+		c.catchUp(ctx, room, catchUpAsked)
 	}
 }
 
+// catchUpCause is what asked for a catch-up: the causes the test hooks record a head for, a
+// notification and a LISTEN's sweep (catchUp), as a set. A catch-up that does not answer for its
+// room carries its causes on to the next catch-up of the room to start, which takes them on with
+// its own (testHooks.catchUpCauses); one that carries both records both heads.
+type catchUpCause uint8
+
+const (
+	// catchUpAsked, the empty set, is a catch-up this process asked for itself: a room
+	// instance's start (schedule), and a retry or a look again (woke), which takes on the causes
+	// the try it retries carried on.
+	catchUpAsked catchUpCause = 0
+	// catchUpNotified is one another process's notification asked for (headNotified, changed).
+	catchUpNotified catchUpCause = 1 << 0
+	// catchUpSwept is the sweep after a LISTEN stands (sweep).
+	catchUpSwept catchUpCause = 1 << 1
+)
+
 // catchUp is one catch-up of room's resident instance on the lane (catchUpRoom, read through the
-// pool), and what follows from it: a replaced history closes the room (closeReplaced), and a
-// catch-up that reached no verdict is tried again later (armRetry). A room with no instance
-// resident has nothing to catch up, but one still loading is looked for again shortly.
-func (c *roomCatchUps) catchUp(ctx context.Context, room string) {
+// pool), cause being what asked for it, and what follows from it: a replaced history closes the
+// room (closeReplaced), and a catch-up that reached no verdict is tried again later (armRetry). A
+// room with no instance resident has nothing to catch up, but one still loading is looked for
+// again shortly (takeLoading).
+//
+// Where the test hooks are on, it takes on, at its start, the causes carried to the room's next
+// catch-up (testHooks.takeCatchUpCauses), which is this one: the lane runs a room's catch-ups one
+// at a time. Where it leaves the room to a later try - a retry (armRetry), a look again
+// (takeLoading), the catch-up asked again in place of a close (closeReplaced) - it carries them on
+// to that try, and where it finds no room while ygo is loading one, before the load has started
+// the room's instance, it leaves them to the catch-up that instance schedules
+// (testHooks.keepForLoadingRoom). One a notification or a sweep asked for that brought the room to
+// the stored head, or found it there, records the head the room then holds through
+// (testHooks.recordCaughtUpHead): what carried, to the room's readers, the changes another process
+// stored. One that found the room gone (catchUpGone) records nothing: the instance it read is not
+// the one the room holds.
+func (c *roomCatchUps) catchUp(ctx context.Context, room string, cause catchUpCause) {
 	service := c.service
+	cause |= service.hooks.takeCatchUpCauses(room)
 	live := service.srv.GetDoc(room)
-	if !c.takeLoading(room, live) {
+	if !c.takeLoading(room, live, cause) {
 		return
 	}
 	if live == nil {
 		c.settled(room)
+		service.hooks.keepForLoadingRoom(service, room, cause)
 		return
 	}
 	outcome, err := service.catchUpRoom(ctx, service.store.Pool, room, live)
@@ -476,19 +522,23 @@ func (c *roomCatchUps) catchUp(ctx context.Context, room string) {
 		if ctx.Err() == nil {
 			slog.Warn("dispatch: catch up a document room to the stored head", "room", room, "error", err)
 		}
-		c.armRetry(room)
+		c.armRetry(room, cause)
 	case outcome == catchUpReplaced:
-		c.closeReplaced(ctx, room, live)
+		c.closeReplaced(ctx, room, live, cause)
 	default:
 		c.settled(room)
+		if outcome != catchUpGone {
+			service.hooks.recordCaughtUpHead(service, room, cause, live)
+		}
 	}
 }
 
-// takeLoading reports whether the catch-up of room should run now, live being the instance the
-// room holds (nil for none): a room whose instance scheduled this catch-up while loading and is
-// not published yet is looked for again in catchUpLoadingWait, until that instance is collected or
+// takeLoading reports whether the catch-up of room that cause asked for should run now, live
+// being the instance the room holds (nil for none): a room whose instance scheduled this catch-up
+// while loading and is not published yet is looked for again in catchUpLoadingWait, which carries
+// cause on (testHooks.carryCatchUpCause), until that instance is collected or
 // catchUpLoadingTimeout passes.
-func (c *roomCatchUps) takeLoading(room string, live *crdt.Doc) bool {
+func (c *roomCatchUps) takeLoading(room string, live *crdt.Doc, cause catchUpCause) bool {
 	now := c.now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -499,6 +549,7 @@ func (c *roomCatchUps) takeLoading(room string, live *crdt.Doc) bool {
 	if live == nil {
 		if instance := loading.instance.Value(); instance != nil && now.Before(loading.until) {
 			c.deferred[room] = now.Add(catchUpLoadingWait)
+			c.service.hooks.carryCatchUpCause(room, cause)
 			return false
 		}
 	}
@@ -509,30 +560,31 @@ func (c *roomCatchUps) takeLoading(room string, live *crdt.Doc) bool {
 // closeReplaced closes live, room's instance whose stored history was replaced (catchUpReplaced),
 // once a read under the document's lock confirms it (historyReplacedUnderLock), so the next access
 // loads the document at the head. A verdict the locked read does not confirm was this process's
-// own write in flight, and the room is caught up again instead. The close is closeRoomBehindHead's,
-// which an open live write of this process holds off; held off or failed, the room is tried again.
-func (c *roomCatchUps) closeReplaced(ctx context.Context, room string, live *crdt.Doc) {
+// own write in flight, and the room is caught up again instead (request), under cause. The close
+// is closeRoomBehindHead's, which an open live write of this process holds off; held off or
+// failed, the room is tried again under cause (armRetry).
+func (c *roomCatchUps) closeReplaced(ctx context.Context, room string, live *crdt.Doc, cause catchUpCause) {
 	service := c.service
 	replaced, err := service.historyReplacedUnderLock(ctx, room, live)
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Warn("dispatch: confirm a document room's stored history was replaced", "room", room, "error", err)
 		}
-		c.armRetry(room)
+		c.armRetry(room, cause)
 		return
 	}
 	if !replaced {
 		c.settled(room)
-		c.request(room)
+		c.request(room, cause)
 		return
 	}
 	closed, err := service.closeRoomBehindHead(ctx, room, live)
 	switch {
 	case errors.Is(err, errRoomCloseHeldOff):
-		c.armRetry(room)
+		c.armRetry(room, cause)
 	case err != nil:
 		slog.Warn("dispatch: close a document room whose stored history was replaced", "room", room, "error", err)
-		c.armRetry(room)
+		c.armRetry(room, cause)
 	case closed:
 		c.settled(room)
 		slog.Info("dispatch: closed a document room whose stored history was replaced", "room", room)
@@ -577,14 +629,16 @@ func (c *roomCatchUps) dueRooms() []string {
 	return due
 }
 
-// armRetry gives room another try after one that reached no verdict, further out for each such
-// try in a row (catchUpRetryBackoff).
-func (c *roomCatchUps) armRetry(room string) {
+// armRetry gives room another try after one that cause asked for reached no verdict, further out
+// for each such try in a row (catchUpRetryBackoff). The retry carries cause on
+// (testHooks.carryCatchUpCause), so it records the heads that try would have.
+func (c *roomCatchUps) armRetry(room string, cause catchUpCause) {
 	now := c.now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.attempts[room]++
 	c.deferred[room] = now.Add(catchUpRetryBackoff(c.attempts[room]))
+	c.service.hooks.carryCatchUpCause(room, cause)
 }
 
 // settled ends room's run of tries that reached no verdict, and any retry still waiting for it:

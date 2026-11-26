@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -35,21 +36,20 @@ const actAnswerSpec = "Context\n\n" +
 // write, seeds the document's live text and waits until settlement has indexed both blocks as
 // asks of the document - the rows the carry reads.
 //
-// The settle is a second, as the other carry tests that answer and then name a version use
-// (approval_carry_approved_test.go), and not the 20 ms a test that only seeds can afford: a
-// settlement firing while one of these tests holds its joined transaction takes the document's
-// rows in the other order and the two deadlock, which `-race` is slow enough to hit. The seeding
-// below schedules one settlement itself and waits up to three seconds for it, so a second costs
-// the seed nothing.
+// The settle is stagedAhead, so no settlement a timer starts runs while one of these tests holds
+// its joined transaction: one that did would take the document's rows in the other order and the
+// two would deadlock. The seeding settles the document itself, at once (SettleNow), as
+// seededRegionDocument does, so no window of real time decides whether a timer's settlement lands
+// among the test's writes.
 func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, actAnswerSpec)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
-	service.ScheduleSettlement(artifactID)
-	waitFor(t, 3*time.Second, "settlement to index both blocks", func() bool {
+	service.SettleNow(artifactID)
+	waitFor(t, "settlement to index both blocks", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from asks where block_artifact_id = $1 and block_id = any($2::text[])

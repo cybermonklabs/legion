@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -22,10 +23,11 @@ import (
 // case holds for any pair of bars with 0 < duplicateNudgeScore < duplicateRefuseScore < 1, and
 // the replay that sets those two numbers cannot break them.
 //
-// A case reads the gate's verdict, so its server runs the gate under a bound the case owns
-// (newDuplicateTestHandler), never production's duplicateGateTimeout: a read that outruns that
-// bound goes in unchecked, as it must in production, and a case run under it would measure the
-// machine. TestCreateIssueGoesInUncheckedWhenTheGateRunsPastItsBound proves the bound itself.
+// A case reads the gate's verdict, so its server runs the gate under a bound past any read of a
+// test project (gateBoundPastEveryRead, which every test server takes), never production's
+// duplicateGateTimeout: a read that outruns that bound goes in unchecked, as it must in
+// production, and a case run under it would measure the machine.
+// TestCreateIssueGoesInUncheckedWhenTheGateRunsPastItsBound proves the bound itself.
 
 func createIssueRequest(t *testing.T, handler http.Handler, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
@@ -69,25 +71,6 @@ func requireDuplicateRefusal(t *testing.T, response *httptest.ResponseRecorder) 
 	return body
 }
 
-// nearCopyVerdictBound is the near-copy gate's bound on a server whose case reads the gate's
-// verdict: what the test binary's deadline leaves less testwait's margin (30 s), the moment
-// testwait's own waits give up, and under -timeout 0 no bound (testwait.Bounded of the longest
-// duration there is), not production's duplicateGateTimeout. Under production's bound a read on
-// a loaded machine ran out of it and the create went in unchecked, so a case wanting a refusal
-// failed on the machine's speed, and a case wanting a create passed whatever the gate would have
-// said; a bound of a minute did the same on a machine slower still.
-func nearCopyVerdictBound(t *testing.T) time.Duration {
-	return testwait.Bounded(t, math.MaxInt64, 30*time.Second)
-}
-
-// newDuplicateTestHandler is the server a near-copy case drives: its gate runs under
-// nearCopyVerdictBound.
-func newDuplicateTestHandler(t *testing.T) (http.Handler, *store.Store) {
-	t.Helper()
-	handler, database, _ := newTestServer(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t)})
-	return handler, database
-}
-
 // requireAnsweredCreate is requireCreatedIssue for a create whose 201 is the gate's verdict: the
 // gate answered, and refused nothing. A create whose gate did not answer goes in all the same
 // and says so in near_copy_check, so a 201 alone would pass a case the gate never judged.
@@ -121,9 +104,73 @@ const (
 		"Buffer each crate locally and reconcile the weights when the dock comes back."
 )
 
+// The two bounds a case gives the near-copy gate. Production's (duplicateGateTimeout, 2 s on the
+// gate's context and as its read's own statement_timeout) is a bound a loaded machine misses, and
+// a case held to it would read an unchecked create as a verdict about the gate (INFRA-3149).
+
+// spentGateBound is what a case gives the gate where its outcome is that no near-copy check was
+// made: a bound already spent, which gateBounds ends before the read starts, so the create meets
+// no check whatever the machine does.
+const spentGateBound = -time.Nanosecond
+
+// gateBoundPastEveryRead is what every server a test builds runs the gate under
+// (newRegisteredTestServer): what is left of the shared wait (testwait.GiveUpAt) as the server is
+// built, so no read of a test project outlasts it before the test itself gives up, and what a
+// case reads is what its project holds. Under -timeout 0 the shared wait has no end, and the gate
+// is given the longest statement_timeout Postgres takes. The replay sets a bound of its own, for
+// its own reason (nearCopyGateBound).
+func gateBoundPastEveryRead(t testing.TB) time.Duration {
+	if deadline, bounded := testwait.GiveUpAt(t); bounded {
+		return time.Until(deadline)
+	}
+	return math.MaxInt32 * time.Millisecond
+}
+
+// The deployment's own near-copy bound is the documented one: duplicateGateTimeout is what a
+// create waits for its check, and the literal, not the constant, is the pin. It reads the server
+// register mounts, which is the only one a deployment runs, because every server a test builds
+// takes gateBoundPastEveryRead instead (newRegisteredTestServer): without this row that override
+// would hide a change of what a filer actually waits.
+func TestTheDeploymentsNearCopyGateBoundIsTheDocumentedOne(t *testing.T) {
+	if got := register(http.NewServeMux(), t.Context(), Deps{}).duplicateGateBound(); got != 2*time.Second {
+		t.Fatalf("the server a deployment runs bounds its near-copy gate at %s, want the documented 2s", got)
+	}
+}
+
+// A bound already spent ends the gate's context before gateBounds returns, on the real clock and
+// on a fake alike, so a case that spends it (spentGateBound) meets no check because the code said
+// so and not because its machine lost a race: a timer of zero or less runs its function on a
+// goroutine of its own on either clock, and a read begun before that goroutine ran would answer
+// the case (INFRA-3149). The cause is the gate's own, which is how duplicateGate tells a bound
+// that ended from a create whose request went away.
+func TestASpentGateBoundEndsTheGatesContextBeforeItIsReturned(t *testing.T) {
+	for _, on := range []struct {
+		name  string
+		clock clock.Clock
+	}{
+		{"the real clock", clock.Real()},
+		{"a fake nothing moves", clocktest.New(checkStart)},
+	} {
+		t.Run(on.name, func(t *testing.T) {
+			srv := &server{deps: Deps{Clock: on.clock}, duplicateBound: spentGateBound}
+			gateCtx, cancel, bound := srv.gateBounds(context.Background())
+			defer cancel()
+			if bound != spentGateBound {
+				t.Fatalf("the bound it answers = %s, want the spent %s the case set", bound, spentGateBound)
+			}
+			if err := gateCtx.Err(); err == nil {
+				t.Fatalf("the gate's context is live where gateBounds returned it, so its read would start; want it ended")
+			}
+			if cause := context.Cause(gateCtx); !errors.Is(cause, errNearCopyGateBoundEnded) {
+				t.Fatalf("the context's cause = %v, want %v, which is what has such a create told no check was made", cause, errNearCopyGateBoundEnded)
+			}
+		})
+	}
+}
+
 func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	first := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -163,7 +210,7 @@ func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
 
 func TestCreateIssueDuplicateCreatesACopyOfADoneIssue(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	first := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -187,7 +234,7 @@ func TestCreateIssueDuplicateCreatesACopyOfADoneIssue(t *testing.T) {
 
 func TestCreateIssueDuplicateCreatesACopyOfAnAncestor(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	// The grandparent is the only near copy in the project, so a gate that leaves out the parent
@@ -220,7 +267,7 @@ func TestCreateIssueDuplicateCreatesACopyOfAnAncestor(t *testing.T) {
 
 func TestCreateIssueDuplicateCreatesATextSharingOnlyCommonWords(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -240,7 +287,7 @@ func TestCreateIssueDuplicateCreatesATextSharingOnlyCommonWords(t *testing.T) {
 
 func TestCreateIssueDuplicateForcePassesTheGate(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -258,7 +305,7 @@ func TestCreateIssueDuplicateForcePassesTheGate(t *testing.T) {
 
 func TestCreateIssueDuplicateIgnoresACitedIssueKey(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	cited := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -389,7 +436,7 @@ func TestCreateIssueDuplicateKeepsACopyThatTemplateIssuesWouldCrowdOut(t *testin
 
 func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 	createDuplicateTestProject(t, handler, "OTHER")
 
@@ -415,7 +462,7 @@ func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testin
 
 func TestCreateIssueDuplicateOrdersCandidatesByScore(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "ORDER")
 
 	// Three open issues holding progressively more of the new text's words. Each is forced in,
@@ -470,7 +517,7 @@ func TestCreateIssueDuplicateOrdersCandidatesByScore(t *testing.T) {
 // TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord.
 func TestCreateIssueDuplicateRefusesACopiedTitleWhoseWordsAreCommon(t *testing.T) {
 	t.Parallel()
-	handler, database := newDuplicateTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	createDuplicateTestProject(t, handler, "COMMON")
 	// Twelve issues holding the three words of the title below, so each word's document
 	// frequency passes relatedCommonFloor and the picker drops it as a common word.
@@ -514,7 +561,7 @@ func TestCreateIssueDuplicateRefusesACopiedTitleWhoseWordsAreCommon(t *testing.T
 // tests fail at this head with `POST /api/v1/issues failed: 409` on the second create.
 func TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "AGT")
 
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -535,7 +582,7 @@ func TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord(t *
 // created.
 func TestCreateIssueDuplicateRefusesACopiedSpecWhoseListIsRenumbered(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "LIST")
 
 	first := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -559,76 +606,75 @@ func TestCreateIssueDuplicateRefusesACopiedSpecWhoseListIsRenumbered(t *testing.
 }
 
 // gateBoundStandIn is a near-copy read that never answers on its own (server.beforeDuplicateRead):
-// it blocks until the context the gate gives it ends, and records the deadline that context
-// carried, when the read began and why it ended, so a case can tell what ended it. wait is the
-// case's own bound on the block, the test binary's deadline less testwait's margin
-// (nearCopyVerdictBound), so a gate whose bound is gone fails the case by name before go test's
-// alarm rather than holding it to the binary's deadline.
+// it says it has begun, blocks until the context the gate gives it ends, and records that
+// context's cause, so a case can tell what ended it.
 type gateBoundStandIn struct {
-	wait time.Duration
+	began chan struct{}
 
-	mu       sync.Mutex
-	began    time.Time
-	deadline time.Time
-	bounded  bool
-	ended    error
+	mu    sync.Mutex
+	ended error
+}
+
+func newGateBoundStandIn() *gateBoundStandIn {
+	return &gateBoundStandIn{began: make(chan struct{}, 1)}
 }
 
 func (s *gateBoundStandIn) read(ctx context.Context) error {
-	deadline, bounded := ctx.Deadline()
-	began := time.Now()
-	ended := errors.New("the near-copy read's context carries no deadline")
-	if bounded {
-		select {
-		case <-ctx.Done():
-			ended = ctx.Err()
-		case <-time.After(s.wait):
-			ended = fmt.Errorf("the near-copy read's context did not end within %s", s.wait)
-		}
+	select {
+	case s.began <- struct{}{}:
+	default:
 	}
+	<-ctx.Done()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.began, s.deadline, s.bounded, s.ended = began, deadline, bounded, ended
-	return ended
+	s.ended = context.Cause(ctx)
+	return ctx.Err()
 }
 
 // The gate's bound, production's duplicateGateTimeout, is what ends a read that does not answer.
 // A read held until its context ends (gateBoundStandIn) is ended by that bound: the create of an
 // exact copy of an open issue goes in rather than being refused, is told that no near-copy check
 // was made in that time, and the server logs the bound it ran out of. This case runs under
-// production's bound, which every other case of the gate replaces with one of its own
-// (newDuplicateTestHandler), and nothing in it waits on the machine's speed: the read never
-// answers, however fast the machine is.
+// production's bound, which every other test server replaces (gateBoundPastEveryRead), on a
+// clock the case moves: the gate arms its bound duplicateGateTimeout from the request on the
+// server's clock (gateBounds), the read never answers however fast the machine is, and the case
+// moves the clock to that deadline.
 func TestCreateIssueGoesInUncheckedWhenTheGateRunsPastItsBound(t *testing.T) {
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	fake := clocktest.New(checkStart)
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{clock: fake})
 	createDuplicateTestProject(t, handler, "BOUND")
 	const title = "Astrolabe calibration drifts after a reseat"
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "BOUND", "title": title, "spec": duplicateSpecAstrolabe,
 	}))
-	standIn := &gateBoundStandIn{wait: nearCopyVerdictBound(t)}
+	// Production's bound, which the rig replaced (newRegisteredTestServer).
+	served.duplicateBound = 0
+	standIn := newGateBoundStandIn()
 	served.beforeDuplicateRead = standIn.read
 	logs := captureLogs(t)
 
-	asked := time.Now()
-	response := createIssueRequest(t, handler, map[string]any{
-		"project": "BOUND", "title": title, "spec": duplicateSpecAstrolabe,
-	})
+	responded := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		responded <- createIssueRequest(t, handler, map[string]any{
+			"project": "BOUND", "title": title, "spec": duplicateSpecAstrolabe,
+		})
+	}()
+	testwait.Receive(t, "the gate's read to begin", standIn.began)
+	bound := checkStart.Add(duplicateGateTimeout)
+	fake.AwaitArmedAt(t, "the gate's bound", bound)
+	select {
+	case early := <-responded:
+		t.Fatalf("the create answered (status %d) before the clock reached the gate's bound, its read held", early.Code)
+	default:
+	}
+	fake.Set(bound)
+	response := testwait.Receive(t, "the create's answer once the gate's bound ran out", responded)
 	created := requireCreatedIssue(t, response)
 	standIn.mu.Lock()
-	began, deadline, bounded, ended := standIn.began, standIn.deadline, standIn.bounded, standIn.ended
+	ended := standIn.ended
 	standIn.mu.Unlock()
-	if !bounded {
-		t.Fatalf("the gate's read ran under no bound: %v", ended)
-	}
-	// The bound starts inside the request, before the read: its deadline is no sooner than
-	// duplicateGateTimeout after the request was sent, and no later than that after the read began.
-	if deadline.Before(asked.Add(duplicateGateTimeout)) || deadline.After(began.Add(duplicateGateTimeout)) {
-		t.Fatalf("the gate's read had until %s after the request was sent and %s after it began, want %s from a moment between",
-			deadline.Sub(asked), deadline.Sub(began), duplicateGateTimeout)
-	}
-	if !errors.Is(ended, context.DeadlineExceeded) {
-		t.Fatalf("the gate's read ended with %v, want its bound's %v", ended, context.DeadlineExceeded)
+	if !errors.Is(ended, errNearCopyGateBoundEnded) {
+		t.Fatalf("the gate's read ended with %v, want its bound's %v", ended, errNearCopyGateBoundEnded)
 	}
 	if check, want := createdSuggestions(t, response).NearCopyCheck, nearCopyCheckNotMade(duplicateGateTimeout); check != want {
 		t.Fatalf("near_copy_check = %q, want %q", check, want)

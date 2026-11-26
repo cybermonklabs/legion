@@ -16,6 +16,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // busyPoolSize is the shared pool's size in the busy case. A full pool is what the case needs, of
@@ -46,7 +48,9 @@ func busySharedPool(t *testing.T, database *store.Store) *store.Store {
 		t.Fatalf("open the busy shared pool: %v", err)
 	}
 	busy := &store.Store{Pool: store.NewPool(pool)}
-	t.Cleanup(busy.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the busy shared pool to come back, so the pool closes", busy.Pool.Close)
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	var callers sync.WaitGroup
 	for range 2 * busyPoolSize {
@@ -263,7 +267,7 @@ func unpublishedCount(t *testing.T, database *store.Store) int {
 // of the stream the checks of what it holds share (streamOrder, assertKeptLaneInOrder).
 func streamMessages(t *testing.T, conn *natsgo.Conn) []*natsgo.RawStreamMsg {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -296,25 +300,46 @@ func streamOrder(t *testing.T, conn *natsgo.Conn) (map[string][]int64, []int64) 
 	return bySubject, all
 }
 
-// envelopeEventID is the dispatch event id data's envelope carries (sourceEventID).
+// envelopeEventID is the dispatch event id data's envelope carries (sourceEventID), for a caller on
+// the test's goroutine.
 func envelopeEventID(t *testing.T, data []byte) int64 {
 	t.Helper()
+	id, err := envelopeEventIDOf(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// envelopeEventIDOf is envelopeEventID's reading with its error answered rather than failed on,
+// for a caller off the test's goroutine, such as subscribeInOrder's reader, whose take reports
+// through t.Error: t.Fatal there would end the reader's goroutine and not the test.
+func envelopeEventIDOf(data []byte) (int64, error) {
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		t.Fatalf("decode an envelope: %v", err)
+		return 0, fmt.Errorf("decode an envelope: %w", err)
 	}
-	return sourceEventID(t, envelope)
+	return sourceEventIDOf(envelope)
 }
 
 // sourceEventID is the dispatch event id envelope was made of, for a caller that has decoded it
 // already.
 func sourceEventID(t *testing.T, envelope contracts.Envelope) int64 {
 	t.Helper()
-	id, err := strconv.ParseInt(envelope.SourceEventID, 10, 64)
+	id, err := sourceEventIDOf(envelope)
 	if err != nil {
-		t.Fatalf("envelope source event id %q: %v", envelope.SourceEventID, err)
+		t.Fatal(err)
 	}
 	return id
+}
+
+// sourceEventIDOf is sourceEventID's reading with its error answered.
+func sourceEventIDOf(envelope contracts.Envelope) (int64, error) {
+	id, err := strconv.ParseInt(envelope.SourceEventID, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("envelope source event id %q: %w", envelope.SourceEventID, err)
+	}
+	return id, nil
 }
 
 // ascending reports the first position at which ids decreases, or -1.
@@ -340,11 +365,11 @@ type throughputRig struct {
 	client   *bus.Client
 	reader   *natsgo.Conn
 	broker   *events.Broker
-	// role is every forward the role's holder received, in arrival order, and marks the markers
-	// it took (markers.await).
+	// role is every forward the role's holder received, in arrival order, and holder its
+	// subscription, which settle reads to its end (orderedSubscription.settle).
 	roleMu sync.Mutex
 	role   []int64
-	marks  markers
+	holder *orderedSubscription
 }
 
 // outstandingSends counts how many of the outbox's sends are outstanding at once. It wraps the
@@ -438,27 +463,22 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	if err != nil {
 		t.Fatalf("connect the outbox's client through the latency proxy: %v", err)
 	}
-	t.Cleanup(client.Close)
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	t.Cleanup(func() { bustest.Close(t, client) })
+	reader := testnats.Connect(t, url)
 	t.Cleanup(reader.Close)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
-	if _, err := reader.Subscribe(contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg) {
-		if rig.marks.took(message) {
+	rig.holder = subscribeInOrder(t, reader, client.Connection(), contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg, _ <-chan struct{}) {
+		// The reader's goroutine runs this, not the test's: a forward it cannot read is reported
+		// and passed over, and the row's own counts then fail it by name.
+		id, err := envelopeEventIDOf(message.Data)
+		if err != nil {
+			t.Errorf("the holder's forward %q: %v", message.Data, err)
 			return
 		}
-		id := envelopeEventID(t, message.Data)
 		rig.roleMu.Lock()
 		rig.role = append(rig.role, id)
 		rig.roleMu.Unlock()
-	}); err != nil {
-		t.Fatalf("subscribe the role's holder: %v", err)
-	}
-	if err := reader.Flush(); err != nil {
-		t.Fatalf("flush the holder's subscription: %v", err)
-	}
+	})
 	registry, err := envoystore.Open(t.Context(), reader)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
@@ -526,7 +546,6 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 		// among the 60 non-burst readings of the loaded campaign at head 844b43ec05b2 on
 		// 2026-11-09; every other reading of it was 50, 55 or 60.
 		minOutstanding = 20
-		waitTime       = 3 * time.Minute
 	)
 	for _, load := range []struct {
 		name string
@@ -588,21 +607,16 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					sends := &outstandingSends{Publisher: rig.client}
 					stop := runOutboxThrough(t, outboxStore, rig.client, sends, rig.broker)
 					defer stop()
-					deadline := started.Add(waitTime)
-					for unpublishedCount(t, rig.database) > 0 && time.Now().Before(deadline) {
-						time.Sleep(10 * time.Millisecond)
-					}
+					testwait.Eventually(t, fmt.Sprintf("%s: every one of the %d events published", name, count), func() bool {
+						return unpublishedCount(t, rig.database) == 0
+					})
 					elapsed := time.Since(started)
-					left := unpublishedCount(t, rig.database)
-					rate := float64(count-left) / elapsed.Seconds()
+					rate := float64(count) / elapsed.Seconds()
 					peak := sends.peakOutstanding()
 					if tc.burst {
-						t.Logf("%s: drained %d of %d events on one issue in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
+						t.Logf("%s: drained %d events on one issue in %s: %.1f events/s, %d sends outstanding at the peak", name, count, elapsed.Round(time.Millisecond), rate, peak)
 					} else {
-						t.Logf("%s: published %d of %d events in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
-					}
-					if left > 0 {
-						t.Fatalf("%s: %d of %d events left unpublished after %s", name, left, count, waitTime)
+						t.Logf("%s: published %d events in %s: %.1f events/s, %d sends outstanding at the peak", name, count, elapsed.Round(time.Millisecond), rate, peak)
 					}
 					// One issue is one chain, so a burst holds a send or three at once whatever
 					// the drain does, and reads nothing here.
@@ -638,8 +652,8 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					// Each event is marked published once the stream acknowledged its sends, and the
 					// holder is handed its forward on a connection of its own, which can take the
 					// last of them just after that acknowledgement on a busy machine: the holder is
-					// read once it has taken every forward the outbox sent it (markers.await).
-					rig.marks.await(t, rig.client, contracts.LegacyAgentSubject(throughputHolder))
+					// read once it has taken every forward the outbox sent it (orderedSubscription.settle).
+					rig.holder.settle(t)
 					routed := load.routed(count)
 					roles := rig.roleArrivals()
 					arrivals := map[string][]int64{}
@@ -703,11 +717,18 @@ func runOutbox(t *testing.T, database *store.Store, client *bus.Client, broker *
 // resolve on client's connection, as cmd/dispatch has them.
 func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
+	return runOn(t, wiredOutbox(t, database, client, publisher, broker))
+}
+
+// wiredOutbox is the outbox runOutboxThrough runs, built and not yet running, for a row that sets
+// one of its own fields (its clock, a hook) before it runs it with runOn.
+func wiredOutbox(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) *Outbox {
+	t.Helper()
 	pool, err := database.Pool.Outbox()
 	if err != nil {
 		t.Fatalf("open the outbox's pool: %v", err)
 	}
 	holders := roles.NewBuckets(client, roles.Windows{})
-	return runDeps(t, Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
+	return New(Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
 		RoleClaims: holders, Sessions: holders})
 }

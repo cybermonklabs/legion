@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -13,11 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// recordLockWait bounds each wait of the lock-order test: for the record to queue behind a hold,
-// and for the scan to return once the record has queued behind none.
-const recordLockWait = 30 * time.Second
 
 // TestRecordBatchTakesAPrefixOfTheStoreLockOrder is the outbox half of the check
 // c-lock-order: recordBatch is a store write path that takes fewer steps than the store's lock
@@ -58,7 +56,7 @@ func TestRecordBatchTakesAPrefixOfTheStoreLockOrder(t *testing.T) {
 	broker := events.NewBroker()
 	route := "role:" + role
 	seedIssue(t, database, key, &route)
-	claim := roleClaimStub{holder: holder, lastSeen: time.Now().UnixMilli()}
+	claim := liveClaim(holder)
 	deps := Deps{Store: database, Publisher: &recordingPublisher{}, Broker: broker,
 		RoleClaims: claim, Sessions: claim}
 	event := appendEvent(t, database, broker, model.Event{
@@ -184,32 +182,32 @@ const recordStatement = "%with hold as%recorded as (%update events e set%"
 // the scan returns, and answers the holds in the order the record queued behind them and how the
 // scan ended. A statement waits on one lock at a time, so a record queued behind two holds at
 // once is a failure of the test's own reading, and a record that queues behind none and does not
-// return is waiting on something the test does not hold.
+// return is waiting on something the test does not hold: each step's wait is the shared one, whose
+// give-up names how far the record got.
 func followTheRecord(t *testing.T, ctx context.Context, database *store.Store, holds []*recordHold, scanned <-chan scanEnd) ([]*recordHold, scanEnd) {
 	t.Helper()
 	var queued []*recordHold
-	deadline := time.Now().Add(recordLockWait)
 	for {
-		select {
-		case end := <-scanned:
-			return queued, end
-		default:
-		}
-		behind := holdsTheRecordWaitsOn(t, ctx, database, holds)
-		switch len(behind) {
-		case 0:
-			if time.Now().After(deadline) {
-				t.Fatalf("the record queued behind none of the holds still held and the scan did not return within %s (queued so far behind %d)",
-					recordLockWait, len(queued))
+		var end *scanEnd
+		var behind []*recordHold
+		testwait.Until(t, fmt.Sprintf("the record to queue behind one of the holds still held, or the scan to return (queued so far behind %d)", len(queued)), func() (string, bool) {
+			select {
+			case returned := <-scanned:
+				end = &returned
+				return "the scan returned", true
+			default:
 			}
-			time.Sleep(2 * time.Millisecond)
-		case 1:
-			queued = append(queued, behind[0])
-			behind[0].release()
-			deadline = time.Now().Add(recordLockWait)
-		default:
+			behind = holdsTheRecordWaitsOn(t, ctx, database, holds)
+			return fmt.Sprintf("queued behind %d of the holds still held", len(behind)), len(behind) > 0
+		})
+		if end != nil {
+			return queued, *end
+		}
+		if len(behind) > 1 {
 			t.Fatalf("the record queued behind %d holds at once, which one statement cannot do", len(behind))
 		}
+		queued = append(queued, behind[0])
+		behind[0].release()
 	}
 }
 

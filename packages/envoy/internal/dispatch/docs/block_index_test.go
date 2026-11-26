@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -22,11 +23,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// blockIndexService is a document service whose settle delay is an hour, so no timer settles a
-// document during a test, on a database holding project CORE and its issues CORE-1, where the
-// documents live unless a test puts one on CORE-2, and CORE-2, which they cite.
+// blockIndexService is a document service whose settle delay is a day (stagedAhead), so no timer
+// settles a document during a test, on a database holding project CORE and its issues CORE-1,
+// where the documents live unless a test puts one on CORE-2, and CORE-2, which they cite.
 func blockIndexService(t *testing.T) (*store.Store, *Service) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -42,17 +44,15 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 }
 
 // blockIndexProcess is one process's document service on database, serving the build of commit
-// (the empty string: an unstamped build's), whose settle delay is an hour, so no timer settles a
-// document during a test. A test that builds a second one on the same database has a second
-// process of that build start beside the first, or after it.
+// (the empty string: an unstamped build's), whose settle delay is a day (stagedAhead), so no
+// timer settles a document during a test. A test that builds a second one on the same database
+// has a second process of that build start beside the first, or after it.
 func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, BuildCommit: commit})
-	testcleanup.Add(t, func() {
-		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = service.Shutdown(stop)
-	})
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: stagedAhead, BuildCommit: commit})
+	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
+	stop := testwait.Context(t)
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, stop, service) })
 	return service
 }
 
@@ -749,8 +749,7 @@ func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
 func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 	t.Parallel()
 	database, service := blockIndexService(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	var comment string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into comments (issue_key, author, body)
@@ -785,13 +784,8 @@ func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the edit: %v", err)
 	}
-	select {
-	case err := <-ticked:
-		if err != nil {
-			t.Fatalf("tick beside the edit: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("the tick never finished after the edit committed")
+	if err := testwait.Receive(t, "the tick to finish once the edit committed", ticked); err != nil {
+		t.Fatalf("tick beside the edit: %v", err)
 	}
 	if tick.Items != 0 || tick.OwedItems != 1 {
 		t.Fatalf("tick beside the edit = %#v, want nothing written and the comment still owed", tick)
@@ -1391,15 +1385,11 @@ func TestTheBlockIndexArmsWaitForTheDocumentsOwnerLockHoldingNoTransactionID(t *
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatalf("release the owner lock: %v", err)
 			}
-			select {
-			case got := <-ticked:
-				if got.err != nil {
-					t.Fatalf("the tick: %v", got.err)
-				}
-				arm.wrote(t, got.tick)
-			case <-time.After(30 * time.Second):
-				t.Fatal("the tick never finished once the owner lock was released")
+			got := testwait.Receive(t, "the tick to finish once the owner lock was released", ticked)
+			if got.err != nil {
+				t.Fatalf("the tick: %v", got.err)
 			}
+			arm.wrote(t, got.tick)
 		})
 	}
 }

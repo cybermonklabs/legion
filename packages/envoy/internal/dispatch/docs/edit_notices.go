@@ -135,17 +135,12 @@ const (
 	editNoticeDiffBytes = 4096
 )
 
-// editNoticeSchedule is the sweep's pace. minGap is the least time from one sweep's start to the
-// next one's, whatever woke it (duty.WokenLoop.MinGap), and also how long a sweep waits, plus up to
-// a tenth again, when another process holds the lease. A test runs the loop faster.
-type editNoticeSchedule struct {
-	minGap time.Duration
-}
-
-// editNoticeSweepSchedule is the server's pace: five seconds between sweeps, the period of the
-// timer this loop replaced, so under load it sweeps no more often than that timer did, and a
-// notice goes at most five seconds after its quiet window ends.
-var editNoticeSweepSchedule = editNoticeSchedule{minGap: 5 * time.Second}
+// editNoticeMinGap is the sweep's pace: the least time from one sweep's start to the next one's,
+// whatever woke it (duty.WokenLoop.MinGap), and also how long a sweep waits, plus up to a tenth
+// again, when another process holds the lease. Five seconds, the period of the timer this loop
+// replaced, so under load it sweeps no more often than that timer did, and a notice goes at most
+// five seconds after its quiet window ends.
+const editNoticeMinGap = 5 * time.Second
 
 // dueEditNotices lists the documents whose quiet window has ended, oldest first. It is read with no
 // lock: each id is read again and claimed on its own, under its owner's lock, by dueEditNotice and
@@ -199,21 +194,19 @@ const nextEditNoticeDue = `
 // (nextEditNoticeDue). Sweeps start at least five seconds apart, so a notice goes within five
 // seconds of its due time, and a notice still due after a sweep - past a full batch, or one whose
 // send failed - is swept again five seconds later. With no notice due or pending it holds no
-// timer and makes no statement. A nil wake leaves the loop with its start and its due times.
+// timer and makes no statement. A nil wake leaves the loop with its start and its due times. Its
+// gaps and its due times run on the service's clock (Deps.Clock), so a test drives them with a
+// fake.
 //
 // The window is a row, not a timer, so a notice still pending when a process stops is sent by
 // the next sweep of any process: each process's boot sweep reads the earliest due time.
 func (s *Service) RunEditNotices(ctx context.Context, leases duty.Leases, wake <-chan struct{}) {
-	s.runEditNotices(ctx, leases, wake, editNoticeSweepSchedule)
-}
-
-func (s *Service) runEditNotices(ctx context.Context, leases duty.Leases, wake <-chan struct{}, schedule editNoticeSchedule) {
-	ctx = store.WithTransactionTracking(ctx)
-	duty.RunWoken(ctx, duty.WokenLoop{
+	duty.RunWoken(store.WithTransactionTracking(ctx), duty.WokenLoop{
 		Lease:  editNoticeLease,
 		Leases: leases,
 		Wake:   wake,
-		MinGap: schedule.minGap,
+		MinGap: editNoticeMinGap,
+		Clock:  s.clock,
 		Pass:   s.editNoticePass,
 	})
 }
@@ -232,7 +225,7 @@ func (s *Service) editNoticePass(ctx context.Context) time.Time {
 		return time.Time{}
 	case err != nil:
 		slog.Error("dispatch: send edit notices", "error", err)
-		return time.Now()
+		return s.clock.Now()
 	}
 	var wait *int64
 	if err := s.store.Pool.QueryRow(ctx, nextEditNoticeDue).Scan(&wait); err != nil {
@@ -240,12 +233,12 @@ func (s *Service) editNoticePass(ctx context.Context) time.Time {
 			return time.Time{}
 		}
 		slog.Error("dispatch: read the next edit notice's due time", "error", err)
-		return time.Now()
+		return s.clock.Now()
 	}
 	if wait == nil {
 		return time.Time{}
 	}
-	return time.Now().Add(time.Duration(*wait) * time.Microsecond)
+	return s.clock.Now().Add(time.Duration(*wait) * time.Microsecond)
 }
 
 // sendDueEditNotices sends up to editNoticeBatch due notices, each in a transaction of its own, and

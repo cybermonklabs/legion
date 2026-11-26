@@ -28,6 +28,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -44,7 +45,7 @@ import (
 // connection went away, given up on at the rewatch that follows the reconnect: kvCall) and a
 // JetStream 503 while a server restarts.
 // A caller that queues behind a write in progress waits for that write and then its own, so a
-// Record can take two budgets, and recordWait holds it to that, every KV call included. The webhook
+// Record can take two budgets, and RecordWait holds it to that, every KV call included. The webhook
 // handler records a check_run once for each PR it lists, one after another, under one context for
 // the delivery (webhook.GitHubHandler), so a delivery listing k PRs can take up to 2k budgets
 // unless that context ends first; that needs a write to lose its compare-and-swap for its whole
@@ -54,13 +55,16 @@ import (
 const recordBudget = 2 * time.Second
 const recordBackoffCap = 50 * time.Millisecond
 
-// recordWait bounds one Record or RecordSuite as a whole: the wait for a write it queues behind and
+// RecordWait bounds one Record or RecordSuite as a whole: the wait for a write it queues behind and
 // its own write, two budgets (update). nats.go's KV calls take no context and wait up to the
 // JetStream MaxWait (10 s, Open), so each is waited for only until this wait, or the caller's
 // context, ends (kvCall): a silent bus fails the record then rather than holding it, and every
 // caller queued behind it, for the MaxWait. Within that wait a call is still waited for past its
 // write's own budget, so a server that stalls for less and then answers loses nothing.
-const recordWait = 2 * recordBudget
+//
+// It is exported because a caller's own test asserts the deadline a record arms on the store's
+// clock (cmd/listener's frozen-bus rows) rather than keeping a copy of this number.
+const RecordWait = 2 * recordBudget
 
 // checkRunID is a GitHub check-run id. Records written before ids were
 // validated at ingress carry it as a decimal string; new records carry a
@@ -394,6 +398,18 @@ type Store struct {
 	// logger writes the store's JSON lines, which an alarm can count (write).
 	logger *logging.Logger
 
+	// clock times every wait the store makes of its own: the record wait of a Record or
+	// RecordSuite (update), each write's retry budget and the backoff between its attempts
+	// (write, casState) and the summary loop's grid (StartSummaryLoop). It is clock.Real()
+	// unless WithClock names another, so a test asserting what a wait of the store's ends, or
+	// when a loop's pass runs, hands a clocktest.Fake and moves it rather than waiting it out.
+	// Every moment the store stamps is read on it too, a record's LastEventAt and a claim's
+	// ClaimedAt (ClaimSettlement, refreshClaim) among them, so a test drives the summary loop,
+	// which is passed the same clock's time, through the verify timeouts and backoffs without
+	// waiting them out. What nats.go waits for itself (the JetStream MaxWait) is not on it, nor
+	// is the bound of each verify request's read or write (verify.go), a context.WithTimeout of
+	// RecordWait on the real clock.
+	clock clock.Clock
 	// verify says the summary loop asks Dispatch's CI reconcile for a GitHub read of a head
 	// before it publishes the head's settlement (WithVerify, verify.go). Off, it publishes as
 	// soon as it holds the claim, as every listener before ENVOY_CI_VERIFY did.
@@ -402,10 +418,6 @@ type Store struct {
 	// observation is this old is given up for good (stopVerify). Zero, in a writer's store, which
 	// gives nothing up.
 	ttl time.Duration
-	// now is the clock a claim is stamped by (ClaimSettlement, refreshClaim); nil is time.Now. A
-	// test sets it to drive the summary loop, which is passed the same clock's time, through the
-	// verify timeouts and backoffs without waiting them out.
-	now func() time.Time
 	// casHook, when set, runs in each write attempt after the attempt read the record and before
 	// its compare-and-swap (write): a test makes another write land there, so the attempt loses
 	// its compare-and-swap and retries. Nil in every store but a test's.
@@ -415,6 +427,7 @@ type Store struct {
 type openOpts struct {
 	replicas int
 	ttl      time.Duration
+	clock    clock.Clock
 	verify   bool
 }
 
@@ -442,6 +455,15 @@ func WithTTL(d time.Duration) Option {
 	}
 }
 
+// WithClock sets the clock the store's own waits are timed on, clock.Real() by default (Store.clock).
+func WithClock(c clock.Clock) Option {
+	return func(o *openOpts) {
+		if c != nil {
+			o.clock = c
+		}
+	}
+}
+
 // WithVerify turns on the listener's verify-before-announce (ENVOY_CI_VERIFY=on): the summary
 // loop publishes a head's settlement only after Dispatch's CI reconcile has read the head from
 // GitHub after the loop asked (verify.go).
@@ -456,7 +478,7 @@ func WithVerify(on bool) Option {
 // so Open never blocks on per-key Gets. The store and its cache watcher log through logger.
 // ctx bounds the bucket's open (bus.EnsureKeyValue).
 func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error) {
-	o := openOpts{replicas: 1, ttl: 7 * 24 * time.Hour}
+	o := openOpts{replicas: 1, ttl: 7 * 24 * time.Hour, clock: clock.Real()}
 	for _, f := range opts {
 		f(&o)
 	}
@@ -478,6 +500,7 @@ func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Op
 		rewatched:   make(chan struct{}),
 		changedWake: make(chan struct{}, 1),
 		logger:      logger,
+		clock:       o.clock,
 		verify:      o.verify,
 		ttl:         o.ttl,
 	}
@@ -522,7 +545,16 @@ type Writer struct {
 // write of its own is never given up on for a rewatch (kvCall); it is given up on only when its
 // caller's context ends. The handle stays usable across a reconnect, since nats.go reconnects the
 // same *nats.Conn under it.
-func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logger) (*Writer, error) {
+//
+// Of opts only WithClock reaches a writer: the moment it stamps on each record it writes
+// (LastEventAt, which the listener's summary loop counts the debounce from) is read on that
+// clock, clock.Real() by default, so a test runs the writer and the listener on one fake. The
+// bucket's copies and its TTL are the listener's Open's, and a writer sets neither.
+func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logger, opts ...Option) (*Writer, error) {
+	o := openOpts{clock: clock.Real()}
+	for _, f := range opts {
+		f(&o)
+	}
 	kv, err := bus.OpenKeyValue(context.Background(), conn, js, bus.CIStateBucket)
 	if err != nil {
 		return nil, err
@@ -531,6 +563,7 @@ func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logge
 		combiners: map[string]*keyCombiner{},
 		rewatched: make(chan struct{}),
 		logger:    logger,
+		clock:     o.clock,
 	}
 	// One handle for the store's life: nothing moves it, since a writer has no watcher to
 	// rewatch. The cache stays its zero value, since nothing a writer calls reads or writes it.
@@ -826,7 +859,7 @@ func (s *Store) WaitForCacheReady(ctx context.Context) error {
 // takes and all the webhook handler has a use for.
 func (s *Store) Record(ctx context.Context, observation contracts.CIObservation) error {
 	_, err := s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
-		return applyCheckRun(st, observation)
+		return s.applyCheckRun(st, observation)
 	})
 	return err
 }
@@ -852,7 +885,7 @@ func (s *Store) recordRuns(ctx context.Context, observations []contracts.CIObser
 	return s.update(ctx, head.Owner, head.Repo, head.Number, head.SHA, "", func(st *State) bool {
 		changed := false
 		for _, observation := range observations {
-			if applyCheckRun(st, observation) {
+			if s.applyCheckRun(st, observation) {
 				changed = true
 			}
 		}
@@ -863,8 +896,9 @@ func (s *Store) recordRuns(ctx context.Context, observations []contracts.CIObser
 // applyCheckRun folds one check run into st and reports whether that changed it. A run older than
 // the one st holds of its name (checkRunIDIsOlder), and an observation of the same run that may
 // not replace the held one (observationMayReplace, which ranks a finished run over a running or
-// queued one), change nothing, and neither does one st already holds.
-func applyCheckRun(st *State, observation contracts.CIObservation) bool {
+// queued one), change nothing, and neither does one st already holds. A change stamps the record's
+// LastEventAt on the store's clock.
+func (s *Store) applyCheckRun(st *State, observation contracts.CIObservation) bool {
 	if st.Checks == nil {
 		st.Checks = map[string]Check{}
 	}
@@ -888,7 +922,7 @@ func applyCheckRun(st *State, observation contracts.CIObservation) bool {
 	}
 	st.Checks[key] = next
 	rearm(st)
-	st.LastEventAt = time.Now().UnixMilli()
+	st.LastEventAt = s.clock.Now().UnixMilli()
 	return true
 }
 
@@ -921,7 +955,7 @@ func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObserva
 		}
 		st.Suites[observation.SuiteID] = next
 		rearm(st)
-		st.LastEventAt = time.Now().UnixMilli()
+		st.LastEventAt = s.clock.Now().UnixMilli()
 		return true
 	})
 }
@@ -959,7 +993,7 @@ func (s *Store) recordStatus(ctx context.Context, observation contracts.StatusOb
 				return false
 			}
 		}
-		now := time.Now().UnixMilli()
+		now := s.clock.Now().UnixMilli()
 		next.ObservedAt = now
 		if st.Statuses == nil {
 			st.Statuses = map[string]Status{}
@@ -1058,7 +1092,7 @@ func casBackoff(attempt int) time.Duration {
 // the bucket took, and every read after a lost compare-and-swap is the leader's too.
 func (s *Store) casState(key string, apply func(st *State) (ok bool, err error)) (State, bool, error) {
 	kv, epoch := s.watcher.Handle()
-	deadline := time.Now().Add(recordBudget)
+	deadline := s.clock.Now().Add(recordBudget)
 	fromLeader := false
 	for attempt := 0; ; attempt++ {
 		var entry nats.KeyValueEntry
@@ -1104,11 +1138,11 @@ func (s *Store) casState(key string, apply func(st *State) (ok bool, err error))
 		if !bus.IsCASConflict(err) {
 			return State{}, false, err
 		}
-		if time.Now().After(deadline) {
+		if s.clock.Now().After(deadline) {
 			return State{}, false, errors.New("cistore: state transition exceeded CAS budget")
 		}
 		fromLeader = true
-		time.Sleep(casBackoff(attempt))
+		_ = s.clock.Sleep(context.Background(), casBackoff(attempt))
 	}
 }
 
@@ -1128,7 +1162,7 @@ func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uin
 		state.Claim = &SettlementClaim{
 			Hash:       expectedHash,
 			Generation: expectedGeneration,
-			ClaimedAt:  s.clock().UnixMilli(),
+			ClaimedAt:  s.clock.Now().UnixMilli(),
 			Verify:     s.verify,
 		}
 		return true, nil
@@ -1185,7 +1219,7 @@ func (s *Store) ClaimStillHeld(key string, generation uint64, hash string, reque
 	if !held || !claimLive(state.Claim, now, debounce) || state.VerifiedRev < requested || state.VerifiedRev >= entry.Revision() || !settlementReady(state) {
 		return false, nil
 	}
-	read, cancel := context.WithTimeout(context.Background(), recordWait)
+	read, cancel := context.WithTimeout(context.Background(), RecordWait)
 	defer cancel()
 	stream, err := streamIdentity(read, kv)
 	if err != nil {

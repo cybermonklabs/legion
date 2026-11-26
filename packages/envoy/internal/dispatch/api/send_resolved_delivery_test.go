@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/testport"
@@ -23,15 +24,21 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 	t.Parallel()
 	session := "s1"
 	live := ResolvedMention{Target: "session:s1", Delivery: "steer", SessionID: &session}
+	// holding is the late listener's word that it has read the send, so the test ends the
+	// client's window once the send has landed and never before.
+	holding := make(chan struct{}, 1)
 	for _, tc := range []struct {
-		name         string
-		target       ResolvedMention
-		answer       http.HandlerFunc
+		name   string
+		target ResolvedMention
+		answer http.HandlerFunc
+		// late is the listener that answers only once the client's window has ended, which the
+		// test ends once that listener holds the send. No other case's window ends: the
+		// listener's answer, however long a loaded machine takes to carry it, is the outcome.
+		late         bool
 		wantEnvelope bool
 		wantDup      bool
 		wantFailure  bool
 		wantQueued   bool
-		late         bool
 	}{
 		{name: "the target did not resolve", target: ResolvedMention{Target: "role:planner", Delivery: "steer", ResolveError: "no live holder for role planner"}, wantFailure: true},
 		{name: "no live session", target: ResolvedMention{Target: "session:s9", Delivery: "steer"}, wantFailure: true},
@@ -45,12 +52,12 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 		{name: "the listener answered something unreadable", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"event_id":`))
 		}, wantFailure: true},
-		// The send lands and its answer, envelope and all, misses the client's window: the listener
-		// answers only once the request's context has ended, which the client's window, the one
-		// case marked late, ends. The body is read first, because net/http watches a request's
-		// connection for the caller going away only once its body has been read.
+		// The send lands and its answer, envelope and all, misses the client's window. The body is
+		// read first: net/http watches a request's connection for the caller going away only once
+		// its body has been read, so the context ends when the client's window ends the call.
 		{name: "the listener answered too late", target: live, answer: func(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.Copy(io.Discard, r.Body)
+			holding <- struct{}{}
 			<-r.Context().Done()
 			_, _ = w.Write([]byte(`{"event_id":"envelope-late","recipient":"s1"}`))
 		}, late: true, wantFailure: true},
@@ -75,29 +82,23 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 				t.Cleanup(listener.Close)
 				url = listener.URL
 			}
-			// A listener that answers gets a window past the run (pastTheRun), so a loaded machine
-			// that carries a send or its answer slowly never turns the answer into a receipt timeout.
-			window := pastTheRun
-			if tc.late {
-				// The late listener answers only once the client has given up, so this window
-				// ends the call however long a loaded machine takes to end it.
-				window = 150 * time.Millisecond
-			}
-			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithTimeout(window))}}
-			ctx, cancel := context.WithCancel(context.Background())
-			answered, returned := make(chan sendOutcome, 1), make(chan struct{})
-			// Registered after the listener's Close, so it runs before it: the call's context ends,
-			// which ends its request, before the listener waits out its handlers, and the worker has
-			// returned before the subtest ends, whatever ended it.
-			t.Cleanup(func() {
-				cancel()
-				testwait.Receive(t, "sendResolvedDelivery's worker to return once its context ended", returned)
-			})
+			// The client's window runs on this clock, which moves only for the late listener: a
+			// listener that never answers costs the test nothing, and one that answers is never
+			// cut short by a move.
+			clock := clocktest.New(time.Now())
+			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithClock(clock)), Clock: clock}}
+			answered := make(chan sendOutcome, 1)
 			go func() {
-				defer close(returned)
 				answered <- s.sendResolvedDelivery(
-					ctx, tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+					context.Background(), tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 			}()
+			if tc.late {
+				// The window is armed before the request is written (envoy.Client.do), so it is
+				// pending once the listener holds the send, CallWindow from the clock's start.
+				testwait.Receive(t, "the late listener to hold the send", holding)
+				clock.AwaitArmedAt(t, "the send's window", clock.Now().Add(envoy.CallWindow))
+				clock.Advance(envoy.CallWindow)
+			}
 			outcome := testwait.Receive(t, "sendResolvedDelivery to answer", answered)
 			if (outcome.envelopeID != nil) != tc.wantEnvelope || outcome.duplicate != tc.wantDup ||
 				outcome.queued != tc.wantQueued || (outcome.failure != "") != tc.wantFailure {
@@ -124,9 +125,10 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 			_, _ = w.Write([]byte(body))
 		}))
 		t.Cleanup(listener.Close)
-		// A window past the run (pastTheRun): the listener answers at once, and a loaded machine
-		// that carries that answer slowly must not turn it into a receipt timeout.
-		s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(pastTheRun))}}
+		// The client's window runs on a fake clock no one moves: the listener answers at once, and a
+		// loaded machine that carries that answer slowly must not turn it into a receipt timeout.
+		clock := clocktest.New(time.Now())
+		s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(clock)), Clock: clock}}
 		return s.sendResolvedDelivery(
 			context.Background(), live, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 	}

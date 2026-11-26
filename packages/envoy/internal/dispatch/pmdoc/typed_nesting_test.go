@@ -6,34 +6,56 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 )
 
 // The two bodies that froze a reader's tab in the browser engine (INFRA-581) are refused by a
 // document write in a few milliseconds: Go reads a bare `:::a` as a malformed directive, whatever
-// it is nested in. Each refusal is held to 1 s of this process's CPU time (cpuTimeOf), hundreds of
-// times what it takes, so neither a loaded runner nor -race flakes it.
+// it is nested in. Each refusal is held to work linear in the body, counted by Go's coverage
+// counters (countedWorkIsLinear) at an eighth of its openers and at all of them, as the heavy
+// bodies are (heavy_bodies_test.go): a count, so neither a loaded runner nor -race moves it.
 //
 // The bodies are heavybodies.NestedDirectives (pmdoc/heavybodies), so the API's own test of the
 // verdict a write of each gets reads the very same bytes (INFRA-1404).
 func TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly(t *testing.T) {
-	for _, test := range heavybodies.NestedDirectives() {
-		t.Run(test.Name, func(t *testing.T) {
-			var err error
-			took, timing := cpuTimeOf(again(func() error { _, err = ParseForWrite(test.Markdown, nil); return nil }))
-			if timing != nil {
-				t.Fatal(timing)
-			}
-			if !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), malformedDirectiveReason) {
-				t.Fatalf("ParseForWrite: %v, want ErrSchema saying %q", err, malformedDirectiveReason)
-			}
-			if took >= time.Second {
-				t.Fatalf("ParseForWrite took %s of CPU to refuse it, want under 1 s", took)
-			}
+	row := t.Name()
+	for _, shape := range nestedDirectiveShapes() {
+		t.Run(shape.name, func(t *testing.T) {
+			countedWorkIsLinear(t, row, shape)
 		})
 	}
+}
+
+// nestedDirectiveShapes are the refusals of heavybodies.NestedDirectives, each run checking that
+// the write is refused for its malformed directive.
+func nestedDirectiveShapes() []countedShape {
+	var shapes []countedShape
+	for _, directive := range heavybodies.NestedDirectives() {
+		shapes = append(shapes, countedShape{
+			name:    directive.Name,
+			sizes:   [2]int{directive.Openers / growthStep, directive.Openers},
+			unit:    "character",
+			reading: nestedDirectiveReadings[directive.ID],
+			stage:   searchedBytes,
+			prepare: func(t *testing.T, openers int) (int, func()) {
+				markdown := directive.Body(openers)
+				return len(markdown), func() {
+					if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), malformedDirectiveReason) {
+						t.Fatalf("ParseForWrite of %d characters: %v, want ErrSchema saying %q", len(markdown), err, malformedDirectiveReason)
+					}
+				}
+			},
+		})
+	}
+	return shapes
+}
+
+// nestedDirectiveReadings are the readings (countedReading) of each refusal, by its body's ID,
+// taken as heavyBodyParseReadings were (heavy_bodies_test.go), over the body's characters.
+var nestedDirectiveReadings = map[string]countedReading{
+	"directive-openers-then-long-line": {past: 58.7, most: 59.6},
+	"directive-openers-then-closers":   {past: 180.7, most: 183.1},
 }
 
 // A document write reads 32 typed blocks nested inside one another. The blocks are closed with

@@ -120,7 +120,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	}
 	want := newWanted()
 	_, _ = eventDestinations(ctx, deps, single, want)
-	found, err := loadLookups(ctx, deps.Store.Pool, want)
+	found, err := loadLookups(ctx, deps.Store.Pool, want, deps.unnamedForwardWait())
 	if err != nil {
 		return err
 	}
@@ -158,7 +158,22 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		default:
 			answer = dest.forward.send(ctx, deps, sender, routed, newKeptHandovers())
 		}
-		if err := <-answer; err != nil && !errors.Is(err, bus.ErrRefused) {
+		// publish has no t, and its callers run it on goroutines of their own too, so the wait for
+		// the answer is the shared wait's form for a helper (InHelper), whose give-up is an error
+		// of this publish.
+		var err error
+		if waitErr := testwait.InHelper("outbox test publish", fmt.Sprintf("the answer of %s %q", dest.label, dest.id), func() bool {
+			select {
+			case err = <-answer:
+				return true
+			default:
+				return false
+			}
+		}); waitErr != nil {
+			failures = append(failures, waitErr)
+			continue
+		}
+		if err != nil && !errors.Is(err, bus.ErrRefused) {
 			failures = append(failures, fmt.Errorf("%s %q: %w", dest.label, dest.id, err))
 		}
 	}
@@ -178,7 +193,7 @@ func routeTopics(t *testing.T, database *store.Store, event model.Event, add fun
 	t.Helper()
 	want := newWanted()
 	_ = add(event, routing{}, want, &destinations{seen: map[string]struct{}{}})
-	found, err := loadLookups(context.Background(), database.Pool, want)
+	found, err := loadLookups(context.Background(), database.Pool, want, unnamedForwardBound)
 	if err != nil {
 		t.Fatalf("read the lookups: %v", err)
 	}
@@ -305,7 +320,7 @@ func TestRunPublishesAskAnswerEnvelope(t *testing.T) {
 	defer stop()
 
 	// The issue topic and, because the asker follows its own ask, the asker's own topic.
-	waitFor(t, time.Second, "ask answer publication", func() bool {
+	testwait.Eventually(t, "ask answer publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	if asker := publisher.all()[1]; asker.Topic != "notifications.agent.session-asker" || asker.InReplyTo != askID {
@@ -361,7 +376,7 @@ func TestRunPublishesTheDeployedEventOnTheIssueSubject(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "issue.deployed publication", func() bool {
+	testwait.Eventually(t, "issue.deployed publication", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -462,7 +477,7 @@ func TestRunRoutesAskEventsToEveryFollowerRegardlessOfNotify(t *testing.T) {
 			stop := run(t, database, publisher, broker)
 			defer stop()
 
-			waitFor(t, time.Second, "follower publication", func() bool {
+			testwait.Eventually(t, "follower publication", func() bool {
 				return len(publisher.all()) == len(tc.wantTopics) && publishedAt(t, database, event.ID) != nil
 			})
 			items := publisher.all()
@@ -496,7 +511,7 @@ func TestRunSkipsAnUnfollowedSession(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "reply publication", func() bool {
+	testwait.Eventually(t, "reply publication", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -628,7 +643,7 @@ func TestRunRoutesDocumentEventsToTheDocumentTopicAndTheirAuthor(t *testing.T) {
 
 	// Project documents have no route, so the follower route is the only way the
 	// asking session ever learns about this human reply.
-	waitFor(t, time.Second, "document event publication", func() bool {
+	testwait.Eventually(t, "document event publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -674,7 +689,7 @@ func TestRunSummarizesCommentBody(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "comment publication", func() bool { return len(publisher.all()) == 1 })
+	testwait.Eventually(t, "comment publication", func() bool { return len(publisher.all()) == 1 })
 	if summary := publisher.all()[0].PayloadSummary; summary != "T-1 comment created: Tighten this paragraph" {
 		t.Fatalf("payload summary = %q", summary)
 	}
@@ -716,7 +731,7 @@ func TestRunSummarizesAnEditByItsNewBodyAndADeleteByNoText(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "the corrections' publication", func() bool {
+	testwait.Eventually(t, "the corrections' publication", func() bool {
 		return len(publisher.all()) == len(written) && publishedAt(t, database, written[len(written)-1].ID) != nil
 	})
 	want := map[string]string{
@@ -768,7 +783,7 @@ func TestRunPublishesADeletedCommentsCreateAsRecordedAndItsDeleteAfterIt(t *test
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "the create's and the delete's publication", func() bool {
+	testwait.Eventually(t, "the create's and the delete's publication", func() bool {
 		return publishedAt(t, database, created.ID) != nil && publishedAt(t, database, deleted.ID) != nil
 	})
 	// Where each event reached, by destination, and the order each destination was handed them
@@ -834,7 +849,7 @@ func TestRunCorrelatesAskReplyCommentToItsAsk(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "ask reply publication", func() bool {
+	testwait.Eventually(t, "ask reply publication", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) != nil
 	})
 	item := publisher.all()[0]
@@ -874,7 +889,7 @@ func TestRunRoutesAskReplyToAuthorEvenWhenIssueRoutedElsewhere(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "ask author route publication", func() bool {
+	testwait.Eventually(t, "ask author route publication", func() bool {
 		return len(publisher.all()) == 3 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -916,7 +931,7 @@ func TestRunRoutesHumanReplyToCommentAuthor(t *testing.T) {
 	// The root author is not subscribed to the issue's route (there is none here), so
 	// without a direct author route the session that wrote the root comment never
 	// learns a human replied to it.
-	waitFor(t, time.Second, "comment author route publication", func() bool {
+	testwait.Eventually(t, "comment author route publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -950,7 +965,7 @@ func TestRunRoutesHumanReplyToMessageAuthor(t *testing.T) {
 	// The root author is not subscribed to the issue's route (there is none here), so
 	// without a direct author route the session that wrote the root message never
 	// learns a human replied to it.
-	waitFor(t, time.Second, "message author route publication", func() bool {
+	testwait.Eventually(t, "message author route publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -988,7 +1003,7 @@ func TestRunRoutesHumanAnsweredReplyToRouteAndMessageAuthor(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "answered reply publication", func() bool {
+	testwait.Eventually(t, "answered reply publication", func() bool {
 		return len(publisher.all()) == 3 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1024,7 +1039,7 @@ func TestRunRoutesHumanAnsweredReplyToRouteAndMessageAuthor(t *testing.T) {
 		t.Fatalf("a targeted answer must not notify")
 	}
 	broker.Publish(quiet)
-	waitFor(t, time.Second, "targeted answer publication", func() bool {
+	testwait.Eventually(t, "targeted answer publication", func() bool {
 		return len(publisher.all()) == 4 && publishedAt(t, database, quiet.ID) != nil
 	})
 	if got := publisher.all()[3].Topic; got != "notifications.dispatch.issue.T-1.message.answered" {
@@ -1056,7 +1071,7 @@ func TestRunRoutesReplyToReplyToBothTheRootAndParentAuthors(t *testing.T) {
 
 	// A reply to a reply must still reach the thread root's author (the comment
 	// humans reply under), not just the comment it directly targets.
-	waitFor(t, time.Second, "nested reply author route publication", func() bool {
+	testwait.Eventually(t, "nested reply author route publication", func() bool {
 		return len(publisher.all()) == 3 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1090,7 +1105,7 @@ func TestRunRoutesCommentResolutionToRootAuthor(t *testing.T) {
 
 	// A resolved root comment carries neither reply_to nor ask_id, so the root
 	// author route must key off the resolved comment's own id.
-	waitFor(t, time.Second, "comment resolution author route publication", func() bool {
+	testwait.Eventually(t, "comment resolution author route publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1161,7 +1176,7 @@ func TestRunPublishesSubscriptionRemovedAndRoutesItDirectlyToTheUnsubscribedSess
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "subscription.removed publication", func() bool {
+	testwait.Eventually(t, "subscription.removed publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1195,7 +1210,7 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "issue-topic publication despite the failing author route", func() bool {
+	testwait.Eventually(t, "issue-topic publication despite the failing author route", func() bool {
 		return len(publisher.all()) == 1
 	})
 	if publishedAt(t, database, event.ID) != nil {
@@ -1203,7 +1218,7 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	}
 
 	publisher.setFailTopic("")
-	waitFor(t, 7*time.Second, "retried publication once the author route succeeds", func() bool {
+	testwait.Eventually(t, "retried publication once the author route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1235,15 +1250,11 @@ func TestLoadRootCommentAuthorsTerminatesOnACycle(t *testing.T) {
 	go func() {
 		defer close(done)
 		var found *lookups
-		if found, err = loadLookups(context.Background(), database.Pool, &wanted{comments: map[string]struct{}{commentID: {}}}); err == nil {
+		if found, err = loadLookups(context.Background(), database.Pool, &wanted{comments: map[string]struct{}{commentID: {}}}, unnamedForwardBound); err == nil {
 			_, ok, err = found.rootCommentAuthor(commentID)
 		}
 	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("loadRootCommentAuthors did not terminate on a cyclic reply_to chain")
-	}
+	testwait.Receive(t, "loadRootCommentAuthors to end on a cyclic reply_to chain", done)
 	if err != nil {
 		t.Fatalf("load the comment's root author: %v", err)
 	}
@@ -1279,7 +1290,7 @@ func TestRunStillPublishesWhenTheRootWalkHitsAReplyToCycle(t *testing.T) {
 	// A malformed cycle must not stop the event from reaching its own issue topic or the
 	// author of the comment it replies to, which the bounded walk up visited; only the
 	// thread root, which the walk cannot find, is missing.
-	waitFor(t, 5*time.Second, "cyclic reply_to publication", func() bool {
+	testwait.Eventually(t, "cyclic reply_to publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1326,7 +1337,7 @@ func TestRunRoutesAskResolutionToTheAskerAndHumanResolutionToTheRoute(t *testing
 			stop := run(t, database, publisher, broker)
 			defer stop()
 
-			waitFor(t, time.Second, "ask resolution publication", func() bool {
+			testwait.Eventually(t, "ask resolution publication", func() bool {
 				return len(publisher.all()) == len(tc.wantTopics) && publishedAt(t, database, event.ID) != nil
 			})
 			items := publisher.all()
@@ -1384,7 +1395,7 @@ func TestADeclineTellsEveryFollowingSessionInDispatchsOwnWords(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "decline publication", func() bool {
+	testwait.Eventually(t, "decline publication", func() bool {
 		return len(publisher.all()) == len(wantTopics) && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1435,7 +1446,7 @@ func TestRunAddsBoundRoutePublication(t *testing.T) {
 			stop := run(t, database, publisher, broker)
 			defer stop()
 
-			waitFor(t, time.Second, "route publication", func() bool {
+			testwait.Eventually(t, "route publication", func() bool {
 				return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 			})
 			items := publisher.all()
@@ -1467,7 +1478,7 @@ func TestRunPublishesTargetedMessageToIssueSubscribersOnly(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "targeted issue publication", func() bool {
+	testwait.Eventually(t, "targeted issue publication", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1495,7 +1506,7 @@ func TestRunPublishesQuietAnchorRefreshEventsOnlyToTheIssueTopic(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "anchor refresh issue publications", func() bool {
+	testwait.Eventually(t, "anchor refresh issue publications", func() bool {
 		return len(publisher.all()) == len(eventsToPublish) && publishedAt(t, database, eventsToPublish[1].ID) != nil
 	})
 	items := publisher.all()
@@ -1532,7 +1543,7 @@ func TestRunPublishesEveryEventButRoutesOnlyNotifyingEvents(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "all event publication", func() bool {
+	testwait.Eventually(t, "all event publication", func() bool {
 		return len(publisher.all()) == 3 && publishedAt(t, database, silent.ID) != nil && publishedAt(t, database, notifying.ID) != nil
 	})
 	// Each destination takes the issue's events in id order; the two destinations' sends
@@ -1675,11 +1686,11 @@ func TestRunRetriesEventWhenRequiredRoleRouteFails(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "issue topic publication despite a failing role route", func() bool {
+	testwait.Eventually(t, "issue topic publication despite a failing role route", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) == nil
 	})
 	publisher.setFailTopic("")
-	waitFor(t, 7*time.Second, "retried publication once the role route succeeds", func() bool {
+	testwait.Eventually(t, "retried publication once the role route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1711,11 +1722,11 @@ func TestRunRetriesEventWhenRequiredAuthorRouteFails(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "issue topic publication despite a failing author route", func() bool {
+	testwait.Eventually(t, "issue topic publication despite a failing author route", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) == nil
 	})
 	publisher.setFailTopic("")
-	waitFor(t, 7*time.Second, "retried publication once the author route succeeds", func() bool {
+	testwait.Eventually(t, "retried publication once the author route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1742,15 +1753,11 @@ func TestRunRetriesFailedIssuePublication(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	select {
-	case <-publisher.attempt:
-	case <-time.After(time.Second):
-		t.Fatal("initial publication was not attempted")
-	}
+	testwait.Receive(t, "the initial publication attempt", publisher.attempt)
 	if publishedAt(t, database, event.ID) != nil {
 		t.Fatal("event was marked published after failed issue publication")
 	}
-	waitFor(t, 7*time.Second, "the back-off's retry publication", func() bool {
+	testwait.Eventually(t, "the back-off's retry publication", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) != nil
 	})
 	if publishedAt(t, database, event.ID) == nil {
@@ -1790,12 +1797,11 @@ func TestAFullBatchOfFailingEventsHoldsBackOnlyItsOwnIssue(t *testing.T) {
 	publisher := &recordingPublisher{failSummary: "T-1 message created: poison"}
 
 	// A scan that left failed rows due would read the same full batch again and never return; the
-	// deadline turns that into a named failure instead of a package timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// test's own deadline turns that into a named failure instead of a package timeout.
+	ctx := testwait.Context(t)
 	holding(t, Deps{Store: database, Publisher: publisher, Broker: broker}).scan(ctx, unfenced{})
 	if ctx.Err() != nil {
-		t.Fatal("scan did not return within 30s: the failed rows keep refilling every batch")
+		t.Fatal("scan did not return before the test's deadline: the failed rows keep refilling every batch")
 	}
 
 	if publishedAt(t, database, valid.ID) == nil {
@@ -1896,19 +1902,19 @@ func TestRunReplacesOverflowedSubscriptionWithoutBusyLoop(t *testing.T) {
 		Payload:  model.Message{ID: "message-1", IssueKey: new("T-1"), Body: "Retry me"},
 	})
 	publisher := &blockingFailPublisher{started: make(chan struct{}), release: make(chan struct{})}
-	stop := run(t, database, publisher, broker)
+	outbox := New(withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
+	// A holder at rest is waiting with no wake pending and has scanned nothing since; a busy loop
+	// never comes to rest.
+	rest := watchRest(outbox)
+	stop := runOn(t, outbox)
 	defer stop()
 
-	select {
-	case <-publisher.started:
-	case <-time.After(time.Second):
-		t.Fatal("initial outbox scan did not start")
-	}
+	testwait.Receive(t, "the initial outbox scan's publish", publisher.started)
 	for range 65 {
 		broker.Publish(model.Event{})
 	}
 	close(publisher.release)
-	time.Sleep(100 * time.Millisecond)
+	rest.await(t, "the holder resting after the overflowed subscription's wakes")
 	if calls := publisher.calls.Load(); calls > 70 {
 		t.Fatalf("overflowed subscription caused %d scans, want a bounded number", calls)
 	}
@@ -1940,7 +1946,7 @@ func TestRunMarksIssueLessTargetedMessagesPublishedWithoutRepublishing(t *testin
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "ownerless message publication settlement", func() bool {
+	testwait.Eventually(t, "ownerless message publication settlement", func() bool {
 		return publishedAt(t, database, created.ID) != nil &&
 			publishedAt(t, database, delivery.ID) != nil &&
 			publishedAt(t, database, answered.ID) != nil
@@ -1974,7 +1980,7 @@ func TestRunSettlesAPriorityEventPublishedWithoutASend(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "ownerless priority event publication settlement", func() bool {
+	testwait.Eventually(t, "ownerless priority event publication settlement", func() bool {
 		return publishedAt(t, database, created.ID) != nil && publishedAt(t, database, deleted.ID) != nil
 	})
 	if items := publisher.all(); len(items) != 0 {
@@ -1988,14 +1994,26 @@ func run(t *testing.T, database *store.Store, publisher Publisher, broker *event
 	return runDeps(t, withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
 }
 
-// runDeps runs New(deps) until the returned func stops it, which waits for Run to return through
-// the shared wait, with no span of its own. A test that needs more of Deps than run's store,
-// publisher and broker - a metrics counter among them - builds it itself and calls this.
+// runDeps runs New(deps) until the returned func stops it (runOn). A test that needs more of Deps
+// than run's store, publisher and broker - a metrics counter among them - builds it itself and
+// calls this. The publisher hold lasts past the test (holdPastTheRun): its rows read what the
+// outbox sent and recorded, which a hold lost to a renewal that came late and taken again would
+// change - a batch it ends sends nothing more, its owners wait for the next take, and one whose
+// record the lapsed hold refused is read and sent again.
 func runDeps(t *testing.T, deps Deps) func() {
+	t.Helper()
+	holdPastTheRun(t)
+	return runOn(t, New(deps))
+}
+
+// runOn runs outbox until the returned func stops it, which waits for Run to return through the
+// shared wait, with no span of its own. A test that sets one of the outbox's own fields before it
+// runs - its clock - builds it itself and calls this.
+func runOn(t *testing.T, outbox *Outbox) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { New(deps).Run(ctx); close(done) }()
+	go func() { outbox.Run(ctx); close(done) }()
 	return func() {
 		cancel()
 		testwait.Receive(t, "the outbox's Run to return once its context ended", done)
@@ -2122,12 +2140,15 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 	return value
 }
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
-
-func waitFor(t *testing.T, timeout time.Duration, what string, condition func() bool) {
+// awaitPublished waits through the shared wait for the event eventID names to be marked published.
+func awaitPublished(t *testing.T, database *store.Store, eventID int64) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, testwait.Poll, what, condition)
+	testwait.Eventually(t, "the event marked published", func() bool {
+		return publishedAt(t, database, eventID) != nil
+	})
 }
+
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 func TestRunRoutesChangedDocumentAskAnswerToFollower(t *testing.T) {
 	ctx := context.Background()
@@ -2173,7 +2194,7 @@ func TestRunRoutesChangedDocumentAskAnswerToFollower(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "changed document answer publication", func() bool {
+	testwait.Eventually(t, "changed document answer publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	follower := publisher.all()[1]

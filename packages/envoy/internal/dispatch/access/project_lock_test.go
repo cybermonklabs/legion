@@ -3,7 +3,6 @@ package access
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestAProjectWriteTakesTheOwnerLockBeforeTheRow: every write of a project's access takes the
@@ -111,13 +111,8 @@ func TestAProjectWriteTakesTheOwnerLockBeforeTheRow(t *testing.T) {
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatalf("commit the lock's holder: %v", err)
 			}
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("%s after the lock's holder committed: %v", write.name, err)
-				}
-			case <-time.After(30 * time.Second):
-				t.Fatalf("%s never finished after the lock's holder committed", write.name)
+			if err := testwait.Receive(t, write.name+" to finish after the lock's holder committed", done); err != nil {
+				t.Fatalf("%s after the lock's holder committed: %v", write.name, err)
 			}
 		})
 	}

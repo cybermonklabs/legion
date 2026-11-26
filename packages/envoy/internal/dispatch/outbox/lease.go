@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -71,9 +72,19 @@ const (
 // about 3.1 s (run 42346322118, attempt 1), which neither setting survives from every offset. A
 // holder whose renewal is late must stop at its deadline, and the row it still holds keeps every
 // standby out until its release deletes the row, or for Margin after the deadline when that
-// release cannot reach the database first. That gap is the product's, and the two-process row
-// holds it to the take-over bound rather than to nothing.
+// release cannot reach the database first. That gap is the product's. Every run holds the
+// standby's take to the row's lapse on a fake clock
+// (TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses), and the two-process
+// rows hold the take-over to its bound only in the timing lane (cmd/dispatch, requireTakeOver on
+// the clock), which CI does not run.
 var publisherHoldOptions = duty.HoldOptions{TTL: 6 * time.Second, Renew: time.Second, Margin: 2 * time.Second}
+
+// timerClock is the clock the outbox arms its timers on, a narrowing of clock.Clock: the
+// standby's timer to the lapse of the current hold, and the holder's grace for a lost NATS
+// connection and its one retry timer.
+type timerClock interface {
+	NewTimer(d time.Duration) clock.Timer
+}
 
 // holdEnd is why a holder stopped publishing.
 type holdEnd string
@@ -111,6 +122,16 @@ type Outbox struct {
 	hold atomic.Pointer[duty.Hold]
 	// claims counts the batches this outbox read, one per scanBatch: how often it scanned.
 	claims atomic.Int64
+	// clock is what the outbox arms its timers on: clock.Real() in production (New), and a
+	// clocktest.Fake in a row that reads which wait the outbox armed and moves past it itself.
+	// Set it only before Run starts, so nothing races it.
+	clock timerClock
+	// holdClock is the clock the publisher hold runs on (duty.HoldOptions.Clock: its renewals and
+	// its loss deadline) and the one this outbox reads that deadline against (Publishing, scan):
+	// nil, which New leaves, is the real clock. A row that drives a hold's loss or a silence on a
+	// clocktest.Fake sets it, and gives the outbox's bus client the same fake
+	// (bus.WithWindowClock), whose windows read the hold's deadline. Set it only before Run starts.
+	holdClock clock.Clock
 	// afterRetryArmed is given the wait serve armed its one retry timer for, each time it arms
 	// one. Nil in production; a test uses it to read the sequence the outbox went through - which
 	// wait it armed, and when - rather than measuring the wall clock the publish landed on. Set
@@ -131,6 +152,11 @@ type Outbox struct {
 	// disconnected waits here without having scanned, and says nothing about what is due. Set it
 	// only before Run starts, so nothing races it.
 	afterServeWait func()
+	// afterStandbyWait is called in standby each time it is about to wait, after any try of the
+	// hold it made. Nil in production; a test uses it as afterServeWait is used, to know the
+	// standby has stopped trying for now, and reads the wake queue (standbyWake) itself. Set it
+	// only before Run starts, so nothing races it.
+	afterStandbyWait func()
 	// probeBeforeHold is set when this process gave the publisher hold up for NATS lost, and
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
@@ -146,7 +172,7 @@ func New(deps Deps) *Outbox {
 		host = "unknown-host"
 	}
 	if deps.held == nil {
-		deps.held = newHeldCopies()
+		deps.held = newHeldCopies(clock.Real())
 	}
 	deps.held.register(deps.Metrics)
 	return &Outbox{
@@ -155,6 +181,7 @@ func New(deps Deps) *Outbox {
 		token:       fmt.Sprintf("%s/%d", host, os.Getpid()),
 		wake:        make(chan struct{}, 1),
 		standbyWake: make(chan struct{}, 1),
+		clock:       clock.Real(),
 	}
 }
 
@@ -165,7 +192,15 @@ func (o *Outbox) Publishing() bool {
 		return false
 	}
 	hold := o.hold.Load()
-	return hold != nil && time.Now().Before(hold.Deadline())
+	return hold != nil && o.holdTime().Now().Before(hold.Deadline())
+}
+
+// holdTime is holdClock, and the real clock when it is nil.
+func (o *Outbox) holdTime() clock.Clock {
+	if o.holdClock == nil {
+		return clock.Real()
+	}
+	return o.holdClock
 }
 
 // Run publishes the outbox whenever this process holds the publisher hold, and stands by for it
@@ -302,7 +337,7 @@ func (o *Outbox) standby(ctx context.Context) *duty.Hold {
 		if ctx.Err() != nil {
 			return nil
 		}
-		var lapse *time.Timer
+		var lapse clock.Timer
 		var lapsed <-chan time.Time
 		if o.deps.Publisher.Connected() {
 			wait := holdRetry
@@ -316,8 +351,11 @@ func (o *Outbox) standby(ctx context.Context) *duty.Hold {
 					continue
 				}
 			}
-			lapse = time.NewTimer(wait)
-			lapsed = lapse.C
+			lapse = o.clock.NewTimer(wait)
+			lapsed = lapse.C()
+		}
+		if o.afterStandbyWait != nil {
+			o.afterStandbyWait()
 		}
 		select {
 		case <-ctx.Done():
@@ -353,6 +391,7 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 	pool := o.deps.Store.Pool
 	options := publisherHoldOptions
 	options.Token = o.token
+	options.Clock = o.holdClock
 	hold, err := duty.TryHold(ctx, pool, publisherHold, o.instance, options)
 	if err == nil && hold != nil {
 		return hold, 0
@@ -447,14 +486,14 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // Rows wait on these messages' words (tookHold, releasedHold and lostHold in
 // cmd/dispatch/multiprocess_test.go), so a change to them is a change to those rows too.
 func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
-	started := time.Now()
+	started := o.holdTime().Now()
 	o.hold.Store(hold)
 	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance,
 		"started", started.Format(time.RFC3339Nano))
 	end := o.serve(ctx, hold)
-	returned := time.Now()
+	returned := o.holdTime().Now()
 	o.hold.Store(nil)
-	cleared := time.Now()
+	cleared := o.holdTime().Now()
 	deadline := hold.Deadline()
 	stopped, stoppedBy := deadline, deadline
 	if returned.Before(stopped) {
@@ -499,14 +538,14 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // still down when the grace ends, or a batch's sends failed for the connection and a probe of
 // that connection failed too.
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
-	var disconnected, retryTimer *time.Timer
+	var disconnected, retryTimer clock.Timer
 	var disconnectedFor, retryDue <-chan time.Time
 	due := true
 	for {
 		if !o.deps.Publisher.Connected() {
 			if disconnected == nil {
-				disconnected = time.NewTimer(natsLossGrace)
-				disconnectedFor = disconnected.C
+				disconnected = o.clock.NewTimer(natsLossGrace)
+				disconnectedFor = disconnected.C()
 			}
 		} else {
 			if disconnected != nil {
@@ -534,8 +573,8 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 					retryTimer, retryDue = nil, nil
 				}
 				if wait, ok := o.nextRetry(ctx, end.failed || failedPass); ok {
-					retryTimer = time.NewTimer(wait)
-					retryDue = retryTimer.C
+					retryTimer = o.clock.NewTimer(wait)
+					retryDue = retryTimer.C()
 					if o.afterRetryArmed != nil {
 						o.afterRetryArmed(wait)
 					}
@@ -597,8 +636,11 @@ type scanEnd struct {
 // as a stopping process's batch does. It returns why it stopped, once every batch it started
 // has returned, each fenced by the hold's deadline itself. A wake it took and did not use is
 // given back (signal), so the scan serve starts next sees it. Every batch that sent anything is
-// logged as a sent batch with this process's instance, the span of event ids it sent, how many
-// events it sent at least one envelope of (sent) and how many it marked published (published).
+// logged as a sent batch with this process's instance, the span of event ids it sent and those
+// ids themselves (event_ids), how many events it sent at least one envelope of (sent) and how many
+// it marked published (published); a batch that returned an error is logged as the scan's
+// failure, with the ids of the events it sent (event_ids), which that failure leaves unpublished
+// for the next read to send again.
 func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 	deps := o.deps
 	deps.lanes = newLanes(o.signal)
@@ -615,7 +657,7 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 			switch {
 			case ctx.Err() != nil:
 				stop = true
-			case !time.Now().Before(hold.Deadline()):
+			case !o.holdTime().Now().Before(hold.Deadline()):
 				end.fenced, stop = true, true
 			default:
 				inflight++
@@ -650,14 +692,15 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 			batch := ran.batch
 			if batch.sent > 0 {
 				slog.Info("dispatch outbox: sent batch", "instance", o.instance,
-					"sent", batch.sent, "published", batch.published, "first_id", batch.firstID, "last_id", batch.lastID, "started", batch.started)
+					"sent", batch.sent, "published", batch.published, "first_id", batch.firstID, "last_id", batch.lastID,
+					"event_ids", batch.sentIDs, "started", batch.started)
 			}
 			switch {
 			case ran.err != nil:
 				// A batch this scan ended, or the process's stop ended, reports that end and not
 				// a failure of its own.
 				if batches.Err() == nil {
-					slog.Error("dispatch outbox: scan", "instance", o.instance, "error", ran.err)
+					slog.Error("dispatch outbox: scan", "instance", o.instance, "event_ids", batch.sentIDs, "error", ran.err)
 					end.failed = true
 				}
 				stop = true

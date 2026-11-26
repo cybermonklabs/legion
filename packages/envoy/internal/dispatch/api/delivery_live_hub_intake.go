@@ -22,9 +22,10 @@ import (
 // before the open P0 issues it arrives with, is what leaves no gap: every event at or below the
 // head was committed and is final before the reads that follow it (those P0 issues, each view's
 // recompute) run, and every event above it arrives on the feed. The listener's connection
-// (onConnected) catches the change log up after its LISTEN for the same reason, and marks every
+// (onConnected) catches the change log up after its LISTEN for the same reason, marks every
 // Legion view, which a notification lost before that LISTEN would otherwise leave stale until
-// the next one came, with no bound (dirtyLegionViews).
+// the next one came, with no bound (dirtyLegionViews), and reads the freshness row again, which a
+// freshness notification lost then would leave older on every open page (readFreshness).
 func (h *deliveryHub) intake(g *hubGeneration) {
 	var feed relaySubscription
 	var held, open bool
@@ -60,7 +61,10 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 		case <-g.connected:
 			h.catchUp(g)
 			h.dirtyLegionViews(g)
+			h.readFreshness(g)
 			h.note(deliveryHubNote{what: "connected"})
+		case <-g.wakeFreshness:
+			h.readFreshness(g)
 		case done := <-g.barrier:
 			h.catchUp(g)
 			close(done)
@@ -138,7 +142,7 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 // every view dirty: a view computed before it read the database at a moment the hub cannot place
 // against the feed's head, so it may have missed an event at or below it, which no feed will carry.
 func (h *deliveryHub) applyFeed(g *hubGeneration, taken hubEventFeed) {
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	g.p0 = taken.p0
 	h.dirtyAllLocked(g, now)
@@ -166,19 +170,20 @@ func (h *deliveryHub) readChangeCursor(g *hubGeneration) bool {
 	return true
 }
 
-// catchUp catches the change log up; a read that fails is tried again a second later.
+// catchUp catches the change log up; a read that fails is tried again a second later, on the hub's
+// clock.
 func (h *deliveryHub) catchUp(g *hubGeneration) {
 	if err := h.catchUpChanges(g); err != nil && g.ctx.Err() == nil {
 		slog.Warn("dispatch: delivery live hub could not read the delivery changes; retrying", "error", err)
-		time.AfterFunc(time.Second, func() { signal(g.wakeChanges) })
+		h.clock.AfterFunc(time.Second, func() { signal(g.wakeChanges) })
 	}
 }
 
 // catchUpChanges reads every delivery change after the cursor, marking the views each can touch.
 // Before each read it checks for a reset log: one holding no row as far as the cursor, or one whose
-// row at the cursor was recorded at another time than the hub read (a TRUNCATE ... RESTART IDENTITY
-// refilled past it, e2e/seed.ts:150). A reset moves the cursor to the newest row and marks every
-// view dirty.
+// row at the cursor was recorded at another time than the hub read (a reseed that deleted the rows
+// and restarted each emptied table's sequences refilled past it, e2e/seed.ts:285). A reset moves
+// the cursor to the newest row and marks every view dirty.
 func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 	ctx, pool := g.readContext(), h.server.deps.Store.Pool
 	for {
@@ -190,7 +195,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 			return err
 		}
 		reset := latest < seq
-		if !reset && seq > 0 && h.clock.Now().Sub(at) < delivery.ChangeRetention {
+		if !reset && seq > 0 && h.now().Sub(at) < delivery.ChangeRetention {
 			read, err := delivery.ChangeAt(ctx, pool, seq)
 			if err != nil {
 				return err
@@ -204,7 +209,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 					return err
 				}
 			}
-			now := h.clock.Now()
+			now := h.now()
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			g.changeSeq, g.changeAt = latest, timeOrZero(latestAt)
@@ -216,7 +221,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 		if err != nil {
 			return err
 		}
-		now := h.clock.Now()
+		now := h.now()
 		h.mu.Lock()
 		for _, change := range changes {
 			for _, view := range g.views {
@@ -237,7 +242,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 // in id order, so the hub keeps no cursor of the event log: a gap in what it receives is a feed
 // that closed, which intake answers.
 func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	h.applyEventLocked(g, event, now)
 	h.mu.Unlock()
@@ -431,8 +436,10 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 }
 
 // window is the view's window as its last answer resolved it: a custom range as named, a preset
-// from its last start (or its length before now, before its first answer) to the present, and a
-// pipeline view from the first shown day of its pinned at or of its last answer's.
+// from its last start (or, before its first answer, the start presetWindow gives now) to the
+// present, and a pipeline view from the first shown day of its pinned at or of its last answer's.
+// A preset's end is the present itself, not presetWindow's truncated end: a change stamped inside
+// the present's microsecond is inside the window the next read takes.
 func (view *deliveryView) window(now time.Time) (from, to time.Time) {
 	switch {
 	case view.spec.kind == deliveryLivePipeline:
@@ -445,7 +452,8 @@ func (view *deliveryView) window(now time.Time) (from, to time.Time) {
 		return measures.WindowStart(at), time.Time{}
 	case view.spec.preset > 0:
 		if view.from.IsZero() {
-			return now.Add(-view.spec.days()), now
+			from, _ := presetWindow(now, view.spec.days())
+			return from, now
 		}
 		return view.from, now
 	default:

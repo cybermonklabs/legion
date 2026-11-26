@@ -9,12 +9,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -52,16 +52,6 @@ import (
 // it decides on the row as the lock froze it, or on a row it read before it - shows only where the
 // row changed underneath it while it waited. The anchor-block backfill is driven that way, and why
 // is written at readyAnchorBlockBackfill.
-
-// itemRowOwnerLockQueued bounds the wait for a writer's backend to queue behind the held lock. A
-// writer reaches its owner lock in milliseconds - the reads before it are the request's own - so
-// this bound is reached only by a call stuck somewhere other than that lock, and the failure then
-// names the backend rather than hanging the package until go test's -timeout.
-const itemRowOwnerLockQueued = 30 * time.Second
-
-// itemRowOwnerLockFinish bounds the wait for the writer to answer once the lock is given back. A
-// writer that queued has only its own work left, so this is far longer than any row takes.
-const itemRowOwnerLockFinish = 60 * time.Second
 
 // lockedItemWrite is one writer readied to run against a held owner lock.
 type lockedItemWrite struct {
@@ -1074,7 +1064,9 @@ func oneConnectionStore(t *testing.T, deps Deps) (*store.Store, uint32) {
 	callStore := &store.Store{Pool: store.NewPool(opened)}
 	// Registered before anything the caller registers over this store - a server's wait, a
 	// document service's shutdown - so that those run first and the pool closes after them.
-	t.Cleanup(callStore.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the call's one-connection pool to come back, so the pool closes", callStore.Pool.Close)
+	})
 	conn, err := callStore.Pool.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire the call's connection: %v", err)
@@ -1099,7 +1091,7 @@ func oneConnectionDocs(t *testing.T, deps Deps) (*docs.Service, uint32) {
 	// Registered after the store's close and so run before it, cleanups running last registered
 	// first, which leaves the service its connection while it shuts down.
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown the command's document service: %v", err)
 		}
 	})

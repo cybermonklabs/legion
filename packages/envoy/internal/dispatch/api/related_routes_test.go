@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -160,7 +161,7 @@ func TestRelatedRouteKeywordsOnlySkipsMeaning(t *testing.T) {
 		issueEmbeddingText(title, ""): angledVector(0.9, 2),
 		text:                          queryVector(),
 	}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, relatedBound: meaningVerdictBound(t)})
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, clock: clocktest.Held()})
 	createSuggestionProject(t, handler, "RKEY")
 	key := createSearchIssue(t, handler, "RKEY", title, "")
 	processAllPending(t, database, embedder)

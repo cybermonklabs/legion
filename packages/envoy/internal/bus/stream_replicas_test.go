@@ -76,7 +76,7 @@ func deployedClusterStream(change func(*nats.StreamConfig)) nats.StreamConfig {
 }
 
 // awaitKeptValue reads key through kv until the bucket answers with want, and fails the test if
-// no read does. The wait is bounded only by the test binary's deadline (testwait.UntilPolling): a
+// no read does. The wait is bounded only by the test binary's deadline (testwait.Until): a
 // copy a raise adds catches up with a one-message stream in milliseconds, and a loaded machine
 // only makes it later.
 //
@@ -88,7 +88,7 @@ func deployedClusterStream(change func(*nats.StreamConfig)) nats.StreamConfig {
 // on no copy, and no read answers with it.
 func awaitKeptValue(t *testing.T, kv KeyValue, key, want string) {
 	t.Helper()
-	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("get %s after the raise to answer %q", key, want), func() (string, bool) {
+	testwait.Until(t, fmt.Sprintf("get %s after the raise to answer %q", key, want), func() (string, bool) {
 		entry, err := kv.Get(key)
 		return fmt.Sprintf("%v, %v", entry, err), err == nil && string(entry.Value()) == want
 	})
@@ -540,7 +540,7 @@ func stopAFollower(t *testing.T, cluster *testnats.Cluster) int {
 func metaLeader(t *testing.T, cluster *testnats.Cluster) int {
 	t.Helper()
 	ctx := testwait.Context(t)
-	named := testwait.UntilPolling(t, 50*time.Millisecond, "every member's /jsz to name one JetStream meta leader", func() ([]string, bool) {
+	named := testwait.Until(t, "every member's /jsz to name one JetStream meta leader", func() ([]string, bool) {
 		named := make([]string, len(cluster.Servers))
 		for i, server := range cluster.Servers {
 			leader, err := jszMetaLeader(ctx, server)

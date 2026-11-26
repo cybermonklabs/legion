@@ -359,31 +359,22 @@ func waitingForTheApplyLock() bool {
 	return false
 }
 
-// eventually waits for cond, asking it every 20 ms, until testwait's own margin before the test
-// binary's deadline (testwait.UntilPolling), and fails the test naming what it waited for. No span
+// eventually waits for cond through the shared wait (testwait.Eventually), until testwait's own
+// margin before the test binary's deadline, and fails the test naming what it waited for. No span
 // of its own ends it: on a loaded machine a fact that is merely late is not a failure.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	testwait.UntilPolling(t, 20*time.Millisecond, what, func() (bool, bool) {
-		held := cond()
-		return held, held
-	})
+	testwait.Eventually(t, what, cond)
 }
 
-// waitSpare is how long before the test binary's deadline testContext ends, testwait's own
-// margin: the time a test that waited that long has left to fail by name and run its cleanups.
-const waitSpare = 30 * time.Second
-
-// testContext is a context that ends waitSpare before the test binary's deadline
-// (testwait.Remaining): the context of each request a test makes itself, and of each call of the
-// code under test whose bound is not the test's subject, so a server or a watcher that answers late
-// on a loaded machine costs the test time and not its result, as a request of a testnats.MaxWait
-// context does.
+// testContext is a context that ends where a wait gives up, testwait's margin before the test
+// binary's deadline, and when the test ends (testwait.Context): the context of each request a test
+// makes itself, and of each call of the code under test whose bound is not the test's subject, so a
+// server or a watcher that answers late on a loaded machine costs the test time and not its result,
+// as a request of a testnats.MaxWait context does.
 func testContext(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t, waitSpare))
-	t.Cleanup(cancel)
-	return ctx
+	return testwait.Context(t)
 }
 
 // The cache is ready once the first watcher has delivered every existing key, and not before. Its
@@ -1728,9 +1719,9 @@ func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.
 	w := kvwatch.New("probe cache", live, into, kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	testwait.Until(t, "the live bucket's read to complete", func() (bool, bool) {
+	testwait.Until(t, "the live bucket's read to complete", func() (string, bool) {
 		following := w.Following()
-		return following, following
+		return readState(w, following), following
 	})
 	if !into.has("live-key") {
 		t.Fatal("the live bucket's read completed without live-key")
@@ -1786,9 +1777,9 @@ func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.
 	// The listener's self-health rebuild rewatches a copy that needs a read on every tick of its
 	// own, so the wait does the same: it reads the restored bucket again whenever the copy is
 	// waiting for a read, and ends when the read of the restored bucket has completed.
-	testwait.Until(t, "the restored bucket's read to complete", func() (bool, bool) {
+	testwait.Until(t, "the restored bucket's read to complete", func() (string, bool) {
 		if w.Following() {
-			return true, true
+			return readState(w, true), true
 		}
 		if w.NeedsRead() {
 			if err := kvwatch.WatchOn(w, older); err != nil {
@@ -1797,12 +1788,23 @@ func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.
 		}
 		_ = w.Check()
 		following := w.Following()
-		return following, following
+		return readState(w, following), following
 	})
 	if w.Err() != nil || !into.has("restored-key") || into.has("live-key") || w.Epoch() == 0 {
 		t.Fatalf("after the reads of the restored bucket: Err=%v, restored-key=%v, live-key=%v, Epoch=%d; "+
 			"want the restored bucket's key only, read as a new epoch", w.Err(), into.has("restored-key"), into.has("live-key"), w.Epoch())
 	}
+}
+
+// readState is a wait's reading of w: whether it follows its bucket (following, as the wait read
+// it), whether it waits for a read, and the error its last Check recorded, so a give-up says where
+// the read stood rather than that it had not completed.
+func readState(w *kvwatch.Watcher, following bool) string {
+	recorded := "no error recorded"
+	if err := w.Err(); err != nil {
+		recorded = "recorded error: " + err.Error()
+	}
+	return fmt.Sprintf("Following %v, NeedsRead %v, %s", following, w.NeedsRead(), recorded)
 }
 
 // snapshot is a stream snapshot as the server sent it: the stream's config and state, and the

@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -702,7 +701,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 	}
 	if input.Advances != nil {
-		if err := writeIssueAdvances(ctx, tx, key, heldAdvances, advances, actor, time.Now().UTC()); err != nil {
+		if err := writeIssueAdvances(ctx, tx, key, heldAdvances, advances, actor, s.stampedNow().UTC()); err != nil {
 			return issueWriteResult{}, err
 		}
 	}

@@ -29,13 +29,13 @@ func startNATS(t *testing.T) (*testnats.Server, string) {
 }
 
 // waitFor waits for cond, asking it every 250 ms, and fails the test naming desc if it never holds.
-// The wait ends on cond, bounded only by the test binary's deadline (testwait.UntilPolling): each
+// The wait ends on cond, bounded only by the test binary's deadline (testwait.Until): each
 // caller waits for a connection, a delivery, a log line or a server's state that a loaded machine
 // delays without anything being wrong. A fixed span each caller passed ended about 90 calls in
 // this package early on a slow machine before.
 func waitFor(t *testing.T, desc string, cond func() bool) {
 	t.Helper()
-	testwait.UntilPolling(t, 250*time.Millisecond, desc, func() (struct{}, bool) { return struct{}{}, cond() })
+	testwait.Until(t, desc, func() (struct{}, bool) { return struct{}{}, cond() })
 }
 
 func subscribeAllNotifications(client *bus.Client, handler natsgo.MsgHandler, opts ...natsgo.SubOpt) (*natsgo.Subscription, error) {
@@ -1025,10 +1025,10 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 		return len(byName()[name])
 	}
 	// settle waits for the server to hold want of the client's connections, bounded only by the test
-	// binary's deadline (testwait.UntilPolling), and fails with the count it last read.
+	// binary's deadline (testwait.Until), and fails with the count it last read.
 	settle := func(want int, when string) {
 		t.Helper()
-		testwait.UntilPolling(t, 100*time.Millisecond, fmt.Sprintf("%d connection(s) open %s", want, when), func() (int, bool) {
+		testwait.Until(t, fmt.Sprintf("%d connection(s) open %s", want, when), func() (int, bool) {
 			open := connections()
 			return open, open == want
 		})

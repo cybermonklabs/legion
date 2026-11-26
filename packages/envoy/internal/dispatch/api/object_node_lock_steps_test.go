@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestEveryObjectNodeWriterTakesTheStoreLockOrder holds the create sites that write an ask's
@@ -130,7 +130,7 @@ func (r *storeWriterRig) approvalRequest() storeWriter {
 // runs on the service's own goroutine, so a run's write ends once the block's ask is there, which
 // the settlement's commit puts there.
 func (r *storeWriterRig) askBlockSettle(t *testing.T) storeWriter {
-	settler := docs.New(docs.Deps{Store: r.callStore, Events: r.direct.deps.Events, ServerURL: testServerURL, Settle: time.Hour})
+	settler := docs.New(docs.Deps{Store: r.callStore, Events: r.direct.deps.Events, ServerURL: testServerURL, Settle: stagedAhead})
 	t.Cleanup(func() {
 		if err := settler.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut down the settling document service: %v", err)
@@ -153,24 +153,23 @@ func (r *storeWriterRig) askBlockSettle(t *testing.T) storeWriter {
 }
 
 // askBlockOpened waits for the ask of block on document, which the commit of the settlement that
-// opens it puts there, and answers an error once the settlement has had longer than any run waits
-// for it.
+// opens it puts there, through the shared wait's helper form (write runs on a goroutine of its
+// own, where no method of t may run).
 func (r *storeWriterRig) askBlockOpened(ctx context.Context, document, block string) error {
-	within := 3 * storeStepWait
-	for deadline := time.Now().Add(within); ; time.Sleep(5 * time.Millisecond) {
+	var readErr error
+	if err := testwait.InHelper("api", fmt.Sprintf("the settlement of %s to open an ask for block %s", document, block), func() bool {
 		var open bool
 		if err := r.database.Pool.QueryRow(ctx, `
 			select exists (select 1 from asks where block_artifact_id = $1::uuid and block_id = $2)
 		`, document, block).Scan(&open); err != nil {
-			return fmt.Errorf("read the ask of block %s: %w", block, err)
+			readErr = fmt.Errorf("read the ask of block %s: %w", block, err)
+			return true
 		}
-		if open {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("the settlement of %s opened no ask for block %s within %s", document, block, within)
-		}
+		return open
+	}); err != nil {
+		return err
 	}
+	return readErr
 }
 
 // broadcastCopy is a broadcast's copy to one session (writeBroadcast), called as the broadcast

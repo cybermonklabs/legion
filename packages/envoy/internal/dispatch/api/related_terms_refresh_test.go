@@ -554,7 +554,9 @@ func TestARefreshWithNoChangeReadsNoItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open a pool of one connection: %v", err)
 	}
-	t.Cleanup(raw.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the pool of one connection to come back, so the pool closes", raw.Close)
+	})
 	alone := store.NewPool(raw)
 
 	// The pass that empties the queue, so that the measured one has nothing to apply.

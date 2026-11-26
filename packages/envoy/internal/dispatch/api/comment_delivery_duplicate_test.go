@@ -22,11 +22,10 @@ import (
 // the repeat and the retry's row records it as a duplicate rather than a fresh delivery. The
 // listener client's window, and the take-over's tries, run on the server's clock, a fake the test
 // moves through each held call's window (settledCommentDeliveriesOn), so no answer the stand-in
-// gives in time is cut by a window a loaded machine ran out. The mention's first send's window ends
-// CallWindow past its start on that clock, past the test server's take-over window
-// (testTakeoverWindow), so the take-over makes no second try under the same key and the attempt is
-// recorded failed at once (TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce covers the
-// same-key tries).
+// gives in time is cut by a window a loaded machine ran out. A missed receipt is tried again
+// inside the listener take-over window (takeoverRetry) under the same key, so the attempt is
+// recorded failed only when every try of that window missed; this listener misses every one until
+// the comment's own request has answered.
 func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
 	t.Parallel()
 	var calls listenerCalls

@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The Dispatch server's starts of the stream here go through dispatchStreamOptions over what
@@ -33,16 +34,6 @@ import (
 
 // replicasTestClientID is the GitHub App the tests' webhook sweeper signs as.
 const replicasTestClientID = "Iv1.replicas"
-
-// reconcileWait bounds the wait of the start helpers for a start's first outcome: the stream's
-// background reconcile, or the first failed run of the reconnect hooks.
-const reconcileWait = 30 * time.Second
-
-// repairedReconcileWait bounds the wait for the reconcile after a test has repaired what the
-// first run failed on. reconcileWait alone is not enough: the bus retries the hooks with a
-// backoff that reaches 30 s (maxBackoff, internal/bus/recovery.go:309), so a repair that lands
-// just after a failed attempt waits that backoff out before the next attempt runs.
-const repairedReconcileWait = reconcileWait + 30*time.Second
 
 // dispatchStart is one Dispatch publisher start under test: the settings it resolved, the
 // client, the buffer that holds the client's log lines, and the overrides a failure names.
@@ -55,9 +46,9 @@ type dispatchStart struct {
 
 // connectDispatchStream is the Dispatch server's publisher connect for the settings overrides
 // names, exactly as main makes it on the servers at urls: ConnectOwningStream with serverClient
-// over dispatchStreamOptions, with no clock of the test's own and no option but extra, which a
-// caller passes to shorten a period main's own settings leave at a production length and which
-// main itself never sets (bus.WithKeepInterval). It returns the start it made (dispatchStart).
+// over dispatchStreamOptions, with no option of the test's own but extra, which a caller passes
+// to hand the client a clock it drives itself (bus.WithClock) where main leaves it the wall
+// clock. It returns the start it made (dispatchStart).
 // The client returns before it has connected, and its first connection reconciles the stream and
 // only then starts its keeper (bus.WithConnectInBackground), so a caller waits for what it expects
 // itself (dispatchStart.awaitReconciled, dispatchStart.awaitHookFailure). The helper sets the
@@ -76,11 +67,11 @@ func connectDispatchStream(t *testing.T, urls []string, overrides map[string]str
 	if err != nil {
 		t.Fatalf("connect Dispatch's publisher for %v: %v", overrides, err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	return dispatchStart{boot: boot, client: client, logged: logged, overrides: overrides}
 }
 
-// awaitReconciled waits, at the latest for within, until the stream holds what the start's
+// awaitReconciled waits through the shared wait until the stream holds what the start's
 // settings ask of it (reconciledFor), and fails the test when it does not. The wait is for this
 // client's own reconcile, not for a stream that already looks reconciled: it ends only once the
 // client's hooks have covered a connection event (bus.Client.HookedConnectionEvents). An earlier
@@ -91,56 +82,53 @@ func connectDispatchStream(t *testing.T, urls []string, overrides map[string]str
 // A failed run of the reconnect hooks does not end the wait, because the bus runs those hooks
 // again. The wait reads no log at all. Its failure message names how long the hooks have been due
 // and the error of the last run that failed (bus.Client.HookStall).
-func (s dispatchStart) awaitReconciled(t *testing.T, within time.Duration) {
+func (s dispatchStart) awaitReconciled(t *testing.T) {
 	t.Helper()
 	reconciled := reconciledFor(s.boot)
-	var info *natsgo.StreamInfo
-	var err error
-	for deadline := time.Now().Add(within); ; {
-		if s.client.Connected() && s.client.HookedConnectionEvents() >= 1 {
-			if info, err = s.client.JS().StreamInfo(bus.Stream); err == nil && reconciled(info.Config) {
-				return
-			}
+	testwait.Until(t, fmt.Sprintf("Dispatch's start for %v to reconcile the stream", s.overrides), func() (string, bool) {
+		if !s.client.Connected() || s.client.HookedConnectionEvents() < 1 {
+			return fmt.Sprintf("hooked events %d", s.client.HookedConnectionEvents()), false
 		}
-		if time.Now().After(deadline) {
-			stall, hookErr := s.client.HookStall()
-			t.Fatalf("Dispatch's start for %v did not reconcile the stream within %s: %+v (%v), hooked events %d, reconnect hooks due for %s, last failed run %v", s.overrides, within, info, err, s.client.HookedConnectionEvents(), stall, hookErr)
+		info, err := s.client.JS().StreamInfo(bus.Stream)
+		if err == nil && reconciled(info.Config) {
+			return "", true
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		stall, hookErr := s.client.HookStall()
+		return fmt.Sprintf("%+v (%v), reconnect hooks due for %s, last failed run %v", info, err, stall, hookErr), false
+	})
 }
 
 // awaitHookFailure is the first failed run of the start's reconnect hooks that the Dispatch
 // publisher logs (reconcileFailure), for a start whose settings the servers refuse. It leaves the
 // client open and the caller decides what follows: a caller that wants no further reconcile closes
-// the client, a caller that repairs what the start failed on waits the repaired reconcile out
-// (awaitReconciled, repairedReconcileWait). It fails the test when the start's hooks run through
-// instead, and when the publisher logs no such failure within reconcileWait.
+// the client, a caller that repairs what the start failed on waits for the reconcile the bus runs
+// after its backoff (awaitReconciled). It fails the test when the start's hooks run through
+// instead; a publisher that never logs such a failure fails at the shared wait's end, naming the
+// hooked events it last read.
 func (s dispatchStart) awaitHookFailure(t *testing.T) hookFailure {
 	t.Helper()
-	for deadline := time.Now().Add(reconcileWait); ; {
-		if failure := reconcileFailure(s.logged.String()); failure.Message != "" {
-			return failure
+	var failure hookFailure
+	testwait.Until(t, fmt.Sprintf("Dispatch's start for %v to log a failed run of its reconnect hooks", s.overrides), func() (string, bool) {
+		if failure = reconcileFailure(s.logged.String()); failure.Message != "" {
+			return "", true
 		}
 		if s.client.HookedConnectionEvents() >= 1 {
 			t.Fatalf("Dispatch's start for %v ran its reconnect hooks through, so the servers accepted the start, want them to refuse it", s.overrides)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Dispatch's start for %v logged no failed run of the reconnect hooks within %s, hooked events %d", s.overrides, reconcileWait, s.client.HookedConnectionEvents())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return fmt.Sprintf("hooked events %d", s.client.HookedConnectionEvents()), false
+	})
+	return failure
 }
 
 // startDispatchStream is the Dispatch server's publisher connect for the settings overrides names,
-// built exactly as main builds it, with extra over it (connectDispatchStream), waited out for
-// reconcileWait until this client's own first connection has reconciled the stream to what the
+// built exactly as main builds it, with extra over it (connectDispatchStream), waited for through
+// the shared wait until this client's own first connection has reconciled the stream to what the
 // settings ask of it (dispatchStart.awaitReconciled). It sets the default logger
 // (connectDispatchStream), so a test that calls it must not run in parallel.
 func startDispatchStream(t *testing.T, urls []string, overrides map[string]string, extra ...bus.ConnectOption) *bus.Client {
 	t.Helper()
 	start := connectDispatchStream(t, urls, overrides, extra...)
-	start.awaitReconciled(t, reconcileWait)
+	start.awaitReconciled(t)
 	return start.client
 }
 
@@ -236,7 +224,7 @@ func TestADispatchStartWaitsOutAReconcileFailureTheBusRetries(t *testing.T) {
 	cluster.Servers[1].Start(t)
 	cluster.Servers[2].Start(t)
 	cluster.AwaitReady(t)
-	start.awaitReconciled(t, repairedReconcileWait)
+	start.awaitReconciled(t)
 
 	testnats.AwaitStreamCopies(t, cluster.JetStream(t), bus.Stream, 3)
 }
@@ -280,7 +268,7 @@ func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testi
 	t.Cleanup(conn.Close)
 	// The earlier sweep's own start creates the bucket, through a context bounded by the ten
 	// seconds every production caller opens its own with (bus.RequestTimeout,
-	// cmd/listener/brokerauth.go:149). That bound is a per-send hang guard and not a budget for
+	// cmd/listener/brokerauth.go:152). That bound is a per-send hang guard and not a budget for
 	// one request: a create or a lookup the server leaves unanswered is sent again rather than
 	// waited out (bus.EnsureKeyValue), so a clustered create that is merely slow is answered on
 	// the send it is answered on, and what a step that draws no answer at all costs is counted in
@@ -353,20 +341,15 @@ func TestADefaultDispatchStartOnASingleServerCreatesEverythingAtOneCopyAndTheNex
 	})
 }
 
-// keeperPeriod is the keeper's period in this test, in place of the bus's default of 30 seconds
-// (bus.WithKeepInterval): the test sees a period pass without waiting one. It is the only setting
-// of main's that the test shortens, and the keeper's work is the same at either length.
+// keeperPeriod is the keeper's period in this row, set through main's interval override
+// (bus.WithKeepInterval), since the bus's own clock (bus.WithClock) lands with the rest of the
+// Envoy module. A pass runs every keeperPeriod, so the restore comes within one period of the
+// lowering, and the wait for it is the shared wait.
 const keeperPeriod = 250 * time.Millisecond
 
-// keeperRestoreWait is the hang guard of the wait for the restore, not the time the restore
-// takes: a pass runs every keeperPeriod and a three-server cluster applies a replica change in
-// well under a second, so a wait that reaches this bound means no pass restored the stream at
-// all.
-const keeperRestoreWait = 30 * time.Second
-
-// The Dispatch server's publisher, started as main starts it, keeps the stream once its background
-// reconcile has run: an operator who lowers the stream to one copy and half the byte limit finds
-// both back at the deployment's settings within one keeper period.
+// The Dispatch server's publisher, started as main starts it, keeps the stream once its
+// background reconcile has run: an operator who lowers the stream to one copy and half the byte
+// limit finds both back at the deployment's settings on the keeper's next pass.
 func TestTheDispatchPublishersKeeperRestoresALoweredStream(t *testing.T) {
 	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	cluster := testnats.StartCluster(t, 3)
@@ -375,19 +358,26 @@ func TestTheDispatchPublishersKeeperRestoresALoweredStream(t *testing.T) {
 	lowered := testnats.AwaitSettledStream(t, js, bus.Stream).Config
 	lowered.Replicas = 1
 	lowered.MaxBytes = bustest.StreamMaxBytes / 2
-	if _, err := js.UpdateStream(&lowered); err != nil {
+	// The lowering is sent once, on a JetStream context whose wait for the answer is the test
+	// binary's deadline (testnats.MaxWait), as Cluster.CreateStream sends a create: the stream's
+	// leader answers it, which on a loaded machine can outlast jetStreamWait, the bound of each
+	// request of cluster.JetStream's context.
+	operatorConn := testnats.Connect(t, cluster.URL())
+	t.Cleanup(operatorConn.Close)
+	operator, err := operatorConn.JetStream(testnats.MaxWait(t))
+	if err != nil {
+		t.Fatalf("open the operator's JetStream context: %v", err)
+	}
+	if _, err := operator.UpdateStream(&lowered); err != nil {
 		t.Fatalf("operator lowering: %v", err)
 	}
-	for deadline := time.Now().Add(keeperRestoreWait); ; {
+	testwait.Until(t, "the keeper's pass to restore the lowered stream to the deployment's settings", func() (string, bool) {
 		info, err := js.StreamInfo(bus.Stream)
-		if err == nil && info.Config.Replicas == 3 && info.Config.MaxBytes == bustest.StreamMaxBytes {
-			break
+		if err != nil {
+			return err.Error(), false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the keeper, at a period of %s, did not restore the lowered stream to three copies and a byte limit of %d within %s: %+v (%v)", keeperPeriod, bustest.StreamMaxBytes, keeperRestoreWait, info, err)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return fmt.Sprintf("%+v", info.Config), info.Config.Replicas == 3 && info.Config.MaxBytes == bustest.StreamMaxBytes
+	})
 	if info := testnats.AwaitSettledStream(t, js, bus.Stream); testnats.Copies(info.Cluster) != 3 {
 		t.Fatalf("the restored stream has %d copies, want 3", testnats.Copies(info.Cluster))
 	}

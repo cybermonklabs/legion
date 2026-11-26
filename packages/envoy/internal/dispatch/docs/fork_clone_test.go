@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"maps"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A warm fork takes the room's replica cloned under the replica's lock (Service.forkPoint),
@@ -263,12 +263,12 @@ func TestAClonedForkAndItsReplicaAreIndependent(t *testing.T) {
 func TestEveryForkLeavesTheWriteAuthoringUnderItsForksClientID(t *testing.T) {
 	t.Parallel()
 	server := websocket.NewServer()
-	server.RoomIdleTimeout = time.Hour
+	server.RoomIdleTimeout = stagedAhead // keeps ygo's idle sweep away from the room for the whole test
 	service := &Service{srv: newRoomServer(server)}
+	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
+	stop := testwait.Context(t)
 	testcleanup.Add(t, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
+		if err := server.Shutdown(stop); err != nil {
 			t.Errorf("shut the server down: %v", err)
 		}
 	})

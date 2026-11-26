@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -184,7 +185,7 @@ func newSubscribersHandler(t *testing.T, database *store.Store, envoyURL string)
 		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
 	})
 	t.Cleanup(func() {
-		if err := documentService.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -201,7 +202,7 @@ func newSubscribersHandler(t *testing.T, database *store.Store, envoyURL string)
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	registerJoined(t, mux, deps)
 	return mux
 }
 
@@ -674,7 +675,7 @@ func TestUnsubscribeArtifactSessionRejectsIssueLinkedArtifacts(t *testing.T) {
 // read before it, the request would be answered twice.
 func TestASubscriptionRemovalCompletionQueuedBehindAnotherAppendsNoSecondRemoval(t *testing.T) {
 	t.Parallel()
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "TEST", "Removed once", "A spec")
 	ctx := context.Background()
 	own := issueOwner(issue.Key)

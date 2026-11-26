@@ -8,4 +8,4 @@ import (
 )
 
 // TestMain drops the databases the package's tests clone (storetest.Main).
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }

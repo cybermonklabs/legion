@@ -37,15 +37,16 @@ var messageRouteXidWindows = []routeXidWindowCase{
 			"the claim's lock of the mention row, its locked read of the pending attempt, the new "+
 				"attempt's insert and the COMMIT ending them"),
 	},
-	// A broadcast writes inline, six statements per recipient, so its window grows with them;
-	// this one goes to two.
+	// A broadcast writes inline, five statements per recipient, so its window grows with them;
+	// this one goes to two. Its body's blocks are split once, before the transaction begins, so no
+	// statement of the window reads a copy's block state.
 	{
 		name: "the broadcast route", route: "POST /api/v1/broadcasts (writeBroadcast)",
-		ready: readyBroadcast, window: storetest.XidWindowOf(16,
+		ready: readyBroadcast, window: storetest.XidWindowOf(14,
 			"the broadcast's insert, its keyed request's recovery point, then for each of its two "+
-				"recipients the message's node, the message's insert, the read of its block state, the batch writing its "+
-				"block index, the batch appending message.created and what the node write stated, and its first attempt's insert, and "+
-				"last the keyed request's commit mark and the COMMIT ending them"),
+				"recipients the message's node, the message's insert, the batch writing its block index, the "+
+				"batch appending message.created and what the node write stated, and its first attempt's "+
+				"insert, and last the keyed request's commit mark and the COMMIT ending them"),
 	},
 	// The direct message runs three transactions, the listener call holding none: the create -
 	// its write phase's one batch, the keyed request's commit mark and its COMMIT - the
@@ -195,10 +196,12 @@ func readyInboxMarkAll(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Inbox mark all")
 	unreadReplyThread(t, fixture)
+	// The mark is read once, here on the test goroutine, off the clock that stores it.
+	through := databaseNow(t, fixture.database.Pool).UTC().Format(time.RFC3339Nano)
 	return fixture.routeWrite(t, "the thread's read mark",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/inbox/read", map[string]any{
-				"read_through": time.Now().UTC().Format(time.RFC3339Nano),
+				"read_through": through,
 			}, "alice")
 		},
 		func(t *testing.T, answer *httptest.ResponseRecorder) {
@@ -217,10 +220,12 @@ func readyInboxDismiss(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Inbox dismiss")
 	unreadReplyThread(t, fixture)
+	// The mark is read once, here on the test goroutine, off the clock that stores it.
+	through := databaseNow(t, fixture.database.Pool).UTC().Format(time.RFC3339Nano)
 	return fixture.routeWrite(t, "the thread's dismissal",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return postInboxDismiss(t, handler, "alice", map[string]any{
-				"dismiss_through": time.Now().UTC().Format(time.RFC3339Nano),
+				"dismiss_through": through,
 			})
 		},
 		func(t *testing.T, answer *httptest.ResponseRecorder) {

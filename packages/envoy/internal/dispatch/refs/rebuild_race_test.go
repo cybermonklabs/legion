@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A rebuild and an edit of the same source race unless they are ordered: the rebuild reads a
@@ -220,7 +221,7 @@ func (g *readGate) order(t *testing.T, ctx context.Context, pool Pool, probe pgx
 		// letting the rebuild finish, which is what the lock makes it do in a server.
 		_ = probe.Rollback(ctx)
 		g.releaseRebuild()
-		if err := <-rebuilt; err != nil {
+		if err := testwait.Receive(t, "the rebuild to return once it was released", rebuilt); err != nil {
 			t.Fatalf("rebuild the references: %v", err)
 		}
 		writeInTx(t, ctx, pool, edit)
@@ -233,7 +234,7 @@ func (g *readGate) order(t *testing.T, ctx context.Context, pool Pool, probe pgx
 		t.Fatalf("commit the edit: %v", err)
 	}
 	g.releaseRebuild()
-	if err := <-rebuilt; err != nil {
+	if err := testwait.Receive(t, "the rebuild to return once it was released", rebuilt); err != nil {
 		t.Fatalf("rebuild the references: %v", err)
 	}
 }

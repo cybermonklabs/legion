@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -151,7 +152,7 @@ func (r *Reconciler) endPass(id int64, c *counts, at *stop, cancelled bool) {
 	// Bounded, because a statement with no deadline at all wedges the loop's goroutine on a
 	// half-open connection, where a send draws neither an answer nor an error, while an update
 	// of one row by its primary key answers at once on a connection that works.
-	ctx, done := duty.LeaseCall()
+	ctx, done := duty.LeaseCall(clock.Real())
 	defer done()
 	cursor := r.resume
 	if _, err := r.Pool.Exec(ctx, updatePass, id, string(passOutcome(c, at, cancelled)),

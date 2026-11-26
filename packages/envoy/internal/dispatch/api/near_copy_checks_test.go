@@ -18,6 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The near_copy_checks record: one row for each answer the near-copy gate gives a create, read
@@ -241,7 +243,7 @@ func gateTermReadWaiting(t *testing.T, database *store.Store) int {
 }
 
 // A read that does not answer names the step it was waiting at. The gate's bound is
-// nearCopyVerdictBound, past every wait of this test, so the test itself ends the read: it holds
+// gateBoundPastEveryRead, past every wait of this test, so the test itself ends the read: it holds
 // search_term_stats, sees the gate's term pick wait for it, and cancels that statement, which the
 // gate reads as a read that did not answer (SQLSTATE 57014, nearCopyBoundHit). Nothing here races
 // the machine's speed: the read is seen at the term pick before it is ended there.
@@ -249,7 +251,7 @@ func TestNearCopyChecksRecordTheStepAReadWaitedAt(t *testing.T) {
 	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "STEP")
-	served.duplicateBound = nearCopyVerdictBound(t)
+	served.duplicateBound = gateBoundPastEveryRead(t)
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin the lock transaction: %v", err)
@@ -265,7 +267,7 @@ func TestNearCopyChecksRecordTheStepAReadWaitedAt(t *testing.T) {
 		})
 	}()
 	var reader int
-	waitUntil(t, "the gate's term pick to wait for search_term_stats", func() bool {
+	testwait.Eventually(t, "the gate's term pick to wait for search_term_stats", func() bool {
 		reader = gateTermReadWaiting(t, database)
 		return reader != 0
 	})
@@ -275,13 +277,13 @@ func TestNearCopyChecksRecordTheStepAReadWaitedAt(t *testing.T) {
 	}
 	// The lock is let go only once the cancelled statement waits no more, so the read cannot take
 	// the lock and answer instead.
-	waitUntil(t, "the cancelled term pick to stop waiting", func() bool {
+	testwait.Eventually(t, "the cancelled term pick to stop waiting", func() bool {
 		return gateTermReadWaiting(t, database) != reader
 	})
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release search_term_stats: %v", err)
 	}
-	created := requireCreatedIssue(t, <-answered)
+	created := requireCreatedIssue(t, testwait.Receive(t, "the create's answer", answered))
 
 	page := nearCopyChecksOf(t, handler, url.Values{"project": {"STEP"}})
 	if len(page.Checks) != 1 {
@@ -345,13 +347,13 @@ func TestNearCopyChecksARefusalThatCannotBeRecordedRefusesNothing(t *testing.T) 
 	// The refusal's write waits for the table until its bound ends it, and only then does the
 	// create's transaction begin; the table is let go once that transaction's write waits, so the
 	// refusal's write cannot have landed and the create's write is the one that lands.
-	waitUntil(t, "the create's transaction to wait for near_copy_checks", func() bool {
+	testwait.Eventually(t, "the create's transaction to wait for near_copy_checks", func() bool {
 		return createWaitsForNearCopyChecks(t, database)
 	})
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release near_copy_checks: %v", err)
 	}
-	response := <-answered
+	response := testwait.Receive(t, "the create to answer once near_copy_checks is let go", answered)
 
 	created := requireCreatedIssue(t, response)
 	suggestions := decodeBody[struct {
@@ -512,7 +514,7 @@ func TestNearCopyChecksACreateWhoseRowCannotReplaceTheRefusalIsNotAdmitted(t *te
 // The route pages by id, refuses a cursor that is no row of the project, and needs a project.
 func TestNearCopyChecksPagesAndRefusesBadQueries(t *testing.T) {
 	t.Parallel()
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	createDuplicateTestProject(t, handler, "TEST")
 	createDuplicateTestProject(t, handler, "OTHER")
 	for _, title := range []string{"Astrolabe drifts", "Weighbridge loses power", "Orchard crates pile up"} {
@@ -532,7 +534,10 @@ func TestNearCopyChecksPagesAndRefusesBadQueries(t *testing.T) {
 	if len(second.Checks) != 1 || second.Checks[0].ID != all.Checks[2].ID || second.NextAfter != nil {
 		t.Fatalf("second page = %+v", second)
 	}
-	future := nearCopyChecksOf(t, handler, url.Values{"project": {"TEST"}, "from": {time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}})
+	// A window from a second past the database's clock now, which stamped every row, in the
+	// whole seconds the parameter is read in.
+	after := databaseNow(t, database.Pool).Add(time.Second).UTC().Format(time.RFC3339)
+	future := nearCopyChecksOf(t, handler, url.Values{"project": {"TEST"}, "from": {after}})
 	if len(future.Checks) != 0 || future.From == nil {
 		t.Fatalf("a window after every row = %+v", future)
 	}
@@ -610,7 +615,7 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 	}
 	poll := func(what string, done func() bool) {
 		t.Helper()
-		waitUntil(t, what, done)
+		testwait.Eventually(t, what, done)
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -637,7 +642,7 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 		}
 		return true
 	})
-	created := requireCreatedIssue(t, <-answered)
+	created := requireCreatedIssue(t, testwait.Receive(t, "the create to answer once the lock is let go", answered))
 	if got := served.relatedRecordRetrying.Load(); got != 1 {
 		t.Fatalf("records being retried after the create answered = %d, want 1 (its row's first attempt held up by the lock)", got)
 	}
@@ -711,9 +716,7 @@ func TestNearCopyChecksARowThatCannotBeWrittenIsLoggedAndTheCreateStands(t *test
 		}
 	}
 	logs := &storetest.LockedLog{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 
 	created := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "title": "Orchard pickers cannot log a crate", "spec": duplicateSpecHarvest,

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -31,13 +32,16 @@ const redeliveryPace = time.Second
 // the first sweep that finds the client connected, not here: the client connects in the background
 // (serverBus), and a bus that is down at boot must not stop the boot. A sweep before then is
 // skipped and logged as failed. Its App client and its own backoff obey the GitHub rate limits
-// every process shares, in the database's github_rate_limits.
-func webhookSweeper(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase string, replicas int) (*redeliver.Sweeper, error) {
+// every process shares, in the database's github_rate_limits. githubOptions add to that client's
+// own (main's gitHubClientOptions): a test process's bound on each call, none in a deployment, and
+// in the redeliver-webhooks command none unless an end-to-end test sets
+// DISPATCH_TEST_GITHUB_REQUEST_DEADLINE under DISPATCH_TEST_HOOKS=1.
+func webhookSweeper(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase string, replicas int, githubOptions ...githubapp.Option) (*redeliver.Sweeper, error) {
 	if natsClient == nil {
 		return nil, nil
 	}
 	limits := ratelimit.New(database.Pool)
-	github, err := githubapp.New(app, apiBase, githubapp.WithLimits(limits))
+	github, err := githubapp.New(app, apiBase, append([]githubapp.Option{githubapp.WithLimits(limits)}, githubOptions...)...)
 	if err != nil || github == nil {
 		return nil, err
 	}
@@ -56,7 +60,9 @@ func webhookSweeper(natsClient *bus.Client, database *store.Store, app *auth.App
 // DATABASE_URL names, as the server does, for the GitHub rate limits every process shares, and
 // migrates nothing. It connects to envoy.natsUrls as the nkey user NATS_NKEY_SEED_FILE (or
 // NATS_NKEY_SEED) names and never runs envoy.natsSeed, so a run against a NATS that requires a
-// user needs NATS_NKEY_SEED_FILE.
+// user needs NATS_NKEY_SEED_FILE. An end-to-end test's run ends each GitHub call at
+// DISPATCH_TEST_GITHUB_REQUEST_DEADLINE, as a test server process does, refused without
+// DISPATCH_TEST_HOOKS=1; any other run keeps githubapp.RequestTimeout.
 func redeliverWebhooks(ctx context.Context, args []string, env settingValues, out io.Writer) int {
 	flags := flag.NewFlagSet("redeliver-webhooks", flag.ContinueOnError)
 	flags.SetOutput(out)
@@ -80,6 +86,11 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 	if databaseURL == "" {
 		fmt.Fprintln(out, "redeliver-webhooks: DATABASE_URL is required: the GitHub rate limits every process obeys live there")
 		return 2
+	}
+	var requestDeadline clock.Deadline
+	if err := testHookDeadline(env, "DISPATCH_TEST_GITHUB_REQUEST_DEADLINE", env.get("DISPATCH_TEST_HOOKS") == "1", &requestDeadline); err != nil {
+		fmt.Fprintf(out, "redeliver-webhooks: %v\n", err)
+		return 1
 	}
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
@@ -113,7 +124,7 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 		fmt.Fprintf(out, "redeliver-webhooks: load app credentials: %v\n", err)
 		return 1
 	}
-	sweeper, err := webhookSweeper(natsClient, database, app, strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")), replicas)
+	sweeper, err := webhookSweeper(natsClient, database, app, strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")), replicas, gitHubClientOptions(requestDeadline)...)
 	if err != nil {
 		fmt.Fprintf(out, "redeliver-webhooks: %v\n", err)
 		return 1

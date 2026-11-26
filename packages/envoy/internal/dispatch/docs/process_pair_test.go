@@ -4,12 +4,15 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The fixture every test of two envoy-dispatch processes on one database runs on: the rooms
@@ -39,25 +42,58 @@ type processPair struct {
 // over the pair start.
 func newProcessPair(t *testing.T) processPair {
 	t.Helper()
-	pair := newSeededProcessPair(t, "First.\n\nSecond.\n")
+	return newProcessPairOn(t, nil)
+}
+
+// newProcessPairOn is newProcessPair with task A on taskAClock (Deps.Clock), the real clock when
+// nil: a test that moves task A's settlement timer moves that clock.
+func newProcessPairOn(t *testing.T, taskAClock clock.Clock) processPair {
+	t.Helper()
+	pair := newSeededProcessPairOn(t, "First.\n\nSecond.\n", taskAClock)
 	settleCurrentGeneration(t, pair.taskA, pair.artifactID)
 	return pair
 }
 
+// answerWait is the wait every process of a test's pair gives the other's answers
+// (roomQueries.wait) in place of production's roomQueryWait: what is left of the shared wait's
+// own, read at each ask, so every ask's wait ends where testwait gives up, 30 s before the test
+// binary's deadline, however late in the test the ask comes. Under no deadline (-timeout 0) it is
+// a quarter of querySettleDelay, the longest duration there is: no run outlasts it, and the
+// query's timers it arms stand short of the half of querySettleDelay by which queryArms tells them
+// from the settlement timers, where a wait of the longest duration would stand beside those.
+// roomQueryWait is a latency budget, and on a loaded machine an answer can take longer than that
+// to cross Postgres twice, which failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with no
+// answer at all (dispatch://INFRA-3904); a wait of a length the test picked would fail the same
+// way on a slower machine still. TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget
+// itself, on the clock it moves.
+func answerWait(t *testing.T) func() time.Duration {
+	t.Helper()
+	end, bounded := testwait.GiveUpAt(t)
+	return func() time.Duration {
+		if bounded {
+			return max(time.Until(end), time.Nanosecond)
+		}
+		return querySettleDelay / 4
+	}
+}
+
 // newSeededProcessPair is the pair on a document seeded with markdown and not settled, which
 // leaves task A holding no room of its own: where the room-query tests start. Each process's
-// queries wait for the other's answers for roomWait, not production's roomQueryWait: what the
-// tests over the pair check is what an answer holds and what a write does with it, and on a loaded
-// machine an answer can take longer than that latency budget to cross Postgres twice, which
-// failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with no answer at all
-// (dispatch://INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget itself.
+// queries wait for the other's answers for answerWait: what the tests over the pair check is what
+// an answer holds and what a write does with it.
 func newSeededProcessPair(t *testing.T, markdown string) processPair {
+	t.Helper()
+	return newSeededProcessPairOn(t, markdown, nil)
+}
+
+// newSeededProcessPairOn is newSeededProcessPair with task A on taskAClock, the real clock when nil.
+func newSeededProcessPairOn(t *testing.T, markdown string, taskAClock clock.Clock) processPair {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	taskA, serverA := newTestServiceInstance(t, database)
+	taskA, serverA := newTestServiceInstanceOn(t, database, taskAClock)
 	taskB, gateB := newGatedServiceInstance(t, storetest.SecondProcess(t, database))
-	taskA.roomQueries.wait, taskB.roomQueries.wait = roomWait(t), roomWait(t)
+	taskA.roomQueries.wait, taskB.roomQueries.wait = answerWait(t), answerWait(t)
 	serverB := newTestServer(t, taskB)
 	seedServiceText(t, taskA, artifactID, markdown)
 	return processPair{
@@ -79,7 +115,7 @@ func (pair processPair) runRoomSync(t *testing.T) {
 func (pair processPair) openReader(t *testing.T, server *httptest.Server, login string) *docstest.Peer {
 	t.Helper()
 	reader := connectPeer(t, server.URL, pair.artifactID, login)
-	if err := reader.WaitForText(peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID), roomWait(t)); err != nil {
+	if err := reader.WaitForText(t, peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID)); err != nil {
 		t.Fatalf("%s's reader never received the document: %v", login, err)
 	}
 	return reader
@@ -92,7 +128,7 @@ func (pair processPair) heldEditOnB(t *testing.T, connection uint64, actor model
 	pair.gateB.hold()
 	pair.taskB.addConnection(pair.artifactID, connection, actor)
 	editAsPeer(t, pair.taskB, pair.artifactID, edit)
-	waitFor(t, roomWait(t), "task B's append of the edit to wait at the gate", func() bool { return pair.gateB.waiting.Load() == 1 })
+	waitFor(t, "task B's append of the edit to wait at the gate", func() bool { return pair.gateB.waiting.Load() == 1 })
 }
 
 // leaveTaskABehind loads task A's room, then has a browser on task B edit the document: task A's

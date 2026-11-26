@@ -995,12 +995,12 @@ type mentionHeldForOrder struct {
 // claim the held call left on it, queued on the lane of the session it waits to reach, as actor,
 // with a take-over window of its own, held from now behind the event it waits behind, or behind
 // none when the read of the rule failed (held).
-func (h *mentionHeldForOrder) send(created model.Event, actor model.Actor, takeover takeoverRetry) mentionSend {
+func (h *mentionHeldForOrder) send(created model.Event, actor model.Actor, takeover takeoverRetry, now time.Time) mentionSend {
 	item := mentionSend{
 		comment: h.comment, created: created, mention: h.target, actor: actor,
 		attempt: h.claim.attempt, claimed: h.claim.claimedAt, takeover: takeover,
 	}
-	item.held(h)
+	item.held(h, now)
 	return item
 }
 
@@ -1045,15 +1045,15 @@ func (s *server) mentionCopyHolderFor(
 // roleHolderMayBe is whether sessionID holds role now, or may. Only two answers are a no: the
 // listener's own refusal that no live session holds the role (dispatchenvoy.ErrNoRoleHolder), and a
 // holder that is another session. Everything else holds the send, since it says nothing about who
-// holds the role: unreachable, timed out within mentionLookupTimeout, a status the listener did
-// not explain or chose for another reason - a 500 for a claim record it cannot read - an answer
-// that does not decode, and an answer that names no holder. A deployment with no listener reaches
-// no session, so it answers no.
+// holds the role: unreachable, timed out within mentionLookupTimeout on the server's clock, a
+// status the listener did not explain or chose for another reason - a 500 for a claim record it
+// cannot read - an answer that does not decode, and an answer that names no holder. A deployment
+// with no listener reaches no session, so it answers no.
 func (s *server) roleHolderMayBe(ctx context.Context, role, sessionID string) bool {
 	if s.deps.Envoy == nil {
 		return false
 	}
-	lookup, cancel := context.WithTimeout(ctx, mentionLookupTimeout)
+	lookup, cancel := s.clock().WithTimeout(ctx, mentionLookupTimeout)
 	defer cancel()
 	holder, err := s.deps.Envoy.Role(lookup, role)
 	switch {
@@ -1336,7 +1336,7 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		// attempt is pending, and the mention sender's lane for that session sends it once the
 		// outbox has sent that event. The answer is the pending attempt, as a send still on its
 		// way is.
-		s.mentions.enqueue(context.WithoutCancel(r.Context()), held.send(created, actor, s.newTakeoverRetry()))
+		s.mentions.enqueue(context.WithoutCancel(r.Context()), held.send(created, actor, s.newTakeoverRetry(), s.mentions.sendClock().Now()))
 	}
 	WriteJSON(w, http.StatusCreated, attempt)
 }

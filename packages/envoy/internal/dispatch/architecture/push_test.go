@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -36,16 +37,7 @@ import (
 // has returned". It fails the test rather than hang when one never does.
 func waitForPushWorkers(t *testing.T, importer *Importer) {
 	t.Helper()
-	idle := make(chan struct{})
-	go func() {
-		importer.running.wait()
-		close(idle)
-	}()
-	select {
-	case <-idle:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("push workers or flights still run after 30s; want every one returned")
-	}
+	testwait.Returns(t, "every push worker and flight of the importer to return", importer.running.wait)
 }
 
 // pendingPushes counts the sources whose push worker importer still holds an entry for.
@@ -188,7 +180,7 @@ func TestAPushAfterCloseStartsNothing(t *testing.T) {
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, _ := newImporterFixture(t, fake)
 	logged := capturePushLogs(t)
-	importer.Close()
+	closeImporter(t, importer)
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -229,16 +221,7 @@ func TestAPushWorkerStoppedByCloseSaysWhichPushesNoImportCovered(t *testing.T) {
 		t.Fatalf("the push's import held in its blob read cost %d head lookups; want 1: it looked the head up before the hold", heads-before)
 	}
 	// Close ends the held read by cancelling its request, and waits for the worker.
-	closed := make(chan struct{})
-	go func() {
-		importer.Close()
-		close(closed)
-	}()
-	select {
-	case <-closed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("Close did not return within 30s of a push's import held in its blob read; want it to end the import and wait for the worker")
-	}
+	testwait.Returns(t, "Close to end the push's import held in its blob read and wait for its worker", importer.Close)
 
 	if left := pendingPushes(importer); left != 0 {
 		t.Fatalf("%d sources hold pushes after Close; want none", left)
@@ -326,7 +309,7 @@ func TestCoverPushesLetsNoAnswerCloseMayHaveCutShortCoverAPush(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			importer := NewImporter(nil, nil, nil)
-			t.Cleanup(importer.Close)
+			t.Cleanup(func() { closeImporter(t, importer) })
 			key := seedPush(importer, pushed)
 			if c.stopping {
 				importer.abandon()
@@ -351,7 +334,7 @@ func TestCoverPushesLetsNoAnswerCloseMayHaveCutShortCoverAPush(t *testing.T) {
 func TestARefusedBeginSaysThePushIsDropped(t *testing.T) {
 	importer := NewImporter(nil, nil, nil)
 	logged := capturePushLogs(t)
-	importer.Close()
+	closeImporter(t, importer)
 
 	importer.recordPush(EnabledSource{Project: "CORE", Repo: archRepo}, "main")
 	if left := pendingPushes(importer); left != 0 {
@@ -376,7 +359,7 @@ func TestAPushDuringAWorkersLastLookIsNotLost(t *testing.T) {
 	// head lookups.
 	heads := &headClock{next: fake.handler()}
 	importer := NewImporter(database, newGitHubClient(t, heads), events.NewBroker())
-	t.Cleanup(importer.Close)
+	t.Cleanup(func() { closeImporter(t, importer) })
 	// After the first import every import is the unchanged-head refresh, a short one, so a round
 	// holds several imports and several last looks for the pushes to race.
 	if _, err := importer.Sync(ctx, "CORE", archRepo); err != nil {
@@ -399,7 +382,7 @@ func TestAPushDuringAWorkersLastLookIsNotLost(t *testing.T) {
 				}
 			})
 		}
-		group.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d: the pushers' Pushed calls to return", round), group.Wait)
 		waitForPushWorkers(t, importer)
 
 		newest := slices.MaxFunc(asked, time.Time.Compare)
@@ -444,7 +427,7 @@ func startPushBus(t *testing.T, importer *Importer, database *store.Store) *push
 	if err != nil {
 		t.Fatalf("connect the publisher: %v", err)
 	}
-	t.Cleanup(publisher.Close)
+	t.Cleanup(func() { bustest.Close(t, publisher) })
 	callers, err := database.Pool.Leases()
 	if err != nil {
 		t.Fatalf("open the lease pool: %v", err)
@@ -469,15 +452,13 @@ func startPushBus(t *testing.T, importer *Importer, database *store.Store) *push
 	}
 	t.Cleanup(func() {
 		cancel()
-		stop()
+		testwait.Returns(t, "the delivery intakes to stop: their Runs returned, their NATS clients closed and their hand-back finalizers settled", stop)
 	})
 	pushes := &pushBus{publisher: publisher}
-	if !testwait.Holds(20*time.Second, 50*time.Millisecond, func() bool {
+	testwait.Until(t, "the delivery intake to bind its durable", func() (string, bool) {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.PushBound
-	}) {
-		t.Fatalf("the delivery intake did not bind its durable within 20s: %s", pushes.durable())
-	}
+		return pushes.durable(), err == nil && info.PushBound
+	})
 	return pushes
 }
 
@@ -533,12 +514,10 @@ func (b *pushBus) awaitHandedOver(t *testing.T) {
 		t.Fatalf("read the stream: %v", err)
 	}
 	last := stream.State.LastSeq
-	if !testwait.Holds(20*time.Second, 50*time.Millisecond, func() bool {
+	testwait.Until(t, fmt.Sprintf("the delivery intake to acknowledge through stream sequence %d", last), func() (string, bool) {
 		info, err := b.publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.NumPending == 0 && info.NumAckPending == 0 && info.AckFloor.Stream >= last
-	}) {
-		t.Fatalf("the delivery intake did not acknowledge through stream sequence %d within 20s: %s", last, b.durable())
-	}
+		return b.durable(), err == nil && info.NumPending == 0 && info.NumAckPending == 0 && info.AckFloor.Stream >= last
+	})
 }
 
 // durable says what the NATS server holds of the delivery intake's durable, for a failure's text.
@@ -600,13 +579,10 @@ func TestAPushToAComponentSourceStartsItsImport(t *testing.T) {
 		pushes := startPushBus(t, importer, database)
 
 		pushes.push(t, "legion", "arch", "refs/heads/main")
-		if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		testwait.Until(t, "an import of legion/arch's main after its push: a head lookup at the fake GitHub, with the intake's durable", func() (string, bool) {
 			_, heads := fake.lookups()
-			return heads > 0
-		}) {
-			t.Fatalf("no import within 10s of a push of legion/arch's main: the fake GitHub saw no head lookup, and the intake's durable is %s",
-				pushes.durable())
-		}
+			return pushes.durable(), heads > 0
+		})
 		pushes.awaitHandedOver(t)
 		waitForPushWorkers(t, importer)
 		if _, heads := fake.lookups(); heads != 1 {

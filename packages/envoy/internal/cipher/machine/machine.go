@@ -78,6 +78,10 @@ type Service struct {
 	EdgeAudience string
 	Skew         time.Duration
 	PendingTTL   time.Duration
+	// Now, where a test sets it, is the moment a person's machine login's deadline is stamped from
+	// (PendingTTL after it, LoginDevice). Every production caller leaves it nil, and the deadline
+	// is stamped from the wall clock's reading the login's request object was verified at.
+	Now func() time.Time
 	// CredentialLifetime is how long a minted credential lasts, and how far each refresh of its
 	// device login moves its expiry.
 	CredentialLifetime time.Duration
@@ -195,7 +199,8 @@ func (s *Service) CheckPersonLogin(compact, dpopJKT string, now time.Time) error
 // transaction took and never waits for another, and a refused login leaves no jti behind. The
 // record's code is the user code; the machine polls with its device code. The record also carries
 // the request object, its approver, the credential lifetime an approval mints (CredentialLifetime),
-// the policy version, and an expiry PendingTTL after now.
+// the policy version, and an expiry PendingTTL after the wall clock's reading the request object
+// was verified at, or after Now's moment where a test sets Now.
 func (s *Service) LoginDevice(ctx context.Context, form url.Values, userCode string) error {
 	tx, ok := oauthstore.TxFrom(ctx)
 	if !ok {
@@ -207,13 +212,17 @@ func (s *Service) LoginDevice(ctx context.Context, form url.Values, userCode str
 	if err != nil {
 		return err
 	}
+	stamp := now
+	if s.Now != nil {
+		stamp = s.Now()
+	}
 	body := record.Body{
 		Request:         compact,
 		Approver:        approver,
 		Enrollment:      record.Enrollment{Kind: "-", RuntimeID: "-", Operator: ""},
 		LifetimeSeconds: new(int(s.CredentialLifetime.Seconds())),
 		RulesVersion:    s.Policy.Get().Version,
-		ExpiresAt:       now.Add(s.PendingTTL).UTC().Truncate(time.Second),
+		ExpiresAt:       stamp.Add(s.PendingTTL).UTC().Truncate(time.Second),
 		Code:            userCode,
 	}
 	_, err = tx.Exec(ctx, `insert into credential_requests (id, body, kind, approver, code, expires_at) values ($1,$2,'launcher_credential',$3,$4,$5)`,

@@ -232,7 +232,7 @@ func (r *settlementReconciliation) nameVersion(
 		}
 	}
 	for _, ask := range r.retracted {
-		retracted, encoded, err := askResolution(ask, "retracted", fmt.Sprintf("%s %d", SettlementRetractionReason, version), SettlementActor)
+		retracted, encoded, err := askResolution(ask, "retracted", fmt.Sprintf("%s %d", SettlementRetractionReason, version), SettlementActor, time.Now())
 		if err != nil {
 			return fmt.Errorf("retract deleted ask block: %w", err)
 		}

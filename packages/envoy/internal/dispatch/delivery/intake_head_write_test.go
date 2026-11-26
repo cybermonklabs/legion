@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -16,8 +15,13 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -43,7 +47,7 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	withoutBranchCommits(t, ctx, pool)
 
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
+	runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -57,7 +61,7 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	})
 
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 45*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info = deliveryConsumerInfo(t, natsClient)
 		return info.Delivered.Consumer-before >= 2
 	}, func() string {
@@ -93,10 +97,14 @@ type headWriteProcess struct {
 // startHeadWriteProcess runs a delivery intake as a process of its own on pool's database (a
 // pool of its own, storetest.SecondProcess) and natsURL's server, until the test ends. Its
 // GitHub answers the pull request's commit read with no commits, after counting it, and holds
-// the first one when hold is set until the row releases it or the handler making it is
-// abandoned. That read is where a handler can be held for this row: everything after it is the
-// head write, which is the failure under test.
-func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold bool) *headWriteProcess {
+// the first one until the row releases it or the handler making it is abandoned. That read is
+// where a handler can be held for this row: everything after it is the head write, which is the
+// failure under test. The client's own bound on that read is the test's give-up
+// (githubapptest.RequestDeadlineAtTheGiveUp), so only the row's release or the handler's own end
+// ends it while the row stages its next step. The intake's message timeout is past the run too
+// (ackWaitPastTheRun): the row's envelope must reach the keeper by the take-over's recreate at the
+// ack floor, never by the server's redelivery at the ack wait.
+func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string) *headWriteProcess {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
 	leasePool := storetest.Leases(t, second.Pool)
@@ -104,7 +112,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	if err != nil {
 		t.Fatalf("connect the process's intake: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	process := &headWriteProcess{leases: &cuttableLeases{pool: leasePool}}
 
 	held := make(chan struct{})
@@ -113,9 +121,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	fake.handle("GET /repos/acme/widgets/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
 		process.reads.Add(1)
 		holding := false
-		if hold {
-			first.Do(func() { holding = true })
-		}
+		first.Do(func() { holding = true })
 		if holding {
 			select {
 			case <-held:
@@ -124,24 +130,15 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 		}
 		mustEncode(t, w, []any{})
 	})
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	// Registered after the fake's server, so it runs first: the server's Close waits for the
 	// handler it holds.
 	process.release = sync.OnceFunc(func() { close(held) })
 	t.Cleanup(process.release)
 
-	process.intake = newIntake(tuningFor(t), client, second.Pool, process.leases, github, events.NewBroker(),
-		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
-	runCtx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		process.intake.Run(runCtx)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
+	process.intake = ackWaitPastTheRun(newIntake(tuningFor(t), client, second.Pool, process.leases, github, events.NewBroker(),
+		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed()))
+	runIntake(t, process.intake)
 	return process
 }
 
@@ -202,9 +199,12 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // be a hand-back. The keeper's own acknowledgement is there to be read beside them, so a
 // recorder that saw nothing at all cannot pass the row by silence.
 //
-// The table is put back once the holder has stopped delivering and before the keeper is handed
-// anything, so the keeper's handling is the ordinary one: it writes the head row the holder
-// could not, acknowledges the envelope, and is handed it exactly once.
+// The table is put back once the holder has stopped delivering, and the keeper's own commit read
+// is held until then, so the keeper's handling is the ordinary one whenever its take-over lands:
+// it writes the head row the holder could not, acknowledges the envelope, and is handed it
+// exactly once. Its take-over can land as soon as the hold's row lapses, intakeHoldMargin after
+// the loss deadline that stops the holder, which is less than a loaded runner can take to stop
+// the holder and migrate the table back.
 func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelopeOnce(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -214,9 +214,9 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	publisher := intakeTestClient(t)
 	answers := durableAnswers(t, publisher)
 
-	holder := startHeadWriteProcess(t, pool, natsURL, true)
+	holder := startHeadWriteProcess(t, pool, natsURL)
 	awaitBoundDurable(t, publisher)
-	keeper := startHeadWriteProcess(t, pool, natsURL, false)
+	keeper := startHeadWriteProcess(t, pool, natsURL)
 
 	// A merge, so the head row and its branch seed are written together and the write is the
 	// one that fails; its own head repository and a branch naming no issue, so the attribution
@@ -228,31 +228,32 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 		"head_sha":         "5555555555555555555555555555555555555555",
 		"merge_commit_sha": "6666666666666666666666666666666666666666",
 	})
-	waitFor(t, 30*time.Second, func() bool { return holder.reads.Load() == 1 }, func() string {
+	waitFor(t, func() bool { return holder.reads.Load() == 1 }, func() string {
 		return "the holder's handler never reached the read this row holds it in: " + consumerState(publisher)
 	})
 
 	// The cut takes the holder off the lease pool its hold is renewed on, as a network that
 	// took it off Postgres would: the hold lapses, and the holder stops delivering.
 	holder.leases.cut.Store(true)
-	waitFor(t, 30*time.Second, func() bool { return keyedRunnerStopped(holder.intake) }, func() string {
+	waitFor(t, func() bool { return keyedRunnerStopped(holder.intake) }, func() string {
 		return "the holder never began stopping, though its hold is no longer renewed: " + consumerState(publisher)
 	})
 	holder.release()
 
 	// The holder's subscription gone from the durable is its stop finished, so its handler has
 	// returned and whatever it was going to publish is behind it.
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && !info.PushBound
 	}, func() string {
 		return "the holder has not let the durable go: " + consumerState(publisher)
 	})
 	restoreBranchCommits()
+	keeper.release()
 
-	// 60 s: the hold's lapse (intakeHoldTTL, 15 s), the keeper's poll (durableBindInterval, 2 s)
-	// and its take-over's delete, subscribe and create under the consumer lease.
-	waitFor(t, 60*time.Second, func() bool { return keeper.reads.Load() >= 1 }, func() string {
+	// The hold's lapse (intakeHoldTTL, 15 s), the keeper's poll (durableBindInterval, 2 s) and its
+	// take-over's delete, subscribe and create under the consumer lease come first.
+	waitFor(t, func() bool { return keeper.reads.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the keeper was never handed the envelope the holder left unanswered: holder %d read(s), keeper %d; %s",
 			holder.reads.Load(), keeper.reads.Load(), consumerState(publisher))
 	})
@@ -296,19 +297,23 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 // The row above drives the sequence a running intake makes of that, where the stop the lost
 // hold starts has set its flag by the time the handler returns; this one holds the half that
 // sequence cannot separate, since an intake stops delivering within intakeHoldMargin of
-// reporting its hold lost.
+// reporting its hold lost. The hold and the delivery's reading of it run on a fake the row never
+// moves, so the control's hold has not passed its loss deadline (intakeHoldTTL less
+// intakeHoldMargin after the take, on that clock) however long the take took to return; the
+// lapse half ends it with Lapse, which sets that deadline to the fake's present.
 func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
+	held := clocktest.New(time.Now())
 	hold, err := duty.TryHold(ctx, deliveryTestLeases(t, pool), "delivery-test-lapsing-hold", uuid.New(),
-		duty.HoldOptions{TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin})
+		duty.HoldOptions{TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Clock: held})
 	if err != nil {
 		t.Fatalf("take the hold this row lapses: %v", err)
 	}
 	if hold == nil {
-		t.Fatal("the hold this row lapses is held by another process, though the test's database is its own")
+		t.Fatal("the hold this row lapses is held by another process, though the row's database is its own")
 	}
-	delivery := &intakeDelivery{hold: hold, subject: natsgo.NewInbox()}
+	delivery := &intakeDelivery{hold: hold, holdClock: held, clock: clock.Real(), subject: natsgo.NewInbox()}
 	if !delivery.mayAnswer() {
 		t.Fatal("a delivery under a live hold, with nothing stopped, reports that it may not answer the durable itself")
 	}

@@ -124,16 +124,23 @@ func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
 	}
 	createProjectDocument(t, handler, "CORE", "Paged notes", "# Paged notes\n")
 
-	// Once one page holds them, the horizon stands above every event written so far, so the pages
-	// below read the same log.
-	whole, _ := readEventLogBehindHorizon(t, handler, database, "the event log, at least 5 events to page", func(rows []eventLogRow) bool {
-		return len(rows) >= 5
+	// Once one page holds the log through its head, the horizon stands above every event written
+	// so far, so the pages below read the same log: a page that ended short of the head would be
+	// one horizon-capped read, which the paged reads after it can pass.
+	whole, _ := readEventLogBehindHorizon(t, handler, database, "the event log through its head, to page", func(rows []eventLogRow) bool {
+		return len(rows) >= 5 && rows[len(rows)-1].ID == eventHead(t, database)
 	})
 	var paged []eventLogRow
 	after := int64(0)
 	for {
 		page, _ := readEventLogPage(t, handler, fmt.Sprintf("?after=%d&limit=2", after))
 		paged = append(paged, page...)
+		// The log holds no event past whole's, so pages that go on past it repeat what they read:
+		// a route that ignored after would answer the same page for ever.
+		if len(paged) > len(whole) {
+			t.Fatalf("paged %d events through after=%d, more than the %d one page holds: the pages repeat events",
+				len(paged), after, len(whole))
+		}
 		if len(page) < 2 {
 			break
 		}

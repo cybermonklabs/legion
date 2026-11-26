@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The API's road to a mention asks the rule for a role route an earlier event still owes by the
@@ -31,8 +33,11 @@ func TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow(t *testing.T) {
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	ctx := context.Background()
 	listener, _ := newMentionListener(t)
+	// A clock whose timers fire only when the test moves it, which it never does (clocktest.Held;
+	// its Now still reads the wall clock): no lookup bound of the server's (mentionLookupTimeout)
+	// may end a role lookup behind the test's back, so each row's answer is the listener's.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true,
+		envoyURL: listener.URL, clock: clocktest.Held(), outboxPublishes: true,
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "A role route owed before a mention", "before")
 	earlier := decodeMentionedComment(t, sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -91,7 +96,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	var mu sync.Mutex
 	var sent []string
 	open := false
-	sender := newMentionSender(lifetime, 100*time.Millisecond,
+	sender := newMentionSender(lifetime, 100*time.Millisecond, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -106,10 +111,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 		func(context.Context, []mentionClaim) error { return nil },
 	)
 	parks := countParks(sender, false)
-	t.Cleanup(func() {
-		stop()
-		sender.wait()
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	enqueue := func(id, issue string) {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new(issue)}, mention: ResolvedMention{Target: "session:s1"},
@@ -123,13 +125,12 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	}
 
 	enqueue("a-first", "A-1")
-	waitUntil(t, "A's first send held on its own lane", func() bool { return parks.Load() >= 1 })
+	testwait.Eventually(t, "A's first send held on its own lane", func() bool { return parks.Load() >= 1 })
 	enqueue("b-only", "B-1")
 	enqueue("a-second", "A-1")
-	waitUntil(t, "B's mention of s1 sent while A's wait", func() bool {
+	testwait.Eventually(t, "B's mention of s1 sent while A's wait", func() bool {
 		return slices.Contains(sentNow(), "b-only")
 	})
-
 	if got := sentNow(); !slices.Equal(got, []string{"b-only"}) {
 		t.Fatalf("sent %v while A's earlier event was owed, want B's alone", got)
 	}
@@ -137,10 +138,9 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	mu.Lock()
 	open = true
 	mu.Unlock()
-	waitUntil(t, "A's two sends once its earlier event was sent", func() bool {
+	testwait.Eventually(t, "A's two sends once its earlier event was sent", func() bool {
 		return len(sentNow()) == 3
 	})
-
 	t.Logf("sent in the order %v", sentNow())
 	if got := sentNow(); !slices.Equal(got, []string{"b-only", "a-first", "a-second"}) {
 		t.Fatalf("sent %v, want B's, then A's first and A's second", got)
@@ -159,7 +159,7 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	listener, state := newMentionListener(t)
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{
-		envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true,
+		envoyURL: listener.URL, outboxPublishes: true,
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "A route that moves", "before")
 	route := func(to string) {
@@ -176,9 +176,7 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 	state.landed = view.mentionLanded
 	state.mu.Unlock()
 	runOutboxBeside(t, deps, view)
-	waitUntil(t, "the issue's first events published", func() bool {
-		return unpublishedEvents(t, database, issue.Key) == 0
-	})
+	awaitFirstEventsPublished(t, database, issue.Key)
 
 	view.mu.Lock()
 	view.refused = contracts.LegacyAgentSubject("s2")
@@ -187,7 +185,7 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 		"body": "the earlier event, by a person",
 	}))
 	earlier := commentEventID(t, database, earlierComment.ID)
-	waitUntil(t, "the earlier event's route send backed off", func() bool {
+	testwait.Eventually(t, "the earlier event's route send backed off", func() bool {
 		attempts, _ := eventAttempts(t, database, earlier)
 		return attempts > 0
 	})
@@ -198,14 +196,13 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 		"body": body, "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	comment := commentEventID(t, database, mention.ID)
-	waitUntil(t, "every event of the issue published and the mention settled", func() bool {
+	testwait.Eventually(t, "every event of the issue published and the mention settled", func() bool {
 		settled := true
 		for _, attempt := range waitForCommentDeliveries(t, database, mention.ID, "the mention's attempts", func([]model.CommentDelivery) bool { return true }) {
 			settled = settled && attempt.State != "pending"
 		}
 		return settled && unpublishedEvents(t, database, issue.Key) == 0
 	})
-
 	taken, own := view.order([]int64{earlier, comment}, map[string]int64{body: comment}, comment)
 	t.Logf("s1 takes %v (want %v), the comment's copies on s1's own channels: %v", taken, []int64{earlier, comment}, own)
 	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
@@ -230,7 +227,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string
 	var gaveUp []mentionKey
-	sender := newMentionSender(lifetime, time.Hour,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.comment.ID == "first" {
 				once.Do(func() { close(started) })
@@ -257,10 +254,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	sender.capacity = 1
 	sender.mu.Unlock()
 	parks := countParks(sender, true)
-	t.Cleanup(func() {
-		stop()
-		sender.wait()
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	enqueue := func(id, issue string) mentionSend {
 		item := mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new(issue)}, mention: ResolvedMention{Target: "session:s1"},
@@ -270,10 +264,10 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 		return item
 	}
 	enqueue("first", "A-1")
-	<-started
+	testwait.Receive(t, "the first send of A-1 in flight", started)
 	second := enqueue("second", "A-1")
 	close(release)
-	waitUntil(t, "the first send parked on A-1's held lane", func() bool { return parks.Load() == 1 })
+	testwait.Eventually(t, "the first send parked on A-1's held lane", func() bool { return parks.Load() == 1 })
 	queued, inflight := queuedAndInFlight(sender)
 	mu.Lock()
 	defer mu.Unlock()
@@ -294,17 +288,14 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
-	sender := newMentionSender(lifetime, time.Hour,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) { return item, true },
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
 		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
 	parks := countParks(sender, true)
-	t.Cleanup(func() {
-		stop()
-		sender.wait()
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	for _, id := range []string{"a-first", "a-second", "a-third"} {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
@@ -312,13 +303,12 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 		})
 	}
 	held := heldLane(laneKey{recipient: "session:s1"}, "A-1")
-	waitUntil(t, "the three sends on A's held lane, parked", func() bool {
+	testwait.Eventually(t, "the three sends on A's held lane, parked", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return parks.Load() == 1 && len(sender.lanes[held]) == 3
 	})
-
-	count, _ := sender.heldSamples(time.Now())
+	count, _ := sender.heldSamples(sender.sendClock().Now())
 	t.Logf("the held gauge reads %d", count)
 	if count != 3 {
 		t.Fatalf("the held gauge reads %d, want 3 sends of A-1", count)

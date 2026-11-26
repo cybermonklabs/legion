@@ -523,18 +523,62 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 		public.route(t, short)
 		defer public.route(t, broker)
 		b := newBrowser(t)
-		b.SignIn(t, recordB, ciphertest.Person(ada))
-		form := ciphertest.DecisionForm(t, b.Page(t, recordB).Body, recordB)
+		// The sign-in's callback is read here rather than through ciphertest's SignIn, so the
+		// session cookie is the one its answer set: the browser's cookie jar drops a cookie past
+		// its two-second Max-Age on the machine's clock, and every request below carries the
+		// cookie itself, as the expired session's replay does.
+		callback := b.Get(t, b.Authorize(t, b.StartSignIn(t, "/approve/"+recordB), ciphertest.Person(ada)))
+		if callback.Status != http.StatusSeeOther || callback.Header.Get("Location") != "/approve/"+recordB {
+			t.Fatalf("callback = %d to %q, want 303 to /approve/%s:\n%s", callback.Status, callback.Header.Get("Location"), recordB, callback.Body)
+		}
+		set := callback.Cookie(sessionCookieName)
+		if set == nil {
+			t.Fatalf("the callback set no %s cookie:\n%s", sessionCookieName, callback.Body)
+		}
+		old := &http.Cookie{Name: sessionCookieName, Value: set.Value}
+		// The page is read under the session the short broker wrote, which lives two seconds from
+		// the sign-in: its expiry is staged a day on while the page is read, state for the broker's
+		// clock and not a wait, longer than any `go test -timeout` CI gives this package, so the
+		// page offers its form however long the machine takes after the sign-in. The session is
+		// found as the broker finds it, by the SHA-256 of the cookie's secret (approval.Authenticate),
+		// and the expiry the two-second setting wrote is put back once the form is in hand.
+		sessions := connectToBroker(t, databaseURL)
+		secret, err := base64.RawURLEncoding.DecodeString(old.Value)
+		if err != nil {
+			t.Fatalf("decode ada's session cookie: %v", err)
+		}
+		hash := sha256.Sum256(secret)
+		var written time.Time
+		if err := sessions.QueryRow(t.Context(), `update browser_sessions set expires_at = expires_at + interval '24 hours'
+			where secret_hash = $1 returning expires_at - interval '24 hours'`, hash[:]).Scan(&written); err != nil {
+			t.Fatalf("stage ada's short session a day on: %v", err)
+		}
+		page := b.Get(t, "/approve/"+recordB, old)
+		if page.Status != http.StatusOK {
+			t.Fatalf("GET /approve/%s under ada's staged session = %d, want the page:\n%s", recordB, page.Status, page.Body)
+		}
+		form := ciphertest.DecisionForm(t, page.Body, recordB)
 		if form == nil {
 			t.Fatalf("ada's page for %s on the short-session broker offers no decision", recordB)
 		}
-		old := &http.Cookie{Name: sessionCookieName, Value: b.Cookie(t, sessionCookieName)}
+		if _, err := sessions.Exec(t.Context(), `update browser_sessions set expires_at = $2 where secret_hash = $1`, hash[:], written); err != nil {
+			t.Fatalf("put back the expiry the short broker wrote: %v", err)
+		}
 		// The session's two-second absolute expiry is this broker's own setting, in a process of
 		// its own, so what the row waits for is the first read that shows the session gone — a
 		// GET answered with the sign-in redirect — rather than a span of its own. Each read is a
-		// page the address's bucket pays for, so it is asked every tenth of a second.
+		// page the address's bucket pays for, so the wait asks the page only once the database
+		// holds no live session of ada's that ends within the hour, which the two-second session
+		// is and the day-long ones the other rows made are not; that read costs the bucket nothing.
 		expired := newBrowser(t)
-		testwait.UntilPolling(t, 100*time.Millisecond, "the short-session broker's session to pass its expiry", func() (string, bool) {
+		testwait.Until(t, "the short-session broker's session to pass its expiry", func() (string, bool) {
+			var live bool
+			if err := sessions.QueryRow(t.Context(), `select exists (select 1 from browser_sessions where login = $1 and expires_at > now() and expires_at < now() + interval '1 hour')`, ada).Scan(&live); err != nil {
+				t.Fatalf("read ada's short sessions: %v", err)
+			}
+			if live {
+				return "the database holds ada's short session live still", false
+			}
 			res := expired.Get(t, "/approve/"+recordB, old)
 			return fmt.Sprintf("%d to %q", res.Status, res.Header.Get("Location")), res.Status == http.StatusFound
 		})

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // dropBlock returns a live edit that removes the block whose text starts with prefix, as a
@@ -47,7 +48,7 @@ func dropBlock(t *testing.T, prefix string) func(*pmdoc.Node) *pmdoc.Node {
 func TestADeletionTheRoomTakesAfterAWritesReadIsVersionedAfterTheWrite(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before\n\ndoomed paragraph")
 
 	ctx := context.Background()
@@ -92,7 +93,7 @@ func TestADeletionTheRoomTakesAfterAWritesReadIsVersionedAfterTheWrite(t *testin
 func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before\n\nthe anchored quote paragraph")
 
 	askID := "00000000-0000-4000-8000-0000000000b1"
@@ -152,7 +153,7 @@ func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.
 func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 
 	ctx := context.Background()
@@ -209,7 +210,7 @@ func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
 func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	body := make([]string, 0, 1200)
 	for index := range 1200 {
 		body = append(body, fmt.Sprintf("Paragraph %d of the specification body with enough words to be realistic prose.", index+1))
@@ -278,7 +279,7 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 			Find: fmt.Sprintf("Paragraph %d of the specification body with enough words to be realistic prose.", round+1),
 			With: fmt.Sprintf("EDITED %d of the specification body with enough words to be realistic prose.", round+1),
 		}}, alice, nil)
-		browser.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d's browser delete to return (a deadlock with the transaction's capture never does)", round), browser.Wait)
 		if editErr != nil {
 			ledger.Discard()
 			_ = tx.Rollback(ctx)

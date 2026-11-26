@@ -7,25 +7,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // liveProcess writes the server_processes row of a server process whose embedder has identity,
-// started startedAgo before the database's now() and live now, and returns its instance id. The
-// row names this build's owner lock protocol, as processes.Register writes it.
+// started startedAgo before the database's now() and live, and returns its instance id. The row
+// names this build's owner lock protocol, as processes.Register writes it. Its heartbeat is
+// stagedAhead past now(), so it reads live (processes.Live) however long the row takes to read
+// it, where one stamped now() would lapse processes.LiveWindow later.
 func liveProcess(t *testing.T, database *store.Store, identity string, startedAgo time.Duration) string {
 	t.Helper()
 	var id string
 	if err := database.Pool.QueryRow(context.Background(), `
 		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, started_at, heartbeat_at, owner_lock_protocol)
-		values (gen_random_uuid(), '{fingerprint}', 1, 1, $1, false, now() - make_interval(secs => $2), now(), $3)
-		returning instance::text`, identity, startedAgo.Seconds(), store.OwnerLockProtocol).Scan(&id); err != nil {
+		values (gen_random_uuid(), '{fingerprint}', 1, 1, $1, false, now() - make_interval(secs => $2), now() + make_interval(secs => $4), $3)
+		returning instance::text`, identity, startedAgo.Seconds(), store.OwnerLockProtocol, stagedAhead.Seconds()).Scan(&id); err != nil {
 		t.Fatalf("add a server process embedding with %q: %v", identity, err)
 	}
 	return id
 }
+
+// stagedAhead is how far past the database's now() a row of this package stages a time the
+// product judges against the database's clock: a live process's heartbeat (liveProcess), a row's
+// backoff (the queue's clock read that far past the wall clock), and another process's claim on
+// a row. It is staged state for the product's clock, not a wait: longer than any
+// `go test -timeout` CI gives this package, so what the row staged reads as not yet passed however
+// long the run takes, where processes.LiveWindow, a backoff's seconds or claimWindow's two minutes
+// would pass on a loaded machine.
+const stagedAhead = 24 * time.Hour
 
 // expireProcess moves the heartbeat of the process id past the registry's live window, as a
 // process that stopped without deregistering leaves it.
@@ -123,7 +136,8 @@ func TestOnlyTheActiveEmbedderIdentityDropsAndEmbeds(t *testing.T) {
 	}
 
 	// The first process serves again: the second identity is still carried, so it stays active.
-	mustExec(t, database.Pool, `update server_processes set heartbeat_at = now() where instance = $1::uuid`, first)
+	mustExec(t, database.Pool, `update server_processes set heartbeat_at = now() + make_interval(secs => $2) where instance = $1::uuid`,
+		first, stagedAhead.Seconds())
 	firstEmbedder.calls = nil
 	before = snapshotRows(t, database)
 	cover(t, firstDeps)
@@ -148,11 +162,13 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
 
 	// The restart: the new process's row is written before the old one's is deleted, in one
-	// transaction here, and it starts after the other identity's process.
+	// transaction here, and it starts after the other identity's process. Its heartbeat is put
+	// ahead as liveProcess puts one.
 	mustExec(t, database.Pool, `
 		with gone as (delete from server_processes where instance = $1::uuid)
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
-		values (gen_random_uuid(), '{fingerprint}', 1, 1, $2, false, $3)`, first, configuredIdentity, store.OwnerLockProtocol)
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), '{fingerprint}', 1, 1, $2, false, now() + make_interval(secs => $4), $3)`,
+		first, configuredIdentity, store.OwnerLockProtocol, stagedAhead.Seconds())
 
 	secondEmbedder := newPlaceEmbedder(foreignIdentity)
 	cover(t, Deps{Store: second, Embedder: secondEmbedder})
@@ -179,6 +195,13 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 // its own ceiling: the bucket never refills faster than the larger ceiling, and each waits out
 // its debt at its own, so together they never take more than the larger ceiling per minute, and
 // neither stops the other. The ceilings are small, so a "minute" of tokens passes in seconds.
+//
+// Both processes wait out their debts on one fake clock (Deps.Clock), and the window passes on it:
+// once both are waiting, the row moves it to the earliest wait armed, and the bucket's own clock,
+// PostgreSQL's now(), passes the same span with it, taken back off the row's last_refill_at before
+// the move, so the next reservation refills by it. A reservation also refills by what PostgreSQL's
+// clock passed on its own while the row ran, so the limit is the larger ceiling's over the window
+// and that time, read on the same clock.
 func TestTwoCeilingsTogetherNeverPassTheLargerOne(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -189,10 +212,14 @@ func TestTwoCeilingsTogetherNeverPassTheLargerOne(t *testing.T) {
 		tokens  = 5
 		window  = 3 * time.Second
 	)
-	mustExec(t, database.Pool, `update embeddings_rate_limit set tokens_available = 0, last_refill_at = now()`)
+	var emptied time.Time
+	if err := database.Pool.QueryRow(ctx,
+		`update embeddings_rate_limit set tokens_available = 0, last_refill_at = now() returning last_refill_at`).Scan(&emptied); err != nil {
+		t.Fatalf("empty the bucket: %v", err)
+	}
 
-	started := time.Now()
-	deadline := started.Add(window)
+	fake := clocktest.New(time.Now())
+	started := fake.Now()
 	taken := make([]int, 2)
 	var wg sync.WaitGroup
 	for i, side := range []struct {
@@ -201,16 +228,42 @@ func TestTwoCeilingsTogetherNeverPassTheLargerOne(t *testing.T) {
 	}{{database, smaller}, {second, larger}} {
 		wg.Go(func() {
 			for {
-				reserveTokens(ctx, Deps{Store: side.database}, tokens, side.ceiling, nil)
-				if time.Now().After(deadline) {
+				reserveTokens(ctx, Deps{Store: side.database, Clock: fake}, tokens, side.ceiling, nil)
+				if fake.Now().Sub(started) > window {
 					return
 				}
 				taken[i] += tokens
 			}
 		})
 	}
-	wg.Wait()
-	elapsed := deadline.Sub(started).Seconds()
+	stopped := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(stopped)
+	}()
+	for fake.Now().Sub(started) <= window {
+		next := fake.AwaitArmed(t, "both processes to wait out their debts", 2)[0]
+		mustExec(t, database.Pool, `update embeddings_rate_limit set last_refill_at = last_refill_at - make_interval(secs => $1)`,
+			next.Sub(fake.Now()).Seconds())
+		fake.Set(next)
+	}
+	// Past the window each process stops once its wait is out, counting nothing more.
+	testwait.Eventually(t, "both processes to stop once the window has passed", func() bool {
+		select {
+		case <-stopped:
+			return true
+		default:
+		}
+		if armed := fake.Armed(); len(armed) > 0 {
+			fake.Set(armed[len(armed)-1])
+		}
+		return false
+	})
+	var drifted float64
+	if err := database.Pool.QueryRow(ctx, `select extract(epoch from now() - $1::timestamptz)::float8`, emptied).Scan(&drifted); err != nil {
+		t.Fatalf("read how far PostgreSQL's clock passed: %v", err)
+	}
+	elapsed := window.Seconds() + drifted
 	total := taken[0] + taken[1]
 	// One reservation per process may be in flight at the window's edge.
 	if limit := float64(larger)/60*elapsed + 2*tokens; float64(total) > limit {

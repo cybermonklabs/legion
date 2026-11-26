@@ -97,7 +97,7 @@ var errWriteNotLanded = errors.New("the CI store did not take a write of what Gi
 // GitHub with the Reconciler's collaborators alone, so it runs beside a pass. Only its own record
 // of failed requests is kept between its passes, and one Verify runs at a time.
 func (r *Reconciler) Verify(ctx context.Context) time.Time {
-	next := time.Now().Add(VerifyInterval)
+	next := r.clock().Now().Add(VerifyInterval)
 	writer, err := r.Open()
 	if err != nil {
 		// NATS is not connected, or the listener has not made the bucket: no request can be
@@ -124,7 +124,7 @@ func (r *Reconciler) Verify(ctx context.Context) time.Time {
 
 // forgetVerifyFailures drops every failed head whose last failure is verifyForget old.
 func (r *Reconciler) forgetVerifyFailures() {
-	cutoff := r.clock().Add(-verifyForget)
+	cutoff := r.clock().Now().Add(-verifyForget)
 	for key, failed := range r.verifyFailed {
 		if failed.at.Before(cutoff) {
 			delete(r.verifyFailed, key)
@@ -156,7 +156,7 @@ func verifyHeadKey(head contracts.CIHead) string {
 // when a limit on the App's budget stopped it, or the pass ended.
 func (r *Reconciler) verify(ctx context.Context, writer Writer, request contracts.CIVerifyRequest) bool {
 	head, key := request.Head, verifyHeadKey(request.Head)
-	now := r.clock()
+	now := r.clock().Now()
 	failed, held := r.verifyFailed[key]
 	if held && failed.episode != request.Episode {
 		// A new settlement episode of the head is asked afresh, whatever the last one met.
@@ -190,7 +190,7 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 			append(fields, "failures", failed.failures, "retry_in", retry.String(), "error", err)...)
 	}
 	token, statuses, err := r.GitHub.RepositoryTokenWithStatuses(ctx, head.Owner, head.Repo)
-	if at := stopAt(err, githubapp.AppScope); at != nil {
+	if at := r.stopAt(err, githubapp.AppScope); at != nil {
 		return at.scope != githubapp.AppScope
 	}
 	if err != nil {
@@ -217,7 +217,7 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 		})
 	}
 	if err != nil {
-		if at := stopAt(err, scope); at != nil {
+		if at := r.stopAt(err, scope); at != nil {
 			return at.scope != githubapp.AppScope
 		}
 		if ctx.Err() != nil {
@@ -233,7 +233,7 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 			return objectPage(answer), err
 		})
 		if err != nil {
-			if at := stopAt(err, scope); at != nil {
+			if at := r.stopAt(err, scope); at != nil {
 				return at.scope != githubapp.AppScope
 			}
 			if ctx.Err() != nil {

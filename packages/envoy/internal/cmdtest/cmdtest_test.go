@@ -10,10 +10,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
-	"time"
 
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenfd"
 )
 
@@ -108,7 +109,10 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial %s: %v\n%s", held.Addr, err, child.Output.String())
 	}
-	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	// The child's answer is bounded by the binary's deadline less testwait's margin, so a late answer
+	// costs the row time, and one that never comes fails the read below by name.
+	bound, _ := testwait.GiveUpAt(t)
+	if err := conn.SetDeadline(bound); err != nil {
 		t.Fatal(err)
 	}
 	answer, err := bufio.NewReader(conn).ReadString('\n')
@@ -134,23 +138,34 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 }
 
 // StartThen runs afterExit once the process has exited and before it closes Exited, so a test
-// that waits on Exited sees what afterExit did. afterExit sleeps before it records anything, so
-// an Exited closed before afterExit returned would show here as nothing recorded.
+// that waits on Exited sees what afterExit did. afterExit here holds until the row lets it go, and
+// the row reads Exited while it holds: an Exited closed before afterExit returned is closed then.
 func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
 	// -test.run=^$ makes this test binary run no test and exit 0.
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	var runs int
-	var exitedFirst bool
+	entered := make(chan bool, 1)
+	release := make(chan struct{})
 	child := StartThen(t, "the exiting child", cmd, func() {
-		exitedFirst = cmd.ProcessState != nil
-		time.Sleep(200 * time.Millisecond)
+		entered <- cmd.ProcessState != nil
+		<-release
 		runs++
 	})
+	// Registered after StartThen's own cleanup, so it runs first: a row that fails while afterExit
+	// holds lets it go before that cleanup waits for Exited.
+	letGo := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letGo)
+	if exitedFirst := testwait.Receive(t, "afterExit to start once the child exited", entered); !exitedFirst {
+		t.Fatalf("afterExit ran before the process's exit was recorded (Cmd.ProcessState was nil)")
+	}
+	select {
+	case <-child.Exited:
+		t.Fatalf("Exited closed while afterExit was still running")
+	default:
+	}
+	letGo()
 	child.WaitExit(t, "its start")
 	if runs != 1 {
 		t.Fatalf("afterExit had run %d times when Exited closed; want 1", runs)
-	}
-	if !exitedFirst {
-		t.Fatalf("afterExit ran before the process's exit was recorded (Cmd.ProcessState was nil)")
 	}
 }

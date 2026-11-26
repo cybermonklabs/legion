@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	ygsync "github.com/reearth/ygo/sync"
@@ -78,7 +77,7 @@ func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of every paragraph's block id would race the
 	// subtests' reads of the history.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	persist := NewPgVersioned(service.store)
 	live := crdt.New(crdt.WithClientID(1_000_000))
@@ -174,7 +173,7 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp would race the reads below.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "before")
 	persist := NewPgVersioned(service.store)
@@ -210,7 +209,7 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 		testcleanup.Add(t, httpServer.Close)
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
-		waitFor(t, 10*time.Second, "the peer's room to open", func() bool {
+		waitFor(t, "the peer's room to open", func() bool {
 			return service.srv.GetDoc(artifactID) != nil
 		})
 		state := service.room(artifactID)
@@ -239,7 +238,7 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 			}
 			return false
 		}
-		waitFor(t, time.Minute, "the room to store the browser's update or fail", func() bool {
+		waitFor(t, "the room to store the browser's update or fail", func() bool {
 			return state.failure() != nil || stored()
 		})
 		if err := state.failure(); err != nil {
@@ -280,7 +279,7 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB.
 	service, artifactID := newTestService(t)
 	// The settlement runs below, once, on the test's own goroutine.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
 	const blocks = 150_000
@@ -343,7 +342,7 @@ func TestTheRoomsRenderedReplicaHoldsWhatACommitParked(t *testing.T) {
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of the browser's blocks would commit into the
 	// room while the edit is parked.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("open a room on the seeded document: %v", err)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -29,13 +30,13 @@ func TestAColdWriteLoadsNoRoom(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "Alpha paragraph.\n\nBravo paragraph.\n")
 			closeRoom := func() {
 				if service.srv.GetDoc(artifactID) == nil {
 					return
 				}
-				if err := service.srv.CloseRoom(artifactID, true); err != nil {
+				if err := closeRoomJoined(t, service, artifactID, true); err != nil {
 					t.Fatalf("close the document's room: %v", err)
 				}
 				waitForNoLiveDocument(t, service, artifactID)
@@ -111,7 +112,7 @@ func TestColdWritesSettledOneAfterAnotherLoadTheDocumentOnce(t *testing.T) {
 		if _, err := joinedReplaceText(service, artifactID, fmt.Sprintf("Write %d of an agent, with no browser open.\n", i), model.Actor{Kind: "user", ID: "alice"}); err != nil {
 			t.Fatalf("write %d: %v", i, err)
 		}
-		waitFor(t, roomWait(t), fmt.Sprintf("write %d to settle and its settlement to end", i), func() bool {
+		waitFor(t, fmt.Sprintf("write %d to settle and its settlement to end", i), func() bool {
 			owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 			return err == nil && !owed && !settlementUnderway(service, artifactID)
 		})
@@ -168,10 +169,10 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				Events:      events.NewBroker(),
 				Identity:    headerIdentity(database),
 				ServerURL:   "https://dispatch.example",
-				Settle:      time.Hour,
+				Settle:      stagedAhead,
 			})
 			testcleanup.Add(t, func() {
-				if err := service.Shutdown(context.Background()); err != nil {
+				if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 					t.Errorf("shutdown document service: %v", err)
 				}
 			})
@@ -238,7 +239,7 @@ func closeDocumentRoom(t *testing.T, service *Service, artifactID string) {
 	if service.srv.GetDoc(artifactID) == nil {
 		return
 	}
-	if err := service.srv.CloseRoom(artifactID, true); err != nil {
+	if err := closeRoomJoined(t, service, artifactID, true); err != nil {
 		t.Fatalf("close the document's room: %v", err)
 	}
 	waitForNoLiveDocument(t, service, artifactID)

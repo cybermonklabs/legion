@@ -32,9 +32,9 @@ env:
 jobs:
   envoy-go-claim-model:
     runs-on: ubuntu-24.04
-    # The step's -timeout must fire before the runner cancels the job, so a hung search prints the
-    # dump that names it: the job's limit is the step's and ten minutes of checkout, setup, cache
-    # restore and the package's test build. The step's -timeout is twice the 19 min 18 s the step
+    # The step's -timeout must fire before the runner cancels the job, so a hung search fails by
+    # name, 30 s before that -timeout, where the shared wait gives up on it: the job's limit is the
+    # step's and ten minutes of checkout, setup, cache restore and the package's test build. The step's -timeout is twice the 19 min 18 s the step
     # took on this runner (CLAIM_MODEL_TIMEOUT in .github/scripts/ci_job_reads.py).
     timeout-minutes: 50
     services:

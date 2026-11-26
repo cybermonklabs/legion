@@ -55,8 +55,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -131,12 +134,12 @@ func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	return head, base
 }
 
-// startCostArm starts one arm on an empty database of its own. The database is empty rather
-// than storetest's clone of a migrated template, because each build has to run its own
-// migrations on it: that is what makes the older arm the older schema.
+// startCostArm starts one arm on an empty database of its own (storetest.Empty). The database is
+// empty rather than storetest's clone of a migrated template, because each build has to run its
+// own migrations on it: that is what makes the older arm the older schema.
 func startCostArm(t *testing.T, name string, head bool, options dispatchOptions) *costArm {
 	t.Helper()
-	databaseURL := censusDatabase(t)
+	databaseURL := storetest.Empty(t)
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open %s's own connections: %v", name, err)
@@ -147,12 +150,15 @@ func startCostArm(t *testing.T, name string, head bool, options dispatchOptions)
 	return &costArm{name: name, head: head, server: server, databaseURL: databaseURL, pool: pool}
 }
 
-// costDatabaseName is the database a URL names, for the line that says which arm served which.
+// costDatabaseName is the database a URL names, for the line that says which arm served which:
+// the URL's path, without the query the test server's URL carries (testdb's connect_timeout) and
+// without the credential the URL carries, which a test prints nowhere.
 func costDatabaseName(databaseURL string) string {
-	if cut := strings.LastIndex(databaseURL, "/"); cut >= 0 {
-		return databaseURL[cut+1:]
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		return "a database whose URL does not parse"
 	}
-	return databaseURL
+	return strings.TrimPrefix(parsed.Path, "/")
 }
 
 // costListener is a stub of the Envoy listener a comment delivery sends through: it answers the
@@ -365,28 +371,25 @@ func costShapeName(shape string) string {
 // starts that cursor no later than the horizon the backfill recorded, so a tick after the
 // documents drain can still mark the corpus's own documents owed and index them again, which would
 // write a node inside a measured window, or after the run has taken the store off the corpus.
-func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
+//
+// The wait is the shared wait: a reconciliation that never drains fails the test naming what
+// the arm still owes, with the server's output after it.
+func costBlockIndexDrained(t *testing.T, arm *costArm) {
 	t.Helper()
 	owedRead := `select count(*) from document_block_versions where version is null`
+	owedWhat := "document(s) still owed a block index"
 	if arm.head {
 		owedRead = `select (select count(*) from document_block_versions where version is null or store_owed_at is not null)
 			+ (select case when exists (select 1 from block_index_event_cursors)
 			               and not exists (select 1 from block_index_event_cursors
 			                               where event_id < (select coalesce(max(id), 0) from events))
 			          then 0 else 1 end)`
+		owedWhat = "document(s) still owed a block index, plus one while the tick has not read every event"
 	}
-	deadline := time.Now().Add(within)
-	for {
+	testwait.Until(t, fmt.Sprintf("the block-index reconciliation on the arm of %s to owe nothing, so that no tick of its own runs inside a measured window", arm.name), func() (withOutput[string], bool) {
 		owed := arm.count(t, owedRead)
-		if owed == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: %d document(s) were still owed a block index after %s:\n%s",
-				arm.name, owed, within, arm.server.Output.String())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return readWith(fmt.Sprintf("%d %s; the server's output:", owed, owedWhat), arm.server.Output), owed == 0
+	})
 }
 
 // costLeaseNamespace is the first key every loop lease is taken under - duty's leaseNamespace,
@@ -395,41 +398,44 @@ func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 // lease, behind the `memory` build tag, which these two measurements do not carry.
 const costLeaseNamespace int32 = 0x4C4F4F50
 
-// costLeaseWait bounds the wait for the block-index lease. A pass reads one batch of each queue
-// it serves and gives the lease back, so this is a hang guard on a wait nothing healthy reaches.
-const costLeaseWait = 5 * time.Minute
-
 // costHoldBlockIndex takes the block-index pass's own lease on this arm and answers the call
 // that gives it back, so no tick runs while a window is measured. It is memory_harness_test.go's
 // holdBlockIndexLease over a costArm's pool: duty.Exclusive takes that lease before every pass
 // and skips the pass where another session holds it.
+//
+// The lock belongs to the session that took it, so one connection of the arm's pool takes it,
+// holds it for the window and gives it back (duty.FreeSessionLock, which destroys rather than
+// returns a connection whose unlock failed, since what such a session holds is unknown). A pass
+// reads one batch of each queue it serves and gives the lease back, so the wait for it goes
+// through the shared wait: a pass that never gives it back fails the test naming the lease.
 func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 	t.Helper()
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	conn, err := arm.pool.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("%s: take a connection for the block-index lease: %v", arm.name, err)
 	}
-	deadline := time.Now().Add(costLeaseWait)
-	for {
-		var held bool
+	held := false
+	// Deferred, so a wait that gives up gives the connection back on its way out.
+	defer func() {
+		if !held {
+			conn.Release()
+		}
+	}()
+	// pg_try_advisory_lock answers false rather than queueing behind the holder, so a pass running
+	// at this moment is waited out here: it gives the lease back when it ends.
+	testwait.Until(t, fmt.Sprintf("the block-index pass on the arm of %s to give the %q lease back, so the window is measured with the pass held off", arm.name, docs.BlockIndexLease), func() (withOutput[string], bool) {
 		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
 			costLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
-			conn.Release()
 			t.Fatalf("%s: take the block-index lease: %v", arm.name, err)
 		}
 		if held {
-			break
+			return withOutput[string]{}, true
 		}
-		if time.Now().After(deadline) {
-			conn.Release()
-			t.Fatalf("%s: the block-index pass held the %q lease for more than %s:\n%s",
-				arm.name, docs.BlockIndexLease, costLeaseWait, arm.server.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return readWith("the lease held by another session; the server's output:", arm.server.Output), false
+	})
 	return func() {
-		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
+		if err := duty.FreeSessionLock(clock.Real(), conn, `select pg_advisory_unlock($1, hashtext($2))`,
 			costLeaseNamespace, docs.BlockIndexLease); err != nil {
 			t.Errorf("%s: give the block-index lease back: %v", arm.name, err)
 		}
@@ -449,7 +455,7 @@ func costRunBackfill(t *testing.T, arm *costArm) {
 		return
 	}
 	runBackfill(t, arm.databaseURL)
-	costBlockIndexDrained(t, arm, 30*time.Minute)
+	costBlockIndexDrained(t, arm)
 	nameless := arm.count(t, `
 		select (select count(*) from comments where node_kind is null)
 		     + (select count(*) from document_blocks where node_kind is null)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -13,7 +12,7 @@ import (
 )
 
 // The waits below end on the fact each waits for, and their one bound is the test binary's
-// deadline less testwait's margin (testwait.UntilPolling): a call that a loaded machine starts or
+// deadline less testwait's margin (testwait.Until): a call that a loaded machine starts or
 // queues late still ends the wait, and one that never queues fails the test by name, with what was
 // last read, before go test's alarm. Each must run on the test's own goroutine, since it can fail
 // the test.
@@ -58,14 +57,14 @@ func OwnerLockWaiters(t testing.TB, database *store.Store) (waiting, holdingXid 
 // call under test answers on answered before any backend waited, as WaitForQueuedBehind does: such
 // a call never waited for the lock the test holds, and the caller fails with what it answered.
 // what names that call, for the failure when the test binary's deadline comes first.
-func AwaitOwnerLockWaiter[T any](t *testing.T, database *store.Store, what string, answered <-chan T) (T, bool, int) {
+func AwaitOwnerLockWaiter[T any](t testing.TB, database *store.Store, what string, answered <-chan T) (T, bool, int) {
 	t.Helper()
 	type seen struct {
 		answer              T
 		early               bool
 		waiting, holdingXid int
 	}
-	got := testwait.UntilPolling(t, 5*time.Millisecond, what+" to wait on an owner lock, or to answer (the owner-lock waiters last read)", func() (seen, bool) {
+	got := testwait.Until(t, what+" to wait on an owner lock, or to answer (the owner-lock waiters last read)", func() (seen, bool) {
 		select {
 		case early := <-answered:
 			return seen{answer: early, early: true}, true
@@ -98,9 +97,9 @@ const waitingBehindHolder = `
 // transaction once read. It counts every backend behind the holder, a background document
 // settlement's among them; a test that must know the call under test is the one waiting watches
 // that call's backend instead (QueuedBehind).
-func WaitForLockWaiters(t *testing.T, holder pgx.Tx, want int) int {
+func WaitForLockWaiters(t testing.TB, holder pgx.Tx, want int) int {
 	t.Helper()
-	return testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("%d backends to queue behind the held lock (the count last read)", want), func() (int, bool) {
+	return testwait.Until(t, fmt.Sprintf("%d backends to queue behind the held lock (the count last read)", want), func() (int, bool) {
 		count, err := LockWaiters(context.Background(), holder)
 		if err != nil {
 			t.Fatal(err)
@@ -121,7 +120,7 @@ func LockWaiters(ctx context.Context, holder pgx.Tx) (int, error) {
 }
 
 // QueuedBehind reports whether the backend pid waits on a lock holder's transaction owns,
-// directly or behind an earlier waiter, as WaitForLockWaiters counts them, and reads through
+// directly or behind an earlier waiter, as LockWaiters counts them, and reads through
 // holder's own connection for the same reason. Watching one backend rather than counting them is
 // what tells the call under test from any other session queued on the same lock: an issue's
 // document settlement locks the issue's row too (docs/solutions/testing/a-lock-wait-test-watches-
@@ -134,42 +133,69 @@ func QueuedBehind(ctx context.Context, holder pgx.Tx, pid uint32) (bool, error) 
 	return queued, nil
 }
 
-// WaitForQueuedBehind waits for the backend pid, the one connection a call under test runs on, to
-// queue behind a lock holder's transaction owns (QueuedBehind), polling through holder's own
+// WaitForQueuedBehind waits until the backend pid, the one connection a call under test runs on,
+// queues behind a lock holder's transaction owns (QueuedBehind), polling through holder's own
 // connection. It returns the call's answer and true if the call answers on answered before its
 // backend has queued: such a call never waited on the lock, and the caller fails with what it
-// answered.
-func WaitForQueuedBehind[T any](t *testing.T, holder pgx.Tx, pid uint32, answered <-chan T) (T, bool) {
+// answered. It fails the test if neither ever happens, naming the locks the caller's backend
+// waited for at the last try and the backends that blocked each (lockWaitsOf).
+func WaitForQueuedBehind[T any](t testing.TB, holder pgx.Tx, pid uint32, answered <-chan T) (T, bool) {
 	t.Helper()
-	type seen struct {
-		answer T
-		early  bool
-	}
-	got := testwait.UntilPolling(t, 2*time.Millisecond, fmt.Sprintf("backend %d to queue behind the lock, or its call to answer", pid), func() (seen, bool) {
+	var answer T
+	var early bool
+	ctx := context.Background()
+	testwait.Until(t, fmt.Sprintf("backend %d to queue behind the lock, or its call to answer", pid), func() (string, bool) {
 		select {
-		case answer := <-answered:
-			return seen{answer: answer, early: true}, true
+		case answer = <-answered:
+			early = true
+			return "answered", true
 		default:
 		}
 		queued, err := QueuedBehind(context.Background(), holder, pid)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return seen{}, queued
+		if queued {
+			return "queued", true
+		}
+		waits, err := lockWaitsOf(ctx, holder, pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("not queued behind the holder and not answered; backend %d waits for: %s", pid, waits), false
 	})
-	return got.answer, got.early
+	return answer, early
 }
 
-// WaitForStatementBehind waits for a session of database whose current statement is exactly
-// statement to queue behind a lock holder's transaction owns (QueuedBehind), and returns that
+// lockWaitsOf names each lock the backend pid waits for, by its type and mode, and the backends
+// that block it (pg_blocking_pids), or answers "no lock". It reads pg_locks through holder's own
+// connection, as QueuedBehind does and for the same reason.
+func lockWaitsOf(ctx context.Context, holder pgx.Tx, pid uint32) (string, error) {
+	var waits string
+	if err := holder.QueryRow(ctx, `
+		select coalesce(string_agg(format('%s %s, blocked by backends %s', locktype, mode, pg_blocking_pids(pid)), '; '), 'no lock')
+		from pg_locks where pid = $1 and not granted
+	`, pid).Scan(&waits); err != nil {
+		return "", fmt.Errorf("inspect database locks: %w", err)
+	}
+	return waits, nil
+}
+
+// WaitForStatementBehind waits until a session of database whose current statement is exactly
+// statement queues behind a lock holder's transaction owns (QueuedBehind), and returns that
 // session's backend process id. It is for a call under test that runs in another process, whose
 // connection a test cannot give a pool of its own: the statement names the call's backend, and a
 // session queued behind the same lock with any other statement is never taken for it. It reads
-// pg_stat_activity through the pool, a fresh view on each read.
-func WaitForStatementBehind(t *testing.T, database *store.Store, holder pgx.Tx, statement string) uint32 {
+// pg_stat_activity through the pool, a fresh view on each read. It fails the test, naming the
+// sessions running statement it last saw, when none ever queues.
+func WaitForStatementBehind(t testing.TB, database *store.Store, holder pgx.Tx, statement string) uint32 {
 	t.Helper()
 	ctx := context.Background()
-	return testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("a session running %q to queue behind the held lock (the backend last found)", statement), func() (uint32, bool) {
+	type reading struct {
+		Running []uint32
+		Queued  uint32
+	}
+	return testwait.Until(t, fmt.Sprintf("a session running %q to queue behind the lock", statement), func() (reading, bool) {
 		rows, err := database.Pool.Query(ctx, `
 			select pid from pg_stat_activity where datname = current_database() and query = $1
 		`, statement)
@@ -186,9 +212,9 @@ func WaitForStatementBehind(t *testing.T, database *store.Store, holder pgx.Tx, 
 				t.Fatal(err)
 			}
 			if queued {
-				return pid, true
+				return reading{Running: pids, Queued: pid}, true
 			}
 		}
-		return 0, false
-	})
+		return reading{Running: pids}, false
+	}).Queued
 }

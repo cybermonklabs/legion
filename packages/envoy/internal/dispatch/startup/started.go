@@ -26,6 +26,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -56,19 +57,21 @@ type Payload struct {
 var Interval = 5 * time.Second
 
 // statementTimeout bounds one pass's announcing transaction, well inside Interval, so a database
-// that has stopped answering costs a pass and not the loop: the next tick tries again.
+// that has stopped answering costs a pass and not the loop: the next tick tries again. It runs on
+// the Announcer's clock (Deps.Clock), as publishTimeout does.
 const statementTimeout = 3 * time.Second
 
 // publishTimeout bounds one publish: its context, which the bus client gives the reconnect wait,
 // the flush and the acknowledgement alike, and once it ends sends nothing. The bus client bounds
 // its own publish too, but a client that is still dialling or reconnecting must not hold the
 // publishing transaction, and with it every other process's publish, for longer than this: the
-// next pass tries again. A variable rather than a constant only so this package's tests can
-// shorten it; nothing else sets it.
-var publishTimeout = 10 * time.Second
+// next pass tries again. It runs on the Announcer's clock (Deps.Clock), so a test moves a fake
+// past it rather than shortening it.
+const publishTimeout = 10 * time.Second
 
 // publishPassTimeout bounds a pass's publishing transaction as a whole, its statements and its
 // publishes together, so a database link that stalls mid-pass ends the pass rather than the loop.
+// It runs on the Announcer's clock (Deps.Clock), as publishTimeout does.
 const publishPassTimeout = 30 * time.Second
 
 // announceLock is the transaction advisory lock a pass takes, with pg_try_advisory_xact_lock,
@@ -98,6 +101,10 @@ type Deps struct {
 	// Publisher publishes announcements; nil where NATS is disabled, and such a process announces
 	// into the table and publishes nothing.
 	Publisher Publisher
+	// Clock is the clock every bound of a pass runs on (statementTimeout, publishPassTimeout and
+	// publishTimeout): nil is clock.Real(), and a test hands a clocktest.Fake and moves it past a
+	// bound.
+	Clock clock.Clock
 	// Commit is the commit this process serves, the one it registers under (processes.Instance).
 	// A process announces a commit only where it is this one, since the kinds it announces are
 	// its own build's.
@@ -115,13 +122,41 @@ type Deps struct {
 // Announcer announces the fleet's build (Run) and remembers the latest announcement's commit
 // (FleetCommit) for /healthz.
 type Announcer struct {
-	deps  Deps
+	deps Deps
+	// clock is Deps.Clock, the real clock when that is nil.
+	clock clock.Clock
 	fleet atomic.Pointer[string]
+	// passes counts the passes made (pass, AnnouncerPassed's pass).
+	passes atomic.Uint64
 }
+
+// AnnouncerPassed is the line an Announcer writes at Debug for each pass it makes (pass), so a test
+// can count a process's passes from its log; production's handler, at Info, leaves it out. Its
+// fields are pass, the pass's number in this Announcer's life, from 1; found, what the pass found:
+// passAnnounceFailed, passNothingUnpublished, passPublished or passPublishFailed; and fleet, the
+// latest announcement's commit as the pass left it (FleetCommit), or "" while there is none.
+const AnnouncerPassed = "dispatch: the fleet's build announcer made a pass"
+
+// What an announcer pass found (AnnouncerPassed's found).
+const (
+	// passAnnounceFailed: the announcing transaction failed, so the pass published what it could.
+	passAnnounceFailed = "announce failed"
+	// passNothingUnpublished: every announcement was published, so the pass published nothing.
+	passNothingUnpublished = "nothing unpublished"
+	// passPublished: an announcement awaited publishing, and the publish ended without an error
+	// (it publishes nothing while the publisher is down or another process holds the lock).
+	passPublished = "published"
+	// passPublishFailed: an announcement awaited publishing, and the publish failed.
+	passPublishFailed = "publish failed"
+)
 
 // New returns an Announcer over deps; nothing runs until Run.
 func New(deps Deps) *Announcer {
-	return &Announcer{deps: deps}
+	c := deps.Clock
+	if c == nil {
+		c = clock.Real()
+	}
+	return &Announcer{deps: deps, clock: c}
 }
 
 // FleetCommit is the commit of the latest announcement as of this process's last pass, nil when
@@ -150,8 +185,21 @@ func (a *Announcer) Run(ctx context.Context) {
 	}
 }
 
-// pass is one pass of Run.
+// pass is one pass of Run. It writes AnnouncerPassed.
 func (a *Announcer) pass(ctx context.Context) {
+	found := a.announceAndPublish(ctx)
+	n := a.passes.Add(1)
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		fleet := ""
+		if commit := a.fleet.Load(); commit != nil {
+			fleet = *commit
+		}
+		slog.Debug(AnnouncerPassed, "pass", n, "found", found, "fleet", fleet)
+	}
+}
+
+// announceAndPublish is pass's work, and answers what it found.
+func (a *Announcer) announceAndPublish(ctx context.Context) string {
 	unpublished, err := a.announce(ctx)
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("dispatch: announce the server fleet's build", "error", err)
@@ -159,11 +207,21 @@ func (a *Announcer) pass(ctx context.Context) {
 	// A fleet with nothing to publish costs no publishing transaction each Interval. A pass whose
 	// announce failed cannot tell, so it tries.
 	if !unpublished && err == nil {
-		return
+		return passNothingUnpublished
 	}
-	if err := a.publish(ctx); err != nil && ctx.Err() == nil {
-		slog.Warn("dispatch: publish the server fleet's build; the next pass retries", "error", err)
+	found := passPublished
+	if err != nil {
+		found = passAnnounceFailed
 	}
+	if err := a.publish(ctx); err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("dispatch: publish the server fleet's build; the next pass retries", "error", err)
+		}
+		if found == passPublished {
+			found = passPublishFailed
+		}
+	}
+	return found
 }
 
 // announce reads the latest announcement and, holding announceLock, inserts a new one when every
@@ -178,7 +236,7 @@ func (a *Announcer) pass(ctx context.Context) {
 // transaction has committed. It reports whether an announcement awaits publishing: one this pass
 // inserted, or one its read found unpublished, which a pass that missed the lock learns as well.
 func (a *Announcer) announce(ctx context.Context) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, statementTimeout)
+	ctx, cancel := a.clock.WithTimeout(ctx, statementTimeout)
 	defer cancel()
 	tx, err := a.deps.Pool.Begin(ctx)
 	if err != nil {
@@ -262,7 +320,7 @@ func (a *Announcer) publish(ctx context.Context) error {
 	if a.deps.Publisher == nil || !a.deps.Publisher.Connected() {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, publishPassTimeout)
+	ctx, cancel := a.clock.WithTimeout(ctx, publishPassTimeout)
 	defer cancel()
 	tx, err := a.deps.Pool.Begin(ctx)
 	if err != nil {
@@ -299,7 +357,7 @@ func (a *Announcer) publish(ctx context.Context) error {
 			failed = err
 			break
 		}
-		publishCtx, cancelPublish := context.WithTimeout(ctx, publishTimeout)
+		publishCtx, cancelPublish := a.clock.WithTimeout(ctx, publishTimeout)
 		duplicate, err := a.deps.Publisher.PublishReportingDuplicateWithin(publishCtx, item)
 		cancelPublish()
 		if err != nil {

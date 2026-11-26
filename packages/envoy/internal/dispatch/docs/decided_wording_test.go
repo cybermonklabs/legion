@@ -20,11 +20,11 @@ func TestARestorationRefusesAnAskAnsweredSinceItsPlan(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 	settleCurrentGeneration(t, service, original)
 	answer, _ := decidedShip("answered")
-	if err := closeSource(ctx, service, original, "ship", blockAskOn(t, service, original, "ship"), answer, nil); err != nil {
+	if err := closeSource(t, ctx, service, original, "ship", blockAskOn(t, service, original, "ship"), answer, nil); err != nil {
 		t.Fatal(err)
 	}
 	source := blockAskOn(t, service, original, "ship")

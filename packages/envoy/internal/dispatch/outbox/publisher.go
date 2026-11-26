@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -113,6 +114,20 @@ type Deps struct {
 	// unexported, so only this package sets it and no importer can shorten the wait cmd/dispatch
 	// runs.
 	forwardAckWait time.Duration
+	// keepClock is what a role forward's keep reads the moment of its keep from (roleForward.keep),
+	// the KeptAt its handover's forward carries, and nil is the real clock, which is what
+	// cmd/dispatch runs. A test names the moment with a fake; it is unexported, so no importer
+	// can.
+	keepClock clock.Clock
+	// forwardBound is how long a role route's forward waits in its event's list for an attempt of
+	// the comment that names no session yet and that no one key stands for, measured from that
+	// attempt's creation, and zero is unnamedForwardBound, which is what cmd/dispatch runs. The
+	// read of a batch's mention deliveries and the fallback pass's read of one comment's judge
+	// each attempt's age against it (mentionDeliveryQuery). A test sets it longer than its own
+	// run, so that an attempt it stages past its lease reads within the bound however long the
+	// test takes to read it, which the two leases of unnamedForwardBound leave a staged attempt
+	// less than one lease of; it is unexported, so no importer can.
+	forwardBound time.Duration
 	// PublishFailures counts a destination of a publish attempt that did not reach it, by
 	// reason (countPublishFailure), and RoleForwardsHeld a role forward its holder's resolution
 	// held pending, by that holder's state (countRoleForwardHeld). cmd/dispatch registers both
@@ -147,6 +162,23 @@ func (d Deps) forwardAckTimeout() time.Duration {
 		return d.forwardAckWait
 	}
 	return roleForwardAckTimeout
+}
+
+// keptNow is the moment of a keep, on keepClock.
+func (d Deps) keptNow() time.Time {
+	if d.keepClock == nil {
+		return time.Now()
+	}
+	return d.keepClock.Now()
+}
+
+// unnamedForwardWait is the bound this outbox's role forwards wait an unnamed mention out for
+// (unnamedForwardBound), from forwardBound.
+func (d Deps) unnamedForwardWait() time.Duration {
+	if d.forwardBound > 0 {
+		return d.forwardBound
+	}
+	return unnamedForwardBound
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under
@@ -455,6 +487,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			}
 			result.lastID = max(result.lastID, event.event.ID)
 			result.sent++
+			result.sentIDs = append(result.sentIDs, event.event.ID)
 		}
 	}
 	releaseUnacknowledged := false
@@ -512,16 +545,19 @@ func connectionReplaced(changed <-chan struct{}) bool {
 
 // batchResult is what one batch (scanBatch) came to. sendable is how many of its events were due,
 // sent how many of them it sent at least one envelope of, from firstID to lastID, the first send no
-// earlier than started, and published how many it marked published. blocked is a batch after which
-// the scan stops: a row it could not read, an event any settle of it released - an owner's own as
-// its chains finish, or the batch's final one - or its record failed. fenced is a send of it
-// meeting the publisher hold's deadline, or its record finding the hold another's, and natsLost
-// a probe of its connection failing after its sends failed for the connection. excluded
-// is a read that left the owners the batches beside it held out (lanes.reserve): it may have read
-// past their events, so the scan reads again once every batch has given its owners back.
+// earlier than started, and published how many it marked published. sentIDs is the ids of those
+// sent events, in the order the batch read them, which the scan logs on the batch's sent batch
+// line and, for a batch that failed and so left them unpublished, on its failure line. blocked is
+// a batch after which the scan stops: a row it could not read, an event any settle of it released
+// - an owner's own as its chains finish, or the batch's final one - or its record failed. fenced is
+// a send of it meeting the publisher hold's deadline, or its record finding the hold another's,
+// and natsLost a probe of its connection failing after its sends failed for the connection.
+// excluded is a read that left the owners the batches beside it held out (lanes.reserve): it may
+// have read past their events, so the scan reads again once every batch has given its owners back.
 type batchResult struct {
 	sendable, sent, published int
 	firstID, lastID           int64
+	sentIDs                   []int64
 	started                   time.Time
 	blocked, fenced           bool
 	natsLost                  bool
@@ -1041,7 +1077,7 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 	var found *lookups
 	if err := deps.lanes.statement(func() error {
 		var err error
-		found, err = loadLookups(ctx, deps.Store.Pool, want)
+		found, err = loadLookups(ctx, deps.Store.Pool, want, deps.unnamedForwardWait())
 		return err
 	}); err != nil {
 		return nil, err

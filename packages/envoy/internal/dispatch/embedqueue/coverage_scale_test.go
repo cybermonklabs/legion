@@ -26,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // coverageScaleURLEnv names the Postgres server TestCoverageStatementScale builds its corpora on,
@@ -417,7 +418,9 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 	if err != nil {
 		t.Fatalf("open %s: %v", name, err)
 	}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the pool on "+name+" to come back, so the pool closes", database.Pool.Close)
+	})
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate %s: %v", name, err)
 	}

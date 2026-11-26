@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible holds the report to its two
@@ -66,7 +67,9 @@ func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *tes
 	if err != nil {
 		t.Fatalf("open a pool of one connection: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the pool of one connection to come back, so the pool closes", pool.Close)
+	})
 	single := &store.Store{Pool: store.NewPool(pool)}
 
 	// One row of each page of embeddings updated, so no page is all-visible, and the statistics

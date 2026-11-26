@@ -38,16 +38,7 @@ func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
 	held.armed.Store(true)
 	renamed := make(chan *httptest.ResponseRecorder, 1)
 	go func() { renamed <- correctTitle(t, fixture.handler, document.ID, corrected) }()
-	testwait.Until(t, "the correction's update of the document's title to be held", func() (string, bool) {
-		select {
-		case <-held.reached:
-			return "held", true
-		case response := <-renamed:
-			t.Fatalf("the correction answered before its update was held: status=%d body=%s", response.Code, response.Body.String())
-		default:
-		}
-		return "not yet run", false
-	})
+	awaitEntered(t, "its update of the document's title", held.reached, renamed)
 
 	commented := make(chan *httptest.ResponseRecorder, 1)
 	go func() {

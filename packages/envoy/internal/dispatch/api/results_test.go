@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -688,15 +688,17 @@ func resultsGitHubServed(
 	checkRuns http.HandlerFunc,
 ) (http.Handler, *store.Store, *server) {
 	t.Helper()
-	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns))
+	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, testServerOptions{}, repos, held, defaultBranch, answer, checkRuns))
 	return handler, database, served
 }
 
-// resultsGitHubOptions is the server resultsGitHubServed builds, as options a test can add to
-// before it builds the server itself: its own store and the rename pairs read from it
-// (renamedRepositoryStore).
+// resultsGitHubOptions is options, its GitHub App and API base set to the fixture's: the server
+// resultsGitHubServed builds, as options a test can add to before it builds the server itself
+// (its own store and the rename pairs read from it, renamedRepositoryStore), or that a test hands
+// in already holding its own (resultsGitHubCheckRunsWith).
 func resultsGitHubOptions(
 	t *testing.T,
+	options testServerOptions,
 	repos, held map[string]bool,
 	defaultBranch string,
 	answer func(base, head string) (int, string),
@@ -719,7 +721,7 @@ func resultsGitHubOptions(
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 	})
 	// The read that says whether Dispatch can see the repository at all
 	// (delivery.Branches.DefaultBranchOf) is refused for a repository repos does not hold, as
@@ -759,10 +761,9 @@ func resultsGitHubOptions(
 		mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", checkRuns)
 	}
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
-	return testServerOptions{
-		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: upstream,
-	}
+	options.app = &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}
+	options.githubAPIBase = upstream
+	return options
 }
 
 // A result at a commit the repository of the check's issue does not hold is refused, and
@@ -885,7 +886,7 @@ func TestResultAtAnUnreadableRepositoryIsStoredAndComparesWithNothing(t *testing
 // unreadable repository refuses nothing. The pair is seeded by SQL before the server is built.
 func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *testing.T) {
 	t.Parallel()
-	options := resultsGitHubOptions(t, map[string]bool{"acme/gadgets": true}, map[string]bool{headCommit: true}, "main",
+	options := resultsGitHubOptions(t, testServerOptions{}, map[string]bool{"acme/gadgets": true}, map[string]bool{headCommit: true}, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)
 	options.store, options.renames = renamedRepositoryStore(t, "RESN", "oldco/gadgets", "acme/gadgets")
 	handler, _, _ := newTestServer(t, options)
@@ -1029,7 +1030,7 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
 		repo := r.PathValue("owner") + "/" + r.PathValue("repo")
@@ -1919,7 +1920,7 @@ func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
 // is the whole of what the answer needs (delivery.Branches.CommitOnBranch). The branch the
 // check compares with is named from the default branch this process resolved before the App
 // lost the repository, which delivery keeps across a read that can say nothing exactly so
-// that this answer survives (delivery/branch.go:261-273).
+// that this answer survives (delivery/branch.go:263-275).
 //
 // This pins the reviewer's finding on pull request #3530 (dispatch://INFRA-1522):
 // branchBases compared with nothing as soon as the repository read answered unreadable, so
@@ -2231,7 +2232,7 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 	})
 	var issueKey string
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
@@ -2287,7 +2288,7 @@ func TestAResultAtTheHeadOfAPullRequestTitledAfterAnotherRepositorysIssueStandsA
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 	})
 	// The repository is readable, so a result at no attributed head is `other_commit` rather
 	// than `unknown`.
@@ -2356,7 +2357,7 @@ func TestAResultOfAnIssueRecordedUnderARepositorysOldNameStandsAtItsHead(t *test
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
@@ -2467,7 +2468,7 @@ func TestChildsResultInItsOwnRepositoryStandsAtNoBasisOnTheParentsTab(t *testing
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 	})
 	// Both repositories read, so a commit heading no pull request Dispatch knows is
 	// `other_commit` there rather than `unknown`.
@@ -2605,7 +2606,7 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
@@ -2764,6 +2765,11 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 			issue.Key+" the work", repo, newHeadCommit, repo)
 	})
 	served.commitPulls = delivery.CommitPullReads{}
+	// The read stamps its claim and its settling with the server's own moment (stampedNow), on a
+	// fake here that stands still, so the span the claim below is judged against starts at a
+	// moment the test reads off it.
+	stamps := clocktest.New(time.Now())
+	served.stampClock = stamps
 
 	for _, read := range []struct {
 		name  string
@@ -2783,9 +2789,9 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 	}
 	// Settled, not merely bounded: the pair is refused a claim far past
 	// delivery.CommitPullReadStaleAfter, which is what keeps the call off the refetches of the
-	// hour that follows. The settling's own moment is the read's, a second or so before this
-	// one, so a claim a minute short of the span is inside it.
-	if served.commitPulls.Claim("acme/widgets", headCommit, time.Now().Add(delivery.CommitPullSettledFor-time.Minute)) {
+	// hour that follows. The settling's moment is the reads' own, the fake's, so a claim a
+	// nanosecond short of the span is inside it.
+	if served.commitPulls.Claim("acme/widgets", headCommit, stamps.Now().Add(delivery.CommitPullSettledFor-time.Nanosecond)) {
 		t.Fatal("a claim of the superseded commit inside the settled span was granted, want it refused")
 	}
 }
@@ -3518,9 +3524,15 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 // resultsGitHubCheckRuns is resultsGitHub over acme/widgets whose check runs fake lists.
 func resultsGitHubCheckRuns(t *testing.T) (http.Handler, *store.Store, *checkRunsFake) {
 	t.Helper()
+	return resultsGitHubCheckRunsWith(t, testServerOptions{})
+}
+
+// resultsGitHubCheckRunsWith is resultsGitHubCheckRuns on a server built with options.
+func resultsGitHubCheckRunsWith(t *testing.T, options testServerOptions) (http.Handler, *store.Store, *checkRunsFake) {
+	t.Helper()
 	fake := newCheckRunsFake()
-	handler, database, _ := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
-		func(string, string) (int, string) { return http.StatusOK, "diverged" }, fake.serve)
+	handler, database, _, _ := newRegisteredTestServer(t, resultsGitHubOptions(t, options, map[string]bool{"acme/widgets": true}, nil, "main",
+		func(string, string) (int, string) { return http.StatusOK, "diverged" }, fake.serve))
 	return handler, database, fake
 }
 
@@ -3561,14 +3573,6 @@ func issueOfProject(t *testing.T, handler http.Handler, project, title, verifica
 	key := decodeBody[model.Issue](t, response).Key
 	uploadDocument(t, handler, "/api/v1/issues/"+key, "verification.md", verification)
 	return key
-}
-
-// shortenCIReadDeadline sets the bound of one head's check-runs read for the test.
-func shortenCIReadDeadline(t *testing.T, deadline time.Duration) {
-	t.Helper()
-	before := ciReadDeadline
-	ciReadDeadline = deadline
-	t.Cleanup(func() { ciReadDeadline = before })
 }
 
 // ciVerdictLineOf is the pull-request body line of a check written by ciCheckBlock whose run
@@ -3710,12 +3714,13 @@ func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 
 // A read Dispatch could not make is no verdict: GitHub's 500, a read held past the deadline and
 // a deployment holding no App key each leave the check with no result and a detail saying what
-// GitHub answered, never a pass and never a fail. The held read is cut at the deadline: the fake
-// answers a held read nothing until its caller gives up, the GitHub client's own bound on a call
-// (githubapp.RequestTimeout) is raised past any run, so the deadline the read's context carries is
-// the one thing that can end it, and the detail names that deadline.
+// GitHub answered, never a pass and never a fail.
 func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
-	handler, database, fake := resultsGitHubCheckRuns(t)
+	// The GitHub client's own bound on a call runs on the wall clock, so this row's client takes
+	// one past any run (githubRequestTimeout): only ciReadDeadline, on the fake the row moves, may
+	// end the read GitHub holds.
+	clock := clocktest.New(time.Now())
+	handler, database, fake := resultsGitHubCheckRunsWith(t, testServerOptions{clock: clock, githubRequestTimeout: 24 * time.Hour})
 	issue := issueInRepository(t, handler, "RESCU", "acme/widgets", "Unread")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
 	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
@@ -3725,24 +3730,25 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 	assertUnread(t, checkOf(t, readResults(t, handler, issue.Key), "c1"),
 		"status 500", "Server Error at the check runs of "+headCommit)
 
+	// A read GitHub holds is cut at ciReadDeadline on the server's clock, which the test moves
+	// there once GitHub holds the read: the deadline is armed before the read's request leaves, so
+	// moved as soon as it is armed it would end a read GitHub was never asked.
 	fake.failWith(0)
 	fake.holdEveryRead(t)
-	shortenCIReadDeadline(t, 300*time.Millisecond)
-	requestTimeout := githubapp.RequestTimeout
-	githubapp.RequestTimeout = time.Hour
-	t.Cleanup(func() { githubapp.RequestTimeout = requestTimeout })
-	// The read runs on a goroutine of its own, and the wait for its answer has one bound, the test
-	// binary's deadline less testwait's margin: the fake answers a held read only once its caller
-	// gives up, so a read whose deadline never reaches the GitHub call fails here by name.
-	answered := make(chan *httptest.ResponseRecorder, 1)
+	asked := fake.reads(headCommit)
+	held := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		answered <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/results", nil, "alice")
+		held <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/results", nil, "alice")
 	}()
-	held := testwait.Receive(t, "the results read whose check-runs read GitHub holds to answer", answered)
-	if held.Code != http.StatusOK {
-		t.Fatalf("read the results of %s: status=%d body=%s", issue.Key, held.Code, held.Body.String())
+	deadline := clock.Now().Add(ciReadDeadline)
+	clock.AwaitArmedAt(t, "the check-runs read's deadline", deadline)
+	testwait.Eventually(t, "GitHub to hold the check-runs read", func() bool { return fake.reads(headCommit) > asked })
+	clock.Set(deadline)
+	response := testwait.Receive(t, "the held read's answer once its deadline passed", held)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the results of %s: status=%d body=%s", issue.Key, response.Code, response.Body.String())
 	}
-	assertUnread(t, checkOf(t, decodeBody[issueResults](t, held), "c1"), "no answer within 300ms")
+	assertUnread(t, checkOf(t, decodeBody[issueResults](t, response), "c1"), "no answer within "+ciReadDeadline.String())
 
 	keyless, keylessDatabase, deps := newTestServer(t, testServerOptions{})
 	if deps.GitHub != nil {
@@ -4254,7 +4260,8 @@ func readOnlyResultsRig(t *testing.T) (*brokerTokenRig, *readOnlyResultsGitHub) 
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		// The installation token expires a day ahead (stagedAhead), staged state: the client caches it.
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
@@ -4815,7 +4822,7 @@ func TestACIReadOfAStoredHeadRowSendsGitHubNoNameItDoesNotAllow(t *testing.T) {
 			switch {
 			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 				w.WriteHeader(http.StatusCreated)
-				fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+				fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 			case strings.HasSuffix(r.URL.Path, "/installation"):
 				fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read"}}`)
 			case strings.HasSuffix(r.URL.Path, "/check-runs"):

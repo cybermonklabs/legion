@@ -18,18 +18,32 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // maxStackEnv carries the cap, in bytes, to the child process the parent runs, which caps its
 // stacks at that value: a child run by hand with it set runs the body under the cap it names.
 const maxStackEnv = "ENVOY_TEST_MAX_STACK_BYTES"
 
+// childMargin is how long before the parent's deadline the child's ends: the time the parent takes
+// to read the child's output and report it.
+const childMargin = time.Second
+
 // Under runs body with every goroutine's stack capped at maxStackBytes.
 //
 // In the parent it starts the test binary again for this one test, with the cap in the
 // environment, and mirrors the child's result: a skipped child skips the parent, a passing child
 // passes, and any failure shows the child's whole output - a stack overflow's fatal error among it.
-// In the child, where the cap is set, it runs body under that cap.
+// The child runs under what is left of the parent's deadline less childMargin (-test.timeout), so
+// a wait in the body gives up by name (testwait) before the parent's own alarm and the parent has
+// time left to print why; with less than that left, the child gets a millisecond and fails at once
+// rather than run with no deadline. Under no deadline the child has none either. -test.timeout
+// watches only the child's tests, so the parent runs the child on the shared wait's context
+// (testwait.Context): a child still running once the parent's deadline less testwait's margin has
+// passed, one held in its TestMain after its tests among them, is killed, and the parent fails
+// with its output. In the child, where the cap is set, it runs body under that cap.
 func Under(t *testing.T, maxStackBytes int, body func(t *testing.T)) {
 	t.Helper()
 	if value := os.Getenv(maxStackEnv); value != "" {
@@ -41,7 +55,11 @@ func Under(t *testing.T, maxStackBytes int, body func(t *testing.T)) {
 		body(t)
 		return
 	}
-	child := exec.Command(os.Args[0], "-test.run", runPattern(t.Name()), "-test.v", "-test.count=1")
+	args := []string{"-test.run", runPattern(t.Name()), "-test.v", "-test.count=1"}
+	if deadline, ok := t.Deadline(); ok {
+		args = append(args, "-test.timeout="+max(time.Until(deadline)-childMargin, time.Millisecond).String())
+	}
+	child := exec.CommandContext(testwait.Context(t), os.Args[0], args...)
 	child.Env = append(os.Environ(), maxStackEnv+"="+strconv.Itoa(maxStackBytes))
 	output, err := child.CombinedOutput()
 	if err == nil && hasVerdict(string(output), "SKIP", t.Name()) {

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // refusingPublisher refuses one topic as NATS refuses an envelope it cannot take, and publishes
@@ -93,7 +94,7 @@ func TestRunSendsAStandInForARefusedDestinationAndIsDoneOnceThatIsRefusedToo(t *
 	stop := runDeps(t, deps)
 	defer stop()
 
-	waitFor(t, 7*time.Second, "the event marked published past its refused destination", func() bool {
+	testwait.Eventually(t, "the event marked published past its refused destination", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	attempts, published := publisher.snapshot()

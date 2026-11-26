@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -54,8 +55,9 @@ const SourceColumns = `project_key, id, repo, branch, enabled, installation_id, 
 
 // syncTimeout bounds one whole sync — every GitHub call plus the projection —
 // so a slow upstream ends one source's shared flight (and so every caller
-// waiting on it) instead of hanging on indefinitely.
-var syncTimeout = 2 * time.Minute
+// waiting on it) instead of hanging on indefinitely. It runs on the importer's
+// clock (NewImporterOn), so a test moves a fake past it rather than shortening it.
+const syncTimeout = 2 * time.Minute
 
 // errSourceMoved is a sync that found the source's repo or branch changed
 // while its fetch was in flight: nothing was written, and the next trigger
@@ -98,6 +100,9 @@ type Importer struct {
 	store  *store.Store
 	github *githubapp.Client
 	events *events.Broker
+	// clock is what a flight's own deadline runs on (syncTimeout): the real clock from
+	// NewImporter, and a test's clocktest.Fake from NewImporterOn.
+	clock clock.Clock
 
 	// GitHubReads records each pass of the running import (the pass syncAllLeased runs under its
 	// lease) as the newest attempt of githubreads.ArchitectureImport, which GET /healthz answers:
@@ -149,9 +154,15 @@ type Importer struct {
 // is the "no app credentials" state: every sync answers ErrNoAppKey), and the
 // event broker.
 func NewImporter(database *store.Store, github *githubapp.Client, broker *events.Broker) *Importer {
+	return NewImporterOn(clock.Real(), database, github, broker)
+}
+
+// NewImporterOn is NewImporter with each flight's own deadline on c: clock.Real from
+// NewImporter, and a test's clocktest.Fake, which ends a sync only when the test moves it.
+func NewImporterOn(c clock.Clock, database *store.Store, github *githubapp.Client, broker *events.Broker) *Importer {
 	owner, abandon := context.WithCancel(context.Background())
 	return &Importer{
-		store: database, github: github, events: broker, owner: owner, abandon: abandon,
+		store: database, github: github, events: broker, clock: c, owner: owner, abandon: abandon,
 		pushes: map[string]*pushedSource{},
 	}
 }

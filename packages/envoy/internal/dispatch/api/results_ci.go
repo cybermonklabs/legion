@@ -26,8 +26,8 @@ import (
 // ciReadDeadline bounds the whole read of one head's check runs, the token mint and every page
 // together: the route is read inside a role's turn and inside the reviewer's gate, and a read
 // that runs out is a failed read the next one repairs. githubapp.RequestTimeout bounds one call
-// at twice this, so the bound is the context's. A var so a test can shorten it.
-var ciReadDeadline = 10 * time.Second
+// at twice this, so the bound is the context's, which runs on the server's clock.
+const ciReadDeadline = 10 * time.Second
 
 // ciCheckRunPages bounds the pages of one head's check runs, a hundred runs a page, as
 // cireconcile bounds its own reads of the same listing: a listing GitHub keeps reporting full
@@ -167,7 +167,7 @@ func (s *server) readCIRuns(ctx context.Context, head delivery.NewestHead, names
 	if err != nil {
 		return nil, fmt.Errorf("the pull request row's %w", err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, ciReadDeadline)
+	ctx, cancel := s.clock().WithTimeout(ctx, ciReadDeadline)
 	defer cancel()
 	runs, err := s.readCIRunPages(ctx, owner, repo, head.HeadSHA, names)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {

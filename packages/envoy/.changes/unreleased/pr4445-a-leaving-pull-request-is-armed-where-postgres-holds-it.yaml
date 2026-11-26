@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A live Delivery timeline or measures frame and a GET of the same window could differ by one pull
+  request. The live hub timed a preset window to the nanosecond, while PostgreSQL holds times to
+  the microsecond, so when the hub read its clock less than a microsecond past a pull request's
+  edge it dropped a pull request the GET still returned. The hub now times each preset window to
+  the microsecond, as PostgreSQL does, and recomputes a view when that window first passes a pull
+  request or a UTC midnight, so the frame and the GET agree at every moment.

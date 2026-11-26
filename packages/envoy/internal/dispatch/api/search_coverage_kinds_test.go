@@ -3,53 +3,22 @@ package api
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// searchFreshness is how long a write has to become findable. A person typing the words of
-// something they just wrote expects it back, so the index is held to a stated wait rather than
-// to "eventually" (dispatch://INFRA-1042, check k5).
-const searchFreshness = 60 * time.Second
-
-// within runs probe until it answers true, and fails the test once a probe begun more than
-// searchFreshness after written still found the write missing. written is the write's own time
-// (writtenAt) and each probe's start is read just before it, both on the database's clock, so the
-// span is the product's: from the write to a search that should have found it. A probe that misses
-// the write proves the index did not hold it when that probe began, and a correct index holds it
-// by searchFreshness after the write, so a loaded machine that only looks late fails nothing, and
-// an index that holds it late fails however soon the test looks. It reads every 20 ms, and a check
-// that holds at once - which every one of these does, since each kind is indexed in the write's
-// own transaction and the block-index tick these tests drive themselves has already run
-// (INFRA-988) - costs one read.
-func within(t *testing.T, database *store.Store, written time.Time, what string, probe func() bool) {
+// requireIndexed fails the test unless probe answers true now. A person typing the words of
+// something they just wrote expects it back, so the index is held to a stated wait, sixty
+// seconds, rather than to "eventually" (dispatch://INFRA-1042, check k5); every kind here is
+// indexed in the write's own transaction, and the block-index tick these tests drive themselves
+// has already run (INFRA-988), so each is findable as soon as the test has written it.
+func requireIndexed(t *testing.T, what string, probe func() bool) {
 	t.Helper()
-	for {
-		asked := databaseNow(t, database.Pool)
-		if probe() {
-			return
-		}
-		if after := asked.Sub(written); after > searchFreshness {
-			t.Fatalf("%s was still missing from a search begun %s after its write, both on the database's clock; want it within %s of the write",
-				what, after, searchFreshness)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !probe() {
+		t.Fatalf("%s was not there once the write and the block-index tick had run, which index it", what)
 	}
-}
-
-// writtenAt is when the row of table whose column reads id was written, on the database's clock:
-// its created_at, the start of the transaction that wrote it and indexed it.
-func writtenAt(t *testing.T, database *store.Store, table, column, id string) time.Time {
-	t.Helper()
-	var at time.Time
-	if err := database.Pool.QueryRow(context.Background(),
-		`select created_at from `+table+` where `+column+`::text = $1`, id).Scan(&at); err != nil {
-		t.Fatalf("read when the %s row %s was written: %v", table, id, err)
-	}
-	return at
 }
 
 // windowsUnder counts the embeddings windows of kind kind the indexers wrote under one owner:
@@ -66,10 +35,10 @@ func windowsUnder(t *testing.T, database *store.Store, kind, owner string) int64
 }
 
 // A write of each kind the index holds - an issue, and a document, a comment, an ask and a
-// message - is returned by a search of its own words within 60 seconds of the write, and the
-// blocks of the document, the comment, the ask and the message are indexed as windows under
-// them over that same wait, each measured from its own row's write on the database's clock
-// (within).
+// message - is returned by a search of its own words as soon as the write and the block-index
+// tick have run, well inside the sixty seconds check k5 allows (requireIndexed reads once), and
+// the blocks of the document, the comment, the ask and the message are indexed as windows under
+// them by then.
 func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -77,34 +46,32 @@ func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 	corpus := seedSearchCorpus(t, handler)
 	// An item's and a document's windows are the block-index tick's to write, not the write's
 	// (INFRA-988), and no tick runs behind a test server, so the test runs the one the
-	// deployment's reconciler would have run in the seconds this check allows.
+	// deployment's reconciler would run before it searches.
 	windowOwedOwners(t, deps)
 
-	for _, item := range []struct{ query, kind, id, table, column string }{
-		{"astrolabe", "document", corpus.primaryArtifactID, "artifacts", "id"},
-		{"sextant", "comment", corpus.commentID, "comments", "id"},
-		{"quadrant", "ask", corpus.askID, "asks", "id"},
-		{"compass", "message", corpus.messageID, "messages", "id"},
-		{"instruments", "issue", corpus.issueKey, "issues", "key"},
+	for _, item := range []struct{ query, kind, id string }{
+		{"astrolabe", "document", corpus.primaryArtifactID},
+		{"sextant", "comment", corpus.commentID},
+		{"quadrant", "ask", corpus.askID},
+		{"compass", "message", corpus.messageID},
+		{"instruments", "issue", corpus.issueKey},
 	} {
-		written := writtenAt(t, database, item.table, item.column, item.id)
-		within(t, database, written, "the "+item.kind+" searched for by its own word "+item.query, func() bool {
+		requireIndexed(t, "the "+item.kind+" searched for by its own word "+item.query, func() bool {
 			return searchResultOf(searchResponse(t, handler, "q="+item.query), item.kind, item.id) != nil
 		})
 	}
 
-	for _, window := range []struct{ kind, owner, table, id string }{
-		{"document_block", corpus.primaryArtifactID, "artifacts", corpus.primaryArtifactID},
-		{"comment_block", "comment/" + corpus.commentID, "comments", corpus.commentID},
-		{"ask_part", "ask/" + corpus.askID, "asks", corpus.askID},
-		{"message_block", "message/" + corpus.messageID, "messages", corpus.messageID},
+	for _, window := range []struct{ kind, owner string }{
+		{"document_block", corpus.primaryArtifactID},
+		{"comment_block", "comment/" + corpus.commentID},
+		{"ask_part", "ask/" + corpus.askID},
+		{"message_block", "message/" + corpus.messageID},
 	} {
-		written := writtenAt(t, database, window.table, "id", window.id)
-		within(t, database, written, "a "+window.kind+" window under "+window.owner, func() bool {
+		requireIndexed(t, "a "+window.kind+" window under "+window.owner, func() bool {
 			return windowsUnder(t, database, window.kind, window.owner) > 0
 		})
 	}
-	within(t, database, writtenAt(t, database, "issues", "key", corpus.issueKey), "the issue's own embeddings row", func() bool {
+	requireIndexed(t, "the issue's own embeddings row", func() bool {
 		return windowsUnder(t, database, "issue", corpus.issueKey) == 1
 	})
 }

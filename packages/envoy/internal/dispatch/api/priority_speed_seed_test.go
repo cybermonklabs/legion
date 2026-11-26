@@ -12,10 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// How the corpus the two speed tests are measured over is built, and what is in it. It is a file
-// of its own because none of it is a measurement: a reader asking what each number is held to
-// reads api/priority_speed_test.go, and a reader asking what was in the database when it was
-// taken reads this one.
+// How the corpus the three reading tests of api/priority_speed_test.go and its timing lane
+// (api/priority_speed_timing_test.go) read is built, and what is in it. It is a file of its own
+// because none of it is a reading: a reader asking what each number is held to reads those two
+// files, and a reader asking what was in the database when it was taken reads this one.
 //
 // The whole corpus is five COPY statements into the database storetest.Open cloned from this
 // package's migrated template (priority_fixture_test.go): 2,500 open issues over 18 projects,
@@ -58,22 +58,40 @@ const (
 var speedCorpusStatuses = []string{"triage", "icebox", "backlog", "todo", "in_progress", "testing", "needs_review", "retro"}
 
 // speedCorpusShape is the corpus as the readings address it: the server over it, the issue
-// carrying the most relations, the chain as deep as the cap and the priorities' ids; the
-// database under the server, which the counts explain each statement on, and the trace of what
-// the server sends for a counted request. The server reads through a traced pool of that
-// database, and the caller's identity is resolved on the untraced one, so a count is the read's
-// own statements and not the sign-in lookup every request makes.
+// carrying the most relations, the chain as deep as the cap, the priorities' ids, and the parent
+// of every issue that has one, as the corpus was written; the database under the server, which
+// the counts explain each statement on and settle the statistics of, and the trace of what the
+// server sends for a counted read. The server reads through a traced pool of that database, and
+// the caller's identity is resolved on the untraced one, so a count is the read's own statements
+// and not the sign-in lookup every request makes.
 type speedCorpusShape struct {
 	handler    http.Handler
 	server     *server
 	heaviest   string
 	chain      []string
 	priorities []string
+	parents    map[string]string
 	database   *store.Store
 	trace      *speedTrace
 	// moreRelations are the speedCorpusMoreRelations tuples growSpeedPriorities writes, once
 	// every other reading is taken.
 	moreRelations [][]any
+}
+
+// walkRows is the rows the relation read's inheritance walk climbs for page, the keys a page of
+// the listing holds: one for each of them and one for each issue above it, which is what
+// issueAdvancesTerms' advances_chain answers, counted here from the parents the corpus was
+// written with rather than read back through SQL of the same shape. The walk stops at the
+// parent-depth cap, and the deepest chain of the corpus is exactly as deep as that cap, so the
+// whole of every chain counts.
+func (corpus speedCorpusShape) walkRows(page []string) int {
+	rows := 0
+	for _, key := range page {
+		for at, above := key, true; above; at, above = corpus.parents[at] {
+			rows++
+		}
+	}
+	return rows
 }
 
 // seedSpeedCorpus writes the corpus and answers the server over it. Every issue of the first
@@ -98,6 +116,7 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	statuses := make([]string, 0, speedCorpusIssues)
 	parented := make(map[string]bool, speedCorpusIssues)
 	chain := make([]string, 0, speedCorpusChain)
+	parents := make(map[string]string, speedCorpusIssues)
 	for index := range speedCorpusIssues {
 		project := 0
 		if index >= speedCorpusChain {
@@ -137,6 +156,7 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 		keys = append(keys, key)
 		statuses = append(statuses, status)
 		if parent != nil {
+			parents[key] = *parent
 			parented[*parent] = true
 		}
 		if index < speedCorpusChain {
@@ -209,7 +229,7 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	trace := &speedTrace{}
 	handler, _, _, srv := newRegisteredTestServer(t, testServerOptions{store: database, tracer: trace, identity: headerIdentity(database)})
 	return speedCorpusShape{
-		handler: handler, server: srv, heaviest: heaviest, chain: chain, priorities: priorityIDs,
+		handler: handler, server: srv, heaviest: heaviest, chain: chain, priorities: priorityIDs, parents: parents,
 		database: database, trace: trace, moreRelations: more,
 	}
 }

@@ -16,6 +16,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -53,10 +54,10 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect NATS: %v", err)
 	}
-	t.Cleanup(natsClient.Close)
+	t.Cleanup(func() { bustest.Close(t, natsClient) })
 
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-	startIntake(t, intake)
+	runIntake(t, intake)
 
 	envelopeFields := map[string]string{
 		"kind": "pr", "action": "closed", "repo": "acme/widgets", "number": "42",
@@ -69,16 +70,13 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 42, envelopeFields)
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 42, envelopeFields)
 
+	// deliver writes, and records the event's time, before it acknowledges a message, so once both
+	// envelopes are acknowledged what each caused is in place: the count read then holds the
+	// second envelope's upsert as well as the first's.
+	awaitAcknowledged(t, natsClient)
 	var count int
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if err := pool.QueryRow(ctx, "select count(*) from delivery_pull_requests where repo = $1 and number = $2", "acme/widgets", 42).Scan(&count); err != nil {
-			t.Fatalf("count rows: %v", err)
-		}
-		if count > 0 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
+	if err := pool.QueryRow(ctx, "select count(*) from delivery_pull_requests where repo = $1 and number = $2", "acme/widgets", 42).Scan(&count); err != nil {
+		t.Fatalf("count rows: %v", err)
 	}
 	if count != 1 {
 		t.Fatalf("delivery_pull_requests row count for acme/widgets#42 = %d, want exactly 1 (two envelopes for the same merge must dedupe through the shared upsert)", count)
@@ -99,14 +97,9 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	}
 
 	// deliver records the event's time only once the handler that stored the row has returned
-	// (intake.go deliver), so the row can be read before the freshness is: wait for it on a
-	// deadline of its own rather than reading it once.
+	// (intake.go deliver), and before it acknowledges, so the acknowledgement waited for above
+	// has it in place.
 	got, err := GetSettings(ctx, pool)
-	freshnessDeadline := time.Now().Add(10 * time.Second)
-	for err == nil && got.LastEventAt == nil && time.Now().Before(freshnessDeadline) {
-		time.Sleep(50 * time.Millisecond)
-		got, err = GetSettings(ctx, pool)
-	}
 	if err != nil || got.LastEventAt == nil {
 		t.Errorf("settings.LastEventAt not recorded after intake processed an event: %+v, %v", got, err)
 	}
@@ -125,7 +118,7 @@ func TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting(t *testing.T) {
 	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	checks, err := json.Marshal(cistore.Summary{
@@ -181,7 +174,7 @@ func TestIntakeAcksAnEnvelopeWithNoPayloadSilently(t *testing.T) {
 	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	publishGitHubEnvelope(t, natsClient, contracts.GithubSubject("unknown", "unknown", "comment"), "")
@@ -231,7 +224,7 @@ func TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead(t *test
 		})
 	})
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	topic := contracts.GithubResourceSubject("acme", "widgets", "pr", "7")
@@ -272,7 +265,7 @@ func TestIntakeWarnsOfAWorkflowRunWhoseRunIDIsNotAString(t *testing.T) {
 	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	topic := contracts.GithubWorkflowSubject("acme", "widgets", "deploy_yml", "completed")
@@ -319,7 +312,7 @@ func TestIntakeLogsAMalformedEnvelopePayload(t *testing.T) {
 			logs := captureIntakeLogs(t)
 			fake := newFakeGitHub(t)
 			natsClient := intakeTestClient(t)
-			startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+			runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 			awaitBoundDurable(t, natsClient)
 
 			publishGitHubEnvelope(t, natsClient, topic, envelope.payload)
@@ -354,7 +347,6 @@ func TestIntakeLogsAMalformedEnvelopePayload(t *testing.T) {
 // has no interest in.
 func TestIntakeDiscardsAnEnvelopeItDoesNotWantWithoutCallingGitHub(t *testing.T) {
 	t.Parallel()
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -365,7 +357,7 @@ func TestIntakeDiscardsAnEnvelopeItDoesNotWantWithoutCallingGitHub(t *testing.T)
 
 	natsClient := intakeTestClient(t)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-	startIntake(t, intake)
+	runIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
 	// A workflow file neither setting names, and another repository's run of the deploy file.
@@ -381,7 +373,7 @@ func TestIntakeDiscardsAnEnvelopeItDoesNotWantWithoutCallingGitHub(t *testing.T)
 	// Every one acknowledged: the ack floor reaches the last message the stream holds.
 	var info *natsgo.ConsumerInfo
 	var lastSeq uint64
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		stream, err := natsClient.JS().StreamInfo(bus.Stream)
 		if err != nil {
 			t.Fatalf("read stream info: %v", err)
@@ -405,12 +397,12 @@ func TestIntakeDiscardsAnEnvelopeItDoesNotWantWithoutCallingGitHub(t *testing.T)
 // TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives holds that a settings change reaches
 // the running intake with no rebind and no poll: the durable's filter subject never changes, so a
 // new deploy workflow path takes effect through the settings cache, which a real pglisten.Hub
-// wakes on the write's notification. The cache holds the new path within 2 s of the write. After
+// wakes on the write's notification (that the cache reads nothing between notifications is
+// TestTheIntakesReadNoSettingsWhileNothingChanges's). After
 // the change, an envelope for the new path is handled and one for the old path is discarded with
 // no GitHub call. The run it stores carries GitHub's created_at beside run_started_at, which the
 // served run, a re-run, moves past it.
 func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	oldPath, newPath := settings.DeployWorkflowPath, ".github/workflows/release.yml"
@@ -437,29 +429,37 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	settingsCache := newSettingsCache(pool, settingsWake(t, pool), tuningFor(t).log)
 	runSettingsCache(t, settingsCache)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settingsCache, unrenamed())
-	startIntake(t, intake)
+	runIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
 	settings.DeployWorkflowPath = newPath
 	if _, err := PutSettings(ctx, pool, settings, model.Actor{Kind: "system", ID: "delivery-test"}); err != nil {
 		t.Fatalf("change the deploy workflow path: %v", err)
 	}
-	waitFor(t, 2*time.Second, func() bool {
+	waitFor(t, func() bool {
 		held := settingsCache.Load()
 		return held != nil && held.DeployWorkflowPath == newPath
 	}, func() string {
-		return fmt.Sprintf("the running intake's settings = %+v two seconds after the write, want deploy workflow path %s", settingsCache.Load(), newPath)
+		return fmt.Sprintf("the running intake's settings = %+v after the write, want deploy workflow path %s", settingsCache.Load(), newPath)
 	})
 
 	const onNewPath, onOldPath = int64(8001), int64(8002)
 	publishWorkflowEnvelope(t, natsClient, "acme", "widgets", newPath, onNewPath)
-	awaitRuns(t, ctx, pool, natsClient, 1, 30*time.Second)
+	awaitRuns(t, ctx, pool, natsClient, 1)
 	publishWorkflowEnvelope(t, natsClient, "acme", "widgets", oldPath, onOldPath)
 
-	// The old-path envelope is acknowledged without being fetched.
-	waitFor(t, 30*time.Second, func() bool {
+	// The old-path envelope is acknowledged without being fetched. A publish's ack says the stream
+	// stored it, and the server counts it toward a consumer only once the stream's signal goroutine
+	// runs, after that ack, so pending counts of 0 can be read before the consumer has it at all
+	// (nats-server v2.15.1, processJetStreamMsg and signalConsumersLoop). So the wait is for the
+	// consumer's ack floor to reach the envelope's own stream sequence.
+	oldEnvelope, err := natsClient.JS().GetLastMsg(bus.Stream, contracts.GithubWorkflowSubject("acme", "widgets", pathBaseForTest(oldPath), "in_progress"))
+	if err != nil {
+		t.Fatalf("read the old path's envelope from the stream: %v", err)
+	}
+	waitFor(t, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.NumPending == 0 && info.NumAckPending == 0
+		return err == nil && info.AckFloor.Stream >= oldEnvelope.Sequence && info.NumAckPending == 0
 	}, func() string {
 		return fmt.Sprintf("the intake did not acknowledge the old path's envelope\n%s", intakeStateReport(t, natsClient))
 	})

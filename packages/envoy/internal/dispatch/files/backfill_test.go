@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // seedFileVersion writes an issue, a file artifact and one version holding body in its row, as
 // an upload did before the store existed, and returns the version's id. Each call's row is

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/persistence"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A rebuild is only for a history ygo cannot load. A healthy, idle document can carry updates
@@ -23,7 +23,7 @@ import (
 // needs the person scope, which the deployment's shared token does not hold.
 func TestRebuildArtifactRouteNeedsThePersonScopeAndRefusesADocumentThatLoads(t *testing.T) {
 	t.Parallel()
-	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createArtifactIssue(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 		"name": "healthy.md", "content": "before\n",
@@ -114,7 +114,7 @@ func newBrokenTestServer(t *testing.T) (http.Handler, *store.Store, *invalidLoad
 	t.Helper()
 	var broken *invalidLoadOnceStore
 	handler, database, _ := newTestServer(t, testServerOptions{
-		settle: time.Hour,
+		settle: stagedAhead,
 		persistence: func(database *store.Store) docs.VersionedStore {
 			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
 			return broken
@@ -293,7 +293,7 @@ func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
 	t.Parallel()
 	var broken *invalidLoadOnceStore
 	handler, database, deps := newTestServer(t, testServerOptions{
-		settle: time.Hour,
+		settle: stagedAhead,
 		persistence: func(database *store.Store) docs.VersionedStore {
 			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
 			return broken
@@ -311,7 +311,7 @@ func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close issue: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	waitUntil(t, "the closed issue's document room to leave residency after the close", func() bool {
+	testwait.Eventually(t, "the closed issue's document room to leave residency after the close", func() bool {
 		return !slices.Contains(documentService.ResidentRooms(), artifact.ID)
 	})
 	broken.failNextLoad(artifact.ID)

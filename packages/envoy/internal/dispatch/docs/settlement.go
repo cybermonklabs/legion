@@ -248,7 +248,22 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	if err != nil {
 		return settle.stoppedShort(fmt.Errorf("begin document transaction: %w", err))
 	}
+	// Registered ahead of the rollback, so it runs once the transaction has ended: committed below
+	// or rolled back by the deferred call that follows.
+	if s.afterSettleTransaction != nil {
+		defer s.afterSettleTransaction(room)
+	}
 	defer tx.Rollback(ctx)
+	// Where the test hooks are on, the transaction names itself in pg_stat_activity for as long as
+	// it runs (set_config's is_local: the pooled connection's own name, none, comes back when it
+	// ends), so a test reading the database's sessions can tell a settlement from the other
+	// document writes that wait on the same owner lock with the same statement: the block-index
+	// pass, an edit, a rebuild. Production sends no such statement.
+	if s.hooks != nil {
+		if _, err := tx.Exec(ctx, `select set_config('application_name', $1, true)`, SettlementApplicationName); err != nil {
+			return settle.stoppedShort(fmt.Errorf("name the settlement transaction: %w", err))
+		}
+	}
 	// Settlement decides everything before it writes anything: every write of the stages below
 	// goes through write and queues on this ledger, and the queue runs back to back right before
 	// the commit, so the transaction holds a transaction id only for those statements, not while
@@ -823,8 +838,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// editor, so the reopen still finds the editor of the text the closed issue's versions hold.
 	// So does one on a closed issue that saved nothing (savedNothing): it credits SettlementActor
 	// only because it found nothing to credit, and its commit deletes the pending row alone,
-	// whatever arming ran it after the settlement that kept the editor. The delete and the keep
-	// are queued, as every write of this settlement is, for its write phase.
+	// whatever arming ran it after the settlement that kept the editor. Each of these acts on the
+	// kept editor only with the row it deletes: a settlement that finds the row already gone, a
+	// second one of the same updates the resumption armed while the first was committing, leaves
+	// the kept editor as the first left it (clearSettlementPending). The delete and the keep are
+	// queued, as every write of this settlement is, for its write phase.
 	var kept *model.Actor
 	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
 		kept = &st.credit.actor
@@ -953,6 +971,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}
 	return settleDone, settleOutcome{}
 }
+
+// SettlementApplicationName is the application_name a settlement's transaction shows in
+// pg_stat_activity while it runs, where the test hooks are on (Deps.TestHooks); the connection's own
+// name comes back when the transaction ends.
+const SettlementApplicationName = "dispatch-settlement"
 
 // settledEditNotice is what a settlement's version does to the document's edit notice, under the
 // owner lock the settlement took first: the sweep takes the two in that order too

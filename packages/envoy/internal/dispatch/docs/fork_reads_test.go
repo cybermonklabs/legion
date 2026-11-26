@@ -11,12 +11,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	ygws "github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests here hold a write transaction's reads of its fork (forkTreeCounts) to what reading the
@@ -192,14 +193,15 @@ func forkReadsDocument() string {
 	return b.String()
 }
 
-// newForkReadsRoom is a service whose settlement waits an hour, holding forkReadsDocument in a
-// room one browser edit has written to, durable. Its test hooks are on, so a case can hold a
-// write at a pause point (ArmLiveWritePause); a hook nothing arms changes nothing.
+// newForkReadsRoom is a service whose settlement waits a day (stagedAhead), holding
+// forkReadsDocument in a room one browser edit has written to, durable. Its test hooks are on, so
+// a case can hold a write at a pause point (ArmLiveWritePause); a hook nothing arms changes
+// nothing.
 func newForkReadsRoom(t *testing.T) (*Service, string) {
 	t.Helper()
 	service, artifactID := newTestService(t)
 	service.hooks = newTestHooks()
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, forkReadsDocument())
 	editAsConnectedPeer(t, service, artifactID, 1, model.Actor{Kind: "user", ID: "carol"}, replaceRun("Paragraph 0 opens", "Paragraph 0 first opens"))
 	waitForLandedAppends(t, service, artifactID)
@@ -781,24 +783,104 @@ func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
 			t.Fatalf("arm the pause after the commit: %v", err)
 		}
 		stored := make(chan error, 1)
-		go func(wait time.Duration) {
-			stored <- storeBeforePublish(service, artifactID, fmt.Sprintf("Paragraph %d then opens", section), wait)
-		}(roomWait(t))
+		go func(ctx context.Context) {
+			stored <- storeBeforePublish(ctx, service, artifactID, fmt.Sprintf("Paragraph %d then opens", section))
+		}(testwait.Context(t))
 		browserCommitBetweenOperations(t, section, "s-stored")
-		if err := <-stored; err != nil {
+		if err := testwait.Receive(t, "the room to store the browser's update before the write's publish", stored); err != nil {
 			t.Fatalf("the room did not store the browser's update before the write's publish, so nothing here is tested: %v", err)
 		}
 	})
+}
+
+// A committed write hands its fork to its room's shadow (newShadow), and the room's durable
+// writers apply to that document the browser commits the room made after the write's read as they
+// store them (roomShadow.measure), so the write's rendering describes its fork up to the commit
+// and no state of the write's after it. Here a browser commits after the write's read, and the
+// room stores that commit while the write is parked after its commit, before its publish: the
+// order comes from the commit pause, not from load. The rendering is checked where the fork is
+// last the write's own, at the commit ("commit"), and describes it there. Checked at the publish,
+// after the room had stored the browser's commit, it read the shadow's document, which holds that
+// commit (INFRA-3149: this row's "a browser commit between operations" failed so under load).
+func TestForkReadsAWritesRenderingDescribesItsForkAtTheCommitThatHandsItToTheRoomsShadow(t *testing.T) {
+	service, artifactID := newForkReadsRoom(t)
+	checks := checkRenderings(service)
+	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
+		t.Fatalf("load the document's room: %v", err)
+	}
+	if err := service.ArmLiveWritePause(artifactID, PauseAfterCommit); err != nil {
+		t.Fatalf("arm the pause after the commit: %v", err)
+	}
+	testcleanup.Add(t, func() { _, _ = service.ReleaseLiveWritePause(artifactID, PauseAfterCommit) })
+	var markErr error
+	operated, commit, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	// The write waits on commit in its open transaction until the row lets it go; a row that fails
+	// before the release lets it go in its cleanup, which runs before the service's Shutdown.
+	letCommit := sync.OnceFunc(func() { close(commit) })
+	testcleanup.Add(t, letCommit)
+	go func() {
+		done <- joinedWrite(service, func(ctx context.Context) error {
+			_, markErr = service.MarkQuote(ctx, artifactID, MarkSpec{Kind: MarkSuggestion, ID: "s-stored", By: reuseAlice}, "Step 44 one is taken first", nil)
+			close(operated)
+			if markErr != nil {
+				return markErr
+			}
+			<-commit
+			return nil
+		})
+	}()
+	testwait.Receive(t, "the write's operation", operated)
+	if markErr != nil {
+		t.Fatalf("mark the quote: %v", markErr)
+	}
+	editAsConnectedPeer(t, service, artifactID, 2, reuseBob, replaceRun("Paragraph 44 opens", "Paragraph 44 then opens"))
+	letCommit()
+	parked := make(chan error, 1)
+	go func() { parked <- service.AwaitLiveWriteParked(testwait.Context(t), artifactID, PauseAfterCommit) }()
+	ended := testwait.Until(t, "the write to park after its commit, or to end", func() (string, bool) {
+		select {
+		case err := <-parked:
+			if err != nil {
+				return fmt.Sprintf("the wait for the park ended: %v", err), true
+			}
+			return "", true
+		case err := <-done:
+			return fmt.Sprintf("the write ended before it parked: %v", err), true
+		default:
+			return "neither yet", false
+		}
+	})
+	if ended != "" {
+		t.Fatal(ended)
+	}
+	// The write's commit let the document's lock go, so the room stores the browser's commit now
+	// and measures its class on the room's shadow, the write's fork (Ledger.flushThrough).
+	waitForLandedAppends(t, service, artifactID)
+	if _, err := service.ReleaseLiveWritePause(artifactID, PauseAfterCommit); err != nil {
+		t.Fatalf("release the write: %v", err)
+	}
+	if err := testwait.Receive(t, "the write's publish", done); err != nil {
+		t.Fatalf("commit the write: %v", err)
+	}
+	calls, failures := checks.take()
+	if want := map[string]int{"fork": 1, "commit": 1}; !maps.Equal(calls, want) {
+		t.Errorf("the write checked its rendering at %v, want %v", calls, want)
+	}
+	for _, failure := range failures {
+		t.Errorf("a write's rendering is not its fork's at %s", failure)
+	}
+	if stored := documentText(t, service, artifactID); !strings.Contains(stored, "Paragraph 44 then opens") {
+		t.Error("the document does not hold the browser's commit the room stored after the write")
+	}
 }
 
 // storeBeforePublish holds the write of artifactID that parks after its commit
 // (PauseAfterCommit) until the room has stored every update it took - the browser's commit the
 // transaction's advisory lock held back - and lets it go on. It fails unless the write parked,
 // the room's appends landed meanwhile, and the room's shadow, the write's fork, holds text by then
-// (roomShadow.measure): the order the caller exists to make.
-func storeBeforePublish(service *Service, artifactID, text string, wait time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
-	defer cancel()
+// (roomShadow.measure): the order the caller exists to make. Its waits end with ctx, the shared
+// wait's (testwait.Context), which the caller takes on the test goroutine.
+func storeBeforePublish(ctx context.Context, service *Service, artifactID, text string) error {
 	err := service.AwaitLiveWriteParked(ctx, artifactID, PauseAfterCommit)
 	if err == nil {
 		err = service.waitForPendingUpdates(ctx, artifactID)

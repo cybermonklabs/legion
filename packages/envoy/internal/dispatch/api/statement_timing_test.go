@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -411,7 +412,9 @@ func openRefreshTimingStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("open the measurement database: %v", err)
 	}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the measurement database's pool to come back, so the pool closes", database.Pool.Close)
+	})
 	return database
 }
 

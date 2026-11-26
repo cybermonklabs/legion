@@ -19,12 +19,14 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/pglisten"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A browser's keystrokes reach the store through the room's persistence, one call per update
@@ -53,7 +55,14 @@ import (
 type statementTracer struct {
 	mu    sync.Mutex
 	trips []tracedTrip
+	// answers is the text of each statement sent on its own whose answer the connection read
+	// whole and without an error (TraceQueryEnd), in the order they ended.
+	answers []string
 }
+
+// tracedQuery is the context key under which TraceQueryStart hands its statement's text to that
+// statement's TraceQueryEnd, which pgx calls with the context TraceQueryStart returned.
+type tracedQuery struct{}
 
 // tracedTrip is one statement, or one pipeline of statements, a connection sent.
 type tracedTrip struct {
@@ -80,10 +89,18 @@ func (t *statementTracer) record(conn *pgx.Conn, statements []tracedStatement) {
 
 func (t *statementTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	t.record(conn, []tracedStatement{{sql: data.SQL, args: data.Args}})
-	return ctx
+	return context.WithValue(ctx, tracedQuery{}, data.SQL)
 }
 
-func (t *statementTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (t *statementTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	sql, ok := ctx.Value(tracedQuery{}).(string)
+	if !ok || data.Err != nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.answers = append(t.answers, sql)
+}
 
 func (t *statementTracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
 	statements := make([]tracedStatement, 0, len(data.Batch.QueuedQueries))
@@ -167,6 +184,21 @@ func (t *statementTracer) statements(room, text string, since int) int {
 	return count
 }
 
+// answered is how many statements sent on their own, whose text contains text, have been answered
+// whole, whatever they name: a statement that is only sent may not have run yet, and the snapshot
+// it reads is taken when it runs, so a wait for what such a statement read waits for its answer.
+func (t *statementTracer) answered(text string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	count := 0
+	for _, sql := range t.answers {
+		if strings.Contains(sql, text) {
+			count++
+		}
+	}
+	return count
+}
+
 // storedVersionsAfter is every version of artifactID's stored updates past after, in order.
 func storedVersionsAfter(t *testing.T, database *store.Store, artifactID string, after int64) []int64 {
 	t.Helper()
@@ -230,11 +262,11 @@ func TestQueuedBrowserUpdatesOfOneRoomCommitInOneTransactionOffTheSharedPool(t *
 	for keystroke := range queued {
 		typeInRoom(t, service, artifactID, 1, alice, appendBlocks(t, fmt.Sprintf("Keystroke %d.\n", keystroke)))
 	}
-	waitFor(t, roomWait(t), "the room's first append to wait for the document's lock", func() bool {
+	waitFor(t, "the room's first append to wait for the document's lock", func() bool {
 		return waitingAdvisoryLocks(t, observer) > 0
 	})
 	unlock()
-	waitFor(t, roomWait(t), "every queued update to be stored", func() bool {
+	waitFor(t, "every queued update to be stored", func() bool {
 		return storedHead(t, observer, artifactID) >= before+queued
 	})
 	waitForLandedAppends(t, service, artifactID)
@@ -327,7 +359,7 @@ func storeCreditedUpdates(t *testing.T, service *Service, observer *store.Store,
 		}
 	}
 	if together {
-		waitFor(t, roomWait(t), "the room's first append to wait for the document's lock", func() bool {
+		waitFor(t, "the room's first append to wait for the document's lock", func() bool {
 			return waitingAdvisoryLocks(t, observer) > 0
 		})
 		unlock()
@@ -557,11 +589,7 @@ func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(
 			if err := adapter.StoreUpdateContext(ctx, artifactID, updates[1]); err != nil {
 				t.Errorf("the second queued update's call on the failed room = %v, want it dropped", err)
 			}
-			select {
-			case <-evicting:
-			case <-time.After(roomWait(t)):
-				t.Fatal("the failed room's eviction never started")
-			}
+			testwait.Receive(t, "the failed room's eviction to start", evicting)
 			release()
 			if err := service.awaitRoomRecovery(ctx, artifactID); err != nil {
 				t.Fatalf("wait for the failed room's eviction: %v", err)
@@ -650,11 +678,7 @@ func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 		appends.mu.Unlock()
 
 		first := typeInRoom(t, service, artifactID, 1, alice, step("Alice", 2*round))
-		select {
-		case <-gate.entered:
-		case <-time.After(roomWait(t)):
-			t.Fatalf("round %d: the first peer's append never reached the store", round)
-		}
+		testwait.Receive(t, fmt.Sprintf("round %d: the first peer's append to reach the store", round), gate.entered)
 		second := typeInRoom(t, service, artifactID, 2, bob, step("Bob", round))
 		if _, err := joinedApplyOps(service, artifactID, []model.EditOp{
 			{Op: "replace", Find: fmt.Sprintf("Agent %d.", round), With: fmt.Sprintf("Agent %d.", round+1)},
@@ -688,19 +712,35 @@ func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 		retiredPeer, retiredUpdate := peerEdit(t, live, step("Retired", round))
 		retired := &roomCursor{}
 		service.queueUpdateClass(artifactID, retiredUpdate, documentUpdateClass{seq: 1, contentChanged: true, durable: true, cursor: retired}, false)
+		// The room counts the retired instance's update as a durable append until the update is
+		// stored, which only the row's own store below does, and the service's Shutdown and the
+		// package's leak check wait for that count to fall. The cleanup is registered after the
+		// service, so it runs before the service's Shutdown: for a row that failed before its own
+		// store, it makes that store, once, through the sync.OnceValue the row's own call shares.
+		storeRetired := sync.OnceValue(func() error {
+			return adapter.StoreUpdateContext(ctx, artifactID, retiredUpdate)
+		})
+		testcleanup.Add(t, func() {
+			testwait.Returns(t, fmt.Sprintf("round %d: the store of the retired instance's update", round), func() { _ = storeRetired() })
+		})
 		fourth := typeInRoom(t, service, artifactID, 1, alice, step("Alice", 2*round+1))
 		gate.let()
 
 		state := service.room(artifactID)
-		waitFor(t, roomWait(t), "every update but the retired instance's to be stored", func() bool {
+		waitFor(t, "every update but the retired instance's to be stored", func() bool {
 			state.mu.Lock()
 			defer state.mu.Unlock()
 			return len(state.updateClasses) == 1 && state.durableAppends.Load() == 1
 		})
+		// The cursor's lock is held over a read that can fail the row; a row that fails there lets
+		// it go in its cleanup, before the cleanup above stores the update, whose append reads the
+		// cursor.
+		unlockCursor := sync.OnceFunc(retired.mu.Unlock)
 		retired.mu.Lock()
+		testcleanup.Add(t, unlockCursor)
 		retired.through = storedHead(t, database, artifactID)
-		retired.mu.Unlock()
-		if err := adapter.StoreUpdateContext(ctx, artifactID, retiredUpdate); err != nil {
+		unlockCursor()
+		if err := storeRetired(); err != nil {
 			t.Fatalf("round %d: store the retired instance's update: %v", round, err)
 		}
 		waitForLandedAppends(t, service, artifactID)
@@ -844,13 +884,15 @@ func TestALoneUpdateAndABatchHoldingItStoreItOnce(t *testing.T) {
 				{entered: make(chan struct{}), release: make(chan struct{})},
 				{entered: make(chan struct{}), release: make(chan struct{})},
 			}
+			appends := &countingBurstStore{burstStore: burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: gates}}
+			service := newShutdownTestService(t, database, appends)
+			// Registered after the service, so it runs before its Shutdown: a row that fails with
+			// an append held at a gate lets it go rather than leave the shutdown waiting on it.
 			testcleanup.Add(t, func() {
 				for _, gate := range gates {
 					gate.let()
 				}
 			})
-			appends := &countingBurstStore{burstStore: burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: gates}}
-			service := newShutdownTestService(t, database, appends)
 			seedServiceText(t, service, artifactID, "First.\n")
 			settleCurrentGeneration(t, service, artifactID)
 			if err := service.warmLiveDocument(ctx, artifactID); err != nil {
@@ -887,13 +929,16 @@ func TestALoneUpdateAndABatchHoldingItStoreItOnce(t *testing.T) {
 				gate := gates[len(arrived)]
 				arrived = append(arrived, index)
 				go func() { returned[index] <- adapter.StoreUpdateContext(ctx, artifactID, updates[index]) }()
-				select {
-				case <-gate.entered:
-				case err := <-returned[index]:
-					t.Fatalf("%s returned (%v) before it reached the store", what, err)
-				case <-time.After(roomWait(t)):
-					t.Fatalf("%s never reached the store", what)
-				}
+				testwait.Eventually(t, what+" to reach the store", func() bool {
+					select {
+					case <-gate.entered:
+						return true
+					case err := <-returned[index]:
+						t.Fatalf("%s returned (%v) before it reached the store", what, err)
+					default:
+					}
+					return false
+				})
 			}
 			if test.loneFirst {
 				slot := queueSlot()
@@ -908,13 +953,8 @@ func TestALoneUpdateAndABatchHoldingItStoreItOnce(t *testing.T) {
 			}
 			for _, held := range test.let {
 				gates[held].let()
-				select {
-				case err := <-returned[arrived[held]]:
-					if err != nil {
-						t.Fatalf("the call for update %d: %v", arrived[held], err)
-					}
-				case <-time.After(roomWait(t)):
-					t.Fatalf("the call for update %d never returned once its append was let go", arrived[held])
+				if err := testwait.Receive(t, fmt.Sprintf("the call for update %d to return once its append was let go", arrived[held]), returned[arrived[held]]); err != nil {
+					t.Fatalf("the call for update %d: %v", arrived[held], err)
 				}
 			}
 
@@ -1155,7 +1195,7 @@ func TestARoomAppendWhoseUnlockDoesNotFreeTheLockClosesItsConnection(t *testing.
 	if held := appends.Stat().TotalConns(); held != 0 {
 		t.Fatalf("the room-appends pool holds %d connections after an unlock that answered false, want none: a connection whose locks are unknown went back to the pool", held)
 	}
-	waitFor(t, roomWait(t), "the backend of the append's connection to end with it", func() bool {
+	waitFor(t, "the backend of the append's connection to end with it", func() bool {
 		var running bool
 		if err := database.Pool.QueryRow(ctx, `select exists (select 1 from pg_stat_activity where pid = $1)`, backend.Load()).Scan(&running); err != nil {
 			t.Fatalf("read the state of the append backend: %v", err)
@@ -1254,18 +1294,10 @@ func (p *blockingProxy) forward(dst, src net.Conn, blocked <-chan struct{}) {
 	}
 }
 
-// leaseCallBound is how long duty.LeaseCall gives one statement on a session lock's own
-// connection, read from a call of its own rather than written down twice.
-func leaseCallBound(t *testing.T) time.Duration {
-	t.Helper()
-	ctx, cancel := duty.LeaseCall()
-	defer cancel()
-	deadline, bounded := ctx.Deadline()
-	if !bounded {
-		t.Fatal("duty.LeaseCall gives its statement no deadline")
-	}
-	return time.Until(deadline)
-}
+// rollbackBound is the bound a room append's rollback runs under (duty.LeaseCall): five seconds,
+// the bound pglisten.DefaultPingTimeout gives the keepalive ping, chosen there against this same
+// half-open connection.
+const rollbackBound = pglisten.DefaultPingTimeout
 
 // A room's append that returns before its commit rolls its transaction back on its own connection
 // before it gives the document's session lock back, and that rollback runs under the bound the
@@ -1278,9 +1310,12 @@ func leaseCallBound(t *testing.T) time.Duration {
 // Here the gate refuses a browser's update on an issue closed longer ago than closeMargin
 // (ErrIssueClosed), and the link under the append's connection stops forwarding just before the
 // rollback (beforeAppendRollback), so the rollback meets a connection whose sends draw neither an
-// answer nor an error. The call must end at about the bound, its connection must leave the
-// room-appends pool rather than go back into it, and the room's next writer must get past
-// holdRoom - the room's in-process lock, then a connection of that pool - within the same bound.
+// answer nor an error: the proxy takes them in and parks them until the test ends, so only the
+// rollback's bound can end the call. The bound runs on the store's clock, a fake here: the
+// rollback must arm rollbackBound on it, must not return before the test moves the fake past
+// that, and must return once it does; its connection must leave the room-appends pool rather
+// than go back into it, and the room's next writer must get past holdRoom - the room's
+// in-process lock, then a connection of that pool.
 func TestARefusedRoomAppendsRollbackIsBoundedOnAHalfOpenLink(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -1311,13 +1346,15 @@ func TestARefusedRoomAppendsRollbackIsBoundedOnAHalfOpenLink(t *testing.T) {
 	defer func() {
 		// The link goes first: a pool whose connection is parked on the proxy cannot close.
 		proxy.release()
-		proxied.Pool.Close()
+		testwait.Returns(t, "every connection of the pool through the proxy to come back, so the pool closes", proxied.Pool.Close)
 	}()
 	appends, err := proxied.Pool.RoomAppends()
 	if err != nil {
 		t.Fatalf("open the room-appends pool: %v", err)
 	}
 	versioned := NewPgVersioned(proxied)
+	linkClock := clocktest.New(time.Now())
+	versioned.clock = linkClock
 	var stopped atomic.Bool
 	rollingBack := make(chan struct{})
 	versioned.beforeAppendRollback = func(room string, _ *pgxpool.Conn) {
@@ -1333,7 +1370,6 @@ func TestARefusedRoomAppendsRollbackIsBoundedOnAHalfOpenLink(t *testing.T) {
 	update := newProofHistory(t, 405).write("one\n")
 	gated := withRoomCursor(ctx, &roomCursor{through: storedHead(t, database, artifactID)})
 	refused := make(chan error, 1)
-	start := time.Now()
 	go func() {
 		_, err := versioned.AppendUpdatesWithCredit(gated, artifactID,
 			[]BrowserUpdate{{Update: update, ContentChanged: true, Observed: time.Now()}})
@@ -1358,36 +1394,32 @@ func TestARefusedRoomAppendsRollbackIsBoundedOnAHalfOpenLink(t *testing.T) {
 		held <- nil
 	}()
 
-	bound := leaseCallBound(t)
-	select {
-	case err := <-refused:
-		if !errors.Is(err, ErrIssueClosed) {
-			t.Fatalf("the append of an update the gate refuses = %v, want ErrIssueClosed", err)
+	testwait.Receive(t, "the append's rollback to begin on the half-open link", rollingBack)
+	armed := linkClock.Now().Add(rollbackBound)
+	waitFor(t, fmt.Sprintf("the rollback to arm its %v bound on the store's clock", rollbackBound), func() bool {
+		select {
+		case err := <-refused:
+			t.Fatalf("the append returned (%v) before its rollback's bound ended, on a link that answers nothing", err)
+		default:
 		}
-	case <-time.After(3 * bound):
-		t.Fatalf("the append had not returned %v after it began, three times the rollback's %v bound: it is waiting on a half-open connection, holding the room's lock, its connection and the session lock",
-			time.Since(start), bound)
+		return slices.Contains(linkClock.Armed(), armed)
+	})
+	linkClock.Advance(rollbackBound)
+	err = testwait.Receive(t, "the append of an update the gate refuses to return once its rollback's bound ended", refused)
+	if !errors.Is(err, ErrIssueClosed) {
+		t.Fatalf("the append of an update the gate refuses = %v, want ErrIssueClosed", err)
 	}
 	if !stopped.Load() {
 		t.Fatal("the append returned without rolling a transaction back, so nothing here met the half-open connection")
 	}
-	select {
-	case <-lockTaken:
-	case <-time.After(3 * bound):
-		t.Fatalf("the room's next writer was still waiting at holdRoom %v after the append began, three times the rollback's %v bound", time.Since(start), bound)
-	}
+	testwait.Receive(t, "the room's next writer to get past holdRoom's in-process lock once the append returned", lockTaken)
 	// The connection the rollback's bound closed is destroyed rather than returned, which puddle
 	// does on a goroutine of its own, so the pool empties a moment after the call returns.
-	waitFor(t, roomWait(t), "the stuck connection to leave the room-appends pool", func() bool {
+	waitFor(t, "the stuck connection to leave the room-appends pool", func() bool {
 		return appends.Stat().TotalConns() == 0
 	})
 	close(reading)
-	select {
-	case err := <-held:
-		if err != nil {
-			t.Fatalf("the room's next writer takes a connection of the room-appends pool: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's next writer never took a connection of the room-appends pool")
+	if err := testwait.Receive(t, "the room's next writer to take a connection of the room-appends pool", held); err != nil {
+		t.Fatalf("the room's next writer takes a connection of the room-appends pool: %v", err)
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // moveStoreAboveTheBuild applies, in one transaction, a type migration of the release after this
@@ -60,11 +60,12 @@ func moveStoreAboveTheBuild(t *testing.T, database *store.Store, built int) {
 }
 
 // requireClosedForTheSchema reads a socket until it ends and fails unless it ends with the close
-// a browser reads as "the schema moved" (documentSchemaCloseCode) within the wait. Frames the
-// room sent before the close - its sync, an awareness update - are read past.
+// a browser reads as "the schema moved" (documentSchemaCloseCode); the read waits for that end
+// until the shared wait gives up (readDeadline). Frames the room sent before the close - its sync,
+// an awareness update - are read past.
 func requireClosedForTheSchema(t *testing.T, connection *gws.Conn, what string) {
 	t.Helper()
-	_ = connection.SetReadDeadline(time.Now().Add(roomWait(t)))
+	_ = connection.SetReadDeadline(readDeadline(t))
 	for {
 		_, message, err := connection.ReadMessage()
 		if err == nil {
@@ -120,7 +121,7 @@ func TestAStoreSchemaAboveTheBuildInstallsItsOwnVersionAndClosesTheDocumentSocke
 	}()
 	testcleanup.Add(t, func() {
 		stopInstalling()
-		<-stopped
+		testwait.Receive(t, "the schema installer to stop once its context is cancelled", stopped)
 	})
 
 	moveStoreAboveTheBuild(t, database, built)

@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Two peers' updates reach the room's persistence in whatever order their read loops hand them
@@ -33,7 +33,7 @@ import (
 func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	var attempts atomic.Int64
 	service.afterSettleWarm = func(string) { attempts.Add(1) }
 	var first atomic.Uint64
@@ -78,7 +78,7 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 		}
 		return true
 	}
-	waitFor(t, 10*time.Second, "both peers to hold the room's document", func() bool {
+	waitFor(t, "both peers to hold the room's document", func() bool {
 		return holdsRoom(alpha) && holdsRoom(beta)
 	})
 
@@ -100,15 +100,11 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 	if _, err := alpha.Send(typeParagraph(alpha.Doc, "alpha")); err != nil {
 		t.Fatalf("send the first peer's keystroke: %v", err)
 	}
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the room did not apply the first peer's update")
-	}
+	testwait.Receive(t, "the room to apply the first peer's update", held)
 	if _, err := beta.Send(typeParagraph(beta.Doc, "beta")); err != nil {
 		t.Fatalf("send the second peer's keystroke: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the second peer's update to be stored", func() bool {
+	waitFor(t, "the second peer's update to be stored", func() bool {
 		return storedClock(beta.Doc.ClientID()) > 0
 	})
 	if storedClock(alpha.Doc.ClientID()) == 0 {
@@ -138,7 +134,7 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 
 	stored := storedUpdateCount(t, service.store, artifactID)
 	releaseHeld()
-	waitFor(t, 10*time.Second, "the room to count no update its persistence has not taken", func() bool {
+	waitFor(t, "the room to count no update its persistence has not taken", func() bool {
 		return !service.hasPendingUpdates(artifactID) && !service.hasDurableAppend(artifactID)
 	})
 	if after := storedUpdateCount(t, service.store, artifactID); after != stored {
@@ -164,7 +160,7 @@ func TestARoomsParkedOnlyCommitIsStoredAndReplaysFromItsLog(t *testing.T) {
 func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -201,7 +197,7 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 	// A peer update that only parks has no OnUpdate, so the peer path drains the log itself and
 	// stores the parked bytes (onPeerUpdate). A shutdown in that window must not lose an edit the
 	// room accepted.
-	waitFor(t, 10*time.Second, "the parked peer update to become durable", func() bool {
+	waitFor(t, "the parked peer update to become durable", func() bool {
 		return storedUpdateCount(t, service.store, artifactID) > stored
 	})
 	if updates.Load() != 0 {
@@ -251,7 +247,7 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 	if applyErr != nil {
 		t.Fatalf("apply the predecessor update: %v", applyErr)
 	}
-	waitFor(t, 10*time.Second, "the room to count no persistence update after its parked-only commit", func() bool {
+	waitFor(t, "the room to count no persistence update after its parked-only commit", func() bool {
 		return !service.hasPendingUpdates(artifactID) && !service.hasDurableAppend(artifactID)
 	})
 	// The predecessor's commit stores the successor's structs again, in its own update: a load of
@@ -298,7 +294,7 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 func TestAPeerUpdateThatChangesTheRoomAndParksKeepsBothAcrossARestart(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -328,13 +324,13 @@ func TestAPeerUpdateThatChangesTheRoomAndParksKeepsBothAcrossARestart(t *testing
 	if err := peer.Write(ygsync.EncodeUpdate(mixed)); err != nil {
 		t.Fatalf("send an update that changes the room and parks: %v", err)
 	}
-	waitFor(t, 10*time.Second, "both parts of the peer's update to be stored", func() bool {
+	waitFor(t, "both parts of the peer's update to be stored", func() bool {
 		return storedUpdateCount(t, service.store, artifactID) >= stored+2
 	})
 	if pending := service.srv.GetDoc(artifactID).PendingStats(); pending.Items == 0 {
 		t.Fatalf("the room parked nothing of the update: %+v", pending)
 	}
-	waitFor(t, 10*time.Second, "the room to count no persistence update", func() bool {
+	waitFor(t, "the room to count no persistence update", func() bool {
 		return !service.hasPendingUpdates(artifactID) && !service.hasDurableAppend(artifactID)
 	})
 

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
@@ -713,9 +714,10 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 }
 
 // A request GitHub gave no answer to is noted, with the error the caller is given: a transport
-// error, and the client's own RequestTimeout ending while the caller's context is live. A request
-// whose caller's context ended is not noted, since the caller's end -- a pass's own bound, or the
-// process shutting down -- is no failure of GitHub's. Both are marked sent.
+// error, and the client's own request timeout (WithRequestTimeout) ending while the caller's
+// context is live. A request whose caller's context ended is not noted, since the caller's end --
+// a pass's own bound, or the process shutting down -- is no failure of GitHub's. Both are marked
+// sent.
 func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 	t.Run("a transport error", func(t *testing.T) {
 		closed := httptest.NewServer(http.NotFoundHandler())
@@ -737,14 +739,11 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 	})
 
 	t.Run("the client's own timeout", func(t *testing.T) {
-		client := hangingGitHub(t, nil)
-		saved := RequestTimeout
-		RequestTimeout = 50 * time.Millisecond
-		t.Cleanup(func() { RequestTimeout = saved })
+		client := hangingGitHub(t, nil, WithRequestTimeout(50*time.Millisecond))
 		ctx, attempt := githubreads.Begin(context.Background())
 		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
 		if !errors.Is(readErr, context.DeadlineExceeded) {
-			t.Fatalf("a read past RequestTimeout: err = %v, want the deadline", readErr)
+			t.Fatalf("a read past the client's request timeout: err = %v, want the deadline", readErr)
 		}
 		sent, failed, cause := attempt.Outcome()
 		if !sent || !failed || cause != readErr.Error() {
@@ -772,9 +771,9 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 	})
 }
 
-// hangingGitHub is a client of a GitHub that answers no request until the request's own context
-// ends, signalling arrived, when it is not nil, as each request reaches it.
-func hangingGitHub(t *testing.T, arrived chan<- struct{}) *Client {
+// hangingGitHub is a client, built with options, of a GitHub that answers no request until the
+// request's own context ends, signalling arrived, when it is not nil, as each request reaches it.
+func hangingGitHub(t *testing.T, arrived chan<- struct{}, options ...Option) *Client {
 	t.Helper()
 	base := githubtest.Server(t, githubtest.Spec{Handle: func(_ http.ResponseWriter, r *http.Request) {
 		if arrived != nil {
@@ -786,11 +785,57 @@ func hangingGitHub(t *testing.T, arrived chan<- struct{}) *Client {
 		<-r.Context().Done()
 	}})
 	_, pemText := testKeyPEM(t)
-	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base, options...)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
 	return client
+}
+
+// deadlineTransport answers every call 200 with an empty JSON object, in memory, and records the
+// deadline each request's context carries.
+type deadlineTransport struct{ deadlines []time.Time }
+
+func (d *deadlineTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	deadline, _ := r.Context().Deadline()
+	d.deadlines = append(d.deadlines, deadline)
+	recorder := httptest.NewRecorder()
+	_, _ = recorder.WriteString("{}")
+	return recorder.Result(), nil
+}
+
+// Each call the client sends is bounded by the client's request timeout: RequestTimeout for a
+// client built without WithRequestTimeout, and the timeout WithRequestTimeout names for one built
+// with it. The read runs in a synctest bubble, whose clock stands still while nothing waits, so the
+// deadline the transport sees is that bound past the moment the read began.
+func TestEachCallIsBoundedByTheClientsRequestTimeout(t *testing.T) {
+	_, pemText := testKeyPEM(t)
+	for _, row := range []struct {
+		name    string
+		options []Option
+		want    time.Duration
+	}{
+		{name: "RequestTimeout by default", want: RequestTimeout},
+		{name: "a timeout of the client's own", options: []Option{WithRequestTimeout(time.Hour)}, want: time.Hour},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				transport := &deadlineTransport{}
+				options := append([]Option{WithHTTPClient(&http.Client{Transport: transport})}, row.options...)
+				client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, "https://github.test", options...)
+				if err != nil {
+					t.Fatalf("new client: %v", err)
+				}
+				began := time.Now()
+				if _, _, _, err := client.Read(context.Background(), "installation-token", "/repos/acme/web"); err != nil {
+					t.Fatalf("read: %v", err)
+				}
+				if want := began.Add(row.want); len(transport.deadlines) != 1 || !transport.deadlines[0].Equal(want) {
+					t.Fatalf("the read's requests carried the deadlines %v, want one at %v, %s past the read's start", transport.deadlines, want, row.want)
+				}
+			})
+		})
+	}
 }
 
 func TestGraphQLPostsQueryAndVariablesWithAnInstallationToken(t *testing.T) {

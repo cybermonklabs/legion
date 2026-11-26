@@ -18,28 +18,30 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// compactionSweepLease names the lease a sweep pass runs under, and compactionSweepPeriod the
-// period one pass serves (duty.Exclusive): a pass reads the rows of every document with rows to
-// fold, so two envoy-dispatch processes sweeping, or one process sweeping again after a restart,
-// inside one aligned hour is that whole read again for what the queue already compacts.
+// compactionSweepLease names the lease a sweep pass runs under, and CompactionSweepPeriod the
+// period one pass serves in production (duty.Exclusive): a pass reads the rows of every document
+// with rows to fold, so two envoy-dispatch processes sweeping, or one process sweeping again after
+// a restart, inside one aligned hour is that whole read again for what the queue already compacts.
 const (
 	compactionSweepLease  = "document-compaction"
-	compactionSweepPeriod = time.Hour
+	CompactionSweepPeriod = time.Hour
 )
 
-// RunCompactionSweep compacts, once an aligned hour across every process that serves the database
-// and across restarts (duty.Exclusive, compactionSweepLease), every document due a compaction by
-// the queue's own rule (checkCompaction): a row after its first older than compactMaxTailAge, or
-// compactMinRows of them older than compactTail. It runs until ctx ends. Its ticks are
-// duty.RunLeased's, a ticker's of compactionSweepPeriod: the first at the moment it starts, so a
+// RunCompactionSweep compacts, once an aligned period across every process that serves the
+// database and across restarts (duty.Exclusive, compactionSweepLease), every document due a
+// compaction by the queue's own rule (checkCompaction): a row after its first older than
+// compactMaxTailAge, or compactMinRows of them older than compactTail. It runs until ctx ends. Its
+// ticks are duty.RunLeased's, a ticker's of period: the first at the moment it starts, so a
 // document a restart dropped from the queue is swept at once unless some process has already swept
-// this hour, then one each period, which falls in the next aligned hour while a pass takes less
-// than an hour. It runs whether or not NATS is configured: the compaction is what keeps text a
-// write deleted out of doc_updates and its backups, and it needs nothing but the database. leases
-// is required, as it is of every leased loop.
-func (s *Service) RunCompactionSweep(ctx context.Context, leases duty.Leases) {
+// this period, then one each period, which falls in the next aligned period while a pass takes
+// less than one. period is CompactionSweepPeriod, the hour, in production; cmd/dispatch passes
+// another only for an end-to-end test (DISPATCH_TEST_COMPACTION_SWEEP_PERIOD). It runs whether or
+// not NATS is configured: the compaction is what keeps text a write deleted out of doc_updates and
+// its backups, and it needs nothing but the database. leases is required, as it is of every leased
+// loop.
+func (s *Service) RunCompactionSweep(ctx context.Context, period time.Duration, leases duty.Leases) {
 	ctx = store.WithTransactionTracking(ctx)
-	duty.RunLeased(ctx, leases, compactionSweepLease, compactionSweepPeriod, duty.TickAtStart, s.compactionSweepPass)
+	duty.RunLeased(ctx, leases, compactionSweepLease, period, duty.TickAtStart, s.compactionSweepPass)
 }
 
 // compactionSweepPass lists the documents with rows to fold (compactionCandidates) and tries each

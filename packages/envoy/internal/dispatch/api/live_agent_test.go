@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -114,24 +113,43 @@ func TestAgentStreamRearmsTheSessionAndDeliversItsReplayOnItsFirstAnswer(t *test
 	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, false)
-	rig := newLiveSocketRig(t, testServerOptions{agentStream: source, agentWatchInterval: 50 * time.Millisecond}, nil)
+	fake := clocktest.New(time.Now())
+	rig := newLiveSocketRig(t, testServerOptions{agentStream: source, clock: fake}, nil)
+	// rearm moves the server's clock to the view's next re-arm once the view has armed it, and waits
+	// for that re-arm's watch of the session.
+	rearm := func() {
+		t.Helper()
+		watched := source.Watches(plannerSessionID)
+		at := fake.Now().Add(agentStreamWatchInterval)
+		fake.AwaitArmedAt(t, "the view's next re-arm", at)
+		fake.Set(at)
+		testwait.Eventually(t, "the re-arm's watch of the session", func() bool { return source.Watches(plannerSessionID) > watched })
+	}
 	client := rig.dial(t, asUser("alice"))
 	client.subscribeAgent(t, "agent", plannerSessionID)
 	if data := client.agentFrame(t, "agent", "responder"); data != `{"v":1,"responding":false}` {
 		t.Fatalf("the first frame's data is %s, want the no-responder verdict", data)
 	}
-	waitUntil(t, "the view re-arms the session", func() bool { return source.Watches(plannerSessionID) >= 3 })
+	rearm()
+	rearm()
 
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"late-replay"}`))
+	rearm()
 	if data := client.agentFrame(t, "agent", "responder"); data != `{"v":1,"responding":true}` {
 		t.Fatalf("the frame after the session answered has data %s, want it responding", data)
 	}
 	if data := client.agentFrame(t, "agent", "replay"); data != `{"v":1,"kind":"late-replay"}` {
 		t.Fatalf("the frame after the responder has data %s, want the session's replay", data)
 	}
-	armed := source.Watches(plannerSessionID)
-	waitUntil(t, "a re-arm of the session after it answered", func() bool { return source.Watches(plannerSessionID) > armed })
-	client.quiet(t, 300*time.Millisecond, "after the session answered: a re-arm asks for no second replay")
+	// The view goes on re-arming the session. Its re-arms run one after another on the view's own
+	// goroutine, so once it has armed the session twice more, the re-arm after the replay has ended,
+	// and a second replay it asked for is queued ahead of a frame the session publishes now.
+	rearm()
+	rearm()
+	source.Publish(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"message","seq":1}`))
+	if data := client.agentFrame(t, "agent", "frame"); data != `{"v":1,"kind":"message","seq":1}` {
+		t.Fatalf("the frame after the re-arms has data %s, want the published frame: a re-arm asked for a second replay", data)
+	}
 }
 
 func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
@@ -213,7 +231,8 @@ func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
 		if !strings.Contains(refusal.Message, model.ScopePerson) {
 			t.Fatalf("%s was refused %q, which does not name the %s scope", name, refusal.Message, model.ScopePerson)
 		}
-		client.quiet(t, 300*time.Millisecond, "after the agent view of "+name+" was refused")
+		testwait.Span(t, 300*time.Millisecond, refusedViewWhy)
+		client.sentNothing(t, "after the agent view of "+name+" was refused")
 		if got := source.Watches(reviewerSessionID); got != 0 {
 			t.Fatalf("%s armed the session %d times, want 0", name, got)
 		}
@@ -248,7 +267,8 @@ func TestAgentStreamRefusesASessionIdThatIsNotAUUID(t *testing.T) {
 	}
 	client.send(t, liveSubscribe("no-session", LiveView{DeliveryLiveView: DeliveryLiveView{Kind: liveAgentView}}, ""))
 	client.refusal(t, "no-session", "SESSION_ID_INPUT")
-	client.quiet(t, 300*time.Millisecond, "after every refused session id")
+	testwait.Span(t, 300*time.Millisecond, refusedViewWhy)
+	client.sentNothing(t, "after every refused session id")
 	for _, id := range ids {
 		if got := source.Watches(id); got != 0 {
 			t.Fatalf("a refused session id %q reached the bus %d times, want 0", id, got)
@@ -318,8 +338,8 @@ func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
 			_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 			stream := newGatedStream()
 			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
-			t.Cleanup(running.stop)
-			waitUntil(t, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
+			stopOnCleanup(t, "agent", running)
+			testwait.Eventually(t, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
 
 			for index := range test.frames {
 				source.Publish(plannerSessionID, paddedFrame(index, test.size))
@@ -347,8 +367,8 @@ func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 	stream := newGatedStream()
 	running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
-	t.Cleanup(running.stop)
-	waitUntil(t, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
+	stopOnCleanup(t, "agent", running)
+	testwait.Eventually(t, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
 
 	// The whole budget, and then one frame more than it holds.
 	frames := agentStreamBufferBytes / (1 << 20)
@@ -379,7 +399,7 @@ func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
 		}
 		break
 	}
-	waitUntil(t, "the view that fell behind leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	testwait.Eventually(t, "the view that fell behind leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 }
 
 // The relay ending a viewer, as a connection lost on the way to the page does, ends the
@@ -399,9 +419,11 @@ func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
 	if reason := client.endedAs(t, "agent"); reason != "dropped" {
 		t.Fatalf("the dropped view ended %q, want dropped", reason)
 	}
-	waitUntil(t, "the dropped view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	// The view no longer holds the session's frames, so a frame the session publishes now reaches
+	// no subscription; and had the ended view sent anything after its end, the page would read it
+	// ahead of the next subscription's opening frames, which the subscribe below reads first.
+	testwait.Eventually(t, "the dropped view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 	source.Publish(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"message","seq":1}`))
-	client.quiet(t, 300*time.Millisecond, "after the relay dropped the view")
 	if !client.open() {
 		t.Fatalf("the socket ended with the view: %v", client.err)
 	}
@@ -445,7 +467,7 @@ func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "agent"})
 	const message = "dispatch: skipped agent frames that are not JSON"
-	waitUntil(t, "the ended view logs what it skipped", func() bool { return logs.Lines(message) != "" })
+	testwait.Eventually(t, "the ended view logs what it skipped", func() bool { return logs.Lines(message) != "" })
 	lines := logs.Lines(message)
 	if strings.Count(lines, message) != 1 || !strings.Contains(lines, "level=WARN") || !strings.Contains(lines, "skipped=3") {
 		t.Fatalf("the view logged %q, want one WARN counting 3 skipped frames", lines)
@@ -491,120 +513,97 @@ func TestTwoAgentViewsShareOneSocket(t *testing.T) {
 	}
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "planner"})
-	waitUntil(t, "the unsubscribed view leaves the planner's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	testwait.Eventually(t, "the unsubscribed view leaves the planner's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 	if got := source.Viewers(reviewerSessionID); got != 1 {
 		t.Fatalf("the reviewer's frames have %d viewers after the planner's view stopped, want 1", got)
 	}
+	// The planner's view holds no subscription now, so seq 3 reaches nothing; and a frame the
+	// stopped view had queued is on the socket's stream ahead of seq 4, which the reviewer's view
+	// queues next, so the page would read it first.
 	source.Publish(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"message","seq":3}`))
 	source.Publish(reviewerSessionID, agentstream.Frame(`{"v":1,"kind":"message","seq":4}`))
 	if data := client.agentFrame(t, "reviewer", "frame"); data != `{"v":1,"kind":"message","seq":4}` {
 		t.Fatalf("the frame after the planner's view stopped has data %s, want the reviewer's", data)
 	}
-	client.quiet(t, 300*time.Millisecond, "after the planner's view stopped")
 }
 
 // heldReplaySource is the in-memory relay but for one session whose replay request waits until it
 // is released or its request's context ends, as a session slow to answer holds a real request up to
-// its timeout. Each request of the held session sends asked a record of its own (heldReplay), so
-// how one request ended is never read as another's.
+// its timeout. returned receives what each held request ended with: nil once released, or its
+// context's error.
 type heldReplaySource struct {
 	*agentstream.Memory
-	held    string
-	asked   chan *heldReplay
-	release chan struct{}
-}
-
-// heldReplay is one replay request of the held session.
-type heldReplay struct {
-	mu sync.Mutex
-	// ended is the error the request ended with, its context's, and nil while it still waits.
-	ended error
+	held     string
+	asked    chan struct{}
+	release  chan struct{}
+	returned chan error
 }
 
 func (s *heldReplaySource) Replay(ctx context.Context, sessionID string) (agentstream.Frame, error) {
 	if sessionID == s.held {
-		request := &heldReplay{}
-		s.asked <- request
+		s.asked <- struct{}{}
 		select {
 		case <-s.release:
+			s.returned <- nil
 		case <-ctx.Done():
-			request.end(ctx.Err())
+			s.returned <- ctx.Err()
 			return nil, ctx.Err()
 		}
 	}
 	return s.Memory.Replay(ctx, sessionID)
 }
 
-// end records how the request ended.
-func (r *heldReplay) end(err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.ended = err
-}
-
-// endedWith is the error the request ended with, its context's, and nil while it still waits.
-func (r *heldReplay) endedWith() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.ended
-}
-
 // A session's replay can take up to two seconds to answer, and it is asked on the subscription's
 // own goroutine: the socket's read loop goes on taking the page's frames, so another view on the
-// same socket opens while the replay waits, and an unsubscribe ends the waiting view at once,
-// cancelling its request rather than waiting the request out.
-//
-// The replay's own timeout (agentStreamReplayTimeout) runs on the server's clock, a fake no one
-// moves here, so the held request ends only by the release or by its view's end, however long a
-// loaded machine takes between the request and the row's checks. A read loop that waits on the
-// replay never opens the second view, and a view that waits its request out never ends it
-// cancelled, so either fails by the name of the wait it holds.
+// same socket opens while the replay waits, and an unsubscribe ends the waiting view, cancelling
+// its request rather than waiting the request out. The server's clock is a fake the test never
+// moves, so the request's timeout never ends it.
 func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
 	t.Parallel()
 	memory := agentstream.NewMemory()
 	memory.SetResponder(plannerSessionID, true)
 	memory.SetResponder(reviewerSessionID, true)
-	source := &heldReplaySource{Memory: memory, held: plannerSessionID, asked: make(chan *heldReplay, 4), release: make(chan struct{})}
+	source := &heldReplaySource{Memory: memory, held: plannerSessionID, asked: make(chan struct{}, 4), release: make(chan struct{}), returned: make(chan error, 4)}
 	t.Cleanup(func() { close(source.release) })
-	// The server's clock is held: the replay's wait (agentStreamReplayTimeout) never ends on it, and
-	// neither does any other timer of the server's, so a row that came to wait on one would reach
-	// the binary's deadline, where testwait ends it by name.
-	rig := newLiveSocketRig(t, testServerOptions{agentStream: source, clock: clocktest.Held()}, nil)
-
+	rig := newLiveSocketRig(t, testServerOptions{agentStream: source, clock: clocktest.New(time.Now())}, nil)
 	client := rig.dial(t, asUser("alice"))
+
 	client.subscribeAgent(t, "planner", plannerSessionID)
-	replay := testwait.Receive(t, "the planner's view's request for its replay", source.asked)
+	testwait.Receive(t, "the planner's view to ask for its replay", source.asked)
 	client.subscribeAgent(t, "reviewer", reviewerSessionID)
-	// The planner's view answers only once its replay has ended, which nothing ends yet, so the
-	// first frame is the reviewer's.
 	if data := client.agentFrame(t, "reviewer", "responder"); data != `{"v":1,"responding":true}` {
 		t.Fatalf("the reviewer's first frame has data %s", data)
 	}
-	if ended := replay.endedWith(); ended != nil {
-		t.Fatalf("the reviewer's view opened once the planner's replay had ended (%v), want it opened while that replay waited", ended)
+	// A read loop that waited on the planner's replay would have read the reviewer's subscribe only
+	// once the replay's request returned.
+	select {
+	case err := <-source.returned:
+		t.Fatalf("the planner's replay request returned (%v) before the reviewer's view opened: the read loop waited on it", err)
+	default:
 	}
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "planner"})
-	waitUntil(t, "the unsubscribed view's end", func() bool { return memory.Viewers(plannerSessionID) == 0 })
-	if cancelled := replay.endedWith(); !errors.Is(cancelled, context.Canceled) {
-		t.Fatalf("the planner's replay ended %v, want it cancelled by its unsubscribe", cancelled)
+	if err := testwait.Receive(t, "the end of the planner's replay request once its view was unsubscribed", source.returned); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the unsubscribed view's replay request ended with %v, want its cancel", err)
 	}
-	client.quiet(t, 300*time.Millisecond, "after the waiting view was unsubscribed")
+	testwait.Eventually(t, "the unsubscribed view ends while its replay waits", func() bool { return memory.Viewers(plannerSessionID) == 0 })
+	// A frame the stopped view had queued is on the socket's stream ahead of one the reviewer's view
+	// queues now, so the page would read it first.
+	memory.Publish(reviewerSessionID, agentstream.Frame(`{"v":1,"kind":"message","seq":1}`))
+	if data := client.agentFrame(t, "reviewer", "frame"); data != `{"v":1,"kind":"message","seq":1}` {
+		t.Fatalf("the reviewer's frame after the planner's view stopped has data %s", data)
+	}
 }
 
 // failingSource is the in-memory relay whose subscribe or watch fails, as a NATS connection that is
-// closed or reconnecting fails them. It records when it answered a call with its failure.
+// closed or reconnecting fails them.
 type failingSource struct {
 	*agentstream.Memory
 	subscribe, watch error
-
-	mu     sync.Mutex
-	failed time.Time
 }
 
 func (s *failingSource) Subscribe(sessionID string, deliver func(agentstream.Frame)) (func(), error) {
 	if s.subscribe != nil {
-		s.fail()
 		return nil, s.subscribe
 	}
 	return s.Memory.Subscribe(sessionID, deliver)
@@ -612,57 +611,15 @@ func (s *failingSource) Subscribe(sessionID string, deliver func(agentstream.Fra
 
 func (s *failingSource) Watch(sessionID string) error {
 	if s.watch != nil {
-		s.fail()
 		return s.watch
 	}
 	return s.Memory.Watch(sessionID)
 }
 
-// fail records the moment the relay answers a call with its failure.
-func (s *failingSource) fail() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failed = time.Now()
-}
-
-// failedAt is the moment the relay last answered a call with its failure, zero before it has.
-func (s *failingSource) failedAt() time.Time {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.failed
-}
-
-// sendStampedStream is a gatedStream that records when the subscription first asked it to send a
-// frame, before its gate lets the frame through.
-type sendStampedStream struct {
-	*gatedStream
-	mu    sync.Mutex
-	asked time.Time
-}
-
-func (s *sendStampedStream) SendWait(ctx context.Context, frame any) error {
-	s.mu.Lock()
-	if s.asked.IsZero() {
-		s.asked = time.Now()
-	}
-	s.mu.Unlock()
-	return s.gatedStream.SendWait(ctx, frame)
-}
-
-// firstAsked is when the subscription first asked the stream to send a frame, zero before it has.
-func (s *sendStampedStream) firstAsked() time.Time {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.asked
-}
-
 // A relay that cannot subscribe the view or tell the session it is attached ends the subscription
 // as dropped, so its page subscribes again rather than watching a session that never hears of it;
-// and it waits a second first, so a relay that keeps failing is asked again at that pace rather than
-// as fast as the page can subscribe. The view leaves the session's frames before its end: the
-// stream's gate holds the end until the test has read that the relay failed and the session has no
-// viewer. The second is read off the view's own calls, from the relay's answer of its failure to
-// the view's ask to send its end.
+// and it waits agentStreamRetry on the server's clock first, so a relay that keeps failing is asked
+// again at that pace rather than as fast as the page can subscribe.
 func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
 	t.Parallel()
 	for name, source := range map[string]*failingSource{
@@ -670,24 +627,26 @@ func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
 		"its watch":     {Memory: agentstream.NewMemory(), watch: errors.New("nats: connection reconnecting")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
-			stream := &sendStampedStream{gatedStream: newGatedStream()}
-			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
-			t.Cleanup(running.stop)
-			waitUntil(t, "the failed view leaves the session's frames while the gate holds its end", func() bool {
-				return !source.failedAt().IsZero() && source.Viewers(plannerSessionID) == 0
-			})
+			fake := clocktest.New(time.Now())
+			_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source, clock: fake})
+			stream := newGatedStream()
 			close(stream.gate)
+			retry := fake.Now().Add(agentStreamRetry)
+			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
+			stopOnCleanup(t, "agent", running)
+			fake.AwaitArmedAt(t, "the failed view's retry", retry)
+			// The view waits its retry with the session's frames already let go and nothing sent.
+			if got := source.Viewers(plannerSessionID); got != 0 {
+				t.Fatalf("the failed view holds %d subscriptions to the session's frames while it waits its retry, want 0", got)
+			}
+			if queued := len(stream.frames); queued != 0 {
+				t.Fatalf("the failed view sent %d frames before its retry", queued)
+			}
+			fake.Set(retry)
 			ended, ok := stream.next(t, "agent's end").(LiveEnded)
 			if !ok || ended.Sub != "agent" || ended.Reason != "dropped" {
 				t.Fatalf("the first frame of a view whose relay failed = %+v, want its end, dropped", ended)
 			}
-			if waited := stream.firstAsked().Sub(source.failedAt()); waited < agentStreamRetry {
-				t.Fatalf("the view asked to send its end %s after its relay failed, before the relay's retry (%s)", waited, agentStreamRetry)
-			}
-			waitUntil(t, "the failed view leaves the session's frames", func() bool {
-				return source.Viewers(plannerSessionID) == 0
-			})
 		})
 	}
 }

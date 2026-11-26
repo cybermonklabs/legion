@@ -17,6 +17,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -64,7 +65,7 @@ func newInteractionServer(t testing.TB, makeDocs func(*store.Store) docs.API) (h
 	}
 	mux := http.NewServeMux()
 	srv := register(mux, t.Context(), deps)
-	t.Cleanup(srv.waitBackground)
+	t.Cleanup(func() { waitBackgroundOf(t, srv) })
 	return mux, database, deps, srv
 }
 
@@ -120,26 +121,49 @@ func sessionRequest(t testing.TB, handler http.Handler, method, target string, b
 	return response
 }
 
-func createInteractionIssue(t testing.TB, handler http.Handler, project, title, spec string) struct {
+// interactionIssue is what the issue create answers that the interaction rows read.
+type interactionIssue struct {
 	Key               string `json:"key"`
 	PrimaryArtifactID string `json:"primary_artifact_id"`
-} {
+}
+
+// createInteractionIssue creates project and an issue in it as alice, failing the test when either
+// create is refused.
+func createInteractionIssue(t testing.TB, handler http.Handler, project, title, spec string) interactionIssue {
 	t.Helper()
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": project, "name": project + " project",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	issue, err := createInteractionIssueOffTest(handler, project, title, spec)
+	if err != nil {
+		t.Fatal(err)
 	}
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"project": project, "title": title, "spec": spec,
-	}, "alice")
+	return issue
+}
+
+// createInteractionIssueOffTest is createInteractionIssue for a goroutine that is not the test's,
+// where FailNow may not run: it answers a refused create as an error, and the caller hands that
+// error to the test's goroutine, which fails the row naming it.
+func createInteractionIssueOffTest(handler http.Handler, project, title, spec string) (interactionIssue, error) {
+	post := func(target string, body map[string]string) *httptest.ResponseRecorder {
+		// A map of strings always encodes.
+		data, _ := json.Marshal(body)
+		request := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(data))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Dispatch-User", "alice")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := post("/api/v1/projects", map[string]string{"key": project, "name": project + " project"}); response.Code != http.StatusCreated {
+		return interactionIssue{}, fmt.Errorf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response := post("/api/v1/issues", map[string]string{"project": project, "title": title, "spec": spec})
 	if response.Code != http.StatusCreated {
-		t.Fatalf("create issue: status=%d body=%s", response.Code, response.Body.String())
+		return interactionIssue{}, fmt.Errorf("create issue: status=%d body=%s", response.Code, response.Body.String())
 	}
-	return decodeBody[struct {
-		Key               string `json:"key"`
-		PrimaryArtifactID string `json:"primary_artifact_id"`
-	}](t, response)
+	var issue interactionIssue
+	if err := json.Unmarshal(response.Body.Bytes(), &issue); err != nil {
+		return interactionIssue{}, fmt.Errorf("decode response body %q: %v", response.Body.String(), err)
+	}
+	return issue, nil
 }
 
 func sessionActor() map[string]any {
@@ -181,10 +205,10 @@ func (g *firstReplaceGate) AcceptSuggestion(ctx context.Context, artifactID, mar
 
 // waitForSecondReplacementOrCommentLock waits until the second accept reaches the document service
 // or waits on a lock in the test's own database. Its one bound is the test binary's deadline
-// (waitUntil): a request a loaded machine runs late still ends the wait.
+// (testwait.Eventually): a request a loaded machine runs late still ends the wait.
 func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, secondReplacement <-chan struct{}) {
 	t.Helper()
-	waitUntil(t, "the second accept to reach the document service or wait for the comment lock", func() bool {
+	testwait.Eventually(t, "the second acceptance to reach the document service or wait for the comment lock", func() bool {
 		select {
 		case <-secondReplacement:
 			return true
@@ -405,7 +429,7 @@ func TestAnswerAskLocksIssueBeforeAskRow(t *testing.T) {
 	t.Parallel()
 	// The seeded spec's settlement would take the issue's owner lock this test holds; keep it
 	// out of the lock queue so the counted waiter is the answer handler.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "TEST", "Answer lock order", "A spec")
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 		"question": "Can this be answered?", "actor": sessionActor(),
@@ -672,9 +696,9 @@ func TestAnchorsCaptureAnUnnamedVersionWhenLiveTextChanged(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() {
-			if err := documentService.Shutdown(context.Background()); err != nil {
+			if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
@@ -883,8 +907,8 @@ func TestCommentsSuggestionsAndArtifactFilter(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Comments", "The quick brown fox")
@@ -974,9 +998,9 @@ func TestSuggestionAcceptAppliesLiveDocument(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond})
 		t.Cleanup(func() {
-			if err := documentService.Shutdown(context.Background()); err != nil {
+			if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
@@ -1028,9 +1052,9 @@ func TestSuggestionAcceptEmitsAnchorRefreshEventsForChangedOpenRows(t *testing.T
 	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond})
 		t.Cleanup(func() {
-			if err := documentService.Shutdown(context.Background()); err != nil {
+			if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
@@ -1224,7 +1248,7 @@ func TestAcceptOrphanedSuggestionIs409(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Orphaned suggestion", "The quick brown fox")
@@ -1264,7 +1288,7 @@ func TestResolveOrphanedSuggestionSucceeds(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Orphaned suggestion", "The quick brown fox")
@@ -1309,7 +1333,7 @@ func TestReopenOrphanedSuggestionSucceeds(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Orphaned suggestion", "The quick brown fox")
@@ -1353,14 +1377,14 @@ func TestReopenOrphanedSuggestionSucceeds(t *testing.T) {
 }
 
 // waitForArtifactVersion waits until version number of artifactID is readable, which is when its
-// settlement has written it. Its one bound is the test binary's deadline (testwait.UntilPolling):
-// a settlement a loaded machine runs late still ends the wait, and one that never writes the
-// version fails it by name, with the status the read last answered.
+// settlement has written it. Its one bound is the test binary's deadline (testwait.Eventually): a
+// settlement a loaded machine runs late still ends the wait, and one that never writes the version
+// fails it by name.
 func waitForArtifactVersion(t *testing.T, handler http.Handler, artifactID string, number int) {
 	t.Helper()
-	testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("artifact version %d of %s to settle (the status of its read)", number, artifactID), func() (int, bool) {
+	testwait.Eventually(t, fmt.Sprintf("artifact %s version %d to settle", artifactID, number), func() bool {
 		version := dispatchRequest(t, handler, http.MethodGet, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", artifactID, number), nil, "alice")
-		return version.Code, version.Code == http.StatusOK
+		return version.Code == http.StatusOK
 	})
 }
 
@@ -1368,8 +1392,8 @@ func TestSuggestionAcceptClearsPendingAuthorBeforeNextVersion(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Accepted author", "before")
@@ -1575,8 +1599,8 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 	var documentService *docs.Service
 	var gate *firstReplaceGate
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		gate = &firstReplaceGate{
 			API: documentService, firstEntered: make(chan struct{}), releaseFirst: make(chan struct{}), secondEntered: make(chan struct{}),
 		}
@@ -1635,8 +1659,8 @@ func TestSuggestionAcceptChecksClosureBeforeApplyingReplacement(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed suggestion", "foo")
@@ -1668,7 +1692,7 @@ func TestSuggestionAcceptChecksClosureBeforeApplyingReplacement(t *testing.T) {
 	if err := blocker.Commit(context.Background()); err != nil {
 		t.Fatalf("commit closed issue: %v", err)
 	}
-	response := <-responses
+	response := testwait.Receive(t, "the accept to answer once the close commits", responses)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"ISSUE_CLOSED"`) {
 		t.Fatalf("accept suggestion after close: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -2139,8 +2163,8 @@ func TestEmptyArtifactEditDoesNotScheduleSettlement(t *testing.T) {
 	t.Parallel()
 	var tracked *scheduleTrackingDocs
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+		service := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 		tracked = &scheduleTrackingDocs{API: service}
 		return tracked
 	})
@@ -2475,32 +2499,36 @@ func TestGetCommentReturnsNotFound(t *testing.T) {
 	}
 }
 
-// loadMarkProjection waits for the mark to reach the persisted document: the API answers once
-// the live document carries the mark, and persistence follows on its own schedule. Its one bound
-// is the test binary's deadline (testwait.UntilPolling): persistence a loaded machine runs late
-// still ends the wait.
+// loadMarkProjection waits for the mark to reach the persisted document and answers its record.
+// A document's updates do not all reach Postgres inside the request that caused them: the API
+// answers once the live document carries the mark, and a server-side mark written outside a
+// transaction persists on the document service's own queue. Reading the instant a request
+// returns is therefore a race with that queue, not a statement about the write. A try that finds no
+// record of the mark reads the marks the persisted document records.
 func loadMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) map[string]any {
 	t.Helper()
-	return testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("mark %q to reach the persisted document %s", markID, artifactID), func() (map[string]any, bool) {
-		return findMarkProjection(t, database, artifactID, markID)
+	var projection map[string]any
+	testwait.Until(t, "the persisted record of mark "+markID, func() (string, bool) {
+		marks := persistedMarks(t, database, artifactID)
+		found, ok := markProjection(t, marks, markID)
+		if !ok {
+			recorded := marks.Keys()
+			slices.Sort(recorded)
+			return fmt.Sprintf("the persisted document records %d marks: %v", len(recorded), recorded), false
+		}
+		projection = found
+		return "recorded", true
 	})
-}
-
-// awaitMarkProjection waits for the mark's durable record. A document's updates do not all
-// reach Postgres inside the request that caused them: a server-side mark written outside a
-// transaction persists on the document service's own queue, and a Yjs update that depends on
-// one still in flight stays pending in a freshly loaded document until it lands. Reading the
-// instant a request returns is therefore a race with that queue, not a statement about the
-// write, so the record is waited for. Its one bound is the test binary's deadline
-// (testwait.UntilPolling): a record that never appears fails the test by name.
-func awaitMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) map[string]any {
-	t.Helper()
-	return testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("mark %q's durable record in document %s", markID, artifactID), func() (map[string]any, bool) {
-		return findMarkProjection(t, database, artifactID, markID)
-	})
+	return projection
 }
 
 func findMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) (map[string]any, bool) {
+	t.Helper()
+	return markProjection(t, persistedMarks(t, database, artifactID), markID)
+}
+
+// persistedMarks is the marks map of the document's persisted state.
+func persistedMarks(t *testing.T, database *store.Store, artifactID string) *crdt.YMap {
 	t.Helper()
 	loaded, err := docs.NewPgVersioned(database).Load(context.Background(), artifactID)
 	if err != nil {
@@ -2510,7 +2538,13 @@ func findMarkProjection(t *testing.T, database *store.Store, artifactID, markID 
 	if err := crdt.ApplyUpdateV1(document, loaded.Update, nil); err != nil {
 		t.Fatalf("decode persisted document: %v", err)
 	}
-	value, found := document.GetMap("marks").Get(markID)
+	return document.GetMap("marks")
+}
+
+// markProjection is the record marks holds for markID, and whether it holds one.
+func markProjection(t *testing.T, marks *crdt.YMap, markID string) (map[string]any, bool) {
+	t.Helper()
+	value, found := marks.Get(markID)
 	if !found {
 		return nil, false
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deferredItems is a bullet list of more items than a write indexes in its own request: one
@@ -366,7 +367,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("release %s: %v", step.name, err)
 		}
-		<-ticked
+		testwait.Receive(t, "the tick waiting on "+step.name+" to end once it is free", ticked)
 		if rows := countRows(t, database, "document_blocks", document); rows == 0 {
 			t.Errorf("the tick wrote no block row of %s once %s was free, so this step proves nothing",
 				step.slug, step.name)

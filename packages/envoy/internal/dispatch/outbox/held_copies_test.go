@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -12,12 +13,13 @@ import (
 // that holds a copy, with no scrape of the gauges: reading them changes nothing, and the record
 // keeps only what this process's passes last found waiting.
 func TestAHandedOverHeldCopyLeavesTheRecordWithoutAScrape(t *testing.T) {
-	held := newHeldCopies()
+	fake := clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	held := newHeldCopies(fake)
 	issue := "A-1"
 	event := model.Event{IssueKey: &issue}
 	stale := fallbackCopy{commentID: "stale", destination: "notifications.agent.s1"}
 	held.hold(stale, event, model.MentionCopyHolder{EventID: 1}, time.Hour)
-	long := time.Now().Add(-2 * fallbackClaim)
+	long := fake.Now().Add(-2 * fallbackClaim)
 	held.mu.Lock()
 	held.rows[heldCopyKey{comment: stale.commentID, destination: stale.destination}].seen = long
 	held.swept = long
@@ -32,7 +34,7 @@ func TestAHandedOverHeldCopyLeavesTheRecordWithoutAScrape(t *testing.T) {
 		return comments
 	}
 
-	if count, _ := held.samples(time.Now()); count != 0 {
+	if count, _ := held.samples(fake.Now()); count != 0 {
 		t.Fatalf("the gauges read %d, want nothing of a copy no pass found waiting for %s", count, fallbackClaim)
 	}
 	if got := entries(); len(got) != 1 {

@@ -233,7 +233,7 @@ func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) erro
 			ResolvedMention{Target: owed.target, Delivery: owed.delivery}, comment.Author,
 			attemptClaim{attempt: owed.attempt}, s.newTakeoverRetry())
 		if held != nil {
-			s.mentions.enqueue(ctx, held.send(created, comment.Author, s.newTakeoverRetry()))
+			s.mentions.enqueue(ctx, held.send(created, comment.Author, s.newTakeoverRetry(), s.mentions.sendClock().Now()))
 		}
 		return err
 	}

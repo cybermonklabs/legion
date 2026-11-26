@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -93,7 +94,7 @@ func (k iapSocketKeys) expiring(t *testing.T, lifetime time.Duration) http.Heade
 // started at. It asks the verifier while the verifier still admits the assertion.
 func (k iapSocketKeys) pastExpiry(t *testing.T, header http.Header) time.Time {
 	t.Helper()
-	claims, err := k.identity.Verifier.Verify(t.Context(), header.Get(identity.IAPAssertionHeader))
+	claims, err := k.identity.Verifier.Verify(testwait.Context(t), header.Get(identity.IAPAssertionHeader))
 	if err != nil {
 		t.Fatalf("the verifier refused the assertion whose expiry the row reads: %v", err)
 	}
@@ -227,9 +228,11 @@ func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing
 			socket := rig.dial(t, expiring)
 			judged.Set(iap.pastExpiry(t, expiring))
 			switched.swap(change.apply(t, iap))
-			// The socket's one heartbeat on the server's clock; the socket it closes arms no other.
+			// The socket's first heartbeat on the server's clock, whose check closes it:
+			// whileCallerResolves re-arms the heartbeat as it takes this one, and stops it once the
+			// check has refused, so no later heartbeat checks the socket.
 			first := opened.Add(heartbeat)
-			awaitArmedAt(t, fake, "the socket's first heartbeat", first)
+			fake.AwaitArmedAt(t, "the socket's first heartbeat", first)
 			fake.Set(first)
 			if closed := socket.closeError(t); closed.Code != gws.ClosePolicyViolation {
 				t.Fatalf("the socket whose upgrade's assertion expired, %s, closed with %d %q, want %d: it is refused, not rotated",
@@ -261,8 +264,8 @@ func newIAPDocumentRig(t *testing.T, heartbeat time.Duration, clk, judged clock.
 	rig := &iapDocumentRig{iap: newIAPSocketKeys(t, database, judged)}
 	rig.switched = newSwitchedIdentity(rig.iap.identity)
 	broker := events.NewBroker()
-	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: rig.switched, Settle: time.Hour})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: rig.switched, Settle: stagedAhead})
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: rig.switched, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: testServerURL, Docs: documents, Events: broker, StreamHeartbeat: heartbeat, Clock: clk,
@@ -271,7 +274,7 @@ func newIAPDocumentRig(t *testing.T, heartbeat time.Duration, clk, judged clock.
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	registerJoined(t, mux, deps)
 	rig.sockets = &servedSockets{finished: make(map[string]chan struct{})}
 	rig.server = httptest.NewServer(rig.sockets.serve(mux.ServeHTTP))
 	t.Cleanup(rig.server.Close)
@@ -380,9 +383,11 @@ func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *tes
 			peer := rig.openDocument(t, expiring)
 			judged.Set(rig.iap.pastExpiry(t, expiring))
 			rig.switched.swap(change.apply(t, rig.iap))
-			// The socket's one heartbeat on the server's clock; the socket it ends arms no other.
+			// The socket's first heartbeat on the server's clock, whose check ends it:
+			// whileCallerResolves re-arms the heartbeat as it takes this one, and stops it once the
+			// check has refused, so no later heartbeat checks the socket.
 			first := opened.Add(heartbeat)
-			awaitArmedAt(t, fake, "the document socket's first heartbeat", first)
+			fake.AwaitArmedAt(t, "the document socket's first heartbeat", first)
 			fake.Set(first)
 			testwait.Receive(t, fmt.Sprintf("the document socket whose upgrade's assertion expired, %s, to close", change.name), peer.connection().Ended)
 			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
@@ -415,7 +420,7 @@ func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
 				cause <- context.Cause(r.Context())
 			})
 			handler(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ws/live", nil))
-			if got := <-cause; !errors.Is(got, tc.want) {
+			if got := testwait.Receive(t, "the inner handler to report its request's cause", cause); !errors.Is(got, tc.want) {
 				t.Fatalf("the heartbeat's refusal %v cancelled the socket with %v, want %v", tc.err, got, tc.want)
 			}
 		})

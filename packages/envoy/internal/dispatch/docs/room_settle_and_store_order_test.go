@@ -9,16 +9,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Two processes editing one document settle it as one process does (plan D3.7): a content change
@@ -41,7 +43,7 @@ func TestARemoteChangeRearmsOnlyAnArmedSettlement(t *testing.T) {
 	}
 	room := pair.taskA.srv.GetDoc(pair.artifactID)
 	state := pair.taskA.room(pair.artifactID)
-	settleOf := func() (timer *time.Timer, armed bool, generation uint64) {
+	settleOf := func() (timer clock.Timer, armed bool, generation uint64) {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		return state.settle, pair.taskA.isSettleTimerArmed(state.settle), state.roomGeneration
@@ -66,7 +68,7 @@ func TestARemoteChangeRearmsOnlyAnArmedSettlement(t *testing.T) {
 		t.Fatal("task B's change armed a settlement on task A, which had none armed: two processes would each version the burst")
 	}
 
-	// Task A's own peer types: its settlement is armed a settle delay out (an hour here).
+	// Task A's own peer types: its settlement is armed a settle delay out (a day here, stagedAhead).
 	editAsConnectedPeer(t, pair.taskA, pair.artifactID, 2, model.Actor{Kind: "user", ID: "alice-on-task-a"}, appendBlocks(t, "Alice's paragraph.\n"))
 	waitForLandedAppends(t, pair.taskA, pair.artifactID)
 	before, armed, generation := settleOf()
@@ -206,6 +208,8 @@ func (g *gatedAppends) release() {
 }
 
 // newGatedServiceInstance is newTestServiceInstance whose room appends pass a gate the test holds.
+// Its shutdown ends at the shared wait's deadline, as newTestServiceInstanceOn's does: a test may
+// put it on a fake (newQueryProcesses), whose drain budget no one moves.
 func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *gatedAppends) {
 	t.Helper()
 	gated := newGatedAppends(database)
@@ -215,10 +219,10 @@ func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *ga
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
 	})
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -325,7 +329,7 @@ func TestStoredHistoryIsNeverTorn(t *testing.T) {
 		writer.gate.hold()
 		writer.service.addConnection(artifactID, 2, typist)
 		editAsPeer(t, writer.service, artifactID, replaceRun(typedText, fmt.Sprintf("Typed-%d-x.", round)))
-		waitFor(t, roomWait(t), "the typist's rewrite to wait at the gate", func() bool { return writer.gate.waiting.Load() == 1 })
+		waitFor(t, "the typist's rewrite to wait at the gate", func() bool { return writer.gate.waiting.Load() == 1 })
 		keystroke := editAsPeer(t, writer.service, artifactID, replaceRun(fmt.Sprintf("Typed-%d-x.", round), fmt.Sprintf("Typed-%d-xy.", round)))
 		writer.service.removeConnection(artifactID, 2)
 		if !writer.service.hasPendingUpdates(artifactID) {

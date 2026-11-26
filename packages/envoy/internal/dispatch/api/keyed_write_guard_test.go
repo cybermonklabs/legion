@@ -321,11 +321,12 @@ func (g *keyedWriteGuard) walk(fn *lockFunction) {
 
 // callees is what call runs while the handler's commit step may be live: what the copy-lock graph
 // says it runs on its caller's goroutine, and every function it is passed, whatever it does with
-// it. The copy-lock guard leaves out a function handed to a Go method or time.AfterFunc, whose
-// locks are another goroutine's; but a handler that waits for its errgroup or WaitGroup runs that
-// work inside its request, where a write commits while the mark is live. Only goDetached is
-// presumed to run after the handler (detached), so a bare write anywhere else - a timer's callback
-// included - is named, and moves into a transaction or onto goDetached.
+// it. The copy-lock guard leaves out a function handed to a Go method or to the AfterFunc of a
+// package afterFuncPackages lists (time, clock, clocktest), whose locks are another goroutine's;
+// but a handler that waits for its errgroup or WaitGroup runs that work inside its request, where a
+// write commits while the mark is live. Only goDetached is presumed to run after the handler
+// (detached), so a bare write anywhere else - a timer's callback included - is named, and moves
+// into a transaction or onto goDetached.
 func (g *keyedWriteGuard) callees(call *ast.CallExpr) []*lockFunction {
 	return g.graph.calleesAndPassed(call)
 }

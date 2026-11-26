@@ -186,7 +186,7 @@ func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
 		t.Fatalf("new deps with a store: %v", err)
 	}
 	withStore := http.NewServeMux()
-	t.Cleanup(Register(withStore, t.Context(), deps).Wait)
+	registerJoined(t, withStore, deps)
 	served := dispatchRequest(t, withStore, http.MethodGet, "/api/v1/artifacts/"+version.Artifact.ID+"/versions/1", nil, "alice")
 	if served.Code != http.StatusOK || served.Body.String() != "legacy bytes" {
 		t.Fatalf("serve a row-held version with a store configured: status=%d body=%q", served.Code, served.Body.String())
@@ -240,7 +240,7 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 		t.Fatalf("new deps without a store: %v", err)
 	}
 	withoutStore := http.NewServeMux()
-	t.Cleanup(Register(withoutStore, t.Context(), noStore).Wait)
+	registerJoined(t, withoutStore, noStore)
 	unconfigured := dispatchRequest(t, withoutStore, http.MethodGet, "/api/v1/artifacts/"+version.Artifact.ID+"/versions/1", nil, "alice")
 	if unconfigured.Code != http.StatusServiceUnavailable || responseCode(t, unconfigured) != "FILE_STORE_UNAVAILABLE" {
 		t.Fatalf("serve a cleared row with no store: status=%d body=%s, want 503 FILE_STORE_UNAVAILABLE", unconfigured.Code, unconfigured.Body.String())
@@ -255,7 +255,10 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 // this build's process, so it names this build's owner lock protocol ($1), as processes.Register
 // writes it. The other process registers before the issue is filed: the earlier build's insert
 // takes the owner lock gate and waits, at most 5 s, for every transaction holding it, and before
-// the issue there is no document whose settlement could hold it.
+// the issue there is no document whose settlement could hold it. The two bucketless rows that keep
+// the bytes stage their heartbeat stagedAhead past the database's now(), so processes.Bucketless
+// reads each live at the upload however long the row takes to reach it; a heartbeat of now() is
+// live for processes.LiveWindow alone.
 func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 	t.Parallel()
 	thisBuild := []any{store.OwnerLockProtocol}
@@ -264,8 +267,8 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 		args         []any
 		keepsBytes   bool
 	}{
-		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, $1)`, thisBuild, true},
-		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys) values (gen_random_uuid(), '{fingerprint}')`, nil, true},
+		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() + make_interval(secs => $2), $1)`, []any{store.OwnerLockProtocol, stagedAhead.Seconds()}, true},
+		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys, heartbeat_at) values (gen_random_uuid(), '{fingerprint}', now() + make_interval(secs => $1))`, []any{stagedAhead.Seconds()}, true},
 		{"process with a bucket", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, true, $1)`, thisBuild, false},
 		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour', $1)`, thisBuild, false},
 	} {
@@ -304,7 +307,7 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 				t.Fatalf("new deps without a store: %v", err)
 			}
 			withoutStore := http.NewServeMux()
-			t.Cleanup(Register(withoutStore, t.Context(), bucketless).Wait)
+			registerJoined(t, withoutStore, bucketless)
 			served := dispatchRequest(t, withoutStore, http.MethodGet, "/api/v1/artifacts/"+version.Artifact.ID+"/versions/1", nil, "alice")
 			if served.Code != http.StatusOK || !bytes.Equal(served.Body.Bytes(), image) {
 				t.Fatalf("the bucketless process serves the upload: status=%d, %d body bytes, want 200 with the image", served.Code, served.Body.Len())
@@ -399,6 +402,11 @@ func (p uploadLockProbe) heldBy() string {
 	return p.holder.String()
 }
 
+// String is what the shared wait prints of the probe's last reading when it gives up.
+func (p uploadLockProbe) String() string {
+	return fmt.Sprintf("took the lock: %t; the first refusal read %s", p.took, p.heldBy())
+}
+
 // uploadHoldsTheLock is the failure to report when the holder the probe named is an upload's own
 // transaction, and "" when it is anything else. What names it is the issue read, not the lock:
 // the two go out in one batch (store.LockOwnerAndRead), the server runs the lock first and the
@@ -409,7 +417,7 @@ func (p uploadLockProbe) heldBy() string {
 // writing its object would sit on it for the whole of Put, and it is no statement of this test's
 // other writer: the settlement of the spec document fileIssue wrote shows one of the document's
 // own reads or its write phase's. An upload that ran further statements between that read and
-// Put would show one of those instead and be retried until the test binary's deadline, whose
+// Put would show one of those instead and be retried until the shared wait gives up, whose
 // failure names what it read rather than timing out mutely.
 func (p uploadLockProbe) uploadHoldsTheLock() string {
 	if p.holder == nil || !strings.Contains(p.holder.query, issueStatusRead) {
@@ -419,10 +427,11 @@ func (p uploadLockProbe) uploadHoldsTheLock() string {
 }
 
 // probeIssueOwnerLock tries issue's owner lock without waiting, over and over, until it takes it
-// or the holder it first met is an upload's own transaction, where retrying could only wait for
-// ever. A lock it takes is released with the statement that took it, since it runs on the pool
-// outside a transaction (store.TryLockOwners). Its one bound is the test binary's deadline
-// (testwait.UntilPolling), whose failure names what the first refused attempt read.
+// or the holder it first met is an upload's own transaction, where retrying could only wait for a
+// lock that upload holds through its Put. A lock it takes is released with the statement that took
+// it, since it runs on the pool outside a transaction (store.TryLockOwners). The wait has no bound
+// of its own (testwait.Until): one that never takes the lock fails naming what the first refusal
+// read.
 //
 // It is a function rather than a loop inside the test below so that the fast arm it answers is
 // shown to fire against a holder a test makes itself
@@ -430,14 +439,14 @@ func (p uploadLockProbe) uploadHoldsTheLock() string {
 func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string) uploadLockProbe {
 	t.Helper()
 	var probe uploadLockProbe
-	testwait.UntilPolling(t, 2*time.Millisecond, "issue "+issue+"'s owner lock to be taken while its upload's bytes are in flight (what the first refused attempt read)", func() (string, bool) {
+	return testwait.Until(t, "the issue's owner lock to be taken, or its holder named as an upload's own transaction", func() (uploadLockProbe, bool) {
 		taken, err := store.TryLockOwners(context.Background(), database.Pool, store.IssueOwner(issue))
 		if err != nil {
 			t.Fatalf("try the issue's owner lock while its upload's bytes are in flight: %v", err)
 		}
 		if len(taken) == 1 {
 			probe.took = true
-			return "taken", true
+			return probe, true
 		}
 		// Read once, at the first refusal: a reading per attempt would bury the one that
 		// matters, and a holder parked in Put is still there to be named at any later attempt.
@@ -446,20 +455,19 @@ func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string) uplo
 			probe.holder = readIssueOwnerLockHolder(t, database, issue)
 			t.Logf("the issue's owner lock refused the probe; it is held by %s", probe.heldBy())
 			if probe.uploadHoldsTheLock() != "" {
-				return probe.heldBy(), true
+				return probe, true
 			}
 		}
-		return probe.heldBy(), false
+		return probe, false
 	})
-	return probe
 }
 
 // The negative control of that fast arm: a transaction of this test's own takes the issue's owner
 // lock and makes the read every upload makes under it (store.LockOwnerAndRead, issueStatusRead),
 // which is what pg_stat_activity shows of an upload's transaction parked in Put, and then holds
-// both. The probe must name that holder and answer there, rather than wait for ever on a lock it
-// will never take. Without this nothing shows the arm can fire, and the test below could only
-// ever fail by timing out.
+// both. The probe must name that holder and answer there, rather than wait for a lock it will
+// never take. Without this nothing shows the arm can fire, and the test below could only ever fail
+// at the shared wait's end.
 func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -523,7 +531,7 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	held := heldPut{Memory: filestest.NewMemory(), entered: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(held.release) }) }
-	handler, database, _ := newTestServer(t, testServerOptions{files: held, settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{files: held, settle: stagedAhead})
 	issue := fileIssue(t, handler)
 
 	var body bytes.Buffer
@@ -559,7 +567,7 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	// not leave the upload parked in Put while the server's shutdown waits for it.
 	t.Cleanup(func() {
 		release()
-		<-finished
+		testwait.Receive(t, "the upload handler to return once released", finished)
 	})
 
 	select {
@@ -572,7 +580,7 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 		t.Fatal(holding)
 	}
 	release()
-	if response := <-uploaded; response.Code != http.StatusCreated {
+	if response := testwait.Receive(t, "the upload to answer once released", uploaded); response.Code != http.StatusCreated {
 		t.Fatalf("upload: status=%d body=%s", response.Code, response.Body.String())
 	}
 }

@@ -20,9 +20,9 @@ import (
 // good.
 func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningRestoresThem(t *testing.T) {
 	t.Parallel()
-	// Past the run (pastTheRun), so no settlement timer loads the unloadable document between the
-	// requests.
-	f := newRepairFixtureSettlingAfter(t, pastTheRun)
+	// The settle window is stagedAhead, staged state for the settlement's timer and not a wait, so
+	// no settlement timer loads the unloadable document between the requests.
+	f := newRepairFixtureSettlingAfter(t, stagedAhead)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closing beside an unloadable document", "Context\n")
 	uploaded := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 		"name": "notes.md", "content": "Notes\n",

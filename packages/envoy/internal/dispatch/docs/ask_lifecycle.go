@@ -733,22 +733,22 @@ func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) err
 	if err != nil {
 		return err
 	}
-	deadline := time.Now().Add(issueSettleBudget)
+	deadline := s.clock.Now().Add(issueSettleBudget)
 	var failures []error
 	for _, room := range rooms {
 		var err error
-		for attempt := 1; attempt <= issueSettleAttempts && (attempt == 1 || time.Now().Before(deadline)); attempt++ {
+		for attempt := 1; attempt <= issueSettleAttempts && (attempt == 1 || s.clock.Now().Before(deadline)); attempt++ {
 			if attempt > 1 && (ctx.Err() != nil || s.stopping.Load()) {
 				break
 			}
 			if err = s.settleOwedNow(ctx, room, deadline); err == nil || attempt == issueSettleAttempts {
 				break
 			}
-			pause := time.NewTimer(min(issueSettleRetryPause, time.Until(deadline)))
+			pause := s.clock.NewTimer(min(issueSettleRetryPause, deadline.Sub(s.clock.Now())))
 			select {
 			case <-ctx.Done():
 				pause.Stop()
-			case <-pause.C:
+			case <-pause.C():
 			}
 		}
 		if err != nil {
@@ -771,7 +771,7 @@ func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) err
 // of its own, so Shutdown joins it as it would the timer's settlement, and holds the room's state
 // across it, so the state the settlement looks up is the one whose generation it runs at.
 func (s *Service) settleOwedNow(ctx context.Context, room string, deadline time.Time) error {
-	waitCtx, cancel := context.WithDeadline(ctx, deadline)
+	waitCtx, cancel := s.clock.WithDeadline(ctx, deadline)
 	err := s.waitForDurableAppends(waitCtx, room)
 	cancel()
 	if err != nil {

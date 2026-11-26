@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 )
 
 // Resolver says what a bare issue key, a `#id` and a short id name for one text. Mentions asks it
@@ -51,8 +53,9 @@ type Prefix struct {
 // run of the block-id characters [A-Za-z0-9_-], read as questionRef reads it. There is no
 // markdown parse here, so a candidate in code is read, as a reference in code is, and is marked
 // as written there (Located.InCode) by the one reading of the body's code contexts extractSpans
-// makes.
+// makes. It is a reference extraction docwork's observers are told of (docwork.References).
 func Mentions(body, serverURL string, r Resolver) ([]Located, error) {
+	docwork.Enter(docwork.References)
 	spans := referencePattern.FindAllStringIndex(body, -1)
 	located, code := extractSpans(body, serverURL, spans, true)
 	if r == nil {

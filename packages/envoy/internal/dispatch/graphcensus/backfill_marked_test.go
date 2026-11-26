@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // markedSnapshot is what a second backfill must leave as it found: how many nodes and tuples the
@@ -352,15 +353,11 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 	if err := database.Pool.QueryRow(ctx, `select pg_terminate_backend($1)`, int64(pid)).Scan(&terminated); err != nil || !terminated {
 		t.Fatalf("terminate the backfill's backend %d: %t, %v", pid, terminated, err)
 	}
-	select {
-	case answer := <-answered:
-		if answer.err == nil {
-			t.Fatalf("the backfill whose backend was terminated answered %#v and no error", answer.report)
-		}
-		t.Logf("the killed run answered: %v", answer.err)
-	case <-time.After(time.Minute):
-		t.Fatal("the backfill did not answer within a minute of its backend's termination")
+	answer := testwait.Receive(t, "the backfill to answer once its backend was terminated", answered)
+	if answer.err == nil {
+		t.Fatalf("the backfill whose backend was terminated answered %#v and no error", answer.report)
 	}
+	t.Logf("the killed run answered: %v", answer.err)
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release issue CORE-2's row: %v", err)
 	}

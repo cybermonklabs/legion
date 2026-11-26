@@ -41,7 +41,7 @@ func TestAThreadMarkWaitsForTheProjectLockHoldingNoTransactionID(t *testing.T) {
 		t.Fatalf("hold the project's lock: %v", err)
 	}
 
-	mark := time.Now()
+	mark := databaseNow(t, database.Pool)
 	marks := make(chan *httptest.ResponseRecorder, 1)
 	go func() { marks <- markThreadRead(t, handler, "alice", thread.ID, mark) }()
 	response, early, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the thread mark", marks)

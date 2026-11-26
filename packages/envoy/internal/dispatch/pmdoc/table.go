@@ -46,7 +46,8 @@ func unescapeTablePipes(root ast.Node, source []byte) {
 				return ast.WalkContinue, nil
 			})
 			return ast.WalkSkipChildren, nil
-		case node.Type() == ast.TypeInline:
+		}
+		if node.Type() == ast.TypeInline {
 			return ast.WalkSkipChildren, nil
 		}
 		return ast.WalkContinue, nil
@@ -162,9 +163,10 @@ func recordTablePadding(pc parser.Context, padding tablePadding) bool {
 // goldmark.New calls Extend through the goldmark.Extender interface while it initializes
 // blockReader and displayReader, and Go's initialization order follows no call through an
 // interface, so a variable of this package could still be nil then. It was in every build made
-// without inlining (-gcflags=all=-l, and so every debugger build), where the readers copied a nil
-// transformer and each table panicked. goldmark's own package is initialized before this one
-// starts, so its transformer exists whenever Extend runs.
+// without inlining (-gcflags=all=-l, and so every debugger build), and in a build with Go's
+// coverage counters, where the readers copied a nil transformer and each table panicked.
+// goldmark's own package is initialized before this one starts, so its transformer exists
+// whenever Extend runs.
 func (lazyAwareTable) Extend(m goldmark.Markdown) {
 	m.Parser().AddOptions(parser.WithParagraphTransformers(util.Prioritized(lazyTableRows{table: extension.NewTableParagraphTransformer()}, 200)))
 }
@@ -180,7 +182,8 @@ func (lazyAwareTable) Extend(m goldmark.Markdown) {
 // (headerCells), so it is a header of none and no table forms. The transformer runs on the lines
 // of the table that parser reads, the lines before them left a paragraph of their own where
 // goldmark would read no table in them at all (textBeforeTable). Where goldmark would read a
-// table, the budget pays for its padded cells before goldmark's transformer builds them.
+// table, the budget pays for its padded cells before goldmark's transformer builds them. table is
+// goldmark's table paragraph transformer (extension.NewTableParagraphTransformer).
 type lazyTableRows struct{ table parser.ParagraphTransformer }
 
 func (t lazyTableRows) Transform(node *ast.Paragraph, reader gmtext.Reader, pc parser.Context) {

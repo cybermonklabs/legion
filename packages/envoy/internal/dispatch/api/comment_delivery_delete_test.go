@@ -96,7 +96,7 @@ func TestAMentionSendWhoseClaimADeleteSettledSendsNothing(t *testing.T) {
 	deleteThreadComment(t, mention.handler, mention.comment.ID, "alice")
 	letResolve()
 
-	endedByTheDelete(t, <-retried)
+	endedByTheDelete(t, testwait.Receive(t, "the Retry's answer", retried))
 	if sends := mention.framesSent(); sends != 1 {
 		t.Fatalf("the listener took %d frames of the comment, want its first attempt's alone: the Retry sent on a "+
 			"claim the delete had settled", sends)
@@ -127,7 +127,7 @@ func TestAMentionSendWhoseClaimADeleteSettledDuringItsCopyRuleSendsNothing(t *te
 	deleteThreadComment(t, mention.handler, mention.comment.ID, "alice")
 	letSend()
 
-	endedByTheDelete(t, <-retried)
+	endedByTheDelete(t, testwait.Receive(t, "the Retry's answer", retried))
 	if sends := mention.framesSent(); sends != 1 {
 		t.Fatalf("the listener took %d frames of the comment, want its first attempt's alone: the Retry sent on a "+
 			"claim the delete settled while its copy rule was read", sends)
@@ -148,7 +148,7 @@ func TestAMentionWhoseFrameLeftBeforeTheDeleteReadsEndedByThePostsDelete(t *test
 	deleteThreadComment(t, mention.handler, mention.comment.ID, "alice")
 	answer()
 
-	endedByTheDelete(t, <-retried)
+	endedByTheDelete(t, testwait.Receive(t, "the Retry's answer", retried))
 	if sends := mention.framesSent(); sends != 2 {
 		t.Fatalf("the listener took %d frames of the comment, want two: the Retry's left before the delete", sends)
 	}

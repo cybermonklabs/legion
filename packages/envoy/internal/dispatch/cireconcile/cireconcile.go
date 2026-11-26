@@ -68,15 +68,16 @@
 // limit, which GitHub shares between an installation's REST calls and its queries, is recorded
 // under that installation's own scope and holds both (githubapp.GraphQLRateLimit).
 //
-// One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout), so it always
-// ends before the pass after it is due and always logs its one line. The pass walks one stable
-// order -- the repositories covered() answers, every project's default repository and every
-// repository an issue names as its own, and within each its open pull requests by number --
-// from the first repository to the last page of the last one, and keeps a cursor in it. A pass
-// cut off by its bound or by a rate limit leaves the cursor at the first page or REST head it
-// did not finish and the pass after it takes up there; a pass that reaches the end of the order
-// ends there rather than beginning again, and leaves the cursor at the start of the order for
-// the pass after it. No head starves behind the heads the order holds before it.
+// One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout, Interval when
+// the caller sets none), so it always ends before the pass after it is due and always logs its
+// one line. The pass walks one stable order -- the repositories covered() answers, every
+// project's default repository and every repository an issue names as its own, and within each
+// its open pull requests by number -- from the first repository to the last page of the last
+// one, and keeps a cursor in it. A pass cut off by its bound or by a rate limit leaves the cursor
+// at the first page or REST head it did not finish and the pass after it takes up there; a pass
+// that reaches the end of the order ends there rather than beginning again, and leaves the cursor
+// at the start of the order for the pass after it. No head starves behind the heads the order
+// holds before it.
 //
 // One sweep from the start of the order to the end of it is a cycle, which takes as many passes
 // as their bounds leave them, and what the Reconciler keeps of a head is forgotten only where a
@@ -95,6 +96,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -172,11 +174,22 @@ type Reconciler struct {
 	Pace time.Duration
 	// PassTimeout is how long one pass may run, which its caller sets to the interval its loop
 	// runs the pass on. A pass that has not covered every head by then ends where it stands,
-	// logs its one line and leaves the next pass the cursor it reached. Zero is unbounded. A
-	// rate limit GitHub answers as the bound falls is still written to the shared ledger after
-	// it, for up to githubapp's limitRecordTimeout (5 s), so a pass's last write can end that
-	// much past PassTimeout.
+	// logs its one line and leaves the next pass the cursor it reached. Zero is Interval, the
+	// period the loop runs the pass on in every deployment. A rate limit GitHub answers as the
+	// bound falls is still written to the shared ledger after it, for up to
+	// githubapp.LimitRecordTimeout (5 s), so a pass's last write can end that much past PassTimeout.
 	PassTimeout time.Duration
+	// Clock is the time a pass's bound (PassTimeout), the gap it leaves between two REST
+	// requests (Pace), the wait each query earns (graphQLPace) and the hold of an answer that
+	// the App is not installed (AbsentAppRecheck) run on: clock.Real when nil, and a test's
+	// clocktest.Fake, which ends the pass's bound, a wait or a hold only when the test moves it.
+	// It is also what the end of a limit GitHub answered is placed from (stopAt): GitHub's wait,
+	// which the GitHub client read against its own clock (githubapp.WithRateLimitClock), added to
+	// this clock's reading. A limit held in the ledger every process shares ends where the ledger
+	// says, on the database's clock. The verify loop reads its moments on it too: when its next
+	// pass is due, when a head it failed to answer is read again (verifyRetryAfter) and when that
+	// failure is forgotten (verifyForget).
+	Clock clock.Clock
 	// Instance answers this process's row in the registry of live server processes, the id
 	// processes.Register gave it, and "" while the process holds none yet. It is what each pass
 	// records its row under (beginPass), and the registry row it names is what says later
@@ -197,10 +210,6 @@ type Reconciler struct {
 	// on, since both can be inside a lease at once. Nil answers with no lease, which is a test's
 	// Reconciler.
 	VerifyLeases duty.Leases
-	// now is the clock the answers held in absent are timed by, and time.Now when it is nil,
-	// which is every Reconciler but a test's: a test of how long an answer is held moves its
-	// own clock rather than waiting out AbsentAppRecheck.
-	now func() time.Time
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
 	// name it read it under, which an old name and the name it was renamed to share as one entry:
@@ -255,6 +264,23 @@ type Reconciler struct {
 	verifyFailed map[string]verifyFailure
 }
 
+// clock is the time the pass's bound and its waits run on: Clock, or the wall clock when the
+// caller set none.
+func (r *Reconciler) clock() clock.Clock {
+	if r.Clock == nil {
+		return clock.Real()
+	}
+	return r.Clock
+}
+
+// bound is how long one pass may run: PassTimeout, or Interval when the caller set none.
+func (r *Reconciler) bound() time.Duration {
+	if r.PassTimeout <= 0 {
+		return Interval
+	}
+	return r.PassTimeout
+}
+
 // stop is the rate limit that ended a pass: the scope it was found or answered under, and when
 // GitHub will take a request under it again.
 type stop struct {
@@ -291,13 +317,15 @@ func (r *Reconciler) limited(ctx context.Context, under ...string) *stop {
 // stopAt is the stop a GitHub error ends the pass at, and nil for every other error.
 // githubapp.Client.request records GitHub's own limit in the shared ledger itself, so the pass
 // records nothing here; scope is what the request was budgeted under, which a limit GitHub
-// answered with rather than one already held does not carry.
-func stopAt(err error, scope string) *stop {
+// answered with rather than one already held does not carry. The stop's end is the wait GitHub
+// named from the reconciler's clock (Clock), the clock its GitHub client read that wait against
+// (githubapp.WithRateLimitClock): both are the real clock in a deployment.
+func (r *Reconciler) stopAt(err error, scope string) *stop {
 	limited, ok := githubapp.AsRateLimit(err)
 	if !ok {
 		return nil
 	}
-	at := &stop{scope: limited.Scope, until: time.Now().Add(limited.Wait)}
+	at := &stop{scope: limited.Scope, until: r.clock().Now().Add(limited.Wait)}
 	if at.scope == "" {
 		at.scope = scope
 	}
@@ -336,14 +364,6 @@ func remember[K comparable, V any](held *map[K]V, key K, value V) {
 // on the first key there is: remember for a set, whose value is the empty struct.
 func see[K comparable](held *map[K]struct{}, key K) {
 	remember(held, key, struct{}{})
-}
-
-// clock is the time the Reconciler's held answers are timed by (Reconciler.now).
-func (r *Reconciler) clock() time.Time {
-	if r.now != nil {
-		return r.now()
-	}
-	return time.Now()
 }
 
 // forget drops every entry of held the cycle that has just closed did not reach, so what the

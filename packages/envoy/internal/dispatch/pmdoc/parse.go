@@ -14,6 +14,8 @@ import (
 	extensionast "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/util"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 )
 
 var anchorAttribute = regexp.MustCompile(`([a-zA-Z0-9_-]+)="([^"]*)"`)
@@ -485,8 +487,9 @@ func ParseInline(markdown string, budget *WriteBudget) (nodes []*Node, err error
 // read-back's markdown, which the renderer wrote, holds neither, so both leave it as it is. The
 // lines the parse recorded as opening a block of HTML for the browser editor's parser are dropped
 // before the tree is converted (dropHTMLFlowLines), since this markdown opens no block where it
-// lands.
+// lands. It is a parse docwork's observers are told of (docwork.Parse).
 func readInline(markdown string, inline parser.Parser, context parser.Context, budget *WriteBudget) (nodes []*Node, err error) {
+	docwork.Enter(docwork.Parse)
 	defer recoverPanic(&nodes, &err, "reading inline markdown")
 	source := []byte(nulAsReplacement(LineFeeds(markdown)))
 	var count *parseCount

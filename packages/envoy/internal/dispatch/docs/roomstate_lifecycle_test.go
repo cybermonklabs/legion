@@ -3,13 +3,17 @@ package docs
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every condition unusedLocked names keeps an otherwise detached document state until that holder
@@ -35,7 +39,7 @@ func TestEveryRoomStateHolderKeepsADetachedState(t *testing.T) {
 				service.settleWG.Add(1)
 				timerID := service.nextSettleTimer.Add(1)
 				service.registerSettleTimer(timerID)
-				timer := time.NewTimer(time.Hour)
+				timer := service.clock.NewTimer(stagedAhead)
 				service.attachSettleTimer(timerID, timer)
 				state.settle = timer
 			},
@@ -96,9 +100,26 @@ func TestLiveWriterKeepsOneWriterSlotAfterItsRoomHasGone(t *testing.T) {
 		t.Fatalf("take the first writer slot: %v", err)
 	}
 	defer service.finishLiveWrite(first)
-	wait, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// The second transaction's wait ends on a fake clock, which the test moves past its deadline
+	// once that transaction is waiting in openLiveWrite for the first one's slot.
+	waitClock := clocktest.New(time.Now())
+	wait, cancel := waitClock.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	if _, err := service.openLiveWrite(wait, &Ledger{}, id); !errors.Is(err, context.DeadlineExceeded) {
+	second := make(chan error, 1)
+	go func() {
+		_, err := service.openLiveWrite(wait, &Ledger{}, id)
+		second <- err
+	}()
+	waitFor(t, "the second transaction to wait for the first one's writer slot", func() bool {
+		select {
+		case err := <-second:
+			t.Fatalf("take a second writer slot while the first is open: %v, want it to wait until its context ends", err)
+		default:
+		}
+		return goroutinesIn("(*Service).openLiveWrite(", "TestLiveWriterKeepsOneWriterSlotAfterItsRoomHasGone") > 0
+	})
+	waitClock.Advance(100 * time.Millisecond)
+	if err := testwait.Receive(t, "the second transaction's wait to end with its context", second); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("take a second writer slot while the first is open: %v, want context deadline exceeded", err)
 	}
 }
@@ -129,6 +150,10 @@ func TestAStillLoadingRoomKeepsItsState(t *testing.T) {
 	load := service.srv.OnLoadDocument
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	// A failure below still lets the held load go: registered after newTestService's shutdown, this
+	// cleanup runs first, so the load never stays parked in the hook while the shutdown waits.
+	letLoad := sync.OnceFunc(func() { close(release) })
+	testcleanup.Add(t, letLoad)
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
 		if err := load(ctx, room, doc); err != nil {
 			return err
@@ -143,14 +168,14 @@ func TestAStillLoadingRoomKeepsItsState(t *testing.T) {
 	go func() {
 		done <- service.srv.Apply(context.Background(), artifactID, func(*crdt.Doc, func(func(*crdt.Transaction))) {})
 	}()
-	<-entered
+	testwait.Receive(t, "Apply's room load to reach the load hook", entered)
 	state := service.lockExistingState(artifactID)
 	if state == nil {
 		t.Fatal("the state of a room still loading was released")
 	}
 	service.unlockState(artifactID, state)
-	close(release)
-	if err := <-done; err != nil && !errors.Is(err, websocket.ErrNoChanges) {
+	letLoad()
+	if err := testwait.Receive(t, "srv.Apply to return once its load was released", done); err != nil && !errors.Is(err, websocket.ErrNoChanges) {
 		t.Fatalf("finish loading the room: %v", err)
 	}
 	if err := service.Evict(context.Background(), artifactID); err != nil {

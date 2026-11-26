@@ -19,10 +19,12 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// burstGitHubLatency is what the fake GitHub adds to every call it answers.
+// burstGitHubLatency is what the fake GitHub adds to every call it answers: the time a GitHub REST
+// call takes in production, which is what this measurement times the intake against.
 const burstGitHubLatency = 200 * time.Millisecond
 
-// withLatency answers every request through next once latency has passed.
+// withLatency answers every request through next once latency has passed. Its sleep models GitHub's
+// own response time (burstGitHubLatency) and opens no race, so it stays a sleep.
 func withLatency(latency time.Duration, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(latency)

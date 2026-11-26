@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,8 +39,9 @@ type takeOverAnswer struct {
 
 // takeOverListener is a listener whose replacement is under way: session s1, which takes every
 // mode, once it answers, and until then the script it is given - each entry answers the next
-// request on its route and is spent - or, while refusing, every request refused. It records every
-// send it published, a late answer's included, and how many requests reached each route.
+// request on its route and is spent - or, while it answers every request alike (answerEvery),
+// that answer. It records every send it published, a late answer's included, and how many
+// requests reached each route.
 type takeOverListener struct {
 	server *httptest.Server
 
@@ -48,14 +50,16 @@ type takeOverListener struct {
 	// window (stepListenerWaits).
 	calls listenerCalls
 
-	mu       sync.Mutex
-	script   []takeOverAnswer
-	refusing bool
+	mu     sync.Mutex
+	script []takeOverAnswer
+	// every answers every request while it is set, in place of the script and of the listener's
+	// own answer (answerEvery).
+	every    func(l *takeOverListener, w http.ResponseWriter, r *http.Request, send resumeSend)
 	requests map[takeOverRoute]int
 	sends    []resumeSend
-	// observe runs on every request before it is answered, so a test can read the attempt row
-	// as each try finds it.
-	observe func()
+	// observe runs on every request before it is answered, with the route the request is on, so
+	// a test can read the attempt row as each try finds it, or note each lookup it took.
+	observe func(route takeOverRoute)
 }
 
 func startTakeOverListener(t *testing.T) *takeOverListener {
@@ -90,15 +94,15 @@ func (l *takeOverListener) serve(w http.ResponseWriter, r *http.Request) {
 	l.requests[route]++
 	var scripted *takeOverAnswer
 	switch {
-	case l.refusing:
-		scripted = &takeOverAnswer{answer: refuseConnection}
+	case l.every != nil:
+		scripted = &takeOverAnswer{answer: l.every}
 	case len(l.script) > 0 && (l.script[0].route == takeOverAny || l.script[0].route == route):
 		scripted = &l.script[0]
 		l.script = l.script[1:]
 	}
 	l.mu.Unlock()
 	if observe != nil {
-		observe()
+		observe(route)
 	}
 	if scripted != nil {
 		scripted.answer(l, w, r, send)
@@ -151,10 +155,13 @@ func (l *takeOverListener) play(script ...takeOverAnswer) {
 	l.sends = nil
 }
 
-func (l *takeOverListener) refuse(refusing bool) {
+// answerEvery answers every request with answer until it is called again with nil: a take-over
+// that lasts until the test ends it, refusing connections (refuseConnection) or answering a
+// status (answerJSON).
+func (l *takeOverListener) answerEvery(answer func(l *takeOverListener, w http.ResponseWriter, r *http.Request, send resumeSend)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.refusing = refusing
+	l.every = answer
 }
 
 func (l *takeOverListener) requestsTo(route takeOverRoute) int {
@@ -312,21 +319,27 @@ func stepListenerWaits(fake *clocktest.Fake, calls *listenerCalls) {
 
 // answerWhileCallsAreHeld waits for a request running on a goroutine of its own, whose listener
 // calls a stand-in holds, moving fake - the server's clock - through the waits those calls leave
-// the request in (stepListenerWaits) until it answers.
+// the request in (stepListenerWaits) until it answers. A try with no answer reads what the step
+// it takes acts on: the calls open and held, and the fake's moment and what is armed on it.
 func answerWhileCallsAreHeld(
 	t *testing.T, fake *clocktest.Fake, calls *listenerCalls, answered <-chan *httptest.ResponseRecorder,
 ) *httptest.ResponseRecorder {
 	t.Helper()
-	return testwait.Until(t, "the request to answer once the calls its stand-in holds had run out of window",
-		func() (*httptest.ResponseRecorder, bool) {
+	var response *httptest.ResponseRecorder
+	testwait.Until(t, "the request to answer once the calls its stand-in holds had run out of window",
+		func() (string, bool) {
 			select {
-			case response := <-answered:
-				return response, true
+			case response = <-answered:
+				return "answered", true
 			default:
 			}
+			open, held := calls.counts()
+			reading := fmt.Sprintf("no answer; %d listener calls open, %d of them held; the fake at %s holds %v armed",
+				open, held, fake.Now().Format(time.RFC3339Nano), fake.Armed())
 			stepListenerWaits(fake, calls)
-			return nil, false
+			return reading, false
 		})
+	return response
 }
 
 // A listener being replaced refuses connections, answers 503, or does not hold a session yet for
@@ -343,9 +356,7 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 	listener := startTakeOverListener(t)
 	clock := clocktest.New(time.Now())
 	listener.calls.on(clock)
-	handler, database, _ := newTestServer(t, testServerOptions{
-		envoyURL: listener.server.URL, clock: clock, takeoverWindow: listenerTakeoverWindow,
-	})
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL, clock: clock})
 
 	lateAnswer := func(l *takeOverListener, w http.ResponseWriter, r *http.Request, send resumeSend) {
 		// The listener publishes before it answers, and this answer misses the client's window:
@@ -448,13 +459,19 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 // renewMessageDeliveryClaim), so the claims written on the attempt are its tries: one, the claim
 // it took before its first try, with no renewal. It says nothing of how soon that try runs: the
 // product records the attempt's times but states no bound on how soon an attempt with no listener
-// settles, so a delay before the first try is not this test's to see.
+// settles, so a delay before the first try is not this test's to see. The server runs the
+// production window on a fake clock the test never moves, so a send that waited out any part of a
+// take-over would never answer at all.
 func TestASendWithNoListenerConfiguredSettlesOnItsFirstTry(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
+	handler, database, _ := newTestServer(t, testServerOptions{clock: clocktest.New(time.Now())})
 	claims := countAttemptClaims(t, database)
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",
-		map[string]any{"body": "Nobody listens", "delivery": "steer"}, "alice")
+	sent := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		sent <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",
+			map[string]any{"body": "Nobody listens", "delivery": "steer"}, "alice")
+	}()
+	response := testwait.Receive(t, "the send to settle with no listener configured", sent)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("send: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -546,7 +563,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 			clock := clocktest.New(time.Now())
 			listener.calls.on(clock)
 			handler, database, deps := newTestServer(t, testServerOptions{
-				envoyURL: listener.server.URL, clock: clock, takeoverWindow: listenerTakeoverWindow,
+				envoyURL: listener.server.URL, clock: clock,
 			})
 			path := tc.path
 			if path == "" {
@@ -556,7 +573,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 			var claimsMu sync.Mutex
 			var claims []time.Time
 			listener.mu.Lock()
-			listener.observe = func() {
+			listener.observe = func(takeOverRoute) {
 				var claimed *time.Time
 				err := database.Pool.QueryRow(context.Background(),
 					`select claimed_at from `+tc.table+` where state = 'pending' and attempt = 1`).Scan(&claimed)
@@ -567,7 +584,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 				}
 			}
 			listener.mu.Unlock()
-			listener.refuse(true)
+			listener.answerEvery(refuseConnection)
 
 			data, err := json.Marshal(tc.body)
 			if err != nil {
@@ -590,19 +607,20 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 			// A lookup cut so reaches the stand-in later all the same, and its read of the claim is
 			// one no try of the sender's made. The attempt is written after every lookup the
 			// request makes, so a move made once it stands cuts none of them.
-			testwait.Until(t, "the attempt the sender's tries hold to be committed", func() (bool, bool) {
+			testwait.Eventually(t, "the attempt the sender's tries hold to be committed", func() bool {
 				var committed bool
 				if err := database.Pool.QueryRow(context.Background(),
 					`select exists (select from `+tc.table+` where state = 'pending' and attempt = 1)`,
 				).Scan(&committed); err != nil {
 					t.Fatalf("read the attempt the sender's tries hold: %v", err)
 				}
-				return committed, committed
+				return committed
 			})
 			// Two tries the sender made while holding the attempt, each after the backoff this
-			// wait moves the clock through. A direct message that answered first settled without
-			// them, and no try is left to come; a mention's request answers its attempt pending once
-			// it is committed, and its lane's tries come after.
+			// wait moves the clock through. A direct message's request that answered first settled
+			// without them, and no try is left to come. A mention's request answers its attempt
+			// pending once it commits, and its lane's tries come after, so its answer says nothing
+			// about them.
 			testwait.Until(t, "two tries of the sender that found its attempt held (the tries seen)", func() (int, bool) {
 				stepListenerWaits(clock, &listener.calls)
 				claimsMu.Lock()
@@ -633,7 +651,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 				t.Fatalf("attempts after a sweep pass during the wait = %v, want attempt 1 alone, still the waiting sender's", states)
 			}
 
-			listener.refuse(false)
+			listener.answerEvery(nil)
 			response := answerWhileCallsAreHeld(t, clock, &listener.calls, answered)
 			if response.Code != http.StatusCreated {
 				t.Fatalf("send: status=%d body=%s", response.Code, response.Body.String())

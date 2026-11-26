@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -26,8 +25,8 @@ import (
 // the room free to take behind it.
 func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 	t.Parallel()
-	ctx := uploadLockContext(t)
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := testwait.Context(t)
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "LOCK", "name": "Lock order",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -61,7 +60,7 @@ func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 		t.Fatalf("release the document owner: %v", err)
 	}
 
-	response := <-uploaded
+	response := testwait.Receive(t, "the upload to answer once the locks are let go", uploaded)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -78,7 +77,7 @@ func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 // commit (Ledger.Commit's recordLatestEditSource), after its event, would wait for the answer and
 // then finish; what fails this test is a lock the two come to share in opposite orders.
 func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTheirEvents(t *testing.T) {
-	ctx := uploadLockContext(t)
+	ctx := testwait.Context(t)
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -169,11 +168,7 @@ func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTh
 	})
 	release(answerHold)
 	for _, request := range []*pendingRequest{upload, answer} {
-		select {
-		case <-request.done:
-		case <-ctx.Done():
-			t.Fatalf("the upload (%s) and the answer (%s) never both finished", upload, answer)
-		}
+		testwait.Receive(t, fmt.Sprintf("the upload (%s) and the answer (%s) both to finish", upload, answer), request.done)
 	}
 	if upload.response.Code != http.StatusCreated || answer.response.Code != http.StatusOK {
 		t.Fatalf("upload: %s\nanswer: %s\nwant 201 and 200; the server logged:\n%s", upload, answer, logs.Lines("API handler failed"))
@@ -212,24 +207,8 @@ func (r *pendingRequest) String() string {
 	return fmt.Sprintf("status=%d body=%s", r.response.Code, strings.TrimSpace(r.response.Body.String()))
 }
 
-// uploadLockContext is the context of an upload-lock row's own database calls and waits, some of
-// which wait on a lock the code under test may hold: it ends binaryDeadlineMargin before the test
-// binary's deadline, the bound of every wait of the package's tests, so such a call fails the row
-// by name rather than outlasting the binary, and it ends with the test.
-func uploadLockContext(t *testing.T) context.Context {
-	t.Helper()
-	ctx := t.Context()
-	if deadline, bounded := t.Deadline(); bounded {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-binaryDeadlineMargin))
-		t.Cleanup(cancel)
-	}
-	return ctx
-}
-
 // awaitLockWaits waits until reached holds, given how many sessions of the test's database wait on
-// a lock whose statement matches a LIKE pattern (storetest.CountLockWaits), asking every 2 ms;
-// what names the fact. Its one bound is the test binary's deadline (testwait.UntilPolling).
+// a lock whose statement matches a LIKE pattern (storetest.CountLockWaits); what names the fact.
 func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, what string, reached func(waiting func(like string) int) bool) {
 	t.Helper()
 	waiting := func(like string) int {
@@ -239,18 +218,14 @@ func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, wh
 		}
 		return count
 	}
-	testwait.UntilPolling(t, 2*time.Millisecond, what, func() (bool, bool) {
-		held := reached(waiting)
-		return held, held
-	})
+	testwait.Eventually(t, what, func() bool { return reached(waiting) })
 }
 
 // awaitCopyShows waits for the latest version of copy to hold want, with no document owing a
-// settlement, reading both every 20 ms. Its one bound is the test binary's deadline
-// (testwait.UntilPolling).
+// settlement. Its one bound is the test binary's deadline (testwait.Until).
 func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, copy, want string) {
 	t.Helper()
-	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the copy's latest version to hold %s with nothing owed (owed, then the version)", want), func() (string, bool) {
+	testwait.Until(t, fmt.Sprintf("the copy's latest version to hold %s with nothing owed (owed, then the version)", want), func() (string, bool) {
 		var markdown string
 		var pending int
 		if err := database.Pool.QueryRow(ctx, `
@@ -269,8 +244,8 @@ func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, co
 // conflicted and the two deadlocked. The owner's advisory lock takes no row lock at all.
 func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
 	t.Parallel()
-	ctx := uploadLockContext(t)
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := testwait.Context(t)
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "LEVEL", "name": "Lock level",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -307,7 +282,7 @@ func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
 		t.Fatalf("release the room lock: %v", err)
 	}
 
-	response := <-uploaded
+	response := testwait.Receive(t, "the upload to answer once the room lock is let go", uploaded)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload: status=%d body=%s", response.Code, response.Body.String())
 	}

@@ -285,10 +285,11 @@ type Client struct {
 	// apiToken alone. The last of the two options given wins; cmd/dispatch refuses both.
 	identity   listenerIdentity
 	httpClient *http.Client
-	// window is how long every listener call gets (roundTrip): CallWindow, or what WithTimeout
-	// names. clock is what that window runs on: clock.Real(), or what WithClock names.
-	window time.Duration
-	clock  clock.Clock
+	// clock is what the window of every listener call runs on (roundTrip).
+	clock clock.Clock
+	// callDeadline is the end a test gives every call's window in CallWindow's place
+	// (WithCallDeadline); its zero value, production's, leaves each call CallWindow.
+	callDeadline clock.Deadline
 	// logger takes the line a call made again on the shared token writes (do); slog.Default()
 	// unless WithLogger names another.
 	logger *slog.Logger
@@ -297,19 +298,22 @@ type Client struct {
 // CallWindow is the window every listener call gets. A send that misses it is
 // ErrReceiptTimeout rather than a plain failure, because the envelope may already be published.
 // It is exported because a test whose server runs on a fake clock moves that clock past the
-// window to make a call miss it (api's comment delivery tests).
+// window to make a call miss it (api's comment delivery tests), and a test that holds a call at
+// its stand-in listener derives what it may hold from it.
 const CallWindow = 5 * time.Second
 
-// ErrCallWindow reports a listener call its window ended (CallWindow, or what WithTimeout names):
-// the call's error wraps it beside the request's own error, so it is still context.DeadlineExceeded
-// and a net.Error whose Timeout is true, as an end of http.Client.Timeout was. A call the caller's
-// own context ended is not ErrCallWindow, so a caller tells its own bound's end from the window's.
+// ErrCallWindow reports a listener call its window ended (CallWindow, or the end WithCallDeadline
+// names): the call's error wraps it beside the request's own error, so it is still
+// context.DeadlineExceeded and a net.Error whose Timeout is true, as an end of http.Client.Timeout
+// was. A call the caller's own context ended is not ErrCallWindow, so a caller tells its own
+// bound's end from the window's.
 var ErrCallWindow = errors.New("envoy listener call window ended")
 
 // callWindowError is a call's error once its window ended and its caller's context had not.
+// window names that window: CallWindow, or the end WithCallDeadline set.
 type callWindowError struct {
 	err    error
-	window time.Duration
+	window string
 }
 
 func (e callWindowError) Error() string {
@@ -330,17 +334,15 @@ func (c *Client) windowEnded(err error, ctx, parent context.Context) error {
 	if err == nil || err == io.EOF || ctx.Err() == nil || parent.Err() != nil {
 		return err
 	}
-	return callWindowError{err: err, window: c.window}
+	window := CallWindow.String()
+	if !c.callDeadline.IsZero() {
+		window = "the end " + c.callDeadline.String()
+	}
+	return callWindowError{err: err, window: window}
 }
 
 // Option configures a Client.
 type Option func(*Client)
-
-// WithTimeout replaces the window every listener call gets. Tests use it to exercise a receipt
-// timeout without waiting out the production window.
-func WithTimeout(timeout time.Duration) Option {
-	return func(c *Client) { c.window = timeout }
-}
 
 // WithClock sets the clock every listener call's window runs on. Without it the window is the
 // real clock's; a test passes a clocktest.Fake and moves it past the window, so a listener that
@@ -349,10 +351,25 @@ func WithClock(clock clock.Clock) Option {
 	return func(c *Client) { c.clock = clock }
 }
 
+// WithCallDeadline ends every listener call's window at deadline instead of CallWindow after the
+// call began, on the client's clock; the zero deadline leaves CallWindow, which is what a
+// deployment runs. A test that holds a call at its stand-in listener gives the moment its own waits
+// give up (testwait.GiveUpAt), or no end under -timeout 0, whose waits have none.
+func WithCallDeadline(deadline clock.Deadline) Option {
+	return func(c *Client) { c.callDeadline = deadline }
+}
+
 // WithToken sets the bearer every listener call sends (cmd/dispatch: ENVOY_TOKEN). Without it, or
 // with an empty token, a call sends no Authorization header.
 func WithToken(token string) Option {
 	return func(c *Client) { c.apiToken = token }
+}
+
+// WithHTTPClient sets the HTTP client every listener call is sent through. Without it the client
+// builds one of its own, which is what a deployment does; a test passes one whose transport sees
+// each request's context.
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(c *Client) { c.httpClient = httpClient }
 }
 
 // WithAccountTokenFile makes every listener call present Dispatch's own identity (cmd/dispatch:
@@ -391,7 +408,6 @@ func New(baseURL string, options ...Option) *Client {
 	client := &Client{
 		baseURL:    strings.TrimSuffix(baseURL, "/"),
 		httpClient: &http.Client{},
-		window:     CallWindow,
 		clock:      clock.Real(),
 	}
 	for _, option := range options {
@@ -403,13 +419,14 @@ func New(baseURL string, options ...Option) *Client {
 	return client
 }
 
-// roundTrip sends request within the client's window on the client's clock. The window covers
-// reading the answer's body as well as its head, as http.Client.Timeout does, so its end is
-// released when the caller closes the body. A call or a body read the window ended fails with
-// ErrCallWindow beside its own error (windowEnded).
+// roundTrip sends request within its window on the client's clock: CallWindow, or the end a test
+// set (WithCallDeadline), or none at all (clock.Deadline.WithTimeout). The window covers reading
+// the answer's body as well as its head, as http.Client.Timeout does, so its end is released when
+// the caller closes the body. A call or a body read the window ended fails with ErrCallWindow
+// beside its own error (windowEnded).
 func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
 	parent := request.Context()
-	ctx, cancel := c.clock.WithTimeout(parent, c.window)
+	ctx, cancel := c.callDeadline.WithTimeout(c.clock, parent, CallWindow)
 	response, err := c.httpClient.Do(request.WithContext(ctx))
 	if err != nil {
 		err = c.windowEnded(err, ctx, parent)
@@ -788,66 +805,6 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	return sessionOf(info, sessionID), nil
-}
-
-// Agent returns the Legion agent registry's entry for one session (listenerwire.LegionAgentAnswer,
-// whose Live is never read as "that agent has stopped"), or ErrNotFound when the registry holds
-// none: a 404, or an id the listener refuses (a 400 or 413), under which no entry can be recorded.
-// Every other status, a body that does not decode and a transport failure are ErrUnavailable
-// carrying the listener's reason: a read the registry did not answer says nothing about whether
-// the session was recorded.
-func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.LegionAgentAnswer, error) {
-	route := "/v1/legion/agents/sessions/" + url.PathEscape(sessionID)
-	response, err := c.get(ctx, route, "")
-	if err != nil {
-		return listenerwire.LegionAgentAnswer{}, err
-	}
-	defer response.Body.Close()
-	switch response.StatusCode {
-	case http.StatusOK:
-	case http.StatusNotFound, http.StatusBadRequest, http.StatusRequestEntityTooLarge:
-		return listenerwire.LegionAgentAnswer{}, ErrNotFound
-	default:
-		return listenerwire.LegionAgentAnswer{}, unavailableGetStatus(response, route)
-	}
-	var agent listenerwire.LegionAgentAnswer
-	if err := json.NewDecoder(response.Body).Decode(&agent); err != nil {
-		return listenerwire.LegionAgentAnswer{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
-	}
-	return agent, nil
-}
-
-// RoleAgents returns every session the Legion agent registry holds for a role token, newest
-// first, the first being the role's current holder; none when it holds none. Any answer but a 200
-// is ErrUnavailable.
-func (c *Client) RoleAgents(ctx context.Context, roleToken string) ([]listenerwire.LegionAgentAnswer, error) {
-	return c.legionAgents(ctx, "/v1/legion/agents/roles/"+url.PathEscape(roleToken), "")
-}
-
-// IssueAgents returns every session the Legion agent registry holds for an issue, by role in
-// workflow order (architect, planner, implementer, tester, reviewer, merger), then newest first;
-// none when it holds none. Any answer but a 200 is ErrUnavailable.
-func (c *Client) IssueAgents(ctx context.Context, issueKey string) ([]listenerwire.LegionAgentAnswer, error) {
-	return c.legionAgents(ctx, "/v1/legion/agents", "?issue="+url.QueryEscape(issueKey))
-}
-
-func (c *Client) legionAgents(ctx context.Context, route, query string) ([]listenerwire.LegionAgentAnswer, error) {
-	response, err := c.get(ctx, route, query)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, unavailableGetStatus(response, route)
-	}
-	var body listenerwire.LegionAgentList
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
-	}
-	if body.Entries == nil {
-		body.Entries = []listenerwire.LegionAgentAnswer{}
-	}
-	return body.Entries, nil
 }
 
 // get makes one authorized GET of route+query, the one shape every read of the listener takes.

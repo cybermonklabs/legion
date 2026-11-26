@@ -7,13 +7,13 @@ import (
 	"net"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // One query reads the sessions the primary documents of a whole batch's issues credit, keyed by
@@ -79,11 +79,7 @@ func TestLoadCommentRecipientsReadsEveryThreadOfABatchInOneQuery(t *testing.T) {
 		recipients, err = loadCommentRecipients(context.Background(), database.Pool,
 			[]string{first, nested, cyclic, "00000000-0000-0000-0000-000000000099"})
 	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("loadCommentRecipients did not end on a cyclic reply_to chain")
-	}
+	testwait.Receive(t, "loadCommentRecipients to end on a cyclic reply_to chain", done)
 	if err != nil {
 		t.Fatalf("load comment recipients: %v", err)
 	}
@@ -161,7 +157,9 @@ func TestARefusedConnectionOrAFailingServerIsNoRefusedStatement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("split the server's address: %v", err)
 	}
-	_, refusedConnection := pgconn.Connect(ctx, fmt.Sprintf("host=%s port=%s user=outbox database=dispatch sslmode=disable connect_timeout=5", host, port))
+	// The connect is bounded by the binary's deadline less testwait's margin, not a timeout of the
+	// test's own: the stand-in refuses at once, and a slow connect costs the row time and not its result.
+	_, refusedConnection := pgconn.Connect(testwait.Context(t), fmt.Sprintf("host=%s port=%s user=outbox database=dispatch sslmode=disable", host, port))
 	var connect *pgconn.ConnectError
 	var carried *pgconn.PgError
 	if !errors.As(refusedConnection, &connect) || !errors.As(refusedConnection, &carried) || carried.Code != "53300" {

@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -230,8 +229,9 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	// once something waits on the lock. (Another waiter, the term statistics refresh the issue's
 	// own check started, may be the one seen: the commit is what the second edit needs.) The second
 	// edit is guarded by the paragraph it rewrites, which the first block's settlement leaves alone.
+	// A try that is not yet there reads which of the two it lacks.
 	var second map[string]any
-	testwait.UntilPolling(t, 10*time.Millisecond, "the first edit to commit with a check waiting on the term statistics (the lock's waiters)", func() (int, bool) {
+	testwait.Until(t, "the first edit to commit with a check waiting on the term statistics", func() (string, bool) {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
@@ -239,15 +239,18 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read lock waits: %v", err)
 		}
-		if waiting > 0 && strings.Contains(readDocumentPrecondition(t, handler, issue.PrimaryArtifactID).Markdown, question) {
-			paragraph := readDocumentPreconditionBlocks(t, handler, issue.PrimaryArtifactID)[1]
-			second = map[string]any{
-				"ops":          []map[string]string{{"op": "replace", "find": "Planning notes.", "with": "Planning notes, revised."}},
-				"precondition": map[string]any{"blocks": []map[string]string{{"id": paragraph.ID, "token": paragraph.Token}}},
-			}
-			return waiting, true
+		if waiting == 0 {
+			return "no backend waits on the term statistics' lock", false
 		}
-		return waiting, false
+		if !strings.Contains(readDocumentPrecondition(t, handler, issue.PrimaryArtifactID).Markdown, question) {
+			return fmt.Sprintf("%d backends wait on the term statistics' lock; the document does not hold the first edit's block", waiting), false
+		}
+		paragraph := readDocumentPreconditionBlocks(t, handler, issue.PrimaryArtifactID)[1]
+		second = map[string]any{
+			"ops":          []map[string]string{{"op": "replace", "find": "Planning notes.", "with": "Planning notes, revised."}},
+			"precondition": map[string]any{"blocks": []map[string]string{{"id": paragraph.ID, "token": paragraph.Token}}},
+		}
+		return "committed, with a check waiting", true
 	})
 
 	secondResponse := editDocument(t, handler, issue.PrimaryArtifactID, second)
@@ -263,7 +266,7 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
-	checks, present := decisionBlockChecksOf(t, <-firstDone)
+	checks, present := decisionBlockChecksOf(t, testwait.Receive(t, "the first edit to answer once the lock is let go", firstDone))
 	if !present || len(checks) != 1 || checks[0].BlockID != "window" {
 		t.Fatalf("first edit's decision_block_checks = %+v, want the block window", checks)
 	}

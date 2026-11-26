@@ -15,8 +15,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -80,38 +82,47 @@ func (h *harness) requests() []contracts.CIVerifyRequest {
 	return requests
 }
 
-// waitForRequest polls the bucket until it holds a verify request of the harness's head past
-// after, the revision of an earlier one (zero for any), and answers it.
+// waitForRequest waits until the bucket holds a verify request of the harness's head past after,
+// the revision of an earlier one (zero for any), and answers it.
 func (h *harness) waitForRequest(after uint64) contracts.CIVerifyRequest {
 	h.t.Helper()
 	return h.waitForRequestOf(headSHA, after)
 }
 
-// waitForRequestOf is waitForRequest for the head at sha.
+// waitForRequestOf is waitForRequest for the head at sha. The listener writes a request from its
+// summary loop, which runs on ciClock, so each try that finds none moves that clock on through
+// the next tick the loop arms (driveLoop), as settlement does.
 func (h *harness) waitForRequestOf(sha string, after uint64) contracts.CIVerifyRequest {
 	h.t.Helper()
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		for _, request := range h.requests() {
-			if request.Head.SHA == sha && request.Revision > after {
-				return request
+	var found contracts.CIVerifyRequest
+	testwait.Until(h.t, fmt.Sprintf("the listener to write a verify request of the head at %s past revision %d", sha, after),
+		func() (string, bool) {
+			requests := h.requests()
+			for _, request := range requests {
+				if request.Head.SHA == sha && request.Revision > after {
+					found = request
+					return fmt.Sprintf("%+v", request), true
+				}
 			}
-		}
-	}
-	h.t.Fatalf("the listener wrote no verify request of the head at %s past revision %d", sha, after)
-	return contracts.CIVerifyRequest{}
+			moved := h.driveLoop(h.loopStep())
+			return fmt.Sprintf("the bucket holds the verify requests %+v; this try moved the summary loop's clock: %t; armed on it now: %v",
+				requests, moved, h.ciClock.Armed()), false
+		})
+	return found
 }
 
-// waitForState polls the head's record until done holds of it.
+// waitForState waits until the head's record is one done holds of, and answers it.
 func (h *harness) waitForState(why string, done func(cistore.State) bool) cistore.State {
 	h.t.Helper()
 	var state cistore.State
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		var ok bool
-		if state, _, ok = h.record(); ok && done(state) {
-			return state
+	testwait.Until(h.t, why+": the head's record", func() (string, bool) {
+		read, _, ok := h.record()
+		if !ok {
+			return "no record of the head", false
 		}
-	}
-	h.t.Fatalf("%s: the record is %+v", why, state)
+		state = read
+		return fmt.Sprintf("%+v", read), done(read)
+	})
 	return state
 }
 
@@ -299,7 +310,7 @@ func TestAFailedWriteOfTheReadLeavesNoAnswerUntilALaterOneLands(t *testing.T) {
 		t.Fatalf("the request at revision %d is gone after the write of the read failed", request.Revision)
 	}
 
-	h.replica().Verify(h.ctx)
+	h.verifyPassOf(h.replica())
 	if settled := h.settlement(settlements, "after a later answer landed"); settled.Passed.Count != 1 {
 		t.Fatalf("settlement = %+v, want ci-ok passed", settled)
 	}
@@ -319,9 +330,12 @@ func TestAVerifyReadFailingPastTenMinutesBacksOffDoublingAndAnswersOnceGitHubDoe
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
-	start := time.Now()
+	start := h.clock.Now()
 	clock := start
-	h.reconciler.now = func() time.Time { return clock }
+	// The passes read the moment clock holds, which the row sets for each pass as it walks the
+	// verify loop through minutes of its backoff, and every wait a pass arms stays on the passes'
+	// clock, which the row does not move.
+	h.reconciler.Clock = clocktest.WithNow(h.clock, func() time.Time { return clock })
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	h.post("check_run", webhookBody("check_run", run), "d1")
@@ -380,9 +394,12 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
-	start := time.Now()
+	start := h.clock.Now()
 	clock := start
-	h.reconciler.now = func() time.Time { return clock }
+	// The passes read the moment clock holds, which the row sets for each pass as it walks the
+	// verify loop through 31 minutes, and every wait a pass arms stays on the passes' clock, which
+	// the row does not move.
+	h.reconciler.Clock = clocktest.WithNow(h.clock, func() time.Time { return clock })
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	h.post("check_run", webhookBody("check_run", run), "d1")
@@ -512,8 +529,10 @@ func TestAVerifyReadHoldsItsAnswerWhileGitHubStillRunsASuiteOfTheHead(t *testing
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
-	clock := time.Now()
-	h.reconciler.now = func() time.Time { return clock }
+	clock := h.clock.Now()
+	// The passes read the moment clock holds, which the row moves past the verify retry, and every
+	// wait a pass arms stays on the passes' clock, which the row does not move.
+	h.reconciler.Clock = clocktest.WithNow(h.clock, func() time.Time { return clock })
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	running := checkSuite(901, "in_progress", "", otherApp, "2026-11-22T00:05:01Z")

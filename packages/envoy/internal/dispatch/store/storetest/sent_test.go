@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -876,7 +875,7 @@ func TestSentStatementsCountAStatementAFatalErrorEnds(t *testing.T) {
 				_, err := conn.Exec(ctx, scenario.query, scenario.args...)
 				ended <- err
 			}()
-			testwait.UntilPolling(t, 10*time.Millisecond, "the server to start the query on its backend", func() (bool, bool) {
+			testwait.Until(t, "the server to start the query on its backend", func() (bool, bool) {
 				var running bool
 				if err := database.Pool.QueryRow(ctx, "select exists (select from pg_stat_activity where pid = $1 and state = 'active' and query = $2 and wait_event_type = 'Timeout' and wait_event = 'PgSleep')",
 					pid, scenario.query).Scan(&running); err != nil {

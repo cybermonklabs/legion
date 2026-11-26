@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The embeddings trigger migrations (0073-0077) take one table's lock at a time, each in its
@@ -14,7 +17,8 @@ import (
 // while a transaction holds `messages` (the last table, 0077) with a lock CREATE TRIGGER's own
 // SHARE ROW EXCLUSIVE conflicts with, the runner applies 0074-0076 and commits each, gives up on
 // 0077 at pgmigrate.LockTimeout, and meanwhile a read of `issues` - whose lock a single-file
-// migration would still be holding - answers at once. Once the holder ends, the runner finishes.
+// migration would still be holding - answers without waiting on a lock. Once the holder ends,
+// the runner finishes.
 // The holder must take at least ROW EXCLUSIVE: a plain SELECT's ACCESS SHARE is compatible with
 // CREATE TRIGGER's own lock (unlike the search migrations, which also ALTER TABLE ADD COLUMN and
 // so need ACCESS EXCLUSIVE, conflicting with a reader) - a no-op UPDATE matching no row still
@@ -35,32 +39,22 @@ func TestEmbeddingsMigrationsLockOneTableAtATime(t *testing.T) {
 	migrated := make(chan error, 1)
 	go func() { migrated <- store.Migrate(ctx) }()
 
-	// Wait until the runner is queued on messages, then read issues with a one-second bound.
+	// Wait until the runner is queued on messages, then read issues, which must answer without
+	// waiting on a lock while it is (requireAnsweredWithoutALockWait).
 	waitForQueuedLock(t, store, "messages", "ShareRowExclusiveLock")
 	var version int
 	var issues int
-	err = func() error {
-		tx, err := store.Pool.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback(ctx)
-		if _, err := tx.Exec(ctx, "set local statement_timeout = '1s'"); err != nil {
-			return err
-		}
+	requireAnsweredWithoutALockWait(t, store, "a read of issues while the runner waits for messages", func(ctx context.Context, tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx, "select count(*) from issues").Scan(&issues); err != nil {
 			return err
 		}
 		return tx.QueryRow(ctx, "select max(version) from schema_migrations").Scan(&version)
-	}()
-	if err != nil {
-		t.Fatalf("while the runner waited for messages, a read of issues did not answer within 1 s: %v", err)
-	}
+	})
 	if version != 76 {
 		t.Errorf("while the runner waited for messages, schema_migrations was at %d, want 76 (0073-0076 committed one by one)", version)
 	}
 
-	err = <-migrated
+	err = testwait.Receive(t, "store.Migrate to give up on 0077 at its lock timeout", migrated)
 	var lockTimeout *pgmigrate.LockTimeoutError
 	if err == nil || !errors.As(err, &lockTimeout) || !strings.Contains(lockTimeout.Migration, "0077_messages_embeddings_trigger") {
 		t.Fatalf("the runner should have given up on 0077 at its lock timeout, got: %v", err)

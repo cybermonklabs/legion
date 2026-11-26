@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // StallRelay relays each TCP connection a client makes to a NATS server, and reads what the client
@@ -113,20 +116,19 @@ func (r *StallRelay) stall(dropServer bool) {
 	}
 }
 
-// AwaitParked waits until the reader of every stalled connection has stopped at its stall, failing
-// the test when one has not by the test's deadline (testDeadline). A reader waiting inside a read as
-// the stall began reads what its client sends next, at most stallReadBuffer bytes, and stops after
-// it; a client that sends nothing keeps it there.
+// AwaitParked waits until the reader of every stalled connection has stopped at its stall, and fails
+// the test, naming the connection whose reader had not, when the shared wait gives up
+// (testwait.Receive). A reader waiting inside a read as the stall began reads what its client sends
+// next, at most stallReadBuffer bytes, and stops after it; a client that sends nothing keeps it there.
 func (r *StallRelay) AwaitParked(t testing.TB) {
 	t.Helper()
-	bound := boundOf(t)
-	for _, c := range r.stalledConns() {
+	conns := r.stalledConns()
+	for i, c := range conns {
 		r.mu.Lock()
 		parked := c.parked
 		r.mu.Unlock()
-		if !awaitSignal(bound, parked) {
-			t.Fatalf("a stalled connection's reader did not stop at its stall by %s, short of the test's deadline: its client sent nothing", bound)
-		}
+		testwait.Receive(t, fmt.Sprintf("the relay's reader of stalled connection %d of %d, from client %s, to stop at its stall, "+
+			"which a reader inside a read as the stall began does only once its client sends again", i+1, len(conns), c.client.RemoteAddr()), parked)
 	}
 }
 
@@ -179,18 +181,17 @@ func (r *StallRelay) Move() {
 // AwaitEnded waits until every stalled connection has ended at both ends: its client's side has
 // ended -- a normal close once the relay has read everything it sent, or a reset -- and the server has
 // closed its side after reading everything the relay forwarded, which it handles before it closes. It
-// fails the test when one has not by the test's deadline (testDeadline).
+// fails the test, naming the connection that had not ended, when the shared wait gives up
+// (testwait.Receive).
 func (r *StallRelay) AwaitEnded(t testing.TB) {
 	t.Helper()
 	conns := r.stalledConns()
 	if len(conns) == 0 {
 		t.Fatal("control: the stall relay stalled no connection")
 	}
-	bound := boundOf(t)
-	for _, c := range conns {
-		if !awaitSignal(bound, c.ended) {
-			t.Fatalf("a stalled connection had not ended at both ends by %s, short of the test's deadline, after the relay moved", bound)
-		}
+	for i, c := range conns {
+		testwait.Receive(t, fmt.Sprintf("stalled connection %d of %d, from client %s, to end at both ends once the relay moved: "+
+			"its client's side ended and the server's side closed after it", i+1, len(conns), c.client.RemoteAddr()), c.ended)
 	}
 }
 
@@ -212,7 +213,7 @@ func (r *StallRelay) serve() {
 		if err != nil {
 			return
 		}
-		server, err := net.DialTimeout("tcp", r.target, dialTimeout)
+		server, err := net.Dial("tcp", r.target)
 		if err != nil {
 			_ = client.Close()
 			continue

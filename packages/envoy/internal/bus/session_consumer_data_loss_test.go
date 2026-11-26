@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A one-copy stream that lost the end of its data does not turn the messages a session's consumer
@@ -41,7 +39,7 @@ func TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgai
 	if err != nil {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
-	t.Cleanup(owner.Close)
+	t.Cleanup(func() { closeClient(t, owner) })
 	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect session consumers: %v", err)
@@ -83,19 +81,9 @@ func TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgai
 	t.Logf("before the loss the server reports the ack floor as %d, the last delivery as %d and the start sequence as %d",
 		info.AckFloor.Stream, info.Delivered.Stream, info.Config.OptStartSeq)
 
-	size, kept := srv.CutStream(t, Stream, func(size int64) int64 { return size/2 + 1 })
+	size, kept := cutStream(t, srv, owner, consumers, func(size int64) int64 { return size/2 + 1 })
 	t.Logf("cut the stream's first message block from %d bytes to %d and removed the stream's index", size, kept)
-
-	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
-		return owner.Connected() && consumers.client.Connected()
-	})
-	var state sessionStreamState
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, func() bool {
-		state, err = consumers.streamState(ctx)
-		return err == nil
-	}) {
-		t.Fatalf("read the stream after the restart: %v", err)
-	}
+	state := streamStateAfterCut(t, consumers)
 	lost := state.lastSeq
 	t.Logf("after the cut the stream's last sequence is %d, where it was %d", lost, before+acked)
 	if lost == 0 || lost > before-2 {

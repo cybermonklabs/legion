@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -158,8 +159,10 @@ func render(doc *Node, spanCells int) (*renderer, error) {
 // renderDocument is render, validating doc first only when validate says so and recording the
 // renderer's layout as well when recordLayout says so: ValidDocument's rendering passes false for
 // the tree it validated once already. A nil or non-doc tree is refused either way, every refusal
-// of the renderer's own runs either way, and a panic is an ErrPanic either way.
+// of the renderer's own runs either way, and a panic is an ErrPanic either way. Every whole render
+// starts here, and is the render docwork's observers are told of (docwork.Render).
 func renderDocument(doc *Node, spanCells int, validate, recordLayout bool) (r *renderer, err error) {
+	docwork.Enter(docwork.Render)
 	// The renderer reads back what it writes (blockKinds, parseInlineWithDefinitions).
 	defer recoverPanic(&r, &err, "rendering a document")
 	if doc == nil || doc.Type != "doc" {
@@ -266,7 +269,8 @@ type footnoteLabelSet struct {
 
 // refersTo reports whether text shaped like a reference with label is escaped: it would read as a
 // reference to a defined label, or this renderer escaped it when it lowercased labels. An escape
-// the parser does not need reads back as the same text.
+// the parser does not need reads back as the same text. footnoteReferenceText asks only of a label
+// no longer than a defined one could fold to, so the folds of a text are linear in it.
 func (labels footnoteLabelSet) refersTo(label string) bool {
 	return labels.keys[footnoteLabelKey(label)] || labels.lowered[strings.ToLower(label)]
 }
@@ -1293,7 +1297,9 @@ func writeNulsInAttrs(attrs Attrs) {
 
 // writtenLineBreaks is a textblock's inline nodes with each soft break a space and each line feed
 // in text outside code followed by more than whitespace a hard break (asWritten), adjacent text
-// with the same marks merged, as the parser reads it.
+// with the same marks merged, as the parser reads it. Whether only whitespace follows a node is
+// read once for the textblock, from its end, where asking it of the rest of the text at every line
+// was not.
 func writtenLineBreaks(nodes []*Node) []*Node {
 	out := make([]*Node, 0, len(nodes))
 	appendText := func(text string, marks []Mark) {

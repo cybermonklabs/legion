@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,7 @@ import (
 // than as a string, and today client.go flattens the cause with %v so errors.Is sees nothing.
 // A refusal is the discriminating control: nothing landed, and it must not read as a timeout.
 func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
-	held := make(chan struct{})
+	held, reached := make(chan struct{}), make(chan struct{}, 1)
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			IdempotencyKey string `json:"idempotency_key"`
@@ -38,6 +39,7 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"listener refused the send"}`))
 			return
 		}
+		reached <- struct{}{}
 		<-held
 	}))
 	defer func() {
@@ -45,9 +47,21 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 		listener.Close()
 	}()
 
-	_, err := New(listener.URL, WithTimeout(150*time.Millisecond)).Send(context.Background(), SendInput{
-		TargetSession: "s1", Message: "held past the window", IdempotencyKey: "held:steer",
-	})
+	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	answered := make(chan error, 1)
+	go func() {
+		_, err := New(listener.URL, WithClock(fake)).Send(context.Background(), SendInput{
+			TargetSession: "s1", Message: "held past the window", IdempotencyKey: "held:steer",
+		})
+		answered <- err
+	}()
+	testwait.Receive(t, "the held send to reach the listener", reached)
+	if armed := fake.AwaitArmed(t, "the send's window", 1); armed[0] != start.Add(CallWindow) {
+		t.Fatalf("the send's window ends at %v, want %v, the window every call gets", armed[0], start.Add(CallWindow))
+	}
+	fake.Advance(CallWindow)
+	err := testwait.Receive(t, "the held send to end at its window", answered)
 	if !errors.Is(err, ErrReceiptTimeout) {
 		t.Fatalf("send that missed the window = %v, want ErrReceiptTimeout", err)
 	}
@@ -55,7 +69,7 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 		t.Fatalf("a receipt timeout is still a listener failure: %v", err)
 	}
 
-	_, err = New(listener.URL, WithTimeout(5*time.Second)).Send(context.Background(), SendInput{
+	_, err = New(listener.URL).Send(context.Background(), SendInput{
 		TargetSession: "s1", Message: "refused outright", IdempotencyKey: "refused:steer",
 	})
 	if err == nil || errors.Is(err, ErrReceiptTimeout) {
@@ -219,12 +233,28 @@ func TestSendCarriesTheListenersDuplicateVerdict(t *testing.T) {
 func TestSendDoesNotCallAConnectFailureAReceiptTimeout(t *testing.T) {
 	// 203.0.113.0/24 is TEST-NET-3: reserved, routed nowhere. The dial either times out or is
 	// refused outright; both mean nothing was written, and neither may read as a receipt
-	// timeout.
-	_, err := New("http://203.0.113.1:9", WithTimeout(200*time.Millisecond)).Send(
-		context.Background(), SendInput{
+	// timeout. The window ends when the test moves the clock past it, whichever comes first.
+	fake := clocktest.New(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
+	answered := make(chan error, 1)
+	go func() {
+		_, err := New("http://203.0.113.1:9", WithClock(fake)).Send(context.Background(), SendInput{
 			TargetSession: "s1", Message: "never left the building", IdempotencyKey: "m1:steer",
-		},
-	)
+		})
+		answered <- err
+	}()
+	var err error
+	testwait.Until(t, "the send to an unroutable address to fail", func() (string, bool) {
+		select {
+		case err = <-answered:
+			return fmt.Sprintf("the send answered %v", err), true
+		default:
+		}
+		armed := fake.Armed()
+		if len(armed) > 0 {
+			fake.Advance(CallWindow)
+		}
+		return fmt.Sprintf("no answer yet; the send's clock had %v armed", armed), false
+	})
 	if err == nil {
 		t.Fatal("a send to an unroutable address must fail")
 	}
@@ -456,7 +486,7 @@ func TestUnsubscribePostsSessionAndTopicsAndReturnsRemoved(t *testing.T) {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request body: %v", err)
+			t.Errorf("decode request body: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"removed":["notifications.dispatch.issue.T-1.>"]}`))
@@ -501,7 +531,7 @@ func TestRoleAndSendPreserveTheListenerDeliveryContract(t *testing.T) {
 			_, _ = w.Write([]byte(`{"role":"legion-planner","holder":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","capabilities":["aside","btw"],"last_seen":42}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
-				t.Fatalf("decode delivery: %v", err)
+				t.Errorf("decode delivery: %v", err)
 			}
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
 		default:

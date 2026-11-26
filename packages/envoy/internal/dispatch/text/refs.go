@@ -6,8 +6,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 )
 
 // referenceEnd is every character that ends a reference: whitespace (the Unicode space separators
@@ -131,8 +134,10 @@ func Refs(located []Located) []Ref {
 }
 
 // ExtractAt is Extract with each reference's byte offset into body, so a caller can find the
-// block a mention sits in. Trailing punctuation the grammar trims never moves the start.
+// block a mention sits in. Trailing punctuation the grammar trims never moves the start. It is the
+// reference extraction docwork's observers are told of (docwork.References), Extract's included.
 func ExtractAt(body, serverURL string) []Located {
+	docwork.Enter(docwork.References)
 	return extractAt(body, serverURL, true)
 }
 
@@ -268,23 +273,44 @@ func linkAddress(raw string) string {
 // that close emphasis and strikethrough around it (GFM's autolinks drop the same characters,
 // keeping them inside a link), and a closing parenthesis that opens nowhere in the reference. It
 // counts the parentheses once and walks back from the end, so a run of closers costs one pass.
+// Each byte it reads is added to trimmedBytes where it is read: by each count (countIn) and by
+// each step of the walk.
 func trimReference(raw string) string {
-	opened, closed := strings.Count(raw, "("), strings.Count(raw, ")")
+	opened, closed := countIn(raw, "("), countIn(raw, ")")
 	end := len(raw)
+walk:
 	for ; end > 0; end-- {
+		trimmedBytes.Add(1)
 		switch raw[end-1] {
 		case '.', ',', ';', ':', '!', '?', '*', '_', '~':
 		case ')':
 			if opened >= closed {
-				return raw[:end]
+				break walk
 			}
 			closed--
 		default:
-			return raw[:end]
+			break walk
 		}
 	}
-	return ""
+	return raw[:end]
 }
+
+// countIn is strings.Count(s, substr), adding every byte of s it reads to trimmedBytes, so a trim
+// that counted again for each byte it dropped would add the span again each time.
+func countIn(s, substr string) int {
+	trimmedBytes.Add(uint64(len(s)))
+	return strings.Count(s, substr)
+}
+
+// trimmedBytes counts what trimWork answers.
+var trimmedBytes atomic.Uint64
+
+// trimWork is how many bytes trimReference has read, in all, since the process started: each
+// span once for each parenthesis count it makes, and every byte its walk back steps over. It is
+// what holds the trim to one pass over a closing run (TestExtractTrimsALongClosingRunInLinearTime),
+// where a trim that counted the parentheses again for every byte it dropped read a 1 MiB run in 13
+// to 26 seconds.
+func trimWork() uint64 { return trimmedBytes.Load() }
 
 // DispatchSpans is where each `dispatch://` address stands in value, as text reads one: each
 // reference span (referencePattern) that starts with `dispatch://`, from its first byte to the end

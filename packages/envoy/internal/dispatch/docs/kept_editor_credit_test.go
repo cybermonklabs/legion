@@ -38,7 +38,7 @@ type keptEditorSweep struct {
 }
 
 // sweepAfterAClosedEdit builds keptEditorSweep, with an approval request opened over the document
-// before the close when requestBeforeClose is set. The close is written by SQL a minute ahead, with
+// before the close when requestBeforeClose is set. The close is written by SQL a day ahead, with
 // nothing telling the room and no ask withdrawn, as a close by an older release left an issue, so
 // the store's close margin admits alice's rewording however long the run takes
 // (observedBeforeClose). The ask repair withdraws the decision and the request, writing the
@@ -47,7 +47,7 @@ type keptEditorSweep struct {
 func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSweep {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, keptEditorSpec)
 	settleCurrentGeneration(t, service, artifactID)
@@ -63,7 +63,7 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
 		t.Fatalf("load the document's room while DOC-1 is open: %v", err)
 	}
-	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = now() + interval '1 minute' where key = 'DOC-1'`); err != nil {
+	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = now() + make_interval(secs => $1) where key = 'DOC-1'`, stagedAhead.Seconds()); err != nil {
 		t.Fatalf("close DOC-1 in the database alone: %v", err)
 	}
 	// The room is warm already: warming it again is an injection the closed issue refuses.
@@ -95,7 +95,7 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 			return err
 		}
 		for _, id := range withdrawn {
-			if _, err := WriteAskResolution(ctx, tx, model.Ask{ID: id}, model.AskResolutionWithdrawn, "Withdrawn by the close of DOC-1.", closer); err != nil {
+			if _, err := WriteAskResolution(ctx, tx, model.Ask{ID: id}, model.AskResolutionWithdrawn, "Withdrawn by the close of DOC-1.", closer, time.Now()); err != nil {
 				return err
 			}
 		}
@@ -111,8 +111,8 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 
 // settleOwed runs the resumption over what f's document owes and waits until it owes nothing,
 // what naming that settlement, and answers the id of the newest event before the resumption ran.
-// Every write before and after it leaves its settlement to the next call: the settle delay is an
-// hour outside it.
+// Every write before and after it leaves its settlement to the next call: the settle delay is a
+// day outside it (stagedAhead).
 func (f keptEditorSweep) settleOwed(t *testing.T, what string) int64 {
 	t.Helper()
 	lastEvent := latestEventID(t, f.service.store)
@@ -121,7 +121,7 @@ func (f keptEditorSweep) settleOwed(t *testing.T, what string) int64 {
 		t.Fatalf("resume %s: %v", what, err)
 	}
 	waitForNoPendingSettlement(t, f.service, f.artifactID, what)
-	f.service.settle = time.Hour
+	f.service.settle = stagedAhead
 	return lastEvent
 }
 

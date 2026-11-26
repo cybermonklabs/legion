@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -34,7 +35,7 @@ import (
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the issue closes before the edit's own settlement runs
+	service.settle = stagedAhead // the issue closes before the edit's own settlement runs
 	actor := model.Actor{Kind: "session", ID: "asking-session"}
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 
@@ -56,26 +57,26 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the issue closes before the edit's own settlement runs
+	service.settle = stagedAhead // the issue closes before the edit's own settlement runs
 	ctx := context.Background()
 	actor := model.Actor{Kind: "session", ID: "restarted-asking-session"}
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 
 	writeAskBeforeClose(t, service, artifactID, actor)
 	closeTestIssue(t, service)
-	if err := service.Shutdown(ctx); err != nil {
+	if err := docstest.Shutdown(t, ctx, service); err != nil {
 		t.Fatalf("stop the service between close and reopen: %v", err)
 	}
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
 	testcleanup.Add(t, func() {
-		if err := restarted.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), restarted); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
 	})
 	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the closed issue's owed settlement: %v", err)
 	}
-	waitFor(t, roomWait(t), "the closed issue's document to settle on the restarted service", func() bool {
+	waitFor(t, "the closed issue's document to settle on the restarted service", func() bool {
 		owed, err := settlementPending(ctx, restarted.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -103,7 +104,7 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen
 func TestCommittedLedgerWritePersistsSettlementCreditWhenCallerContextCancelsAfterCommit(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -147,7 +148,7 @@ func TestCloseAfterSettlementDoesNotRecreatePendingSettlementFromConsumedLastAct
 
 	writeAskBeforeClose(t, service, artifactID, actor)
 	waitForAskAuthor(t, service, artifactID, actor)
-	waitFor(t, 30*time.Second, "the ask settlement to clear its pending row", func() bool {
+	waitFor(t, "the ask settlement to clear its pending row", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -170,7 +171,7 @@ func TestCloseAfterSettlementDoesNotRecreatePendingSettlementFromConsumedLastAct
 func TestADocumentLoadsAPendingSettlementRowNamingAnotherLastActor(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the seed's own settlement never runs
+	service.settle = stagedAhead // the seed's own settlement never runs
 	ctx := context.Background()
 	seed := model.Actor{Kind: "user", ID: "seed"}
 	seedServiceText(t, service, artifactID, ":::ask{#null-pending-ask urgency=\"med\" multiple=\"false\"}\nWho asked?\n:::\n")
@@ -185,7 +186,7 @@ func TestADocumentLoadsAPendingSettlementRowNamingAnotherLastActor(t *testing.T)
 		t.Fatalf("load the document: %v", err)
 	}
 	var author model.Actor
-	waitFor(t, 30*time.Second, "the loaded document's settlement to index its ask", func() bool {
+	waitFor(t, "the loaded document's settlement to index its ask", func() bool {
 		return service.store.Pool.QueryRow(ctx, `
 			select author from asks where block_artifact_id = $1 and block_id = 'null-pending-ask'
 		`, artifactID).Scan(&author) == nil
@@ -200,7 +201,7 @@ func TestADocumentLoadsAPendingSettlementRowNamingAnotherLastActor(t *testing.T)
 func TestTwoCreditedWritersBothSurviveACrashRestart(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the writing process never settles them
+	service.settle = stagedAhead // the writing process never settles them
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	first := model.Actor{Kind: "session", ID: "first-writer-session"}
@@ -210,14 +211,14 @@ func TestTwoCreditedWritersBothSurviveACrashRestart(t *testing.T) {
 
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
 	testcleanup.Add(t, func() {
-		if err := restarted.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), restarted); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
 	})
 	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the document's settlement: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the resumed settlement to commit", func() bool {
+	waitFor(t, "the resumed settlement to commit", func() bool {
 		owed, err := settlementPending(ctx, service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -234,7 +235,7 @@ func TestClosingAnIssueOnATrackedContextPersistsEveryDocumentsCredit(t *testing.
 		t.Run(fmt.Sprintf("GOMAXPROCS=%d", procs), func(t *testing.T) {
 			defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(procs))
 			service, database := newRoomReleaseService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			ctx := context.Background()
 			ids := createDocuments(t, database, 500)
 			writer := model.Actor{Kind: "session", ID: "closing-writer"}
@@ -279,19 +280,28 @@ const (
 )
 
 // writeThroughLedger writes markdown at the document's end as actor in one transaction, as POST
-// /edits does, with the version the same transaction writes, if any.
+// /edits does, with the version the same transaction writes, if any, and fails the test on what
+// failed (ledgerWrite).
 func writeThroughLedger(t *testing.T, service *Service, artifactID string, actor model.Actor, markdown string, version ledgerWriteVersion) {
 	t.Helper()
+	if err := ledgerWrite(service, artifactID, actor, markdown, version); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ledgerWrite is writeThroughLedger's write, which returns what failed rather than failing a test,
+// for a write a goroutine of the test's own makes: only the test's goroutine can end the test.
+func ledgerWrite(service *Service, artifactID string, actor model.Actor, markdown string, version ledgerWriteVersion) error {
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin %s's write: %v", actor.ID, err)
+		return fmt.Errorf("begin %s's write: %w", actor.ID, err)
 	}
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "insert", After: "end", Markdown: markdown}}, actor, nil); err != nil {
-		t.Fatalf("apply %s's write: %v", actor.ID, err)
+		return fmt.Errorf("apply %s's write: %w", actor.ID, err)
 	}
 	switch version {
 	case withSnapshotVersion:
@@ -300,11 +310,12 @@ func writeThroughLedger(t *testing.T, service *Service, artifactID string, actor
 		_, err = service.NamedVersion(joined, artifactID, actor.ID+"'s version", actor)
 	}
 	if err != nil {
-		t.Fatalf("write %s's version: %v", actor.ID, err)
+		return fmt.Errorf("write %s's version: %w", actor.ID, err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
-		t.Fatalf("commit %s's write: %v", actor.ID, err)
+		return fmt.Errorf("commit %s's write: %w", actor.ID, err)
 	}
+	return nil
 }
 
 // An author whose edit wrote its own version is not owed that credit again: the next version after
@@ -312,7 +323,7 @@ func writeThroughLedger(t *testing.T, service *Service, artifactID string, actor
 func TestAReopenedDocumentsNextVersionCreditsOnlyItsOwnAuthor(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edits
+	service.settle = stagedAhead // no settlement runs between the edits
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	alpha := model.Actor{Kind: "session", ID: "alpha-session"}
 	delta := model.Actor{Kind: "session", ID: "delta-session"}
@@ -332,7 +343,7 @@ func TestAReopenedDocumentsNextVersionCreditsOnlyItsOwnAuthor(t *testing.T) {
 func TestAVersionedAuthorIsNotCreditedAgainAfterAReopen(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the issue closes before any settlement runs
+	service.settle = stagedAhead // the issue closes before any settlement runs
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	versioned := model.Actor{Kind: "session", ID: "versioned-session"}
 	asking := model.Actor{Kind: "session", ID: "asking-session"}
@@ -345,7 +356,7 @@ func TestAVersionedAuthorIsNotCreditedAgainAfterAReopen(t *testing.T) {
 	service.ScheduleSettlement(artifactID)
 
 	waitForAskAuthor(t, service, artifactID, asking)
-	waitFor(t, 30*time.Second, "the reopened document's settlement to commit", func() bool {
+	waitFor(t, "the reopened document's settlement to commit", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -359,7 +370,7 @@ func TestAVersionedAuthorIsNotCreditedAgainAfterAReopen(t *testing.T) {
 func TestAVersionedAuthorIsNotCreditedAgainAfterACrashRestart(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the writing process never settles them
+	service.settle = stagedAhead // the writing process never settles them
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	versioned := model.Actor{Kind: "session", ID: "versioned-session"}
@@ -370,7 +381,7 @@ func TestAVersionedAuthorIsNotCreditedAgainAfterACrashRestart(t *testing.T) {
 
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
 	testcleanup.Add(t, func() {
-		if err := restarted.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), restarted); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
 	})
@@ -391,7 +402,7 @@ func TestAVersionedAuthorIsNotCreditedAgainAfterACrashRestart(t *testing.T) {
 func TestABrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReopen(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edits
+	service.settle = stagedAhead // no settlement runs between the edits
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -463,13 +474,16 @@ func connectBrowser(t *testing.T, serverURL, artifactID, login string) *docstest
 	if err := browser.AskForDocument(); err != nil {
 		t.Fatalf("ask the room for its document: %v", err)
 	}
-	select {
-	case <-browser.Answers:
-	case <-browser.Ended:
-		t.Fatalf("%s's connection closed before the room sent the document", login)
-	case <-time.After(roomWait(t)):
-		t.Fatalf("the room did not send %s the document within roomWait", login)
-	}
+	testwait.Eventually(t, "the room to send "+login+" the document", func() bool {
+		select {
+		case <-browser.Answers:
+			return true
+		case <-browser.Ended:
+			t.Fatalf("%s's connection closed before the room sent the document", login)
+		default:
+		}
+		return false
+	})
 	return browser
 }
 
@@ -517,35 +531,8 @@ func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 	}); err != nil || changeErr != nil {
 		t.Fatalf("send the browser's edit: %v %v", err, changeErr)
 	}
-	select {
-	case <-recorded:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room did not record the browser's edit within roomWait")
-	}
+	testwait.Receive(t, "the room to record the browser's edit", recorded)
 }
-
-// roomWait bounds a wait on a document room's own work - sending a browser the document,
-// recording an edit, landing an append, finishing an eviction - which takes as long as the loaded
-// machine takes. It is the smaller of roomWaitCap and what the test binary's deadline leaves after
-// roomWaitMargin (testwait.Remaining), so a room that never finishes fails the test by name, and
-// leaves the binary's timeout to the package's later tests. A deadline that leaves no more than
-// roomWaitMargin to begin with fails once, by name, saying whether the -timeout was too short or
-// the tests before used it up.
-func roomWait(t *testing.T) time.Duration {
-	t.Helper()
-	return min(testwait.Remaining(t, roomWaitMargin), roomWaitCap)
-}
-
-const (
-	// roomWaitCap is far above the longest run of a test that uses roomWait measured on the
-	// development machine (2.1 s, at load 17), so a loaded runner is not mistaken for a room that
-	// stopped.
-	roomWaitCap = 2 * time.Minute
-	// roomWaitMargin is what roomWait leaves of the test binary's deadline for the failed test's
-	// cleanups, which hold the document service's Shutdown, bounded by ShutdownDrainBudget (9 s):
-	// they took at most 85 ms after a wait that timed out, over every test that uses roomWait.
-	roomWaitMargin = 30 * time.Second
-)
 
 // connectedBrowsers is how many browsers the room has registered (state.connected).
 func connectedBrowsers(service *Service, artifactID string) int {
@@ -564,7 +551,7 @@ func connectedBrowsers(service *Service, artifactID string) int {
 func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReopen(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edits
+	service.settle = stagedAhead // no settlement runs between the edits
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -603,7 +590,7 @@ func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReo
 	// append queues behind it too; he stays connected until the issue's close ends his connection.
 	daveBrowser := connectBrowser(t, httpServer.URL, artifactID, "dave")
 	carol.Close()
-	waitFor(t, 5*time.Second, "the room to forget carol's connection", func() bool {
+	waitFor(t, "the room to forget carol's connection", func() bool {
 		return connectedBrowsers(service, artifactID) == 1
 	})
 	editAsBrowser(t, service, artifactID, daveBrowser, "# Decision\n\nContext.\n\nCarol's paragraph.\n\nDave's paragraph.\n")
@@ -639,7 +626,7 @@ func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReo
 func TestABrowserEditAfterAVersionsCaptureStaysOwed(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edits
+	service.settle = stagedAhead // no settlement runs between the edits
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -677,7 +664,7 @@ func TestABrowserEditAfterAVersionsCaptureStaysOwed(t *testing.T) {
 func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCreditedWith(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edit and the upload
+	service.settle = stagedAhead // no settlement runs between the edit and the upload
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -688,12 +675,9 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 	browser := connectBrowser(t, httpServer.URL, artifactID, bob.ID)
 	editAsBrowser(t, service, artifactID, browser, "First.\n\nSecond, bob.\n")
 	testcleanup.Add(t, browser.Close)
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := service.waitForDurableAppends(waitCtx, artifactID); err != nil {
-		waitCancel()
+	if err := service.waitForDurableAppends(testwait.Context(t), artifactID); err != nil {
 		t.Fatalf("wait for bob's edit to become durable: %v", err)
 	}
-	waitCancel()
 	if owed := pendingAuthorRows(t, service.store, artifactID); !slices.Contains(owed, bob) {
 		t.Fatalf("pending authors before the upload = %+v; the test's premise needs bob's edit durable first", owed)
 	}
@@ -736,7 +720,7 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs during the race window
+	service.settle = stagedAhead // no settlement runs during the race window
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -793,15 +777,24 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 // rolling deploy's overlap.
 func newTestServiceInstance(t *testing.T, database *store.Store) (*Service, *httptest.Server) {
 	t.Helper()
+	return newTestServiceInstanceOn(t, database, nil)
+}
+
+// newTestServiceInstanceOn is newTestServiceInstance on serviceClock (Deps.Clock), the real clock
+// when nil. Its shutdown ends at the shared wait's deadline, since a fake no one moves never
+// reaches the drain's own bound.
+func newTestServiceInstanceOn(t *testing.T, database *store.Store, serviceClock clock.Clock) (*Service, *httptest.Server) {
+	t.Helper()
 	service := New(Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
+		Clock:     serviceClock,
 	})
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -850,7 +843,7 @@ func nextVersionNumber(t *testing.T, database *store.Store, artifactID string) i
 func TestABrowserEditAfterARoomReloadIsOwed(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	// The writes below publish into this room, which the test then reloads; a write to a document
 	// no room holds publishes into none (publishLiveWrite).
@@ -867,14 +860,11 @@ func TestABrowserEditAfterARoomReloadIsOwed(t *testing.T) {
 		agent := model.Actor{Kind: "session", ID: fmt.Sprintf("agent-%d", round)}
 		writeThroughLedger(t, service, artifactID, agent, fmt.Sprintf("Round %d.\n", round), withSnapshotVersion)
 	}
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := service.waitForDurableAppends(waitCtx, artifactID); err != nil {
-		waitCancel()
+	if err := service.waitForDurableAppends(testwait.Context(t), artifactID); err != nil {
 		t.Fatalf("wait for the setup rounds to become durable: %v", err)
 	}
-	waitCancel()
 
-	if err := service.srv.CloseRoom(artifactID, true); err != nil {
+	if err := closeRoomJoined(t, service, artifactID, true); err != nil {
 		t.Fatalf("close the room: %v", err)
 	}
 	waitForNoLiveDocument(t, service, artifactID)
@@ -905,7 +895,7 @@ func requireOwedAlone(t *testing.T, service *Service, artifactID string, want mo
 func TestConcurrentBrowserAndVersionedWritesListEveryAuthorOnceAfterEveryRound(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edits
+	service.settle = stagedAhead // no settlement runs between the edits
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	testcleanup.Add(t, httpServer.Close)
@@ -918,19 +908,19 @@ func TestConcurrentBrowserAndVersionedWritesListEveryAuthorOnceAfterEveryRound(t
 		agent := model.Actor{Kind: "session", ID: fmt.Sprintf("round%d-agent", round)}
 		authors = append(authors, model.Actor{Kind: "user", ID: login, Proven: true}, agent)
 
-		var wg sync.WaitGroup
-		wg.Add(2)
+		// The agent's write races the browser's edit on a goroutine of its own, which hands its
+		// error to this one: only the test's goroutine ends the test, and the browser's edit, with
+		// its wait for the room, runs here.
+		agentWrote := make(chan error, 1)
 		go func() {
-			defer wg.Done()
-			editAsBrowser(t, service, artifactID, browser, fmt.Sprintf("# Decision\n\nContext.\n\nRound %d browser.\n", round))
+			agentWrote <- ledgerWrite(service, artifactID, agent, fmt.Sprintf("Round %d agent.\n", round), withSnapshotVersion)
 		}()
-		go func() {
-			defer wg.Done()
-			writeThroughLedger(t, service, artifactID, agent, fmt.Sprintf("Round %d agent.\n", round), withSnapshotVersion)
-		}()
-		wg.Wait()
+		editAsBrowser(t, service, artifactID, browser, fmt.Sprintf("# Decision\n\nContext.\n\nRound %d browser.\n", round))
+		if err := testwait.Receive(t, "the agent's write through the ledger to return", agentWrote); err != nil {
+			t.Fatal(err)
+		}
 		browser.Close()
-		waitFor(t, 10*time.Second, "the round's browser to disconnect", func() bool {
+		waitFor(t, "the round's browser to disconnect", func() bool {
 			return connectedBrowsers(service, artifactID) == 0
 		})
 		waitForLandedAppends(t, service, artifactID)
@@ -1005,7 +995,7 @@ func TestABrowserEditAnotherTransactionsObserverReachesFirstIsCreditedExactly(t 
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, test.seed)
 			settleCurrentGeneration(t, service, artifactID)
 			bob := model.Actor{Kind: "user", ID: "bob"}
@@ -1199,7 +1189,7 @@ func (tx pausedCommitTx) Commit(ctx context.Context) error {
 func TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n")
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	state := service.lockState(artifactID)
@@ -1236,6 +1226,12 @@ func TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands(t *testing.T) {
 	var readingsMu sync.Mutex
 	var readings []reading
 	stop, done := make(chan struct{}), make(chan struct{})
+	// A failure below still stops the reader, so it never queries past the test.
+	stopReader := sync.OnceFunc(func() { close(stop) })
+	testcleanup.Add(t, func() {
+		stopReader()
+		testwait.Receive(t, "the test's reader loop to stop", done)
+	})
 	go func() {
 		defer close(done)
 		for {
@@ -1260,35 +1256,36 @@ func TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 	}()
-	// awaitReading moves the commit to at and waits, up to wait, for the reader to take a reading
-	// there; it reports whether one was taken.
-	awaitReading := func(at int32, wait time.Duration) bool {
+	// readerBlocked moves the commit to at and waits until the reader waits on the room's state
+	// lock, which the commit holds from before its transaction commits until it has consumed the
+	// credits (commitConsuming): the reader's next reading is then the first once the commit lets go.
+	// It runs inside the commit, which holds that lock and lets it go with no defer, so a give-up
+	// fails the test with t.Error and returns, and the commit lets the lock go: a FailNow here
+	// would leave it held for the reader and the test's cleanup to wait on.
+	readerBlocked := func(at int32) {
 		phase.Store(at)
-		deadline := time.Now().Add(wait)
-		for time.Now().Before(deadline) {
-			readingsMu.Lock()
-			taken := slices.ContainsFunc(readings, func(read reading) bool { return read.phase == at })
-			readingsMu.Unlock()
-			if taken {
-				return true
-			}
-			time.Sleep(time.Millisecond)
+		if err := testwait.InHelper("readerBlocked", "the reader to wait on the room's state lock the commit holds", func() bool {
+			return goroutinesIn("TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands", "sync.(*Mutex).lockSlow") > 0
+		}); err != nil {
+			t.Error(err)
 		}
-		return false
 	}
 	paused := pausedCommitTx{
 		Tx:     tx,
-		before: func() { awaitReading(1, 250*time.Millisecond) },
-		after:  func() { awaitReading(2, 250*time.Millisecond) },
+		before: func() { readerBlocked(1) },
+		after:  func() { readerBlocked(2) },
 	}
 	if err := service.commitConsuming(ctx, paused, []roomCapture{{room: artifactID, capture: capture}}, nil); err != nil {
 		t.Fatalf("commit the version: %v", err)
 	}
-	if !awaitReading(3, 10*time.Second) {
-		t.Fatal("the reader took no reading once the commit returned")
-	}
-	close(stop)
-	<-done
+	phase.Store(3)
+	waitFor(t, "the reader to take a reading once the commit returned", func() bool {
+		readingsMu.Lock()
+		defer readingsMu.Unlock()
+		return slices.ContainsFunc(readings, func(read reading) bool { return read.phase == 3 })
+	})
+	stopReader()
+	testwait.Receive(t, "the test's reader loop, whose in-flight step takes the room's state lock, to stop", done)
 
 	readingsMu.Lock()
 	defer readingsMu.Unlock()
@@ -1329,7 +1326,7 @@ func closeTestIssue(t *testing.T, service *Service) {
 		t.Fatalf("close the issue: %v", err)
 	}
 	service.issueOpenChanged(ctx, "DOC-1")
-	waitFor(t, 30*time.Second, "the closed issue's rooms to close", func() bool {
+	waitFor(t, "the closed issue's rooms to close", func() bool {
 		for room, live := range resident {
 			if live != nil && service.srv.GetDoc(room) == live {
 				return false
@@ -1372,7 +1369,7 @@ func waitForAskAuthor(t *testing.T, service *Service, artifactID string, want mo
 	t.Helper()
 	ctx := context.Background()
 	var author model.Actor
-	waitFor(t, 30*time.Second, "the reopened document's settlement to index the ask", func() bool {
+	waitFor(t, "the reopened document's settlement to index the ask", func() bool {
 		return service.store.Pool.QueryRow(ctx, `select author from asks where block_artifact_id = $1 and block_id = 'closing-ask'`, artifactID).Scan(&author) == nil
 	})
 	if author != want {

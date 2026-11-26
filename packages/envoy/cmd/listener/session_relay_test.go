@@ -399,13 +399,12 @@ func awaitAcked(t *testing.T, consumers *bus.SessionConsumers, sessionID string,
 // message through floor acked. A consumer that does not exist yet is waited for the same way: a
 // registration with a new epoch restarts the session's relay, which deletes its consumer and
 // creates it again at the floor, and a read between the two finds none. The wait ends on that
-// state, bounded only by the test binary's deadline (testwait.UntilPolling): an ack is the
-// session's answer reaching the relay, and a loaded machine delays it without anything being wrong,
-// so a fixed span (5 s, before) failed rows whose session answered late. It reads the consumer
-// every ackStatePoll, a CONSUMER.INFO request too costly to send every 10 ms.
+// state, bounded only by the test binary's deadline (testwait.Until): an ack is the session's
+// answer reaching the relay, and a loaded machine delays it without anything being wrong, so a
+// fixed span (5 s, before) failed rows whose session answered late.
 func awaitAckState(t *testing.T, consumers *bus.SessionConsumers, sessionID string, pending int, floor uint64) {
 	t.Helper()
-	testwait.UntilPolling(t, ackStatePoll, fmt.Sprintf("the consumer of %s to hold %d pending ack with everything through %d acked", sessionID, pending, floor), func() (string, bool) {
+	testwait.Until(t, fmt.Sprintf("the consumer of %s to hold %d pending ack with everything through %d acked", sessionID, pending, floor), func() (string, bool) {
 		info, err := consumers.Info(context.Background(), sessionID)
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
 			return "no consumer yet", false
@@ -416,10 +415,6 @@ func awaitAckState(t *testing.T, consumers *bus.SessionConsumers, sessionID stri
 		return fmt.Sprintf("%d pending ack, ack floor %d", info.NumAckPending, info.AckFloor.Stream), info.NumAckPending == pending && info.AckFloor.Stream >= floor
 	})
 }
-
-// ackStatePoll is how often awaitAckState reads a session's consumer: the 20 ms its fixed-span
-// loop read it at before.
-const ackStatePoll = 20 * time.Millisecond
 
 // A frame the session holds unwritten (received and progress, no done, as a side question held
 // over a turn) does not delay the receipt of the frames after it, which are written and done. When
@@ -644,10 +639,10 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 
 // A registration resumes a paused relay at once, long before its backoff would send again.
 func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testing.T) {
-	// A backoff no test waits out: only the registration can make the relay send again here.
-	// The receipt wait is this row's own, as in the row above.
+	// A backoff no test waits out (stagedAhead): only the registration can make the relay send
+	// again here. The receipt wait is this row's own, as in the row above.
 	const receipt = 500 * time.Millisecond
-	rig := newRelayRigReceipt(t, time.Minute, time.Minute, receipt)
+	rig := newRelayRigReceipt(t, stagedAhead, stagedAhead, receipt)
 	const sessionID = "ses_unreachable_registers"
 	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
@@ -845,7 +840,7 @@ func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 
 	const failed = "session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"
 	const whole = "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"
-	awaitLogLine(t, rig, failed, 15*time.Second)
+	awaitLogLine(t, rig, failed)
 	// The log is read once the hand-over line is in it: before that the run has written neither
 	// line, and a missing line of a whole hand-over would say nothing.
 	logs := rig.harness.logs.String()
@@ -1129,13 +1124,17 @@ func deliveryExceptionsFor(t *testing.T, exceptions *natsgo.Subscription, sessio
 	}
 }
 
-// awaitLogLine waits for line to appear in the listener's log, failing the test when it does not
-// within the bound.
-func awaitLogLine(t *testing.T, rig *relayRig, line string, within time.Duration) {
+// awaitLogLine waits for line to appear in the listener's log, through the shared wait
+// (testwait.Until), which has no bound of its own; a wait that gives up prints how many lines the
+// listener had logged and the last of them.
+func awaitLogLine(t *testing.T, rig *relayRig, line string) {
 	t.Helper()
-	if !testwait.Holds(within, 20*time.Millisecond, func() bool { return strings.Contains(rig.harness.logs.String(), line) }) {
-		t.Fatalf("the listener never logged %q within %s", line, within)
-	}
+	testwait.Until(t, "the listener to log "+strconv.Quote(line), func() (string, bool) {
+		logged := rig.harness.logs.String()
+		lines := strings.TrimRight(logged, "\n")
+		last := lines[strings.LastIndex(lines, "\n")+1:]
+		return fmt.Sprintf("%d lines logged, the last %q", strings.Count(logged, "\n"), last), strings.Contains(logged, line)
+	})
 }
 
 // grantConfigBeforeSessionConsumers is the configuration of a server whose one user, the nkey user

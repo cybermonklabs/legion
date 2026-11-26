@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/legionagents"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // putRoleHoldersAs sends PUT /api/v1/issues/{key}/role-holders over the deployment's bearer, the
@@ -132,7 +134,7 @@ func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 	}
 	// Each write is its own transaction, so a write that sets now() again sets a later time once the
 	// database's clock reads past the first one's: the wait ends on that clock.
-	awaitDatabaseClockPast(t, database, first.Holders[0].RecordedAt)
+	awaitDatabaseAge(t, database.Pool, "the first publish", first.Holders[0].RecordedAt, time.Microsecond)
 	again := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(again.Holders) != 1 || !again.Holders[0].RecordedAt.Equal(first.Holders[0].RecordedAt) {
 		t.Fatalf("the second publish answered %#v, want the time %s of the first", again, first.Holders[0].RecordedAt)
@@ -290,7 +292,7 @@ func TestOnlyTheDaemonsSessionPublishesRoleHolders(t *testing.T) {
 		}
 		// A pair written again would take its transaction's time, so wait until the database's clock
 		// has passed the first publication's: a kept pair then shows by its unchanged time.
-		awaitDatabaseClockPast(t, rig.database, first[0].RecordedAt)
+		awaitDatabaseAge(t, rig.database.Pool, "the first publication", first[0].RecordedAt, time.Microsecond)
 		rig.publishRoles(t, issue, set...)
 		marked := readStoredRoleHolders(t, rig.database, issue)
 		requireStoredRoleHolders(t, marked, set, true)
@@ -448,12 +450,12 @@ func TestTwoPublicationsOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 					response := putRoleHoldersAs(t, handler, issue, map[string]any{"holders": set, "actor": daemonSessionOf("ACME")})
 					codes[index] = response.Code
 					if response.Code == http.StatusOK {
-						answers[index] = sortedPairs(decodeBody[issueRoleHolders](t, response).Holders)
+						answers[index] = sortedPairs(decodeBodyOrError[issueRoleHolders](t, response).Holders)
 					}
 				}()
 			}
 			start.Done()
-			done.Wait()
+			testwait.Returns(t, fmt.Sprintf("%s, round %d: the two role-holder publications to answer", shape.name, round+1), done.Wait)
 			stored := sortedPairs(readRoleHolders(t, handler, issue).Holders)
 			if !slices.Equal(stored, shape.a) && !slices.Equal(stored, shape.b) {
 				t.Errorf("%s, round %d: the issue stores %v, want exactly %v or %v", shape.name, round+1, stored, shape.a, shape.b)

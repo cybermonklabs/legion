@@ -3,14 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.T) {
@@ -29,7 +32,9 @@ func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.
 				Payload string `json:"payload"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode Envoy send request: %v", err)
+				t.Errorf("decode Envoy send request: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			var frame struct {
 				Event struct {
@@ -39,7 +44,9 @@ func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.
 				} `json:"event"`
 			}
 			if err := json.Unmarshal([]byte(request.Payload), &frame); err != nil {
-				t.Fatalf("decode mention delivery frame: %v", err)
+				t.Errorf("decode mention delivery frame: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			var state string
 			err := database.Pool.QueryRow(context.Background(), `
@@ -98,7 +105,11 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 	roleHolder := "s1"
 	roleLookups := 0
 	blockS1 := false
-	started := make(chan struct{})
+	// reached carries what the listener's handler has to tell the test's goroutine about the held
+	// send: nil once the first delivery's send to s1 is held, or the refusal of a send it could not
+	// read, which FailNow may not end the test with on the handler's goroutine. Either ends the
+	// wait for the held send at once.
+	reached := make(chan error, 1)
 	release := make(chan struct{})
 	sent := []string{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
@@ -119,13 +130,22 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 				TargetSession string `json:"target_session"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode retry send: %v", err)
+				t.Errorf("decode retry send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				select {
+				case reached <- fmt.Errorf("decode retry send: %v", err):
+				default:
+				}
+				return
 			}
 			mu.Lock()
 			block := blockS1 && request.TargetSession == "s1"
 			if block {
 				blockS1 = false
-				close(started)
+				select {
+				case reached <- nil:
+				default:
+				}
 			}
 			mu.Unlock()
 			if block {
@@ -140,7 +160,15 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	// The held send waits on release, and the listener's Close waits for it: deferred after the
+	// Close, so it runs first, the release lets a send still held go when the row fails before
+	// its own release below.
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
+	// A clock whose timers never fire: the comment's lookup of the role is answered as the listener
+	// answers it and is never left unanswered by its bound (mentionLookupTimeout), after which its
+	// send would look the role up once more than the two lookups this row counts.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
 	direct := directServer(deps)
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent mention retry", "before")
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -179,7 +207,9 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		)
 		first <- deliveryResult{attempt: attempt, held: held, err: err}
 	}()
-	<-started
+	if err := testwait.Receive(t, "the first delivery to reach the held listener send", reached); err != nil {
+		t.Fatalf("the first delivery's send to the held listener: %v", err)
+	}
 	mu.Lock()
 	roleHolder = "s2"
 	mu.Unlock()
@@ -189,9 +219,9 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		)
 		second <- deliveryResult{attempt: attempt, held: held, err: err}
 	}()
-	close(release)
-	firstResult := <-first
-	secondResult := <-second
+	letGo()
+	firstResult := testwait.Receive(t, "the first delivery to return", first)
+	secondResult := testwait.Receive(t, "the second delivery to return", second)
 	if firstResult.err != nil || secondResult.err != nil || firstResult.held != nil || secondResult.held != nil {
 		t.Fatalf("concurrent retries: first=%#v second=%#v", firstResult, secondResult)
 	}

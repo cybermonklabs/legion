@@ -3,10 +3,10 @@ package access
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestATokensTieAndListedReachAnnounceThemselves: the tie a broker-issued token records
@@ -37,9 +37,8 @@ func TestATokensTieAndListedReachAnnounceThemselves(t *testing.T) {
 	}
 	next := func() string {
 		t.Helper()
-		wait, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		notification, err := conn.WaitForNotification(wait)
+		// The wait has no bound of its own: it ends where every wait of the test gives up.
+		notification, err := conn.WaitForNotification(testwait.Context(t))
 		if err != nil {
 			t.Fatalf("wait for a notification on %s: %v", events.SessionAccessChannel, err)
 		}

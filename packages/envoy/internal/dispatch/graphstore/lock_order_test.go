@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -18,17 +19,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deadlockDetected is the SQLSTATE Postgres answers the transaction it killed to break a lock
 // cycle. Nothing this store does may ever produce one.
 const deadlockDetected = "40P01"
 
-// lockWait bounds how long a step of this test waits for a backend to queue behind a holder, and
-// unblockedWait how long an unblocked statement is given to finish. Both are far above what the
-// work takes; a step that passes either is the lock order being wrong, not a slow machine.
+// unblockedWait bounds how long people_lock_steps_test.go's requireUnblockedBy gives an
+// unblocked statement to finish. It is far above what the work takes.
 const (
-	lockWait       = 20 * time.Second
 	unblockedWait  = 20 * time.Second
 	racingRounds   = 25
 	lockOrderIssue = "GRAPH-1"
@@ -307,8 +307,7 @@ func waitForTheHolderItWaitsOn(
 ) (behindFirst, behindSecond bool) {
 	t.Helper()
 	pid := conn.Conn().PgConn().PID()
-	deadline := time.Now().Add(lockWait)
-	for {
+	testwait.Until(t, what+" to queue behind either holder", func() (string, bool) {
 		select {
 		case answer := <-done:
 			t.Fatalf("%s finished without waiting for either holder: %v%s", what, answer, deadlockNote(answer))
@@ -321,14 +320,10 @@ func waitForTheHolderItWaitsOn(
 		if behindSecond, err = storetest.QueuedBehind(ctx, second, pid); err != nil {
 			t.Fatalf("inspect the locks %s waits on: %v", what, err)
 		}
-		if behindFirst || behindSecond {
-			return behindFirst, behindSecond
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s queued behind neither holder within %s", what, lockWait)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		return fmt.Sprintf("behind the first holder %t, behind the second %t", behindFirst, behindSecond),
+			behindFirst || behindSecond
+	})
+	return behindFirst, behindSecond
 }
 
 // --- each step of the order ------------------------------------------------------------
@@ -620,10 +615,24 @@ func requireTheForeignKeyTakesNoRowLock(t *testing.T, ctx context.Context, f *lo
 	defer release()
 	lockNodeRow(t, ctx, holder, nodeProjected)
 
-	writing, cancel := context.WithTimeout(ctx, unblockedWait)
-	defer cancel()
-	if _, err := f.database.Pool.Exec(writing, projectionStatement,
-		f.comment, nodeProjected.Kind, nodeProjected.ID); err != nil {
+	// The projection write runs on a connection of its own, so its backend is the one watched:
+	// it passes by answering, and fails by queueing behind the holder of its node.
+	writer, err := f.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the projection write: %v", err)
+	}
+	pid := writer.Conn().PgConn().PID()
+	wrote := make(chan error, 1)
+	go func() {
+		defer writer.Release()
+		_, err := writer.Exec(ctx, projectionStatement, f.comment, nodeProjected.Kind, nodeProjected.ID)
+		wrote <- err
+	}()
+	err, answered := storetest.WaitForQueuedBehind(t, holder, pid, wrote)
+	if !answered {
+		t.Fatal("the projection row's write queued behind the transaction that holds its node: its foreign key takes a lock the store's order does not name")
+	}
+	if err != nil {
 		t.Fatalf("write the projection row while another transaction holds its node: %v", err)
 	}
 
@@ -761,13 +770,8 @@ func requireQueued(t *testing.T, holder pgx.Tx, conn *pgxpool.Conn, done chan er
 // requireCommitted holds a write to finishing, and to finishing without a deadlock.
 func requireCommitted(t *testing.T, done chan error, what string) {
 	t.Helper()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("%s: %v%s", what, err, deadlockNote(err))
-		}
-	case <-time.After(unblockedWait):
-		t.Fatalf("%s did not finish within %s after the holder let go", what, unblockedWait)
+	if err := testwait.Receive(t, what+" to finish after the holder let go", done); err != nil {
+		t.Fatalf("%s: %v%s", what, err, deadlockNote(err))
 	}
 }
 

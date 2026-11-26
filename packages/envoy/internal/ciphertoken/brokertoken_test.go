@@ -28,7 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 const (
 	// dispatchOrigin is DISPATCH_SERVER_URL for these tests: the origin a caller signs its

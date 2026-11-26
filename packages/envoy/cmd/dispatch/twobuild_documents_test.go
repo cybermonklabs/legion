@@ -7,7 +7,7 @@
 package main
 
 // The two-build suite's stored-document half reads this tree's side of what each build holds
-// (documentSides, tree ../../internal/dispatch at :55); the previous build's side is the copy
+// (documentSides, whose tree is ../../internal/dispatch); the previous build's side is the copy
 // packages/envoy/scripts/build-dispatch-build.sh writes outside the checkout.
 //ci:reads packages/envoy/internal/dispatch/pmdoc/schema/blocks.json documentSides readManifest (os.ReadFile) of the current build's block manifest
 //ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md documentSides the current build's corpus: corpusFiles os.ReadDir, and requireCorpusCrossesBuilds os.ReadFile of each .md file it lists
@@ -29,6 +29,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,10 +37,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/encoding"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ───── stored documents ─────────────────────────────────────────────────────
@@ -365,6 +366,9 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 		t.Fatalf("authenticate the document socket: %v", err)
 	}
 	scopes := make(chan string, 1)
+	// read counts the messages the socket has read, which the wait for the answer names when it
+	// gives up: none, or messages of other kinds than the answer.
+	var read atomic.Int64
 	go func() {
 		defer close(socket.ended)
 		for {
@@ -373,6 +377,7 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 				socket.endErr = err
 				return
 			}
+			read.Add(1)
 			decoder := encoding.NewDecoder(message)
 			if _, err := decoder.ReadVarString(); err != nil {
 				continue
@@ -399,14 +404,17 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 			}
 		}
 	}()
-	select {
-	case answer := <-scopes:
-		socket.scope = strings.TrimPrefix(answer, "scope ")
-	case <-socket.ended:
-		t.Fatalf("the document socket for %s closed before the server answered its authentication: %v", artifactID, socket.endErr)
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the server never answered the document socket's authentication for %s", artifactID)
-	}
+	answer := testwait.Until(t, "the server to answer the document socket's authentication for "+artifactID, func() (string, bool) {
+		select {
+		case answer := <-scopes:
+			return answer, true
+		case <-socket.ended:
+			t.Fatalf("the document socket for %s closed before the server answered its authentication: %v", artifactID, socket.endErr)
+		default:
+		}
+		return fmt.Sprintf("no answer to the authentication among the %d messages the socket has read, and the socket is open", read.Load()), false
+	})
+	socket.scope = strings.TrimPrefix(answer, "scope ")
 	return socket
 }
 
@@ -477,8 +485,17 @@ func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
 }
 
 // socketOpenFor is how long every socket the corpus row opened must stay open after the last one
-// was admitted: long enough for a server that closes a socket it admitted to have done so.
+// was admitted: long enough for a server that closes a socket it admitted to have done so. It is
+// a span of the row's own (socketsStayOpenWhy).
 const socketOpenFor = 3 * time.Second
+
+// socketsStayOpenWhy is why the corpus row holds socketOpenFor as a span: a server closes a
+// socket it admitted on a decision of its own that it records nowhere the row can read, both
+// builds are child processes so synctest does not reach them, and a message the row sent on a
+// socket would be answered by the document's room, which says nothing of a close still to come.
+const socketsStayOpenWhy = "a server closes a socket it admitted on a decision it records nowhere the row can read, " +
+	"both builds are child processes so synctest does not reach them, and a message sent on the socket is answered " +
+	"by the document's room, which says nothing of a close still to come"
 
 // corpusSkipped are the corpus files this row leaves out, each with why. A corpus file is
 // markdown for the parsers' fixtures, which a server does not have to be able to store.
@@ -531,7 +548,7 @@ func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader 
 		}
 		sockets = append(sockets, socket)
 	}
-	time.Sleep(socketOpenFor)
+	testwait.Span(t, socketOpenFor, socketsStayOpenWhy)
 	for _, socket := range sockets {
 		if socket.closed() {
 			t.Errorf("the %s closed the socket it admitted for document %s: %v", reader.name, socket.artifactID, socket.endErr)
@@ -623,44 +640,47 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	// no pair the harness makes holds a build older than that: dispatch-two-builds pairs this tree
 	// with the newest release before it, which only moves forward, and dispatch-two-builds-same
 	// pairs it with its own build. So the comparison holds every field of the actor, the flag too.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	carried := testwait.Until(t, fmt.Sprintf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) to carry the approval to the next version",
+		reader.name, writer.name, dispatchTestLogin, approval.Version), func() (withOutput[[]servedReview], bool) {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
-		if len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
-			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin, Proven: true}) {
-			t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, reviews[0].Version)
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) carried no approval within 30s; reviews: %+v\n%s:\n%s",
-				reader.name, writer.name, dispatchTestLogin, approval.Version, reviews, reader.name, reader.process.Output.String())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return readWith(reviews, reader.process.Output), len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
+			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin, Proven: true})
+	}).read
+	t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, carried[0].Version)
 }
 
 // waitForBlockAsk waits for the ask settlement indexed from the decision block blockID of the
 // issue's documents, and returns its id.
 func waitForBlockAsk(t *testing.T, p *dispatchProcess, issueKey, blockID string) string {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		var asks []struct {
-			ID      string  `json:"id"`
-			BlockID *string `json:"block_id"`
-		}
+	var id string
+	testwait.Until(t, fmt.Sprintf("an ask to be indexed from the block %s of %s", blockID, issueKey), func() ([]blockAsk, bool) {
+		var asks []blockAsk
 		getJSON(t, p, "/api/v1/issues/"+issueKey+"/asks?state=all", &asks)
 		for _, ask := range asks {
 			if ask.BlockID != nil && *ask.BlockID == blockID {
-				return ask.ID
+				id = ask.ID
+				return asks, true
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no ask was indexed from the block %s of %s within 20s: %+v", blockID, issueKey, asks)
-		}
-		time.Sleep(100 * time.Millisecond)
+		return asks, false
+	})
+	return id
+}
+
+// blockAsk is an ask as an issue's asks list it: its id, and the decision block it was indexed
+// from, nil for an ask no block made.
+type blockAsk struct {
+	ID      string  `json:"id"`
+	BlockID *string `json:"block_id"`
+}
+
+func (a blockAsk) String() string {
+	if a.BlockID == nil {
+		return a.ID + " from no block"
 	}
+	return a.ID + " from block " + *a.BlockID
 }
 
 // referenceTables is a build's two reference tables of text/testdata: the bodies of its text table
@@ -832,10 +852,22 @@ func queryRows(t *testing.T, builds *twoBuilds, what, query string, args ...any)
 	return read
 }
 
-// referencesSettle is how long the references row waits after Y's edit before it reads the refs
-// rows again: past the default two-second settle delay, so a settlement that rewrites the document
-// after the edit has rewritten it too.
-const referencesSettle = 4 * time.Second
+// waitForSettled waits until the document owes no settlement. The write that appends an update
+// records a doc_settlements_pending row in its own transaction, so the row is there when the
+// edit's call returns, and the settlement that covers the update deletes it in the transaction
+// that commits the version it writes (migration 0063): a rewrite the settlement makes is in the
+// refs rows by then.
+func waitForSettled(t *testing.T, builds *twoBuilds, artifactID string) {
+	t.Helper()
+	testwait.Eventually(t, "the document's settlement to have run", func() bool {
+		var owed bool
+		if err := builds.database.Pool.QueryRow(context.Background(),
+			`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID).Scan(&owed); err != nil {
+			t.Fatalf("read whether the document owes a settlement: %v", err)
+		}
+		return !owed
+	})
+}
 
 // requireReferencesKeptAcrossBuilds creates the reference forms of X's text/testdata on X as two
 // bodies, split by Y's own tables (referencesMarkdown), appends a paragraph to each on Y, and
@@ -866,7 +898,7 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 	}
 	appendParagraph(t, reader.process, artifactID, "Rewritten on the "+reader.name+".")
 	requireRefsKept(t, documentRefs(t, builds, artifactID), written, "after the "+reader.name+" rewrote the body", writer.name, reader)
-	time.Sleep(referencesSettle)
+	waitForSettled(t, builds, artifactID)
 	dropped := requireRefsKept(t, documentRefs(t, builds, artifactID), written, "after the "+reader.name+"'s rewrite settled", writer.name, reader)
 	t.Logf("%d of the %d refs rows the %s wrote survived the %s's rewrite", len(written)-len(dropped), len(written), writer.name, reader.name)
 	if writerOnly == "" {
@@ -884,46 +916,36 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 	}
 }
 
-// writerOnlyReferencesBack is how long after the reader's rewrite every row of the forms only the
-// writer reads must be back: two intervals of the writer's forms drain, the wait between its
-// passes once no batch is full, so a pass that listed the queue just before the rewrite owed the
-// document is followed by one that drains it.
-const writerOnlyReferencesBack = 2 * docs.BlockIndexReconcileInterval
-
 // requireWriterOnlyReferencesBack creates markdown, the forms only the writer's table holds, on the
-// writer, appends a paragraph on the reader, and fails unless the document's edges are the ones
-// the writer wrote again within writerOnlyReferencesBack of that rewrite: every refs row back, and
-// no row of a kind the writer wrote that it did not write, which would mean the writer's index of
-// the reader's text read one form as another target, and its blocks' edges as the writer wrote
-// them. Until then the reader's rewrite may have dropped rows of the kinds it extracts, which is
-// logged; the first read is taken after referencesSettle, so a settlement that rewrites the
+// writer, appends a paragraph on the reader, and waits through the shared wait until the
+// document's edges are the ones the writer wrote again: every refs row back, and no row of a kind
+// the writer wrote that it did not write, which would mean the writer's index of the reader's text
+// read one form as another target, and its blocks' edges as the writer wrote them. Until then the
+// reader's rewrite may have dropped rows of the kinds it extracts, which is logged; the wait runs
+// once the rewrite's settlement has run (waitForSettled), so a settlement that rewrites the
 // document after the edit has dropped them too.
 func requireWriterOnlyReferencesBack(t *testing.T, builds *twoBuilds, writer, reader documentSide, project, markdown string) {
 	_, artifactID := createDocument(t, writer.process, project, "Every reference form only the writer reads", markdown)
 	written, writtenBlocks := documentRefs(t, builds, artifactID), documentBlockEdges(t, builds, artifactID)
-	rewritten := time.Now()
 	appendParagraph(t, reader.process, artifactID, "Rewritten on the "+reader.name+".")
 	if lost, _ := refRowsMoved(documentRefs(t, builds, artifactID), written); len(lost) > 0 {
 		t.Logf("after the %s rewrote the body of the forms only the %s reads, it dropped %d of the %d rows the %s wrote:\n%s",
 			reader.name, writer.name, len(lost), len(written), writer.name, refRowsText(lost))
 	}
-	time.Sleep(referencesSettle)
-	deadline := rewritten.Add(writerOnlyReferencesBack)
-	for {
+	waitForSettled(t, builds, artifactID)
+	testwait.Until(t, fmt.Sprintf("all %d refs rows and %d block edges the %s wrote of the forms only it reads to be back after the %s's rewrite",
+		len(written), len(writtenBlocks), writer.name, reader.name), func() (string, bool) {
 		got, blocks := documentRefs(t, builds, artifactID), documentBlockEdges(t, builds, artifactID)
 		lost, added := refRowsMoved(got, written)
 		if len(lost) == 0 && len(added) == 0 && slices.Equal(blocks, writtenBlocks) {
-			t.Logf("all %d refs rows and %d block edges the %s wrote of the forms only it reads were back %s after the %s's rewrite",
-				len(written), len(writtenBlocks), writer.name, time.Since(rewritten).Round(time.Second), reader.name)
-			return
+			return "all back", true
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s after the %s rewrote the body of the forms only the %s reads, its refs rows lack %d of the %d the %s wrote\n%s\nand hold %d rows of kinds the %s wrote that it did not write\n%s\nall rows now:\n%s\nits blocks hold the edges\n%s\nwhere the %s wrote\n%s",
-				writerOnlyReferencesBack, reader.name, writer.name, len(lost), len(written), writer.name, refRowsText(lost),
-				len(added), writer.name, refRowsText(added), refRowsText(got), refRowsText(blocks), writer.name, refRowsText(writtenBlocks))
-		}
-		time.Sleep(time.Second)
-	}
+		return fmt.Sprintf("its refs rows lack %d of the %d the %s wrote\n%s\nand hold %d rows of kinds the %s wrote that it did not write\n%s\nall rows now:\n%s\nits blocks hold the edges\n%s\nwhere the %s wrote\n%s",
+			len(lost), len(written), writer.name, refRowsText(lost),
+			len(added), writer.name, refRowsText(added), refRowsText(got), refRowsText(blocks), writer.name, refRowsText(writtenBlocks)), false
+	})
+	t.Logf("all %d refs rows and %d block edges the %s wrote of the forms only it reads were back after the %s's rewrite",
+		len(written), len(writtenBlocks), writer.name, reader.name)
 }
 
 // readsTabAddresses reports whether a build's text table holds the row naming an issue's plan tab,
@@ -989,18 +1011,12 @@ func formsOwed(t *testing.T, builds *twoBuilds, artifactID string) bool {
 	return owed
 }
 
-// triggerRowsBack is how long the trigger rows give the writer to write a document's edges back:
-// the rewrite row's two drain intervals and two more, since after the previous build's rebuild-refs
-// the writer's first passes take every text that rebuild re-indexed and every document it marked
-// owed a block index.
-const triggerRowsBack = 4 * docs.BlockIndexReconcileInterval
-
 // requireEachTriggerOwesTheDocument shows each trigger that owes the writer (X, this build) a
 // document the reader (Y, the previous build, which reads no tab address) re-indexed needed on its
 // own, each through a re-index the other two do not see:
 //   - A version Y writes (migration 20261117025904): Y creates a document holding forms only X
 //     reads, so no edge of them exists for Y to delete, and only its version owes it. X's edges for
-//     that text, its own and its blocks', must appear within triggerRowsBack.
+//     that text, its own and its blocks', must appear.
 //   - Y's rebuild-refs' delete from refs (20261117025906): with both processes stopped, so nothing
 //     else re-indexes or drains, Y's rebuild-refs re-indexes every source's references alone,
 //     writing no version and no block edge, and the document holding forms only X reads must be
@@ -1011,10 +1027,9 @@ const triggerRowsBack = 4 * docs.BlockIndexReconcileInterval
 //     marked owed with no version, dropping the second block's edge; the document must then be
 //     owed.
 //
-// X, started again, must then write both documents' edges back within triggerRowsBack. A run with
-// any one of the three triggers removed fails its own step, where today's rewrite row passes with
-// either of the first two removed. The rows stop and restart both builds' processes, and so run
-// last.
+// X, started again, must then write both documents' edges back. A run with any one of the three
+// triggers removed fails its own step, where today's rewrite row passes with either of the first
+// two removed. The rows stop and restart both builds' processes, and so run last.
 func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, reader documentSide, project, key string) {
 	_, twin := createDocument(t, writer.process, project, "Forms only the writer reads, written by it", formsOnlyMarkdown(key))
 	onlyForms := writtenEdges(t, builds, twin)
@@ -1024,13 +1039,14 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	// A version alone: the reader creates the same text the writer indexed in twin.
 	_, readerWrote := createDocument(t, reader.process, project, "Forms only the writer reads, written by the reader", formsOnlyMarkdown(key))
 	versionOwed := documentEdgesWritten{id: readerWrote, refs: onlyForms.refs, blocks: onlyForms.blocks}
-	waitUntil(t, triggerRowsBack, "the "+writer.name+" to write its edges of the forms only it reads for the document the "+reader.name+" created holding them, owed by its version alone",
+	testwait.Eventually(t, "the "+writer.name+" to write its edges of the forms only it reads for the document the "+reader.name+" created holding them, owed by its version alone",
 		func() bool { return versionOwed.back(t, builds) })
 
 	// Nothing runs from here until the reader starts again: the settlements of the writer's two
 	// documents have written their versions, and the reader holds no room of them.
-	time.Sleep(referencesSettle)
-	waitUntil(t, writerOnlyReferencesBack, "the "+writer.name+"'s documents to owe nothing",
+	waitForSettled(t, builds, twin)
+	waitForSettled(t, builds, issueTwice)
+	testwait.Eventually(t, "the "+writer.name+"'s documents to owe nothing",
 		func() bool { return !formsOwed(t, builds, twin) && !formsOwed(t, builds, issueTwice) })
 	stop(t, reader.process)
 	stop(t, writer.process)
@@ -1050,7 +1066,7 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	}
 
 	reader.process = builds.startPrevious(t, referenceEnv())
-	waitUntil(t, triggerRowsBack, "the "+reader.name+"'s block index to index the document naming its issue twice", func() bool {
+	testwait.Eventually(t, "the "+reader.name+"'s block index to index the document naming its issue twice", func() bool {
 		var version *int
 		if err := builds.database.Pool.QueryRow(context.Background(),
 			`select version from document_block_versions where artifact_id = $1::uuid`, issueTwice).Scan(&version); err != nil {
@@ -1064,7 +1080,7 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	}
 
 	writer.process = builds.startCurrent(t, referenceEnv())
-	waitUntil(t, triggerRowsBack, "the "+writer.name+" to write back the edges of the documents the "+reader.name+"'s rebuild-refs and block index re-indexed",
+	testwait.Eventually(t, "the "+writer.name+" to write back the edges of the documents the "+reader.name+"'s rebuild-refs and block index re-indexed",
 		func() bool { return onlyForms.back(t, builds) && twice.back(t, builds) })
 }
 
@@ -1072,10 +1088,8 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 // database, as an operator runs it during a roll, and returns what it printed.
 func (b *twoBuilds) rebuildRefsOnPrevious(t *testing.T) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
 	home := t.TempDir()
-	cmd := exec.CommandContext(ctx, b.build.path("envoy-dispatch"), "rebuild-refs")
+	cmd := exec.CommandContext(testwait.Context(t), b.build.path("envoy-dispatch"), "rebuild-refs")
 	cmd.Dir = home
 	cmd.Env = []string{
 		"HOME=" + home, "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,

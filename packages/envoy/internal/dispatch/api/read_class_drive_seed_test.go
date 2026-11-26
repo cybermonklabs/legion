@@ -131,7 +131,9 @@ func newDriveRig(t *testing.T) *driveWorld {
 // it must be.
 func (w *driveWorld) mintTokens(t *testing.T) {
 	t.Helper()
-	answer := ciphertokentest.NarrowedAnswers(t, w.caller.jkt, driveSession, time.Now().Add(time.Hour).Unix())["machine-login"]
+	// The token expires a day ahead (stagedAhead), staged state: one that lapsed in the middle of
+	// the run would be refused as expired.
+	answer := ciphertokentest.NarrowedAnswers(t, w.caller.jkt, driveSession, time.Now().Add(stagedAhead).Unix())["machine-login"]
 	if answer.Person != drivePerson || answer.AsOf != "" {
 		t.Fatalf("the golden machine-login answer names %q with the cut %q, want %s and no cut", answer.Person, answer.AsOf, drivePerson)
 	}

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -241,7 +242,8 @@ func heldGauges(t *testing.T, registry *metrics.Registry) string {
 // read how long the oldest has waited, naming no owner, since /metrics answers whoever reaches the
 // port; and once it has waited past the warn threshold the pass logs one WARN naming the owner,
 // the event it waits behind and that event's last publish error - once, however many passes find
-// it waiting. When the event is published the row's copy goes and the gauges read none: the
+// it waiting. The record reads its moments off a fake clock, which the test moves past the
+// threshold itself. When the event is published the row's copy goes and the gauges read none: the
 // control, as is the scrape before any pass.
 func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	ctx := store.WithTransactionTracking(context.Background())
@@ -262,8 +264,9 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	}
 	registry := metrics.New()
 	publisher := &recordingPublisher{}
+	fake := clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	deps := Deps{Store: database, Publisher: publisher, Broker: broker, Metrics: registry,
-		held: newHeldCopies(), heldCopyWarnAfter: time.Second}
+		held: newHeldCopies(fake), heldCopyWarnAfter: time.Second}
 	holder := holding(t, deps).instance
 	due := func() {
 		t.Helper()
@@ -290,7 +293,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 		t.Fatalf("%d WARN lines before the threshold, want none", got)
 	}
 
-	time.Sleep(1100 * time.Millisecond)
+	fake.Advance(1100 * time.Millisecond)
 	due()
 	publishFallbackCopies(ctx, deps, unfenced{}, holder)
 	due()

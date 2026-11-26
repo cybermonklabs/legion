@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // A role route's forward whose holder a mention of the comment delivered to carries that
@@ -44,6 +44,10 @@ import (
 // the route was held by nobody when it was written, so the role route is published and resolves
 // to a session this comment mentions (resolveRoleHolders, destinations.leftToMention leaving
 // that session's own copy to the mention that delivered it).
+//
+// Both rows read the unnamed attempts within the bound, so each runs the outbox on
+// stagedAhead: past unnamedForwardBound, which a resumed attempt reaches half a lease
+// after it is staged (seedDelivery), the forward would be held as a row in either case.
 func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *testing.T) {
 	const routed = "routed-to-a-session-either-unnamed-mention-may-name"
 	const first = "mentioned-first-whose-attempt-is-past-its-lease"
@@ -56,6 +60,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	rig.forwardBound = stagedAhead
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
 
@@ -114,9 +119,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 			rows)
 	}
 
-	waitFor(t, 10*time.Second, "the comment's forward and the owner's later event at the holder",
-		func() bool { return len(recv.received()) > 1 })
-	time.Sleep(time.Second)
+	recv.settle(t)
 	copies := recv.received()
 	if len(copies) != 2 {
 		t.Fatalf("%s was sent %+v, want two copies: the comment's forward under its own mention's key and the owner's later event behind it. The copy bound for the holder's own topic is left to the mention that delivered the comment (destinations.leftToMention)",
@@ -158,6 +161,7 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	rig.forwardBound = stagedAhead
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
 
@@ -192,10 +196,10 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 		},
 	})
 
-	before := time.Now()
+	before := testdb.ClockTimestamp(t, rig.database.Pool)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := time.Now()
-	time.Sleep(time.Second)
+	after := testdb.ClockTimestamp(t, rig.database.Pool)
+	recv.settle(t)
 
 	failedKey := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, holderTarget, "steer"))
 	if got := recv.received(); len(got) != 0 {
@@ -213,9 +217,7 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on the comment's unpinned mentions, want 0: a wait is no failure", attempts)
 	}
-	if !waitsFromScan(due, before, after) {
-		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
-	}
+	requireBlockedByPass(t, "the comment whose forward waits", due, before, after)
 	if rows := heldDestinations(t, rig.database, commentID); slices.Contains(rows, roleTopic) {
 		t.Fatalf("the comment holds fallback rows %v, want %s among them nowhere: the forward waits in the event's list while the bound holds, a row taking it over only past it (holdsTheForwardAsARow)",
 			rows, roleTopic)

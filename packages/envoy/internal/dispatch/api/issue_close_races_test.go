@@ -15,13 +15,16 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An issue's close races the writers of its asks and documents. Each race below ends in one of
-// the orders the issue's row allows, never in a mixture of them, and never in a deadlock.
+// the orders the issue's row allows, never in a mixture of them, and never in a deadlock: a
+// deadlock answers nothing, and the wait each race ends on fails the test naming what it waited
+// for.
 
 // A resolution of an open ask and the close of its issue, released together, serialise on the
 // issue's row. Either the resolution commits first, so the ask keeps the resolver's record and the
@@ -119,18 +122,18 @@ func (d *afterCloseSettlementDocs) SettleIssueDocuments(ctx context.Context, iss
 // A decision resolved after the close's settlement ran and before the close took the issue's row
 // is the order a resolve released beside a close commits in when it wins. The resolution marks
 // the decision's copy in the issue's other document owed a settlement, which the settle delay of
-// an hour keeps from running here, and the close withdraws nothing of an ask already resolved.
-// The close's sweep writes the copy from its source's row instead, so it reads resolved, as the
-// source does, without waiting for that settlement.
+// a day (stagedAhead) keeps from running here, and the close withdraws nothing of an ask already
+// resolved. The close's sweep writes the copy from its source's row instead, so it reads resolved,
+// as the source does, without waiting for that settlement.
 func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t *testing.T) {
 	t.Parallel()
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		// An hour, so the only settlements are the ones this test runs: the one the resolution
-		// arms for the copy never fires while the test runs.
-		documents = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+		// A day (stagedAhead), so the only settlements are the ones this test runs: the one the
+		// resolution arms for the copy never fires while the test runs.
+		documents = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		wrapper.API = documents
 		return wrapper
 	})
@@ -150,13 +153,14 @@ func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t
 
 // A decision resolved within the settle delay before a release older than the withdrawal closed
 // its issue leaves its copy in the issue's other document owing the settlement that shows the
-// resolution, which the settle delay of an hour keeps from running here. The repair's sweep of
-// that closed issue writes the copy from its source's row, as the close's own sweep does, so it
-// reads resolved without waiting for that settlement.
+// resolution, which the settle delay of a day (stagedAhead) keeps from running here. The repair's
+// sweep of that closed issue writes the copy from its source's row, as the close's own sweep does,
+// so it reads resolved without waiting for that settlement.
 func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
 	t.Parallel()
-	// An hour, so the settlement the resolution arms for the copy never fires while the test runs.
-	f := newRepairFixtureSettlingAfter(t, time.Hour)
+	// A day (stagedAhead), so the settlement the resolution arms for the copy never fires while the
+	// test runs.
+	f := newRepairFixtureSettlingAfter(t, stagedAhead)
 	issue, decision, copied := decisionWithCopy(t, f.handler, f.documents)
 	if resolved := resolveAsSession(t, f.handler, decision); resolved.Code != http.StatusOK {
 		t.Fatalf("resolve: status=%d body=%s", resolved.Code, resolved.Body.String())
@@ -174,20 +178,20 @@ func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
 // A decision answered after the close's settlement ran and before the close took the issue's row
 // is the order an answer released beside a close commits in when it wins. The answer writes the
 // decision's own block and marks its copy in the issue's other document owed a settlement, which
-// the settle delay of an hour keeps from running here, and the close withdraws nothing of an ask
-// already answered. The close's sweep writes the copy from its source's row instead, so it reads
-// answered, naming who answered and when, with the answer itself left out; the decision's own
-// block is left as the answer route wrote it. The settlement the reopen leaves owed writes the
+// the settle delay of a day (stagedAhead) keeps from running here, and the close withdraws nothing
+// of an ask already answered. The close's sweep writes the copy from its source's row instead, so
+// it reads answered, naming who answered and when, with the answer itself left out; the decision's
+// own block is left as the answer route wrote it. The settlement the reopen leaves owed writes the
 // answer into the copy.
 func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t *testing.T) {
 	t.Parallel()
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		// An hour, so the only settlements are the ones this test runs: the one the answer arms
-		// for the copy never fires while the test runs.
-		documents = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+		// A day (stagedAhead), so the only settlements are the ones this test runs: the one the
+		// answer arms for the copy never fires while the test runs.
+		documents = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		wrapper.API = documents
 		return wrapper
 	})
@@ -214,14 +218,15 @@ func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t
 
 // A decision answered within the settle delay before a release older than the withdrawal closed
 // its issue leaves its copy in the issue's other document owing the settlement that shows the
-// answer, which the settle delay of an hour keeps from running here. The repair's sweep of that
-// closed issue writes the copy from its source's row, as the close's own sweep does, so it reads
-// answered with the answer left out, and leaves the decision's own block as the answer route
-// wrote it.
+// answer, which the settle delay of a day (stagedAhead) keeps from running here. The repair's
+// sweep of that closed issue writes the copy from its source's row, as the close's own sweep does,
+// so it reads answered with the answer left out, and leaves the decision's own block as the answer
+// route wrote it.
 func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
 	t.Parallel()
-	// An hour, so the settlement the answer arms for the copy never fires while the test runs.
-	f := newRepairFixtureSettlingAfter(t, time.Hour)
+	// A day (stagedAhead), so the settlement the answer arms for the copy never fires while the
+	// test runs.
+	f := newRepairFixtureSettlingAfter(t, stagedAhead)
 	issue, decision, copied := decisionWithCopy(t, f.handler, f.documents)
 	answered := answerDecision(t, f.handler, f.database, issue.PrimaryArtifactID, decision)
 	closer := repairActor("session-closer")
@@ -241,9 +246,9 @@ func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
 	t.Parallel()
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		// An hour, so the only settlements are the ones this test runs.
-		documents = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+		// A day (stagedAhead), so the only settlements are the ones this test runs.
+		documents = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		return documents
 	})
 	issue, decision, copied := decisionWithCopy(t, handler, documents)
@@ -319,9 +324,9 @@ func requireAnsweredDecisionAndCopy(t *testing.T, handler http.Handler, database
 const sessionResolution = "Settled in the meeting."
 
 // decisionWithCopy creates an issue whose spec holds closeDecision, settled as an open ask, and a
-// second document holding a copy of it, settled as that copy. documents' settle delay is an hour:
-// it settles them here, on demand. It answers the issue, the decision's ask and the copy's
-// document.
+// second document holding a copy of it, settled as that copy. documents' settle delay is a day
+// (stagedAhead): it settles them here, on demand. It answers the issue, the decision's ask and the
+// copy's document.
 func decisionWithCopy(t *testing.T, handler http.Handler, documents *docs.Service) (issue struct {
 	Key               string `json:"key"`
 	PrimaryArtifactID string `json:"primary_artifact_id"`
@@ -395,7 +400,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 				<-release
 			}
 		})
-		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		// Registered after the shutdown, so it runs before it: a test that fails while the
 		// settlement is held still lets it finish.
 		t.Cleanup(releaseSettlement)
@@ -493,14 +498,14 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 	var cancelOn atomic.Pointer[string]
 	var cancelClose atomic.Pointer[context.CancelFunc]
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		// An hour, so the only settlement is the close's own.
-		documents := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		// A day (stagedAhead), so the only settlement is the close's own.
+		documents := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		documents.AfterSettleLockForTest(func(room string) {
 			if target := cancelOn.Load(); target != nil && *target == room && cancelOn.CompareAndSwap(target, nil) {
 				(*cancelClose.Load())()
 			}
 		})
-		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		return documents
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "A close its client hangs up on", "Context\n")
@@ -593,11 +598,11 @@ func lockWaiters(t *testing.T, database *store.Store) int {
 }
 
 // awaitLockWaiters waits until at least count backends of this test's own database wait on a lock.
-// Its one bound is the test binary's deadline (testwait.UntilPolling): a request a loaded machine
+// Its one bound is the test binary's deadline (testwait.Until): a request a loaded machine
 // runs late still ends the wait, and its failure prints the count last read.
 func awaitLockWaiters(t *testing.T, database *store.Store, count int) {
 	t.Helper()
-	testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("%d request(s) to wait on a lock (the count waiting)", count), func() (int, bool) {
+	testwait.Until(t, fmt.Sprintf("%d request(s) to wait on a lock (the count waiting)", count), func() (int, bool) {
 		waiting := lockWaiters(t, database)
 		return waiting, waiting >= count
 	})

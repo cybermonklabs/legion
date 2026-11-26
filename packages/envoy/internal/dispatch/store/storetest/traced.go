@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -14,13 +15,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reopenedPool opens a second pool on pool's database, from the configuration pool was opened
-// with and whatever change configure makes to a copy of it, and closes it after t ends. The
-// production pool is built in store.Open and is not a seam a test may configure, so every test
-// that needs a pool of its own shape opens it here: Traced, Reopened, SingleConnection and
-// SecondProcess.
+// with and whatever change configure makes to a copy of it, and closes it after t ends through the
+// shared wait (openClone says why). The production pool is built in store.Open and is not a seam a
+// test may configure, so every test that needs a pool of its own shape opens it here: Traced,
+// Reopened, SingleConnection and SecondProcess.
 func reopenedPool(t testing.TB, pool *store.Pool, configure func(*pgxpool.Config)) *store.Pool {
 	t.Helper()
 	config := pool.Config()
@@ -30,7 +32,9 @@ func reopenedPool(t testing.TB, pool *store.Pool, configure func(*pgxpool.Config
 		t.Fatalf("open a second pool on the same database: %v", err)
 	}
 	reopened := store.NewPool(opened)
-	testcleanup.Add(t, reopened.Close)
+	testcleanup.Add(t, func() {
+		testwait.Returns(t, "every connection of a second pool on the test's database to come back, so the pool closes", reopened.Close)
+	})
 	return reopened
 }
 
@@ -58,9 +62,13 @@ func SingleConnection(t testing.TB, database *store.Store) *store.Store {
 // configuration (store.Pool.Leases, store.Pool.Listener) are traced too. Only the code under test
 // is given it, so everything tracer sees is that code's. pgx reports one query start per statement
 // sent on its own and one batch start per batch, whatever that batch holds, so a tracer that also
-// implements pgx.BatchTracer counts a read's round trips.
+// implements pgx.BatchTracer counts a read's round trips. An XidTracer also watches the document
+// work of t's run from here on (XidTracer.watchDocumentWork), until t ends.
 func Traced(t testing.TB, pool *store.Pool, tracer pgx.QueryTracer, params map[string]string) *store.Pool {
 	t.Helper()
+	if xid, ok := tracer.(*XidTracer); ok {
+		xid.watchDocumentWork(t)
+	}
 	return reopenedPool(t, pool, func(config *pgxpool.Config) {
 		config.ConnConfig.Tracer = tracer
 		for name, value := range params {
@@ -84,30 +92,34 @@ func (c *StatementCounter) Count() int64 {
 	return c.count.Load()
 }
 
-// AwaitQuiet waits until counter has counted no statement for quiet, failing once within passes.
-func AwaitQuiet(t testing.TB, counter *StatementCounter, quiet, within time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	last, since := counter.Count(), time.Now()
-	for time.Since(since) < quiet {
-		if time.Now().After(deadline) {
-			t.Fatalf("statements did not stop for %v within %v", quiet, within)
-		}
-		time.Sleep(20 * time.Millisecond)
-		if n := counter.Count(); n != last {
-			last, since = n, time.Now()
-		}
-	}
-}
-
-// RequireNoStatements fails if counter counts any statement over window.
-func RequireNoStatements(t testing.TB, counter *StatementCounter, window time.Duration, what string) {
+// RequireNoStatements fails if counter counts any statement over a span of window, a
+// testwait.Span held for why, which says why neither the state the code leaves, synctest.Wait nor
+// a later action's effect proves the absence instead.
+func RequireNoStatements(t testing.TB, counter *StatementCounter, window time.Duration, what, why string) {
 	t.Helper()
 	before := counter.Count()
-	time.Sleep(window)
+	testwait.Span(t, window, why)
 	if made := counter.Count() - before; made != 0 {
 		t.Errorf("%s: %d statements over %v, want none", what, made, window)
 	}
+}
+
+// AwaitQuiet waits, through the shared wait, until counter has counted no statement over a span of
+// quiet: a span held for why, as testwait.Span holds one, which says why neither the state the
+// code leaves, synctest.Wait nor a later action's effect shows the code at rest instead. Its one
+// bound is the shared wait's, and its failure names the last count it read.
+func AwaitQuiet(t testing.TB, counter *StatementCounter, quiet time.Duration, why string) {
+	t.Helper()
+	if strings.TrimSpace(why) == "" {
+		t.Fatal("storetest.AwaitQuiet needs a why: say which of the state, synctest.Wait and a later action's effect does not reach the code")
+	}
+	last, since := counter.Count(), time.Now()
+	testwait.Until(t, fmt.Sprintf("the statements counted to stop for %v (%s)", quiet, why), func() (int64, bool) {
+		if n := counter.Count(); n != last {
+			last, since = n, time.Now()
+		}
+		return last, time.Since(since) >= quiet
+	})
 }
 
 // StatementRecorder records the SQL of every statement run on the pool it traces (Traced).

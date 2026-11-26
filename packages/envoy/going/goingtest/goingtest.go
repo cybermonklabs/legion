@@ -27,8 +27,8 @@ type Reply struct {
 	ToolCalls []going.ToolCall
 	// Chunk is how many runes each frame carries; zero picks a small default.
 	Chunk int
-	// Pause is how long the model waits between frames, so a test can assert the first byte
-	// arrives early.
+	// Pause is how long the model waits between frames, the latency of a model writing its
+	// answer; it is the stand-in's own and runs on the real clock.
 	Pause time.Duration
 	// Silent never answers: the response is held open until the caller's context ends.
 	Silent bool

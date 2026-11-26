@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -69,8 +70,8 @@ func messageAttempts(t *testing.T, database *store.Store, messageID string) []mo
 
 // commitKeyedMessage writes what alice's keyed send to s1 commits before its delivery starts - the
 // message, and its key holding the message as its recovery point - and nothing else, as a process
-// that died between the commit and the attempt leaves them: the key in flight, leased leasedAgo,
-// or finished with status when status is set.
+// that died between the commit and the attempt leaves them: the key in flight, leased leasedAgo (a
+// negative leasedAgo leases it that far ahead), or finished with status when status is set.
 func commitKeyedMessage(t *testing.T, database *store.Store, key, body, delivery string, leasedAgo time.Duration, status *int) string {
 	t.Helper()
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -95,9 +96,9 @@ func commitKeyedMessage(t *testing.T, database *store.Store, key, body, delivery
 	return id
 }
 
-// strandAttempt opens messageID's first attempt as a sender that claimed it claimedAgo and never
-// came back leaves it: pending, naming sessionID (empty for one stranded before anything was
-// resolved).
+// strandAttempt opens messageID's first attempt as a sender that claimed it claimedAgo (a negative
+// claimedAgo claims it that far ahead) and never came back leaves it: pending, naming sessionID
+// (empty for one stranded before anything was resolved).
 func strandAttempt(t *testing.T, database *store.Store, messageID, delivery, sessionID string, claimedAgo time.Duration) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -182,6 +183,11 @@ func TestARepeatedKeyAnswersTheMessageItMadeAndDeliversOnce(t *testing.T) {
 // flight, and Shutdown waits for each of them. A send the listener is still answering at that
 // signal therefore finishes inside the drain: its attempt settles sent, and the page's retry under
 // its key is answered with that message and hands the session nothing more.
+//
+// The server is on the real clock, so its listener client's window is the test's
+// (testServerOptions.clock: it ends where the shared wait gives up), and nothing but a defect ends
+// the held send. The row holds for exactly envoy.CallWindow, the longest a deployment's send is
+// held: a deploy's signal that cut the send anywhere inside that window cuts it within the span.
 func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	t.Parallel()
 	held := make(chan struct{})
@@ -217,10 +223,12 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	// listener request at once; given that long, the listener then answers the send the drain
 	// waits for.
 	shutDown()
-	select {
-	case <-cut:
-	case <-time.After(500 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the listener's request cut off by the deploy's signal", cut, envoy.CallWindow,
+		"no state records that Dispatch gave the send up, the send is real HTTP to a listener (no synctest), "+
+			"and no later action of the test is ordered after a cancellation that reaches the listener on "+
+			"the HTTP client's own goroutine; the send runs on the test's window, and the span is the production "+
+			"CallWindow, past which a deployment's send would have ended by itself, so a cut inside it is one the "+
+			"span sees")
 	close(release)
 	created := testwait.Receive(t, "the answer of the send in flight at shutdown", answered)
 
@@ -260,10 +268,14 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 // A retry racing its original, sixteen times over, all held at the key's insert until the last of
 // them has arrived there: one makes the message and every other is told the first is in flight or,
 // once it has answered, given its answer. The session is handed the message once.
+//
+// The server stages the key's lease (stagedAhead), so the first request's lease is live at
+// every other request's read however long the machine takes, and only the key's own state decides
+// each answer.
 func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, idempotencyLease: stagedAhead})
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -390,7 +402,11 @@ func TestARetryOfAMessageCommittedWithoutAnAnswerDeliversIt(t *testing.T) {
 	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
-	id := commitKeyedMessage(t, database, "undelivered", "Still there?", "aside", 0, nil)
+	// The key's lease is put a day ahead of the database's clock, staged state for the product's
+	// clock and longer than any -timeout CI gives the package (70 minutes in api's race lane), so
+	// the first retry finds it in flight (contracts.IdempotencyLease) however long the machine
+	// takes before it, until the row lapses it below.
+	id := commitKeyedMessage(t, database, "undelivered", "Still there?", "aside", -24*time.Hour, nil)
 	retry := func() *httptest.ResponseRecorder {
 		t.Helper()
 		return postAgentMessageKeyed(t, handler, "s1", map[string]any{"body": "Still there?", "delivery": "aside"}, "alice", "undelivered")
@@ -445,7 +461,11 @@ func TestARetryOfAStrandedSendResumesItsAttempt(t *testing.T) {
 			listener, sends := newBroadcastListener(t, agentSessions)
 			handler, database := newTargetedMessageHandler(t, listener.URL)
 			id := commitKeyedMessage(t, database, "stranded", "Status?", "steer", 0, &created)
-			strandAttempt(t, database, id, "steer", pinned, 0)
+			// The claim is put a day ahead of the database's clock, staged state for the product's
+			// clock and longer than any -timeout CI gives the package (70 minutes in api's race
+			// lane), so the first retry finds it live (model.DeliveryClaimLapse) however long the
+			// machine takes before it, until the row lapses it below.
+			strandAttempt(t, database, id, "steer", pinned, -24*time.Hour)
 			retry := func() model.Message {
 				t.Helper()
 				response := postAgentMessageKeyed(t, handler, "s1", map[string]any{"body": "Status?", "delivery": "steer"}, "alice", "stranded")

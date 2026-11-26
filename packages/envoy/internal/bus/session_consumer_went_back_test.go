@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // restartPath is one path that keeps or restarts a session's consumer, run on the consumer of
@@ -43,7 +41,7 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 	if err != nil {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
-	t.Cleanup(owner.Close)
+	t.Cleanup(func() { closeClient(t, owner) })
 	logs := &capturedLogs{}
 	consumers, err := ConnectSessionConsumers([]string{uri}, 0, slog.New(slog.NewJSONHandler(logs, nil)))
 	if err != nil {
@@ -72,16 +70,8 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 	waitForAckFloor(t, consumers, session, before)
 	waitForAckPending(t, consumers, session, 0)
 
-	srv.CutStream(t, Stream, func(int64) int64 { return 0 })
-
-	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
-		return owner.Connected() && consumers.client.Connected()
-	})
-	var state sessionStreamState
-	testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the cut and the restart", func() (string, bool) {
-		state, err = consumers.streamState(ctx)
-		return fmt.Sprint(err), err == nil
-	})
+	cutStream(t, srv, owner, consumers, func(int64) int64 { return 0 })
+	state := streamStateAfterCut(t, consumers)
 	if state.lastSeq != 0 {
 		t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", state.lastSeq)
 	}

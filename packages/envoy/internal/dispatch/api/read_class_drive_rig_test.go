@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // drivenStatement is one statement the traced pool ran: its SQL, the writes it makes as
@@ -42,7 +43,7 @@ type drivenStatement struct {
 // the request's own, the work a request detaches from it, and the server's own context, where a
 // read can start a statistics refresh or a roster fetch, and where every duty of the rig runs.
 // Each statement of a batch is recorded on its own, and a copy as the insert it is. It also keeps
-// when the pool last ran a write, which is when a window may close (window).
+// when the pool last ran a write, which is when a window may close (driveWorld.windowUntil).
 type poolStatements struct {
 	mu         sync.Mutex
 	statements []drivenStatement
@@ -106,52 +107,76 @@ func (p *poolStatements) lastWriteAt() time.Time {
 
 const (
 	// driveWindowAfterAnswer is how long a window stays open after its request is answered, at
-	// least.
+	// least, and driveWindowQuiet how long the pool must have run no write before it closes.
+	//
+	// Neither span decides a verdict. A window closes only once the work it waits for has run:
+	// the server's detached work (server.detached: the work a request starts and does not wait
+	// on, a display tree's store among it) has ended, and, where the drive names a write the
+	// request starts, that write has run (windowUntil). The spans hold it open past the work no
+	// count reaches, which a read can start too: a project's term statistics refresh on the
+	// server's lifetime (ensureSearchTermStats), the document service's compaction worker and the
+	// event horizon's observer. Every write those make is one a read may make (readMayWrite),
+	// which every row's window takes, so one that a loaded machine runs past both spans lands in
+	// a later window or between two and changes no row's verdict; the pre-check waits for each
+	// write it counts, and the calibration's request starts none.
 	driveWindowAfterAnswer = 2 * time.Second
-	// driveWindowQuiet is how long the pool must have run no write before a window closes.
-	driveWindowQuiet = 500 * time.Millisecond
-	// driveWindowLimit is how long after it opened a window that has not closed fails its drive.
-	driveWindowLimit = 20 * time.Second
+	driveWindowQuiet       = 500 * time.Millisecond
 )
 
-// window opens a window on the pool, runs send, and closes the window no sooner than
-// driveWindowAfterAnswer after send returned and only once the pool has run no write for
-// driveWindowQuiet, so work a request starts and does not wait on lands inside it. A window still
-// open driveWindowLimit after it opened fails the drive, naming what. It answers every statement
-// the pool ran while it was open.
-func (p *poolStatements) window(t *testing.T, what string, send func()) []drivenStatement {
+// window opens a window on the pool, runs send, and closes it as windowUntil does, with no write
+// named to wait for.
+func (w *driveWorld) window(t *testing.T, what string, send func()) []drivenStatement {
 	t.Helper()
-	opened := time.Now()
+	return w.windowUntil(t, what, send, nil)
+}
+
+// windowUntil opens a window on the pool, runs send, and answers every statement the pool ran
+// while it was open. When done is given, it first waits for done to hold of the statements the
+// window has seen: work the request starts and does not wait on that the caller counts, which a
+// loaded machine can run long after the answer. It then closes the window no sooner than
+// driveWindowAfterAnswer after send returned, once the server's detached work has ended and the
+// pool has run no write for driveWindowQuiet, so the work a request starts lands inside it. Each
+// wait is the shared wait's (testwait.Until), whose one bound is the test's give-up, and its
+// failure names what and the writes the window held at its last read.
+func (w *driveWorld) windowUntil(t *testing.T, what string, send func(), done func([]drivenStatement) bool) []drivenStatement {
+	t.Helper()
+	p := w.tracer
 	from := p.count()
 	send()
 	answered := time.Now()
-	for {
-		now := time.Now()
-		if now.Sub(answered) >= driveWindowAfterAnswer && now.Sub(p.lastWriteAt()) >= driveWindowQuiet {
-			return p.since(from)
-		}
-		if now.Sub(opened) >= driveWindowLimit {
-			t.Errorf("%s: the window was still open %s after it opened, the pool writing within %s of every moment: %v",
-				what, driveWindowLimit, driveWindowQuiet, writesIn(p.since(from)))
-			return p.since(from)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if done != nil {
+		testwait.Until(t, what+": the write the request started, on the pool (the writes the window held)", func() ([]string, bool) {
+			statements := p.since(from)
+			return writesIn(statements), done(statements)
+		})
 	}
+	testwait.Until(t, what+": the window to close, the server's detached work ended and the pool quiet (the writes the window held)", func() ([]string, bool) {
+		now := time.Now()
+		closes := now.Sub(answered) >= driveWindowAfterAnswer && now.Sub(p.lastWriteAt()) >= driveWindowQuiet && w.detachedIdle()
+		return writesIn(p.since(from)), closes
+	})
+	return p.since(from)
 }
 
-// quiet waits until the pool has run no write for driveWindowQuiet, so a window opened next
-// holds nothing an earlier request left running, and fails what past driveWindowLimit.
-func (p *poolStatements) quiet(t *testing.T, what string) {
+// quiet waits until the server's detached work has ended and the pool has run no write for
+// driveWindowQuiet, so a window opened next holds nothing an earlier request left running. The
+// wait is the shared wait's (testwait.Until), whose one bound is the test's give-up, and its
+// failure names what and the writes the pool ran meanwhile.
+func (w *driveWorld) quiet(t *testing.T, what string) {
 	t.Helper()
-	started := time.Now()
+	p := w.tracer
 	from := p.count()
-	for time.Since(p.lastWriteAt()) < driveWindowQuiet {
-		if time.Since(started) >= driveWindowLimit {
-			t.Errorf("%s: the pool never ran no write for %s within %s: %v", what, driveWindowQuiet, driveWindowLimit, writesIn(p.since(from)))
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, what+": the server's detached work to end and the pool to run no write for "+driveWindowQuiet.String()+" (the writes since)", func() ([]string, bool) {
+		return writesIn(p.since(from)), time.Since(p.lastWriteAt()) >= driveWindowQuiet && w.detachedIdle()
+	})
+}
+
+// detachedIdle reports whether the server runs no detached work (server.detached).
+func (w *driveWorld) detachedIdle() bool {
+	detached := &w.rig.served.detached
+	detached.mu.Lock()
+	defer detached.mu.Unlock()
+	return detached.running == 0
 }
 
 var (
@@ -493,7 +518,8 @@ func (g *driveGitHub) serve(t *testing.T) string {
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		// The installation token expires a day ahead (stagedAhead), staged state: the client caches it.
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(stagedAhead).Format(time.RFC3339))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
 		if !installed[repoOf(r)] {

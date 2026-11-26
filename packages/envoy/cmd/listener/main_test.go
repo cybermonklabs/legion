@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -19,9 +20,12 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -345,7 +349,7 @@ func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Cli
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	return client
 }
 
@@ -427,6 +431,20 @@ func (clock *listenerAcknowledgementClock) CancelAll() {
 // Before team topics were stored the route published them over core NATS, which hands a message
 // only to whoever holds the subject at that moment, so this message would have reached nobody.
 func TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor(t *testing.T) {
+	publishATeamTopicNoSessionIsConnectedFor(t, benchtime.EveryRun)
+}
+
+// TestPublishHandlerAnswersATeamTopicWithinASecond is the row above's service level: the publish
+// is answered within a second, as a publish that waited for a reader no session is would not be.
+// The reading is of the machine's clock, so the row runs only in benchtime's timing lane; that the
+// publish is answered and stored is the row above, which every run proves.
+func TestPublishHandlerAnswersATeamTopicWithinASecond(t *testing.T) {
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), publishATeamTopicNoSessionIsConnectedFor)
+}
+
+// publishATeamTopicNoSessionIsConnectedFor is the two rows above: the publish to a team topic is
+// answered 200 and stored, and on the clock (benchtime.OnTheClock) answered within a second.
+func publishATeamTopicNoSessionIsConnectedFor(t *testing.T, lane benchtime.Lane) {
 	const topic = "notifications.team.deploy-squad"
 	harness := newListenerDeliveryHarness(t)
 	client := harness.client
@@ -437,10 +455,12 @@ func TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	started := time.Now()
 	publishHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+	elapsed := time.Since(started)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("publish to a team topic: status %d, body %s", recorder.Code, recorder.Body.String())
 	}
-	if elapsed := time.Since(started); elapsed >= time.Second {
+	t.Logf("the publish to a team topic was answered in %s", elapsed)
+	if lane == benchtime.OnTheClock && elapsed >= time.Second {
 		t.Fatalf("publish to a team topic took %s", elapsed)
 	}
 	var answered contracts.Envelope
@@ -479,7 +499,7 @@ func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = subscription.Unsubscribe() })
 	}
-	if err := client.Conn.Flush(); err != nil {
+	if err := client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 	state := harness.publishDeps(t)
@@ -507,22 +527,15 @@ func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
 			t.Fatalf("publish to %q: refusal %+v, want one naming notifications. and the topic field", topic, refusal)
 		}
 	}
-	select {
-	case msg := <-received:
-		t.Fatalf("a refused publish reached NATS on %q", msg.Subject)
-	case <-time.After(300 * time.Millisecond):
-	}
-
+	// The route publishes on the harness's one connection, the one the subscriptions above are on,
+	// and one connection's publishes reach a subscriber in the order they were sent, into the one
+	// channel that connection's reader fills: the accepted publish, sent after the refused ones, is
+	// the first message received unless a refused one reached NATS.
 	if recorder := publish(accepted); recorder.Code != http.StatusOK {
 		t.Fatalf("publish to %q: status %d, want 200; body %s", accepted, recorder.Code, recorder.Body.String())
 	}
-	select {
-	case msg := <-received:
-		if msg.Subject != accepted {
-			t.Fatalf("received subject %q, want %q", msg.Subject, accepted)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the team publish reached nobody")
+	if msg := testwait.Receive(t, "the team publish to reach its subscriber", received); msg.Subject != accepted {
+		t.Fatalf("a refused publish reached NATS on %q before the accepted publish sent after it", msg.Subject)
 	}
 }
 
@@ -558,7 +571,7 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 		t.Fatalf("subscribe to publish subject without sending an ack: %v", err)
 	}
 	t.Cleanup(func() { _ = noAck.Unsubscribe() })
-	if err := client.Conn.Flush(); err != nil {
+	if err := client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush no-ack subscription: %v", err)
 	}
 
@@ -636,7 +649,7 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 		t.Fatalf("subscribe to the role lane: %v", err)
 	}
 	t.Cleanup(func() { _ = laneProbe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush role subscriptions: %v", err)
 	}
 	if harness.client.SubOK() {
@@ -661,7 +674,7 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 	}
 
 	item := publishRole(roleTopic, "agent")
-	forwardedMessage, err := probeB.NextMsg(5 * time.Second)
+	forwardedMessage, err := probeB.NextMsgWithContext(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("read forwarded role event for B: %v", err)
 	}
@@ -684,21 +697,20 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 	if !strings.HasPrefix(forwarded.DedupeKey, "envoy.role.forward.") {
 		t.Fatalf("forwarded dedupe key = %q, want arbiter prefix", forwarded.DedupeKey)
 	}
-	if _, err := probeA.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("A received a post-takeover role event: %v", err)
-	}
-	if _, err := probeB.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("B received duplicate forwarded role event: %v", err)
-	}
-
+	// The route forwards on the harness's one connection (startRoleForward), and one connection's
+	// publishes reach a subscriber in the order they were sent, so the next forward B receives is
+	// the next send's unless the first was forwarded to B again before it.
 	externalHuman := publishRole(roleTopic, "human")
-	externalMessage, err := probeB.NextMsg(5 * time.Second)
+	externalMessage, err := probeB.NextMsgWithContext(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("read human-sourced role event for B: %v", err)
 	}
 	var externalForwarded contracts.Envelope
 	if err := json.Unmarshal(externalMessage.Data, &externalForwarded); err != nil {
 		t.Fatalf("decode human-sourced forwarded envelope: %v", err)
+	}
+	if externalForwarded.EventID == item.EventID {
+		t.Fatalf("B received duplicate forwarded role event %s before the forward of the send after it", item.EventID)
 	}
 	if externalForwarded.Source != "human" {
 		t.Fatalf("human-sourced forwarded source = %q, want human", externalForwarded.Source)
@@ -720,24 +732,18 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 		}
 		return held
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	var forwards uint64
-	for {
-		forwards = agentForwards()
+	testwait.Until(t, "the stream to hold the two agent-subject role forwards", func() (string, bool) {
+		forwards := agentForwards()
 		if forwards > 2 {
 			t.Fatalf("agent-subject role forwards were captured %d times, want at most two", forwards)
 		}
-		if forwards == 2 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if forwards != 2 {
-		t.Fatalf("agent-subject role forwards were captured %d times, want two", forwards)
-	}
-	if _, err := laneProbe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("the route published on the role lane: the probe answered %v, want a timeout", err)
-	}
+		return fmt.Sprintf("%d forwards", forwards), forwards == 2
+	})
+	// A and the role lane are each proved to have heard nothing by a marker sent on the harness's
+	// connection after both sends: the route sends on that connection, and one connection's
+	// publishes reach a subscriber in the order they were sent.
+	requireMarkerNext(t, harness.client.Conn, probeA, contracts.LegacyAgentSubject("ses_role_a"), "A received a post-takeover role event")
+	requireMarkerNext(t, harness.client.Conn, laneProbe, roleTopic+".marker", "the route published on the role lane")
 }
 
 // A holder registered and holding the role with nothing subscribed to its agent subject is
@@ -839,19 +845,20 @@ func TestPublishHandler_ExplicitDedupeKeyIsNotForwardedAgainOnceStored(t *testin
 	expectForwards := func(what string, count int) {
 		t.Helper()
 		for range count {
-			select {
-			case forwarded := <-forwards:
-				if forwarded.DedupeKey != roleForwardDedupePrefix+"publish.resend-1" {
-					t.Fatalf("%s: holder received dedupe %q, want it with the forward prefix", what, forwarded.DedupeKey)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatalf("%s: holder received no forward", what)
+			if forwarded := testwait.Receive(t, what+": the holder's forward", forwards); forwarded.DedupeKey != roleForwardDedupePrefix+"publish.resend-1" {
+				t.Fatalf("%s: holder received dedupe %q, want it with the forward prefix", what, forwarded.DedupeKey)
 			}
 		}
-		select {
-		case forwarded := <-forwards:
+		// A marker on the holder's subject, sent on the harness's connection after the send: the
+		// route forwards on that connection (startRoleForward), and one connection's publishes
+		// reach a subscriber in the order they were sent, so another forward of the send would be
+		// received before it.
+		marker := listenerTestEnvelope(contracts.LegacyAgentSubject("ses_slow"), "marker-"+what)
+		if err := harness.client.Conn.Publish(contracts.LegacyAgentSubject("ses_slow"), marshalListenerEnvelope(t, marker)); err != nil {
+			t.Fatalf("%s: publish the marker: %v", what, err)
+		}
+		if forwarded := testwait.Receive(t, what+": the marker sent after the send", forwards); forwarded.EventID != marker.EventID {
 			t.Fatalf("%s: holder received another forward of %q", what, forwarded.EventID)
-		case <-time.After(250 * time.Millisecond):
 		}
 	}
 
@@ -1305,16 +1312,27 @@ func TestIsValidRole(t *testing.T) {
 	}
 }
 
+// stagedAhead is how long a row of this package stages a time the product judges against a clock
+// the row does not move: a session TTL, which is the registry's deadline for a row and the
+// bucket's age nats-server drops a record at, the interval a durable's bind waits out between
+// attempts on the real clock (bindListenerDurable), which a bind that ignored its context would
+// sit out, and the backoff a paused relay waits on the real clock before it sends again
+// (newRelayRigReceipt), which a row about what resumes the relay needs never to run out. It is
+// staged state for those clocks, not a wait of the row's: longer than any `go test -timeout` CI
+// gives this package, so what the row staged holds however long the machine takes, and a bind
+// that waited out its interval would not return before the shared wait gave up.
+const stagedAhead = 24 * time.Hour
+
+// The session cache counts ses_health until its TTL passes, so the TTL is staged at stagedAhead,
+// and the count reads it however long the machine takes after the Put.
 func TestSessionHealthFields_PopulatedAfterReady(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(stagedAhead))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := sessions.WaitForCacheReady(ctx); err != nil {
+	if err := sessions.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
 	if err := sessions.Put("ses_health", session.SessionEntry{SelfSubscribed: true, MachineID: "m1"}); err != nil {
@@ -1453,7 +1471,7 @@ func setupAdminTestRegistry(t *testing.T, interests map[string][]string) *store.
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
@@ -1530,7 +1548,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
@@ -1556,10 +1574,10 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 
 	// The registry's cache still answers a session it holds; a cache miss must read NATS, which
 	// is now gone.
-	waitFor(t, time.Second, "the watcher to cache ses_known", func() bool {
+	testwait.Eventually(t, "the watcher to cache ses_known", func() bool {
 		return get("ses_known").Code == http.StatusOK
 	})
-	client.Close()
+	bustest.Close(t, client)
 	if rec := get("ses_known"); rec.Code != http.StatusOK {
 		t.Fatalf("cached session with NATS down: status %d %s, want 200", rec.Code, rec.Body.String())
 	}
@@ -1583,11 +1601,14 @@ func TestAdminInterestsHandler_DeleteBySession(t *testing.T) {
 		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Allow watcher to propagate delete event to cache
-	time.Sleep(500 * time.Millisecond)
-	if _, err := registry.Get(context.Background(), "ses_delete_target"); err == nil {
-		t.Fatal("expected interest to be deleted")
-	}
+	// The watcher propagates the delete to the registry's cache on a goroutine of its own.
+	testwait.Until(t, "the interest registry to read ses_delete_target as deleted", func() (string, bool) {
+		interest, err := registry.Get(context.Background(), "ses_delete_target")
+		if err != nil {
+			return err.Error(), true
+		}
+		return fmt.Sprintf("still reads %+v", interest), false
+	})
 }
 
 func TestAdminInterestsHandler_DeleteIdempotent(t *testing.T) {
@@ -1636,7 +1657,7 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	rowsWritten := time.Now().Add(-3 * time.Minute)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(func() time.Time { return rowsWritten }))
 	if err != nil {
@@ -1654,9 +1675,12 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 			t.Fatalf("failed to upsert interest for %s: %v", sessionID, err)
 		}
 	}
-	waitFor(t, 5*time.Second, "the interest cache to hold every row", func() bool {
+	testwait.Until(t, fmt.Sprintf("the interest cache to hold every one of the %d rows", len(interests)), func() (string, bool) {
 		listed, err := registry.List()
-		return err == nil && len(listed) == len(interests)
+		if err != nil {
+			return err.Error(), false
+		}
+		return fmt.Sprintf("%d rows", len(listed)), len(listed) == len(interests)
 	})
 	return registry, sessions
 }
@@ -1737,20 +1761,36 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 // while the cache retains it, as the listener retains it for as long as the interest reaper can
 // still hold the row: the heartbeat, not the row's older updated_at. The read comes more than one
 // TTL after the session left, past the default retention, so only WithLastSeenRetention keeps it.
+//
+// The session registry runs on a clock of the row's own (session.WithSessionClock), which stands
+// at the moment it was made until the row moves it: the heartbeat's Get right after its Put, the
+// expiry and the read are each judged at the moment the row set, so none passes or falls short of
+// its TTL by how long the machine took. The TTL is staged at stagedAhead, so nats-server keeps
+// the record while the row runs; the row moves the clock past it, then on past the default
+// retention to a moment the configured one still covers.
 func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testing.T) {
 	t.Parallel()
 	const (
 		expired    = "ses_heartbeat_expired"
-		sessionTTL = time.Second
+		sessionTTL = stagedAhead
 	)
+	clock := clocktest.New(time.Now())
 	registry, sessions := setupInterestLastSeenTest(t, []string{expired},
-		session.WithSessionTTL(sessionTTL), session.WithLastSeenRetention(time.Minute))
+		session.WithSessionTTL(sessionTTL), session.WithLastSeenRetention(3*sessionTTL), session.WithSessionClock(clock.Now))
 	beat := heartbeat(t, sessions, expired)
-	waitFor(t, 5*time.Second, "the session to expire from the cache", func() bool {
-		_, err := sessions.Get(expired)
-		return err != nil
+	// Half a TTL past the heartbeat's own deadline, which is the record's write (nats-server's
+	// stamp of it, moments after the heartbeat) a TTL on.
+	clock.Set(time.UnixMilli(beat).Add(sessionTTL + sessionTTL/2))
+	testwait.Until(t, "the session to expire from the cache", func() (string, bool) {
+		entry, err := sessions.Get(expired)
+		if err != nil {
+			return err.Error(), true
+		}
+		return fmt.Sprintf("still reads %+v", entry), false
 	})
-	time.Sleep(sessionTTL + 200*time.Millisecond)
+	// Two TTLs past the session's leaving: past the default retention (session.LastSeenMemory, or
+	// the TTL where that is longer) and inside the three TTLs WithLastSeenRetention keeps it.
+	clock.Advance(sessionTTL + sessionTTL/2)
 
 	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")))
 	wantLastSeen(t, "GET /v1/interests/", list[expired], beat)
@@ -1763,7 +1803,7 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, live []strin
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
@@ -1836,9 +1876,7 @@ func claimRoles(t *testing.T, registry *store.Registry, sessionID string, roles 
 // waits before the freeze, never after.
 func waitForRegistry(t *testing.T, registry *store.Registry) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := registry.WaitForCacheReady(ctx); err != nil {
+	if err := registry.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for the registry's caches: %v", err)
 	}
 }
@@ -1849,9 +1887,7 @@ func waitForRegistry(t *testing.T, registry *store.Registry) {
 // the copy where it cannot answer after this wait, never before it.
 func waitForSessions(t *testing.T, sessions *session.SessionRegistry) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := sessions.WaitForCacheReady(ctx); err != nil {
+	if err := sessions.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for the session registry's cache: %v", err)
 	}
 }
@@ -1910,7 +1946,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
@@ -2274,12 +2310,12 @@ func TestDurableConsumerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect publisher bus: %v", err)
 	}
-	t.Cleanup(publisher.Close)
+	t.Cleanup(func() { bustest.Close(t, publisher) })
 	firstListener, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to connect first listener bus: %v", err)
 	}
-	t.Cleanup(firstListener.Close)
+	t.Cleanup(func() { bustest.Close(t, firstListener) })
 
 	consumer := "listener-durable-restart-test"
 	_ = publisher.JS().DeleteConsumer(bus.Stream, consumer)
@@ -2327,16 +2363,11 @@ func TestDurableConsumerRestart(t *testing.T) {
 		t.Fatalf("publish first failed: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.Until(t, "the first delivery before the restart", func() (string, bool) {
 		mu.Lock()
-		count := len(delivered)
-		mu.Unlock()
-		if count == 1 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		defer mu.Unlock()
+		return fmt.Sprintf("%d deliveries: %v", len(delivered), delivered), len(delivered) >= 1
+	})
 	mu.Lock()
 	firstCount := len(delivered)
 	mu.Unlock()
@@ -2344,19 +2375,14 @@ func TestDurableConsumerRestart(t *testing.T) {
 		t.Fatalf("expected first delivery before restart, got %d", firstCount)
 	}
 
-	firstListener.Close()
-	deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		info, infoErr := publisher.JS().ConsumerInfo(bus.Stream, consumer)
-		if infoErr == nil && !info.PushBound {
-			break
+	bustest.Close(t, firstListener)
+	testwait.Until(t, "the durable consumer to be released once the first listener closed", func() (string, bool) {
+		info, err := publisher.JS().ConsumerInfo(bus.Stream, consumer)
+		if err != nil {
+			return err.Error(), false
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	info, infoErr := publisher.JS().ConsumerInfo(bus.Stream, consumer)
-	if infoErr != nil || info.PushBound {
-		t.Fatalf("durable consumer remained push-bound after listener close: info=%+v error=%v", info, infoErr)
-	}
+		return fmt.Sprintf("push_bound=%t", info.PushBound), !info.PushBound
+	})
 
 	second := contracts.Envelope{
 		EventID:        "evt-restart-2",
@@ -2389,7 +2415,7 @@ func TestDurableConsumerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect second listener bus: %v", err)
 	}
-	t.Cleanup(secondListener.Close)
+	t.Cleanup(func() { bustest.Close(t, secondListener) })
 
 	resub, err := startListenerSubscription(secondListener, consumer, handler)
 	if err != nil {
@@ -2397,16 +2423,11 @@ func TestDurableConsumerRestart(t *testing.T) {
 	}
 	defer resub.Unsubscribe()
 
-	deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.Until(t, "the durable consumer to resume the pending messages after the restart", func() (string, bool) {
 		mu.Lock()
-		count := len(delivered)
-		mu.Unlock()
-		if count == 3 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		defer mu.Unlock()
+		return fmt.Sprintf("%d deliveries: %v", len(delivered), delivered), len(delivered) >= 3
+	})
 
 	mu.Lock()
 	got := append([]string(nil), delivered...)
@@ -2427,7 +2448,7 @@ func TestDurableConsumerSurvivesUnsubscribe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 
 	consumer := "listener-survives-unsubscribe"
 	_ = client.JS().DeleteConsumer(bus.Stream, consumer)
@@ -2470,7 +2491,7 @@ func TestASettingNATSCannotChangeOnTheListenerDurableIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	for _, tc := range []struct {
 		name     string
 		settings []string
@@ -2573,7 +2594,7 @@ func TestRebuildingALostDurableConsumerReplacesItsSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	consumer := "listener-rebuild-replaces-subscription"
 	_ = client.JS().DeleteConsumer(bus.Stream, consumer)
 	t.Cleanup(func() { _ = client.JS().DeleteConsumer(bus.Stream, consumer) })
@@ -2606,13 +2627,7 @@ func TestRebuildingALostDurableConsumerReplacesItsSubscription(t *testing.T) {
 	if _, err := client.JS().Publish("notifications.github.acme.widgets.push.branch.main", []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for deliveries.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the rebuilt subscription never delivered")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the rebuilt subscription to deliver", func() bool { return deliveries.Load() > 0 })
 }
 
 // TestBoundDurableConsumerIsNotStolen pins the rolling-deploy contract: a
@@ -2625,7 +2640,7 @@ func TestBoundDurableConsumerIsNotStolen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect first bus: %v", err)
 	}
-	t.Cleanup(first.Close)
+	t.Cleanup(func() { bustest.Close(t, first) })
 
 	consumer := "listener-not-stolen"
 	_ = first.JS().DeleteConsumer(bus.Stream, consumer)
@@ -2637,23 +2652,19 @@ func TestBoundDurableConsumerIsNotStolen(t *testing.T) {
 	t.Cleanup(func() { _ = firstSub.Unsubscribe(); _ = first.JS().DeleteConsumer(bus.Stream, consumer) })
 	// Subscribe returns before the server has processed the SUB, and the consumer is push-bound
 	// only once it has; the property under test is about a consumer that is already bound.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, "the first listener's consumer to become push-bound", func() (string, bool) {
 		info, err := first.JS().ConsumerInfo(bus.Stream, consumer)
-		if err == nil && info.PushBound {
-			break
+		if err != nil {
+			return err.Error(), false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the first listener's consumer never became push-bound: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return fmt.Sprintf("push_bound=%t", info.PushBound), info.PushBound
+	})
 
 	second, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect second bus: %v", err)
 	}
-	t.Cleanup(second.Close)
+	t.Cleanup(func() { bustest.Close(t, second) })
 
 	_, err = startListenerSubscription(second, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
 	if err == nil {
@@ -2682,20 +2693,24 @@ func durableHeldElsewhere(t *testing.T, uri, consumer string) (*bus.Client, *nat
 	if err != nil {
 		t.Fatalf("connect the old task: %v", err)
 	}
-	t.Cleanup(old.Close)
+	t.Cleanup(func() { bustest.Close(t, old) })
 	holder, err := startListenerSubscription(old, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
 	if err != nil {
 		t.Fatalf("bind the durable as the old task: %v", err)
 	}
-	waitFor(t, 5*time.Second, "the old task's durable to become push-bound", func() bool {
+	testwait.Until(t, "the old task's durable to become push-bound", func() (string, bool) {
 		info, err := old.JS().ConsumerInfo(bus.Stream, consumer)
-		return err == nil && info.PushBound
+		if err != nil {
+			return err.Error(), false
+		}
+		return fmt.Sprintf("push_bound=%t", info.PushBound), info.PushBound
 	})
 	return old, holder
 }
 
 // waitFor polls cond every 50 ms until it holds, and fails the test as waiting for desc once
 // timeout passes.
+// A2's callers still use this; A2 deletes it with its last caller.
 func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
 	t.Helper()
 	testwait.WithinPolling(t, timeout, 50*time.Millisecond, desc, cond)
@@ -2709,8 +2724,22 @@ type bindOutcome struct {
 }
 
 // The replacement polls the durable while the old task holds it, so it binds within one interval of
-// the old task's exit rather than at the end of a backoff that grows with each attempt.
+// the old task's exit rather than at the end of a backoff that grows with each attempt. Every run
+// proves the bind waits out the hold and binds after the release; the interval is a reading of the
+// machine's clock, held in benchtime's timing lane by the row below.
 func TestBindListenerDurableBindsWithinOneIntervalOfRelease(t *testing.T) {
+	bindOnRelease(t, benchtime.EveryRun)
+}
+
+// TestBindListenerDurableBindsWithinOneIntervalOfReleaseOnTheClock is the row above on the clock:
+// the replacement binds within 500 ms of the old task's exit, at a 50 ms interval.
+func TestBindListenerDurableBindsWithinOneIntervalOfReleaseOnTheClock(t *testing.T) {
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), bindOnRelease)
+}
+
+// bindOnRelease is the two rows above: a replacement's bind is refused while the old task holds the
+// durable, returns only after the old task's exit, and has then bound it.
+func bindOnRelease(t *testing.T, lane benchtime.Lane) {
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-on-release"
 	old, _ := durableHeldElsewhere(t, uri, consumer)
@@ -2718,35 +2747,56 @@ func TestBindListenerDurableBindsWithinOneIntervalOfRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the replacement: %v", err)
 	}
-	t.Cleanup(replacement.Close)
+	t.Cleanup(func() { bustest.Close(t, replacement) })
 
+	// Each refused attempt reads the durable twice, once in listenerDurable and once in nats.go's
+	// bind, which refuses a durable another subscription holds (v1.55.0 js.go:1611), and nothing
+	// else reads it here: twelve reads while the old task holds it are six refused attempts, the
+	// ones the 50 ms interval made in the 300 ms this row once held the durable for.
+	observer := testnats.Connect(t, uri)
+	t.Cleanup(observer.Close)
+	var reads atomic.Int32
+	readSubscription, err := observer.Subscribe("$JS.API.CONSUMER.INFO."+bus.Stream+"."+consumer, func(*natsgo.Msg) { reads.Add(1) })
+	if err != nil {
+		t.Fatalf("subscribe to the durable's reads: %v", err)
+	}
+	t.Cleanup(func() { _ = readSubscription.Unsubscribe() })
+	if err := observer.FlushWithContext(testnats.Context(t)); err != nil {
+		t.Fatalf("flush the read subscription: %v", err)
+	}
 	done := make(chan bindOutcome, 1)
 	go func() {
 		bind, err := bindListenerDurable(context.Background(), replacement, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
 			logging.NewWithWriter("test", io.Discard), 50*time.Millisecond, 10*time.Second)
 		done <- bindOutcome{bind, err, time.Now()}
 	}()
-	time.Sleep(300 * time.Millisecond)
-	select {
-	case outcome := <-done:
-		t.Fatalf("the replacement returned while the old task held the durable: %+v", outcome)
-	default:
-	}
+	testwait.Until(t, "the replacement to read the durable twelve times while the old task holds it", func() (string, bool) {
+		select {
+		case outcome := <-done:
+			t.Fatalf("the replacement returned while the old task held the durable: %+v", outcome)
+		default:
+		}
+		read := reads.Load()
+		return fmt.Sprintf("%d reads", read), read >= 12
+	})
 	released := time.Now()
-	old.Close()
-	select {
-	case outcome := <-done:
-		if outcome.err != nil {
-			t.Fatalf("bind after the old task's exit: %v", outcome.err)
-		}
-		if after := outcome.at.Sub(released); after > 500*time.Millisecond {
-			t.Fatalf("the replacement bound %s after the old task's exit, want within 500 ms at a 50 ms interval", after)
-		}
-		if outcome.bind.attempts < 2 {
-			t.Fatalf("the bind took %d attempts, want the refused ones before the release counted too", outcome.bind.attempts)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the replacement never bound the released durable")
+	bustest.Close(t, old)
+	outcome := testwait.Receive(t, "the replacement to bind the released durable", done)
+	if outcome.err != nil {
+		t.Fatalf("bind after the old task's exit: %v", outcome.err)
+	}
+	// The two moments are read in the order the bind and the release happened, so a bind that
+	// returned before the release took a durable the old task still held.
+	if outcome.at.Before(released) {
+		t.Fatalf("the replacement returned at %s, before the old task's exit at %s: it bound a durable the old task held", outcome.at, released)
+	}
+	after := outcome.at.Sub(released)
+	t.Logf("the replacement bound %s after the old task's exit, in %d attempts", after, outcome.bind.attempts)
+	if lane == benchtime.OnTheClock && after > 500*time.Millisecond {
+		t.Fatalf("the replacement bound %s after the old task's exit, want within 500 ms at a 50 ms interval", after)
+	}
+	if outcome.bind.attempts < 2 {
+		t.Fatalf("the bind took %d attempts, want the refused ones before the release counted too", outcome.bind.attempts)
 	}
 	if !replacement.SubOK() {
 		t.Fatal("SubOK is false after the bind")
@@ -2765,7 +2815,7 @@ func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the replacement: %v", err)
 	}
-	t.Cleanup(replacement.Close)
+	t.Cleanup(func() { bustest.Close(t, replacement) })
 
 	bind, err := bindListenerDurable(context.Background(), replacement, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
 		logging.NewWithWriter("test", io.Discard), 50*time.Millisecond, 200*time.Millisecond)
@@ -2791,8 +2841,23 @@ func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
 }
 
 // A signal during the wait ends the bind at once, without waiting for the next attempt, so the
-// listener's ordered shutdown starts while ECS's stop timeout still runs.
+// listener's ordered shutdown starts while ECS's stop timeout still runs. The interval is
+// stagedAhead, so a bind that waited for its next attempt would not return before the shared wait
+// gave up; how soon it returns is a reading of the machine's clock, held in benchtime's timing
+// lane by the row below.
 func TestBindListenerDurableStopsWhenTheContextEnds(t *testing.T) {
+	bindCancelledInItsWait(t, benchtime.EveryRun)
+}
+
+// TestBindListenerDurableStopsWhenTheContextEndsOnTheClock is the row above on the clock: the bind
+// returns within 500 ms of its context's end.
+func TestBindListenerDurableStopsWhenTheContextEndsOnTheClock(t *testing.T) {
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), bindCancelledInItsWait)
+}
+
+// bindCancelledInItsWait is the two rows above: the context of a bind that waits out its interval
+// after a refused attempt ends, and the bind returns context.Canceled.
+func bindCancelledInItsWait(t *testing.T, lane benchtime.Lane) {
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-cancelled"
 	durableHeldElsewhere(t, uri, consumer)
@@ -2800,29 +2865,39 @@ func TestBindListenerDurableStopsWhenTheContextEnds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the replacement: %v", err)
 	}
-	t.Cleanup(replacement.Close)
+	t.Cleanup(func() { bustest.Close(t, replacement) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// The bind logs its first refused attempt just before it waits out its interval
+	// (bindListenerDurable), so the cancel after that line lands in the wait, not before the first
+	// attempt, which would end the bind without exercising the wait at all.
+	logs := &cmdtest.LockedBuffer{}
 	done := make(chan bindOutcome, 1)
 	go func() {
 		bind, err := bindListenerDurable(ctx, replacement, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
-			logging.NewWithWriter("test", io.Discard), 2*time.Second, 10*time.Second)
+			logging.NewWithWriter("test", logs), stagedAhead, 2*stagedAhead)
 		done <- bindOutcome{bind, err, time.Now()}
 	}()
-	time.Sleep(120 * time.Millisecond)
+	testwait.Until(t, "the bind's first attempt to be refused, after which it waits out its interval", func() (string, bool) {
+		select {
+		case outcome := <-done:
+			t.Fatalf("the bind returned before its context ended: %+v", outcome)
+		default:
+		}
+		output := logs.String()
+		return output, strings.Contains(output, `"msg":"subscribe failed, retrying"`)
+	})
 	cancelled := time.Now()
 	cancel()
-	select {
-	case outcome := <-done:
-		if !errors.Is(outcome.err, context.Canceled) {
-			t.Fatalf("bind after the context ended: %v, want context.Canceled", outcome.err)
-		}
-		if after := outcome.at.Sub(cancelled); after > 500*time.Millisecond {
-			t.Fatalf("the bind returned %s after the context ended, want at once rather than at its next 2 s attempt", after)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the bind never returned after the context ended")
+	outcome := testwait.Receive(t, "the bind to return once its context ended, a day before its next attempt", done)
+	if !errors.Is(outcome.err, context.Canceled) {
+		t.Fatalf("bind after the context ended: %v, want context.Canceled", outcome.err)
+	}
+	after := outcome.at.Sub(cancelled)
+	t.Logf("the bind returned %s after the context ended", after)
+	if lane == benchtime.OnTheClock && after > 500*time.Millisecond {
+		t.Fatalf("the bind returned %s after the context ended, want at once rather than at its next attempt", after)
 	}
 }
 
@@ -2834,7 +2909,7 @@ func TestBindListenerDurablePassesARefusalThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	const consumer = "listener-bind-refused"
 	config := natsgo.ConsumerConfig{Durable: consumer, DeliverSubject: natsgo.NewInbox()}
 	applyListenerConsumerPolicy(&config, bus.StreamSubjects())
@@ -2865,7 +2940,7 @@ func deniedGrantClient(t *testing.T, deny ...string) *bus.Client {
 	if err != nil {
 		t.Fatalf("the admin creates the stream: %v", err)
 	}
-	t.Cleanup(owner.Close)
+	t.Cleanup(func() { bustest.Close(t, owner) })
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := bus.Connect([]string{uri})
 	if err != nil {
@@ -2880,6 +2955,18 @@ func deniedGrantClient(t *testing.T, deny ...string) *bus.Client {
 // interval until the deadline: the grant refuses it again however often it is sent. It once ended
 // after 2m15s and 69 attempts with "listener durable bind exhausted".
 func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
+	bindRefusedByTheGrant(t, benchtime.EveryRun)
+}
+
+// TestBindListenerDurableEndsAtTheGrantsRefusalOnTheClock is the row above on the clock: the bind
+// of a durable the grant refuses ends within 3 s. That it ends at the first attempt, with the
+// grant's refusal, is the row above, which every run proves.
+func TestBindListenerDurableEndsAtTheGrantsRefusalOnTheClock(t *testing.T) {
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), bindRefusedByTheGrant)
+}
+
+// bindRefusedByTheGrant is the two rows above.
+func bindRefusedByTheGrant(t *testing.T, lane benchtime.Lane) {
 	const consumer = "listener-bind-denied"
 	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
 	client := deniedGrantClient(t, create, create+".>", "$JS.API.CONSUMER.DURABLE.CREATE."+bus.Stream+"."+consumer)
@@ -2894,14 +2981,30 @@ func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
 	if want := `Permissions Violation for Publish to "` + create; !strings.Contains(err.Error(), want) {
 		t.Fatalf("bind of a durable the grant refuses: %v, want it to name %q", err, want)
 	}
-	if bind.attempts != 1 || took > 3*time.Second {
-		t.Fatalf("the bind made %d attempts in %s at a durable the grant refuses, want 1 within 3s", bind.attempts, took.Round(time.Millisecond))
+	if bind.attempts != 1 {
+		t.Fatalf("the bind made %d attempts in %s at a durable the grant refuses, want 1", bind.attempts, took.Round(time.Millisecond))
+	}
+	t.Logf("the bind of a durable the grant refuses ended after %s", took.Round(time.Millisecond))
+	if lane == benchtime.OnTheClock && took > 3*time.Second {
+		t.Fatalf("the bind of a durable the grant refuses ended after %s, want within 3s", took.Round(time.Millisecond))
 	}
 }
 
 // A rebuild's wait for its durable ends at once when the grant refuses the durable's read, naming
 // the refusal, rather than reading it again every interval until the deadline.
 func TestAwaitDurableBoundEndsAtTheGrantsRefusal(t *testing.T) {
+	awaitRefusedByTheGrant(t, benchtime.EveryRun)
+}
+
+// TestAwaitDurableBoundEndsAtTheGrantsRefusalOnTheClock is the row above on the clock: the wait for
+// a durable whose read the grant refuses ends within 3 s. That it ends with the grant's refusal
+// rather than at its deadline is the row above, which every run proves.
+func TestAwaitDurableBoundEndsAtTheGrantsRefusalOnTheClock(t *testing.T) {
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), awaitRefusedByTheGrant)
+}
+
+// awaitRefusedByTheGrant is the two rows above.
+func awaitRefusedByTheGrant(t *testing.T, lane benchtime.Lane) {
 	const consumer = "listener-await-denied"
 	info := "$JS.API.CONSUMER.INFO." + bus.Stream + "." + consumer
 	client := deniedGrantClient(t, info)
@@ -2912,7 +3015,8 @@ func TestAwaitDurableBoundEndsAtTheGrantsRefusal(t *testing.T) {
 	if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, errDurableUnbound) {
 		t.Fatalf("the wait for a durable whose read the grant refuses = %v, want bus.ErrPublishDenied alone", err)
 	}
-	if took > 3*time.Second {
+	t.Logf("the wait for a durable whose read the grant refuses ended after %s", took.Round(time.Millisecond))
+	if lane == benchtime.OnTheClock && took > 3*time.Second {
 		t.Fatalf("the wait for a durable whose read the grant refuses ended after %s, want within 3s", took.Round(time.Millisecond))
 	}
 }
@@ -2937,7 +3041,7 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the replacement: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
@@ -2961,9 +3065,12 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 	}
 
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "the role holder to be read on the replacement connection", func() bool {
+	testwait.Until(t, "the role holder to be read on the replacement connection", func() (string, bool) {
 		holder, err := registry.RoleHolder(role)
-		return err == nil && holder == holderID
+		if err != nil {
+			return err.Error(), false
+		}
+		return fmt.Sprintf("holder %q", holder), holder == holderID
 	})
 	if client.SubOK() {
 		t.Fatal("SubOK reports the durable bound while the old task holds it")
@@ -3005,7 +3112,7 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot migrated listener bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	// nats-server releases a push binding on the consumer's own goroutine, after the client's
 	// Close is answered, so only the consumer's own report tells this row that the legacy
 	// durable may be bound again: startListenerSubscription binds once and does not retry a
@@ -3013,18 +3120,13 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	// merge queue (run 42117898395). Production never binds through that primitive; its boot
 	// calls bindListenerDurable, which retries the bind every durableBindInterval up to
 	// durableBindDeadline. internal/bus/stream_config_test.go waits the same way.
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	testwait.Until(t, "the server to report the legacy durable consumer no longer push-bound after the legacy connection closed", func() (string, bool) {
 		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
 		if err != nil {
 			t.Fatalf("read the legacy durable consumer: %v", err)
 		}
-		if !info.PushBound {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the server still reports the legacy durable consumer push-bound 30s after the legacy connection closed")
-		}
-	}
+		return fmt.Sprintf("push_bound=%t", info.PushBound), !info.PushBound
+	})
 	durableReceived := make(chan struct{}, 1)
 	durableSub, err := startListenerSubscription(client, consumer, func(msg *natsgo.Msg) {
 		durableReceived <- struct{}{}
@@ -3053,17 +3155,13 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 		t.Fatalf("boot migrated role lane: %v", err)
 	}
 	t.Cleanup(func() { _ = roleSub.Unsubscribe() })
-	if err := client.Conn.Flush(); err != nil {
+	if err := client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush migrated listener subscriptions: %v", err)
 	}
 	if _, err := client.JS().Publish("notifications.github.acme.widgets.migration", []byte("durable")); err != nil {
 		t.Fatalf("publish durable migration message: %v", err)
 	}
-	select {
-	case <-durableReceived:
-	case <-time.After(5 * time.Second):
-		t.Fatal("migrated durable listener did not receive a non-role message")
-	}
+	testwait.Receive(t, "the migrated durable listener to receive a non-role message", durableReceived)
 	if err := client.Publish(contracts.Envelope{
 		EventID:        "evt-listener-migration-role",
 		Source:         "agent",
@@ -3076,11 +3174,7 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("publish core role migration message: %v", err)
 	}
-	select {
-	case <-roleReceived:
-	case <-time.After(5 * time.Second):
-		t.Fatal("migrated listener role lane did not receive the core message")
-	}
+	testwait.Receive(t, "the migrated listener's role lane to receive the core message", roleReceived)
 }
 
 func TestDeadSessionACK(t *testing.T) {
@@ -3142,7 +3236,7 @@ func TestListenerDeliveryHandler_RoleReleasedByReplacementIsKeptForItsNextHolder
 		t.Fatalf("subscribe core role handler: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush subscriptions: %v", err)
 	}
 
@@ -3181,7 +3275,7 @@ func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAndItsMessageIsKept(t *
 		t.Fatalf("subscribe role handler: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush role subscriptions: %v", err)
 	}
 
@@ -3208,9 +3302,7 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 		holderID = "ses_unseen_holder"
 		role     = "unseen-holder"
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := harness.sessions.WaitForCacheReady(ctx); err != nil {
+	if err := harness.sessions.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("warm the session cache: %v", err)
 	}
 	harness.sessions.StopWatch()
@@ -3241,7 +3333,7 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
@@ -3250,9 +3342,7 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 	if len(forwardedTo) != 1 || forwardedTo[0] != contracts.LegacyAgentSubject(holderID) {
 		t.Fatalf("the role message was forwarded to %v, want once to %s", forwardedTo, contracts.LegacyAgentSubject(holderID))
 	}
-	if message, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("a forwarded role message emitted an exception (or the probe failed): %v %v", message, err)
-	}
+	requireMarkerNext(t, harness.client.Conn, probe, probe.Subject, "a forwarded role message emitted an exception")
 	if holder, err := harness.registry.RoleHolder(role); err != nil || holder != holderID {
 		t.Fatalf("the claim after the delivery = %q, %v; want %s's", holder, err, holderID)
 	}
@@ -3284,7 +3374,7 @@ func TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed(t *t
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
@@ -3341,7 +3431,7 @@ func TestListenerDeliveryHandler_RoleForwardRefusesUnadvertisedDeliveryMode(t *t
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
@@ -3397,16 +3487,14 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
 	// 1. First delivery: the holder advertises "btw", the frame asks for "btw" -- forwarded.
 	handler(&natsgo.Msg{Data: data})
 	cfg.roleForwards.settled(t)
-	if _, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("first delivery: unexpected exception (or probe failed): %v", err)
-	}
+	requireMarkerNext(t, harness.client.Conn, probe, probe.Subject, "first delivery: unexpected exception")
 	if got := forwards.Load(); got != 1 {
 		t.Fatalf("forward attempts after first delivery = %d, want 1", got)
 	}
@@ -3426,9 +3514,7 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 	// changed set.
 	handler(&natsgo.Msg{Data: data})
 	cfg.roleForwards.settled(t)
-	if _, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("redelivery: unexpected exception (or probe failed) -- must be a silent dedupe skip: %v", err)
-	}
+	requireMarkerNext(t, harness.client.Conn, probe, probe.Subject, "redelivery: unexpected exception -- must be a silent dedupe skip")
 	if got := forwards.Load(); got != 1 {
 		t.Fatalf("forward attempts after redelivery = %d, want still 1: a delivered duplicate must never be re-forwarded", got)
 	}
@@ -3488,7 +3574,7 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 				t.Fatalf("subscribe exception probe: %v", err)
 			}
 			t.Cleanup(func() { _ = probe.Unsubscribe() })
-			if err := harness.client.Conn.Flush(); err != nil {
+			if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush exception probe: %v", err)
 			}
 
@@ -3549,7 +3635,7 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 				t.Fatalf("start listener subscription: %v", err)
 			}
 			t.Cleanup(func() { _ = sub.Unsubscribe() })
-			if err := harness.client.Conn.Flush(); err != nil {
+			if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush listener subscription: %v", err)
 			}
 
@@ -3579,6 +3665,18 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 // the fan-out counts that recipient skipped and reports nothing of it, and the one exception it
 // publishes is the incapable subscriber's refusal (session.SessionEntry.ConsumerRelaysStored).
 func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testing.T) {
+	fanoutRefusesUnadvertisedDeliveryMode(t, benchtime.EveryRun)
+}
+
+// TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryModeOnTheClock is the row above on
+// the clock: the refusal completes in under 4 s. The reading is of the machine's clock, so the row
+// runs only in benchtime's timing lane; the refusal itself is the row above, which every run proves.
+func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryModeOnTheClock(t *testing.T) {
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), fanoutRefusesUnadvertisedDeliveryMode)
+}
+
+// fanoutRefusesUnadvertisedDeliveryMode is the two rows above.
+func fanoutRefusesUnadvertisedDeliveryMode(t *testing.T, lane benchtime.Lane) {
 	harness := newListenerDeliveryHarness(t)
 	const (
 		topic     = "notifications.github.owner.repo.issue.1"
@@ -3594,18 +3692,18 @@ func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testin
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
 	started := time.Now()
 	harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 	elapsed := time.Since(started)
-	if elapsed >= 4*time.Second {
+	t.Logf("capability refusal completed in %s", elapsed)
+	if lane == benchtime.OnTheClock && elapsed >= 4*time.Second {
 		t.Fatalf("capability refusal took %s, want less than 4s", elapsed)
 	}
-	t.Logf("capability refusal completed in %s", elapsed)
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush delivery exception: %v", err)
 	}
 
@@ -3701,25 +3799,23 @@ func TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery(t *t
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 	data := marshalListenerEnvelope(t, item)
 
 	harness.coreHandler(&natsgo.Msg{Data: data})
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush first refusal exception: %v", err)
 	}
 	if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != incapable {
 		t.Fatalf("first exception recipient = %q, want %q", recipient, incapable)
 	}
 	harness.coreHandler(&natsgo.Msg{Data: data})
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush duplicate refusal: %v", err)
 	}
-	if _, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("duplicate terminal refusal emitted another exception: %v", err)
-	}
+	requireMarkerNext(t, harness.client.Conn, probe, probe.Subject, "duplicate terminal refusal emitted another exception")
 }
 
 // TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload proves ordinary
@@ -3756,7 +3852,7 @@ func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
 	probe := exceptionProbe(t, harness.client)
 
 	harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush what the fan-out published: %v", err)
 	}
 
@@ -3801,7 +3897,7 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 				t.Fatalf("subscribe exception probe: %v", err)
 			}
 			t.Cleanup(func() { _ = probe.Unsubscribe() })
-			if err := harness.client.Conn.Flush(); err != nil {
+			if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush exception probe: %v", err)
 			}
 
@@ -3885,14 +3981,9 @@ func TestListenerDeliveryHandler_FailedDeliveryOnNonControlTopic_NoException(t *
 	// When: handler processes the failed delivery
 	harness.handler(&natsgo.Msg{Data: data})
 
-	// Then: verify NO exception was published (timeout waiting for message)
-	_, err = probe.NextMsg(500 * time.Millisecond)
-	if err == nil {
-		t.Fatal("expected no exception for non-control topic, but exception was published")
-	}
-	if !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("unexpected error waiting for exception: %v", err)
-	}
+	// Then: the next message the probe receives is a marker sent after the delivery on the
+	// connection the delivery publishes its exceptions on, so no exception was published
+	requireMarkerNext(t, harness.client.Conn, probe, probe.Subject, "expected no exception for non-control topic, but exception was published")
 }
 
 // A delivery that fails on an exceptions topic raises no exception: that would recurse. The
@@ -3920,14 +4011,9 @@ func TestListenerDeliveryHandler_FailedDeliveryOnExceptionTopic_NoException(t *t
 	// When: handler processes the failed delivery
 	harness.handler(&natsgo.Msg{Data: data})
 
-	// Then: verify NO exception was published (timeout waiting for message)
-	_, err = probe.NextMsg(500 * time.Millisecond)
-	if err == nil {
-		t.Fatal("expected no exception for exceptions topic, but exception was published")
-	}
-	if !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("unexpected error waiting for exception: %v", err)
-	}
+	// Then: the next message the probe receives is a marker sent after the delivery on the
+	// connection the delivery publishes its exceptions on, so no exception was published
+	requireMarkerNext(t, harness.client.Conn, probe, probe.Subject, "expected no exception for exceptions topic, but exception was published")
 }
 
 type listenerDeliveryHarness struct {
@@ -4056,14 +4142,15 @@ func wireTestRoleForwarder(t *testing.T, cfg listenerDeliveryHandlerConfig) list
 	return wireRoleForwarder(cfg)
 }
 
-// settled waits until every forward the forwarder holds has been reported, within 20 s: a test
-// reads what a forward did after it, since the forwarder publishes and reports off the handler.
+// settled waits until every forward the forwarder holds has been reported: a test reads what a
+// forward did after it, since the forwarder publishes and reports off the handler. It waits on the
+// forwarder's own WaitGroup (roleForwarder.wait), whose Done is each forward's last act, so what a
+// forward wrote is the test's to read once it returns; a count of the forwarder's slots would not
+// order those writes before the read. Its bound is the shared wait's give-up.
 func (f *roleForwarder) settled(t *testing.T) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if !f.wait(ctx) {
-		t.Fatalf("%d role forwards were still outstanding after 20s", f.outstanding())
+	if !f.wait(testwait.Context(t)) {
+		t.Fatalf("gave up waiting for every role forward the forwarder holds to be reported, at the shared wait's give-up (testwait.Context): %d forwards outstanding", f.outstanding())
 	}
 }
 
@@ -4144,7 +4231,7 @@ func marshalListenerEnvelope(t *testing.T, item contracts.Envelope) []byte {
 
 func assertDeliveryException(t *testing.T, probe *natsgo.Subscription, original contracts.Envelope, reason string) contracts.Envelope {
 	t.Helper()
-	message, err := probe.NextMsg(5 * time.Second)
+	message, err := probe.NextMsgWithContext(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("read delivery exception: %v", err)
 	}
@@ -4215,6 +4302,28 @@ func exceptionRecipient(t *testing.T, exception contracts.Envelope) string {
 	return payload.RecipientSession
 }
 
+// requireMarkerNext proves probe has heard nothing so far: it publishes a marker on subject from
+// conn, the connection what probe must not have heard would have been sent on, and fails naming
+// what unless the marker is the next message probe receives. One connection's publishes reach a
+// subscriber in the order they were sent, so anything sent on conn before the marker comes first.
+func requireMarkerNext(t *testing.T, conn *natsgo.Conn, probe *natsgo.Subscription, subject, what string) {
+	t.Helper()
+	marker := []byte("marker " + id.New())
+	if err := conn.Publish(subject, marker); err != nil {
+		t.Fatalf("publish the marker on %s: %v", subject, err)
+	}
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
+		t.Fatalf("flush the marker on %s: %v", subject, err)
+	}
+	message, err := probe.NextMsgWithContext(testwait.Context(t))
+	if err != nil {
+		t.Fatalf("%s: read the marker on %s: %v", what, subject, err)
+	}
+	if !bytes.Equal(message.Data, marker) {
+		t.Fatalf("%s: the probe on %s received %s on %s before the marker sent after it", what, probe.Subject, message.Data, message.Subject)
+	}
+}
+
 func TestHealthzConsumerLag(t *testing.T) {
 	t.Parallel()
 	natsURI := testnats.URL(t)
@@ -4226,7 +4335,7 @@ func TestHealthzConsumerLag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create bus client: %v", err)
 	}
-	defer client.Close()
+	defer bustest.Close(t, client)
 
 	// Create a consumer
 	consumerName := "listener-test-machine"
@@ -4412,7 +4521,7 @@ func TestCheckSelfHealth_ClosedConnReturnsError(t *testing.T) {
 		t.Fatalf("open session registry: %v", err)
 	}
 
-	client.Close()
+	bustest.Close(t, client)
 
 	if err := checkSelfHealth([]listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, nil, nil); err == nil {
 		t.Fatal("probe after conn close should return error")
@@ -4463,20 +4572,12 @@ func TestRunSelfHealthMonitor_RetriesPastTransientFailures(t *testing.T) {
 		close(done)
 	}()
 
-	select {
-	case <-recovered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("monitor stopped before the transient NATS failures recovered")
-	}
+	testwait.Receive(t, "the monitor to recover from the transient NATS failures", recovered)
 	if got := atomic.LoadInt32(&probeCalls); got < 4 {
 		t.Fatalf("probe calls = %d, want retry after the threshold", got)
 	}
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("monitor did not stop after shutdown")
-	}
+	testwait.Receive(t, "the monitor to stop after shutdown", done)
 }
 
 // TestRunSelfHealthMonitor_TerminatesAfterSustainedDisconnection is the sustained disconnection this
@@ -4507,19 +4608,10 @@ func TestRunSelfHealthMonitor_TerminatesAfterSustainedDisconnection(t *testing.T
 		runSelfHealthMonitor(ctx, logging.New("test"), probe, isUnrecoverable, connected, rebuild,
 			func() { terminatedAt <- probes.Load() }, time.Millisecond, 3)
 	}()
-	select {
-	case got := <-terminatedAt:
-		if got != 20 {
-			t.Fatalf("the monitor terminated after %d disconnected probes, want exactly 20", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the monitor never terminated a disconnected probe that never recovered")
+	if got := testwait.Receive(t, "the monitor to terminate a disconnected probe that never recovered", terminatedAt); got != 20 {
+		t.Fatalf("the monitor terminated after %d disconnected probes, want exactly 20", got)
 	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("the monitor did not return after terminating")
-	}
+	testwait.Receive(t, "the monitor to return after terminating", done)
 	if got := rebuilds.Load(); got != 0 {
 		t.Fatalf("rebuilds = %d, want 0: a disconnected client is never rebuilt", got)
 	}
@@ -4558,19 +4650,10 @@ func TestRunSelfHealthMonitor_CountsADisconnectedProbeAfterARebuild(t *testing.T
 			// A terminal bound well past twenty, so only the disconnected bound can end the run.
 			func() { terminatedAt <- disconnectedProbes.Load() }, time.Millisecond, 100)
 	}()
-	select {
-	case got := <-terminatedAt:
-		if got != 20 {
-			t.Fatalf("the monitor terminated after %d disconnected probes, the post-rebuild probe among them, want exactly 20", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the monitor never terminated a disconnection that began on the probe after a rebuild")
+	if got := testwait.Receive(t, "the monitor to terminate a disconnection that began on the probe after a rebuild", terminatedAt); got != 20 {
+		t.Fatalf("the monitor terminated after %d disconnected probes, the post-rebuild probe among them, want exactly 20", got)
 	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("the monitor did not return after terminating")
-	}
+	testwait.Receive(t, "the monitor to return after terminating", done)
 	if got := rebuilds.Load(); got != 1 {
 		t.Fatalf("rebuilds = %d, want 1", got)
 	}
@@ -4600,22 +4683,20 @@ func TestRunSelfHealthMonitor_DoesNotTerminateOnSustainedConnectedTransientFailu
 		runSelfHealthMonitor(ctx, logging.New("test"), probe, isUnrecoverable, connected, nil,
 			func() { terminated <- struct{}{} }, time.Millisecond, 3)
 	}()
-	deadline := time.After(2 * time.Second)
-	for probeCalls.Load() < disconnectedFailureThreshold*2 {
+	// The monitor decides each tick, its termination among them, on its one goroutine before it
+	// probes again, so once the probe after the threshold's last has run, every tick up to it has
+	// been decided.
+	testwait.Until(t, fmt.Sprintf("more than %d connected, non-terminal probe failures", disconnectedFailureThreshold*2), func() (string, bool) {
 		select {
 		case <-terminated:
 			t.Fatalf("the monitor terminated after %d connected, non-terminal failures: the disconnected threshold must not count these", probeCalls.Load())
-		case <-deadline:
-			t.Fatalf("probe calls = %d, want at least %d", probeCalls.Load(), disconnectedFailureThreshold*2)
-		case <-time.After(time.Millisecond):
+		default:
 		}
-	}
+		calls := probeCalls.Load()
+		return fmt.Sprintf("%d probes", calls), calls > disconnectedFailureThreshold*2
+	})
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("monitor did not stop after shutdown")
-	}
+	testwait.Receive(t, "the monitor to stop after shutdown", done)
 }
 
 // TestRunSelfHealthMonitor_DisconnectedFailuresDoNotAccumulateAcrossRecoveries guards the resets
@@ -4640,7 +4721,9 @@ func TestRunSelfHealthMonitor_DisconnectedFailuresDoNotAccumulateAcrossRecoverie
 			cycle := disconnectedFailureThreshold // threshold-1 disconnected failures, then one connected probe
 			var calls atomic.Int32
 			var disconnected atomic.Bool
-			finished := make(chan struct{})
+			// Buffered, since the wait below reads it without blocking on it: the probe's send
+			// never waits, so an unbuffered channel would take it only while a receive waits.
+			finished := make(chan struct{}, 1)
 			probe := func() error {
 				n := int(calls.Add(1))
 				if n > outages*cycle {
@@ -4670,20 +4753,22 @@ func TestRunSelfHealthMonitor_DisconnectedFailuresDoNotAccumulateAcrossRecoverie
 					nil,
 					func() { terminated <- struct{}{} }, time.Millisecond, 3)
 			}()
-			select {
-			case <-finished:
-			case <-terminated:
-				t.Fatalf("the monitor terminated after %d probes: %d outages of %d disconnected failures each, every one ended by a connected probe, must not add up to the bound",
-					calls.Load(), outages, disconnectedFailureThreshold-1)
-			case <-time.After(5 * time.Second):
-				t.Fatalf("probe calls = %d, want more than %d", calls.Load(), outages*cycle)
-			}
+			testwait.Until(t, fmt.Sprintf("more than %d probes over %d outages, each ended by a connected probe", outages*cycle, outages), func() (string, bool) {
+				select {
+				case <-terminated:
+					t.Fatalf("the monitor terminated after %d probes: %d outages of %d disconnected failures each, every one ended by a connected probe, must not add up to the bound",
+						calls.Load(), outages, disconnectedFailureThreshold-1)
+				default:
+				}
+				select {
+				case <-finished:
+					return "", true
+				default:
+					return fmt.Sprintf("%d probes", calls.Load()), false
+				}
+			})
 			cancel()
-			select {
-			case <-done:
-			case <-time.After(time.Second):
-				t.Fatal("monitor did not stop after shutdown")
-			}
+			testwait.Receive(t, "the monitor to stop after shutdown", done)
 		})
 	}
 }
@@ -4695,18 +4780,13 @@ func TestRunSelfHealthMonitor_DisconnectedFailuresDoNotAccumulateAcrossRecoverie
 func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *testing.T) {
 	t.Parallel()
 	client := setupTestNATS(t)
-	registryConn, err := natsgo.Connect(client.Conn.ConnectedUrl())
-	if err != nil {
-		t.Fatalf("connect registry: %v", err)
-	}
+	registryConn := testnats.Connect(t, client.Conn.ConnectedUrl())
 	t.Cleanup(registryConn.Close)
 	registry, err := store.Open(t.Context(), registryConn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
-	readyCtx, readyCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer readyCancel()
-	if err := registry.WaitForCacheReady(readyCtx); err != nil {
+	if err := registry.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for interest cache: %v", err)
 	}
 	registryConn.Close()
@@ -4714,7 +4794,7 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 		t.Fatal("the registry still answered after its connection closed")
 	}
 
-	monitorUntilRecovered(t, "the registry on the live connection", 5*time.Second, time.Millisecond,
+	awaitMonitorRecovery(t, "the registry on the live connection", time.Millisecond,
 		registry.Ping,
 		func(err error) bool { return errors.Is(err, natsgo.ErrConnectionClosed) },
 		client.Connected,
@@ -4732,33 +4812,23 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 	if _, err := other.Upsert(store.Interest{SessionID: "ses_after_move", MachineID: "other-listener"}, []string{"notifications.agent.ses_after_move"}); err != nil {
 		t.Fatalf("subscribe through another listener: %v", err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		found := false
+	testwait.Until(t, "the moved registry's cache to see another listener's subscription", func() (string, bool) {
 		interests, err := registry.List()
 		if err != nil {
 			t.Fatalf("list interests: %v", err)
 		}
+		sessionIDs := make([]string, 0, len(interests))
 		for _, interest := range interests {
-			found = found || interest.SessionID == "ses_after_move"
+			sessionIDs = append(sessionIDs, interest.SessionID)
 		}
-		if found {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the moved registry's cache never saw another listener's subscription")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("sessions %v", sessionIDs), slices.Contains(sessionIDs, "ses_after_move")
+	})
 }
 
 func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 	t.Parallel()
 	client := setupTestNATS(t)
-	watcherConn, err := natsgo.Connect(client.Conn.ConnectedUrl())
-	if err != nil {
-		t.Fatalf("connect watcher: %v", err)
-	}
+	watcherConn := testnats.Connect(t, client.Conn.ConnectedUrl())
 	t.Cleanup(watcherConn.Close)
 	sessions, err := session.OpenSessionRegistry(t.Context(), watcherConn,
 		session.WithSessionReplicas(1),
@@ -4766,22 +4836,14 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
-	readyCtx, readyCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer readyCancel()
-	if err := sessions.WaitForCacheReady(readyCtx); err != nil {
+	if err := sessions.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for session cache: %v", err)
 	}
 	watcherConn.Close()
-	deadline := time.Now().Add(5 * time.Second)
-	for sessions.WatchErr() == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("stopped watcher was not detected")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the session registry to report its stopped watcher", func() bool { return sessions.WatchErr() != nil })
 
 	var rebuilds atomic.Int32
-	monitorUntilRecovered(t, "the session watcher", 5*time.Second, time.Millisecond,
+	awaitMonitorRecovery(t, "the session watcher", time.Millisecond,
 		sessions.Ping,
 		func(err error) bool {
 			return isUnrecoverableSelfHealthFailure(err, client, []listenerCache{{name: "session", cache: sessions}})
@@ -4813,9 +4875,13 @@ func TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs(t *tes
 	var current error
 	next := 0
 	landsAt := time.Now()
+	// probes counts the monitor's probes, the later actions the absence after the last repair is
+	// proved by.
+	var probes atomic.Int32
 	// Each fault lands half an interval after the previous one was repaired, so it arrives
 	// after the repair and before the next interval's probe.
 	probe := func() error {
+		probes.Add(1)
 		mu.Lock()
 		defer mu.Unlock()
 		if current == nil && next < len(faults) && !time.Now().Before(landsAt) {
@@ -4845,23 +4911,35 @@ func TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs(t *tes
 			func() { terminated <- struct{}{} }, interval, 3)
 	}()
 
-	deadline := time.After(time.Duration(len(faults)+3) * interval * 2)
-	for rebuilds.Load() < int32(len(faults)) {
+	testwait.Until(t, fmt.Sprintf("the monitor to rebuild each of the %d faults", len(faults)), func() (string, bool) {
 		select {
 		case <-terminated:
 			t.Fatalf("the monitor terminated after %d repaired faults, each gone before the next landed", rebuilds.Load())
-		case <-deadline:
-			t.Fatalf("rebuilds = %d, want %d: the monitor stopped rebuilding", rebuilds.Load(), len(faults))
-		case <-time.After(interval / 10):
+		default:
 		}
-	}
+		rebuilt := rebuilds.Load()
+		return fmt.Sprintf("%d rebuilds", rebuilt), rebuilt >= int32(len(faults))
+	})
+	// The monitor decides each tick, its termination among them, on its one goroutine before it
+	// probes again, so once three more probes have run, the two ticks after the last fault's have
+	// been decided: its later probes are the proof that it did not terminate on them.
+	last := probes.Load()
+	testwait.Until(t, "the monitor to probe three more times after the last fault was repaired", func() (string, bool) {
+		select {
+		case <-terminated:
+			t.Fatal("the monitor terminated after the last fault was repaired")
+		default:
+		}
+		probed := probes.Load()
+		return fmt.Sprintf("%d probes since the last repair was read", probed-last), probed >= last+3
+	})
 	select {
 	case <-terminated:
 		t.Fatal("the monitor terminated after the last fault was repaired")
-	case <-time.After(2 * interval):
+	default:
 	}
 	cancel()
-	<-done
+	testwait.Receive(t, "the self-health monitor to return once its context ended", done)
 }
 
 // TestRunSelfHealthMonitor_ExitsAfterThreeRebuildsThatLeaveAFault is the persistent failure the
@@ -4923,16 +5001,8 @@ func TestRunSelfHealthMonitor_ExitsAfterThreeRebuildsThatLeaveAFault(t *testing.
 					3,
 				)
 			}()
-			select {
-			case <-terminated:
-			case <-time.After(2 * time.Second):
-				t.Fatal("the monitor never terminated a fault three rebuilds left in place")
-			}
-			select {
-			case <-done:
-			case <-time.After(time.Second):
-				t.Fatal("the monitor did not return after terminating")
-			}
+			testwait.Receive(t, "the monitor to terminate a fault three rebuilds left in place", terminated)
+			testwait.Receive(t, "the monitor to return after terminating", done)
 			if got := rebuilds.Load(); got != 3 {
 				t.Fatalf("rebuilds = %d, want 3", got)
 			}
@@ -4993,11 +5063,7 @@ func TestRunSelfHealthMonitor_ShutdownCutRebuildLogsNoError(t *testing.T) {
 			3,
 		)
 	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the monitor did not return after the shutdown cut its rebuild")
-	}
+	testwait.Receive(t, "the monitor to return after the shutdown cut its rebuild", done)
 	if got := terminates.Load(); got != 0 {
 		t.Fatalf("terminate calls = %d, want 0: a shutdown is not a failure to restart from", got)
 	}
@@ -5026,9 +5092,7 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
-	readyCtx, readyCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer readyCancel()
-	if err := registry.WaitForCacheReady(readyCtx); err != nil {
+	if err := registry.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for interest cache: %v", err)
 	}
 	js, err := client.Conn.JetStream()
@@ -5060,30 +5124,42 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 			3,
 		)
 	}()
-	select {
-	case <-terminated:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the listener stayed up without its role bucket: %d rebuilds, no termination", rebuilds.Load())
-	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("the monitor did not return after terminating")
-	}
+	testwait.Until(t, "the listener to be terminated without its role bucket", func() (string, bool) {
+		select {
+		case <-terminated:
+			return "", true
+		default:
+			return fmt.Sprintf("%d rebuilds, no termination", rebuilds.Load()), false
+		}
+	})
+	testwait.Receive(t, "the monitor to return after terminating", done)
 	if got := rebuilds.Load(); got != 3 {
 		t.Fatalf("rebuilds = %d, want 3", got)
 	}
 }
 
-// monitorUntilRecovered runs the self-health monitor with the listener's threshold of three over
-// probe, isUnrecoverable, connected and rebuild, until a probe passes. It fails the test when the
-// monitor terminates first or nothing recovers within wait, naming what should have recovered.
-func monitorUntilRecovered(t *testing.T, what string, wait, interval time.Duration, probe func() error, isUnrecoverable func(error) bool, connected func() bool, rebuild func() error) {
-	t.Helper()
+// recoveryMonitor is the self-health monitor with the listener's threshold of three over probe,
+// isUnrecoverable, connected and rebuild, every interval, on a goroutine of its own: what
+// awaitMonitorRecovery and monitorUntilRecovered read. Its first report is the one value reports
+// carries: true once a probe passes, false when the monitor terminates first.
+type recoveryMonitor struct {
+	reports <-chan bool
+	cancel  context.CancelFunc
+	done    <-chan struct{}
+}
+
+// startRecoveryMonitor starts the recoveryMonitor over probe, isUnrecoverable, connected and
+// rebuild, which the test's end stops if nothing has.
+func startRecoveryMonitor(t *testing.T, interval time.Duration, probe func() error, isUnrecoverable func(error) bool, connected func() bool, rebuild func() error) recoveryMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	recovered := make(chan struct{}, 1)
-	terminated := make(chan struct{}, 1)
+	t.Cleanup(cancel)
+	reports := make(chan bool, 1)
+	report := func(recovered bool) {
+		select {
+		case reports <- recovered:
+		default:
+		}
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -5093,30 +5169,52 @@ func monitorUntilRecovered(t *testing.T, what string, wait, interval time.Durati
 			func() error {
 				err := probe()
 				if err == nil {
-					select {
-					case recovered <- struct{}{}:
-					default:
-					}
+					report(true)
 				}
 				return err
 			},
 			isUnrecoverable,
 			connected,
 			rebuild,
-			func() { terminated <- struct{}{} },
+			func() { report(false) },
 			interval,
 			3,
 		)
 	}()
-	select {
-	case <-recovered:
-	case <-terminated:
+	return recoveryMonitor{reports: reports, cancel: cancel, done: done}
+}
+
+// end fails the test unless recovered, the monitor's first report, is a recovery of what, then
+// stops the monitor and waits for it to return.
+func (m recoveryMonitor) end(t *testing.T, what string, recovered bool) {
+	t.Helper()
+	if !recovered {
 		t.Fatalf("the monitor terminated instead of recovering %s", what)
+	}
+	m.cancel()
+	testwait.Receive(t, "the self-health monitor to return once its context ended, after it recovered "+what, m.done)
+}
+
+// awaitMonitorRecovery runs the self-health monitor (recoveryMonitor) until a probe passes, and
+// fails the test when the monitor terminates first, naming what should have recovered.
+func awaitMonitorRecovery(t *testing.T, what string, interval time.Duration, probe func() error, isUnrecoverable func(error) bool, connected func() bool, rebuild func() error) {
+	t.Helper()
+	m := startRecoveryMonitor(t, interval, probe, isUnrecoverable, connected, rebuild)
+	m.end(t, what, testwait.Receive(t, "the self-health monitor to recover "+what+" or to terminate", m.reports))
+}
+
+// monitorUntilRecovered is awaitMonitorRecovery under a bound of its caller's own: it also fails
+// the test when the monitor has reported nothing within wait.
+// A2's callers still use this; A2 deletes it with its last caller.
+func monitorUntilRecovered(t *testing.T, what string, wait, interval time.Duration, probe func() error, isUnrecoverable func(error) bool, connected func() bool, rebuild func() error) {
+	t.Helper()
+	m := startRecoveryMonitor(t, interval, probe, isUnrecoverable, connected, rebuild)
+	select {
+	case recovered := <-m.reports:
+		m.end(t, what, recovered)
 	case <-time.After(wait):
 		t.Fatalf("the monitor never recovered %s", what)
 	}
-	cancel()
-	<-done
 }
 
 // setupTestNATS starts a NATS server dedicated to this test, which ends with it, and a bus client
@@ -5133,7 +5231,7 @@ func setupTestNATS(t *testing.T) *bus.Client {
 	if err != nil {
 		t.Fatalf("bus connect: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	return client
 }
 
@@ -5166,13 +5264,7 @@ func endInterestWatcherWhileConnected(t *testing.T, client *bus.Client, registry
 	if err := client.JS().DeleteStream("KV_" + bus.InterestBucket); err != nil {
 		t.Fatalf("delete the interest bucket's stream: %v", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for registry.WatchErr() == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("the interest watcher never ended after its stream was deleted")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the interest watcher to end after its stream was deleted", func() bool { return registry.WatchErr() != nil })
 	if !client.Connected() {
 		t.Fatal("the bus lost NATS; the watcher must end with the connection up")
 	}
@@ -5190,9 +5282,7 @@ func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T
 		t.Fatalf("open interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	readyCtx, readyCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer readyCancel()
-	if err := registry.WaitForCacheReady(readyCtx); err != nil {
+	if err := registry.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for interest cache: %v", err)
 	}
 	endInterestWatcherWhileConnected(t, client, registry)
@@ -5202,7 +5292,7 @@ func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T
 		t.Fatalf("recreate the interest bucket: %v", err)
 	}
 
-	monitorUntilRecovered(t, "the interest watcher", 10*time.Second, 10*time.Millisecond,
+	awaitMonitorRecovery(t, "the interest watcher", 10*time.Millisecond,
 		func() error { return checkSelfHealth([]listenerCache{{name: "interest", cache: registry}}, nil, nil) },
 		func(err error) bool {
 			return isUnrecoverableSelfHealthFailure(err, client, []listenerCache{{name: "interest", cache: registry}})
@@ -5223,13 +5313,9 @@ func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T
 		t.Fatalf("write an interest after the rebuild: %v", err)
 	}
 	// Match reads only the cache, which is what delivery reads; Get would fall back to KV on a miss.
-	deadline := time.Now().Add(5 * time.Second)
-	for len(registry.Match("m1", "notifications.rebuilt")) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the rebuilt registry's cache never saw an interest written after the rebuild")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the rebuilt registry's cache to see an interest written after the rebuild", func() bool {
+		return len(registry.Match("m1", "notifications.rebuilt")) > 0
+	})
 }
 
 // /healthz answers 503 unhealthy, naming the interest watcher, while that watcher is dead, as it
@@ -5244,9 +5330,7 @@ func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 		t.Fatalf("open interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	readyCtx, readyCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer readyCancel()
-	if err := registry.WaitForCacheReady(readyCtx); err != nil {
+	if err := registry.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for interest cache: %v", err)
 	}
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
@@ -5254,7 +5338,7 @@ func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 		t.Fatalf("open session registry: %v", err)
 	}
 	t.Cleanup(sessions.StopWatch)
-	if err := sessions.WaitForCacheReady(readyCtx); err != nil {
+	if err := sessions.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for session cache: %v", err)
 	}
 	var state atomic.Pointer[listenerDeps]
@@ -5277,26 +5361,54 @@ func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 	}
 }
 
-// consumerCreates counts the JetStream consumer create and update requests for one durable on the
-// stream; UpdateConsumer rides the same subject as AddConsumer.
-func consumerCreates(t *testing.T, conn *natsgo.Conn, consumer string) *atomic.Int32 {
+// consumerCreates watches the JetStream consumer create and update requests for one durable on the
+// stream; UpdateConsumer rides the same subject as AddConsumer. Every request and every marker of
+// the watch reach one channel, which conn's one reader fills in the order the server sent them,
+// so count reads every request sent before its marker.
+func consumerCreates(t *testing.T, conn *natsgo.Conn, consumer string) *createWatch {
 	t.Helper()
-	var creates atomic.Int32
+	watch := &createWatch{marker: "listener.test.create-marker." + id.New(), heard: make(chan *natsgo.Msg, 64)}
 	for _, subject := range []string{
 		"$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer,
 		"$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer + ".>",
 		"$JS.API.CONSUMER.DURABLE.CREATE." + bus.Stream + "." + consumer,
+		watch.marker,
 	} {
-		sub, err := conn.Subscribe(subject, func(*natsgo.Msg) { creates.Add(1) })
+		sub, err := conn.ChanSubscribe(subject, watch.heard)
 		if err != nil {
 			t.Fatalf("subscribe %s: %v", subject, err)
 		}
 		t.Cleanup(func() { _ = sub.Unsubscribe() })
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	return &creates
+	return watch
+}
+
+// createWatch is what consumerCreates' connection heard: the create requests, and the markers on
+// marker.
+type createWatch struct {
+	marker string
+	heard  chan *natsgo.Msg
+}
+
+// count publishes a marker from sender, the connection the creates are sent on, and returns how
+// many create requests were heard since the last count, before that marker: one connection's
+// publishes reach a subscriber in the order they were sent, so every create sender sent before it
+// is counted.
+func (w *createWatch) count(t *testing.T, sender *natsgo.Conn) int32 {
+	t.Helper()
+	if err := sender.Publish(w.marker, nil); err != nil {
+		t.Fatalf("publish the create watch's marker: %v", err)
+	}
+	var creates int32
+	for {
+		if heard := testwait.Receive(t, "the create watch's marker, sent after the start's requests", w.heard); heard.Subject == w.marker {
+			return creates
+		}
+		creates++
+	}
 }
 
 // The drift correction writes a durable only when the policy would change it: a new durable is
@@ -5310,7 +5422,7 @@ func TestTheDriftCorrectionWritesADurableOnlyWhenThePolicyChangesIt(t *testing.T
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	observer := testnats.Connect(t, uri)
 	t.Cleanup(observer.Close)
 
@@ -5324,13 +5436,11 @@ func TestTheDriftCorrectionWritesADurableOnlyWhenThePolicyChangesIt(t *testing.T
 			t.Fatalf("unsubscribe %s: %v", consumer, err)
 		}
 	}
-	settle := func(creates *atomic.Int32, want int32, what string) {
+	// The start's requests go out on the client's connection, so a marker sent on it after the
+	// start returned follows every create the start sent.
+	settle := func(creates *createWatch, want int32, what string) {
 		t.Helper()
-		if err := observer.Flush(); err != nil {
-			t.Fatalf("flush: %v", err)
-		}
-		time.Sleep(200 * time.Millisecond)
-		if got := creates.Swap(0); got != want {
+		if got := creates.count(t, client.Conn); got != want {
 			t.Fatalf("%s: %d consumer create requests, want %d", what, got, want)
 		}
 	}

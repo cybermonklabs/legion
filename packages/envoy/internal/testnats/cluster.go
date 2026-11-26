@@ -12,6 +12,7 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
@@ -163,10 +164,11 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 
 // AwaitReady waits until one running member leads the JetStream meta group, that leader counts
 // every running member, and no stopped one, as an online peer, every running member is current
-// with it, and JetStream answers an account info request on every running member, for as long as
-// the test may run (testDeadline): a cluster's JetStream start on a loaded machine can take longer
-// than any fixed wait allows. A test calls it after it starts a stopped member again, or after it
-// stops one, before it asks JetStream for anything that needs the meta group.
+// with it, and JetStream answers an account info request on every running member, through the
+// shared wait, whose one bound is the test binary's deadline: a cluster's JetStream start on a
+// loaded machine can take longer than any fixed wait allows. A test calls it after it starts a
+// stopped member again, or after it stops one, before it asks JetStream for anything that needs
+// the meta group.
 //
 // A member that no other running member's meta group hears from within muteAfter is restarted, at
 // most muteRestarts times in one call. Each restart starts the listening over for every member,
@@ -199,14 +201,13 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 // cannot send to a member with an auth callout (StartClusterWithCallout).
 func (c *Cluster) awaitMeta(t testing.TB) {
 	t.Helper()
-	bound := boundOf(t)
 	// listening is when the wait began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
-	for {
+	testwait.Until(t, "the JetStream meta group to be ready on every running member", func() (error, bool) {
 		err := c.metaReady()
 		if err == nil {
-			return
+			return nil, true
 		}
 		if restarts < muteRestarts {
 			if i := c.mute(time.Since(listening)); i >= 0 {
@@ -215,14 +216,10 @@ func (c *Cluster) awaitMeta(t testing.TB) {
 				c.Servers[i].launch(t)
 				restarts++
 				listening = time.Now()
-				continue
 			}
 		}
-		if bound.over() {
-			t.Fatalf("JetStream was not ready by %s, short of the test's deadline (%d members restarted): %v", bound, restarts, err)
-		}
-		bound.pause()
-	}
+		return err, false
+	})
 }
 
 const (

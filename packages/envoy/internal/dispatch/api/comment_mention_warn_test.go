@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -17,40 +19,59 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// warnClock is the fake a held-WARN row's sender runs on: its parks fire, and its held sends age,
+// only as the test moves it.
+func warnClock() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+}
+
 // Every send that waits on a held lane past the warn threshold is reported, once: the one that
 // waited for an earlier event of its issue and each send of that issue to the same recipient
 // queued behind it - three sends of A-1, three WARN lines, one naming each comment, and no
-// second line for any of them however many times the lane parks again.
+// second line for any of them however many times the lane parks again. The sender runs on a fake
+// the test moves to each park's deadline in turn: three parks put the sends past the threshold,
+// and five more park the lane again past it.
 func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	lifetime, stop := context.WithCancel(context.Background())
-	sender := newMentionSender(lifetime, time.Hour,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) { return item, true },
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
 		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
+	fake := warnClock()
 	sender.mu.Lock()
 	sender.heldWarnAfter = 200 * time.Millisecond
+	sender.clock = fake
 	sender.mu.Unlock()
-	t.Cleanup(func() {
-		stop()
-		sender.wait()
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	for _, id := range []string{"a-first", "a-second", "a-third"} {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
-			attempt: 1, claimed: time.Now(),
+			attempt: 1, claimed: fake.Now(),
 		})
 	}
+	// parkAgain moves the fake to the lane's pending park and waits for the park its try makes:
+	// each park logs its WARNs before it arms its timer.
+	parkAgain := func(park int) {
+		t.Helper()
+		fake.Set(fake.AwaitArmed(t, fmt.Sprintf("park %d of A-1's held lane", park), 1)[0])
+	}
 	const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
-	waitUntil(t, "a WARN line for each held send", func() bool {
-		return strings.Count(logs.String(), marker) >= 3
-	})
-
-	// A second past the threshold the lane has parked again several times.
-	time.Sleep(time.Second)
+	// Parks of 50, 100 and 200 ms: the fourth park, at 350 ms, is past the threshold.
+	for park := 1; park <= 3; park++ {
+		parkAgain(park)
+	}
+	fake.AwaitArmed(t, "park 4 of A-1's held lane", 1)
+	if got := strings.Count(logs.String(), marker); got != 3 {
+		t.Fatalf("%d WARN lines once the lane parked past the threshold, want three", got)
+	}
+	for park := 4; park <= 8; park++ {
+		parkAgain(park)
+	}
+	fake.AwaitArmed(t, "park 9 of A-1's held lane", 1)
 	logged := logs.String()
 	t.Logf("WARN lines: %d", strings.Count(logged, marker))
 	if got := strings.Count(logged, marker); got != 3 {
@@ -67,14 +88,15 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 // A-1's first send waits behind event 42 for s1 and parks, moving A-1's second send behind it; its
 // retry starts before the threshold and is in flight past it, then goes, and the second goes after
 // it. Neither parks again, yet each waited past the threshold: each logs one WARN naming its own
-// comment, s1 and event 42.
+// comment, s1 and event 42. The sender runs on a fake: the test fires the park and moves the fake
+// past the threshold while the retry is in flight.
 func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	lifetime, stop := context.WithCancel(context.Background())
 	retrying, release := make(chan struct{}), make(chan struct{})
 	var tries atomic.Int32
-	sender := newMentionSender(lifetime, time.Hour,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.comment.ID == "a-first" {
 				if tries.Add(1) == 1 {
@@ -90,36 +112,40 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
+	fake := warnClock()
 	sender.mu.Lock()
 	sender.heldWarnAfter = 200 * time.Millisecond
+	sender.clock = fake
 	sender.mu.Unlock()
-	t.Cleanup(func() {
-		stop()
-		sender.wait()
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
+	// a-first's retry parks on release until the row lets it go, and the sender's wait above
+	// returns only once it has. Cleanups run last first, so this one, registered after that wait,
+	// lets the retry go before it: a row that fails between the retry's start and the release
+	// below fails by name rather than hang in sender.wait.
+	letRetryGo := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letRetryGo)
 	for _, id := range []string{"a-first", "a-second"} {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
-			attempt: 1, claimed: time.Now(),
+			attempt: 1, claimed: fake.Now(),
 		})
 	}
-	<-retrying
-	time.Sleep(300 * time.Millisecond)
+	// The park's 50 ms is under the threshold; the retry is then in flight 300 ms more.
+	fake.Set(fake.AwaitArmed(t, "a-first's park behind event 42", 1)[0])
+	testwait.Receive(t, "a-first's retry in flight", retrying)
+	fake.Advance(300 * time.Millisecond)
 	const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
+	// A WARN is logged only by a park or as a send leaves its lane (park, reportLate), and neither
+	// can run while the lane's one try is held in flight.
 	if got := strings.Count(logs.String(), marker); got != 0 {
 		t.Fatalf("%d WARN lines before either send's wait ended, want none: no park saw the threshold pass", got)
 	}
-	close(release)
-	waitUntil(t, "A-1's two sends gone", func() bool {
-		sender.mu.Lock()
-		defer sender.mu.Unlock()
-		return len(sender.held) == 0
-	})
-
+	letRetryGo()
+	awaitA1SendsGone(t, sender)
 	// A send leaves held (claimedDuring) before its goroutine logs its late WARN (reportLate):
 	// join that goroutine before reading the log.
 	stop()
-	sender.wait()
+	testwait.Returns(t, "the mention sender's lanes, their late WARNs logged, and its claim refresh to return once its lifetime ended", sender.wait)
 	logged := logs.String()
 	t.Logf("WARN lines: %d", strings.Count(logged, marker))
 	for _, id := range []string{"a-first", "a-second"} {
@@ -145,10 +171,11 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 func TestALateReportWithNoWaitOnItsLaneNamesTheSendsOwnWait(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
-	sender := &mentionSender{heldWarnAfter: time.Millisecond, waits: map[laneKey]heldWait{}, mu: new(sync.Mutex)}
+	fake := warnClock()
+	sender := &mentionSender{heldWarnAfter: time.Millisecond, clock: fake, waits: map[laneKey]heldWait{}, mu: new(sync.Mutex)}
 	item := mentionSend{
 		comment: model.Comment{ID: "late", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
-		heldFor: "s1", heldBy: model.MentionCopyHolder{EventID: 42}, heldSince: time.Now().Add(-time.Minute),
+		heldFor: "s1", heldBy: model.MentionCopyHolder{EventID: 42}, heldSince: fake.Now().Add(-time.Minute),
 	}
 	sender.reportLate(heldLane(item.lane(), item.owner()), item)
 	logged := logs.String()
@@ -161,21 +188,27 @@ func TestALateReportWithNoWaitOnItsLaneNamesTheSendsOwnWait(t *testing.T) {
 // A held lane whose head waits again is parked by the goroutine that served it, which gives it up
 // before the lane's timer starts: the timer, run here the moment it is started (after), starts
 // one goroutine on the lane only once the first has let it go, and no two goroutines ever send two
-// of its sends at once. A-1's first send waits three times, A-1's second waits behind it; each send
-// takes 5 ms, so two goroutines on the lane would have both in flight together.
+// of its sends at once. A-1's first send waits three times, A-1's second waits behind it. Each send
+// is held in flight until the test has read that it is the only one: a second goroutine on the lane
+// would be in flight beside it, and one goroutine more serving a lane.
 func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries, active, most atomic.Int32
 	var mu sync.Mutex
 	var sent []string
-	sender := newMentionSender(lifetime, time.Hour,
+	entered, proceed, abort := make(chan string, 8), make(chan struct{}), make(chan struct{})
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			now := active.Add(1)
 			defer active.Add(-1)
 			for seen := most.Load(); now > seen && !most.CompareAndSwap(seen, now); seen = most.Load() {
 			}
-			time.Sleep(5 * time.Millisecond)
+			entered <- item.comment.ID
+			select {
+			case <-proceed:
+			case <-abort:
+			}
 			if item.comment.ID == "a-first" && tries.Add(1) <= 3 {
 				item.heldFor, item.heldBy = "s1", model.MentionCopyHolder{EventID: 7}
 				return item, true
@@ -192,22 +225,33 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 	sender.mu.Lock()
 	sender.after = func(_ time.Duration, f func()) { f() }
 	sender.mu.Unlock()
-	t.Cleanup(func() {
-		stop()
-		sender.wait()
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
+	// Runs before the sender's wait: a row that failed while a send was held lets it go.
+	t.Cleanup(func() { close(abort) })
 	for _, id := range []string{"a-first", "a-second"} {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
 			attempt: 1, claimed: time.Now(),
 		})
 	}
-	waitUntil(t, "A-1's two sends gone", func() bool {
-		sender.mu.Lock()
-		defer sender.mu.Unlock()
-		return len(sender.held) == 0
-	})
-
+	// a-first's three waits, its send, then a-second's.
+	for index := range 5 {
+		id := testwait.Receive(t, fmt.Sprintf("send %d of A-1 in flight", index+1), entered)
+		// The goroutine that parked the lane leaves the lane it served (next) a moment after the
+		// one the timer started has taken the held lane: the count settles at one, and a second
+		// goroutine on the held lane would be a second send in flight, which ends the wait.
+		testwait.Until(t, fmt.Sprintf("one goroutine serving lanes while %s is in flight", id), func() (string, bool) {
+			if in := active.Load(); in > 1 {
+				t.Fatalf("%d sends of one lane are in flight at once while %s is held, want one: two goroutines serve the held lane", in, id)
+			}
+			sender.mu.Lock()
+			serving := sender.serving
+			sender.mu.Unlock()
+			return fmt.Sprintf("%d goroutines serving", serving), serving == 1
+		})
+		proceed <- struct{}{}
+	}
+	awaitA1SendsGone(t, sender)
 	mu.Lock()
 	defer mu.Unlock()
 	t.Logf("sent %v; at most %d sends in flight at once", sent, most.Load())
@@ -225,12 +269,14 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 // waiting again, and the goroutine on that lane gives it up (next) before its timer starts, so at
 // each of their starts no goroutine serves any lane, the held lane being the only one with a
 // send. That is why a parked lane's pending timer says no goroutine is on it, which the park tests
-// read (parkRig.state, countParks) where a count of goroutines would lag the park.
+// read (parkRig.state, countParks) where a count of goroutines would lag the park. Each timer is
+// handed to the test, which runs it once no goroutine serves any lane, so the next park's start
+// reads the serve loop's own order and not how fast a goroutine left a lane it no longer serves.
 func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries atomic.Int32
-	sender := newMentionSender(lifetime, time.Hour,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.comment.ID == "a-first" && tries.Add(1) <= 3 {
 				item.heldFor, item.heldBy = "s1", model.MentionCopyHolder{EventID: 7}
@@ -244,46 +290,35 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 	)
 	var mu sync.Mutex
 	var servingAtStart []int
+	timers := make(chan func(), 4)
 	sender.mu.Lock()
-	sender.after = func(delay time.Duration, f func()) {
+	sender.after = func(_ time.Duration, f func()) {
 		sender.mu.Lock()
 		serving := sender.serving
 		sender.mu.Unlock()
 		mu.Lock()
 		servingAtStart = append(servingAtStart, serving)
 		mu.Unlock()
-		// The timer runs once no goroutine serves any lane, so the next park's start reads the
-		// serve loop's own order and not how fast a goroutine left a lane it no longer serves.
-		go func() {
-			for {
-				sender.mu.Lock()
-				idle := sender.serving == 0
-				sender.mu.Unlock()
-				if idle {
-					break
-				}
-				time.Sleep(time.Millisecond)
-			}
-			time.AfterFunc(delay, f)
-		}()
+		timers <- f
 	}
 	sender.mu.Unlock()
-	t.Cleanup(func() {
-		stop()
-		sender.wait()
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	for _, id := range []string{"a-first", "a-second"} {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
 			attempt: 1, claimed: time.Now(),
 		})
 	}
-	waitUntil(t, "A-1's two sends gone", func() bool {
-		sender.mu.Lock()
-		defer sender.mu.Unlock()
-		return len(sender.held) == 0
-	})
-
+	for park := 1; park <= 3; park++ {
+		fire := testwait.Receive(t, fmt.Sprintf("park %d's timer started", park), timers)
+		testwait.Eventually(t, fmt.Sprintf("no goroutine serving a lane before park %d's timer runs", park), func() bool {
+			sender.mu.Lock()
+			defer sender.mu.Unlock()
+			return sender.serving == 0
+		})
+		fire()
+	}
+	awaitA1SendsGone(t, sender)
 	mu.Lock()
 	defer mu.Unlock()
 	t.Logf("goroutines serving lanes as each park's timer started: %v", servingAtStart)
@@ -312,7 +347,7 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 			lifetime, stop := context.WithCancel(context.Background())
 			tried := make(chan mentionKey, 4)
-			sender := newMentionSender(lifetime, time.Hour,
+			sender := newMentionSender(lifetime, stagedAhead, nil,
 				func(_ context.Context, item mentionSend) (mentionSend, bool) {
 					tried <- item.key()
 					return mentionSend{}, false
@@ -334,10 +369,7 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			// lane until its claim is unknown.
 			sender.serving = mentionSendLanes
 			sender.mu.Unlock()
-			t.Cleanup(func() {
-				stop()
-				sender.wait()
-			})
+			t.Cleanup(func() { endMentionSender(t, stop, sender) })
 			item := mentionSend{
 				comment: model.Comment{ID: "a-first", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
 				attempt: 1, claimed: time.Now(),
@@ -349,20 +381,26 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			sender.mu.Unlock()
 			sender.unpark(item.lane())
 
-			parked := testwait.Until(t, "the send to go or to park (where it stands)", func() (string, bool) {
+			// A try that finds neither reads the send's lane and the goroutines serving lanes.
+			var parked bool
+			testwait.Until(t, "the send to go or park", func() (string, bool) {
 				select {
 				case <-tried:
-					return "went", true
+					return "tried", true
 				case <-timers:
+					parked = true
 					return "parked", true
 				default:
-					return "neither went nor parked", false
 				}
-			}) == "parked"
+				sender.mu.Lock()
+				defer sender.mu.Unlock()
+				return fmt.Sprintf("no try and no park's timer; %d sends wait on the send's lane, and %d goroutines serve lanes",
+					len(sender.lanes[item.lane()]), sender.serving), false
+			})
 			if parked != tc.readFail {
 				t.Fatalf("the send parked: %t, want %t", parked, tc.readFail)
 			}
-			held, _ := sender.heldSamples(time.Now())
+			held, _ := sender.heldSamples(sender.sendClock().Now())
 			const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 			logged := logs.String()
 			warns := strings.Count(logged, marker)
@@ -375,6 +413,18 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 	}
 }
 
+// heldWaitBehindEvent42 is how long TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes moves
+// its fake on, once A-1's head has waited behind event 42, before it fires that park: more than a
+// second, so a wait read backwards is a negative one at slog's rounding.
+const heldWaitBehindEvent42 = 1200 * time.Millisecond
+
+// parkOrDone is what the next step of TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes
+// found: a park's timer to fire, or the sender holding no send.
+type parkOrDone struct {
+	fire func()
+	done bool
+}
+
 // A send parked only because its unknown claim could not be read waited behind no event, so when
 // it goes, past the warn threshold, it logs no WARN that it waited behind an earlier event: such a
 // WARN would name session "" and event 0, which does not exist. TestTheMentionSenderClaimModel
@@ -382,10 +432,10 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 //
 // A second send of the owner that joins the lane that park made is no held copy either while the
 // lane waits behind no event (queueLocked stamps it only behind one): when both then go, past the
-// threshold, neither logs a WARN. When the head's try then waits behind event 42, for more than a
-// second, that park stamps the send that joined unstamped (park), so each WARN as they go names
-// event 42 and a wait of at least a second and no longer than the test has run: never the age of
-// a send stamped at no time, nor a wait measured backwards.
+// threshold, neither logs a WARN. When the head's try then waits behind event 42, that park stamps
+// the send that joined unstamped (park), so each WARN as they go names event 42 and the wait the
+// test moved the sender's fake on since that park, heldWaitBehindEvent42 at slog's rounding: never
+// the age of a send stamped at no time, nor a wait measured backwards.
 func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -401,7 +451,6 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 		{name: "a second send joins the lane the failed read parked, and the head then waits behind event 42", readFail: true, second: true, headWaits: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			began := time.Now()
 			logs := &storetest.LockedLog{}
 			logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 			lifetime, stop := context.WithCancel(context.Background())
@@ -410,7 +459,7 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			if tc.readFail {
 				fails.Store(1)
 			}
-			sender := newMentionSender(lifetime, time.Hour,
+			sender := newMentionSender(lifetime, stagedAhead, nil,
 				func(_ context.Context, item mentionSend) (mentionSend, bool) {
 					tried <- item.key()
 					if tc.headWaits && item.comment.ID == "a-first" && headTries.Add(1) == 1 {
@@ -428,20 +477,19 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 				},
 				func(context.Context, []mentionClaim) error { return nil },
 			)
+			fake := warnClock()
 			timers := make(chan func(), 4)
 			sender.mu.Lock()
 			sender.heldWarnAfter = 30 * time.Millisecond
+			sender.clock = fake
 			sender.after = func(_ time.Duration, f func()) { timers <- f }
 			// No lane goroutine may take the send before its claim is unknown.
 			sender.serving = mentionSendLanes
 			sender.mu.Unlock()
-			t.Cleanup(func() {
-				stop()
-				sender.wait()
-			})
+			t.Cleanup(func() { endMentionSender(t, stop, sender) })
 			item := mentionSend{
 				comment: model.Comment{ID: "a-first", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
-				attempt: 1, claimed: time.Now(),
+				attempt: 1, claimed: fake.Now(),
 			}
 			sender.enqueue(context.Background(), item)
 			// A refresh lost its answer naming this claim, which is therefore unknown
@@ -454,48 +502,60 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			sender.mu.Unlock()
 			sender.unpark(item.lane())
 			joined := false
-			// Each park's timer is fired once the wait is past the threshold; the run ends when the
-			// sender holds no send, which is what the wait waits for, asking every Poll. Its one
-			// bound is the test binary's deadline: a send that never goes or parks fails it by name,
-			// and a slow machine only takes longer.
-			testwait.Until(t, "the sender to hold no send, each park's timer fired (the sends it still holds)", func() (int, bool) {
-				sender.mu.Lock()
-				held := len(sender.held)
-				sender.mu.Unlock()
-				if held == 0 {
-					return 0, true
-				}
-				select {
-				case fire := <-timers:
-					if tc.second && !joined {
-						// The lane the failed read parked holds a-first and no wait: a-second joins it.
-						joined = true
-						sender.enqueue(context.Background(), mentionSend{
-							comment: model.Comment{ID: "a-second", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
-							attempt: 1, claimed: time.Now(),
-						})
+			// Each park's timer is fired once the fake is past the threshold; the run ends when the
+			// sender holds no send. A try that finds neither reads the sends the sender holds.
+			for {
+				var next parkOrDone
+				testwait.Until(t, "a park's timer, or the sender holding no send", func() (string, bool) {
+					for len(tried) > 0 {
+						<-tried
 					}
-					// The outage lasts past the threshold, then the read answers. The wait behind
-					// event 42, once the head's try has met it, lasts more than a second, so a wait
-					// read backwards is a negative one at slog's rounding.
-					wait := 60 * time.Millisecond
-					if headTries.Load() > 0 {
-						wait = 1200 * time.Millisecond
+					select {
+					case fire := <-timers:
+						next = parkOrDone{fire: fire}
+						return "a park's timer", true
+					default:
 					}
-					time.Sleep(wait)
-					fire()
-				case <-tried:
-				default:
+					sender.mu.Lock()
+					defer sender.mu.Unlock()
+					if len(sender.held) == 0 {
+						next = parkOrDone{done: true}
+						return "the sender holds no send", true
+					}
+					keys := make([]string, 0, len(sender.held))
+					for key := range sender.held {
+						keys = append(keys, fmt.Sprintf("%+v", key))
+					}
+					slices.Sort(keys)
+					return fmt.Sprintf("no park's timer; the sender holds %d sends: %v", len(sender.held), keys), false
+				})
+				if next.done {
+					break
 				}
-				return held, false
-			})
+				if tc.second && !joined {
+					// The lane the failed read parked holds a-first and no wait: a-second joins it.
+					joined = true
+					sender.enqueue(context.Background(), mentionSend{
+						comment: model.Comment{ID: "a-second", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
+						attempt: 1, claimed: fake.Now(),
+					})
+				}
+				// The outage lasts past the threshold, then the read answers. The wait behind
+				// event 42, once the head's try has met it, is heldWaitBehindEvent42.
+				wait := 60 * time.Millisecond
+				if headTries.Load() > 0 {
+					wait = heldWaitBehindEvent42
+				}
+				fake.Advance(wait)
+				next.fire()
+			}
 			if tc.second && !joined {
 				t.Fatal("the failed read parked no lane for a-second to join")
 			}
 			// reportLate runs after a send leaves held, on the goroutine that served it: join that
 			// goroutine before reading the log.
 			stop()
-			sender.wait()
+			testwait.Returns(t, "the mention sender's lanes, their late WARNs logged, and its claim refresh to return once its lifetime ended", sender.wait)
 			const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 			var lines []string
 			for l := range strings.SplitSeq(logs.String(), "\n") {
@@ -510,19 +570,18 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 				}
 				return
 			}
-			// Each send waited behind event 42 at least the second and more the test slept, and
-			// no longer than this row has run, however slow the box: a send stamped at no time
-			// would report the age of the zero time instead. Each field is read as the line's own
-			// (horizontest.Field), so a quoted value that holds "event_id=42" or "held_for=0s"
-			// cannot stand in for it.
-			ran := time.Since(began).Round(time.Second) + time.Second
+			// Each send waited behind event 42 exactly the span the test moved the fake on since
+			// the park that stamped it: a send stamped at no time would report the age of the zero
+			// time instead. Each field is read as the line's own (horizontest.Field), so a quoted
+			// value that holds "event_id=42" or "held_for=0s" cannot stand in for it.
+			want := heldWaitBehindEvent42.Round(time.Second)
 			second := false
 			for _, line := range lines {
 				event, _ := horizontest.Field(line, "event_id")
 				value, found := horizontest.Field(line, "held_for")
 				waited, err := time.ParseDuration(value)
-				if event != "42" || !found || err != nil || waited < time.Second || waited > ran {
-					t.Fatalf("a WARN of a send that waited behind event 42 for between 1s and %v names another wait: %s", ran, line)
+				if event != "42" || !found || err != nil || waited != want {
+					t.Fatalf("a WARN of a send that waited behind event 42 for %v names another wait: %s", want, line)
 				}
 				comment, _ := horizontest.Field(line, "comment")
 				second = second || comment == "a-second"
@@ -532,4 +591,15 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// awaitA1SendsGone waits through the shared wait until sender holds no send (mentionSender.held):
+// both of A-1's sends have left it.
+func awaitA1SendsGone(t *testing.T, sender *mentionSender) {
+	t.Helper()
+	testwait.Eventually(t, "A-1's two sends gone", func() bool {
+		sender.mu.Lock()
+		defer sender.mu.Unlock()
+		return len(sender.held) == 0
+	})
 }

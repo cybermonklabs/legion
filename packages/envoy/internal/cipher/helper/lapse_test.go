@@ -23,10 +23,10 @@ import (
 // first renew refused (the fake's refuseRenewNext: 401 ENROLLMENT_NOT_LIVE, whenever that renew
 // comes). Nothing here races a lease's wall clock. The first enrollment's lease is short (the
 // fake's nextLease) only so that its renew comes soon (at MinRenew, 50 ms), and every later
-// enrollment gets the fake's 900 s default, so the re-enrollment a test waits for can never lapse
-// again underneath it. The fake holds that renew at its renew gate until the register answer is
-// in, so the lapse cannot reach the session before register reads it, however slow the host is.
-// The fake then answers failRevokes revokes of the lapsed id with a 503.
+// enrollment gets the fake's default (fakeLease, an hour), so the re-enrollment a test waits for
+// can never lapse again underneath it. The fake holds that renew at its renew gate until the
+// register answer is in, so the lapse cannot reach the session before register reads it, however
+// slow the host is. The fake then answers failRevokes revokes of the lapsed id with a 503.
 //
 // lapseRig returns once the first of those revokes has been answered. It returns the rig, the
 // enrollment id the session had before the lapse, and the state path its records are saved to.
@@ -264,7 +264,7 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 
 	enrollGate, releaseEnroll := testGate(t)
 	r.fake.mu.Lock()
-	r.fake.enrollGate = enrollGate // the third enrollment gets the fake's 900 s default lease
+	r.fake.enrollGate = enrollGate // the third enrollment gets the fake's default lease (fakeLease)
 	r.fake.mu.Unlock()
 	releaseRenew() // the second lapse
 	testwait.Until(t, "the second lapsed id's revoke", func() ([]string, bool) {

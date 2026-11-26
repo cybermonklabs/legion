@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/natsversion"
 )
@@ -167,6 +168,11 @@ type SessionConsumers struct {
 	// pullExpires and pullHeartbeat are sessionPullExpires and sessionPullHeartbeat, shortened by
 	// a test of a pull's later requests.
 	pullExpires, pullHeartbeat time.Duration
+	// pullClock is the clock every pull it starts marks the server heard on and times its stall
+	// by (SessionPull.take): nil, production's, is the real clock, and a test that holds a pull
+	// waiting across heartbeats sets a fake it moves itself, so how long the machine takes decides
+	// nothing.
+	pullClock clock.Clock
 	// logger is the logger the connection was opened with (ConnectSessionConsumers), the client's
 	// own where that was nil (sessionConsumersOn): where create and recordResumeFloorAt write
 	// their lines.

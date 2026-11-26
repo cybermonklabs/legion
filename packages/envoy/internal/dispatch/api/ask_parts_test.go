@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -337,8 +339,8 @@ func TestARestoredDecidedWordingMovesTheAsksPartRevision(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, ServerURL: "https://dispatch.example", Settle: time.Hour})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		documentService = docs.New(docs.Deps{Store: database, ServerURL: "https://dispatch.example", Settle: stagedAhead})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Restored wording", "A spec")
@@ -359,7 +361,7 @@ func TestARestoredDecidedWordingMovesTheAsksPartRevision(t *testing.T) {
 	}
 	requireAskParts(t, database, ask.ID, "the earlier release's rewording", "b1@3 b2@3 b3@1 b4@2", 3)
 
-	restoring := time.Now().UTC()
+	restoring := databaseNow(t, database.Pool)
 	restored, copies, err := documentService.RestoreDecidedWordings(context.Background())
 	if err != nil || restored != 1 || copies != 0 {
 		t.Fatalf("the boot's restoration restored %d asks and marked %d copies owed (%v), want the one ask", restored, copies, err)
@@ -719,7 +721,9 @@ func TestAPinnedAskPartShowsTheRevisionItNames(t *testing.T) {
 // which answer of the read after the answer is final.
 func TestAnAnsweredAsksPartEdgesAreListedSince(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	// A clock never moved, so the since-read is never cut at its wait (referencesSinceWait) and
+	// waits out a held-back horizon: awaitSinceRead reads once.
+	handler, database, _ := newTestServer(t, testServerOptions{clock: clocktest.Held()})
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
 	source := createReferenceAPIIssue(t, handler, "OPS")
@@ -734,8 +738,8 @@ func TestAnAnsweredAsksPartEdgesAreListedSince(t *testing.T) {
 	theAnswer := answeredEventID(t, database, source.Key)
 
 	since := url.Values{"from": {askRef}, "since": {strconv.FormatInt(beforeTheAnswer, 10)}}
-	awaitSinceRead(t, database, "?from= the ask since the log's head before the answer, wanting the answer part's mention stamped with event "+strconv.FormatInt(theAnswer, 10),
-		func() model.GraphReferences { return readGraph(t, handler, since) },
+	awaitSinceRead(t, "?from= the ask since the log's head before the answer, wanting the answer part's mention stamped with event "+strconv.FormatInt(theAnswer, 10), handler,
+		func(bounded http.Handler) model.GraphReferences { return readGraph(t, bounded, since) },
 		func(read model.GraphReferences) bool {
 			if len(read.Edges) != 1 {
 				return false
@@ -748,12 +752,13 @@ func TestAnAnsweredAsksPartEdgesAreListedSince(t *testing.T) {
 
 	// The awaited read listed the answer's mention, so the horizon had passed the ask.answered
 	// event; the horizon only grows, so a read since that same event, the poller's own next read,
-	// answers nothing because of the since filter and not because of a stale horizon.
-	if edges := readGraph(t, handler, url.Values{
-		"from": {askRef}, "since": {strconv.FormatInt(theAnswer, 10)},
-	}).Edges; len(edges) != 0 {
-		t.Fatalf("?from= the ask since the answer's own event lists %#v, want none", edges)
-	}
+	// answers nothing because of the since filter and not because of a stale horizon. It too waits
+	// for an observation taken after it, so it runs on the shared wait's context (awaitSinceRead).
+	awaitSinceRead(t, "?from= the ask since the answer's own event, wanting no edges", handler,
+		func(bounded http.Handler) model.GraphReferences {
+			return readGraph(t, bounded, url.Values{"from": {askRef}, "since": {strconv.FormatInt(theAnswer, 10)}})
+		},
+		func(read model.GraphReferences) bool { return len(read.Edges) == 0 })
 }
 
 // readPartAsk reads GET /api/v1/asks/<id> as a human: the ask as its own read carries it, with

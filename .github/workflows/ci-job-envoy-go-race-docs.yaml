@@ -32,10 +32,14 @@ env:
 jobs:
   envoy-go-race-docs:
     runs-on: ubuntu-24.04-arm
-    # The step's -timeout 60m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race binary,
-    # then the step's own 60 minutes, which is 66 under this limit of 70.
-    timeout-minutes: 70
+    # The step's -timeout 80m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it. It is twice and more the package's slowest run over this job's 20
+    # newest green merge-group runs up to 2026-11-18T07:34Z (runs 44070980269 to 44258870089),
+    # 2322.323 s (run 44244144085), which the 60 minutes it had before held only 1.55 times. The
+    # limit is at least the job's sum over those runs: its other steps at their longest, 93 s, 6 s
+    # of its clock over them, and the step's longest 2395 s (run 44244144085) plus its 80 minutes:
+    # 7294 s, or 122 minutes.
+    timeout-minutes: 125
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -51,10 +55,10 @@ jobs:
     # Load-bearing, not boilerplate: this package's TestMain is storetest.Main
     # (`packages/envoy/internal/dispatch/docs/persistence_test.go#TestMain`), and storetest.Open skips every test that
     # opens the store when DISPATCH_TEST_DATABASE_URL is unset
-    # (`packages/envoy/internal/dispatch/store/storetest/storetest.go#t.Skip(DatabaseURLEnv`). A skip is a pass, so without the
+    # (its template's clone reads the server's URL through `packages/envoy/internal/testpg/testdb/template.go#urlAt`). A skip is a pass, so without the
     # service this job would be green having run almost nothing.
     env:
-      JOB_TIMEOUT_MINUTES: 70 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 125 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,7 +110,7 @@ jobs:
       # step "Test what the race build cannot run at all or at full size" runs plain, under the
       # cleanup detector as well: the two render-reuse storms run in both, at two sizes.
       - name: Race-test the document service
-        run: GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
+        run: GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 80m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

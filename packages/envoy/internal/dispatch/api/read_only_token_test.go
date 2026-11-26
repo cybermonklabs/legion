@@ -136,7 +136,9 @@ type readOnlyWalkToken struct {
 func readOnlyWalkTokens(t *testing.T, rig *brokerTokenRig, caller *brokerCaller) []readOnlyWalkToken {
 	t.Helper()
 	answers := map[string]ciphertoken.Introspection{"the read entry's token": readOnlyToken(caller.jkt)}
-	for kind, answer := range ciphertokentest.NarrowedAnswers(t, caller.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix()) {
+	// The narrowed tokens expire a day ahead (stagedAhead), staged state: a token that lapsed in the
+	// middle of the run would be refused as expired, whatever the row means to show.
+	for kind, answer := range ciphertokentest.NarrowedAnswers(t, caller.jkt, brokerTestSession, time.Now().Add(stagedAhead).Unix()) {
 		answers["the token narrowed from a "+kind] = answer
 	}
 	var tokens []readOnlyWalkToken

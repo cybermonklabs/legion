@@ -1,6 +1,10 @@
 package pmdoc
 
-import "math"
+import (
+	"math"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
+)
 
 // Layout is what one whole render (RenderWithLayout) records of the top level of the markdown it
 // writes, valid only with that markdown. The render writes the document's top-level blocks
@@ -298,10 +302,13 @@ func (l *Layout) start(index int) int {
 //   - bareEmptyCode and wroteBlankEmptyCode: false in an incremental render (finish) and in block k
 //     (G7).
 //   - blockOffsets do not shape the markdown; Splice answers none.
+//
+// A splice that renders a block is a render docwork's observers are told of (docwork.Render).
 func (l *Layout) Splice(markdown string, touched []int, read func(index int) (*Node, error)) (string, *Layout, bool) {
 	if len(touched) == 0 && l != nil {
 		return markdown, l, true
 	}
+	docwork.Enter(docwork.Render)
 	spliced, err := l.splice(markdown, touched, read)
 	if err != nil || spliced == nil {
 		return "", nil, false

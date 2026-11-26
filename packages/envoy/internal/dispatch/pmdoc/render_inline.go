@@ -306,7 +306,8 @@ func (s *rawHTMLScan) opensAt(at int) bool {
 	return html != nil
 }
 
-// readLines makes the run's lines and a reader over them.
+// readLines makes the run's lines and a reader over them. The walks of the parser it asks count the
+// bytes they search in the parse's ParseWork (walkedLines).
 func (s *rawHTMLScan) readLines() {
 	for start := s.from; start < len(s.written); {
 		stop, next := blockLine(s.written, start, s.prefix)

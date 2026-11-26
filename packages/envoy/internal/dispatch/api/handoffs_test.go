@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // postHandoff posts body as the session's handoff for phase of issueKey.
@@ -112,7 +113,7 @@ func TestConcurrentHandoffWritesTakeDistinctVersions(t *testing.T) {
 			responses <- postHandoff(t, handler, issue.Key, "test", fmt.Sprintf(`{"writer":%d}`, i))
 		})
 	}
-	wait.Wait()
+	testwait.Returns(t, fmt.Sprintf("the %d handoff writes racing on one issue and phase to answer", writers), wait.Wait)
 	close(responses)
 	var got []int
 	for response := range responses {

@@ -182,9 +182,11 @@ jobs:
       # TestWebDisplayFixture, and of TestTheWebFixtureFindsItsFilesFromAnyDirectory, which stats
       # the same file: without `--check` the first writes the fixture instead of checking it, so
       # envoy-go's unit step skips both by the same names, both texts built from
-      # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
+      # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py. -timeout 10m against a slowest run
+      # of 0.021 s over envoy-go-checks' 20 newest green merge-group runs up to 2026-11-15, when
+      # that job held the step and the step ran TestWebDisplayFixture alone.
       - name: Check the web app's display-tree fixture is up to date
-        run: go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
+        run: go test -count=1 -timeout 10m -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
         working-directory: packages/envoy
       # pmdoc's readers on tables in a build made without inlining, the mode of every debugger
       # build: the table tests read through the block reader, and the display fixture test reads
@@ -195,9 +197,12 @@ jobs:
       # So a reader that copied a variable of pmdoc there could be handed nil in a build without
       # inlining, where inlining set the same variable at link time in every other build: each
       # table then failed to read in the first build and read in the second. No other step builds
-      # pmdoc without inlining.
+      # pmdoc without inlining. -timeout 46s, twice the slowest step of 23 s over envoy-go-checks'
+      # 20 newest green merge-group runs that ran it, up to 2026-11-22 (runs 45007182495 to
+      # 45020436687), when that job held the step; the step's time holds its build without
+      # inlining as well as the test run.
       - name: Test pmdoc's tables in a build without inlining
-        run: go test -count=1 -gcflags=all=-l -run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./internal/dispatch/pmdoc/
+        run: go test -count=1 -timeout 46s -gcflags=all=-l -run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./internal/dispatch/pmdoc/
         working-directory: packages/envoy
       - name: Build envoy services
         run: go build ./cmd/dispatch ./cmd/listener

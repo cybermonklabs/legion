@@ -49,7 +49,8 @@ func TestCreateMessageAlwaysReturnsDeliveriesArray(t *testing.T) {
 }
 
 // newTargetedMessageHandler is the mux a targeted-delivery test drives, with the store behind
-// it: an ordinary test server pointed at that test's fake Envoy listener.
+// it: an ordinary test server pointed at that test's fake Envoy listener, on the real clock, where
+// every listener call's window ends at the shared wait's give-up (testServerOptions.clock).
 func newTargetedMessageHandler(t *testing.T, envoyURL string) (http.Handler, *store.Store) {
 	t.Helper()
 	return newTargetedMessageHandlerOn(t, envoyURL, nil)
@@ -58,11 +59,11 @@ func newTargetedMessageHandler(t *testing.T, envoyURL string) (http.Handler, *st
 // newTargetedMessageHandlerOn is newTargetedMessageHandler on a server whose clock, which a
 // comment's mention lookups and every listener call's window run on, is clock (nil is the real
 // one): a test whose lookups must be answered however late the listener answers them passes
-// clocktest.Held(), and a test of a receipt timeout passes a fake and moves it to the end of each
-// window its stand-in holds (answerWhileCallsAreHeld). A held clock freezes every timer of the
-// server's, the listener take-over's backoff and the related-item check's allowance among them,
-// so a row on it that met a retryable failure would wait to the binary's deadline, where testwait
-// ends it by name; no row on it meets one today.
+// clocktest.Held(), and a test of a receipt timeout passes a fake, which keeps envoy.CallWindow,
+// and moves it to the end of each window its stand-in holds (answerWhileCallsAreHeld). A held
+// clock freezes every timer of the server's, the listener take-over's backoff and the related-item
+// check's allowance among them, so a row on it that met a retryable failure would wait to the
+// shared wait's give-up, where testwait ends it by name.
 func newTargetedMessageHandlerOn(t *testing.T, envoyURL string, clock *clocktest.Fake) (http.Handler, *store.Store) {
 	t.Helper()
 	options := testServerOptions{envoyURL: envoyURL}
@@ -205,7 +206,9 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 			}
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode listener send: %v", err)
+				t.Errorf("decode listener send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			sent = append(sent, request)
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
@@ -547,10 +550,10 @@ func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
 	})
 
 	t.Run("timeout", func(t *testing.T) {
-		// An unanswered read is what a listener take-over gives, but the read's window ends on the
-		// server's clock CallWindow past its start, past the test server's take-over window
-		// (testTakeoverWindow), so the send makes one try and settles. The read is cancelled at
-		// the end of its window, which the test moves there once the stand-in holds the read.
+		// An unanswered read is what a listener take-over gives, so the send asks again for the
+		// take-over window before it settles; every one of those reads is cancelled the same way,
+		// at the end of its window on the server's clock, which the test moves there once the
+		// stand-in holds the read.
 		cancelled := make(chan struct{})
 		var cancelledOnce sync.Once
 		var calls listenerCalls
@@ -601,10 +604,14 @@ func TestTargetedMessageResolvesRolesAndEnforcesReplyBoundaries(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var input map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				t.Fatalf("decode listener delivery: %v", err)
+				t.Errorf("decode listener delivery: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			if input["target_session"] != "s1" {
-				t.Fatalf("role delivery target = %v, want s1", input["target_session"])
+				t.Errorf("role delivery target = %v, want s1", input["target_session"])
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
 		default:
@@ -981,7 +988,9 @@ func sessionListener(t *testing.T, live *bool, sent *[]map[string]any) *httptest
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode listener send: %v", err)
+				t.Errorf("decode listener send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			*sent = append(*sent, request)
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
@@ -1670,14 +1679,13 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 // its own. While the key carried the attempt number, that retry was a key no dedupe layer had
 // ever seen and the agent was handed the same instruction twice. The key is now stable across
 // the attempts of one message in one mode, so the stream recognises the repeat, answers
-// duplicate, and the retry's row says so instead of claiming a delivery that never happened. The
-// listener client's window and the take-over's tries run on the server's clock, a fake the test
-// moves through each held call's window (answerWhileCallsAreHeld), so the stand-in's lookups,
-// which it answers at once, are never cut by a window a loaded machine ran out. The first send's
-// window ends CallWindow past its start on that clock, past the test server's take-over window
-// (testTakeoverWindow), so the take-over makes no second try under the same key and the attempt
-// is recorded failed at once (TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce covers the
-// same-key tries).
+// duplicate, and the retry's row says so instead of claiming a delivery that never happened. A
+// missed receipt is tried again inside the listener take-over window (takeoverRetry) under the
+// same key, so the attempt is recorded failed only when every try of that window missed; this
+// listener misses every one until the message's own request has answered. The listener client's
+// window and the take-over's tries run on the server's clock, a fake the test moves through each
+// held call's window (answerWhileCallsAreHeld), so the stand-in's lookups, which it answers at
+// once, are never cut by a window a loaded machine ran out.
 func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
 	t.Parallel()
 	var calls listenerCalls

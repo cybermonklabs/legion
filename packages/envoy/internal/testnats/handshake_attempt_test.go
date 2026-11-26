@@ -1,7 +1,6 @@
 package testnats
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -39,22 +38,16 @@ const (
 	// heldAttemptGap is the client's ReconnectWait, how long nats.go waits between two attempts with
 	// its lock free.
 	heldAttemptGap = time.Second
-	// heldAttemptSpare is what the rows below leave of the test binary's deadline for their own
-	// failure and cleanups (testwait.Remaining).
-	heldAttemptSpare = 30 * time.Second
-	// childReportSpare is how much sooner than the context that kills it the child's own -timeout
-	// fires, so a child that hangs prints its goroutines and exits by its alarm, naming itself.
-	childReportSpare = 10 * time.Second
 )
 
 // A call that needs no connection lock answers within the attempt held when it began, and
 // AnswersWithinAttempt passes it: the lock is taken once the call has answered, nats.go did not let
-// it go, and no later attempt reached the hold. The client's held attempt lasts until the test
-// binary's deadline, less heldAttemptSpare, so no span of the attempt ends the row; the cleanup's
-// Release ends the attempt.
+// it go, and no later attempt reached the hold. The client's connect timeout is what is left until
+// the test's waits give up (left), the one HoldReconnect gives it again (OwnConnectTimeout), so no
+// span of the attempt ends the row; the cleanup's Release ends the attempt.
 func TestAnswersWithinAttemptPassesACallThatNeedsNoLock(t *testing.T) {
 	hold := StartHandshakeHold(t, URL(t))
-	conn := heldAttemptConn(t, hold, testwait.Remaining(t, heldAttemptSpare))
+	conn := heldAttemptConn(t, hold, left(t))
 	hold.HoldReconnect(t, conn)
 	hold.AnswersWithinAttempt(t, conn, "a call that needs no lock", func() error { return nil })
 }
@@ -63,7 +56,7 @@ func TestAnswersWithinAttemptPassesACallThatNeedsNoLock(t *testing.T) {
 // skips in an ordinary run.
 const attemptChildEnv = "TESTNATS_ATTEMPT_CHILD"
 
-// attemptHeld is the line the child logs once HoldReconnect has returned, before it measures.
+// attemptHeld is the line the child logs once its attempt is held (AwaitAttempt), before it measures.
 const attemptHeld = "the child's handshake attempt is held"
 
 // AnswersWithinAttempt fails a call that waits out the attempt held when it began. The child's call
@@ -73,15 +66,17 @@ const attemptHeld = "the child's handshake attempt is held"
 // whenever a read of the status is slow passes the call when that read is descheduled, and so does
 // one that reads the attempt count before the lock when the check is held up past the gap; the child
 // then passes, which fails this row. The child runs in a binary of its own, so its failure is read
-// rather than taken as this row's. The context that ends it fires when the test binary's deadline
-// leaves heldAttemptSpare, and the child's own -timeout childReportSpare before that, so a child
-// that hangs is ended by its alarm, with its goroutines printed, and this row's failure is still to
-// come.
+// rather than taken as this row's. Its -timeout ends where this row's waits give up
+// (testwait.GiveUpAt), so the child's own waits give up testwait's margin before that and name
+// what they waited for; the context that ends it is this row's shared wait's (testwait.Context),
+// which kills a child still running at the give-up, and the row then fails on what it printed.
+// Under -timeout 0 neither has an end.
 func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
-	childTimeout := testwait.Remaining(t, heldAttemptSpare+childReportSpare)
-	ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, heldAttemptSpare))
-	defer cancel()
-	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAnswersWithinAttemptChild$", "-test.timeout="+childTimeout.String(), "-test.v")
+	childTimeout := "0"
+	if end, bounded := testwait.GiveUpAt(t); bounded {
+		childTimeout = time.Until(end).String()
+	}
+	child := exec.CommandContext(testwait.Context(t), os.Args[0], "-test.run=^TestAnswersWithinAttemptChild$", "-test.timeout="+childTimeout, "-test.v")
 	child.Env = append(os.Environ(), attemptChildEnv+"=1")
 	output, err := child.CombinedOutput()
 	text := string(output)
@@ -107,14 +102,19 @@ func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
 
 // TestAnswersWithinAttemptChild is the child of
 // TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt: it measures a call that waits for nats.go's
-// lock. It runs only when the parent re-executes this binary.
+// lock. It holds the attempt with Hold and AwaitAttempt rather than HoldReconnect, which would give
+// the client a connect timeout of the test's own (OwnConnectTimeout), so the client keeps its own,
+// heldAttemptTimeout, and the held attempt ends at it. It runs only when the parent re-executes this
+// binary.
 func TestAnswersWithinAttemptChild(t *testing.T) {
 	if os.Getenv(attemptChildEnv) == "" {
 		t.Skip(attemptChildEnv + " is not set: this test is the child of TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt")
 	}
 	hold := StartHandshakeHold(t, URL(t))
 	conn := heldAttemptConn(t, hold, heldAttemptTimeout)
-	hold.HoldReconnect(t, conn)
+	before := hold.Attempts()
+	hold.Hold()
+	hold.AwaitAttempt(t, conn, before)
 	t.Log(attemptHeld)
 	hold.AnswersWithinAttempt(t, conn, "a status read that waits for the lock", func() error {
 		conn.Status()

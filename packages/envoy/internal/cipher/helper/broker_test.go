@@ -93,7 +93,7 @@ type fakeBroker struct {
 	revokeFirstDelay   time.Duration // sleep this long before the first DELETE actually removes its row
 	revokeFailFirst    int           // 503 this many DELETE calls first, row untouched (an unreachable broker)
 	revokeAttempts     int           // every DELETE this fake received, failed or not
-	lease              time.Duration // lease length the fake grants; 900 s unless a test shortens it
+	lease              time.Duration // lease length the fake grants; fakeLease unless a test shortens it
 	seen               map[string]bool
 	revokeForbidden    map[string]bool
 	revokeNotEnrolling map[string]bool
@@ -198,10 +198,20 @@ type fakeBroker struct {
 	devicePollAnswer func(poll int, w http.ResponseWriter) bool
 }
 
+// fakeLease is the lease the fake grants a new enrollment unless a test sets nextLease or lease:
+// an hour, the longest a broker grants (BROKER_LEASE_SECONDS is at most 3600,
+// internal/cipher/config). It is staged state for the clocks that judge it, the helper's renewals
+// and the fake's refusal of a renew past it, both the real clock; it is not a wait. An hour is
+// longer than any `go test -timeout` CI gives this package (20 minutes in envoy-go's unit step),
+// so an enrollment a row holds reads as live however long the row takes, where the production
+// default of 900 s could lapse under a row a loaded machine stalls. The broker caps the lease at
+// the hour, so the fake grants no longer one.
+const fakeLease = time.Hour
+
 func newFakeBroker(t *testing.T) *fakeBroker {
 	f := &fakeBroker{
 		enrolled: map[string]string{}, byTP: map[string]string{}, runtimeIDToID: map[string]string{},
-		leaseExpiry: map[string]time.Time{}, seen: map[string]bool{}, lease: 900 * time.Second,
+		leaseExpiry: map[string]time.Time{}, seen: map[string]bool{}, lease: fakeLease,
 		loginOutcome: "issued", loginLifetime: 7 * 24 * time.Hour, refreshTokens: map[string]string{},
 	}
 	mux := http.NewServeMux()
@@ -441,6 +451,9 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		f.next++
 		f.deviceCode = fmt.Sprintf("device-%d", f.next)
 		f.pendingCode = fakeConfirmationCode()
+		// expires_in is the broker's own device code lifetime, fixed at 15 minutes
+		// (machineLoginPendingTTL, cmd/cipherd): the broker answers no longer one, so the fake
+		// answers that and the helper's poll ends there as it does against the broker.
 		answer := map[string]any{"device_code": f.deviceCode, "user_code": f.pendingCode, "verification_uri": f.srv.URL, "expires_in": 900, "interval": 1}
 		for name, value := range f.deviceAuthFields {
 			if value == nil {
@@ -681,18 +694,15 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	return b
 }
 
-// waitFor polls cond every 5 ms until it is true, failing the test when it never is. Its one bound
-// is testwait's margin before the test binary's deadline (testwait.UntilPolling), so a host too
-// loaded to reach cond within a fixed span is not a failure: with a span of 5 s, a test process
-// frozen 12 s at a time failed TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs here, though the
-// helper did what the test waited for. A login's first token poll comes a second after its device
-// authorization (the interval the fake names).
+// waitFor asks cond at the shared wait's own pace until it is true, failing the test when it never
+// is. Its one bound is testwait's margin before the test binary's deadline (testwait.Eventually),
+// so a host too loaded to reach cond within a fixed span is not a failure: with a span of 5 s, a
+// test process frozen 12 s at a time failed TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs
+// here, though the helper did what the test waited for. A login's first token poll comes a second
+// after its device authorization (the interval the fake names).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	testwait.UntilPolling(t, 5*time.Millisecond, "the condition waitFor asks for", func() (bool, bool) {
-		held := cond()
-		return held, held
-	})
+	testwait.Eventually(t, "the condition waitFor asks for", cond)
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {

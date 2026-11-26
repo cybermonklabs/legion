@@ -9,13 +9,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An edit a browser makes after a settlement has read the document it versions is not in that
@@ -27,7 +27,7 @@ import (
 func TestSettlementCreditsNoAuthorOfAnEditMadeAfterItsRead(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -73,7 +73,7 @@ func TestSettlementCreditsNoAuthorOfAnEditMadeAfterItsRead(t *testing.T) {
 func TestSettlementCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -124,7 +124,7 @@ func TestSettlementCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce(t *testing.
 func TestSettlementKeepsTheCreditOfAnEditItsAuthorMakesBeforeItCommits(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	bob := model.Actor{Kind: "user", ID: "bob"}
@@ -171,7 +171,7 @@ func TestSettlementKeepsTheCreditOfAnEditItsAuthorMakesBeforeItCommits(t *testin
 func TestAnEditReadBeforeItsObserverRunsIsCreditedOnTheVersionThatStoresIt(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -282,7 +282,7 @@ func TestANewAskIsAttributedToTheUpdateThatIntroducedIt(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 			settleCurrentGeneration(t, service, artifactID)
 			test.arrange(t, service, artifactID)
@@ -320,7 +320,7 @@ func TestANewAskIsAttributedToTheUpdateThatIntroducedIt(t *testing.T) {
 func TestAnAskInTheRoomBeforeASettlementsTakeKeepsItsAuthor(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -386,21 +386,12 @@ func holdObserver(t *testing.T, service *Service, artifactID string, hook *func(
 	}
 	done := make(chan error, 1)
 	go func() { done <- write() }()
-	select {
-	case <-held:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the held write never reached its observer hook")
-	}
+	testwait.Receive(t, "the held write to reach its observer hook", held)
 	return func() {
 		t.Helper()
 		let()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("held write: %v", err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatal("the held write never finished applying")
+		if err := testwait.Receive(t, "the held write to finish applying once its observer was let go", done); err != nil {
+			t.Fatalf("held write: %v", err)
 		}
 	}
 }
@@ -418,7 +409,7 @@ func TestAServiceWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAuthor(t *te
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	service.addConnection(artifactID, 1, bob)
@@ -459,7 +450,7 @@ func TestAPublishedAgentWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAutho
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	service.addConnection(artifactID, 1, bob)
@@ -544,7 +535,7 @@ func TestApplyOpsOwnBlockIDRepairCarriesForwardTheRenamedBlocksAuthor(t *testing
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	service.addConnection(artifactID, 1, bob)
@@ -573,7 +564,7 @@ func TestAConditionalEditIntroducesAnAskCreditedToItsAuthor(t *testing.T) {
 	t.Parallel()
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 
@@ -611,7 +602,7 @@ func TestADiscardedJoinedWriteDoesNotOutrankALaterCommitOfTheSameAskID(t *testin
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 
@@ -657,7 +648,7 @@ func TestRecordStampedAskBlocksKeepsACopiedRenamesPreviousIDLive(t *testing.T) {
 	t.Parallel()
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	service.addConnection(artifactID, 1, bob)
@@ -706,7 +697,7 @@ func TestARefusedGrowthDoesNotLeaveACarriedAskAuthorPending(t *testing.T) {
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	service.addConnection(artifactID, 1, bob)
@@ -736,7 +727,7 @@ func TestARefusedGrowthDoesNotLeaveACarriedAskAuthorPending(t *testing.T) {
 func TestASettlementThatAbandonsAfterWritingItsVersionReleasesWhatItRemembered(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -832,7 +823,7 @@ func TestACopiedAskBlocksAuthorIsKeptForTheAskItOpensOnceItsSourceIsRetracted(t 
 	// The ask row is visible once the copy's settlement commits, and that settlement forgets the
 	// room's owed author as it commits, under the room's lock (consumeAskAuthorsLocked); the room
 	// is read once the settlement has ended, so its count is read after the forgetting.
-	waitFor(t, 10*time.Second, "the copy's settlement that opened its ask to end", func() bool {
+	waitFor(t, "the copy's settlement that opened its ask to end", func() bool {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		return state.settling == 0
@@ -846,7 +837,7 @@ func TestACopiedAskBlocksAuthorIsKeptForTheAskItOpensOnceItsSourceIsRetracted(t 
 	// The settlement forgets the author after the transaction that opened the ask has committed
 	// (consumeAskAuthorsLocked, which runs after commitSettlement), so the open ask above can be
 	// read before the room has let the author go.
-	waitFor(t, 10*time.Second, "the copy's room to forget the block's author once its ask has opened", func() bool {
+	waitFor(t, "the copy's room to forget the block's author once its ask has opened", func() bool {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		_, still := state.askAuthors["shared"]

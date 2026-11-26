@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The lock table (item_row_owner_lock_test.go) holds every writer of an item row behind the owner
@@ -765,7 +763,7 @@ func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *te
 			close(release)
 		}
 	}()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "LOCK", "Delivery settle", "A spec.\n")
 	ctx := context.Background()
 
@@ -774,16 +772,7 @@ func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *te
 		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
 			map[string]any{"body": "Did this ship?", "target": "session:s1", "delivery": "btw"}, "alice")
 	}()
-	testwait.Until(t, "the message's send to reach the listener", func() (bool, bool) {
-		select {
-		case <-entered:
-			return true, true
-		case response := <-answered:
-			t.Fatalf("the message answered %d %s before its send reached the listener", response.Code, response.Body.String())
-		default:
-		}
-		return false, false
-	})
+	awaitEntered(t, "the listener with its send", entered, answered)
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the holder: %v", err)

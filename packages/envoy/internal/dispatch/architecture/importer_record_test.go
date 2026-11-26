@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // recordedKeys is how many keys the importer's record of ended flights holds an entry for.
@@ -51,23 +52,23 @@ func TestACallTakesAFlightThatLookedAfterItsStampThoughThatFlightsStarterHungUp(
 		starter <- syncAnswer{source: source, err: err}
 	}()
 	arrived, _ := installation.channels(t)
-	receiveBeforeTheDeadline(t, "the starter's flight to reach its installation lookup", arrived)
+	testwait.Receive(t, "the starter's flight to reach its installation lookup", arrived)
 	hangUp()
-	if answer := receiveBeforeTheDeadline(t, "the starter's answer once it hung up", starter); !errors.Is(answer.err, context.Canceled) {
+	if answer := testwait.Receive(t, "the starter's answer once it hung up", starter); !errors.Is(answer.err, context.Canceled) {
 		t.Fatalf("the starter that hung up answered %+v (err %v); want context.Canceled", answer.source, answer.err)
 	}
 
 	later := make(chan syncAnswer, 1)
 	rig.syncOf(archRepo, later)
-	receiveBeforeTheDeadline(t, "the later call to stamp its call", laterStamped)
+	testwait.Receive(t, "the later call to stamp its call", laterStamped)
 	installation.releaseHeld(t)
 	// A barrier on the flight's end: singleflight hands this call the answer of the flight still
 	// in flight under the key, or runs it alone when none is, so once it answers, the starter's
 	// flight has ended and recorded itself, and nothing is in flight under the key.
-	receiveBeforeTheDeadline(t, "the starter's flight to end",
+	testwait.Receive(t, "the starter's flight to end",
 		rig.process.syncs.DoChan(syncKey("CORE", archRepo), func() (any, error) { return nil, nil }))
 	releaseLater()
-	answer := receiveBeforeTheDeadline(t, "the later call's answer", later)
+	answer := testwait.Receive(t, "the later call's answer", later)
 
 	t.Logf("head lookups=%d later commit=%s err=%v", rig.lookups.Load(), commitOf(answer), answer.err)
 	if answer.err != nil || commitOf(answer) != commitOne {
@@ -134,7 +135,7 @@ func TestSyncsOfRepositoriesNoSourceReadsLeaveNoEntryOnceAnswered(t *testing.T) 
 		t.Fatalf("seed: %v", err)
 	}
 	process := NewImporter(database, client, events.NewBroker())
-	t.Cleanup(process.Close)
+	t.Cleanup(func() { closeImporter(t, process) })
 
 	const syncs = 8
 	for n := range syncs {

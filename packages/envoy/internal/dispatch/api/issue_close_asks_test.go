@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -66,7 +67,7 @@ func newCloseAsksFixtureSettlingAfter(t *testing.T, settle time.Duration) closeA
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documents = docs.New(docs.Deps{Store: database, Settle: settle})
-		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		return documents
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Closing with asks", closeDecision)
@@ -165,16 +166,17 @@ func sessionCloser(name, id string) closer {
 // version of each document showing the blocks resolved, which notifies nobody, and changes no ask
 // row, no answer or review, and appends no ask event. Reopening restores exactly the withdrawn
 // asks and writes their blocks open again, and the settlement that leaves owed saves one more
-// version of each document, equal to its live text. The settle delay is an hour, so the test runs
-// each settlement itself (SettleIssueDocuments, as the timer, the room's next load or the
-// resumption would), and each read in between meets the issue as the write before it left it. The
-// settlement's versions move the issue's sequence past the close's, so the reopen is sent against
-// a read taken after that settlement, as a client that reads the issue before it writes sends it.
+// version of each document, equal to its live text. The settle delay is a day (stagedAhead), so
+// the test runs each settlement itself (SettleIssueDocuments, as the timer, the room's next load or
+// the resumption would), and each read in between meets the issue as the write before it left it.
+// The settlement's versions move the issue's sequence past the close's, so the reopen is sent
+// against a read taken after that settlement, as a client that reads the issue before it writes
+// sends it.
 func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T) {
 	t.Parallel()
 	for _, closer := range closers {
 		t.Run(closer.name, func(t *testing.T) {
-			f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
+			f := newCloseAsksFixtureSettlingAfter(t, stagedAhead)
 			ctx := context.Background()
 			documents := []string{f.spec, f.copy}
 			resolved := map[string]string{
@@ -354,11 +356,11 @@ func (failingSettlement) SettleIssueDocuments(context.Context, string) error {
 	return errors.New("settlement failed")
 }
 
-// A decision block written a moment before the close, which its settlement (an hour away) has not
-// indexed, is still withdrawn by the close: the close settles the issue's documents first, so the
-// block is an ask, credited to whoever wrote it. When that settlement fails, the block is no ask
-// to withdraw, but the close still leaves it reading resolved, and the reopen's settlement opens
-// it as its author's ask.
+// A decision block written a moment before the close, which its settlement (a day away,
+// stagedAhead) has not indexed, is still withdrawn by the close: the close settles the issue's
+// documents first, so the block is an ask, credited to whoever wrote it. When that settlement
+// fails, the block is no ask to withdraw, but the close still leaves it reading resolved, and the
+// reopen's settlement opens it as its author's ask.
 func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 	t.Parallel()
 	for _, settlementFails := range []bool{false, true} {
@@ -369,8 +371,8 @@ func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var documentService *docs.Service
 			handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-				t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+				documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				if settlementFails {
 					return failingSettlement{API: documentService}
 				}
@@ -450,8 +452,8 @@ func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.
 		t.Run(name, func(t *testing.T) {
 			var documentService *docs.Service
 			handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-				documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: time.Hour})
-				t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+				documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: stagedAhead})
+				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				if settlementFails {
 					return failingSettlement{API: documentService}
 				}
@@ -560,14 +562,14 @@ func pastedBlockAsk(t *testing.T, handler http.Handler, issue, document string) 
 }
 
 // otherProcessHandler mounts the API stack of a second envoy-dispatch process on database, as
-// secondProcessHandler does, with a document service whose settle delay is an hour: nothing the
-// second process writes is settled there while a test runs.
+// secondProcess does, with a document service whose settle delay is a day (stagedAhead): nothing
+// the second process writes is settled there while a test runs.
 func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
-	documentService := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+	documentService := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: stagedAhead})
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 	deps, err := NewDeps(DepsInput{
 		Store:       second,
 		Identity:    headerIdentity(second),
@@ -580,7 +582,7 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 		t.Fatalf("new API dependencies for the other process: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	registerJoined(t, mux, deps)
 	return mux
 }
 
@@ -595,8 +597,8 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 func TestClosingAnIssueWithdrawsADecisionBlockWhoseRoomAnotherProcessLeftBehind(t *testing.T) {
 	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService := docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		documentService := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	other := otherProcessHandler(t, database)
@@ -666,7 +668,7 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 	wrapper := &peerInsertDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		wrapper.API = documentService
 		return wrapper
 	})
@@ -703,7 +705,7 @@ func TestEachCloseAndReopenWithdrawsAndRestoresOnce(t *testing.T) {
 	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 		return service
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed and reopened twice", closeDecision)
@@ -855,16 +857,22 @@ func requireLiveText(t *testing.T, handler http.Handler, document string, parts 
 	}
 }
 
-// awaitSettled waits until none of documents owes a settlement. Its one bound is the test binary's
-// deadline (testwait.UntilPolling): a settlement a loaded machine starts late still ends the wait,
-// and one that never runs fails it by name, with the count still owed.
+// awaitSettled waits until none of documents owes a settlement, and with no documents named until
+// no document of the database owes one, so a test that then holds an issue's row holds it against
+// the write it sends, not against a settlement. It is the package's one wait for that fact
+// (awaitSettledDocuments waits for a quiet spell of the database beside it). Its one bound is the
+// test binary's deadline (testwait.Until): a settlement a loaded machine starts late still ends
+// the wait, and one that never runs fails it by name, with the count still owed.
 func awaitSettled(t *testing.T, database *store.Store, documents ...string) {
 	t.Helper()
-	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("documents %v to owe no settlement (the count of their pending settlements)", documents), func() (int, bool) {
+	which, query, args := fmt.Sprintf("documents %v", documents),
+		`select count(*) from doc_settlements_pending where artifact_id = any($1::uuid[])`, []any{documents}
+	if len(documents) == 0 {
+		which, query, args = "every document", `select count(*) from doc_settlements_pending`, nil
+	}
+	testwait.Until(t, which+" to owe no settlement (the count of their pending settlements)", func() (int, bool) {
 		var pending int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from doc_settlements_pending where artifact_id = any($1::uuid[])
-		`, documents).Scan(&pending); err != nil {
+		if err := database.Pool.QueryRow(context.Background(), query, args...).Scan(&pending); err != nil {
 			t.Fatalf("read pending settlements: %v", err)
 		}
 		return pending, pending == 0
@@ -1006,7 +1014,7 @@ func (c *countedAskStateWrites) WriteIssueAskStates(ctx context.Context, issueKe
 // closed issue's ask states into the documents of an issue that is open again.
 func TestACloseSweepThatWaitedOutAReopenWritesNothing(t *testing.T) {
 	t.Parallel()
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "TEST", "Swept after a reopen", "Context\n")
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `update issues set status = 'done', closed_at = now() where key = $1`, issue.Key); err != nil {

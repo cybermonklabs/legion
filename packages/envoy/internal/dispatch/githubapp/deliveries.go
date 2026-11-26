@@ -59,7 +59,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 		if err != nil {
 			return nil, err
 		}
-		if limited := RateLimit(status, header, body); limited != nil {
+		if limited := rateLimitAt(status, header, body, c.limitNow()); limited != nil {
 			return nil, limited
 		}
 		if status != http.StatusOK {
@@ -105,7 +105,7 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 	if err != nil {
 		return err
 	}
-	if limited := RateLimit(status, header, body); limited != nil {
+	if limited := rateLimitAt(status, header, body, c.limitNow()); limited != nil {
 		return limited
 	}
 	if status == http.StatusNotFound {
@@ -187,8 +187,14 @@ func AsRateLimit(err error) (*RateLimitError, bool) {
 // HTTP date, else the time until x-ratelimit-reset when no requests remain, else the one minute
 // GitHub asks for when it gives neither (rateLimitWait). Exported so other GitHub-calling packages
 // (delivery's reconcile) can reuse the same detection this client already has, instead of treating
-// every non-2xx the same.
+// every non-2xx the same. The wait is read against time.Now; a Client reads it against its own
+// clock (WithRateLimitClock, rateLimitAt).
 func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
+	return rateLimitAt(status, header, body, time.Now())
+}
+
+// rateLimitAt is RateLimit with the wait read against now.
+func rateLimitAt(status int, header http.Header, body []byte, now time.Time) *RateLimitError {
 	if status != http.StatusTooManyRequests && status != http.StatusForbidden {
 		return nil
 	}
@@ -196,16 +202,17 @@ func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 	if status == http.StatusForbidden && header.Get("Retry-After") == "" && !exhausted && !containsFold(body, rateLimitPhrase) {
 		return nil
 	}
-	return answeredLimit(status, header, body)
+	return answeredLimit(status, header, body, now)
 }
 
-// answeredLimit is the RateLimitError of a limit GitHub answered with status, header and body, and
-// the one constructor of such an error (RateLimit, GraphQLRateLimit). Its Body is body, GitHub's
-// refusal, at every status but a 2xx, and at a 2xx it is empty and wording is GitHub's wording of
-// the limit read from the envelope around the data or from header (graphQLLimitWording), since
-// such a body is the data the request asked for and no text of the error may carry it.
-func answeredLimit(status int, header http.Header, body []byte) *RateLimitError {
-	limited := &RateLimitError{Status: status, Wait: rateLimitWait(header)}
+// answeredLimit is the RateLimitError of a limit GitHub answered with status, header and body, its
+// wait read against now, and the one constructor of such an error (RateLimit, GraphQLRateLimit).
+// Its Body is body, GitHub's refusal, at every status but a 2xx, and at a 2xx it is empty and
+// wording is GitHub's wording of the limit read from the envelope around the data or from header
+// (graphQLLimitWording), since such a body is the data the request asked for and no text of the
+// error may carry it.
+func answeredLimit(status int, header http.Header, body []byte, now time.Time) *RateLimitError {
+	limited := &RateLimitError{Status: status, Wait: rateLimitWait(header, now)}
 	if status/100 == 2 {
 		limited.wording = graphQLLimitWording(header, body)
 	} else {
@@ -256,15 +263,20 @@ func answeredLimit(status int, header http.Header, body []byte) *RateLimitError 
 // `retry-after`, or the 429 GitHub answers too many requests with, where neither of those says
 // the budget is spent.
 func GraphQLRateLimit(status int, header http.Header, body []byte) (limited *RateLimitError, secondary bool) {
+	return graphQLRateLimitAt(status, header, body, time.Now())
+}
+
+// graphQLRateLimitAt is GraphQLRateLimit with the wait read against now.
+func graphQLRateLimitAt(status int, header http.Header, body []byte, now time.Time) (limited *RateLimitError, secondary bool) {
 	spent, worded := graphQLLimitErrors(body)
 	exhausted := header.Get("X-Ratelimit-Remaining") == "0"
 	retryAfter := header.Get("Retry-After") != ""
-	limited = RateLimit(status, header, body)
+	limited = rateLimitAt(status, header, body, now)
 	if limited == nil {
 		if !spent && !worded && (status != http.StatusOK || (!exhausted && !retryAfter)) {
 			return nil, false
 		}
-		limited = answeredLimit(status, header, body)
+		limited = answeredLimit(status, header, body, now)
 	}
 	switch {
 	case worded:
@@ -427,15 +439,21 @@ func containsFold(body, phrase []byte) bool {
 }
 
 // rateLimitWait is how long GitHub asks for before the next request under a limit it answered
-// with, read now through serverwait.Read, else the one minute GitHub asks for when the answer
+// with, read at now through serverwait.Read, else the one minute GitHub asks for when the answer
 // names no wait. Client.request records it in github_rate_limits under the call's scope, so a wait
 // of an hour stops every Dispatch process's calls under that scope for that hour: every App-JWT
 // call, for a limit an App-JWT call met.
-func rateLimitWait(header http.Header) time.Duration {
-	if wait, named := serverwait.Read(header, time.Now()); named {
+func rateLimitWait(header http.Header, now time.Time) time.Duration {
+	if wait, named := serverwait.Read(header, now); named {
 		return wait
 	}
 	return time.Minute
+}
+
+// limitNow is the moment the client reads a rate-limited answer's wait against: limitClock's
+// reading.
+func (c *Client) limitNow() time.Time {
+	return c.limitClock.Now()
 }
 
 // StatusError is GitHub answering a request with a status other than 200 that is no rate limit
@@ -671,12 +689,19 @@ func withBody[Body string | []byte](head string, body Body) string {
 // RateLimit's own *RateLimitError when the response is a GitHub rate limit, else a *StatusError
 // carrying the status and the raw body. Factors the identical "check rate limit, then check
 // status" three lines delivery's GitHub fetchers (github_prs.go, github_runs.go, client.go's own
-// ListInstallationRepositoriesByID) all repeated at every call site.
+// ListInstallationRepositoriesByID) all repeated at every call site. A rate limit's wait is read
+// against time.Now; the client's own reads take it against its clock (checkResponseAt,
+// limitNow).
 func CheckResponse(status int, header http.Header, body []byte) error {
+	return checkResponseAt(status, header, body, time.Now())
+}
+
+// checkResponseAt is CheckResponse with a rate limit's wait read against now.
+func checkResponseAt(status int, header http.Header, body []byte, now time.Time) error {
 	if status == http.StatusOK {
 		return nil
 	}
-	if limited := RateLimit(status, header, body); limited != nil {
+	if limited := rateLimitAt(status, header, body, now); limited != nil {
 		return limited
 	}
 	return &StatusError{Status: status, Body: string(body)}

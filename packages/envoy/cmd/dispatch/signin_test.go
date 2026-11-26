@@ -10,20 +10,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The boot's retirement of the refresh tokens stored in plain text is bounded: a sign-in pool that
 // accepts the connection and never answers delays the start by the bound, not by each token's own
 // timeout, and the start goes on, every token left in its row for the next boot and the counts
-// logged without a token.
+// logged without a token. The bound runs on a fake clock, which the test moves to it once the
+// pool holds the first revocation, so the retirement can end on nothing but its bound.
 func TestRetirePlainRefreshTokensAtBootStopsAtItsBound(t *testing.T) {
 	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it holds a step
 	// to a wall-clock bound load could break (the 5 s bound on the retirement).
 	ctx := context.Background()
 	pool := signInPool(t, "dispatch-client", "client-secret")
-	pool.DelayRevocation(time.Minute)
+	pool.DelayRevocation(stagedPastTheRun)
 	boot := resolveWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": pool.URL()})
 	signIn := signInFlow(boot)
 	database := storetest.Open(t)
@@ -40,16 +44,34 @@ func TestRetirePlainRefreshTokensAtBootStopsAtItsBound(t *testing.T) {
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 
-	start := time.Now()
-	retirePlainRefreshTokens(ctx, people, 500*time.Millisecond)
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Errorf("the boot's retirement took %s against a pool that never answers, want about its 500ms bound", elapsed)
+	fake := clocktest.New(time.Now())
+	bound := fake.Now().Add(plainRefreshTokenRetireTimeout)
+	retired := make(chan struct{})
+	go func() {
+		defer close(retired)
+		retirePlainRefreshTokens(ctx, people, fake, plainRefreshTokenRetireTimeout)
+	}()
+	if armed := fake.AwaitArmed(t, "the retirement's bound", 1); !armed[0].Equal(bound) {
+		t.Fatalf("the retirement armed %v, want its one bound at %v, %v from its start", armed, bound, plainRefreshTokenRetireTimeout)
 	}
 	// The store main builds revokes through the pool's code flow, which discovers the pool on the
-	// first revocation: without it every token would fail at once with no request made, and this
-	// bound would hold for the wrong reason.
-	if got := pool.RevocationRequests(); len(got) == 0 {
-		t.Error("the boot's retirement sent the sign-in pool nothing, want it to try to revoke the plain tokens")
+	// first revocation: without it every token would fail at once with no request made, and the
+	// bound would end a retirement that waited on nothing.
+	testwait.Eventually(t, "the first revocation to reach the pool that never answers", func() bool {
+		return len(pool.RevocationRequests()) > 0
+	})
+	select {
+	case <-retired:
+		t.Fatal("the retirement returned while the pool held its first revocation, before its bound")
+	default:
+	}
+	fake.Advance(plainRefreshTokenRetireTimeout)
+	testwait.Receive(t, "the retirement to return at its bound", retired)
+	// The bound ends the retirement on the context the revocations run on, so the tokens after the
+	// held one fail on that context without reaching the pool. A retirement that ignored it would
+	// send each later token to the pool and wait out each one's own timeout.
+	if sent := len(pool.RevocationRequests()); sent != 1 {
+		t.Errorf("the pool received %d revocations, want 1: the bound must end the tokens after the held one before they are sent", sent)
 	}
 	out := logs.String()
 	if !strings.Contains(out, "retired the refresh tokens stored in plain text") || !strings.Contains(out, "retired=0 failed=3") {
@@ -87,7 +109,7 @@ func TestRetirePlainRefreshTokensAgainstAnUndiscoveredPoolKeepsEveryToken(t *tes
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 
-	retirePlainRefreshTokens(ctx, people, 30*time.Second)
+	retirePlainRefreshTokens(ctx, people, clock.Real(), plainRefreshTokenRetireTimeout)
 	if out := logs.String(); !strings.Contains(out, "retired=0 failed=2") {
 		t.Errorf("logged, want the counts retired=0 failed=2:\n%s", out)
 	}

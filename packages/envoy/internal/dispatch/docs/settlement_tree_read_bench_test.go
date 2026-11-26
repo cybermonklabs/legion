@@ -24,10 +24,8 @@ import (
 // that costs a quarter as much and allocates a fifth.
 //
 // A document is a spec's markdown with 2,000 keystrokes typed and deleted across it
-// (benchmarkLiveDocument). 200 KiB is about as large as that generator goes: markdown making
-// more than 65,536 elements is refused (pmdoc.ErrTooManyElements), which that generator passes
-// around 237 KiB - and which is why the 524 KiB document BenchmarkLiveDocumentRead still asks
-// for fails to build.
+// (benchmarkLiveDocument). 200 KiB is about as large as that generator goes under the element
+// limit (pmdoc.MaxDocumentElements), which it passes around 237 KiB.
 func BenchmarkSettlementTreeRead(b *testing.B) {
 	for _, size := range []int{51 << 10, 200 << 10} {
 		live := benchmarkLiveDocument(b, size)

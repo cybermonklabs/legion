@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -19,15 +20,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The live view of one issue's Legion state (dispatch://INFRA-4869's R2, a-c-live): a page that
 // subscribes the legion_issue kind is answered GET /api/v1/issues/{key}/legion's body, and then a
-// delta within 5 seconds of each store that moves it, at the hub of the process that stored it and
-// at a second process's hub on the same database. The frames are read as the hub sends them to a
-// socket (fakeLiveConn), and every body a page holds after a delta is the GET body of that moment
-// (requireLandsOnGET). A view of an issue of a project that names no daemon is never refused: its
-// body says so (configured false) and still moves with the issue's runs and with the setting.
+// delta for each store that moves it, at the hub of the process that stored it and at a second
+// process's hub on the same database. The frames are read as the hub sends them to a socket
+// (fakeLiveConn), each through the shared wait: the product promises a delta within 5 seconds, and
+// a loaded machine's delay is no verdict of these rows. Every body a page holds after a delta is
+// the GET body of that moment (requireLandsOnGET). A view of an issue of a project that names no
+// daemon is never refused: its body says so (configured false) and still moves with the issue's
+// runs and with the setting.
 
 // legionIssueSubscription is a subscribe frame's view of one issue's Legion state.
 func legionIssueSubscription(key string) DeliveryLiveView {
@@ -82,20 +86,12 @@ func (p *legionIssuePage) answer(t *testing.T) wireLegionIssue {
 // what names the page in a failure: its issue and its hub.
 func (p *legionIssuePage) what() string { return p.key + " at hub " + p.hub }
 
-// next reads the page's next frame, which must be a delta that the hub sent by deadline, the 5
-// seconds after its store that the live view promises (R2); requires it to set exactly the members
+// next reads the page's next frame, which must be a delta; requires it to set exactly the members
 // set names and nothing of another issue (L-14), and the body it leaves to be the GET body of the
-// moment; and answers that body. R2 is judged on the moment the hub sent the frame
-// (fakeLiveConn.deltaSent), not on when the test reads it: every row gives all its pages one
-// deadline and reads them in turn, so page B's frame is read only after page A's checks, however
-// long those take. The read itself waits until the test binary's deadline, so a delta that never
-// comes fails by name, and one the hub sent late fails here on R2's bound.
-func (p *legionIssuePage) next(t *testing.T, deadline time.Time, set ...string) wireLegionIssue {
+// moment; and answers that body.
+func (p *legionIssuePage) next(t *testing.T, set ...string) wireLegionIssue {
 	t.Helper()
-	delta, sent := p.conn.deltaSent(t, legionIssueSub)
-	if late := sent.Sub(deadline); late > 0 {
-		t.Fatalf("hub %s sent %s's delta %v past the 5 s after its store that the live view promises", p.hub, p.key, late.Round(time.Millisecond))
-	}
+	delta := p.conn.delta(t, legionIssueSub)
 	raw, err := json.Marshal(delta)
 	if err != nil {
 		t.Fatalf("encode %s's delta: %v", p.what(), err)
@@ -120,21 +116,21 @@ func (p *legionIssuePage) next(t *testing.T, deadline time.Time, set ...string) 
 	return answer
 }
 
-// step reads the page's delta of one store, due by deadline, which sets exactly set, and requires
-// the body it leaves to hold body; it answers that body.
-func (p *legionIssuePage) step(t *testing.T, deadline time.Time, body legionIssueBody, set ...string) wireLegionIssue {
+// step reads the page's delta of one store, which sets exactly set, and requires the body it
+// leaves to hold body; it answers that body.
+func (p *legionIssuePage) step(t *testing.T, body legionIssueBody, set ...string) wireLegionIssue {
 	t.Helper()
-	answer := p.next(t, deadline, set...)
+	answer := p.next(t, set...)
 	requireLegionBody(t, p.what(), answer, body)
 	return answer
 }
 
-// runsRise reads the page's delta of a run's write, due by deadline, which sets the runs' revision
-// alone, and requires the revision to rise and the rest of the body to hold body.
-func (p *legionIssuePage) runsRise(t *testing.T, deadline time.Time, body legionIssueBody, what string) {
+// runsRise reads the page's delta of a run's write, which sets the runs' revision alone, and
+// requires the revision to rise and the rest of the body to hold body.
+func (p *legionIssuePage) runsRise(t *testing.T, body legionIssueBody, what string) {
 	t.Helper()
 	before := p.answer(t).RunsRevision
-	if after := p.step(t, deadline, body, "runs_revision").RunsRevision; after <= before {
+	if after := p.step(t, body, "runs_revision").RunsRevision; after <= before {
 		t.Fatalf("%s: %s's runs revision went from %d to %d, want it to rise", what, p.what(), before, after)
 	}
 }
@@ -147,15 +143,31 @@ func (p *legionIssuePage) mark(t *testing.T) int {
 	return p.rig.mark()
 }
 
-// unread requires that the page is sent nothing for a second after row's store, and that its hub
-// began no recompute of the page's view since start, the page's mark before that store, by the
-// second's end. A store that moves nothing the view shows sends the page nothing even where the
-// hub marks the view for it, since the recompute finds no change; so the page's silence alone
-// cannot tell a hub that filtered the store's signal from one that did not, and the hub's own
-// notes, counted once the second has passed, can.
-func (p *legionIssuePage) unread(t *testing.T, start int, row string) {
+// unread requires that row's store, made after start, the page's mark, left the page's hub owing
+// its view nothing. The hub routes the store's notification, on channel with payload, on its
+// listener's goroutine, and marks every view that notification moves before it notes it routed
+// (a "notified" note, onNotify), so the row waits for that note and then reads the hub's own state:
+// a hub that took the notification for the view has by then marked it dirty or begun the
+// recompute the mark made due, and a recompute begun since start, ended or not, left a "recompute
+// begin" note. A store that moves nothing the view shows sends the page nothing even where the hub
+// marks the view for it, since the recompute finds no change; so the page's silence alone could
+// not tell a hub that filtered the store's notification from one that did not, and the hub's state
+// and its notes can.
+func (p *legionIssuePage) unread(t *testing.T, start int, row, channel, payload string) {
 	t.Helper()
-	p.conn.none(t, time.Second, row+", at "+p.what())
+	p.rig.waitFor(t, start, fmt.Sprintf("%s: hub %s to route the notification on %s of %q", row, p.hub, channel, payload), func(note deliveryHubNote) bool {
+		return note.what == "notified" && note.channel == channel && note.payload == payload
+	})
+	if owed := p.rig.owesView(p.view); owed != "" {
+		t.Fatalf("%s: once hub %s routed the notification on %s of %q, it owes %s's view (%s) %s, want nothing", row, p.hub, channel, payload, p.key, p.view, owed)
+	}
+	p.requireNoRecomputeSince(t, start, row)
+}
+
+// requireNoRecomputeSince requires that the page's hub began no recompute of the page's view since
+// start, the page's mark.
+func (p *legionIssuePage) requireNoRecomputeSince(t *testing.T, start int, row string) {
+	t.Helper()
 	if n := p.rig.count(start, func(note deliveryHubNote) bool {
 		return note.what == "recompute begin" && note.view == p.view
 	}); n != 0 {
@@ -163,12 +175,27 @@ func (p *legionIssuePage) unread(t *testing.T, start int, row string) {
 	}
 }
 
+// owesView names what the hub will do of its own accord to the view whose key is key (viewOwes):
+// empty when nothing, a recompute under way, or a mark that makes one due.
+func (r *hubRig) owesView(key string) string {
+	now := r.clock.Now()
+	r.hub.mu.Lock()
+	defer r.hub.mu.Unlock()
+	if r.hub.generation == nil {
+		return "no generation running"
+	}
+	view, held := r.hub.generation.views[key]
+	if !held {
+		return "no view held under its key"
+	}
+	return viewOwes(view, now, r.clock.standsStill())
+}
+
 // announce sends the notification one read of project's daemon sends (legion.StateChannel), as the
-// sampler does after it records the read, and answers the moment a delta of it is due by.
-func announce(t *testing.T, rig *hubRig, project string) time.Time {
+// sampler does after it records the read.
+func announce(t *testing.T, rig *hubRig, project string) {
 	t.Helper()
 	notifyChannel(t, rig.database, legion.StateChannel, project)
-	return time.Now().Add(5 * time.Second)
 }
 
 // TestAnIssuesLegionLiveView is the plan's live rows, one after another on one view of LIVE-1 and
@@ -266,71 +293,69 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	observe("LIVE", "LIVE-1", legion.FieldPhase, `"implementing"`, state.since)
 	body.read = &wireLegionRead{At: tick(), OK: true}
 	seedLegionRead(t, rig.database, "LIVE", body.read.At, "")
-	deadline := announce(t, rig, "LIVE")
+	announce(t, rig, "LIVE")
 	for _, page := range pages {
-		page.step(t, deadline, body, "read", "state")
+		page.step(t, body, "read", "state")
 	}
 
 	// L-3: a role's claim moves.
 	state.roles = []wireLegionRole{{"architect", "working"}, {"tester", "working"}}
 	observe("LIVE", "LIVE-1", claim+"tester", `"working"`, tick())
-	deadline = announce(t, rig, "LIVE")
+	announce(t, rig, "LIVE")
 	for _, page := range pages {
-		page.step(t, deadline, body, "state")
+		page.step(t, body, "state")
 	}
 
 	// L-4: the issue takes a slot.
 	state.slot = new(1)
 	observe("LIVE", "LIVE-1", legion.FieldSlot, `1`, tick())
-	deadline = announce(t, rig, "LIVE")
+	announce(t, rig, "LIVE")
 	for _, page := range pages {
-		page.step(t, deadline, body, "state")
+		page.step(t, body, "state")
 	}
 
 	// L-5: an admission row that moves only this issue, from third to second.
 	state.line = &wireLegionWaitingLine{Place: 2, Length: 3}
 	observe("LIVE", legion.AdmissionKey, legion.FieldAdmission,
 		`{"cap": 2, "active": [], "waiting": ["LIVE-3", "LIVE-1", "LIVE-4"], "blocked": []}`, tick())
-	deadline = announce(t, rig, "LIVE")
+	announce(t, rig, "LIVE")
 	for _, page := range pages {
-		page.step(t, deadline, body, "state")
+		page.step(t, body, "state")
 	}
 
 	// L-6: a failed read.
 	failure := "the Legion daemon could not be read: context deadline exceeded"
 	body.read = &wireLegionRead{At: tick(), OK: false, Error: &failure}
 	seedLegionRead(t, rig.database, "LIVE", body.read.At, failure)
-	deadline = announce(t, rig, "LIVE")
+	announce(t, rig, "LIVE")
 	for _, page := range pages {
-		page.step(t, deadline, body, "read")
+		page.step(t, body, "read")
 	}
 
 	// L-7: a good read that moves nothing else.
 	body.read = &wireLegionRead{At: tick(), OK: true}
 	seedLegionRead(t, rig.database, "LIVE", body.read.At, "")
-	deadline = announce(t, rig, "LIVE")
+	announce(t, rig, "LIVE")
 	for _, page := range pages {
-		page.step(t, deadline, body, "read")
+		page.step(t, body, "read")
 	}
 
 	// L-8: a run's step write through hub A's process.
 	putStepOK(t, rig.handler, "LIVE-1", uuid.NewString(), implementerStart(daemonSessionOf("LIVE")))
-	deadline = time.Now().Add(5 * time.Second)
 	for _, page := range pages {
-		page.runsRise(t, deadline, body, "L-8, a step write that makes a run")
+		page.runsRise(t, body, "L-8, a step write that makes a run")
 	}
 
 	// L-9: a rating write alone, which makes a retro's record.
 	putRatingOK(t, rig.handler, "LIVE-1", uuid.NewString(), withFields(retroIdentity(daemonSessionOf("LIVE"), 1),
 		map[string]any{"rating": 4, "rating_reason": "The plan fit the work."}))
-	deadline = time.Now().Add(5 * time.Second)
 	for _, page := range pages {
-		page.runsRise(t, deadline, body, "L-9, a rating write that makes a retro's record")
+		page.runsRise(t, body, "L-9, a rating write that makes a retro's record")
 	}
 
-	// L-10: a stored change of another project, and its notify. Each hub settles first; then each
-	// page is sent nothing for a second, by whose end its hub may not have read LIVE-1's view again
-	// for it (unread), which the page's silence alone does not show.
+	// L-10: a stored change of another project, and its notify. Each hub settles first; then, once
+	// each hub has routed the notify, it owes LIVE-1's view nothing and began no recompute of it
+	// (unread), which the page's silence alone does not show.
 	marks := map[*legionIssuePage]int{}
 	for _, page := range pages {
 		marks[page] = page.mark(t)
@@ -339,16 +364,17 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	seedLegionRead(t, rig.database, "OTHER", tick(), "")
 	announce(t, rig, "OTHER")
 	for _, page := range pages {
-		page.unread(t, marks[page], "L-10, a notify of another project")
+		page.unread(t, marks[page], "L-10, a notify of another project", legion.StateChannel, "OTHER")
 	}
 
-	// L-11: a run of another issue of the same project, counted as L-10 is.
+	// L-11: a run of another issue of the same project, read as L-10 is once each hub has routed
+	// the run's notify (workflowstore.RunsChannel).
 	for _, page := range pages {
 		marks[page] = page.mark(t)
 	}
 	putStepOK(t, rig.handler, "LIVE-2", uuid.NewString(), implementerStart(daemonSessionOf("LIVE")))
 	for _, page := range pages {
-		page.unread(t, marks[page], "L-11, a run of another issue")
+		page.unread(t, marks[page], "L-11, a run of another issue", workflowstore.RunsChannel, "LIVE-2")
 	}
 
 	// L-12: two run writes of the issue that overlap. Run A's write is made the way the route
@@ -372,16 +398,14 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 		t.Fatalf("L-12: write run A: %v", err)
 	}
 	putStepOK(t, rig.handler, "LIVE-1", uuid.NewString(), implementerStart(daemonSessionOf("LIVE")))
-	deadline = time.Now().Add(5 * time.Second)
 	for _, page := range pages {
-		page.runsRise(t, deadline, body, "L-12, run B's write, committed while run A's is open")
+		page.runsRise(t, body, "L-12, run B's write, committed while run A's is open")
 	}
 	if err := held.Commit(ctx); err != nil {
 		t.Fatalf("L-12: commit run A's write: %v", err)
 	}
-	deadline = time.Now().Add(5 * time.Second)
 	for _, page := range pages {
-		page.runsRise(t, deadline, body, "L-12, run A's write, which began first and committed last")
+		page.runsRise(t, body, "L-12, run A's write, which began first and committed last")
 	}
 
 	// L-15: the view of an issue of a project that names no daemon, which an earlier daemon left
@@ -398,20 +422,19 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 
 	// L-16: a run of it.
 	putStepOK(t, rig.handler, "BARE-1", uuid.NewString(), implementerStart(daemonSessionOf("BARE")))
-	deadline = time.Now().Add(5 * time.Second)
 	for _, page := range barePages {
-		page.runsRise(t, deadline, bare, "L-16, a run of an issue of a project that names no daemon")
+		page.runsRise(t, bare, "L-16, a run of an issue of a project that names no daemon")
 	}
 
 	// L-17: its project names a daemon again (PUT .../legion/daemon, which announces itself), and
 	// the rows the earlier daemon left are its state and its read.
 	nameLegionDaemon(t, rig.handler, "BARE", "http://legion-bare.internal:13370")
-	deadline = time.Now().Add(5 * time.Second)
+	// The PUT announces itself: its notify is what the pages' deltas below answer.
 	named := legionIssueBody{configured: true, state: &legionIssueWant{
 		phase: "implementing", since: started, roles: []wireLegionRole{{"implementer", "working"}}, blockedBy: []string{},
 	}, read: &wireLegionRead{At: firstRead, OK: true}}
 	for _, page := range barePages {
-		page.step(t, deadline, named, "configured", "read", "state")
+		page.step(t, named, "configured", "read", "state")
 	}
 
 	// L-18: the daemon is removed again (DELETE .../legion/daemon, which announces itself): the
@@ -423,18 +446,16 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	if removed := dispatchRequest(t, rig.handler, http.MethodDelete, "/api/v1/projects/BARE/legion/daemon", nil, "alice"); removed.Code != http.StatusNoContent {
 		t.Fatalf("L-18: remove BARE's daemon: status=%d body=%s, want 204", removed.Code, removed.Body.String())
 	}
-	deadline = time.Now().Add(5 * time.Second)
 	for _, page := range barePages {
-		if after := page.step(t, deadline, bare, "configured", "read", "state").RunsRevision; after != revisions[page] {
+		if after := page.step(t, bare, "configured", "read", "state").RunsRevision; after != revisions[page] {
 			t.Fatalf("L-18: %s's runs revision went from %d to %d as its daemon was removed, want it kept", page.what(), revisions[page], after)
 		}
 	}
 
 	// L-19: another run, with no daemon again.
 	putStepOK(t, rig.handler, "BARE-1", uuid.NewString(), implementerStart(daemonSessionOf("BARE")))
-	deadline = time.Now().Add(5 * time.Second)
 	for _, page := range barePages {
-		page.runsRise(t, deadline, bare, "L-19, a run once the daemon was removed again")
+		page.runsRise(t, bare, "L-19, a run once the daemon was removed again")
 	}
 
 	// L-13: hub A's listener loses its connection and cannot dial again; a phase is stored with
@@ -447,10 +468,22 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	terminateListener(t, rig.database, &dials)
 	state.phase, state.since = "testing", tick()
 	observe("LIVE", "LIVE-1", legion.FieldPhase, `"testing"`, state.since)
-	pages[0].conn.none(t, viewMaxWait+time.Second, "L-13, a phase stored with no notify while hub A's listener was down")
+	// No notification of the phase is sent, and terminateListener has returned with no dial of the
+	// listener's in flight, so the hub's listener can hear nothing until the reconnection below, and
+	// nothing the hub holds says whether it hears the phase some other way. A hub that marked the
+	// view by the phase's store would begin its recompute within viewMaxWait of that mark (dueAt):
+	// the span is exactly viewMaxWait from the store, and the recompute count after it catches a
+	// recompute begun in it whose delta is not sent yet. The reconnection is what makes the hub
+	// hear the phase, so the later action whose effect would prove the absence is the one that ends
+	// it.
+	testwait.Quiet(t, "the frames of "+pages[0].what()+" while hub A's listener is down", pages[0].conn.frames, viewMaxWait,
+		"L-13: no state of the hub tells a phase it cannot hear from one it hears some other way, and the only later "+
+			"action whose effect would, the listener's reconnection, is what makes it hear the phase; the span is "+
+			"viewMaxWait from the store, the latest a hub that marked the view by then would begin its recompute")
+	pages[0].requireNoRecomputeSince(t, start, "L-13, while hub A's listener is down")
 	blind.Store(false)
 	rig.waitFor(t, start, "L-13, hub A's listener's reconnection", listenerConnected)
-	pages[0].step(t, time.Now().Add(5*time.Second), body, "state")
+	pages[0].step(t, body, "state")
 }
 
 // TestAnIssuesLegionLiveViewOfAKeyDispatchDoesNotHoldIsRefusedAsTheRouteRefusesIt: a view of a key
@@ -464,7 +497,7 @@ func TestAnIssuesLegionLiveViewOfAKeyDispatchDoesNotHoldIsRefusedAsTheRouteRefus
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame(legionIssueSub, legionIssueSubscription("LIVE-999")))
 	refusal := conn.refusal(t, legionIssueSub, "NOT_FOUND")
-	conn.none(t, time.Second, "the refusal of a key Dispatch does not hold")
+	rig.requireNothingSent(t, conn, "the refusal of a key Dispatch does not hold")
 	routed := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/issues/LIVE-999/legion", nil, "alice")
 	var answer refusalAnswer
 	if err := json.Unmarshal(routed.Body.Bytes(), &answer); err != nil || routed.Code != http.StatusNotFound || answer.Code != "NOT_FOUND" {
@@ -494,7 +527,8 @@ func TestAnIssuesLegionLiveViewOfAnIssueTheDaemonDoesNotRecordAnswersNullThenIts
 
 	phased := read.At.Add(time.Minute)
 	seedLegionObservation(t, rig.database, "LIVE", key, legion.FieldPhase, `"planning"`, phased)
-	page.step(t, announce(t, rig, "LIVE"), legionIssueBody{configured: true, read: read, state: &legionIssueWant{
+	announce(t, rig, "LIVE")
+	page.step(t, legionIssueBody{configured: true, read: read, state: &legionIssueWant{
 		phase: "planning", since: phased, roles: []wireLegionRole{}, blockedBy: []string{},
 	}}, "state")
 }

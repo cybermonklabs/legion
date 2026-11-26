@@ -365,13 +365,13 @@ func TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers(t *testing.T) {
 // row's newest reply and no row the answer holds was written after it.
 func TestInboxRowsAnswerWithTheSnapshotsOwnTime(t *testing.T) {
 	t.Parallel()
-	handler, _, _, _, _ := directConversationFrom(t, "alice")
+	handler, database, _, _, _ := directConversationFrom(t, "alice")
 	issue := createInteractionIssue(t, handler, "TEST", "As of", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Ready?"}, "alice")
 	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": "Yes.", "reply_to": root.ID})
 	agentThread(t, handler, "btw", "Deploy is tonight.", "Noted.")
 
-	before := time.Now()
+	before := databaseNow(t, database.Pool)
 	page := getMyReplies(t, handler, "alice", "?kind=reply,agent")
 	if page.AsOf.IsZero() || len(page.Rows) != 2 {
 		t.Fatalf("page = %#v, want both rows and an as_of", page)
@@ -381,8 +381,8 @@ func TestInboxRowsAnswerWithTheSnapshotsOwnTime(t *testing.T) {
 			t.Fatalf("as_of %s is before %s's reply at %s", page.AsOf, row.ThreadID, row.Reply.CreatedAt)
 		}
 	}
-	if page.AsOf.Before(before.Add(-time.Minute)) || page.AsOf.After(time.Now().Add(time.Minute)) {
-		t.Fatalf("as_of = %s, want the database's own clock around %s", page.AsOf, before)
+	if after := databaseNow(t, database.Pool); page.AsOf.Before(before) || page.AsOf.After(after) {
+		t.Fatalf("as_of = %s, want the database's own clock between %s and %s", page.AsOf, before, after)
 	}
 }
 

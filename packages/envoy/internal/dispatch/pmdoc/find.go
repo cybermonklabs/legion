@@ -12,6 +12,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 )
 
 // Range is a half-open ProseMirror position range.
@@ -286,8 +288,10 @@ func nearerFirst(near int) func(left, right quoteMatch) int {
 }
 
 // matches is every match of quote in the finder's document: a heading quote's headings, otherwise
-// the plain matcher cascade's.
+// the plain matcher cascade's. Every match of a quote (FindQuote, Find, NearestFirst) starts here,
+// so it is the anchor walk docwork's observers are told of (docwork.AnchorWalk).
 func (f *QuoteFinder) matches(quote string) ([]quoteMatch, error) {
+	docwork.Enter(docwork.AnchorWalk)
 	if err := f.prepare(); err != nil {
 		return nil, err
 	}
@@ -1071,11 +1075,13 @@ type MarkFound struct {
 // to the range and quote FindMark returns and the attributes MarkAttrs reads, uncopied, and a key it
 // does not find is absent. A write refreshes every open anchor's range and quote, and a walk per
 // anchor would make that refresh quadratic in a document carrying many of them; here a run costs
-// only its own marks and the identities open at it.
+// only its own marks and the identities open at it. It is the anchor walk docwork's observers are
+// told of (docwork.AnchorWalk), FindMark's included.
 func FindMarks(doc *Node, keys []MarkRef) map[MarkRef]MarkFound {
 	if len(keys) == 0 {
 		return map[MarkRef]MarkFound{}
 	}
+	docwork.Enter(docwork.AnchorWalk)
 	wanted := make(map[MarkRef]*markSearch, len(keys))
 	for _, key := range keys {
 		if _, ok := wanted[key]; !ok {

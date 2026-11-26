@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
@@ -23,28 +25,78 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds runs the fill as two serving
-// processes run it, each on a store of its own, and writes events while both are woken by each:
-// the hold and the cursor row name the first process alone, which writes every event's rows,
-// while the second stands by. Then the first dies with its hold held: its pool closes, so no
-// renewal and no release of its reaches the database, and its context ends. The second takes the
-// hold once it lapses, within 60 s of the death, and writes the next events, and the cursor row's
-// holder, once it names the second, never names the first again. The 60 s bounds the take-over
-// alone, the hold's lapse and the standby's retry; the rows wait on the event horizon, bounded by
-// the test binary's deadline (textversionstest.AwaitRowsUntil).
-func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T) {
+// TestOneFillHoldsTheLeaseAndAnotherTakesItOver runs the fill as two serving processes run it,
+// each on a store of its own, and writes events while both are woken by each: the hold and the
+// cursor row name the first process alone, which writes every event's rows, while the second
+// stands by. Then the first dies with its hold held: its pool closes, so no renewal and no
+// release of its reaches the database, and its context ends. The second takes the hold once it
+// lapses and writes the next events, and the cursor row's holder, once it names the second, never
+// names the first again. Each wait is on its fact, the take and then the rows, which wait on the
+// event horizon (textversionstest.AwaitRows). How soon after the death the second takes the hold
+// is a service level, which TestAStandbyFillTakesTheHoldWithinAMinuteOfTheHoldersDeath holds in
+// benchtime's timing lane.
+//
+// Both fills take their hold with stagedHoldTTL (Config.holdTTL), so the first's hold cannot lapse
+// while both run however long a loaded machine stalls its renewals, which on holdOptions.TTL would
+// hand the standby the hold early; the row reads the first's expiry past holdOptions.TTL, which is
+// what the seam holds. At the death the row lapses the dead holder's row itself, as the TTL passing
+// with no renewal does. The timing lane's twin runs the production TTL and lapses nothing.
+func TestOneFillHoldsTheLeaseAndAnotherTakesItOver(t *testing.T) {
+	fillTakeOverAfterDeath(t, benchtime.EveryRun)
+}
+
+// A standby takes the hold of a holder that died within 60 s of the death: the hold's 15 s TTL
+// and the standby's 10 s retry. The 60 s bounds the take-over alone; the rows the standby then
+// writes wait on the event horizon, which waits on the whole Postgres instance, so no span bounds
+// them. A reading of time on a shared runner is its load as much as the product's work, so the
+// row runs only in benchtime's timing lane (benchtime.Timing); that the standby takes over at all
+// is TestOneFillHoldsTheLeaseAndAnotherTakesItOver's, which the suite runs.
+func TestAStandbyFillTakesTheHoldWithinAMinuteOfTheHoldersDeath(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	if took := fillTakeOverAfterDeath(t, benchtime.OnTheClock); took > time.Minute {
+		t.Fatalf("the standby took the dead holder's hold %v after the death; want within 60 s of the death", took.Round(time.Millisecond))
+	}
+}
+
+// stagedHoldTTL is the hold TTL of the every-run take-over row (Config.holdTTL): staged state for
+// the database's clock, which judges the hold's expiry, and for the hold's own loss deadline, not a
+// wait, longer than any `go test -timeout` CI gives this package.
+const stagedHoldTTL = 24 * time.Hour
+
+// fillTakeOverAfterDeath is TestOneFillHoldsTheLeaseAndAnotherTakesItOver's run, and answers how
+// long after the holder's death, on the machine's clock, the standby's take of the hold was read.
+// On benchtime.EveryRun both fills hold with stagedHoldTTL and the row lapses the dead holder's
+// row at the death; on benchtime.OnTheClock they hold with holdOptions.TTL and the hold lapses by
+// itself.
+func fillTakeOverAfterDeath(t *testing.T, lane benchtime.Lane) time.Duration {
+	t.Helper()
+	var holdTTL time.Duration
+	if lane == benchtime.EveryRun {
+		holdTTL = stagedHoldTTL
+	}
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
-	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
-	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
-	second := startFill(t, storetest.SecondProcess(t, database), nil, true)
+	first := startFillHolding(t, storetest.SecondProcess(t, database), nil, nil, true, holdTTL)
+	firstHolder := awaitLiveHolder(t, database)
+	if lane == benchtime.EveryRun {
+		var left time.Duration
+		if err := database.Pool.QueryRow(context.Background(),
+			`select expires_at - now() from duty_holds where name = $1`, fillHoldName).Scan(&left); err != nil {
+			t.Fatalf("read the first fill's hold: %v", err)
+		}
+		if left <= holdOptions.TTL {
+			t.Fatalf("the first fill's hold expires %v from the database's now(), want more than holdOptions.TTL %v: the fill took it with the staged TTL (Config.holdTTL)", left, holdOptions.TTL)
+		}
+	}
+	second := startFillHolding(t, storetest.SecondProcess(t, database), nil, nil, true, holdTTL)
 	second.AwaitLine(t, standingByMessage)
 
 	var holders cursorHolders
 	var ids []int64
-	// The comments are written 300 ms apart while both fills run, and the hold is read at each: the
-	// loop writes on a tick rather than waiting for something to hold, so it keeps its own sleep.
+	// The comments are written 300 ms apart while both fills run, and the hold is read at each: what
+	// is checked is an absence (the standby never takes the hold while the holder lives), so each
+	// pause is a span held for bothFillsWhy.
 	for range 10 {
 		ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
 		first.Wake()
@@ -53,9 +105,9 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 		if live := liveHolder(t, database); live != firstHolder {
 			t.Fatalf("while both fills run, the hold names %q; want the first's, %s", live, firstHolder)
 		}
-		time.Sleep(300 * time.Millisecond)
+		testwait.Span(t, 300*time.Millisecond, bothFillsWhy)
 	}
-	textversionstest.AwaitRowsUntil(t, database, ids, func() { holders.sample(t, database) })
+	textversionstest.AwaitRows(t, database, ids, func() { holders.sample(t, database) })
 	if got := holders.read; len(got) != 1 || got[0] != firstHolder {
 		t.Fatalf("while both fills ran the cursor row named %v; want the first's holder %s alone", got, firstHolder)
 	}
@@ -64,21 +116,32 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	}
 
 	died := time.Now()
-	first.db.Pool.Close()
-	first.Stop(t)
+	testwait.Returns(t, "the dead holder's pool to close once its fill lets its connections go", first.db.Pool.Close)
+	first.Stop(t, "the dead holder's keyword fill to return after its stop")
+	if lane == benchtime.EveryRun {
+		// The dead holder's row lapses as stagedHoldTTL passing with no renewal would leave it: its
+		// expiry at the database's now(), its holder kept.
+		if _, err := database.Pool.Exec(context.Background(),
+			`update duty_holds set expires_at = now() where name = $1 and holder::text = $2`, fillHoldName, firstHolder); err != nil {
+			t.Fatalf("lapse the dead holder's hold: %v", err)
+		}
+	}
 	var next []int64
 	for range 3 {
 		next = append(next, commitComment(t, database, broker, textversionstest.Issue).id)
 	}
 	second.Wake()
-	testwait.WithinPolling(t, time.Minute-time.Since(died), 50*time.Millisecond, "the standby to take the dead holder's hold within 60 s of the death", func() bool {
+	testwait.Until(t, "the standby to take the dead holder's hold", func() (string, bool) {
 		holders.sample(t, database)
 		second.Wake()
-		live := liveHolder(t, database)
-		return live != "" && live != firstHolder
+		if live := liveHolder(t, database); live != "" && live != firstHolder {
+			return "the hold names " + live, true
+		}
+		return holdRow(t, database), false
 	})
-	t.Logf("the standby took the hold %v after the holder died", time.Since(died).Round(time.Millisecond))
-	textversionstest.AwaitRowsUntil(t, database, next, func() {
+	took := time.Since(died)
+	t.Logf("the standby took the hold %v after the holder died", took.Round(time.Millisecond))
+	textversionstest.AwaitRows(t, database, next, func() {
 		holders.sample(t, database)
 		second.Wake()
 	})
@@ -92,25 +155,25 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	if live := liveHolder(t, database); live != got[1] {
 		t.Fatalf("the hold names %q; want the second's holder %s, which wrote the cursor row", live, got[1])
 	}
+	return took
 }
 
-// TestAStandbyTakesTheReleasedHoldAtOnce stops the holder as a serving process stops, by its
-// context: the batch in flight commits or rolls back and the hold is released, which notifies
-// the standby through its listener (duty.HoldReleasedChannel on a pglisten.Hub, as the server
-// registers it). The standby's retry is one the test never runs (Config.retry), and its released
-// wake is signalled by a notification naming the fill's hold alone (releasedWake), so the
-// notification is the one thing that can make it take the hold: it takes the hold, and a pass
-// writes the next event. Its events are woken only once it is seen to hold the hold, so a standby
-// that needs an event's wake to take it fails. Each wait is on its fact, bounded by the test
-// binary's deadline alone: a fixed span from the stop would include the pass's wait on the event
-// horizon, which waits on the database's open event writes (textversionstest.AwaitRowsUntil), not
-// on the standby.
-func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
+// TestAStandbyTakesTheReleasedHold stops the holder as a serving process stops, by its context:
+// the batch in flight commits or rolls back and the hold is released, which notifies the standby
+// through its listener (duty.HoldReleasedChannel on a pglisten.Hub, as the server registers it).
+// The standby's retry is one the test never runs (Config.retry), and its released wake is
+// signalled by a notification naming the fill's hold alone (releasedWake), so the notification is
+// the one thing that can make it take the hold: it takes the hold, and a pass writes the next
+// event. Its events are woken only once it is seen to hold the hold, so a standby that needs an
+// event's wake to take it fails. Each wait is on its fact, bounded by the test binary's deadline
+// alone: a fixed span from the stop would include the pass's wait on the event horizon, which
+// waits on the database's open event writes (textversionstest.AwaitRows), not on the standby.
+func TestAStandbyTakesTheReleasedHold(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
-	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
+	firstHolder := awaitLiveHolder(t, database)
 	standbyStore := storetest.SecondProcess(t, database)
 	released := releasedWake(t, standbyStore)
 	second := startFillRetrying(t, standbyStore, released, make(chan time.Time), true)
@@ -118,9 +181,9 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	// The holder writes an event before it stops, so what it releases is a hold it fills under.
 	written := commitComment(t, database, broker, textversionstest.Issue).id
 	first.Wake()
-	textversionstest.AwaitRowsUntil(t, database, []int64{written}, nil)
+	textversionstest.AwaitRows(t, database, []int64{written}, nil)
 
-	first.Stop(t)
+	first.Stop(t, "the holder's keyword fill to return after its stop")
 	stopped := time.Now()
 	if !first.Logged(t, releasedHoldMessage) {
 		t.Fatalf("the holder stopped without logging its release:\n%s", first.Log())
@@ -129,15 +192,21 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 		t.Fatalf("the holder stopped and the hold still names it, %s", firstHolder)
 	}
 	id := commitComment(t, database, broker, textversionstest.Issue).id
-	standby := testwait.Until(t, "the standby to take the released hold on the release's notification", func() (string, bool) {
-		live := liveHolder(t, database)
-		return live, live != ""
+	// Nothing wakes the standby's events before its take: a standby that took the hold only once
+	// an event woke it would never take it, and the row would fail here by name.
+	var standby string
+	testwait.Until(t, "the standby to take the released hold on the release's notification", func() (string, bool) {
+		if standby = liveHolder(t, database); standby != "" {
+			return "the hold names " + standby, true
+		}
+		return holdRow(t, database), false
 	})
 	took := time.Since(stopped)
-	// The standby took the hold, and may have run its first pass under it, before the event above
-	// was written.
+	// The take can come before the event's commit, and its first pass with it, so the row wakes
+	// the standby's events now, as the event's commit does in production; the take is already
+	// seen, so the wake cannot have brought it.
 	second.Wake()
-	textversionstest.AwaitRowsUntil(t, database, []int64{id}, nil)
+	textversionstest.AwaitRows(t, database, []int64{id}, nil)
 	t.Logf("the standby took the released hold %v after the holder stopped and wrote the next event %v after",
 		took.Round(time.Millisecond), time.Since(stopped).Round(time.Millisecond))
 	if standby == firstHolder {
@@ -152,12 +221,13 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 // signalled, as a standby whose listener is down has: the holder releases its hold and nothing
 // tells the standby, which leaves the hold free until its next retry. The test runs those retries
 // (Config.retry, where a serving process's ticker of standbyRetry ticks), and one takes the free
-// hold; the standby's first pass writes the next event. Its events are woken only once it is seen
-// to hold the hold, so a standby whose retry needs an event's wake as well fails.
+// hold. Nothing wakes the standby's events, so a standby that took the hold only once an event
+// woke it would not pass; its first pass under the hold writes what was written while it stood
+// by.
 //
 // Each wait is on its fact, bounded by the test binary's deadline alone: the hold coming free, the
 // retry's take, and the row, which the pass writes only once the event horizon, which waits on the
-// database's open event writes, has passed the event (textversionstest.AwaitRowsUntil). A fixed span
+// database's open event writes, has passed the event (textversionstest.AwaitRows). A fixed span
 // from the holder's stop, the ticker's 10 s and 5 s more, read the instance's load as well as the
 // standby (merge-group run 44963211024: `the events [1] had 0 rows within 14.996081355s; want 1`).
 func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
@@ -165,13 +235,13 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
-	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
+	firstHolder := awaitLiveHolder(t, database)
 	never := make(chan struct{})
 	retry := make(chan time.Time, 1)
 	second := startFillRetrying(t, storetest.SecondProcess(t, database), never, retry, true)
 	second.AwaitLine(t, standingByMessage)
 
-	first.Stop(t)
+	first.Stop(t, "the holder's keyword fill to return after its stop")
 	// The holder released its hold as it stopped, or, where its release did not reach the
 	// database, the hold lapses holdOptions.TTL after its last renewal: either way the stopped
 	// holder's hold ends, and nothing tells the standby.
@@ -180,8 +250,8 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 		return live, live != firstHolder
 	})
 	id := commitComment(t, database, broker, textversionstest.Issue).id
-	// Nothing has told the standby that the hold is free, and nothing has woken its events, so it
-	// has not taken it: only a retry, below, can.
+	// Nothing has told the standby that the hold is free, and nothing wakes its events, so it has
+	// not taken it: only a retry, below, can.
 	if live := liveHolder(t, database); live != "" || second.Logged(t, tookHoldMessage) {
 		t.Fatalf("the standby took the hold before its retry, with no wake for the release: the hold names %q live:\n%s", live, second.Log())
 	}
@@ -189,18 +259,19 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	// The test retries as the ticker does, again after a try that found no free hold or failed,
 	// until a retry takes the hold.
 	retried := time.Now()
-	standby := testwait.UntilPolling(t, 100*time.Millisecond, "the standby's retry to take the free hold", func() (string, bool) {
+	var standby string
+	testwait.Until(t, "the standby's retry to take the free hold", func() (string, bool) {
 		select {
 		case retry <- time.Now():
 		default:
 		}
-		live := liveHolder(t, database)
-		return live, live != ""
+		if standby = liveHolder(t, database); standby != "" {
+			return "the hold names " + standby, true
+		}
+		return holdRow(t, database), false
 	})
 	took := time.Since(retried)
-	// Its events are woken only now, so no event's wake can have brought the take.
-	second.Wake()
-	textversionstest.AwaitRowsUntil(t, database, []int64{id}, nil)
+	textversionstest.AwaitRows(t, database, []int64{id}, nil)
 	t.Logf("the standby's retry took the hold %v after the test's first retry and wrote the next event %v after",
 		took.Round(time.Millisecond), time.Since(retried).Round(time.Millisecond))
 	if standby == firstHolder {
@@ -225,7 +296,7 @@ func TestTheFillWritesNothingUntilTheServerListens(t *testing.T) {
 	}
 	fill.Wake()
 
-	time.Sleep(5 * time.Second)
+	testwait.Span(t, 5*time.Second, notServingWhy)
 	if rows := countRows(t, database); rows != 0 {
 		t.Fatalf("before the process serves the fill wrote %d rows", rows)
 	}
@@ -240,7 +311,7 @@ func TestTheFillWritesNothingUntilTheServerListens(t *testing.T) {
 	}
 
 	close(fill.serving)
-	textversionstest.AwaitRowsUntil(t, database, ids, nil)
+	textversionstest.AwaitRows(t, database, ids, nil)
 }
 
 // TestACaughtUpFillSendsNoStatement runs the fill on a store whose every statement a tracer sees,
@@ -253,23 +324,31 @@ func TestACaughtUpFillSendsNoStatement(t *testing.T) {
 	broker := events.NewBroker()
 	tracer := &renewalsApart{}
 	fill := startFill(t, storetest.TracedStore(t, database, tracer), nil, true)
-	awaitLiveHolder(t, database, 10*time.Second)
+	awaitLiveHolder(t, database)
 	var ids []int64
 	for range 3 {
 		ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
 	}
 	fill.Wake()
-	textversionstest.AwaitRowsUntil(t, database, ids, nil)
+	textversionstest.AwaitRows(t, database, ids, nil)
 
 	// Longer than the horizon's longest re-read (rereadMax), so a fill still reading it again is
 	// not taken for one at rest.
-	storetest.AwaitQuiet(t, &tracer.others, rereadMax+time.Second, time.Minute)
+	storetest.AwaitQuiet(t, &tracer.others, rereadMax+time.Second, caughtUpFillWhy)
 	renewed := tracer.renewals.Load()
-	storetest.RequireNoStatements(t, &tracer.others, 10*time.Second, "a fill caught up with nothing written")
-	if tracer.renewals.Load() == renewed {
-		t.Errorf("the hold was not renewed over 10 s; want its renewal every %v", holdOptions.Renew)
-	}
+	storetest.RequireNoStatements(t, &tracer.others, 10*time.Second, "a fill caught up with nothing written", caughtUpFillWhy)
+	// The renewal goes on at rest: a real ticker paces it every holdOptions.Renew, so the row waits
+	// for one past the count read before the quiet span rather than counting them inside a span.
+	testwait.Until(t, "the hold's renewal after the fill went quiet", func() (string, bool) {
+		n := tracer.renewals.Load()
+		return fmt.Sprintf("%d renewals of the hold, %d of them before the quiet span", n, renewed), n > renewed
+	})
 }
+
+// caughtUpFillWhy is why the caught-up fill's rest is held as a span: a fill at rest is the
+// absence of its statements, which no state of the fill shows, its waits are on the wall clock so
+// synctest.Wait does not reach them, and no later action of the test ends a rest.
+const caughtUpFillWhy = "a fill at rest is the absence of its statements, which no state of the fill shows; its waits run on the wall clock, out of synctest's reach, and no later action of the test ends a rest"
 
 // renewalsApart counts the statements the store it traces sends (storetest.TracedStore): the
 // hold's renewals (duty's renewHold) in renewals, and every other statement in others.
@@ -310,6 +389,13 @@ func startFill(t *testing.T, db *store.Store, released <-chan struct{}, serving 
 // sending it where the ticker of standbyRetry would tick (Config.retry); nil is the ticker.
 func startFillRetrying(t *testing.T, db *store.Store, released <-chan struct{}, retry <-chan time.Time, serving bool) *fillProcess {
 	t.Helper()
+	return startFillHolding(t, db, released, retry, serving, 0)
+}
+
+// startFillHolding is startFillRetrying whose fill takes its hold with holdTTL (Config.holdTTL);
+// zero is holdOptions.TTL.
+func startFillHolding(t *testing.T, db *store.Store, released <-chan struct{}, retry <-chan time.Time, serving bool, holdTTL time.Duration) *fillProcess {
+	t.Helper()
 	process := &fillProcess{db: db, serving: make(chan struct{})}
 	if serving {
 		close(process.serving)
@@ -321,6 +407,7 @@ func startFillRetrying(t *testing.T, db *store.Store, released <-chan struct{}, 
 		Serving:  process.serving,
 		Released: released,
 		retry:    retry,
+		holdTTL:  holdTTL,
 	}
 	process.Fill = textversionstest.StartFill(t, func(ctx context.Context, wake <-chan struct{}, logger *slog.Logger) error {
 		config.Events, config.Logger = wake, logger
@@ -359,15 +446,21 @@ func releasedWake(t *testing.T, db *store.Store) <-chan struct{} {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the standby's listener hub to return", done)
 	})
-	select {
-	case <-listening:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the standby's listener hub did not listen within 10 s")
-	}
+	testwait.Receive(t, "the standby's listener hub to listen", listening)
 	return wake
 }
+
+// bothFillsWhy is why the two-fill row's pauses are spans: the absence of a takeover is no state
+// the standby leaves, its retry ticker runs on the wall clock out of synctest's reach, and no later
+// action of the row shows a takeover that did not happen.
+const bothFillsWhy = "a standby that does not take a live holder's hold leaves no state, its retry ticker runs on the wall clock out of synctest's reach, and no later action shows a takeover that did not happen"
+
+// notServingWhy is why the not-serving row's pause is a span: a fill that writes nothing before
+// Serving closes leaves no state to read, it runs on the wall clock with real Postgres I/O, out of
+// synctest's reach, and the later action, Serving's close, is what lets it write.
+const notServingWhy = "a fill that writes nothing before Serving closes leaves no state, it does real Postgres I/O out of synctest's reach, and the only later action is the close that lets it write"
 
 // liveHolder is the holder duty_holds names live for the fill's hold, as text, or "" for none.
 func liveHolder(t *testing.T, database *store.Store) string {
@@ -381,15 +474,34 @@ func liveHolder(t *testing.T, database *store.Store) string {
 	return holder
 }
 
-// awaitLiveHolder waits until the fill's hold names a live holder, and answers it.
-func awaitLiveHolder(t *testing.T, database *store.Store, within time.Duration) string {
+// awaitLiveHolder waits, through the shared wait, until the fill's hold names a live holder, and
+// answers it. A try that finds none reads what duty_holds holds for the hold (holdRow).
+func awaitLiveHolder(t *testing.T, database *store.Store) string {
 	t.Helper()
 	var holder string
-	testwait.WithinPolling(t, within, 20*time.Millisecond, fmt.Sprintf("a fill to take the hold within %v", within), func() bool {
+	testwait.Until(t, "a fill to take the hold", func() (string, bool) {
 		holder = liveHolder(t, database)
-		return holder != ""
+		if holder != "" {
+			return "the hold names " + holder, true
+		}
+		return holdRow(t, database), false
 	})
 	return holder
+}
+
+// holdRow says what duty_holds holds for the fill's hold: the holder its row names and how far
+// the row's expiry stands from the database's now() (below zero once it has lapsed), or that the
+// hold has no row.
+func holdRow(t *testing.T, database *store.Store) string {
+	t.Helper()
+	var row string
+	if err := database.Pool.QueryRow(t.Context(), `
+		select coalesce((select format('duty_holds names holder %s, expiring %s after now()', holder, expires_at - now())
+			from duty_holds where name = $1), format('duty_holds has no row for %s', $1::text))
+	`, fillHoldName).Scan(&row); err != nil {
+		t.Fatalf("read the fill's hold row: %v", err)
+	}
+	return row
 }
 
 // cursorHolders is the cursor row's holder as the test read it.

@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap holds the report to a
@@ -52,7 +53,9 @@ func TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap(t 
 	if err != nil {
 		t.Fatalf("open the database again: %v", err)
 	}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the database's second pool to come back, so the pool closes", database.Pool.Close)
+	})
 	// No autovacuum or autoanalyze of embeddings sets its visibility map or its statistics while
 	// the test makes the state.
 	mustExec(t, database.Pool, `alter table embeddings set (autovacuum_enabled = false)`)

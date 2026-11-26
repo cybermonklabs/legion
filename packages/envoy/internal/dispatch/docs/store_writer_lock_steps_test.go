@@ -18,12 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// storeStepWait bounds how long a run waits for the write under test to queue behind a hold, and
-// how long a write that was let go is given to finish. Both are far above what the work takes; a
-// run that passes either is the write waiting on something it should not, not a slow machine.
-const storeStepWait = 30 * time.Second
 
 // TestEveryDocsStoreWriterTakesTheStoreLockOrder is this package's half of the check
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
@@ -300,11 +296,9 @@ func (r *docsWriterRig) tick() docsWriter {
 // transaction inserted and has not committed; the tuple append and the comments row are held as
 // their tables.
 func (r *docsWriterRig) tickEvents() docsWriter {
-	awaitHorizon := func(t *testing.T, ctx context.Context) {
+	awaitHorizon := func(t *testing.T) {
 		t.Helper()
-		awaited, cancel := context.WithTimeout(ctx, storeStepWait)
-		defer cancel()
-		if _, err := r.service.blockIndexHorizon().Await(awaited); err != nil {
+		if _, err := r.service.blockIndexHorizon().Await(testwait.Context(t)); err != nil {
 			t.Fatalf("await the event log's safe horizon: %v", err)
 		}
 	}
@@ -347,7 +341,7 @@ func (r *docsWriterRig) tickEvents() docsWriter {
 			},
 		},
 		ready: func(t *testing.T, ctx context.Context) docsRun {
-			awaitHorizon(t, ctx)
+			awaitHorizon(t)
 			if _, _, err := r.service.readEventsAfterCursor(ctx, &BlockIndexTick{}); err != nil {
 				t.Fatalf("read the events before the run's: %v", err)
 			}
@@ -370,7 +364,7 @@ func (r *docsWriterRig) tickEvents() docsWriter {
 			}
 			r.recordEvent(t, ctx, "comment.created", map[string]any{"id": comment, "issue_key": "CORE-1", "author": author})
 			r.awaitDurable(t, document)
-			awaitHorizon(t, ctx)
+			awaitHorizon(t)
 			return docsRun{
 				document: document,
 				made: graphstore.Node{
@@ -841,13 +835,8 @@ func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig 
 			rig.requireNothingBetweenTheStepsAndTheFence(t, ctx, writer, index, backend, held)
 		}
 		release()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("%s, once let go at %s: %v", writer.name, step.name, err)
-			}
-		case <-time.After(storeStepWait):
-			t.Fatalf("%s did not finish within %s of being let go at %s", writer.name, storeStepWait, step.name)
+		if err := testwait.Receive(t, writer.name+" to finish once let go at "+step.name, done); err != nil {
+			t.Fatalf("%s, once let go at %s: %v", writer.name, step.name, err)
 		}
 		storetest.RequireNoMarkedCause(t, rig.database, writer.name+" let go at "+step.name)
 	}
@@ -921,7 +910,7 @@ func (r *docsWriterRig) requireNothingBetweenTheStepsAndTheFence(t *testing.T, c
 
 // --- the rig ------------------------------------------------------------------------------
 
-// docsWriterRig is the document service the paths run in, whose settle delay is an hour so no
+// docsWriterRig is the document service the paths run in, whose settle delay is a day so no
 // timer settles a document under a hold (blockIndexService), with three documents of issue CORE-1
 // written through the request path: versioned, whose settlements write versions; asked, whose
 // settlements open asks; and askedLive, whose settlements open asks and write versions, with the
@@ -965,11 +954,10 @@ func (r *docsWriterRig) fresh(prefix string) string {
 }
 
 // awaitDurable waits until every live update of document has reached the service's persistence
-// and landed, so no append of the room's own runs while a step is held.
+// and landed, so no append of the room's own runs while a step is held (waitForLandedAppends).
 func (r *docsWriterRig) awaitDurable(t *testing.T, document string) {
 	t.Helper()
-	awaitRoomAppends(t, r.service, document, "reach persistence", r.service.waitForPendingUpdates)
-	awaitRoomAppends(t, r.service, document, "become durable", r.service.waitForDurableAppends)
+	waitForLandedAppends(t, r.service, document)
 }
 
 // settle runs the document's settlement as its timer does, at the generation its room stands at
@@ -1078,8 +1066,8 @@ func (r *docsWriterRig) beginHolder(t *testing.T, ctx context.Context) (pgx.Tx, 
 // waited at the step, and one that never queues is waiting somewhere the step is not.
 func (r *docsWriterRig) queuedBackend(t *testing.T, ctx context.Context, holder pgx.Tx, done <-chan error, what string) uint32 {
 	t.Helper()
-	deadline := time.Now().Add(storeStepWait)
-	for {
+	var backend uint32
+	testwait.Until(t, what+" to queue behind the holder", func() (string, bool) {
 		select {
 		case err := <-done:
 			t.Fatalf("%s finished without waiting there: %v", what, err)
@@ -1097,20 +1085,19 @@ func (r *docsWriterRig) queuedBackend(t *testing.T, ctx context.Context, holder 
 		}
 		switch len(waiting) {
 		case 0:
+			return fmt.Sprintf("the backends waiting on the holder: %v", waiting), false
 		case 1:
-			return waiting[0]
-		default:
-			statements := make([]string, len(waiting))
-			for index, pid := range waiting {
-				statements[index] = fmt.Sprintf("%d: %s", pid, r.runningStatement(t, ctx, pid))
-			}
-			t.Fatalf("%s: %d backends wait on the holder, want the write's alone: %v", what, len(waiting), statements)
+			backend = waiting[0]
+			return "", true
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s never queued there within %s", what, storeStepWait)
+		statements := make([]string, len(waiting))
+		for index, pid := range waiting {
+			statements[index] = fmt.Sprintf("%d: %s", pid, r.runningStatement(t, ctx, pid))
 		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		t.Fatalf("%s: %d backends wait on the holder, want the write's alone: %v", what, len(waiting), statements)
+		return "", false
+	})
+	return backend
 }
 
 // docsStatementSpace is a run of whitespace in a statement, which docsNormalizedStatement folds.

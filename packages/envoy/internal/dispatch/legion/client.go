@@ -25,6 +25,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // StatePath is the daemon route the sampler reads a project's state from. It authenticates
@@ -36,7 +38,7 @@ const StatePath = "/legion/v1/state"
 // INFRA daemon's state took 10.9 to 11.9 s on 2026-11-21 and grows about 3.4 ms with each issue,
 // and a daemon under load must still project and send a state of some megabytes in it. A bound at
 // all is what keeps a minute's pass from piling up behind a daemon that accepts a connection and
-// never answers.
+// never answers. It runs on the client's clock (WithClock).
 const RequestTimeout = 60 * time.Second
 
 // ResponseLimit is the most of a daemon's answer Dispatch reads: 32 MiB, about four times the
@@ -58,15 +60,18 @@ var ErrResponseTooLarge = fmt.Errorf("the answer is over the %d-byte cap", Respo
 type Client struct {
 	baseURL string
 	http    *http.Client
+	// clock is what every call's RequestTimeout runs on: clock.Real, and a test's
+	// clocktest.Fake (WithClock).
+	clock clock.Clock
 }
 
 // Option configures a Client.
 type Option func(*Client)
 
-// WithTimeout replaces the window every call to the daemon gets. Tests use it to exercise the
-// timeout without waiting out the production window.
-func WithTimeout(timeout time.Duration) Option {
-	return func(c *Client) { c.http.Timeout = timeout }
+// WithClock puts the window every call to the daemon gets (RequestTimeout) on c: a test's
+// clocktest.Fake ends a call that the daemon never answers only once the test moves it there.
+func WithClock(c clock.Clock) Option {
+	return func(client *Client) { client.clock = c }
 }
 
 // New returns a client for the daemon at baseURL.
@@ -74,13 +79,13 @@ func New(baseURL string, options ...Option) *Client {
 	client := &Client{
 		baseURL: strings.TrimSuffix(strings.TrimSpace(baseURL), "/"),
 		http: &http.Client{
-			Timeout: RequestTimeout,
 			// A daemon answers its own routes; it redirects nowhere. Following one would read a
 			// state at a host the project's setting does not name, so a redirect is the answer the
 			// daemon gave and a failed call (ErrUnavailable, naming the status) rather than a
 			// second call.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
+		clock: clock.Real(),
 	}
 	for _, option := range options {
 		option(client)
@@ -107,13 +112,16 @@ func callFailure(err error) error {
 }
 
 // State reads the daemon's own state: the state it answered and the bytes it sent, which the
-// sampler records whether the read succeeded or not. Every failure wraps ErrUnavailable.
+// sampler records whether the read succeeded or not. Every failure wraps ErrUnavailable. The
+// request and the read of its body run under one RequestTimeout on the client's clock.
 //
 // The decode is loose — encoding/json ignores a field State does not name — so a daemon that
 // grows the route's shape is still read (state.go). The call carries no credential: the route
 // authenticates nobody.
 func (c *Client) State(ctx context.Context) (State, int, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+StatePath, nil)
+	bounded, cancel := c.clock.WithTimeout(ctx, RequestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(bounded, http.MethodGet, c.baseURL+StatePath, nil)
 	if err != nil {
 		return State{}, 0, fmt.Errorf("%w: build GET %s: %v", ErrUnavailable, StatePath, err)
 	}

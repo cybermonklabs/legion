@@ -29,15 +29,17 @@ func pinAgent(t *testing.T, handler http.Handler, login, sessionID string, pinne
 // altogether, so the sidebar would have nothing to draw.
 func TestUserAgentPinIsAcceptedAloneAndReadBackWithNoOtherMark(t *testing.T) {
 	t.Parallel()
-	handler := newTestHandler(t)
-	before := time.Now().UTC().Add(-time.Second)
+	handler, database := newTestHandlerWithStore(t)
+	// pinned_at is the pin's own transaction's now(), so it is bracketed by two readings of the
+	// database's clock around the write.
+	before := databaseNow(t, database.Pool)
 	written := pinAgent(t, handler, "alice", "s1", true)
 	if written.PinnedAt == nil || written.ClearedBefore != nil || written.ReadThrough != nil || written.UnreadReplies != 0 {
 		t.Fatalf("the pin write answered %#v, want the pin alone", written)
 	}
 	at := parseTimestamp(t, *written.PinnedAt)
-	if at.Before(before) || at.After(time.Now().UTC().Add(time.Minute)) {
-		t.Fatalf("pinned_at = %s, want the server's own clock at the write", at)
+	if after := databaseNow(t, database.Pool); at.Before(before) || at.After(after) {
+		t.Fatalf("pinned_at = %s, want the database's own clock at the write, between %s and %s", at, before, after)
 	}
 	got := unreadReplies(t, handler, "alice", "s1")
 	if got.PinnedAt == nil || !parseTimestamp(t, *got.PinnedAt).Equal(at) ||

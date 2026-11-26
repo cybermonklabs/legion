@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 )
 
@@ -53,7 +54,7 @@ func acquire(ctx context.Context, pool Querier) (func(), error) {
 		return nil, ErrAnotherPassRunning
 	}
 	return func() {
-		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1)`, backfillLock); err != nil {
+		if err := duty.FreeSessionLock(clock.Real(), conn, `select pg_advisory_unlock($1)`, backfillLock); err != nil {
 			slog.Warn("dispatch: free the backfill lock", "error", err)
 		}
 	}, nil

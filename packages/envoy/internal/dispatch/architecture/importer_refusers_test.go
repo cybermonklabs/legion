@@ -6,35 +6,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// beforeTheDeadline is how long this file's waits may take: what is left of the test binary's
-// deadline, less a second (testwait.Bounded of a day). So how long a loaded host takes to end a
-// flight decides no verdict here, and a wait whose event never comes still fails, naming it.
-func beforeTheDeadline(t *testing.T) time.Duration {
-	return testwait.Bounded(t, 24*time.Hour, time.Second)
-}
-
-// receiveBeforeTheDeadline is the next value of ch, or of its close, within beforeTheDeadline.
-func receiveBeforeTheDeadline[T any](t *testing.T, what string, ch <-chan T) T {
-	t.Helper()
-	var got T
-	testwait.WithinPolling(t, beforeTheDeadline(t), testwait.Poll, what, func() bool {
-		select {
-		case got = <-ch:
-			return true
-		default:
-			return false
-		}
-	})
-	return got
-}
 
 // refusersRig is one importer on archRepo's moving branch, which counts GitHub's head lookups
 // and, through the importer's two test hooks, the flights its callers take and the flights they
@@ -96,7 +73,7 @@ func newRefusersRig(t *testing.T, held int32) *refusersRig {
 		t.Fatalf("seed: %v", err)
 	}
 	rig.process = NewImporter(rig.database, client, events.NewBroker())
-	t.Cleanup(rig.process.Close)
+	t.Cleanup(func() { closeImporter(t, rig.process) })
 	rig.releaseLate = sync.OnceFunc(func() { close(rig.late) })
 	// Cleanups run last registered first: a test that fails while a refuser is held lets it go
 	// before Close waits for the flights.
@@ -126,7 +103,7 @@ func (rig *refusersRig) holdTheFirstFlight(t *testing.T) <-chan syncAnswer {
 	held, _ := rig.branch.hold.channels(t)
 	first := make(chan syncAnswer, 1)
 	rig.syncOf(archRepo, first)
-	receiveBeforeTheDeadline(t, "the first flight's blob read to reach the hold", held)
+	testwait.Receive(t, "the first flight's blob read to reach the hold", held)
 	return first
 }
 
@@ -138,7 +115,7 @@ func (rig *refusersRig) joinTheFirstFlight(t *testing.T, n int32) chan syncAnswe
 	for range n {
 		rig.syncOf(archRepo, refusers)
 	}
-	testwait.WithinPolling(t, beforeTheDeadline(t), testwait.Poll, "the later callers to join the held flight",
+	testwait.Eventually(t, "the later callers to join the held flight",
 		func() bool { return rig.taken.Load() >= n+1 })
 	return refusers
 }
@@ -166,15 +143,15 @@ func TestCallersThatRefusedOneFlightShareTheNextOneHoweverLateTheyLook(t *testin
 	rig.branch.moveHead(commitTwo)
 	rig.branch.releaseHeld()
 
-	if answer := receiveBeforeTheDeadline(t, "the first caller's answer", first); answer.err != nil || commitOf(answer) != commitOne {
+	if answer := testwait.Receive(t, "the first caller's answer", first); answer.err != nil || commitOf(answer) != commitOne {
 		t.Fatalf("the first caller answered commit %s (err %v); want %s, the first flight's", commitOf(answer), answer.err, commitOne)
 	}
 	// The held refuser cannot answer before releaseLate, so the first answer is the other's.
-	if answer := receiveBeforeTheDeadline(t, "the answer of the refuser the hold let through", refusers); answer.err != nil || commitOf(answer) != commitTwo {
+	if answer := testwait.Receive(t, "the answer of the refuser the hold let through", refusers); answer.err != nil || commitOf(answer) != commitTwo {
 		t.Fatalf("the refuser the hold let through answered commit %s (err %v); want %s, the next flight's", commitOf(answer), answer.err, commitTwo)
 	}
 	rig.releaseLate()
-	answer := receiveBeforeTheDeadline(t, "the answer of the refuser held until the other was answered", refusers)
+	answer := testwait.Receive(t, "the answer of the refuser held until the other was answered", refusers)
 	if answer.err != nil || commitOf(answer) != commitTwo {
 		t.Fatalf("the late refuser answered commit %s (err %v); want %s, the next flight's", commitOf(answer), answer.err, commitTwo)
 	}
@@ -202,15 +179,15 @@ func TestARefuserThatLooksAgainLateSharesTheNextFlightsFailure(t *testing.T) {
 	rig.branch.holdNextHeadLookupAnswering(http.StatusBadGateway)
 	rig.branch.releaseHeld()
 
-	if answer := receiveBeforeTheDeadline(t, "the first caller's answer", first); answer.err != nil {
+	if answer := testwait.Receive(t, "the first caller's answer", first); answer.err != nil {
 		t.Fatalf("the first caller: %v", answer.err)
 	}
-	early := receiveBeforeTheDeadline(t, "the answer of the refuser the hold let through", refusers)
+	early := testwait.Receive(t, "the answer of the refuser the hold let through", refusers)
 	if early.err == nil {
 		t.Fatalf("the refuser that started the next flight answered %+v with no error; want that flight's failure", early.source)
 	}
 	rig.releaseLate()
-	late := receiveBeforeTheDeadline(t, "the answer of the refuser held until the other was answered", refusers)
+	late := testwait.Receive(t, "the answer of the refuser held until the other was answered", refusers)
 
 	t.Logf("refusals=%d head lookups=%d early=%q late=%v", rig.refusals.Load(), rig.lookups.Load(), early.err, late.err)
 	if late.err == nil || late.err.Error() != early.err.Error() {
@@ -235,17 +212,17 @@ func TestARefuserOfOneSourceIsNeverAnsweredAnotherSourcesFlight(t *testing.T) {
 	first := rig.holdTheFirstFlight(t)
 	refuser := rig.joinTheFirstFlight(t, 1)
 	rig.branch.releaseHeld()
-	if answer := receiveBeforeTheDeadline(t, "the first caller's answer", first); answer.err != nil {
+	if answer := testwait.Receive(t, "the first caller's answer", first); answer.err != nil {
 		t.Fatalf("the first caller: %v", answer.err)
 	}
-	testwait.WithinPolling(t, beforeTheDeadline(t), testwait.Poll, "the refusal of the first flight",
+	testwait.Eventually(t, "the refusal of the first flight",
 		func() bool { return rig.refusals.Load() >= 1 })
 
 	other := make(chan syncAnswer, 1)
 	rig.syncOf("acme/infra", other)
-	otherAnswer := receiveBeforeTheDeadline(t, "the answer of the sync of acme/infra", other)
+	otherAnswer := testwait.Receive(t, "the answer of the sync of acme/infra", other)
 	rig.releaseLate()
-	answer := receiveBeforeTheDeadline(t, "the answer of the refuser held while acme/infra synced", refuser)
+	answer := testwait.Receive(t, "the answer of the refuser held while acme/infra synced", refuser)
 
 	t.Logf("other=%s refuser=%s refuser err=%v", otherAnswer.source.Repo, answer.source.Repo, answer.err)
 	if otherAnswer.source.Repo != "acme/infra" {

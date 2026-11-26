@@ -4,6 +4,7 @@ package graphcensus
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"os/exec"
 	"regexp"
@@ -229,10 +230,6 @@ const (
 // 0.000001, with one issue, its issue links index past the issues it has.
 const seedScale = "0.0002"
 
-// seedWait bounds the wait for the seed to exit once it is let go; its waits to queue behind a
-// hold end on the queue itself (queuedAt).
-const seedWait = 2 * time.Minute
-
 // seedStatementSpace is a run of whitespace in a statement, which the seed's waits fold.
 var seedStatementSpace = regexp.MustCompile(`\s+`)
 
@@ -275,7 +272,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 	// any statement but one that starts as statement does.
 	queuedAt := func(t *testing.T, holder pgx.Tx, table, statement string) {
 		t.Helper()
-		testwait.UntilPolling(t, 10*time.Millisecond, "the seed to queue behind the hold on "+table+" (the backends queued last read)", func() (int, bool) {
+		testwait.Until(t, "the seed to queue behind the hold on "+table, func() (seedQueue, bool) {
 			select {
 			case <-process.Exited:
 				t.Fatalf("the seed exited before it queued behind the hold on %s; it wrote:\n%s", table, process.Output.String())
@@ -285,7 +282,8 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			if err != nil {
 				t.Fatalf("count the backends queued behind the hold on %s: %v", table, err)
 			}
-			return waiters, waiters >= 1
+			queue := seedQueue{waiters: waiters, output: process.Output}
+			return queue, queue.waiters >= 1
 		})
 		var waited string
 		if err := database.Pool.QueryRow(ctx, `
@@ -359,11 +357,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			if err := comments.Rollback(ctx); err != nil {
 				t.Fatalf("let go of the hold on comments: %v", err)
 			}
-			select {
-			case <-process.Exited:
-			case <-time.After(seedWait):
-				t.Fatalf("the seed was still running %s after it was let go; it wrote:\n%s", seedWait, process.Output.String())
-			}
+			process.WaitExit(t, "it was let go")
 			if code := process.Cmd.ProcessState.ExitCode(); code != 0 {
 				t.Fatalf("the seed exited %d; it wrote:\n%s", code, process.Output.String())
 			}
@@ -384,4 +378,16 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
 		},
 	}}
+}
+
+// seedQueue is one read of the wait for the seed to queue behind a hold (seedRunDrives' queuedAt):
+// how many backends wait behind the hold, and the seed's output, the buffer itself, which only the
+// wait's give-up copies.
+type seedQueue struct {
+	waiters int
+	output  *cmdtest.LockedBuffer
+}
+
+func (q seedQueue) String() string {
+	return fmt.Sprintf("%d backends queued behind the hold; the seed wrote:\n%s", q.waiters, q.output)
 }

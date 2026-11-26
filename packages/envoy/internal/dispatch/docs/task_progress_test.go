@@ -8,11 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // captureLogs sends the default logger's lines to the returned log until the test ends.
@@ -83,7 +85,7 @@ func runTaskProgress(t *testing.T, service *Service) <-chan struct{} {
 	}()
 	testcleanup.Add(t, func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "RunTaskProgressReconciliation to return once its context ended", done)
 	})
 	return done
 }
@@ -99,21 +101,18 @@ func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
 	}
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	service := New(Deps{Store: counted, Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	service := New(Deps{Store: counted, Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 
 	done := runTaskProgress(t, service)
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconciliation did not return after its boot pass found every row counted")
-	}
+	testwait.Receive(t, "the reconciliation to return after its boot pass found every row counted", done)
 	for index, want := range [][3]int{{1, 2, 1}, {2, 3, 1}} {
 		if tasksDone, total, version := taskCount(t, database, keys[index]); [3]int{tasksDone, total, version} != want {
 			t.Fatalf("%s counted %d/%d at version %d; want %d/%d at version %d", keys[index], tasksDone, total, version, want[0], want[1], want[2])
 		}
 	}
-	storetest.RequireNoStatements(t, counter, time.Second, "task progress after its boot pass")
+	storetest.RequireNoStatements(t, counter, time.Second, "task progress after its boot pass",
+		"the reconciliation has returned, but a timer or goroutine it left behind shows in no state the test reads, no later action reaches one, and synctest does not reach the real PostgreSQL connection")
 }
 
 // A row another writer holds through the whole boot pass - its own retries included - is left
@@ -135,11 +134,11 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	if err := store.LockOwner(ctx, writer, store.IssueOwner(held)); err != nil {
 		t.Fatalf("hold %s: %v", held, err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 
 	done := runTaskProgress(t, service)
-	waitFor(t, 20*time.Second, "the boot pass to give up on the held row", func() bool {
+	waitFor(t, "the boot pass to give up on the held row", func() bool {
 		return strings.Contains(logs.String(), "issue task progress reconciliation pass left drift")
 	})
 	if tasksDone, total, version := taskCount(t, database, free); tasksDone != 1 || total != 2 || version != 1 {
@@ -157,16 +156,12 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	if err := writer.Rollback(ctx); err != nil {
 		t.Fatalf("release %s: %v", held, err)
 	}
-	waitFor(t, 10*time.Second, "a retry to count the released row", func() bool {
+	waitFor(t, "a retry to count the released row", func() bool {
 		_, _, version := taskCount(t, database, held)
 		return version == 1
 	})
 	if tasksDone, total, _ := taskCount(t, database, held); tasksDone != 2 || total != 3 {
 		t.Fatalf("%s counted %d/%d; want 2/3", held, tasksDone, total)
 	}
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the reconciliation did not return once no drift was left")
-	}
+	testwait.Receive(t, "the reconciliation to return once no drift was left", done)
 }

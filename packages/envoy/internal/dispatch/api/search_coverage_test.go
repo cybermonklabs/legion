@@ -214,18 +214,20 @@ func TestSearchCoverageAuthentication(t *testing.T) {
 // (embedqueue.ShortenCoverageBoundForTest), and components is locked in another connection, so
 // the statement, whose uncovered count of components reads that table, waits however fast it
 // would run, and the bound is what ends it: the answer's code, which the route gives a statement
-// Postgres ended at its statement_timeout alone, says so, and the answer comes no sooner than the
-// bound after the request began, which load can only lengthen.
+// Postgres ended at its statement_timeout alone, says so, rather than how long the answer took.
 //
 // The freed state is read from pg_stat_activity: the backends of this test's database that
 // another backend blocks (pg_blocking_pids), but for the reader's own. The lock's holder, idle in
 // its transaction, blocks and is not blocked, and nothing but a reader of components waits on it,
-// so the count is 0 once the bound has ended the coverage statement. The control that a count of
-// 0 means the statement ended, and not that the read cannot see it, is a statement of the test's
-// own: it reads components behind the same lock, on no bound at all, and the read must count it
-// as blocked before the test cancels it. The control has no clock of its own, so no wait for it
-// races the product's one-second bound, as a wait for the coverage statement to show blocked
-// did: a machine that took longer than the bound to read pg_stat_activity failed a correct run.
+// so the count is 0 once the bound has ended the coverage statement. It reads this test's database
+// alone, since another test's database on the same server may hold locks of its own, and a
+// backend's state can lag the answer by a moment, so the freed state is waited for rather than
+// read once. The control that a count of 0 means the statement ended, and not that the read
+// cannot see it, is a statement of the test's own: it reads components behind the same lock, on
+// no bound at all, and the read must count it as blocked before the test cancels it. The control
+// has no clock of its own, so no wait for it races the product's one-second bound, as a wait for
+// the coverage statement to show blocked did: a machine that took longer than the bound to read
+// pg_stat_activity failed a correct run.
 func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	// Not parallel: it shortens embedqueue's coverage statement timeout for the whole process
 	// (embedqueue.ShortenCoverageBoundForTest).
@@ -274,36 +276,30 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 		return count, count == 0
 	})
 
-	type answer struct {
-		response *httptest.ResponseRecorder
-		took     time.Duration
-	}
-	answered := make(chan answer, 1)
+	answered := make(chan *httptest.ResponseRecorder, 1)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/search/coverage", nil)
 	request.Header.Set("X-Dispatch-User", "alice")
-	started := time.Now()
 	go func() {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		answered <- answer{response, time.Since(started)}
+		answered <- response
 	}()
-	got := testwait.Receive(t, fmt.Sprintf("the route's answer, with its statement bound to %s", bound), answered)
-
-	if got.response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("coverage past its bound: status=%d body=%s, want 503", got.response.Code, got.response.Body.String())
+	// What ended the statement is told by the route's answer, not by how long it took: the route
+	// answers SEARCH_COVERAGE_TIMEOUT only for a statement Postgres ended at its statement_timeout
+	// (embedqueue.ErrCoverageTimedOut), and that answer names the bound.
+	got := testwait.Receive(t, fmt.Sprintf("the route to answer, with its statement bound to %s", bound), answered)
+	if got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("coverage past its bound: status=%d body=%s, want 503", got.Code, got.Body.String())
 	}
-	if refusal := decodeBody[apiErrorBody](t, got.response); refusal.Code != "SEARCH_COVERAGE_TIMEOUT" || !strings.Contains(refusal.Error, bound.String()) {
-		t.Errorf("coverage past its bound answered %s, want the code SEARCH_COVERAGE_TIMEOUT and an error naming the %s bound", got.response.Body.String(), bound)
-	}
-	if got.took < bound {
-		t.Errorf("coverage past its bound answered %s after the request began, want at least its %s bound", got.took, bound)
+	if refusal := decodeBody[apiErrorBody](t, got); refusal.Code != "SEARCH_COVERAGE_TIMEOUT" || !strings.Contains(refusal.Error, bound.String()) {
+		t.Errorf("coverage past its bound answered %s, want the code SEARCH_COVERAGE_TIMEOUT and an error naming the %s bound", got.Body.String(), bound)
 	}
 	type freed struct {
-		conns      int32
-		statements int
+		AcquiredConns int32
+		Blocked       int
 	}
-	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the pool to hold the %d acquired connections it held before the request and no backend to be blocked: the bound frees the coverage statement's backend (acquired connections, blocked backends)", acquired), func() (freed, bool) {
-		now := freed{conns: database.Pool.Stat().AcquiredConns(), statements: blocked()}
-		return now, now.conns == acquired && now.statements == 0
+	testwait.Until(t, fmt.Sprintf("the pool to hold its %d connections again and no backend to be blocked: the bound frees the coverage statement's backend", acquired), func() (freed, bool) {
+		reading := freed{AcquiredConns: database.Pool.Stat().AcquiredConns(), Blocked: blocked()}
+		return reading, reading.AcquiredConns == acquired && reading.Blocked == 0
 	})
 }

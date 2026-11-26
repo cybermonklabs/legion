@@ -786,10 +786,10 @@ function storedFourXX(status: number | undefined): boolean {
 
 /**
  * Ground truth from Dispatch, rather than the client: route layers outside `keyedWrites` answer
- * before its claim with no key echo (server.go:853-929, request_keys.go:311-376), and
- * `Idempotency-Replayed: ?1` marks a stored replay and a recovery replay alike. Whether a refusal
- * after a possible landing is final follows from which layer wrote it, which each row names, so
- * the oracle never reads the client's classifier:
+ * before its claim with no key echo (server.go's `routeHandler`, request_keys.go's `keyedWrites`),
+ * and `Idempotency-Replayed: ?1` marks a stored replay and a recovery replay alike. Whether a
+ * refusal after a possible landing is final follows from which layer wrote it, which each row
+ * names, so the oracle never reads the client's classifier:
  * - the keyed layer: `422 KEY_REUSED` under this request's exact key. Every resend of one call
  *   carries identical bytes, so a key held under another digest proves no attempt of this write
  *   claimed it. (`409 KEY_COMMITTED` is landed and `409 KEY_IN_FLIGHT` a retry, by their roles.)

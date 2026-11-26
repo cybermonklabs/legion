@@ -92,6 +92,7 @@ func TestPrioritiesRead(t *testing.T) {
 	// one only inherits the priority and one restates it, and neither is a fault, since the
 	// issue above them carries it already. The priority's own work still counts both.
 	backlogOwn := seedPriorityIssue(t, handler, "CORE", "Backlog work", "todo", "", []string{"pace-the-work"})
+	movedFrom := databaseNow(t, database.Pool)
 	moveTestIssue(t, handler, backlogOwn, "backlog", "bob")
 	inheritedOnly := seedPriorityIssue(t, handler, "CORE", "In backlog under its parent's priority alone", "todo", backlogOwn, nil)
 	moveTestIssue(t, handler, inheritedOnly, "backlog", "bob")
@@ -240,7 +241,7 @@ func TestPrioritiesRead(t *testing.T) {
 		t.Fatalf("%s was moved at %v by %v, want the moment and the person the events record",
 			backlogOwn, own.MovedAt, own.MovedBy)
 	}
-	if own.MovedAt.After(time.Now().UTC().Add(time.Minute)) || own.MovedAt.Before(eightDaysAgo) {
+	if movedBy := databaseNow(t, database.Pool); own.MovedAt.Before(movedFrom) || own.MovedAt.After(movedBy) {
 		t.Fatalf("%s says it was moved at %v, want the moment of the write this test made", backlogOwn, own.MovedAt)
 	}
 	assertNoReason(t, handler)

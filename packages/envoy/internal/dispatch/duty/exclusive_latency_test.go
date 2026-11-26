@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // slowWrites is a database connection whose every write waits delay first while slow is set: a
@@ -30,18 +31,19 @@ func (c slowWrites) Write(b []byte) (int, error) {
 }
 
 // A lone loop's ticks come one period apart, and each must run. Here the first tick is due 50 ms
-// before a period boundary on this process's clock, the clock Exclusive buckets a due time on, and
-// every write on its lease connection stalls 100 ms - among them the ones that carry the period
-// query - so any moment read at the database, the database's now() less a duration measured
-// before the query included, lands past the boundary. The second tick, due exactly one period
-// later, stalls on nothing; read by such a moment it lands in the period the first has recorded
-// as served, and a lone loop loses that period, the defect
-// TestExclusiveCountsALateTickInThePeriodItWasDueIn covers for a delay before the query.
+// before the period this process's clock is in now began, the clock Exclusive buckets a due time
+// on, and every write on its lease connection stalls 100 ms - among them the ones that carry the
+// period query - so any moment read at the database, the database's now() less a duration
+// measured before the query included, lands past that boundary. The second tick, due exactly one
+// period later, stalls on nothing; read by such a moment it lands in the period the first has
+// recorded as served, and a lone loop loses that period, the defect
+// TestExclusiveCountsALateTickInThePeriodItWasDueIn covers for a delay before the query. The
+// period is an hour, so both ticks' queries run inside the one period such a reading puts them in.
 func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const name = "suggestion-outcomes"
-	const period = time.Second
+	const period = time.Hour
 	const early, delay = 50 * time.Millisecond, 100 * time.Millisecond
 
 	var slow atomic.Bool
@@ -58,10 +60,11 @@ func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *test
 	if err != nil {
 		t.Fatalf("open the stalling leases pool: %v", err)
 	}
-	t.Cleanup(leases.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the stalling leases pool to come back, so the pool closes", leases.Close)
+	})
 
-	due := beforeNextBoundary(t, period, early)
-	time.Sleep(time.Until(due))
+	due := duty.PeriodBoundary(time.Now(), period).Add(-early)
 	slow.Store(true)
 	ran := duty.Exclusive(ctx, leases, name, due, period, func(context.Context) {})
 	slow.Store(false)
@@ -69,7 +72,6 @@ func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *test
 		t.Fatal("the first tick did not run, so this row measures nothing")
 	}
 	next := due.Add(period)
-	time.Sleep(time.Until(next))
 	ran = false
 	if !duty.Exclusive(ctx, leases, name, next, period, func(context.Context) { ran = true }) || !ran {
 		t.Errorf("the tick due one period after a stalled one was refused (first due %v before a boundary, its writes stalled %v each); a lone loop lost that period",

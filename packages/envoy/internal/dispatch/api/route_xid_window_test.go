@@ -14,12 +14,12 @@ import (
 // The route window table holds the write routes INFRA-636 changed that had no xid window test
 // of their own (xid_window_test.go) to the rule those tests hold theirs to (A1): a route holds
 // its transaction id for its database statements alone, with no document work and no
-// statement-free gap inside its window. Each row is a route, readied the way the route table
+// collaborator call inside its window. Each row is a route, readied the way the route table
 // readies it (route_owner_lock_test.go, routeOwnerLockCase.ready) - the rows it shares with that
 // table borrow its ready function, the rest have one of their own beside their row - on a server
 // whose pool carries the xid tracer and whose issue's spec is the load harness's large one
-// (xidSpec), so a document read or render a route ran inside its window would show as the gap it
-// is. The request goes through the fixture's own server under a marked context
+// (xidSpec), so a document read or render a route ran inside its window is the document work the
+// traced pool reports by name (docwork). The request goes through the fixture's own server under a marked context
 // (storetest.MarkXid), so only the transactions the request itself ran are judged, and once the
 // route answered the row's own check holds it to having made the write it means, so a window
 // measured over a refusal is a rig failure and never a pass.

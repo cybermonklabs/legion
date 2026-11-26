@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestSearchLatencyOnCorpus measures GET /api/v1/search against a real corpus copy
@@ -68,17 +70,19 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 	if err != nil {
 		t.Fatalf("open corpus database: %v", err)
 	}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the corpus database's pool to come back, so the pool closes", database.Pool.Close)
+	})
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate corpus database: %v", err)
 	}
 
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{
-		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: time.Hour,
+		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: stagedAhead,
 	})
 	t.Cleanup(func() {
-		if err := documentService.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -95,7 +99,7 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 	}
 
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	registerJoined(t, mux, deps)
 	return mux
 }
 

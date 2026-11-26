@@ -21,6 +21,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -59,7 +60,7 @@ func liveNamedToken(jkt string) ciphertoken.Introspection {
 		ProjectScope: ciphertoken.ProjectScopeNamed,
 		Projects:     []string{brokerTestProject},
 		Scope:        "dispatch.write",
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    time.Now().Add(stagedAhead).Unix(),
 		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
@@ -86,7 +87,7 @@ func serviceOnlyToken(jkt string) ciphertoken.Introspection {
 		Service:      brokerTestService,
 		ProjectScope: ciphertoken.ProjectScopePerson,
 		Scope:        "dispatch.write",
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    time.Now().Add(stagedAhead).Unix(),
 		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
@@ -107,7 +108,7 @@ func personlessAccountToken(jkt string) ciphertoken.Introspection {
 		Session:      brokerTestSession,
 		Service:      brokerTestAccount,
 		ProjectScope: ciphertoken.ProjectScopeNamed,
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    time.Now().Add(stagedAhead).Unix(),
 		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
@@ -125,7 +126,7 @@ func readOnlyToken(jkt string) ciphertoken.Introspection {
 		Service:      brokerTestReader,
 		ProjectScope: ciphertoken.ProjectScopeNone,
 		Scope:        ciphertoken.ScopeRead,
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    time.Now().Add(stagedAhead).Unix(),
 		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
@@ -149,7 +150,7 @@ func machineLoginToken(jkt string) ciphertoken.Introspection {
 	return ciphertoken.Introspection{
 		Active:     true,
 		Scope:      "machine",
-		ExpiresAt:  time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:  time.Now().Add(stagedAhead).Unix(),
 		ClientID:   "agent-secrets-helper",
 		Thumbprint: jkt,
 	}
@@ -684,7 +685,7 @@ func TestAnOlderBrokersNamedAnswerWritesNothing(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const token = "a-named-token-an-older-replica-answers-for"
 	rig.broker.SaysRaw(token, fmt.Sprintf(`{"active":true,"session":%q,"person":%q,"project_scope":"named","project":%q,"exp":%d,"client_id":%q,"jkt":%q}`,
-		brokerTestSession, brokerTestPerson, brokerTestProject, time.Now().Add(time.Hour).Unix(), ciphertoken.ExchangeClientID, caller.jkt))
+		brokerTestSession, brokerTestPerson, brokerTestProject, time.Now().Add(stagedAhead).Unix(), ciphertoken.ExchangeClientID, caller.jkt))
 	seedProject(t, rig, "OTHER", "Other")
 	written := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 		"project": "OTHER", "title": "Written under an older replica's answer", "spec": "# Spec",
@@ -980,15 +981,20 @@ func TestTheOtherCredentialsAreUnaffectedByTheBrokerBranch(t *testing.T) {
 // resolves its caller again from a detached copy of that request, whose proof is already spent. A
 // second request carrying that proof is refused as the replay it is, while the re-resolution of
 // the connection it authenticated asks only whether the token is still live — which is what
-// whileCallerResolves calls on every heartbeat (callerStillResolves), driven here directly.
+// whileCallerResolves calls on every heartbeat (callerStillResolves), driven here directly. A
+// revocation reaches the open connection once the affirmative answer the verifier remembered has
+// lapsed, AffirmativeCacheTTL after it was remembered and not later: the cache reads the
+// verifier's clock (ciphertoken.Options.Now), a fake here, so the row moves it to that moment.
 func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 	t.Parallel()
-	rig := newBrokerTokenRig(t)
+	cacheClock := clocktest.New(time.Now())
+	rig := newBrokerTokenRig(t, func(options *ciphertoken.Options) { options.Now = cacheClock.Now })
 	caller := newBrokerCaller(t)
 	const token = "a-token-holding-a-socket-open"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	served := directServer(rig.deps)
 
+	remembered := cacheClock.Now()
 	admitted := caller.presenting(t, http.MethodGet, "/ws/live", token, nil)
 	actor, human, err := served.optionalActor(admitted)
 	if err != nil || human || actor.ID != brokerTestSession {
@@ -1009,22 +1015,30 @@ func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 	}
 
 	// Once the broker stops holding the token live, the re-resolution refuses and the connection
-	// closes. The affirmative answer is remembered for a few seconds, so this reads past it.
+	// closes. The affirmative answer is remembered for AffirmativeCacheTTL, so the refusal comes
+	// once that has lapsed on the cache's clock, and not a moment later.
 	rig.broker.Says(token, ciphertoken.Introspection{Active: false})
-	time.Sleep(ciphertoken.AffirmativeCacheTTL + 50*time.Millisecond)
+	cacheClock.Set(remembered.Add(ciphertoken.AffirmativeCacheTTL - time.Nanosecond))
+	if err := served.callerStillResolves(admitted); err != nil {
+		t.Fatalf("the re-resolution refused (%v) before AffirmativeCacheTTL had passed since the answer was remembered; want the remembered answer", err)
+	}
+	cacheClock.Set(remembered.Add(ciphertoken.AffirmativeCacheTTL))
 	if err := served.callerStillResolves(admitted); err == nil {
-		t.Fatal("a revoked token kept resolving on an open connection")
+		t.Fatalf("a revoked token kept resolving on an open connection %s after its answer was remembered; want the refusal once AffirmativeCacheTTL has passed",
+			ciphertoken.AffirmativeCacheTTL)
 	}
 }
 
 // TestTheRateRefusalCarriesTheWaitInItsHeader: the introspection bucket's refusal tells the
 // caller when to come back in Retry-After as well as in its prose, as the broker's own 429s do,
 // so a client reads the wait without parsing a sentence. The bucket here holds one request, so
-// the second presentation of a token the broker has not been asked about meets it.
+// the second presentation of a token the broker has not been asked about meets it; it refills one
+// request every stagedAhead on the real clock, so the second presentation meets it however long
+// the row takes.
 func TestTheRateRefusalCarriesTheWaitInItsHeader(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
+		o.AddressLimit = ratelimit.Limit{Every: stagedAhead, Burst: 1}
 	})
 	caller := newBrokerCaller(t)
 
@@ -1038,8 +1052,8 @@ func TestTheRateRefusalCarriesTheWaitInItsHeader(t *testing.T) {
 	if limited.Code != http.StatusTooManyRequests || refusal.Code != "BROKER_TOKEN_RATE_LIMITED" {
 		t.Fatalf("status=%d refusal=%+v, want 429 BROKER_TOKEN_RATE_LIMITED", limited.Code, refusal)
 	}
-	if got := limited.Header().Get("Retry-After"); got != "60" {
-		t.Fatalf("Retry-After = %q, want the bucket's minute as whole seconds", got)
+	if got, want := limited.Header().Get("Retry-After"), fmt.Sprint(int(stagedAhead/time.Second)); got != want {
+		t.Fatalf("Retry-After = %q, want %q: the bucket's Every (stagedAhead) as whole seconds", got, want)
 	}
 	if rig.broker.Count() != 1 {
 		t.Fatalf("the refused request reached the broker: %d introspections, want 1", rig.broker.Count())
@@ -1370,7 +1384,9 @@ func TestANarrowedTokenActsAsItsIdentityAndOnlyReads(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const session = "ses_narrowed"
-	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	// The tokens expire stagedAhead from now, staged state for the verifier's clock and not a wait,
+	// so none lapses however long the row takes.
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(stagedAhead).Unix())
 	ada, fleet, reader, account, acme := "ada@example.com", brokerTestService, brokerTestReader, brokerTestAccount, "ACME"
 	cut, err := time.Parse(time.RFC3339Nano, answers["machine-login-with-a-cut"].AsOf)
 	if err != nil {

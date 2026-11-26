@@ -17,16 +17,20 @@ import (
 // step or reads the lines of its own intakes runs beside tests that do not: no test changes a
 // value another test's intake reads. The durations, createDurable and log are read once the
 // intake runs, so a test sets them before it starts its intakes; the waits and hooks a test
-// changes while its intakes run are atomic.
+// changes while its intakes run are atomic. The clocks its spans run on are the intake's own
+// (heldDurable.clock, heldDurable.holdClock), beside it, so a test of this package moves a fake
+// past a span rather than shortening it.
 type intakeTuning struct {
 	// messageTimeout bounds one handler's own work (Intake.deliver) and one job read
-	// (JobIntake.fire): intakeMessageTimeout.
+	// (JobIntake.fire) on the intake's clock, unless a test gave them an end of its own
+	// (heldDurable.messageDeadline): intakeMessageTimeout.
 	messageTimeout time.Duration
 	// maxAckPending is the durable's MaxAckPending: intakeMaxAckPending. Together with
 	// messageTimeout it sets the durable's ack wait (ackWait).
 	maxAckPending int
-	// stopBudget is the one deadline of the intake's stop, counted from the moment Run's context
-	// ends (stopContext): intakeStopBudget.
+	// stopBudget is the one deadline of the intake's stop, counted on the intake's clock from the
+	// moment Run's context ends (stopContext), unless a test gave the stop an end of its own
+	// (heldDurable.stopDeadline): intakeStopBudget.
 	stopBudget time.Duration
 	// headWriteMaxDeliveries is how many deliveries an envelope whose head row could not be stored
 	// gets before deliver acknowledges it (headWriteDeliveriesSpent): headWriteMaxDeliveries.
@@ -43,8 +47,9 @@ type intakeTuning struct {
 	// nats.go itself gives a connection's drain (bus connections never set their own), rather than
 	// messageTimeout, which bounds a handler, and the handlers are done by then. All that is left
 	// is nats.go's: the callback handing back what the client had buffered, which never blocks, and
-	// the drain's flush to the server. The stop's context ending cuts it shorter. A test raises it
-	// to keep it from ending the wait and see what else does.
+	// the drain's flush to the server. The stop's context ending cuts it shorter. It is read on the
+	// intake's clock (intakeDelivery.clock), so a test keeps it from ending the wait, to see what
+	// else does, by running the delivery on a fake it never moves.
 	drainWait atomic.Int64
 	// stopArmed, when set, runs in the stop once its give-up is armed (intakeDelivery.stop), where
 	// a test waits for the handler the give-up wakes to decide its hand-back. Nil outside tests.

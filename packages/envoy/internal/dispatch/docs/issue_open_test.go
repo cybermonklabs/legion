@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Closing or reopening an issue changes every process's rooms of its documents (plan
@@ -60,20 +62,24 @@ func writeIssueClosedAgo(t *testing.T, database *store.Store, issueKey string, c
 	}
 }
 
-// waitPastCloseMargin waits on the database's clock until it stands more than closeMargin past
-// the moment issueKey closed (issues.closed_at), and fails the test unless it does. Inside the
-// margin the gate admits a browser's update whatever its age (observedBeforeClose), so a test of
-// the age term must put the close that far behind first. It waits in the database, in one
-// statement, rather than sleeping on this process's clock: the two terms the gate compares are
-// read on the database's clock and this one, and only the database's says when the margin is out.
+// waitPastCloseMargin waits on the database's clock until it stands half a margin past
+// closeMargin after the moment issueKey closed (issues.closed_at), and fails the test unless it
+// does. Inside the margin the gate admits a browser's update whatever its age
+// (observedBeforeClose), so a test of the age term must put the close that far behind first; the
+// half margin beyond it is the slack between this process's clock, which the gate reads an
+// update's age on, and the database's, so the two need only run at about the same rate. It waits
+// in the database, in one statement, rather than sleeping on this process's clock: the two terms
+// the gate compares are read on the database's clock and this one, and only the database's says
+// when the margin is out.
 func waitPastCloseMargin(t *testing.T, database *store.Store, issueKey string) {
 	t.Helper()
 	ctx := context.Background()
+	past := closeMargin + closeMargin/2
 	if _, err := database.Pool.Exec(ctx, `
 		select pg_sleep(greatest(0::double precision,
 			$2::double precision - extract(epoch from clock_timestamp() - closed_at)::double precision))
 		from issues where key = $1
-	`, issueKey, (closeMargin + 50*time.Millisecond).Seconds()); err != nil {
+	`, issueKey, past.Seconds()); err != nil {
 		t.Fatalf("wait out issue %s's close margin: %v", issueKey, err)
 	}
 	var micros *int64
@@ -85,9 +91,9 @@ func waitPastCloseMargin(t *testing.T, database *store.Store, issueKey string) {
 	if micros == nil {
 		t.Fatalf("issue %s is open, so no close margin applies and nothing waits it out", issueKey)
 	}
-	if closedFor := time.Duration(*micros) * time.Microsecond; closedFor <= closeMargin {
-		t.Fatalf("the database's clock stands %s past issue %s's close, want more than the gate's close margin of %s",
-			closedFor.Round(time.Millisecond), issueKey, closeMargin)
+	if closedFor := time.Duration(*micros) * time.Microsecond; closedFor < past {
+		t.Fatalf("the database's clock stands %s past issue %s's close, want at least %s, half the gate's close margin of %s past it",
+			closedFor.Round(time.Millisecond), issueKey, past, closeMargin)
 	}
 }
 
@@ -115,27 +121,24 @@ func connectWithScope(t *testing.T, serverURL, artifactID, login, scope, text st
 // (connectBrowserAsync).
 func requireScopeAndText(t *testing.T, peer *docstest.Peer, login, scope, text string) *docstest.Peer {
 	t.Helper()
-	granted, err := peer.Authenticate(strconv.Itoa(pmdoc.SchemaVersion()), roomWait(t))
+	granted, err := peer.Authenticate(t, strconv.Itoa(pmdoc.SchemaVersion()))
 	if err != nil {
 		t.Fatalf("authenticate %s's browser: %v", login, err)
 	}
 	if granted != scope {
 		t.Fatalf("%s's browser was granted %q, want %q", login, granted, scope)
 	}
-	if err := peer.WaitForText(peerMarkdown, text, roomWait(t)); err != nil {
+	if err := peer.WaitForText(t, peerMarkdown, text); err != nil {
 		t.Fatalf("%s's browser: %v", login, err)
 	}
 	return peer
 }
 
-// requireEnds fails unless peer's socket is closed by its room within roomWait.
+// requireEnds waits for peer's socket to be closed by its room, failing the test with what when it
+// never is.
 func requireEnds(t *testing.T, peer *docstest.Peer, what string) {
 	t.Helper()
-	select {
-	case <-peer.Ended:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("%s: the browser's socket was still open after %v", what, roomWait(t))
-	}
+	testwait.Receive(t, what+": the browser's socket to end", peer.Ended)
 }
 
 // residentRoomMarkdown is what service's resident room of artifactID renders, "" with none resident.
@@ -174,11 +177,7 @@ func requireKeystrokeDropped(t *testing.T, service *Service, peer *docstest.Peer
 	if err := peer.AskForDocument(); err != nil {
 		t.Fatalf("ask the room for its document: %v", err)
 	}
-	select {
-	case <-peer.Answers:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room never answered the request for its document")
-	}
+	testwait.Receive(t, "the room to answer the request for its document", peer.Answers)
 	if markdown := residentRoomMarkdown(t, service, artifactID); strings.Contains(markdown, "typed on a closed issue") {
 		t.Fatalf("the room took a read-only browser's keystroke on the closed issue: it holds %q", markdown)
 	}
@@ -230,12 +229,12 @@ func TestClosingAnIssueOnOneProcessClosesEveryProcessesRoomsAndReopeningMakesThe
 	waitForRoomGone(t, taskB, artifactID, "DOC-1", roomB)
 	alice = connectWithScope(t, serverA.URL, artifactID, "alice", "read-write", "before\n")
 	typeOver(t, alice, "before", "reopened by alice")
-	waitFor(t, roomWait(t), "alice's edit on the reopened issue to be stored", func() bool {
+	waitFor(t, "alice's edit on the reopened issue to be stored", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "reopened by alice")
 	})
 	bob = connectWithScope(t, serverB.URL, artifactID, "bob", "read-write", "reopened by alice\n")
 	typeOver(t, bob, "reopened by alice", "reopened by bob")
-	waitFor(t, roomWait(t), "bob's edit on the reopened issue to be stored", func() bool {
+	waitFor(t, "bob's edit on the reopened issue to be stored", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "reopened by bob")
 	})
 }
@@ -275,7 +274,7 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenItsAppendReachesTheGateA
 	// append that never comes.
 	testcleanup.Add(t, appends.release)
 	typeOver(t, alice, "before", "typed before the close")
-	waitFor(t, roomWait(t), "task A's room to take alice's keystroke and its append to reach the held gate", func() bool {
+	waitFor(t, "task A's room to take alice's keystroke and its append to reach the held gate", func() bool {
 		return appends.waiting.Load() > 0 &&
 			strings.Contains(residentRoomMarkdown(t, taskA, artifactID), "typed before the close")
 	})
@@ -436,6 +435,10 @@ func TestABrowserAppendOnAClosedIssueIsRefusedWithoutItsNotification(t *testing.
 	if failed.Load() {
 		t.Fatal("the refusal failed the room rather than closing it for its issue")
 	}
+	// alice's socket ends as the room closes for its issue, which can be before ygo has taken that
+	// room out of its map: a browser that connects meanwhile joins the closing room and is closed
+	// with it. So the reconnect waits for the room to have gone, and loads a room of its own.
+	waitForNoLiveDocument(t, service, artifactID)
 	connectWithScope(t, server.URL, artifactID, "alice", "readonly", "before\n")
 }
 
@@ -449,11 +452,11 @@ func newHeldAppendsService(t *testing.T, database *store.Store) (*Service, *http
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 		TestHooks: true,
 	})
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -489,7 +492,7 @@ func TestABatchStraddlingTheIssuesCloseStoresWhatTheRoomTookInTime(t *testing.T)
 	}
 
 	requireEnds(t, alice, "the gate refused the keystroke alice made after the close and left her browser connected")
-	waitFor(t, roomWait(t), "the batch's admitted prefix to be stored", func() bool {
+	waitFor(t, "the batch's admitted prefix to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
 	})
 	if moved := storedHead(t, database, artifactID); moved != head+1 {
@@ -522,11 +525,8 @@ func queueAKeystrokeEachSideOfTheClose(t *testing.T, database *store.Store, serv
 	writeIssueClosed(t, database, "DOC-1", true)
 	typeOver(t, alice, from, "typed in time")
 	waitPastCloseMargin(t, database, "DOC-1")
-	// Half a margin past the margin: the gate judges the second keystroke's age on this process's
-	// clock against the close on the database's, so the two need only run at about the same rate.
-	time.Sleep(closeMargin / 2)
 	typeOver(t, alice, "typed in time", "typed after the close")
-	waitFor(t, roomWait(t), "both keystrokes to be queued on the room", func() bool {
+	waitFor(t, "both keystrokes to be queued on the room", func() bool {
 		state := service.lockExistingState(artifactID)
 		if state == nil {
 			return false
@@ -746,7 +746,7 @@ func waitForRoomGone(t *testing.T, service *Service, artifactID, issueKey string
 	if room == nil {
 		t.Fatalf("no room of %s was resident to wait on", artifactID)
 	}
-	waitFor(t, roomWait(t), "the room of "+artifactID+", whose issue "+issueKey+" closed or reopened, to stop being resident", func() bool {
+	waitFor(t, "the room of "+artifactID+", whose issue "+issueKey+" closed or reopened, to stop being resident", func() bool {
 		return service.srv.GetDoc(artifactID) != room
 	})
 }
@@ -950,6 +950,10 @@ func TestTheAppendGatesCloseStandsOverASocketAdmittedWhileItRan(t *testing.T) {
 	requireRecordOpen(t, service, artifactID)
 
 	parked, release := parkSocketAfterItsIssueRead(service, artifactID)
+	// A failed wait below still lets bob's parked admission go, before the document server's Close
+	// waits for its handler.
+	letSocketGo := sync.OnceFunc(func() { close(release) })
+	testcleanup.Add(t, letSocketGo)
 	dialed := connectBrowserAsync(server.URL, artifactID, "bob")
 	awaitSocketParked(t, parked)
 	// Bob read the issue open and recorded that read, so the record stands at his stamp when the
@@ -966,7 +970,7 @@ func TestTheAppendGatesCloseStandsOverASocketAdmittedWhileItRan(t *testing.T) {
 	waitForRefusedAppendClose(t, service)
 	requireRecordClosed(t, service, artifactID)
 
-	close(release)
+	letSocketGo()
 	bob := awaitConnectedBrowser(t, dialed, "bob")
 	requireScopeAndText(t, bob, "bob", "readonly", "before\n")
 	requireRecordClosed(t, service, artifactID)
@@ -998,15 +1002,11 @@ func parkSocketAfterItsIssueRead(service *Service, artifactID string) (parked ch
 }
 
 // awaitSocketParked waits for the socket a test parked after its read of the issue to be parked
-// there (parkSocketAfterItsIssueRead), and fails the test unless it parks within roomWait: until
-// it is, the read the work the test stages next must stand over has not been made.
+// there (parkSocketAfterItsIssueRead): until it is, the read the work the test stages next must
+// stand over has not been made.
 func awaitSocketParked(t *testing.T, parked <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-parked:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("the socket's admission had not parked after its read of the issue within %v", roomWait(t))
-	}
+	testwait.Receive(t, "the socket's admission to park after its read of the issue", parked)
 }
 
 // dialedBrowser is what connectBrowserAsync's goroutine answers with: the browser it connected,
@@ -1035,21 +1035,16 @@ func connectBrowserAsync(serverURL, artifactID, login string) chan dialedBrowser
 }
 
 // awaitConnectedBrowser takes login's browser from the goroutine connectBrowserAsync dialled it
-// on, fails the test unless it connected within roomWait, and closes it with the test, as
-// docstest.Dial closes the browsers it connects.
+// on, fails the test unless it connected, and closes it with the test, as docstest.Dial closes the
+// browsers it connects.
 func awaitConnectedBrowser(t *testing.T, dialed <-chan dialedBrowser, login string) *docstest.Peer {
 	t.Helper()
-	select {
-	case connected := <-dialed:
-		if connected.err != nil {
-			t.Fatalf("connect %s's browser: %v", login, connected.err)
-		}
-		testcleanup.Add(t, connected.peer.Close)
-		return connected.peer
-	case <-time.After(roomWait(t)):
-		t.Fatalf("%s's browser had not connected after %v", login, roomWait(t))
-		return nil
+	connected := testwait.Receive(t, login+"'s browser to connect", dialed)
+	if connected.err != nil {
+		t.Fatalf("connect %s's browser: %v", login, connected.err)
 	}
+	testcleanup.Add(t, connected.peer.Close)
+	return connected.peer
 }
 
 // A room stores one update per keystroke (PersistCoalesceWindow = -1), so a browser typing into
@@ -1111,7 +1106,7 @@ func TestABurstOfRefusedKeystrokesClosesItsRoomOnce(t *testing.T) {
 	// The room applies each keystroke as it arrives and queues its append behind the gate, in
 	// order, so the last of them in the room's own copy says all four are in the room with none
 	// of them stored.
-	waitFor(t, roomWait(t), "the room to take all four of alice's keystrokes, the last of them "+strconv.Quote(typed), func() bool {
+	waitFor(t, "the room to take all four of alice's keystrokes, the last of them "+strconv.Quote(typed), func() bool {
 		return strings.Contains(residentRoomMarkdown(t, service, artifactID), typed)
 	})
 	appends.release()
@@ -1165,7 +1160,7 @@ func TestACloseForARefusedAppendLeavesTheRoomThatLoadedInBetweenAlone(t *testing
 	if refused == nil {
 		t.Fatalf("the service lists no instance for the room of %s alice is in", artifactID)
 	}
-	parked, release := parkRefusedAppendClose(service)
+	parked, letClose := parkRefusedAppendClose(t, service)
 
 	writeIssueClosedAgo(t, database, "DOC-1", closeMargin+30*time.Second)
 	typeOver(t, alice, "before", "typed after the close")
@@ -1184,7 +1179,7 @@ func TestACloseForARefusedAppendLeavesTheRoomThatLoadedInBetweenAlone(t *testing
 		t.Fatalf("the room of %s bob loaded holds the instance whose append was refused, so nothing here is tested", artifactID)
 	}
 
-	close(release)
+	letClose()
 	waitForRefusedAppendClose(t, service)
 	if !roomResident(service, artifactID) {
 		t.Fatalf("the close of the instance whose append was refused took the room of %s that loaded while it waited", artifactID)
@@ -1198,11 +1193,14 @@ func TestACloseForARefusedAppendLeavesTheRoomThatLoadedInBetweenAlone(t *testing
 // parkRefusedAppendClose makes service park the first close the append gate's refusal starts,
 // with the refused instance's mark taken and the close not yet run, so a test can make the room
 // load again while that close waits (beforeRefusedAppendClose). It answers the channel the hook
-// closes once that close is parked (awaitRefusedAppendCloseParked) and the one the test closes
-// to let it go. A close started after the first runs unparked: the staging holds one close, and
-// a second waiting on a channel the test never closes would be a close that never returns.
-func parkRefusedAppendClose(service *Service) (parked chan struct{}, release chan struct{}) {
-	parked, release = make(chan struct{}), make(chan struct{})
+// closes once that close is parked (awaitRefusedAppendCloseParked) and the call that lets it go
+// (letGoOnCleanup), which t's cleanup also makes: a failed wait still lets the parked close go,
+// so it never holds the service's evictions past the test. A close started after the first runs
+// unparked: the staging holds one close, and a second waiting on a channel the test never closes
+// would be a close that never returns.
+func parkRefusedAppendClose(t *testing.T, service *Service) (parked chan struct{}, letClose func()) {
+	release := make(chan struct{})
+	parked = make(chan struct{})
 	var first atomic.Bool
 	service.beforeRefusedAppendClose = func(string) {
 		if !first.CompareAndSwap(false, true) {
@@ -1211,21 +1209,17 @@ func parkRefusedAppendClose(service *Service) (parked chan struct{}, release cha
 		close(parked)
 		<-release
 	}
-	return parked, release
+	return parked, letGoOnCleanup(t, release)
 }
 
 // awaitRefusedAppendCloseParked waits for the close one of the parking hooks installed for it
-// to be parked in that hook (parkRefusedAppendClose, parkCloseAfterRoomClosed), and fails the
-// test unless it parks within roomWait: until it is, the close has not reached the window the
-// test stages its work in, where the room it names is still the room the test is about to take
-// away from it, or the row it has still to write is still unwritten by any other room.
+// to be parked in that hook (parkRefusedAppendClose, parkCloseAfterRoomClosed): until it is, the
+// close has not reached the window the test stages its work in, where the room it names is still
+// the room the test is about to take away from it, or the row it has still to write is still
+// unwritten by any other room.
 func awaitRefusedAppendCloseParked(t *testing.T, parked <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-parked:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("the close the gate's refusal started had not parked after %v", roomWait(t))
-	}
+	testwait.Receive(t, "the close the gate's refusal started to park", parked)
 }
 
 // waitForRefusedAppendClose waits for the close the append gate's refusal started to have run.
@@ -1239,17 +1233,12 @@ func waitForRefusedAppendClose(t *testing.T, service *Service) {
 		service.evictWG.Wait()
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("the close the gate's refusal started had not finished after %v", roomWait(t))
-	}
+	testwait.Receive(t, "the close the gate's refusal started to finish", done)
 }
 
 // requireRoomAnswers drains the answers peer already holds, asks its room for the whole document
-// and fails unless the room answers within roomWait: the socket is open and a room is there to
-// answer on it. The room answers a connection's messages in order, so the answer waited for is
-// this request's.
+// and waits for the room to answer: the socket is open and a room is there to answer on it. The
+// room answers a connection's messages in order, so the answer waited for is this request's.
 func requireRoomAnswers(t *testing.T, peer *docstest.Peer, what string) {
 	t.Helper()
 	for drained := false; !drained; {
@@ -1262,13 +1251,16 @@ func requireRoomAnswers(t *testing.T, peer *docstest.Peer, what string) {
 	if err := peer.AskForDocument(); err != nil {
 		t.Fatalf("%s: ask the room for its document: %v", what, err)
 	}
-	select {
-	case <-peer.Answers:
-	case <-peer.Ended:
-		t.Fatalf("%s: the browser's socket was closed", what)
-	case <-time.After(roomWait(t)):
-		t.Fatalf("%s: the room never answered the request for its document", what)
-	}
+	waitFor(t, what+": the room to answer the request for its document", func() bool {
+		select {
+		case <-peer.Answers:
+			return true
+		case <-peer.Ended:
+			t.Fatalf("%s: the browser's socket was closed", what)
+		default:
+		}
+		return false
+	})
 }
 
 // Such a close writes nothing to the record of the room that loaded in between either. One try
@@ -1310,7 +1302,7 @@ func TestACloseForARefusedAppendLeavesTheRecordOfTheRoomThatLoadedInBetweenAlone
 	if refused == nil {
 		t.Fatalf("the service lists no instance for the room of %s alice is in", artifactID)
 	}
-	parked, release := parkRefusedAppendClose(service)
+	parked, letClose := parkRefusedAppendClose(t, service)
 
 	// Closed far enough back that the gate judges alice's keystroke by its age alone: inside the
 	// margin it stores a browser's update whatever its age (observedBeforeClose).
@@ -1332,7 +1324,7 @@ func TestACloseForARefusedAppendLeavesTheRecordOfTheRoomThatLoadedInBetweenAlone
 		t.Fatalf("the room of %s bob loaded holds the instance whose append was refused, so nothing here is tested", artifactID)
 	}
 
-	close(release)
+	letClose()
 	waitForRefusedAppendClose(t, service)
 	if !roomResident(service, artifactID) {
 		t.Fatalf("the close of the instance whose append was refused took the room of %s that loaded while it waited", artifactID)
@@ -1346,7 +1338,7 @@ func TestACloseForARefusedAppendLeavesTheRecordOfTheRoomThatLoadedInBetweenAlone
 	waitForLandedAppends(t, service, artifactID)
 	head := storedHead(t, database, artifactID)
 	typeOver(t, bob, "before", "typed into the room the close left alone")
-	waitFor(t, roomWait(t), "bob's keystroke into the room the close left alone to be stored", func() bool {
+	waitFor(t, "bob's keystroke into the room the close left alone to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
 	})
 }
@@ -1375,7 +1367,7 @@ func requireRecordLastActor(t *testing.T, service *Service, artifactID string, a
 // opens the document on an open issue, so her connect loads the room and is admitted writable, a
 // scope ygo fixes at her admission; her edit is then recorded as a landed browser edit records
 // it - a durable pending author and the record's latest edit source, with no settlement to take
-// it, this service's Settle being an hour (recordActor). The issue closes with nothing notified,
+// it, this service's Settle being a day (recordActor). The issue closes with nothing notified,
 // as a listener's redial leaves it (this test runs no room sync), and bob's connect is what
 // records that close on the record: his admission reads the issue closed and records that read
 // there, while his connect loads nothing, the room being resident, so the source the record
@@ -1447,7 +1439,7 @@ func TestTheAppendGatesCloseMovesTheRecordsLatestEditSourceToThePendingSettlemen
 	// keystroke's credit are then the same actor, and which of the two the record holds at the
 	// close does not decide the row below.
 	bob.Close()
-	waitFor(t, roomWait(t), "the record of the room to hold alice's browser alone", func() bool {
+	waitFor(t, "the record of the room to hold alice's browser alone", func() bool {
 		return connectedBrowsers(service, artifactID) == 1
 	})
 
@@ -1480,7 +1472,7 @@ func TestTheAppendGatesCloseMovesTheRecordsLatestEditSourceToThePendingSettlemen
 //
 // Here alice types into a writable room on an open issue: her keystroke lands and leaves her on
 // the record as the latest edit source and on the row, with no settlement to take either, this
-// service's Settle being an hour (connectedCreditLocked). The issue then closes unheard, as a
+// service's Settle being a day (connectedCreditLocked). The issue then closes unheard, as a
 // listener's redial leaves it (this test runs no room sync), far enough back for the update's
 // age to decide it, and the gate refuses her next keystroke (ErrIssueClosed); the close that
 // refusal starts reads alice off the record and closes the room. It is held where it has closed
@@ -1544,14 +1536,12 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 	head := storedHead(t, database, artifactID)
 	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
-	waitFor(t, roomWait(t), "alice's keystroke on the open issue to be stored", func() bool {
-		return storedHead(t, database, artifactID) > head
-	})
+	awaitAlicesKeystrokeStored(t, database, artifactID, head)
 	waitForLandedAppends(t, service, artifactID)
 	requireRecordLastActor(t, service, artifactID, alicesEdit)
 	requirePendingSettlementActor(t, service, artifactID, alicesEdit,
 		"alice's keystroke landed on the open issue, before the close reads her off the record")
-	parked, release := parkCloseAfterRoomClosed(service, artifactID)
+	parked, letClose := parkCloseAfterRoomClosed(t, service, artifactID)
 
 	holdSettlements()
 	// Closed far enough back that the gate judges alice's next keystroke by its age alone: inside
@@ -1587,12 +1577,12 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 	// leaves the record behind her closed room: both are waited for, so the row his keystroke
 	// writes is the last word on it and the keystroke's credit names him alone.
 	waitForLandedAppends(t, service, artifactID)
-	waitFor(t, roomWait(t), "the record of the room that loaded while the close waited to hold bob's browser alone", func() bool {
+	waitFor(t, "the record of the room that loaded while the close waited to hold bob's browser alone", func() bool {
 		return connectedBrowsers(service, artifactID) == 1
 	})
 	bobsEdit := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	typeOver(t, bob, "alice typed", "bob typed while the close waited")
-	waitFor(t, roomWait(t), "bob's keystroke to write him to the pending-settlement row of "+artifactID, func() bool {
+	waitFor(t, "bob's keystroke to write him to the pending-settlement row of "+artifactID, func() bool {
 		named := pendingSettlementActor(t, service, artifactID)
 		return named != nil && *named == bobsEdit
 	})
@@ -1600,7 +1590,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 	requireRecordOpen(t, service, artifactID)
 
 	handled := closeIssueBehindAParkedClose(t, service, "DOC-1", artifactID)
-	waitFor(t, roomWait(t), "the second close to take bob off the record, which is its write of him to the row", func() bool {
+	waitFor(t, "the second close to take bob off the record, which is its write of him to the row", func() bool {
 		return recordLastActor(service, artifactID) == nil
 	})
 	requirePendingSettlementActor(t, service, artifactID, bobsEdit,
@@ -1611,7 +1601,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 			artifactID, moved)
 	}
 
-	close(release)
+	letClose()
 	waitForRefusedAppendClose(t, service)
 	awaitNotifiedClose(t, handled)
 	requirePendingSettlementActor(t, service, artifactID, bobsEdit,
@@ -1630,7 +1620,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 //
 // Here alice types into a writable room on task A: her keystroke lands and leaves her on the
 // record as the latest edit source and on the row, with no settlement to take either, this
-// service's Settle being an hour (connectedCreditLocked). The issue then closes unheard, as a
+// service's Settle being a day (connectedCreditLocked). The issue then closes unheard, as a
 // listener's redial leaves it (neither task here runs a room sync), far enough back for the
 // update's age to decide it, and the gate refuses her next keystroke (ErrIssueClosed); the close
 // that refusal starts reads alice off the record and closes the room, and is held where it has
@@ -1671,14 +1661,12 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowASettlementTookWhile
 	head := storedHead(t, database, artifactID)
 	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
-	waitFor(t, roomWait(t), "alice's keystroke on the open issue to be stored", func() bool {
-		return storedHead(t, database, artifactID) > head
-	})
+	awaitAlicesKeystrokeStored(t, database, artifactID, head)
 	waitForLandedAppends(t, taskA, artifactID)
 	requireRecordLastActor(t, taskA, artifactID, alicesEdit)
 	requirePendingSettlementActor(t, taskA, artifactID, alicesEdit,
 		"alice's keystroke landed on the open issue, before the close reads her off the record")
-	parked, release := parkCloseAfterRoomClosed(taskA, artifactID)
+	parked, letClose := parkCloseAfterRoomClosed(t, taskA, artifactID)
 
 	holdSettlements()
 	// Closed far enough back that the gate judges alice's next keystroke by its age alone: inside
@@ -1711,7 +1699,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowASettlementTookWhile
 			artifactID, moved, creditSeq)
 	}
 
-	close(release)
+	letClose()
 	waitForRefusedAppendClose(t, taskA)
 	requireNoPendingSettlement(t, taskA, artifactID,
 		"the close let go once the settlement on the other task had taken the row it read")
@@ -1733,7 +1721,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowASettlementTookWhile
 // Here the document is settled before anything else, so it owes nothing and holds no row; alice's
 // edit is then recorded on task A's record as a landed browser edit records it - a durable
 // pending author and the record's latest edit source, with no settlement to take it, this
-// service's Settle being an hour (recordActor) - and the row that edit writes is deleted again,
+// service's Settle being a day (recordActor) - and the row that edit writes is deleted again,
 // as the settlement before it left the document (clearPendingSettlementRow), which leaves the
 // close a source to write and the document still without a row. The issue closes unheard, as a
 // listener's redial leaves it (neither task here runs a room sync), far enough back for the
@@ -1780,7 +1768,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereItsSnapshotRead
 	clearPendingSettlementRow(t, taskA, artifactID)
 	requireNoPendingSettlement(t, taskA, artifactID, "the row alice's recorded edit wrote, deleted as the settlement before it left the document")
 	head := storedHead(t, database, artifactID)
-	parked, release := parkCloseAfterRoomClosed(taskA, artifactID)
+	parked, letClose := parkCloseAfterRoomClosed(t, taskA, artifactID)
 
 	holdSettlements()
 	// Closed far enough back that the gate judges alice's keystroke by its age alone: inside the
@@ -1824,7 +1812,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereItsSnapshotRead
 			artifactID, moved, creditSeq)
 	}
 
-	close(release)
+	letClose()
 	waitForRefusedAppendClose(t, taskA)
 	requireNoPendingSettlement(t, taskA, artifactID,
 		"the close let go once the other task had written and settled, leaving the row reading at the write exactly as the close read it: none")
@@ -1855,7 +1843,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereItsSnapshotRead
 //
 // While it is held carol's edit is credited on the record as the room credits an edit it has
 // observed whose append has not landed - the record's latest edit source and its credit
-// sequence, with no settlement to take that source, this service's Settle being an hour
+// sequence, with no settlement to take that source, this service's Settle being a day
 // (recordRoomEditSource): the record names carol and stands at a credit sequence past the one
 // alice was read at, and the row, which no append has written since the close read it, still
 // names bob.
@@ -1885,9 +1873,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereTheRecordsSourc
 	head := storedHead(t, database, artifactID)
 	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
-	waitFor(t, roomWait(t), "alice's keystroke on the open issue to be stored", func() bool {
-		return storedHead(t, database, artifactID) > head
-	})
+	awaitAlicesKeystrokeStored(t, database, artifactID, head)
 	waitForLandedAppends(t, service, artifactID)
 	requireRecordLastActor(t, service, artifactID, alicesEdit)
 	requirePendingSettlementActor(t, service, artifactID, alicesEdit,
@@ -1899,7 +1885,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereTheRecordsSourc
 		"bob's committed write, which names him on the row and leaves the record alone")
 	requireRecordLastActor(t, service, artifactID, alicesEdit)
 	landed := storedHead(t, database, artifactID)
-	parked, release := parkCloseAfterRoomClosed(service, artifactID)
+	parked, letClose := parkCloseAfterRoomClosed(t, service, artifactID)
 
 	holdSettlements()
 	// Closed far enough back that the gate judges alice's keystroke by its age alone: inside the
@@ -1930,7 +1916,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereTheRecordsSourc
 			artifactID, moved)
 	}
 
-	close(release)
+	letClose()
 	waitForRefusedAppendClose(t, service)
 	requirePendingSettlementActor(t, service, artifactID, bobsEdit,
 		"the close let go once an edit the record took had moved it past the source that close read")
@@ -2018,7 +2004,7 @@ func clearPendingSettlementRow(t *testing.T, service *Service, artifactID string
 // Here the seed's append leaves a row naming user:seed, the room it loaded is evicted, and
 // alice's edit is recorded on task A's record as a landed browser edit records it - a durable
 // pending author and the record's latest edit source, with no settlement to take it, this
-// service's Settle being an hour (recordActor) - so the close has a source to write and a row to
+// service's Settle being a day (recordActor) - so the close has a source to write and a row to
 // read. The issue then closes, notified to task A and handed to it on a goroutine of its own,
 // and that close is parked between its two readings (closeIssueOnItsOwnGoroutine,
 // parkCloseBetweenItsSnapshotReads).
@@ -2060,7 +2046,7 @@ func TestAnIssuesCloseWritesNoPendingSettlementRowASettlementTookInsideItsSnapsh
 
 	taskB, _ := newTestServiceInstance(t, database)
 	carolsEdit := model.Actor{Kind: "user", ID: "carol"}
-	parked, release := parkCloseBetweenItsSnapshotReads(taskA, artifactID)
+	parked, letClose := parkCloseBetweenItsSnapshotReads(t, taskA, artifactID)
 	handled := closeIssueOnItsOwnGoroutine(t, taskA, "DOC-1")
 	awaitCloseParked(t, parked)
 
@@ -2077,7 +2063,7 @@ func TestAnIssuesCloseWritesNoPendingSettlementRowASettlementTookInsideItsSnapsh
 	// record the close reads below is the one it would have read before either of them.
 	requireRecordLastActor(t, taskA, artifactID, alicesEdit)
 
-	close(release)
+	letClose()
 	awaitNotifiedClose(t, handled)
 	requirePendingSettlementActor(t, taskA, artifactID, carolsEdit,
 		"the close let go once a settlement on the other task had taken the row it read and the edit after it had written another")
@@ -2104,7 +2090,7 @@ func TestAnIssuesCloseWritesNoPendingSettlementRowASettlementTookInsideItsSnapsh
 //
 // Here alice types into a writable room on task A, alone in it, so her keystroke credits her and
 // nobody else and its append writes her to the row (connectedCreditLocked), with no settlement
-// to take either, this service's Settle being an hour. The issue then closes unheard, as a
+// to take either, this service's Settle being a day. The issue then closes unheard, as a
 // listener's redial leaves it (neither task here runs a room sync), far enough back for the
 // update's age to decide it, and the gate refuses her next keystroke (ErrIssueClosed): the room
 // credits her for it too, and the append stores nothing (gateAppend). The close that refusal
@@ -2147,9 +2133,7 @@ func TestTheAppendGatesCloseWritesNoPendingSettlementRowASettlementTookInsideIts
 	head := storedHead(t, database, artifactID)
 	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
-	waitFor(t, roomWait(t), "alice's keystroke on the open issue to be stored", func() bool {
-		return storedHead(t, database, artifactID) > head
-	})
+	awaitAlicesKeystrokeStored(t, database, artifactID, head)
 	waitForLandedAppends(t, taskA, artifactID)
 	requireRecordLastActor(t, taskA, artifactID, alicesEdit)
 	requirePendingSettlementActor(t, taskA, artifactID, alicesEdit,
@@ -2157,7 +2141,7 @@ func TestTheAppendGatesCloseWritesNoPendingSettlementRowASettlementTookInsideIts
 
 	taskB, _ := newTestServiceInstance(t, database)
 	carolsEdit := model.Actor{Kind: "user", ID: "carol"}
-	parked, release := parkCloseBetweenItsSnapshotReads(taskA, artifactID)
+	parked, letClose := parkCloseBetweenItsSnapshotReads(t, taskA, artifactID)
 
 	holdSettlements()
 	// Closed far enough back that the gate judges alice's next keystroke by its age alone: inside
@@ -2187,7 +2171,7 @@ func TestTheAppendGatesCloseWritesNoPendingSettlementRowASettlementTookInsideIts
 			artifactID, moved, creditSeq)
 	}
 
-	close(release)
+	letClose()
 	requireEnds(t, alice, "the close the gate's refusal started left alice's browser connected")
 	waitForRefusedAppendClose(t, taskA)
 	requirePendingSettlementActor(t, taskA, artifactID, carolsEdit,
@@ -2201,8 +2185,10 @@ func TestTheAppendGatesCloseWritesNoPendingSettlementRowASettlementTookInsideIts
 // to write to the document's pending-settlement row (closeRefusedAppendRoom,
 // persistClosedLastActor): the room server runs afterClose there, holding the room's close gate
 // (roomServer.closeHeld). It answers the channel the hook closes once that close is parked
-// (awaitRefusedAppendCloseParked) and the one the test closes to let it go. The hook the service
-// installed, the test hooks' close count, runs on every close as it did (New).
+// (awaitRefusedAppendCloseParked) and the call that lets it go (letGoOnCleanup), which t's cleanup
+// also makes: a failed wait still lets the parked close go, so it never holds the room's close
+// past the test. The hook the service installed, the test hooks' close count, runs on every close
+// as it did (New).
 //
 // afterClose is documented as a hook that must not block, and this one blocks: nothing waits
 // behind the gate it holds here, since a repair that finds the gate held writes nothing and
@@ -2210,8 +2196,9 @@ func TestTheAppendGatesCloseWritesNoPendingSettlementRowASettlementTookInsideIts
 // takes that gate, and no other close of the room is made. A close after the first runs
 // unparked, as does every close of another room: the staging holds one close, and a second
 // waiting on a channel the test never closes would be a close that never returns.
-func parkCloseAfterRoomClosed(service *Service, artifactID string) (parked chan struct{}, release chan struct{}) {
-	parked, release = make(chan struct{}), make(chan struct{})
+func parkCloseAfterRoomClosed(t *testing.T, service *Service, artifactID string) (parked chan struct{}, letClose func()) {
+	release := make(chan struct{})
+	parked = make(chan struct{})
 	counted := service.srv.afterClose
 	var first atomic.Bool
 	service.srv.afterClose = func(room string) {
@@ -2224,22 +2211,24 @@ func parkCloseAfterRoomClosed(service *Service, artifactID string) (parked chan 
 		close(parked)
 		<-release
 	}
-	return parked, release
+	return parked, letGoOnCleanup(t, release)
 }
 
 // parkCloseBetweenItsSnapshotReads makes service park the first close of artifactID that reaches
 // the gap between the two readings its snapshot is made of: the document's pending-settlement
 // row, read first, and the room's record, read after it (betweenCloseSnapshotReads,
 // setRoomIssueOpen, closeRefusedAppendRoom, closeSnapshot). It answers the channel the hook
-// closes once that close is parked (awaitCloseParked) and the one the test closes to let it go.
-// The close holds no record lock and no transaction there - the gate's close holds the room's
-// close gate, on which a settlement waits for nothing, its repair only trying it (holdOpen) - so
-// a settlement of the document commits inside that gap as it would have had nothing parked it. A
-// close after the first runs unparked, as does every close of another room: the staging holds
-// one close, and a second waiting on a channel the test never closes would be a close that never
-// returns.
-func parkCloseBetweenItsSnapshotReads(service *Service, artifactID string) (parked chan struct{}, release chan struct{}) {
-	parked, release = make(chan struct{}), make(chan struct{})
+// closes once that close is parked (awaitCloseParked) and the call that lets it go
+// (letGoOnCleanup), which t's cleanup also makes: a failed wait still lets the parked close go,
+// so it never holds the room's close gate past the test. The close holds no record lock and no
+// transaction there - the gate's close holds the room's close gate, on which a settlement waits
+// for nothing, its repair only trying it (holdOpen) - so a settlement of the document commits
+// inside that gap as it would have had nothing parked it. A close after the first runs unparked,
+// as does every close of another room: the staging holds one close, and a second waiting on a
+// channel the test never closes would be a close that never returns.
+func parkCloseBetweenItsSnapshotReads(t *testing.T, service *Service, artifactID string) (parked chan struct{}, letClose func()) {
+	release := make(chan struct{})
+	parked = make(chan struct{})
 	var first atomic.Bool
 	service.betweenCloseSnapshotReads = func(room string) {
 		if room != artifactID || !first.CompareAndSwap(false, true) {
@@ -2248,20 +2237,33 @@ func parkCloseBetweenItsSnapshotReads(service *Service, artifactID string) (park
 		close(parked)
 		<-release
 	}
-	return parked, release
+	return parked, letGoOnCleanup(t, release)
 }
 
 // awaitCloseParked waits for the close a test parked between the two readings of its snapshot to
-// be parked there (parkCloseBetweenItsSnapshotReads), and fails the test unless it parks within
-// roomWait: until it is, the close has taken neither reading, and work the test stages now would
-// be in both rather than between them.
+// be parked there (parkCloseBetweenItsSnapshotReads): until it is, the close has taken neither
+// reading, and work the test stages now would be in both rather than between them.
 func awaitCloseParked(t *testing.T, parked <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-parked:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("the close had not parked between the two readings of its snapshot after %v", roomWait(t))
-	}
+	testwait.Receive(t, "the close to park between the two readings of its snapshot", parked)
+}
+
+// letGoOnCleanup is the close of release, made once whoever asks first, which lets a close one of
+// the parking hooks above holds go. It is registered on t's cleanup as well, so a row that fails
+// before it lets the close go leaves nothing parked past the test.
+func letGoOnCleanup(t *testing.T, release chan struct{}) (letGo func()) {
+	letGo = sync.OnceFunc(func() { close(release) })
+	testcleanup.Add(t, letGo)
+	return letGo
+}
+
+// awaitAlicesKeystrokeStored waits through the shared wait for artifactID's stored head to pass
+// head, the head read before alice typed: her keystroke on the open issue stored.
+func awaitAlicesKeystrokeStored(t *testing.T, database *store.Store, artifactID string, head int64) {
+	t.Helper()
+	waitFor(t, "alice's keystroke on the open issue to be stored", func() bool {
+		return storedHead(t, database, artifactID) > head
+	})
 }
 
 // closeIssueOnItsOwnGoroutine closes issueKey in the database and hands service the notification
@@ -2398,30 +2400,25 @@ func closeIssueBehindAParkedClose(t *testing.T, service *Service, issueKey, arti
 		defer close(handled)
 		service.issueOpenChanged(store.WithTransactionTracking(context.Background()), issueKey)
 	}()
-	waitFor(t, roomWait(t), "the notified close of "+issueKey+" to mark the record of "+artifactID+" closed", func() bool {
+	waitFor(t, "the notified close of "+issueKey+" to mark the record of "+artifactID+" closed", func() bool {
 		return recordReadsClosed(service, artifactID)
 	})
 	return handled
 }
 
 // awaitNotifiedClose waits for the close a test handed the issue-open lane to have returned, which
-// it does once the parked close has let the room's close gate go (closeIssueBehindAParkedClose),
-// and fails the test unless it returns within roomWait.
+// it does once the parked close has let the room's close gate go (closeIssueBehindAParkedClose).
 func awaitNotifiedClose(t *testing.T, handled <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-handled:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("the close handed to the issue-open lane had not returned after %v", roomWait(t))
-	}
+	testwait.Receive(t, "the close handed to the issue-open lane to return", handled)
 }
 
 // settleTheDocumentNow loads artifactID's document on service and runs its settlement at once,
 // rather than at the end of service's settle window, and waits for the pending-settlement row the
 // settlement takes to be gone: a settlement deletes that row whether or not it writes a version
 // (SettleNow, clearSettlementPending). The window is 20 ms while it runs, as it is in every test
-// that drives a settlement to completion on a service whose window is an hour, so a try that
-// stops short is retried at once rather than an hour from now (retrySettleLocked); the service's
+// that drives a settlement to completion on a service whose window is a day, so a try that
+// stops short is retried at once rather than a day from now (retrySettleLocked); the service's
 // own window is back on return, so an edit a test makes after it leaves its settlement unrun.
 func settleTheDocumentNow(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
@@ -2432,7 +2429,7 @@ func settleTheDocumentNow(t *testing.T, service *Service, artifactID string) {
 		t.Fatalf("load %s for its settlement: %v", artifactID, err)
 	}
 	service.SettleNow(artifactID)
-	waitFor(t, roomWait(t), "the settlement of "+artifactID+" to take its pending-settlement row", func() bool {
+	waitFor(t, "the settlement of "+artifactID+" to take its pending-settlement row", func() bool {
 		owed, _, err := readOwedSettlement(context.Background(), service.store.Pool, artifactID)
 		if err != nil {
 			t.Fatalf("read the pending settlement of %s: %v", artifactID, err)

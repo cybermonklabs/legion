@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -21,6 +23,10 @@ type roleMentionRegistry struct {
 	lookups      int
 	sessionReads int
 	sent         []map[string]any
+	// calls counts the requests the listener is serving, so a test whose server runs on a fake
+	// clock moves that clock through a retry's backoffs only while no lookup is on its way
+	// (stepListenerWaits).
+	calls listenerCalls
 }
 
 // roleMentionListener is the Envoy listener the role-mention retry tests run against: it
@@ -30,6 +36,7 @@ type roleMentionRegistry struct {
 func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.Server {
 	t.Helper()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer registry.calls.took()()
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
 			registry.lookups++
@@ -53,7 +60,9 @@ func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode role mention send: %v", err)
+				t.Errorf("decode role mention send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			registry.sent = append(registry.sent, request)
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
@@ -65,11 +74,18 @@ func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.
 	return listener
 }
 
+// A pending role mention's retry keeps the holder its comment pinned at creation, and the
+// comment's own lookup of the role is the one decision of it: a lookup that went unanswered
+// would leave the attempt unpinned and its send resolving the role afresh. So the server runs on
+// a fake clock, on which a lookup's bound (mentionLookupTimeout) never runs out unless the test
+// moves it there, and the test moves it only through the backoffs of the retry that waits a
+// take-over's "no live session" out below.
 func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	t.Parallel()
 	registry := &roleMentionRegistry{holder: "s1", s1Live: true}
 	listener := roleMentionListener(t, registry)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	fake := clocktest.New(time.Now())
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, fake)
 	issue := createInteractionIssue(t, handler, "TEST", "Pending role mention", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -111,9 +127,15 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	registry.s1Live = false
 	registry.sent = nil
 	registry.sessionReads = 0
-	missingHolder := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
-		"delivery": "steer",
-	}, "alice")
+	// "no live session" is a take-over's answer, so the retry tries again after each backoff on
+	// the server's clock, which the wait below moves through while no recheck is on its way.
+	retried := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		retried <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
+			"delivery": "steer",
+		}, "alice")
+	}()
+	missingHolder := answerWhileCallsAreHeld(t, fake, &registry.calls, retried)
 	if missingHolder.Code != http.StatusCreated {
 		t.Fatalf("complete pending absent-holder mention: status=%d body=%s", missingHolder.Code, missingHolder.Body.String())
 	}
@@ -317,7 +339,9 @@ func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
 				Payload string `json:"payload"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode mention mode send: %v", err)
+				t.Errorf("decode mention mode send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			var frame struct {
 				Delivery struct {
@@ -325,7 +349,9 @@ func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
 				} `json:"delivery"`
 			}
 			if err := json.Unmarshal([]byte(request.Payload), &frame); err != nil {
-				t.Fatalf("decode mention mode frame: %v", err)
+				t.Errorf("decode mention mode frame: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			sentModes = append(sentModes, frame.Delivery.Mode)
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
@@ -466,7 +492,11 @@ func TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration(t *t
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock whose timers never fire: the comment's lookup is answered as the listener answers it,
+	// steer advertised, and is never left unanswered by its bound (mentionLookupTimeout), after
+	// which the send's own read would be the first to see steer and the gap this row reads would
+	// not exist.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Initial capability race", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body":     "Created while steer was advertised.",
@@ -507,7 +537,10 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock whose timers never fire: the comment's lookup of the role is answered as the listener
+	// answers it, no holder, and is never left unanswered by its bound (mentionLookupTimeout),
+	// which would leave the attempt with no error to keep and its send looking the role up again.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Pending unresolved mention", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Keep the original resolution error.", "mentions": []map[string]any{{"target": "role:reviewer"}},
@@ -616,7 +649,11 @@ func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	served := &server{deps: Deps{Envoy: envoy.New(listener.URL)}, lifetime: context.Background()}
+	// A clock whose timers never fire, for the listener client and the server alike: the
+	// listener's answers decide each route, and no call window (envoy.CallWindow) ends a lookup
+	// the listener answers late.
+	held := clocktest.Held()
+	served := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(held)), Clock: held}, lifetime: context.Background()}
 
 	id, title, refusal := served.resolveDeliveryTarget(
 		context.Background(), model.Route{Kind: "role", ID: "reviewer"}, "steer",

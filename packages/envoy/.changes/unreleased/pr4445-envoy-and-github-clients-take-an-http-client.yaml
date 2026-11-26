@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  Dispatch's Envoy listener client (`envoy.Client`) and its GitHub App client (`githubapp.Client`)
+  take a `WithHTTPClient` option, the HTTP client every request is sent through. A test uses it to
+  see each request's context before it is sent. A deployment leaves it unset, and each client
+  builds its own HTTP client as before.

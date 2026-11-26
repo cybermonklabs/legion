@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // deadlinePassingOnTopic is the publisher hold a fallback pass runs under and the NATS it sends
@@ -136,9 +137,9 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookRecordsNothing(t *testing.T) {
 				tc.lose(t, database)
 			}
 
-			before := time.Now()
+			before := testdb.ClockTimestamp(t, database.Pool)
 			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, database))
-			after := time.Now()
+			after := testdb.ClockTimestamp(t, database.Pool)
 
 			if !lost.Load() {
 				t.Fatalf("the pass published no copy, so the hold was never taken from it and the test holds nothing; the pass logged:\n%s",
@@ -179,9 +180,9 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookBeforeItsClaimRecordsNothing(t 
 	// Another process takes the hold before this one claims a row of its own.
 	holdRow(t, database, uuid.New())
 
-	before := time.Now()
+	before := testdb.ClockTimestamp(t, database.Pool)
 	publishFallbackCopies(ctx, deps, unfenced{}, stale)
-	after := time.Now()
+	after := testdb.ClockTimestamp(t, database.Pool)
 
 	// The scan that seeded the row published the issue topic; the copy is the pass's one send.
 	if copies := topicsOf(publisher.all())[1:]; len(copies) != 1 || copies[0] != sessionTopic {
@@ -292,9 +293,9 @@ func TestAFallbackPassWhoseHoldLapsedBeforeItsClaimRecordsNothingBesideItsNextHo
 		holdRow(t, database, uuid.New())
 	}
 
-	before := time.Now()
+	before := testdb.ClockTimestamp(t, database.Pool)
 	publishFallbackCopies(ctx, deps, unfenced{}, stale)
-	after := time.Now()
+	after := testdb.ClockTimestamp(t, database.Pool)
 
 	if !took.Load() {
 		t.Fatalf("the pass published no copy, so nobody took the lapsed hold while it sent and the test holds "+

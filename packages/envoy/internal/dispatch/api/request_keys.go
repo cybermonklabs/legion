@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -41,24 +42,24 @@ import (
 //   - The row is inserted in flight, in a statement of its own, before the handler runs, and on a
 //     context the client's cancellation does not reach. A repeat that finds it answers from it
 //     instead: a different request under the key is 422 KEY_REUSED, naming the request that used
-//     it; a first request still running (its lease, IdempotencyLease, renewed every
-//     keyedLeaseRenewal while it runs) is 409 KEY_IN_FLIGHT with Retry-After: 1; a finished one is
-//     answered with Idempotency-Replayed: ?1, and the handler does not run again. A route that
-//     commits a recovery point answers what it made, read now (keyedReplays), except the status
-//     change, which answers what its steps stored, each issue as its step's write answered it
-//     (replayStatusChange); a route whose answer is one comment or issue message answers that
-//     post, read now (keyedRereads); any other answers its stored status and body - unless that
-//     answer is a success holding a comment or a message that is deleted now, or a document
-//     version a delete renamed (answerEndedByDelete), whenever the delete began, and is then
-//     never replayed: a delete is timed from before it waited for the lock a keyed write may
-//     hold, so no time says which of the two read the post first. A repeat that arrives while its
-//     first request still runs is never spooled (requestKeyInFlight): its body is read off the
-//     connection and discarded, and the repeat is judged by its digest once that body has
-//     arrived, by what the key holds then (answerDrainedRepeat). A refusal the layer answers
-//     itself takes its route's shape (keyedRoute.refuse): the status change's carries changed,
-//     the entries of the request's recovery point for a KEY_IN_FLIGHT - the holder's, answered
-//     while it runs, and an abandoned run's for a freed key - and for an ANSWER_NOT_KEPT, and []
-//     for every other (refuseStatusChangeKey).
+//     it; a first request still running (its lease, IdempotencyLease or one a test staged
+//     (keyLease), renewed every third of it while it runs) is 409 KEY_IN_FLIGHT with
+//     Retry-After: 1; a finished one is answered with Idempotency-Replayed: ?1, and the handler
+//     does not run again. A route that commits a recovery point answers what it made, read now
+//     (keyedReplays), except the status change, which answers what its steps stored, each issue
+//     as its step's write answered it (replayStatusChange); a route whose answer is one comment
+//     or issue message answers that post, read now (keyedRereads); any other answers its stored
+//     status and body - unless that answer is a success holding a comment or a message that is
+//     deleted now, or a document version a delete renamed (answerEndedByDelete), whenever the
+//     delete began, and is then never replayed: a delete is timed from before it waited for the
+//     lock a keyed write may hold, so no time says which of the two read the post first. A repeat
+//     that arrives while its first request still runs is never spooled (requestKeyInFlight): its
+//     body is read off the connection and discarded, and the repeat is judged by its digest once
+//     that body has arrived, by what the key holds then (answerDrainedRepeat). A refusal the layer
+//     answers itself takes its route's shape (keyedRoute.refuse): the status change's carries
+//     changed, the entries of the request's recovery point for a KEY_IN_FLIGHT - the holder's,
+//     answered while it runs, and an abandoned run's for a freed key - and for an ANSWER_NOT_KEPT,
+//     and [] for every other (refuseStatusChangeKey).
 //   - The handler finishes whatever its client does: it runs on the request's context with the
 //     client's cancellation taken off, bounded by keyedHandlerLimit and counted in the server's
 //     background wait, so a client that gives up and asks again waits on the first run rather than
@@ -140,6 +141,25 @@ const (
 	// IdempotencyLease, so two renewals can fail in a row before a repeat presumes the run dead.
 	keyedLeaseRenewal = 20 * time.Second
 )
+
+// keyLease is how long a keyed request's first run holds its key before a repeat may run it
+// again, which every reader of the lease judges by: contracts.IdempotencyLease, or the lease a
+// test staged (Deps.IdempotencyLease).
+func (s *server) keyLease() time.Duration {
+	if s.deps.IdempotencyLease > 0 {
+		return s.deps.IdempotencyLease
+	}
+	return contracts.IdempotencyLease
+}
+
+// keyLeaseRenewal is how often a running keyed handler renews its key's lease: keyedLeaseRenewal,
+// or a third of the lease a test staged, as keyedLeaseRenewal is of contracts.IdempotencyLease.
+func (s *server) keyLeaseRenewal() time.Duration {
+	if s.deps.IdempotencyLease > 0 {
+		return s.deps.IdempotencyLease / 3
+	}
+	return keyedLeaseRenewal
+}
 
 // requestKeyAgentToken is whom a key sent with the shared agent token belongs to: that token names
 // no person.
@@ -369,7 +389,7 @@ func readOnlyCredential(ctx context.Context) *model.Credential {
 // finish as it lets a delivery finish. A client that gives up - the page's attempt cut off by its
 // own silence bound, a closed tab, a proxy's timeout - asks again under its key and is answered
 // 409 KEY_IN_FLIGHT for as long as the first run lives, then that run's stored answer. While the
-// handler runs its key's lease is renewed every keyedLeaseRenewal, so only a run whose process
+// handler runs its key's lease is renewed every keyLeaseRenewal, so only a run whose process
 // died is taken over, once its lease lapses. A handler cut off with its client would roll its
 // transactions back and leave the next attempt to start again from nothing, so a write that takes
 // the server longer than the client waits could never land.
@@ -460,7 +480,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		}
 		s.detached.start()
 		defer s.detached.done()
-		detached, stop := context.WithTimeout(context.WithoutCancel(r.Context()), s.keyedRunLimit())
+		detached, stop := s.clock().WithTimeout(context.WithoutCancel(r.Context()), keyedHandlerLimit)
 		defer stop()
 		stopRenewing := s.renewRequestKeyLease(detached, claim)
 		answer := &keyedAnswer{w: w}
@@ -520,51 +540,35 @@ var keyedUploads = map[string]bool{
 	http.MethodPost + " /api/v1/agents/{session_id}/artifacts": true,
 }
 
-// keyLease is how long a keyed request holds its key without a renewal before a repeat presumes
-// its process died (IdempotencyLease; requestKeyLease in a test).
-func (s *server) keyLease() time.Duration {
-	if s.requestKeyLease > 0 {
-		return s.requestKeyLease
-	}
-	return contracts.IdempotencyLease
-}
-
-// keyedRunLimit is how long a keyed handler runs once its client's cancellation no longer bounds
-// it (keyedHandlerLimit; requestKeyRunLimit in a test).
-func (s *server) keyedRunLimit() time.Duration {
-	if s.requestKeyRunLimit > 0 {
-		return s.requestKeyRunLimit
-	}
-	return keyedHandlerLimit
-}
-
-// renewRequestKeyLease renews claim's lease every keyedLeaseRenewal until the returned stop is
-// called or run - the handler's own context, which keyedRunLimit bounds - ends, and stops by
-// itself once a renewal finds the key no longer its own. A handler that runs on past its limit,
-// ignoring its context, so holds its key for a lease past the limit and no longer: a repeat then
-// takes the key over, or is answered KEY_COMMITTED for a write the run made. stop waits for a
-// renewal under way and may be called more than once. Each renewal is its own statement on a
-// connection of its own, beside whatever transaction the handler holds.
+// renewRequestKeyLease renews claim's lease every keyLeaseRenewal on the server's clock until
+// the returned stop is called or run - the handler's own context, which keyedHandlerLimit bounds -
+// ends, and stops by itself once a renewal finds the key no longer its own. The renewals tick on a
+// clock.Ticker, at a fixed rate: each is due a whole number of keyLeaseRenewal after the
+// handler began, whatever the renewal before it took, and one that took longer than
+// keyLeaseRenewal is followed at once, so two renewals that each run out of keyedBookkeeping
+// still leave the third due inside the lease. A handler that runs on past its limit, ignoring its
+// context, so holds its key for a lease past the limit and no longer: a repeat then takes the key
+// over, or is answered KEY_COMMITTED for a write the run made. stop waits for a renewal under way
+// and may be called more than once. Each renewal is its own statement on a connection of its
+// own, beside whatever transaction the handler holds.
 func (s *server) renewRequestKeyLease(run context.Context, claim requestKeyClaim) (stop func()) {
-	every := keyedLeaseRenewal
-	if s.requestKeyRenewal > 0 {
-		every = s.requestKeyRenewal
-	}
 	stopped, finished := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(finished)
-		ticker := time.NewTicker(every)
-		defer ticker.Stop()
+		renewals := clock.NewTicker(s.clock(), s.keyLeaseRenewal(), false)
+		defer renewals.Stop()
 		for {
 			select {
 			case <-stopped:
 				return
 			case <-run.Done():
 				return
-			case <-ticker.C:
+			case <-renewals.C():
+				renewals.Took()
 				if !s.renewRequestKey(claim) {
 					return
 				}
+				renewals.Next()
 			}
 		}
 	}()
@@ -575,11 +579,12 @@ func (s *server) renewRequestKeyLease(run context.Context, claim requestKeyClaim
 }
 
 // renewRequestKey moves claim's lease to now and reports whether the key is still claim's: a row
-// another attempt took over, or one already answered or released, is left as it is. A renewal that
-// fails is logged and tried again at the next tick: the lease lapses only once renewals have
+// another attempt took over, or one already answered or released, is left as it is. The renewal
+// waits at most keyedBookkeeping on the server's clock, the clock its ticker runs on. A renewal
+// that fails is logged and tried again at the next tick: the lease lapses only once renewals have
 // failed for all of it.
 func (s *server) renewRequestKey(claim requestKeyClaim) bool {
-	ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), keyedBookkeeping)
+	ctx, cancel := s.clock().WithTimeout(store.WithTransactionTracking(context.Background()), keyedBookkeeping)
 	defer cancel()
 	tag, err := s.deps.Store.Pool.Exec(ctx, `
 		update request_keys set leased_at = now()
@@ -1148,7 +1153,7 @@ func (s *server) answerHeldKey(
 // answered 409 KEY_IN_FLIGHT at once, with nothing read: it has sent nothing, so the answer is as
 // fresh as the key, and a read would ask it for its whole body only to judge it.
 //
-// The body is read for at most drainTime (readFor): one that stops arriving is answered 409
+// The body is read for at most bodyDrainLimit (readFor): one that stops arriving is answered 409
 // KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. Neither of those
 // two answers reads the key again to judge the repeat; each names the recovery point the key holds
 // when it is answered (writeUnjudgedKeyInFlight). A body past the route's limit is answered the
@@ -1564,7 +1569,7 @@ func markRequestKeyCommitted(claim requestKeyClaim, running *atomic.Bool) store.
 
 // outlivingTheClient is the context for work a handler does before it answers that must finish
 // even if its client goes away. A keyed request already runs on such a context, with the keyed
-// run's bound (keyedRunLimit), and context.WithoutCancel would drop that bound, so it is used as
+// run's bound (keyedHandlerLimit), and context.WithoutCancel would drop that bound, so it is used as
 // it is. An unkeyed request's context has the client's cancellation taken off, as before. Work
 // that runs after the handler returns still takes context.WithoutCancel: the keyed run's context
 // ends with the handler.

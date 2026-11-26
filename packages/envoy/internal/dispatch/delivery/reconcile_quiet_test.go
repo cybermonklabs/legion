@@ -47,7 +47,6 @@ func timelineRows(t *testing.T, ctx context.Context, pool *store.Pool) []string 
 // stored row, logged no change and made no direct write to the timeline's tables.
 func quietReconcilePass(t *testing.T, prs int) []string {
 	t.Helper()
-	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	finished := time.Now().UTC()

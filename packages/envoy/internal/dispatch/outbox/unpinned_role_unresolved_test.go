@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -39,6 +38,21 @@ func seedCreatedAttempt(t *testing.T, database *store.Store, commentID, target, 
 		values ($1, $2, 1, $3, null, null, 'pending', now())
 	`, commentID, target, mode); err != nil {
 		t.Fatalf("open the unanswered attempt of %s: %v", target, err)
+	}
+}
+
+// keepLive dates every pending attempt of commentID stagedAhead past the database's clock, its
+// creation and its claim, for a row that reads an attempt seedCreatedAttempt opened as live: that
+// statement dates both now(), as the API's does, which reads live for model.DeliveryClaimLapse
+// only (model.MentionLiveSQL), so a row that took a minute to read it would read it past its
+// lease. Dated ahead it reads live for that day and the lease past it.
+func keepLive(t *testing.T, database *store.Store, commentID string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		update comment_deliveries set created_at = now() + $2::interval, claimed_at = now() + $2::interval
+		where comment_id = $1 and state = 'pending'
+	`, commentID, stagedAhead); err != nil {
+		t.Fatalf("keep the attempts of comment %s live: %v", commentID, err)
 	}
 }
 
@@ -105,6 +119,7 @@ func TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesTha
 		},
 	})
 	seedCreatedAttempt(t, rig.database, commentID, target, "steer")
+	keepLive(t, rig.database, commentID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
@@ -140,7 +155,7 @@ func TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesTha
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	claimant.settle(t)
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v, want nothing: its own mention of %s delivered the comment, and a copy under %s would show it that comment twice",
 			holder, got, target, fmt.Sprintf("dispatch-%d", comment.ID))

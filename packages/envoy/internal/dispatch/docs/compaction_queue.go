@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -25,20 +26,19 @@ const compactMinRows = 16
 // of its edit.
 const compactMaxTailAge = 15 * time.Minute
 
-// compactionTiming is how long the compaction queue waits between the steps of a room. Tests shorten
-// it; production runs defaultCompactionTiming.
-type compactionTiming struct {
-	// firstCheck is how long a noted room waits for its first check. Nothing a note's own rows add
-	// is due before they have left the tail, and a room that was due already waits at most this.
-	firstCheck time.Duration
-	// backoff is the wait before the first retry of a compaction that did not finish (dropped,
-	// busy or failed), doubling at each retry up to backoffCap. It is also the shortest wait for a
-	// re-check, so rows the database's clock puts at the boundary cannot spin the worker.
-	backoff    time.Duration
-	backoffCap time.Duration
-}
-
-var defaultCompactionTiming = compactionTiming{firstCheck: compactTail, backoff: time.Second, backoffCap: time.Minute}
+// The compaction queue's waits between the steps of a room, on the service's clock (Deps.Clock).
+const (
+	// compactFirstCheck is how long a noted room waits for its first check. Nothing a note's own
+	// rows add is due before they have left the tail, and a room that was due already waits at most
+	// this.
+	compactFirstCheck = compactTail
+	// compactBackoff is the wait before the first retry of a compaction that did not finish
+	// (dropped, busy or failed), doubling at each retry up to compactBackoffCap. It is also the
+	// shortest wait for a re-check, so rows the database's clock puts at the boundary cannot spin
+	// the worker.
+	compactBackoff    = time.Second
+	compactBackoffCap = time.Minute
+)
 
 // noteStoredUpdates tells the document's compaction queue that the room's rows through head are
 // stored. Every committed append and every load of a document notes its room here, and these are
@@ -238,6 +238,8 @@ func warnCompaction(ctx context.Context, message, room string, err error) {
 type compactionQueue struct {
 	step   func(ctx context.Context, room string, retrying bool) compactionNext
 	cancel context.CancelFunc
+	// clock is what the queue's times and its worker's timer run on: the service's (Deps.Clock).
+	clock clock.Clock
 	// wake tells the worker the queue changed: a room was queued, or the queue stopped or resumed.
 	wake chan struct{}
 	// done is closed when the worker has returned.
@@ -246,8 +248,7 @@ type compactionQueue struct {
 	// ran under, zero for a check. Nil outside tests; tests use it to see the steps a room takes.
 	afterStep func(room string, retry time.Duration, next compactionNext)
 
-	mu     sync.Mutex
-	timing compactionTiming
+	mu sync.Mutex
 	// rooms is every room the queue holds, the one in flight included; due orders those waiting.
 	rooms map[string]*compactionEntry
 	due   compactionHeap
@@ -273,34 +274,35 @@ type compactionEntry struct {
 	index int
 }
 
-// startCompactionQueue creates a compaction queue whose worker runs step, and starts the worker.
-func startCompactionQueue(step func(ctx context.Context, room string, retrying bool) compactionNext) *compactionQueue {
+// startCompactionQueue creates a compaction queue on c whose worker runs step, and starts the
+// worker.
+func startCompactionQueue(c clock.Clock, step func(ctx context.Context, room string, retrying bool) compactionNext) *compactionQueue {
 	ctx, cancel := context.WithCancel(store.WithTransactionTracking(context.Background()))
 	q := &compactionQueue{
 		step:   step,
 		cancel: cancel,
+		clock:  c,
 		wake:   make(chan struct{}, 1),
 		done:   make(chan struct{}),
-		timing: defaultCompactionTiming,
 		rooms:  make(map[string]*compactionEntry),
 	}
 	go q.run(ctx)
 	return q
 }
 
-// note queues room for its first check, firstCheck from now, unless the queue takes no notes. A
-// note of the room in flight marks it (renoted), so its step's end queues it again however the step
-// ended. A note of a room waiting in the queue brings its check forward to firstCheck from now when
-// it was later: the rows the note announces come of age then, and a room checked quiet minutes ago
-// may be waiting out its oldest row's compactMaxTailAge while a burst of appends stacks rows the
-// compactMinRows rule would fold first.
+// note queues room for its first check, compactFirstCheck from now, unless the queue takes no
+// notes. A note of the room in flight marks it (renoted), so its step's end queues it again however
+// the step ended. A note of a room waiting in the queue brings its check forward to
+// compactFirstCheck from now when it was later: the rows the note announces come of age then, and a
+// room checked quiet minutes ago may be waiting out its oldest row's compactMaxTailAge while a burst
+// of appends stacks rows the compactMinRows rule would fold first.
 func (q *compactionQueue) note(room string) {
 	q.mu.Lock()
 	if q.shut || q.paused {
 		q.mu.Unlock()
 		return
 	}
-	at := time.Now().Add(q.timing.firstCheck)
+	at := q.clock.Now().Add(compactFirstCheck)
 	if held := q.rooms[room]; held != nil {
 		// A held room is either in flight or in the heap: take pops it and makes it current under
 		// one lock, settle pushes it back or deletes it, and dropQueuedLocked deletes every room
@@ -338,22 +340,31 @@ func (q *compactionQueue) signal() {
 // again or drops it as the step decided, until the queue is shut.
 func (q *compactionQueue) run(ctx context.Context) {
 	defer close(q.done)
-	timer := time.NewTimer(time.Hour)
-	timer.Stop()
+	// The worker's one timer, made at its first wait and re-armed after; it is stopped after every
+	// wait, so nothing of it stays armed once the worker returns.
+	var timer clock.Timer
 	for {
 		entry, wait, ok := q.take()
 		if !ok {
 			return
 		}
 		if entry == nil {
+			var fire <-chan time.Time
 			if wait > 0 {
-				timer.Reset(wait)
+				if timer == nil {
+					timer = q.clock.NewTimer(wait)
+				} else {
+					timer.Reset(wait)
+				}
+				fire = timer.C()
 			}
 			select {
 			case <-q.wake:
-			case <-timer.C:
+			case <-fire:
 			}
-			timer.Stop()
+			if timer != nil {
+				timer.Stop()
+			}
 			continue
 		}
 		next := q.step(ctx, entry.room, entry.retry > 0)
@@ -377,7 +388,7 @@ func (q *compactionQueue) take() (*compactionEntry, time.Duration, bool) {
 		return nil, 0, true
 	}
 	entry := q.due[0]
-	if wait := time.Until(entry.at); wait > 0 {
+	if wait := entry.at.Sub(q.clock.Now()); wait > 0 {
 		return nil, wait, true
 	}
 	heap.Pop(&q.due)
@@ -387,8 +398,8 @@ func (q *compactionQueue) take() (*compactionEntry, time.Duration, bool) {
 
 // settle ends the step of entry, the room in flight: it queues the room again as next says, unless
 // the queue has shut or paused since, which drops it. A room noted while its step ran (renoted) is
-// not dropped, whatever the step decided: it is queued for a check no later than firstCheck from
-// now, the wait a first note gives it, or sooner as the step decided.
+// not dropped, whatever the step decided: it is queued for a check no later than compactFirstCheck
+// from now, the wait a first note gives it, or sooner as the step decided.
 func (q *compactionQueue) settle(entry *compactionEntry, next compactionNext) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -402,9 +413,8 @@ func (q *compactionQueue) settle(entry *compactionEntry, next compactionNext) {
 		}
 		return
 	}
-	timing := q.timing
 	if next.kind == compactionDone {
-		next = compactionNext{kind: compactionLater, after: timing.firstCheck}
+		next = compactionNext{kind: compactionLater, after: compactFirstCheck}
 	}
 	var after time.Duration
 	switch next.kind {
@@ -412,19 +422,19 @@ func (q *compactionQueue) settle(entry *compactionEntry, next compactionNext) {
 		entry.retry = 0
 	case compactionLater:
 		entry.retry = 0
-		after = max(next.after, timing.backoff)
+		after = max(next.after, compactBackoff)
 	case compactionRetry:
 		if entry.retry == 0 {
-			entry.retry = timing.backoff
+			entry.retry = compactBackoff
 		} else {
-			entry.retry = min(2*entry.retry, timing.backoffCap)
+			entry.retry = min(2*entry.retry, compactBackoffCap)
 		}
 		after = entry.retry
 	}
 	if renoted {
-		after = min(after, timing.firstCheck)
+		after = min(after, compactFirstCheck)
 	}
-	entry.at = time.Now().Add(after)
+	entry.at = q.clock.Now().Add(after)
 	heap.Push(&q.due, entry)
 }
 

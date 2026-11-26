@@ -33,11 +33,15 @@ jobs:
   envoy-go-race-api:
     runs-on: ubuntu-24.04-arm
     # The step's --timeout 70m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 70 minutes, which is 76, under the job's 90. 70 minutes is
-    # twice the longest measured run: the package took 32.6 minutes under the race detector on a
-    # dev box, and this job took 32 minutes 48 seconds, past the 30 minutes it had.
-    timeout-minutes: 90
+    # the dump that names it. 70 minutes is twice the longest measured run: the package took 32.6
+    # minutes under the race detector on a dev box, and this job took 32 minutes 48 seconds, past
+    # the 30 minutes it had. Over this job's 20 newest green merge-group runs up to
+    # 2026-11-18T07:46Z (runs 44172328284 to 44260382312) the slowest was the package's own line
+    # at 1521.659 s and the step at 1655 s, both in run 44244144836, with its other steps at most
+    # 168 s and 6 s of its clock over them. The limit is at least the job's sum: its longest run,
+    # 32 minutes 48 seconds, plus the step's 70 minutes, 102.8 minutes, which the 90 it had did not
+    # hold.
+    timeout-minutes: 103
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -51,7 +55,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 90 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 103 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The broker's store, which the package's contract tests open (brokerstoretest.Open in
       # internal/dispatch/api/contract_test.go) and skip without; a skip is a pass, so without this

@@ -8,10 +8,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -161,7 +161,7 @@ func TestFailingSettlementsWaitBehindOnWhicheverServiceRunsThePass(t *testing.T)
 	requireStillFailing(t, pair.database, failing)
 }
 
-// boundedResumptionService is a document service with its test hooks on and an hour's settle
+// boundedResumptionService is a document service with its test hooks on and a day's settle
 // delay, on a database holding project CORE and its issues CORE-1 and CORE-2, both open.
 func boundedResumptionService(t *testing.T) (*store.Store, *Service) {
 	t.Helper()
@@ -178,11 +178,11 @@ func boundedResumptionService(t *testing.T) (*store.Store, *Service) {
 		Store:     database,
 		Events:    events.NewBroker(),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 		TestHooks: true,
 	})
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -324,7 +324,7 @@ func resumptionCounts(t *testing.T, service *Service, ids []string) map[string]i
 // meets no row a settlement holds.
 func waitForSettlementsToEnd(t *testing.T, service *Service, rooms []string) {
 	t.Helper()
-	waitFor(t, roomWait(t), fmt.Sprintf("the %d settlements the pass armed to end", len(rooms)), func() bool {
+	waitFor(t, fmt.Sprintf("the %d settlements the pass armed to end", len(rooms)), func() bool {
 		return !slices.ContainsFunc(rooms, func(room string) bool { return settlementUnderway(service, room) })
 	})
 }

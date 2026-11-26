@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -207,7 +206,7 @@ func TestACommentListReadsItsStoredTreesInOneStatement(t *testing.T) {
 		identity: headerIdentity(database),
 		// A settlement of the document is database work of its own on the same pool; a delay no
 		// test run reaches keeps it out of the count.
-		settle: time.Hour,
+		settle: stagedAhead,
 	})
 	bodies := []string{
 		unshownText("The **first** of several bodies this list answers."),
@@ -256,7 +255,7 @@ func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
 	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	served := directServer(deps)
-	const body = "A body shaped inside a **read-only** transaction."
+	body := unshownText("A body shaped inside a **read-only** transaction.")
 
 	held := store.WithTransactionTracking(context.Background())
 	tx, err := database.Pool.BeginTx(held, pgx.TxOptions{AccessMode: pgx.ReadOnly})

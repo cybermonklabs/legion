@@ -9,6 +9,7 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A server that cannot open a listener its configuration asks for logs a fatal error and will
@@ -28,7 +29,7 @@ func TestAServerThatCannotOpenAListenerFailsItsStartAtOnce(t *testing.T) {
 		defer close(done)
 		start(recorder, fmt.Sprintf("leafnodes {\n  listen: %q\n}\n", held.Addr().String()), nil)
 	}()
-	<-done
+	testwait.Receive(t, "the start of a server whose leafnode port is held to fail", done)
 	if !strings.Contains(recorder.message, "logged a fatal error") || !strings.Contains(recorder.message, "Error listening on leafnode port") {
 		t.Fatalf("a start whose leafnode port %s is held failed with %q, want the fatal error naming the leafnode listener", held.Addr(), recorder.message)
 	}
@@ -74,7 +75,7 @@ func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T
 		defer close(done)
 		URL(first)
 	}()
-	<-done
+	testwait.Receive(t, "the first asker's start of the shared server to fail", done)
 	if !strings.Contains(first.message, "planted failure") {
 		t.Fatalf("the test whose start of the shared server failed reported %q, want the planted failure", first.message)
 	}
@@ -116,12 +117,9 @@ func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
 	srv.SetLoggerV2(log, false, false, false)
 	go srv.Start()
 	t.Cleanup(func() { srv.Shutdown(); srv.WaitForShutdown() })
-	bound := boundOf(t)
-	for !srv.ReadyForConnections(bound.step(retryInterval)) {
-		if bound.over() {
-			t.Fatalf("the server did not accept connections by %s, short of the test's deadline: %s", bound, log)
-		}
-	}
+	testwait.Until(t, "the server to accept connections", func() (string, bool) {
+		return log.String(), srv.ReadyForConnections(readyProbe)
+	})
 	if !log.fatalLogged() {
 		t.Fatalf("the server accepts connections with no fatal error logged, so its profiler took the held port %s: %s", held.Addr(), log)
 	}

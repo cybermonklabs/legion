@@ -62,10 +62,9 @@ func TestTheConditionalEditQueueIsCappedAcrossProcesses(t *testing.T) {
 		}()
 	}
 	var held []func()
-	waitFor(t, roomWait(t), "32 conditional edits admitted across both processes", func() bool {
+	waitFor(t, "32 conditional edits admitted across both processes", func() bool {
 		select {
 		case result := <-results:
-			// Task B's first edit takes its turn at once; every other one waits for a turn.
 			if result.err != nil {
 				t.Fatalf("a conditional edit within the cap: %v", result.err)
 			}
@@ -90,7 +89,7 @@ func TestTheConditionalEditQueueIsCappedAcrossProcesses(t *testing.T) {
 		release()
 	}
 	for range maxQueuedConditionalEdits - 1 - len(held) {
-		result := <-results
+		result := testwait.Receive(t, "a queued AcquireConditionalEdit to return after its context was cancelled", results)
 		if result.err == nil {
 			// A waiter whose turn came as its context ended may take the turn.
 			result.release()
@@ -152,7 +151,7 @@ func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnect
 	t.Parallel()
 	const storm = 20
 	// pileUpWindow is how long the test leaves the admissions to pile onto the lock: far longer
-	// than twenty goroutines take to reach Begin, and it is only the passing case that waits it out.
+	// than twenty goroutines take to reach Begin.
 	const pileUpWindow = time.Second
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
@@ -179,18 +178,13 @@ func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnect
 		}()
 	}
 	storetest.WaitForLockWaiters(t, holder, 1)
-	// A reading, not a wait for a fact: the admissions get pileUpWindow to pile onto the lock, and
-	// a correct run never queues a second, so a loaded machine only shortens what the window sees
-	// and cannot fail it.
-	waiting := 0
-	testwait.Holds(pileUpWindow, 10*time.Millisecond, func() bool {
-		count, err := storetest.LockWaiters(context.Background(), holder)
-		if err != nil {
-			t.Fatal(err)
-		}
-		waiting = count
-		return count >= storm
-	})
+	testwait.Span(t, pileUpWindow, "an admission that took a shared connection of its own would queue on the lock at a "+
+		"moment no state records: the service counts an admission when it joins the document's gate, before it "+
+		"takes a connection, and no later action of the test is ordered after a goroutine that queues nothing")
+	waiting, err := storetest.LockWaiters(context.Background(), holder)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if waiting != 1 {
 		t.Fatalf("%d of the service's connections wait on the document's queue lock, want 1", waiting)
 	}
@@ -205,28 +199,19 @@ func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnect
 		left <- err
 	}()
 	leave()
-	select {
-	case err := <-left:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("an admission whose context ended while it waited = %v, want its context's cancellation", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("an admission whose context ended stayed queued behind the document's queue lock")
+	if err := testwait.Receive(t, "an admission whose context ended to leave the document's queue lock", left); !errors.Is(err, context.Canceled) {
+		t.Fatalf("an admission whose context ended while it waited = %v, want its context's cancellation", err)
 	}
 
 	if err := holder.Commit(context.Background()); err != nil {
 		t.Fatalf("release the document's conditional edit queue lock: %v", err)
 	}
 	for range storm {
-		select {
-		case result := <-results:
-			if result.err != nil {
-				t.Fatalf("a conditional edit within the cap: %v", result.err)
-			}
-			result.release()
-		case <-time.After(roomWait(t)):
-			t.Fatal("an admission did not complete once the document's queue lock was released")
+		result := testwait.Receive(t, "an admission to complete once the document's queue lock was released", results)
+		if result.err != nil {
+			t.Fatalf("a conditional edit within the cap: %v", result.err)
 		}
+		result.release()
 	}
 	if queued, rows := queuedAcrossProcesses(t, database, artifactID); queued != 0 || rows != 0 {
 		t.Fatalf("after every edit left, the queue holds %d edits in %d rows, want none", queued, rows)

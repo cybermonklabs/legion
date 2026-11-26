@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -66,7 +65,7 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the closed issue's owed settlements: %v", err)
 	}
-	testwait.UntilPolling(t, 20*time.Millisecond, "the closed issue's settlement to save a version without the deleted block, the document owing none (its latest version)", func() (string, bool) {
+	testwait.Until(t, "the closed issue's settlement to save a version without the deleted block", func() (string, bool) {
 		_, version := documentTexts(t, handler, spec)
 		return version, strings.Contains(version, "Context") && !strings.Contains(version, "leaving-decision") &&
 			!documentOwesSettlement(t, database, spec)
@@ -94,9 +93,9 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
-	retracted := testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the reopened issue's settlement to retract ask %s, whose block left its document (the ask)", ask), func() (model.Ask, bool) {
-		read := readBlockAsk(t, handler, ask)
-		return read, read.State != "open"
+	retracted := testwait.Until(t, fmt.Sprintf("the reopened issue's settlement to retract ask %s, whose block left its document", ask), func() (model.Ask, bool) {
+		retracted := readBlockAsk(t, handler, ask)
+		return retracted, retracted.State != "open"
 	})
 	// The settlement's retraction, as docs.settlementRetracted reads it: a later return of the
 	// block restores the ask.
@@ -257,13 +256,13 @@ func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
 
 // awaitRewordedAsk waits until the settlement after f's reopen has taken the block's question into
 // the restored ask: open, asking rewordedQuestion. Its one bound is the test binary's deadline
-// (testwait.UntilPolling): a settlement a loaded machine runs late still ends the wait, and its
-// failure prints the ask's state and question as last read.
+// (testwait.Until): a settlement a loaded machine runs late still ends the wait, and its failure
+// prints the ask as last read, its state and question among it.
 func awaitRewordedAsk(t *testing.T, f rewordedWhileClosed) {
 	t.Helper()
-	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the reopened issue's settlement to take the block's question into ask %s: open, asking %q (its state and question)", f.ask, rewordedQuestion), func() (string, bool) {
+	testwait.Until(t, fmt.Sprintf("the reopened issue's settlement to take the block's question into ask %s, open asking %q", f.ask, rewordedQuestion), func() (model.Ask, bool) {
 		restored := readBlockAsk(t, f.handler, f.ask)
-		return fmt.Sprintf("%s asking %q", restored.State, restored.Question), restored.State == "open" && restored.Question == rewordedQuestion
+		return restored, restored.State == "open" && restored.Question == rewordedQuestion
 	})
 }
 

@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
@@ -23,7 +22,7 @@ import (
 func newerContentDocument(t *testing.T) (*Service, string) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.InjectUnknownElementForTest(context.Background(), artifactID); err != nil {
 		t.Fatalf("write an element this build does not know: %v", err)
@@ -200,7 +199,7 @@ func TestDocumentSocketClosesARoomHoldingNewerContentWithItsOwnCode(t *testing.T
 				t.Fatalf("connect a document holding newer content: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
 			testcleanup.Add(t, func() { _ = connection.Close() })
-			connection.SetReadDeadline(socketDeadline(t))
+			connection.SetReadDeadline(readDeadline(t))
 			_, message, err := connection.ReadMessage()
 			var closed *gws.CloseError
 			if !errors.As(err, &closed) || closed.Code != documentNewerContentCloseCode {

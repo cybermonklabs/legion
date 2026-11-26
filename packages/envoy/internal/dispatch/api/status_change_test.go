@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -53,7 +54,13 @@ type statusChangeRig struct {
 
 func newStatusChangeRig(t *testing.T, on bool) statusChangeRig {
 	t.Helper()
-	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{parentStatusRule: on})
+	return newStatusChangeRigWith(t, testServerOptions{parentStatusRule: on})
+}
+
+// newStatusChangeRigWith is newStatusChangeRig on a server built with options, which set the rule.
+func newStatusChangeRigWith(t *testing.T, options testServerOptions) statusChangeRig {
+	t.Helper()
+	handler, database, deps, served := newRegisteredTestServer(t, options)
 	createTestProject(t, handler, ruleProject)
 	return statusChangeRig{ruleRig: ruleRig{handler: handler, database: database, deps: deps}, served: served}
 }
@@ -68,7 +75,7 @@ func (rig statusChangeRig) afterStep(t *testing.T, hook func(ctx context.Context
 // next fingerprint of the database reads only what the next request writes.
 func (rig statusChangeRig) quiet(t *testing.T) map[string]string {
 	t.Helper()
-	awaitNoSettlementOwed(t, rig.database)
+	awaitSettled(t, rig.database)
 	awaitBackgroundWrites(t, rig.served)
 	return databaseFingerprint(t, rig.database)
 }
@@ -700,13 +707,16 @@ func cookieServer(t *testing.T, on bool) statusChangeServer {
 func iapServer(t *testing.T, on bool) statusChangeServer {
 	t.Helper()
 	database := storetest.Open(t)
-	iap := newIAPSocketKeys(t, database, clock.Real())
+	// The verifier judges the assertion's times on a fake no row moves, so no wall clock decides
+	// when it expires (newIAPSocketKeys).
+	judged := clocktest.New(time.Now())
+	iap := newIAPSocketKeys(t, database, judged)
 	handler, _, _ := newTestServer(t, testServerOptions{store: database, parentStatusRule: on, identity: iap.identity})
 	server := statusChangeServer{
 		name: "the IAP server", project: ruleProject, database: database,
 		beside: func(t *testing.T, method, path string, body map[string]any, authorization string) *httptest.ResponseRecorder {
 			request := brokerRequest(t, method, path, body, authorization, "")
-			for name, values := range iap.assertion(t, time.Now().Add(9*time.Minute)) {
+			for name, values := range iap.assertion(t, judged.Now().Add(9*time.Minute)) {
 				request.Header[name] = values
 			}
 			response := httptest.NewRecorder()
@@ -1713,7 +1723,9 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 
 	t.Run("a reopen's own events through the ledger's sink refuse none of the later steps", func(t *testing.T) {
 		ctx := context.Background()
-		handler, database, documents := closedSettlementHandlerSettlingAfter(t, time.Hour)
+		// A settle delay staged a day ahead (stagedAhead), state and not a wait: the row settles the
+		// documents itself (settle).
+		handler, database, documents := closedSettlementHandlerSettlingAfter(t, stagedAhead)
 		issue := createInteractionIssue(t, handler, "TEST", "Issue reopened with the issues under it", "Context\n")
 		named, spec := issue.Key, issue.PrimaryArtifactID
 		settle := func(what string) {
@@ -1743,9 +1755,10 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 		}
 		settle("the issue's documents")
 		awaitSettled(t, database, spec, notes.ID)
-		// The settle delay is an hour, so no settlement runs between two steps of the call: the test
-		// runs each one itself. The browser's edit inside the close margin is settled into a version
-		// while the issue is closed, which the reopen's follow then moves the approval request to.
+		// The settle delay is a day (stagedAhead), so no settlement runs between two steps of the
+		// call: the test runs each one itself. The browser's edit inside the close margin is settled
+		// into a version while the issue is closed, which the reopen's follow then moves the approval
+		// request to.
 		peer := connectBrowserPeer(t, documents, spec)
 		closeIssueThroughPatch(t, handler, database, named)
 		stored := storedUpdateCount(t, database, spec)
@@ -1874,7 +1887,7 @@ func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
 	named := rig.file(t, "Parent whose plan is read under its locks", "in_progress", "")
 	child := rig.file(t, "Child whose lock a writer holds", "todo", named)
-	awaitNoSettlementOwed(t, rig.database)
+	awaitSettled(t, rig.database)
 	var number int
 	if err := rig.database.Pool.QueryRow(ctx, `
 		update projects set next_number = next_number + 1 where key = $1 returning next_number - 1
@@ -1937,19 +1950,47 @@ func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
 
 // repeatRig is a status change rig, the rule on, whose keyed calls a test stops as a process that
 // died leaves them: the lease of a stopped holder is never renewed, and the test lapses it itself
-// (lapse). sweeps records each ask sweep of a closed issue.
+// (lapse). The lease is stagedAhead (Deps.IdempotencyLease), staged state and not a wait: a repeat
+// reads a live holder's lease live however long the row takes, and no renewal, which a run arms a
+// third of its lease on, fires within the run. sweeps records each ask sweep of a closed issue.
+//
+// The server of the rig the rows share runs on the real clock (newRepeatRig). A drained repeat's
+// server reads the repeat's body until the test's own waits give up, not for bodyDrainLimit from
+// its now: every repeat rig gives the drain that end (drainDeadline, newRepeatRigOn), so a body a
+// loaded machine sends late is read and judged rather than cut off, on the real clock as on a fake.
+// body_drain_test.go's rows hold the drain to production's bound. Only the row that moves a run to
+// its bound (keyedHandlerLimit) has a fake (clock, newRepeatRigOnAFake), on a rig of its own whose
+// keyed calls go through a recorder, which takes no read deadline.
 type repeatRig struct {
 	statusChangeRig
 	sweeps *sweptAsks
+	// clock is the server's fake clock, nil for a rig on the real clock.
+	clock *clocktest.Fake
 }
 
+// newRepeatRig is a repeatRig on the real clock.
 func newRepeatRig(t *testing.T) repeatRig {
 	t.Helper()
-	rig := newStatusChangeRig(t, true)
-	rig.served.requestKeyRenewal = time.Hour
+	return newRepeatRigOn(t, testServerOptions{parentStatusRule: true, idempotencyLease: stagedAhead}, nil)
+}
+
+// newRepeatRigOnAFake is a repeatRig whose server runs on a fake clock that only its row moves.
+func newRepeatRigOnAFake(t *testing.T) repeatRig {
+	t.Helper()
+	fake := clocktest.New(time.Now())
+	return newRepeatRigOn(t, testServerOptions{parentStatusRule: true, idempotencyLease: stagedAhead, clock: fake}, fake)
+}
+
+func newRepeatRigOn(t *testing.T, options testServerOptions, fake *clocktest.Fake) repeatRig {
+	t.Helper()
+	rig := newStatusChangeRigWith(t, options)
+	// A drain ends where the shared wait gives up (testwait.GiveUpAt), or never under -timeout 0,
+	// whose waits have no end: a repeat's body is waited for as long as the row waits for its
+	// answer, and no longer.
+	rig.served.drainDeadline = clock.DeadlineAt(testwait.GiveUpAt(t))
 	sweeps := &sweptAsks{API: rig.served.deps.Docs, swept: map[string][][]string{}}
 	rig.served.deps.Docs = sweeps
-	return repeatRig{statusChangeRig: rig, sweeps: sweeps}
+	return repeatRig{statusChangeRig: rig, sweeps: sweeps, clock: fake}
 }
 
 // sweptAsks is the document service with each ask sweep of a closed issue recorded: every write of
@@ -2021,36 +2062,32 @@ func (rig repeatRig) stopAfterStep(t *testing.T, write ruleWrite, key string, st
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.keyedStatusChange(t, write, key) }()
-	select {
-	case <-stopped:
-	case response := <-answered:
-		t.Fatalf("%s answered %d before its step %d committed: %s", write, response.Code, step, response.Body.String())
-	case <-time.After(30 * time.Second):
-		t.Fatalf("%s never reached its step %d", write, step)
-	}
+	awaitEntered(t, fmt.Sprintf("step %d of %s", step, write), stopped, answered)
 	return func() *httptest.ResponseRecorder {
 		t.Helper()
 		releaseOnce()
-		select {
-		case response := <-answered:
-			return response
-		case <-time.After(30 * time.Second):
-			t.Fatalf("the stopped run of %s never answered once it went on", write)
-			return nil
-		}
+		return testwait.Receive(t, fmt.Sprintf("the stopped run of %s to answer once it went on", write), answered)
 	}
 }
 
-// lapse ages the lease of key, which no answer holds, past IdempotencyLease, as a holder whose
-// process died leaves it.
+// lapse ages the lease of key, which no answer holds, past the lease the rig stages (stagedAhead),
+// as a holder whose process died leaves it.
 func (rig repeatRig) lapse(t *testing.T, key string) {
 	t.Helper()
 	tag, err := rig.database.Pool.Exec(context.Background(), `
-		update request_keys set leased_at = now() - interval '2 minutes' where idempotency_key = $1 and status is null
-	`, key)
+		update request_keys set leased_at = now() - make_interval(secs => $2) where idempotency_key = $1 and status is null
+	`, key, (stagedAhead + 2*time.Minute).Seconds())
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("lapse the lease of %s: %v (%d rows)", key, err, tag.RowsAffected())
 	}
+}
+
+// loseAnswer is loseAnswer for the rig's lease: key's row is left in flight, its lease lapsed past
+// the stagedAhead the rig stages.
+func (rig repeatRig) loseAnswer(t *testing.T, key string) {
+	t.Helper()
+	loseAnswer(t, rig.database, key)
+	rig.lapse(t, key)
 }
 
 // statusChangeKeyRow is the request_keys row of a status change's key: the attempt that holds it,
@@ -2317,20 +2354,36 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 	})
 
 	t.Run("a run cut off at its time bound keeps its row with a released lease, and its repeat finishes", func(t *testing.T) {
+		// A rig of the row's own on a fake clock, which the row moves to the run's bound; the
+		// shared rig runs on the real clock (repeatRig).
+		rig := newRepeatRigOnAFake(t)
 		named := rig.file(t, "Issue whose run hit its bound", "in_progress", "")
 		first := rig.file(t, "Child closed before the bound", "todo", named)
 		second := rig.file(t, "Child closed by the repeat", "todo", named)
 		seq := rig.seqs(t, named, first, second)
 		const key = "repeat-cut-off"
 		write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true})
-		rig.served.requestKeyRunLimit = 5 * time.Second
-		t.Cleanup(func() { rig.served.requestKeyRunLimit = 0 })
 		var once sync.Once
-		rig.afterStep(t, func(ctx context.Context, _ int) { once.Do(func() { <-ctx.Done() }) })
-		if cut := rig.keyedStatusChange(t, write, key); cut.Code < http.StatusInternalServerError {
+		reached := make(chan struct{})
+		rig.afterStep(t, func(ctx context.Context, _ int) {
+			once.Do(func() {
+				close(reached)
+				<-ctx.Done()
+			})
+		})
+		// The run arms its bound, keyedHandlerLimit, on the server's clock as it starts, and the row
+		// moves the clock there once the run has committed its first step and holds at it: the bound
+		// is the one thing that ends the run, and it ends it with its key's row written.
+		start := rig.clock.Now()
+		cutOff := make(chan *httptest.ResponseRecorder, 1)
+		go func() { cutOff <- rig.keyedStatusChange(t, write, key) }()
+		bound := start.Add(keyedHandlerLimit)
+		testwait.Receive(t, "the run to commit its first step", reached)
+		rig.clock.AwaitArmedAt(t, "the run's bound", bound)
+		rig.clock.Set(bound)
+		if cut := testwait.Receive(t, "the cut-off run's answer", cutOff); cut.Code < http.StatusInternalServerError {
 			t.Fatalf("%s cut off at its bound answered %d %s, want a 5xx", write, cut.Code, cut.Body.String())
 		}
-		rig.served.requestKeyRunLimit = 0
 		if held := rig.keyRow(t, key); held.status != nil || !held.released || !slices.Equal(held.pointKeys(), []string{first}) {
 			t.Fatalf("the cut-off run left status %v, a released lease %t and the point %+v, want no answer, the lease released and the first child's entry",
 				held.status, held.released, held.point)
@@ -2374,7 +2427,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		if first := rig.keyedStatusChange(t, write, key); first.Code != http.StatusOK {
 			t.Fatalf("%s: status=%d body=%s, want 200", write, first.Code, first.Body.String())
 		}
-		loseAnswer(t, rig.database, key)
+		rig.loseAnswer(t, key)
 		if retitled := rig.send(t, patchOf(named, map[string]any{"title": "Retitled after the lost answer"})); retitled.Code != http.StatusOK {
 			t.Fatalf("retitle %s: status=%d body=%s", named, retitled.Code, retitled.Body.String())
 		}
@@ -2602,7 +2655,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		if held := rig.keyRow(t, key); !held.point.Finished {
 			t.Fatalf("the call left the point %+v, want it marked", held.point)
 		}
-		loseAnswer(t, rig.database, key)
+		rig.loseAnswer(t, key)
 		again := rig.keyedStatusChange(t, write, key)
 		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, wantAnswer(
 			wantChange{named, "todo", "", seq[named], seq[named] + 1},
@@ -2664,8 +2717,10 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		pattern := "/api/v1/issues/{key}/status-change"
 		holdSettled := func(t *testing.T, write ruleWrite, key, named string) {
 			t.Helper()
+			// The holder's lease is the one the rig stages (stagedAhead), long lapsed: it was taken
+			// that and two minutes ago.
 			holdRequestKey(t, rig.database, heldKey{
-				login: "alice", key: key, pattern: pattern, leasedAgo: 2 * time.Minute,
+				login: "alice", key: key, pattern: pattern, leasedAgo: stagedAhead + 2*time.Minute,
 				request: jsonRequest(t, write.method, write.path, write.body, map[string]string{"key": named}),
 			})
 			if _, err := rig.database.Pool.Exec(context.Background(), `
@@ -2729,11 +2784,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		t.Cleanup(func() { rig.served.repeatFoundInFlight = nil })
 		awaitFound := func(t *testing.T) {
 			t.Helper()
-			select {
-			case <-found:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the repeat never found its key in flight")
-			}
+			testwait.Receive(t, "the repeat to find its key in flight", found)
 		}
 		sendRepeat := func(t *testing.T, write ruleWrite, key string) (*heldBackBody, []byte) {
 			t.Helper()
@@ -2775,23 +2826,14 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 			// first requests do (testwait.Context).
 			ctx := testwait.Context(t)
 			go func() {
-				status, body, _, err := keyedPostContext(ctx, server, write.path, string(encoded), key)
+				status, body, _, err := keyedPost(ctx, server, write.path, string(encoded), key)
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
-			select {
-			case <-reached:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the first run never reached its first step")
-			}
+			testwait.Receive(t, "the first run to reach its first step", reached)
 			repeat, body := sendRepeat(t, write, key)
 			awaitFound(t)
 			releaseOnce()
-			var first keyedAnswered
-			select {
-			case first = <-firstAnswer:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the first run never answered once it went on")
-			}
+			first := testwait.Receive(t, "the first run's answer once it went on", firstAnswer)
 			if first.err != nil || first.status != http.StatusConflict {
 				t.Fatalf("the first run answered %d %s (%v), want its 409 refusal", first.status, first.body, first.err)
 			}

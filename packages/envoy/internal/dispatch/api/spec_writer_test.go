@@ -20,7 +20,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -725,7 +724,7 @@ func (rig *specWriterRig) publish(t *testing.T, issue string, holders []issueRol
 // answer is still running.
 func (rig *specWriterRig) quiet(t *testing.T) {
 	t.Helper()
-	awaitNoSettlementOwed(t, rig.database)
+	awaitSettled(t, rig.database)
 	awaitBackgroundWrites(t, rig.served)
 }
 
@@ -1337,10 +1336,10 @@ func TestSpecWriteLeavesAnchoredWritesAlone(t *testing.T) {
 	})
 
 	t.Run("while a person's edit is unsettled", func(t *testing.T) {
-		// Settlement is held for the test's length, so the person's edit is still unsettled when
-		// each anchored write takes its version: the rig is the tree and its publication alone,
-		// with nothing that waits for a settlement.
-		held := newSpecWriterServer(t, testServerOptions{settle: time.Hour})
+		// Settlement is staged a day ahead (stagedAhead), state and not a wait, so the person's
+		// edit is still unsettled when each anchored write takes its version: the rig is the tree
+		// and its publication alone, with nothing that waits for a settlement.
+		held := newSpecWriterServer(t, testServerOptions{settle: stagedAhead})
 		rig := held.tree(t, specWriterRigShape{})
 		rig.publishRoles(t)
 		spec := rig.c.documents["spec.md"].id

@@ -204,13 +204,13 @@ func traceState(trace string) string {
 // its closed connection ends by itself at its token's renewal, about 40 minutes on with this
 // file's 50-minute tokens (natscred.ServiceRenewBefore is 10), so a wait that ended only on the
 // count would pass that keeper under any deadline past that, and a span short of it would be a
-// guess at how slow a keeper's exit may be. The test binary's deadline (testwait.UntilPolling) is
+// guess at how slow a keeper's exit may be. The test binary's deadline (testwait.Until) is
 // only a hang guard, for a natscred goroutine that never parks and never ends: one that runs for
 // ever, or waits on a lock its holder never lets go.
 func requireNoNatscredGoroutine(t *testing.T, when string) {
 	t.Helper()
 	var last natscredDump
-	testwait.UntilPolling(t, 50*time.Millisecond, "no natscred goroutine to run "+when, func() (string, bool) {
+	testwait.Until(t, "no natscred goroutine to run "+when, func() (string, bool) {
 		last = natscredGoroutines()
 		return fmt.Sprintf("%+v", last), last.all == 0 || last.stuck
 	})

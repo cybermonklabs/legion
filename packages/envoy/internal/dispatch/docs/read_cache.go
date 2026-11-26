@@ -76,8 +76,9 @@ func readBudgetFor(memoryLimit int64) int64 {
 }
 
 // coldReadTimeout bounds a cold read's fold of the stored history (LoadDocument), which belongs to
-// the document rather than to the request that started it, so no request's end cancels it.
-var coldReadTimeout = 60 * time.Second
+// the document rather than to the request that started it, so no request's end cancels it. It runs
+// on the service's clock (Deps.Clock), so a test drives it with a fake.
+const coldReadTimeout = 60 * time.Second
 
 // documentRead is everything the four reads of a document no room holds answer (Text,
 // TextWithToken, TextWithBlocks and BlockPath), rendered from one tree of one stored state, the
@@ -361,7 +362,7 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 			slog.Error("dispatch: cold document read panicked", "room", artifactID, "error", err)
 		}
 	}()
-	foldCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)
+	foldCtx, cancel := s.clock.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)
 	defer cancel()
 	loaded, err := s.persistence.LoadDocument(foldCtx, artifactID)
 	if err != nil {
