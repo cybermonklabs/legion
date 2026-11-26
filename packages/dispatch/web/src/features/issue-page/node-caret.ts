@@ -897,5 +897,10 @@ function caretBox([node, offset]: Point): DOMRect | null {
   range.setStart(node, offset);
   const own: DOMRect | undefined = range.getClientRects()[0];
   if (own !== undefined) return own;
+  // Right after an element, such as an atom that ends the words, its last line is the caret's.
+  const before = node.childNodes[offset - 1];
+  const lines = before instanceof Element ? before.getClientRects() : undefined;
+  const last = lines?.[lines.length - 1];
+  if (last !== undefined) return last;
   return (node instanceof Element ? node : node.parentElement)?.getBoundingClientRect() ?? null;
 }

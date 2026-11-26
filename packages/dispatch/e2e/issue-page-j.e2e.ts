@@ -2629,6 +2629,115 @@ test("a press on a Spec statement's words after every inline kind the editor hol
   });
 });
 
+// A press past inline HTML that ends a statement of several lines puts the caret after it, and
+// the editor's box stands the caret's line where the press was. The caret after an atom that ends
+// the words stands between two elements, where the browser draws a collapsed range no box; at
+// e18d2df4 the box was then scrolled to put the middle of the whole paragraph at the press, which
+// stood the caret's line lines under the pointer. The place a browser answers for a point past the
+// end of a line is its own choice - the end of that line's last text, inside the atom, is one,
+// which reads as a press inside it (`pressInWords`) - so for this one press the place is given as
+// the end of the drawn paragraph, as `pressed-words.test.ts`'s `paragraphEnd` gives it. Where the
+// press is, the editor's layout, the caret's boxes and the scroll are the browser's own.
+// SLOW(>=2s): a seeded issue of sixty statements, a load of the Spec view and a press, each read
+// once the page has stopped moving.
+test("a press past inline HTML that ends a Spec statement of several lines keeps the caret's line at the press", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = seedStatement(() =>
+    statementBlock(
+      LONG_BLOCK_ID,
+      `${longWords("long", 40)}\\\n${longWords("more", 40)}\\\nKept by <name>`
+    )
+  );
+  await phase(browser, seed, async (page, seeded) => {
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
+    const atom = '[data-type="html"]';
+    await expect(
+      long.locator(`[data-node-words] ${atom}`),
+      "the statement draws no inline HTML at the end of its words"
+    ).toHaveCount(1);
+    // The press is 40 px past the atom, half way down its line.
+    const at = await long.locator(`[data-node-words] ${atom}`).evaluate((drawn) => {
+      const line = [...drawn.getClientRects()].at(-1);
+      return {
+        x: Math.round((line?.right ?? 0) + 40),
+        y: Math.round(((line?.top ?? 0) + (line?.bottom ?? 0)) / 2),
+      };
+    });
+    expect(
+      await long.evaluate(
+        (row, { point, selector }) => {
+          const hit = document.elementFromPoint(point.x, point.y);
+          const words = row.querySelector("[data-node-words]");
+          return words?.contains(hit) === true && hit?.closest(`a, button, ${selector}`) === null;
+        },
+        { point: at, selector: atom }
+      ),
+      `the point (${at.x}, ${at.y}) is not on the statement's words past its inline HTML`
+    ).toBe(true);
+    await long.evaluate(
+      (row, { point, selector }) => {
+        const paragraph = row.querySelector(`[data-node-words] ${selector}`)?.closest("p");
+        const own = document.caretPositionFromPoint.bind(document);
+        document.caretPositionFromPoint = (x, y) =>
+          paragraph != null && Math.abs(x - point.x) <= 1 && Math.abs(y - point.y) <= 1
+            ? ({
+                offset: paragraph.childNodes.length,
+                offsetNode: paragraph,
+              } as unknown as CaretPosition)
+            : own(x, y);
+      },
+      { point: at, selector: atom }
+    );
+    const pressedAt = await settledScrollTop(page);
+    await page.mouse.click(at.x, at.y);
+    await expect
+      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
+        message: "a press past the statement's inline HTML does not put the caret in its words",
+      })
+      .toBe(true);
+    await page.evaluate(() => Reflect.deleteProperty(document, "caretPositionFromPoint"));
+    const moved = (await settledScrollTop(page)) - pressedAt;
+    expect(
+      await long.evaluate((row, selector) => {
+        const placed = row.querySelector(`[data-editor-box] ${selector}`);
+        const caret = window.getSelection();
+        if (placed === null || caret?.anchorNode == null) return false;
+        const after = document.createRange();
+        after.setStartAfter(placed);
+        return after.comparePoint(caret.anchorNode, caret.anchorOffset) >= 0;
+      }, atom),
+      "a press past the statement's inline HTML puts the caret before it"
+    ).toBe(true);
+    expect(
+      Math.abs(moved),
+      `a press past the statement's inline HTML moves the page ${moved} px`
+    ).toBeLessThanOrEqual(1);
+    const caret = await settledValue("the caret's line in the editor's box", () =>
+      long.evaluate((row, selector) => {
+        const placed = row.querySelector(`[data-editor-box] ${selector}`);
+        const box = placed?.closest("[data-editor-box]")?.getBoundingClientRect();
+        const line = placed == null ? undefined : [...placed.getClientRects()].at(-1);
+        return {
+          bottom: line?.bottom ?? 0,
+          boxBottom: box?.bottom ?? 0,
+          boxTop: box?.top ?? 0,
+          top: line?.top ?? 0,
+        };
+      }, atom)
+    );
+    expect(
+      caret.top <= at.y && at.y <= caret.bottom,
+      `the caret's line stands from ${caret.top} to ${caret.bottom} px, not at the press's ${at.y} px`
+    ).toBe(true);
+    expect(
+      caret.top >= caret.boxTop && caret.bottom <= caret.boxBottom,
+      `the caret's line, from ${caret.top} to ${caret.bottom} px, is outside the editor's box, from ${caret.boxTop} to ${caret.boxBottom} px`
+    ).toBe(true);
+  });
+});
+
 // The view row holds each filter control's place before the counts arrive. On a large issue the
 // reads the counts come from - the coverage, the decisions and the results - answered 5 to 7 s
 // after the row was drawn; each filter control then grew by its signal, and every control after
