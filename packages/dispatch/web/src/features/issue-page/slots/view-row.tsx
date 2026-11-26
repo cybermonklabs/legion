@@ -51,18 +51,23 @@ export function ViewRowSlot(props: ViewRowProps): ReactNode {
   // something of the reader, and for Conversation how many entries the Contents list holds, as
   // the prototype's signal counts its branches. Each follows `?q=`. None while the reads or the
   // reader's login do not hold, nor under `?q=` while the names do not (above).
+  const treeSignals = useMemo(
+    () =>
+      readsHeld && viewer !== undefined && (namesHeld || address.filter === "")
+        ? {
+            ...filterSignals(root, address.filter),
+            conversation: {
+              count: contentsEntries(presetView(root, "conversation", address.filter).root, viewer),
+            },
+          }
+        : undefined,
+    [address.filter, namesHeld, readsHeld, root, viewer]
+  );
   const signals = useMemo(() => {
     const threads = threadsSignal(threadsCount);
-    return readsHeld && viewer !== undefined && (namesHeld || address.filter === "")
-      ? {
-          ...filterSignals(root, address.filter),
-          conversation: {
-            count: contentsEntries(presetView(root, "conversation", address.filter).root, viewer),
-          },
-          ...threads,
-        }
-      : threads;
-  }, [address.filter, namesHeld, readsHeld, root, threadsCount, viewer]);
+    if (treeSignals === undefined) return threads;
+    return threads === undefined ? treeSignals : { ...treeSignals, ...threads };
+  }, [threadsCount, treeSignals]);
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const row = useRef<HTMLDivElement | null>(null);
   useViewRowHeight(row);

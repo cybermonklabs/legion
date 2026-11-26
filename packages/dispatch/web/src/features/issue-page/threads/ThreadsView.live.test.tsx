@@ -37,9 +37,9 @@ import { answerThreads, drawThreads, stubWindow, threadsAt } from "./threads-vie
 
 /**
  * Live Threads (dispatch://INFRA-5704/spec#b-r-live, R14) over the server's answers captured at
- * the stack base (`fixtures/README.md`), with a query client, as plan list 3 table D gives its
- * states: a write that lands while Threads is open is drawn with no reload, in the list and in the
- * open record, and the rows the reader paged to stay drawn.
+ * the stack base (`fixtures/README.md`), with a query client: a write that lands while Threads is
+ * open is drawn with no reload, in the list and in the open record, and the rows the reader paged
+ * to stay drawn.
  *
  * Each write is the server's captured answer moved as the write moves it on the server. Each
  * event reaches the page as the event feed hands it over (`useEventFeed`): prepended to the
@@ -392,7 +392,7 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-describe("table D: live (R14)", () => {
+describe("live updates (R14)", () => {
   test("the reader's own reply from a record of All's second page moves its row first with no mark, keeps the second page's rows, and is drawn in the open record", async () => {
     const drawn = drawAt(threadsAt());
     const user = userEvent.setup();

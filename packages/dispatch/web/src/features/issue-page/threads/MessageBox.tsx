@@ -49,7 +49,7 @@ function messageInput(body: string, address: MessageAddress): CreateMessageInput
  * A box of Threads that writes a message (dispatch://INFRA-5704/spec#b-r-mentions, R9, R11): the
  * box under an entry of a message thread, the one at its foot, and New thread's. It is this
  * part's own field and no `MentionField`, so `@` offers nothing and stores no mention: a message
- * names its agent by its target (plan choice 1). Its row of the writing list (`threads-message`
+ * names its agent by its target (R11). Its row of the writing list (`threads-message`
  * in `DISPATCH_WRITING_BOXES`) is not covered for the same reason, so the box draws no hint.
  *
  * Send writes `POST /api/v1/issues/{key}/messages` through the write store, under this part's own

@@ -51,7 +51,7 @@ interface RecordFields {
   readonly id: string;
   /** The id of the thread on the server that the record is part of: the ask's id, else the id of
    *  the thread's first comment or root message. Its `me/replies` row and its read mark go by
-   *  this id (R7, R9), so the record a reply with a quote begins shares its post's (choice 11). */
+   *  this id (R7, R9), so the record a reply with a quote begins shares its post's. */
   readonly thread: string;
   /** The newest time of the record's own writes, a deleted entry's included, and for a record
    *  that is the whole thread the thread's `last_activity_at` where the route gave one (R7). */
@@ -67,7 +67,7 @@ interface RecordFields {
   /** Each person the server keeps a read mark of the record's thread for, once, in the order of
    *  their first write there: the person who wrote a comment, a message or an ask in it, or who
    *  answered it, and never for a resolution alone (migrations `0095_user_threads` and
-   *  `0096_user_threads_asks_trigger`, plan choice 8). Every record of one thread holds the same
+   *  `0096_user_threads_asks_trigger`). Every record of one thread holds the same
    *  list. */
   readonly threadWriters: readonly Actor[];
   /** The person an open ask waits on (`waiting_on_person`), on each record of that ask's thread,
@@ -113,7 +113,9 @@ interface Part<P extends Post> {
 }
 
 /** The words a reply quotes of the block it answers, or undefined where it quotes none. */
-function quoteOf(post: Post): string | undefined {
+export function quoteOf(post: {
+  readonly reply_block: { readonly quote?: string } | null;
+}): string | undefined {
   const quote = post.reply_block?.quote ?? "";
   return quote === "" ? undefined : quote;
 }

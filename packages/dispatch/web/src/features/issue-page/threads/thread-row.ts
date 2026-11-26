@@ -7,6 +7,7 @@
  * (`useRowNames` in `ThreadList.tsx`, root R9).
  */
 import type { Actor } from "../../../api/types";
+import { isDaemon } from "../../dashboard/useWaitingItems";
 import { partyOfAddress } from "../../refs/routes";
 import { THREADS_WORDS } from "../page-words";
 import type { ThreadRecord } from "./thread-records";
@@ -38,7 +39,7 @@ export interface RowText {
  *  the page's words and its project's key, which the page never draws as its session's id, and
  *  every other author as the page names one. */
 export function nameOf(actor: Actor, names: RowNames): string {
-  return actor.kind === "session" && actor.id === `legion-daemon:${names.project}`
+  return isDaemon(actor, names.project)
     ? `${THREADS_WORDS.daemon} · ${names.project}`
     : names.author(actor);
 }

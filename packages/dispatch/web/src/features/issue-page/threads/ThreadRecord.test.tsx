@@ -27,8 +27,8 @@ import { answerThreads, drawThreads, KEY, stubWindow, threadsAt } from "./thread
 
 /**
  * The opened record of Threads (dispatch://INFRA-5704/spec#b-r-open, R9) over the server's answers
- * captured at the stack base (`fixtures/README.md`), as plan list 3 tables A (the read mark) and C
- * (the boxes and the send) give its states, and the renderer its entries are drawn through.
+ * captured at the stack base (`fixtures/README.md`): the read mark, the boxes and the send (R11),
+ * and the renderer its entries are drawn through.
  */
 
 const COMMENTS = (commentsInBody as unknown as CommentThreadPage).threads ?? [];
@@ -96,7 +96,7 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-describe("table A: the read mark (R9)", () => {
+describe("the read mark (R9)", () => {
   test("a record whose newest entry stood on screen under a second sends no mark, and once it stood a second one, with the thread's id and the newest entry's time", async () => {
     const window = stubWindow(1440);
     const control = installIntersectionObserver();
@@ -301,7 +301,7 @@ describe("table A: the read mark (R9)", () => {
 /** The issue the remark is on, which its comment pages are keyed by. */
 const KEY_OF_REMARK = REMARK.comment.issue_key;
 
-describe("table C: the boxes and the send (R9, R11)", () => {
+describe("the boxes and the send (R9, R11)", () => {
   test("a reply control pressed while another reply box is open closes the first, whose draft comes back with it", async () => {
     const window = stubWindow(1440);
     answerThreads();

@@ -1,32 +1,12 @@
 import { expect, test } from "bun:test";
-import type { AskThreadPage, CommentThreadPage, MessageThreadPage } from "@legion/contracts";
 
 import type { Actor } from "../../../api/types";
-import asksThreadBody from "./fixtures/asks-thread.json";
-import commentsInBody from "./fixtures/comments-in.json";
-import commentsInBeforeBody from "./fixtures/comments-in-before.json";
-import messagesInBody from "./fixtures/messages-in.json";
-import messagesNoneBody from "./fixtures/messages-none.json";
-import { type ThreadRecord, threadRecords } from "./thread-records";
+import { fixtureRecord as record } from "./thread-fixtures";
 import { threadRow } from "./thread-row";
 
 // The pages the server answered at the stack base (fixtures/README.md), on the project whose
 // Legion daemon replied in the reader's remark.
 const PROJECT = "PDFD720CB";
-const RECORDS: readonly ThreadRecord[] = [
-  ...((commentsInBody as unknown as CommentThreadPage).threads ?? []),
-  ...((commentsInBeforeBody as unknown as CommentThreadPage).threads ?? []),
-  ...((messagesInBody as unknown as MessageThreadPage).threads ?? []),
-  ...((messagesNoneBody as unknown as MessageThreadPage).threads ?? []),
-  ...((asksThreadBody as unknown as AskThreadPage).threads ?? []),
-].flatMap(threadRecords);
-
-/** The record whose id begins with `prefix`, as the fixtures' README names them. */
-function record(prefix: string): ThreadRecord {
-  const found = RECORDS.find((one) => one.id.startsWith(prefix));
-  if (found === undefined) throw new Error(`No page of the fixtures holds the record ${prefix}.`);
-  return found;
-}
 
 /** The page's name of an author stands here as the session's title, else the actor's id. */
 const names = {

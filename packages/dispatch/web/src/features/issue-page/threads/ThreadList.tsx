@@ -67,7 +67,7 @@ export function useRowNames(project: string): RowNames {
  * first. Undefined while that read has not answered. The Threads control counts these rows (R1),
  * never the read's `total`, so the count and the choice read one rule.
  */
-export function waitingRows(
+function waitingRows(
   replies: Pick<MyRepliesResponse, "rows"> | undefined,
   project: string
 ): readonly MyReplyRow[] | undefined {
@@ -77,27 +77,23 @@ export function waitingRows(
 }
 
 /**
- * `waitingRows` over the read that Dashboard's threads and the header's count send
- * (`dashboardRepliesQuery`, with no `limit`), so the page sends it once for all three (R6, R15).
- * The read waits for the issue's project, which the rule reads.
+ * The number of the rows of Waiting on me over the read that Dashboard's threads and the header's
+ * count send (`dashboardRepliesQuery`, with no `limit`), so the page sends it once for all three
+ * (R1, R6, R15). Selects the count alone so a change of rows with the same count does not
+ * re-render the page root. The read waits for the issue's project, which the rule reads.
  */
-export function useWaitingRows(
-  issueKey: string,
-  project: string | undefined
-): readonly MyReplyRow[] | undefined {
-  const replies = useQuery({
+export function useWaitingCount(issueKey: string, project: string | undefined): number | undefined {
+  return useQuery({
     ...dashboardRepliesQuery(issueKey),
     ...EVENT_FRESH,
     enabled: project !== undefined,
+    select: (replies) =>
+      project === undefined ? undefined : waitingRows(replies, project)?.length,
   }).data;
-  return useMemo(
-    () => (project === undefined ? undefined : waitingRows(replies, project)),
-    [project, replies]
-  );
 }
 
 /** One read that failed, which the list says with the page's failed-read line and its Retry
- *  (`FailedReadLine`, plan choice 7). */
+ *  (`FailedReadLine`). */
 interface FailedRead {
   /** Which read it is, which keys its line. */
   readonly id: string;
@@ -111,7 +107,7 @@ interface FailedRead {
 /** What one choice draws. */
 export interface ChoiceView {
   /** The rows, in the choice's order, or undefined while the choice draws none yet: one of the
-   *  reads its first rows come from is out or failed (plan choice 7). */
+   *  reads its first rows come from is out or failed. */
   readonly rows: readonly ThreadRecord[] | undefined;
   /** The number the control under the rows says is left (R2). */
   readonly left: number;
@@ -242,7 +238,7 @@ interface DrawnPages {
 
 /**
  * Waiting on me (R6): `rows`, 20 of them a page, each drawn from its thread, with the records of
- * one thread together at its row's place (plan choice 5). A row whose thread a page of All or
+ * one thread together at its row's place. A row whose thread a page of All or
  * Mine holds (`held`) is drawn from it. Every other row of a page drawn is read through its
  * thread's own route, as Dashboard's thread item reads it (`threadQuery`): at most 20 such reads
  * for each page, none for a row not drawn, and none before All's first pages have settled, which
@@ -270,20 +266,22 @@ function useWaitingChoice({
   readonly shown: number;
 }): ChoiceView & { readonly read: readonly ThreadRecord[] } {
   const asked = (rows ?? []).slice(0, shown);
-  const unheld = asked.filter((row) => !held.has(row.thread_id));
+  const unheld = on ? asked.filter((row) => !held.has(row.thread_id)) : [];
   const reads = useQueries({
-    queries: unheld.map((row) => ({ ...threadQuery(issueKey, row), enabled: on && heldSettled })),
+    queries: on
+      ? unheld.map((row) => ({ ...threadQuery(issueKey, row), enabled: heldSettled }))
+      : [],
   });
-  // Each row's records: its thread's from a page, else from its own read once that answered, an
-  // empty list where that read failed, and undefined while it is out.
-  const recordsOf = new Map<string, readonly ThreadRecord[]>(held);
+  // Each unheld row's records: from its own read once that answered, an empty list where that
+  // read failed, and absent while it is out.
+  const fetched = new Map<string, readonly ThreadRecord[]>();
   const failed: FailedRead[] = [];
   for (const [at, row] of unheld.entries()) {
     const read = reads[at];
     if (read?.data !== undefined) {
-      recordsOf.set(row.thread_id, threadRecords(read.data as ThreadSource));
+      fetched.set(row.thread_id, threadRecords(read.data as ThreadSource));
     } else if (read?.isError === true) {
-      recordsOf.set(row.thread_id, []);
+      fetched.set(row.thread_id, []);
       failed.push({
         failure: read.errorUpdateCount,
         id: `thread-${row.thread_id}`,
@@ -295,14 +293,16 @@ function useWaitingChoice({
   let ready = 0;
   while (ready < asked.length) {
     const page = asked.slice(ready, ready + THREADS_PAGE);
-    if (page.some((row) => !recordsOf.has(row.thread_id))) break;
+    if (page.some((row) => !held.has(row.thread_id) && !fetched.has(row.thread_id))) break;
     ready += page.length;
   }
   const drawn = on && rows !== undefined && (asked.length === 0 || ready > 0);
   const now: DrawnPages | undefined = drawn
     ? {
         left: (rows?.length ?? 0) - ready,
-        rows: asked.slice(0, ready).flatMap((row) => recordsOf.get(row.thread_id) ?? []),
+        rows: asked
+          .slice(0, ready)
+          .flatMap((row) => held.get(row.thread_id) ?? fetched.get(row.thread_id) ?? []),
       }
     : undefined;
   // The pages as the choice drew them last with every row it asked for read.
@@ -317,7 +317,7 @@ function useWaitingChoice({
     failed: on ? failed : [],
     left: pages?.left ?? 0,
     olderBuild: false,
-    read: unheld.flatMap((row) => recordsOf.get(row.thread_id) ?? []),
+    read: unheld.flatMap((row) => fetched.get(row.thread_id) ?? []),
     rows: pages?.rows,
   };
 }
@@ -496,7 +496,7 @@ export function useThreadLists(issue: IssueDetails): ThreadLists {
   };
 }
 
-/** The line each choice draws where it holds no row (plan choice 7). */
+/** The line each choice draws where it holds no row. */
 const EMPTY_LINES: Readonly<Record<ThreadChoice, string>> = {
   agents: EMPTY_STATE_LINES.threads_agents,
   all: EMPTY_STATE_LINES.threads,
@@ -508,7 +508,7 @@ const EMPTY_LINES: Readonly<Record<ThreadChoice, string>> = {
  * The list column (dispatch://INFRA-5704/spec#b-r-view, R2): the four choices, then the rows of
  * the choice that is on, then the control that shows the next 20 while rows are left, then New
  * thread. A failed read draws the page's failed-read line with its Retry above the rows, an
- * older build's answer its one sentence, and a choice with no row its empty line (plan choice 7).
+ * older build's answer its one sentence, and a choice with no row its empty line.
  *
  * Its groups, top to bottom: the choices; the lines of a read; the rows; the control under them;
  * New thread.
@@ -553,7 +553,6 @@ export function ThreadList({
           {view.rows.map((record) => (
             <ThreadRow
               href={buildIssuePath({ key: issue.key, kind: "threads", record: record.id })}
-              id={record.id}
               issueKey={issue.key}
               key={record.id}
               mark={recordMark(record, marks)}

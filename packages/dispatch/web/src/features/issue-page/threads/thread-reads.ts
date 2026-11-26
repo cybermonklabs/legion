@@ -4,7 +4,7 @@
  *
  * Each read stands under a key whose prefix a rule of `api/event-refresh.ts` already refreshes,
  * so a comment, message, ask or issue event of the issue reads it again and neither that file nor
- * `api/queries.ts` changes (R14, R18, plan choice 3): a comment event refreshes
+ * `api/queries.ts` changes (R14, R18): a comment event refreshes
  * `["comments", key]`, a message event `["issue-messages", key]`, an ask event `["asks", key]`, and
  * every issue event `["events", key]`. No key here meets the Conversation tab's
  * `["asks", key, "thread"]` or a document's `["comments", key, { artifact }]`.
@@ -33,7 +33,7 @@ export const EVENTS_PAGE = 200;
 /** Whether `error` is what a page read rejects with where the build that answered serves no page:
  *  one from before the pages answers the route's bare list while a release rolls out
  *  (`threadPageNotOffered` in `api/client.ts`), and a read again would reach the same build as
- *  likely as not. Threads draws its older-build sentence for it (plan choice 7). */
+ *  likely as not. Threads draws its older-build sentence for it. */
 export function isOlderBuild(error: unknown): boolean {
   return (
     error instanceof ApiError &&
@@ -44,7 +44,7 @@ export function isOlderBuild(error: unknown): boolean {
 }
 
 /** A page read is retried as every read of the page is (`queryRetry`), but an older build's bare
- *  list, which `queryRetry` would read twice more as a `404` (plan choice 7). */
+ *  list, which `queryRetry` would read twice more as a `404`. */
 function pageRetry(failureCount: number, error: unknown): boolean {
   return !isOlderBuild(error) && queryRetry(failureCount, error);
 }
@@ -107,7 +107,7 @@ export const askThreadsQuery = (key: string, author?: string) =>
  * The events read the marks count from (R7): the `["events", key]` infinite query in the shape
  * that today's Activity tab (`features/activity/ActivityTab.tsx`) and the new page's history
  * (`IssueHistory.tsx` on dispatch://INFRA-3948) send, a first page of the newest 200, so the page
- * holds one copy and sends one read (plan choice 6). The feed (`api/event-feed.ts`,
+ * holds one copy and sends one read. The feed (`api/event-feed.ts`,
  * `prependEventToLog`) prepends each event as it is published, and a refetch whose read predates
  * one of them must not take it back, so the merge is the same `mergeEventPages`.
  */

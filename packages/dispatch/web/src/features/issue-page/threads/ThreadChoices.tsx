@@ -15,7 +15,7 @@ import { THREADS_WORDS } from "../page-words";
 export type ThreadChoice = keyof typeof THREADS_WORDS.choices;
 
 /** The order the choices are drawn in, left to right (R2). */
-export const CHOICE_ORDER: readonly ThreadChoice[] = ["mine", "waiting", "all", "agents"];
+const CHOICE_ORDER: readonly ThreadChoice[] = ["mine", "waiting", "all", "agents"];
 
 /** The choice that is on when Threads opens (R2). */
 export const FIRST_CHOICE: ThreadChoice = "all";

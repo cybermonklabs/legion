@@ -1,41 +1,26 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { CommentThreadPage } from "@legion/contracts";
 import { QueryClient } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
-import type { ReactNode } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { signedInAsReader } from "../../../__tests__/draft-matrix-fixture";
 import { answerRequests } from "../../../__tests__/network";
-import { api } from "../../../api/client";
 import { dashboardRepliesQuery } from "../../dashboard/useWaitingItems";
-import { parseIssuePath } from "../../refs/routes";
-import { issueDetails } from "../decisions-filter/decisions-fixtures";
-import { NoTooltips } from "../NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS, EMPTY_STATE_LINES, THREADS_WORDS } from "../page-words";
-import { AppProviders } from "../slots/stage-fixtures";
 import asksThreadBody from "./fixtures/asks-thread.json";
 import commentsBareBody from "./fixtures/comments-bare.json";
 import commentsInBody from "./fixtures/comments-in.json";
-import commentsInBeforeBody from "./fixtures/comments-in-before.json";
-import eventsBody from "./fixtures/events.json";
-import meStateBody from "./fixtures/me-state.json";
 import messagesInBody from "./fixtures/messages-in.json";
 import messagesNoneAuthorBody from "./fixtures/messages-none-author.json";
-import repliesUnreadBody from "./fixtures/replies-unread.json";
-import { ThreadsView } from "./ThreadsView";
 import { commentThreadsQuery, messageThreadsQuery, threadEventsQuery } from "./thread-reads";
+import { answerThreads, drawThreads, KEY, stubWindow, threadsAt } from "./threads-view-fixture";
 
 /**
  * The Threads view over the server's answers captured at the stack base (`fixtures/README.md`),
- * with a query client, as plan list 3 tables F (the widths, R2) and G (load, failure, an older
- * build and empty, plan choice 7) give its states.
+ * with a query client: the widths (R2) and load, failure, an older build and empty.
  */
-
-/** The seeded issue the fixtures were read from, and its project. */
-const KEY = "PDFD720CB-1";
-const ISSUE = { ...issueDetails(), key: KEY, project: "PDFD720CB" };
 
 /** The newest thread of All's first pages, the reader's comment: a record a page holds. */
 const FIRST = (commentsInBody as unknown as CommentThreadPage).threads?.[0]?.comment.id ?? "";
@@ -44,130 +29,15 @@ const FIRST = (commentsInBody as unknown as CommentThreadPage).threads?.[0]?.com
 const DESKTOP_WIDTH = 1440;
 const PHONE_WIDTH = 390;
 
-/** Whether a window `width` px wide matches `query`, one `(min-width: …)` or `(max-width: …)`
- *  clause in `px` or `rem`. Any other query throws, naming it, since a guessed answer would let a
- *  case pass on a layout no screen draws. */
-function widthMatches(width: number, query: string): boolean {
-  const clause = /^\((min|max)-width:\s*([\d.]+)(px|rem)\)$/.exec(query.trim());
-  if (clause === null) throw new Error(`The window's stub answers no media query "${query}".`);
-  const px = Number(clause[2]) * (clause[3] === "rem" ? 16 : 1);
-  return clause[1] === "min" ? width >= px : width <= px;
-}
-
-/** A window `width` px wide that a case can narrow and widen: each media query answers by its
- *  width, and each query's listeners hear a change of it, as a resize makes them. */
-function stubWindow(width: number) {
-  const original = window.matchMedia;
-  let current = width;
-  const heard = new Set<() => void>();
-  window.matchMedia = ((query: string) => ({
-    addEventListener: (_type: string, listener: () => void) => heard.add(listener),
-    addListener: () => {},
-    dispatchEvent: () => true,
-    get matches() {
-      return widthMatches(current, query);
-    },
-    media: query,
-    onchange: null,
-    removeEventListener: (_type: string, listener: () => void) => heard.delete(listener),
-    removeListener: () => {},
-  })) as unknown as typeof window.matchMedia;
-  return {
-    resize(next: number): void {
-      current = next;
-      act(() => {
-        for (const listener of heard) listener();
-      });
-    },
-    restore(): void {
-      window.matchMedia = original;
-    },
-  };
-}
-
-/** What a case answers a route with in place of its captured page. */
-type RouteAnswer = () => Response | Promise<Response>;
-
-/**
- * Answers every read Threads sends with the server's captured answers: All's three first pages,
- * the comments' next page from its `before`, Agents' page, the events read, the reader's unread
- * threads and the reader's state. A case answers a route of All its own way through `over`. The
- * answer counts the reads of each route.
- */
-function answerThreads(over: Partial<Record<"asks" | "comments" | "messages", RouteAnswer>> = {}) {
-  const sent = { agents: 0, asks: 0, comments: 0, messages: 0 };
-  answerRequests(
-    http.get("/api/v1/issues/:key/comments", ({ request }) => {
-      sent.comments += 1;
-      if (over.comments !== undefined) return over.comments();
-      const next = new URL(request.url).searchParams.has("before");
-      return Response.json(next ? commentsInBeforeBody : commentsInBody);
-    }),
-    http.get("/api/v1/issues/:key/messages", ({ request }) => {
-      if (new URL(request.url).searchParams.get("person") === "none") {
-        sent.agents += 1;
-        // The server's answer for a route that holds no thread (`person=none&author=alice`).
-        return Response.json(messagesNoneAuthorBody);
-      }
-      sent.messages += 1;
-      return over.messages?.() ?? Response.json(messagesInBody);
-    }),
-    http.get("/api/v1/issues/:key/asks", () => {
-      sent.asks += 1;
-      return over.asks?.() ?? Response.json(asksThreadBody);
-    }),
-    http.get("/api/v1/issues/:key/events", () => Response.json(eventsBody)),
-    http.get("/api/v1/me/replies", () => Response.json(repliesUnreadBody)),
-    http.get("/api/v1/me/state", () => Response.json(meStateBody))
-  );
-  return sent;
-}
-
-/** Threads at the address the router holds, as the stage draws it, and that address. */
-function AtAddress(): ReactNode {
-  const { pathname, search } = useLocation();
-  const route = parseIssuePath(pathname, search);
-  return (
-    <>
-      <output data-testid="address">{pathname}</output>
-      {route === undefined ? null : <ThreadsView issue={ISSUE} route={route} />}
-    </>
-  );
-}
-
-/** Threads opened at `path`, under what the app and the page provide, signed in as the reader
- *  the fixtures were read for. */
-function drawThreads(path: string) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
-  const who = spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never);
-  const view = render(
-    <MemoryRouter initialEntries={[path]}>
-      <AppProviders client={client}>
-        <NoTooltips>
-          <AtAddress />
-        </NoTooltips>
-      </AppProviders>
-    </MemoryRouter>
-  );
-  return {
-    client,
-    view,
-    done(): void {
-      view.unmount();
-      who.mockRestore();
-    },
-  };
-}
-
-const listPath = `/issues/${KEY}/threads`;
-const recordPath = `${listPath}/${FIRST}`;
+const listPath = threadsAt();
+const recordPath = threadsAt(FIRST);
 
 const list = () => document.querySelector("[data-thread-list]");
 const record = () => document.querySelector("[data-thread-record]");
 const rows = () => document.querySelectorAll("[data-thread-row]");
 const backToList = () => screen.queryByRole("button", { name: THREADS_WORDS.back_to_list });
 
-describe("table F: the widths (R2)", () => {
+describe("the widths (R2)", () => {
   test("at 1440 px the list and the opened record stand side by side", async () => {
     const window = stubWindow(DESKTOP_WIDTH);
     answerThreads();
@@ -219,7 +89,7 @@ describe("table F: the widths (R2)", () => {
       expect(back, "an opened record draws no control back to the list").not.toBeNull();
       if (back !== null) await userEvent.setup().click(back);
       await waitFor(() => expect(rows().length, "the list did not return").toBe(20));
-      expect(screen.getByTestId("address")).toHaveTextContent(listPath);
+      expect(drawn.address()).toBe(listPath);
       expect(record(), "the record stays open once the list returns").toBeNull();
     } finally {
       drawn.done();
@@ -250,16 +120,17 @@ describe("table F: the widths (R2)", () => {
   });
 });
 
-describe("table G: load, failure, an older build and empty (plan choice 7)", () => {
+describe("load, failure, an older build and empty", () => {
   test("while one of All's three first pages is out All draws no row, and its 20 rows once it answers", async () => {
     const window = stubWindow(DESKTOP_WIDTH);
     const asks = Promise.withResolvers<void>();
-    answerThreads({
-      asks: async () => {
+    answerThreads();
+    answerRequests(
+      http.get("/api/v1/issues/:key/asks", async () => {
         await asks.promise;
         return Response.json(asksThreadBody);
-      },
-    });
+      })
+    );
     const drawn = drawThreads(listPath);
     try {
       const { client } = drawn;
@@ -287,10 +158,21 @@ describe("table G: load, failure, an older build and empty (plan choice 7)", () 
   test("a route that fails draws the page's failed-read line with Retry, which reads that route again", async () => {
     const window = stubWindow(DESKTOP_WIDTH);
     let lost = true;
-    const sent = answerThreads({
-      messages: () => (lost ? Response.error() : Response.json(messagesInBody)),
-    });
-    const drawn = drawThreads(listPath);
+    let messageReads = 0;
+    answerThreads();
+    answerRequests(
+      http.get("/api/v1/issues/:key/messages", ({ request }) => {
+        if (new URL(request.url).searchParams.get("person") === "none") {
+          return Response.json(messagesNoneAuthorBody);
+        }
+        messageReads += 1;
+        return lost ? Response.error() : Response.json(messagesInBody);
+      })
+    );
+    const client = signedInAsReader(
+      new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
+    );
+    const drawn = drawThreads(listPath, { client });
     try {
       await screen.findByText(ANSWER_LINES.threads_unreadable);
       await waitFor(() => expect(drawn.client.isFetching(), "a read is still out").toBe(0));
@@ -299,11 +181,11 @@ describe("table G: load, failure, an older build and empty (plan choice 7)", () 
         screen.queryByText(EMPTY_STATE_LINES.threads),
         "All drew its empty line with a read failed"
       ).toBeNull();
-      const before = sent.messages;
+      const before = messageReads;
       lost = false;
       await userEvent.setup().click(screen.getByRole("button", { name: CONTROL_LABELS.retry }));
       await waitFor(() => expect(rows().length, "Retry drew no row").toBe(20));
-      expect(sent.messages, "Retry did not read the messages' page once more").toBe(before + 1);
+      expect(messageReads, "Retry did not read the messages' page once more").toBe(before + 1);
       expect(screen.queryByText(ANSWER_LINES.threads_unreadable)).toBeNull();
     } finally {
       drawn.done();
@@ -313,7 +195,7 @@ describe("table G: load, failure, an older build and empty (plan choice 7)", () 
 
   test("a build that answers a route's bare list draws the older-build sentence, and that route is read once", async () => {
     const window = stubWindow(DESKTOP_WIDTH);
-    const sent = answerThreads({ comments: () => Response.json(commentsBareBody) });
+    const sent = answerThreads({ comments: () => commentsBareBody });
     const drawn = drawThreads(listPath);
     try {
       await screen.findByText(ANSWER_LINES.threads_older_build);

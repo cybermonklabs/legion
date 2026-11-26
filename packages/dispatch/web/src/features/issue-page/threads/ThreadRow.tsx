@@ -72,7 +72,6 @@ function FirstLine({
  */
 export function ThreadRow({
   href,
-  id,
   issueKey,
   mark,
   record,
@@ -80,8 +79,6 @@ export function ThreadRow({
 }: {
   /** The record's address, `/issues/<KEY>/threads/<id>`. */
   readonly href: string;
-  /** The record's id, which the row carries as `data-thread-row`. */
-  readonly id: string;
   /** The issue the record is on, which its first line reads a reference by. */
   readonly issueKey: string;
   /** The count of new writes (`recordMark`), or undefined for a row with no counted write. */
@@ -91,7 +88,7 @@ export function ThreadRow({
   readonly text: RowText;
 }): ReactNode {
   return (
-    <li className={`border-b ${pageHairBorder}`} data-thread-row={id}>
+    <li className={`border-b ${pageHairBorder}`} data-thread-row={record.id}>
       {/* The link holds one flex item, so its lines stack whether the link is a block or, below
           1280 px, the flex box the floor makes every link (`styles.css`). */}
       <Link

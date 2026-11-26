@@ -15,11 +15,12 @@ import { plainDelivery } from "../../conversation/delivery";
 import { useAgents } from "../../conversation/useAgents";
 import { useAgentText } from "../../refs/AgentName";
 import { type MentionOption, mentionOptions, stoppedRoleOptions } from "../../refs/party-options";
+import { EVENT_FRESH } from "../../refs/reference-target";
 import { authorText, pageChrome } from "../page-structure";
 import { THREADS_WORDS } from "../page-words";
 import { MessageBox } from "./MessageBox";
 
-/** One party the chooser offers, and the mode a message to it goes in (R10, plan choice 2). */
+/** One party the chooser offers, and the mode a message to it goes in (R10). */
 interface Party {
   readonly option: MentionOption;
   readonly delivery: MessageDeliveryMode;
@@ -43,7 +44,7 @@ interface Party {
  * `@` offers nothing and stores no mention (R11). It offers Send once an agent is chosen and it
  * holds words. Send writes a root message of the issue with the chosen party's target, in the mode
  * `plainDelivery` gives its live session's capabilities, or `aside` for a role no live session
- * holds, as `features/search/new-issue.ts` sends one (plan choice 2). `onSent` takes Dispatch's
+ * holds, as `features/search/new-issue.ts` sends one. `onSent` takes Dispatch's
  * answer, which the view opens the new thread from.
  */
 export function NewThread({
@@ -55,7 +56,7 @@ export function NewThread({
 }): ReactNode {
   const text = useAgentText();
   const live = useAgents(true, true);
-  const collaborators = useQuery(issueCollaboratorsQuery(issueKey));
+  const collaborators = useQuery({ ...issueCollaboratorsQuery(issueKey), ...EVENT_FRESH });
   const [chosen, setChosen] = useState<string>();
   const [filter, setFilter] = useState("");
   const listId = useId();

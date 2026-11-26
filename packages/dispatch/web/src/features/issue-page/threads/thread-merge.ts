@@ -53,8 +53,7 @@ interface Row {
  * whose rows read and not drawn are fewer than 20 and whose `before` names a next page are named
  * in `refill`, and until the view has read them the rows drawn are the pages drawn before, so
  * while no write lands each page draws the next 20 rows in All's order and no row is on two pages
- * (R3). A route whose first page has not answered draws no row of the choice at all (plan choice
- * 7).
+ * (R3). A route whose first page has not answered draws no row of the choice at all.
  */
 export function mergeThreads({
   mine,

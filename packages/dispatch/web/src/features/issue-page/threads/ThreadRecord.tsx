@@ -38,7 +38,7 @@ interface Placed {
  * quote begins, whose root answers its post - stands under the root. An ask's root is the ask
  * itself, which the record draws apart, so its replies start at depth 1 under it.
  */
-export function placedEntries(record: ThreadRecord): readonly Placed[] {
+function placedEntries(record: ThreadRecord): readonly Placed[] {
   const rootId = record.root.id;
   const ids = new Set([rootId, ...record.replies.map((post) => post.id)]);
   const children = new Map<string, Post[]>();

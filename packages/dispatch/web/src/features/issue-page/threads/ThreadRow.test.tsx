@@ -1,5 +1,4 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import type { AskThreadPage, CommentThreadPage, MessageThreadPage } from "@legion/contracts";
 import { QueryClient } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -10,12 +9,9 @@ import type { PublishedReferences } from "../../refs/reference-names";
 import { NoTooltips } from "../NoTooltips";
 import { Publisher, publishedNames } from "../projection-fixture";
 import { AppProviders } from "../slots/stage-fixtures";
-import asksThreadBody from "./fixtures/asks-thread.json";
-import commentsInBody from "./fixtures/comments-in.json";
-import commentsInBeforeBody from "./fixtures/comments-in-before.json";
-import messagesInBody from "./fixtures/messages-in.json";
 import { ThreadRow } from "./ThreadRow";
-import { type ThreadRecord, threadRecords } from "./thread-records";
+import { fixtureRecord as record } from "./thread-fixtures";
+import type { ThreadRecord } from "./thread-records";
 import { threadRow } from "./thread-row";
 
 /**
@@ -25,19 +21,6 @@ import { threadRow } from "./thread-row";
  */
 
 const KEY = "PDFD720CB-1";
-const RECORDS: readonly ThreadRecord[] = [
-  ...((commentsInBody as unknown as CommentThreadPage).threads ?? []),
-  ...((commentsInBeforeBody as unknown as CommentThreadPage).threads ?? []),
-  ...((messagesInBody as unknown as MessageThreadPage).threads ?? []),
-  ...((asksThreadBody as unknown as AskThreadPage).threads ?? []),
-].flatMap(threadRecords);
-
-/** The record whose id begins with `prefix`, as the fixtures' README names them. */
-function record(prefix: string): ThreadRecord {
-  const found = RECORDS.find((one) => one.id.startsWith(prefix));
-  if (found === undefined) throw new Error(`No page of the fixtures holds the record ${prefix}.`);
-  return found;
-}
 
 /** Renders one row of `shown` under the page's providers. */
 function drawRow(shown: ThreadRecord, published?: PublishedReferences) {
@@ -50,7 +33,6 @@ function drawRow(shown: ThreadRecord, published?: PublishedReferences) {
           <ol>
             <ThreadRow
               href="/"
-              id={shown.id}
               issueKey={KEY}
               mark={undefined}
               record={shown}

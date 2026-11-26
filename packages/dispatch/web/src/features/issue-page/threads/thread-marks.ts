@@ -1,7 +1,7 @@
 /**
  * R7's count (dispatch://INFRA-5704/spec#b-r-row): the mark a row draws, the number of writes in
  * its record that the reader has not read. Which events are writes, and who wrote in a thread,
- * follow the server (plan choice 8, and the event table of `fixtures/README.md`).
+ * follow the server (the event table of `fixtures/README.md`).
  *
  * The server keeps a read mark only of a thread a person wrote in (`user_threads`, migration
  * `0095_user_threads`), and `me/replies` gives it as a row's `read_through`. For every other
@@ -62,7 +62,7 @@ function writtenEntry(event: DispatchEvent): string | undefined {
  * A record whose thread on the server holds a write of the reader's counts the writes of others
  * past the `read_through` of that thread's `me/replies` row, and none where the read lists no row:
  * a record that a reply with a quote begins reads its post's row, and counts only its own writes
- * (plan choice 11). Every other record, and the open ask on an open issue that waits on the
+ * (R7). Every other record, and the open ask on an open issue that waits on the
  * reader, which `me/replies` leaves out, counts its write events past the reader's
  * `last_read_seq` of the issue, 0 where `me/state` holds no state for it, among the events read's
  * first page. Where that page holds 200 events and the oldest of them is past `last_read_seq`, a

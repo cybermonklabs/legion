@@ -24,7 +24,7 @@ import { useThreadLookup } from "./thread-lookup";
 import { type ThreadRecord, threadRecords } from "./thread-records";
 
 /** From this width up the list and the main column stand side by side (R2): 1024 px. */
-export const SIDE_BY_SIDE_QUERY = "(min-width: 64rem)";
+const SIDE_BY_SIDE_QUERY = "(min-width: 64rem)";
 
 /** A record the main column draws, with every record the view holds of its thread. */
 interface DrawnRecord {

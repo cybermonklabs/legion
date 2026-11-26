@@ -33,7 +33,9 @@ import type {
   MyReplyRow,
 } from "../web/src/api/types";
 import { agentRoleWord } from "../web/src/features/issue-page/agent-role";
+import { isViewer } from "../web/src/features/refs/actor";
 import { mentionOptions, stoppedRoleOptions } from "../web/src/features/refs/party-options";
+import { partyOfAddress } from "../web/src/features/refs/routes";
 import { compareTimestamps } from "../web/src/lib/timestamps";
 import { type FakeSession, legionAgentEntry, setLegionAgents, setLiveSessions } from "./agents";
 import {
@@ -592,7 +594,7 @@ async function seedSecondIssue(
 }
 
 /**
- * The Verification document's "The seed", with what plan choice 12 adds, written through the
+ * The Verification document's "The seed", with its quoting message reply (R8), written through the
  * routes a person and an agent write through, in an order that sets each thread's last activity
  * and the reader's last read of the issue where the rows need them. The project's key is fresh,
  * as `mainHolds` in `e2e/dashboard-seed.ts` makes one, so no row depends on another's records.
@@ -816,7 +818,7 @@ export async function seedThreads(
   );
   await createMessage(key, { body: "Then I will write it so.", in_reply_to: secondReply.id });
 
-  // The reader's message whose second block the tester answers with a quote (choice 12).
+  // The reader's message whose second block the tester answers with a quote (R8).
   const quoting = await createMessage(key, {
     body: "The row draws its first line.\n\nThe line is cut at a word with an ellipsis.",
     delivery: "aside",
@@ -939,7 +941,7 @@ export interface Entry {
   readonly quote: string | null;
   readonly target: string | null;
   /** Whether the server's triggers count its writer as one who wrote in the thread: every entry
-   *  but an ask's resolution (choice 8). */
+   *  but an ask's resolution (R7). */
   readonly joins: boolean;
 }
 
@@ -1264,16 +1266,11 @@ export function allPages(key: string): Promise<ChoicePage[]> {
   return mergedPages(threeRoutes(key), () => true);
 }
 
-/** Whether `actor` is the person `reader`. */
-function isReader(actor: Actor, reader: string): boolean {
-  return actor.kind === "user" && actor.id.toLowerCase() === reader.toLowerCase();
-}
-
 /** Every page of Mine (R4): the three pages with `author=` the reader, and of their records only
  *  those that hold an entry the reader wrote, left out before the rows are taken. */
 export function minePages(key: string, reader: string = READER): Promise<ChoicePage[]> {
   return mergedPages(threeRoutes(key, reader), (record) =>
-    record.entries.some((entry) => isReader(entry.author, reader))
+    record.entries.some((entry) => isViewer(entry.author, reader))
   );
 }
 
@@ -1354,7 +1351,7 @@ export async function markReads(key: string, reader: string = READER): Promise<M
   };
 }
 
-/** The event types that are writes of an entry (plan choice 8): a comment, a delivered comment
+/** The event types that are writes of an entry (R7): a comment, a delivered comment
  *  reply, a message, an agent's reply message, an ask, its answer and its resolution. An edit, a
  *  delivery and an acceptance name the same ids and are no writes. */
 export const WRITE_EVENTS: Readonly<Record<string, true>> = {
@@ -1385,14 +1382,14 @@ export function markOf(
   reads: MarkReads
 ): string | null {
   const wroteIn = thread.entries.some(
-    (entry) => entry.joins && isReader(entry.author, reads.reader)
+    (entry) => entry.joins && isViewer(entry.author, reads.reader)
   );
   if (wroteIn && !thread.waitsOnReader) {
     const row = reads.replies.find((one) => one.thread_id === record.threadId);
     if (row?.read_through === undefined) return null;
     const through = row.read_through;
     const count = record.entries.filter(
-      (entry) => !isReader(entry.author, reads.reader) && compareTimestamps(entry.at, through) > 0
+      (entry) => !isViewer(entry.author, reads.reader) && compareTimestamps(entry.at, through) > 0
     ).length;
     return count === 0 ? null : String(count);
   }
@@ -1401,7 +1398,7 @@ export function markOf(
     return (
       event.seq > reads.lastReadSeq &&
       WRITE_EVENTS[event.type] === true &&
-      !isReader(event.actor, reads.reader) &&
+      !isViewer(event.actor, reads.reader) &&
       entry !== undefined &&
       record.ids.has(entry)
     );
@@ -1424,8 +1421,9 @@ export function authorName(actor: Actor, project: string): string {
 
 /** The name of the agent a message's target names, as the row names it. */
 function targetName(target: string, thread: ServerThread, project: string): string {
-  if (target.startsWith("role:")) return target.slice("role:".length);
-  const id = target.replace(/^session:/, "");
+  const party = partyOfAddress(target);
+  if (party?.kind === "role") return party.role;
+  const id = party?.kind === "agent-session" ? party.session : target;
   const author = thread.entries.find(
     (entry) => entry.author.kind === "session" && entry.author.id === id
   )?.author;

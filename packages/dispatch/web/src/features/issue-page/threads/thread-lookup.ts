@@ -1,5 +1,5 @@
 /**
- * R12's lookups (dispatch://INFRA-5704/spec#b-r-addresses, plan choice 9): the record that
+ * R12's lookups (dispatch://INFRA-5704/spec#b-r-addresses): the record that
  * `/threads/<id>` names where no page the view holds has it. The id is read through the three
  * routes that read one thread, `GET /api/v1/asks/{id}`, `GET /api/v1/comments/{id}` and
  * `GET /api/v1/messages/{id}`, at once, each once, and a read the server refuses with a `4xx` is
@@ -15,7 +15,7 @@ import {
 import { ApiError, api } from "../../../api/client";
 import { queryRetry } from "../../../api/query-client";
 import { askQuery, commentQuery, EVENT_FRESH } from "../../refs/reference-target";
-import { type ThreadRecord, type ThreadSource, threadRecords } from "./thread-records";
+import { quoteOf, type ThreadRecord, type ThreadSource, threadRecords } from "./thread-records";
 
 /** What the main column draws for an id no page holds. */
 export type ThreadLookup =
@@ -96,7 +96,7 @@ export function useThreadLookup(
   const message = useQuery({ ...messageThreadQuery(issueKey, named), ...lookup });
   const reply = comment.data?.comment;
   const quotedReply =
-    reply !== undefined && reply.issue_key === issueKey && (reply.reply_block?.quote ?? "") !== "";
+    reply !== undefined && reply.issue_key === issueKey && quoteOf(reply) !== undefined;
   const head =
     quotedReply && reply.reply_to !== null && reply.ask_id === null ? reply.reply_to : undefined;
   const replyAsk =

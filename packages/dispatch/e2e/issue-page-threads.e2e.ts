@@ -1486,7 +1486,7 @@ test("@ in a box that writes a comment names an agent, and a box that writes a m
     await expect(refPicker(page), "@ in New thread's box opens the picker").toHaveCount(0);
 
     // Each box the writing list names under Threads: a covered one writes a comment and carries
-    // the picker, and one that writes a message carries none (list 1 (d)).
+    // the picker, and one that writes a message carries none (R11).
     const rows = DISPATCH_WRITING_BOXES.filter((row) =>
       row.files.some((file) => file.includes("/features/issue-page/threads/"))
     );

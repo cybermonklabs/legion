@@ -1,9 +1,10 @@
 /**
  * What the unit tests of Threads' records and addresses share (`ThreadRecord.test.tsx`,
  * `draft-matrix.threads.test.tsx`, `ThreadRow.test.tsx`, `NewThread.test.tsx`,
- * `ThreadsView.addresses.test.tsx`, `../address-target.test.tsx`): the issue the captured
- * fixtures were read from (`fixtures/README.md`), the server's answers to every read Threads
- * sends, Threads drawn at an address under what the app and the page provide, with the router's
+ * `ThreadsView.test.tsx`, `ThreadsView.addresses.test.tsx`, `ThreadsView.live.test.tsx`,
+ * `../address-target.test.tsx`): the issue the captured fixtures were read from
+ * (`fixtures/README.md`), the server's answers to every read Threads sends, Threads drawn at an
+ * address under what the app and the page provide, with the router's
  * address and its Back, and a window whose width a case sets.
  */
 import { spyOn } from "bun:test";

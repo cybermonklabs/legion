@@ -19,10 +19,9 @@ import { answerThreads, drawThreads, stubWindow, threadsAt } from "./threads-vie
 
 /**
  * The addresses of Threads (dispatch://INFRA-5704/spec#b-r-addresses, R12, R15) over the server's
- * answers captured at the stack base (`fixtures/README.md`), as plan list 3 table E gives their
- * states - a row pressed, Back, Escape with no caret and with one, and a cold load of
- * `/threads/<id>` - and as table B's lookups draw in the view: the record a lookup gives, under
- * its own choice, and the line for an address that names no record.
+ * answers captured at the stack base (`fixtures/README.md`): a row pressed, Back, Escape with no
+ * caret and with one, a cold load of `/threads/<id>`, and how lookups draw in the view (the
+ * record a lookup gives under its own choice, and the line for an address that names no record).
  */
 
 /** The newest thread of All's first pages, the reader's comment: a record a page holds. */
@@ -115,7 +114,7 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-describe("table E: open, Back and Escape (R12)", () => {
+describe("open, Back and Escape (R12)", () => {
   test("a row pressed pushes its address, and Back returns to the list with the same choice and the rows it had shown", async () => {
     const drawn = drawAt(threadsAt());
     const user = userEvent.setup();
@@ -202,7 +201,7 @@ describe("table E: open, Back and Escape (R12)", () => {
   });
 });
 
-describe("table B in the view: the lookups' record and line (R12, R15)", () => {
+describe("lookups in the view: record and line (R12, R15)", () => {
   test("a thread between agents that no page of All holds is looked up once All's first pages answered, once on each route, and opens under Agents with its row", async () => {
     const window = stubWindow(1440);
     const asks = Promise.withResolvers<void>();

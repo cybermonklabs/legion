@@ -15,8 +15,8 @@ import messageCreatedBody from "./fixtures/message-created.json";
 import { answerThreads, drawThreads, KEY, stubWindow, threadsAt } from "./threads-view-fixture";
 
 /**
- * New thread (dispatch://INFRA-5704/spec#b-r-new-thread, R10, R11, R15), as plan list 3 table C
- * gives its states: opened, no agent or no words, sending, refused and sent. The reads of Threads
+ * New thread (dispatch://INFRA-5704/spec#b-r-new-thread, R10, R11, R15) in each of its states:
+ * opened, no agent or no words, sending, refused and sent. The reads of Threads
  * and Dispatch's `201` are the server's answers captured at the stack base (`fixtures/README.md`).
  * No capture holds the agent registry or the issue's collaborators, so the two reads of the `@`
  * picker are answered as every picker's test answers them (`__tests__/search-fixture.ts`): the
@@ -122,7 +122,7 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-describe("table C: New thread (R10, R11, R15)", () => {
+describe("New thread (R10, R11, R15)", () => {
   test("New thread opened puts the caret in its box and reads only what the @ picker reads, once it opens", async () => {
     const at = drawWithParties();
     const user = userEvent.setup();

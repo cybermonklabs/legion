@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AskThreadPage, CommentThreadPage, MessageThreadPage } from "@legion/contracts";
+import type { CommentThreadPage } from "@legion/contracts";
 
 import type { EventPages } from "../../../api/event-feed";
 import type {
@@ -9,17 +9,15 @@ import type {
   MyRepliesResponse,
   UserState,
 } from "../../../api/types";
-import asksThreadBody from "./fixtures/asks-thread.json";
 import commentsInBody from "./fixtures/comments-in.json";
-import commentsInBeforeBody from "./fixtures/comments-in-before.json";
 import eventsBody from "./fixtures/events.json";
 import eventsPast200Body from "./fixtures/events-past-200.json";
 import meStateBody from "./fixtures/me-state.json";
 import meStateFreshBody from "./fixtures/me-state-fresh.json";
-import messagesInBody from "./fixtures/messages-in.json";
 import repliesUnreadBody from "./fixtures/replies-unread.json";
+import { fixtureRecord as record } from "./thread-fixtures";
 import { type MarkedRecord, type MarkReads, recordMark } from "./thread-marks";
-import { type ThreadRecord, threadRecords } from "./thread-records";
+import { threadRecords } from "./thread-records";
 
 // The answers the server gave the reader, alice, at the stack base (fixtures/README.md).
 const KEY = "PDFD720CB-1";
@@ -29,20 +27,6 @@ const EVENTS_PAST_200 = eventsPast200Body as unknown as DispatchEvent[];
 const REPLIES = repliesUnreadBody as unknown as MyRepliesResponse;
 const STATE = meStateBody as unknown as UserState;
 const FRESH_STATE = meStateFreshBody as unknown as UserState;
-
-const RECORDS: readonly ThreadRecord[] = [
-  ...((commentsInBody as unknown as CommentThreadPage).threads ?? []),
-  ...((commentsInBeforeBody as unknown as CommentThreadPage).threads ?? []),
-  ...((messagesInBody as unknown as MessageThreadPage).threads ?? []),
-  ...((asksThreadBody as unknown as AskThreadPage).threads ?? []),
-].flatMap(threadRecords);
-
-/** The record whose id begins with `prefix`, as the fixtures' README names them. */
-function record(prefix: string): ThreadRecord {
-  const found = RECORDS.find((one) => one.id.startsWith(prefix));
-  if (found === undefined) throw new Error(`No page of the fixtures holds the record ${prefix}.`);
-  return found;
-}
 
 function page(events: readonly DispatchEvent[]): EventPages {
   return { pageParams: [null], pages: [[...events]] };
