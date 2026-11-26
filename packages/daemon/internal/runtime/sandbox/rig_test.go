@@ -809,13 +809,19 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		client.PrependReactor("*", "*", g.record)
 	}
 	opts := testOptions()
+	// An unset rig boot timeout is the event-wait default below. An explicit test timeout must be
+	// applied before testwait.Remaining, which correctly refuses a binary with no clean-failure
+	// margin left.
+	opts.BootTimeout = 0
 	opts.Conns = g.conns
 	opts.Now = func() time.Time { return *g.now.Load() }
-	// A rig's event waits end at the test binary's deadline. Timeout-verdict tests override this
-	// default with withTestBootTimeout after it is applied.
-	withWaitsToTheDeadline()(g, &opts)
 	for _, option := range options {
 		option(g, &opts)
+	}
+	if opts.BootTimeout == 0 {
+		// A rig's event waits end at the test binary's deadline. Timeout-verdict tests set their
+		// finite BootTimeout through withTestBootTimeout or an option of their own.
+		withWaitsToTheDeadline()(g, &opts)
 	}
 	g.store, _ = opts.Store.(*fakeStore)
 	g.opts = opts
