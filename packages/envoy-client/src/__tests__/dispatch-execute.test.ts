@@ -41,6 +41,8 @@ import {
   formatOpenAsksSummary,
   linkBaseOf,
   positionText,
+  refuseOpenDecisionBlocks,
+  resolveIssueDocument,
   resolveIssueDocumentId,
 } from "../dispatch-execute";
 import {
@@ -20477,6 +20479,86 @@ test("a reference that is one document's slug and another's filename is the slug
   await expect(resolveIssueDocumentId(client, "DSP-42", "draft.md")).rejects.toThrow(
     '"draft.md" names 2 documents on this issue; use a slug: draft-md (draft.md), draft-md-2 (draft.md)'
   );
+});
+
+// The test `dispatch request-approval` makes over open decision blocks is the one another caller
+// that rests on a document makes too (the legion tool's register_gate on an ancestor's basis): it
+// reads the document `resolveIssueDocument` resolved, with its issue, names each open block, and
+// says the rest in that caller's own words. A document whose block has settled, its opener in the
+// version the request names reading `state="answered"`, passes.
+test("the open decision block test refuses another caller in that caller's own words", async () => {
+  const fetchFor =
+    (state: "open" | "answered") =>
+    async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          primary_artifact_id: "artifact-42",
+          artifacts: [
+            {
+              id: "artifact-42",
+              slug: "spec",
+              name: "spec.md",
+              primary: true,
+              approval: { state: "draft", latest_version: 4 },
+            },
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-42/blocks") {
+        return response([{ id: "b-1", type: "ask", from: 0, to: 90 }]);
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/asks") {
+        return response([
+          {
+            id: "ask-b-1",
+            kind: "question",
+            block_id: "b-1",
+            block_artifact: { id: "artifact-42" },
+            state,
+            question: "Question of b-1?",
+          },
+        ]);
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-42/versions/4") {
+        return response({
+          number: 4,
+          markdown: `:::ask{#b-1 urgency="med" multiple="false" state="${state}"}\nQuestion of b-1?\n:::`,
+        });
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+  const clientWith = (state: "open" | "answered") =>
+    new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchFor(state) as typeof fetch
+    );
+  const words = {
+    call: "legion register_gate",
+    effect: "Answering one writes a version the registration does not name.",
+    remedy: "Register the version that carries the answer.",
+  };
+
+  const open = clientWith("open");
+  const resolved = await resolveIssueDocument(open, "DSP-42", "spec");
+  expect(resolved.issue?.key).toBe("DSP-42");
+  expect(resolved.artifact.id).toBe("artifact-42");
+  const refusal = await refuseOpenDecisionBlocks(open, resolved, words).then(
+    () => "",
+    (error: Error) => error.message
+  );
+  expect(refusal.split("\n")).toEqual([
+    "legion register_gate was not called: spec.md (version 4) has 1 open decision block. Answering one writes a version the registration does not name.",
+    '- "Question of b-1?" (block b-1, ask ask-b-1)',
+    "Register the version that carries the answer.",
+  ]);
+
+  const settled = clientWith("answered");
+  await expect(
+    refuseOpenDecisionBlocks(settled, await resolveIssueDocument(settled, "DSP-42", "spec"), words)
+  ).resolves.toBeUndefined();
 });
 
 const anchoredRow: TablePosition = {
