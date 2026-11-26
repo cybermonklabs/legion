@@ -4467,7 +4467,9 @@ func readOnlyThenWriter(
 
 // answerButReadTimes is a read's answer as JSON with each moment a pull request head was read at
 // cleared, once that moment is shown to be the read's own: within the read, to the microsecond
-// the database keeps. Every other member is as the read answered it.
+// the database keeps. It is cleared on each basis the answer names: those a check compared with,
+// those a result stands at and those a pass stands on (pass_stands.subjects). Every other member
+// is as the read answered it.
 func answerButReadTimes(t *testing.T, who string, answered timedResultsRead) string {
 	t.Helper()
 	var read issueResults
@@ -4493,6 +4495,9 @@ func answerButReadTimes(t *testing.T, who string, answered timedResultsRead) str
 			if stands := check.Results[result].CommitStands; stands != nil {
 				clearReadTime(stands.Basis)
 			}
+		}
+		for subject := range check.PassStands.Subjects {
+			clearReadTime(&check.PassStands.Subjects[subject].Basis)
 		}
 	}
 	encoded, err := json.Marshal(read)

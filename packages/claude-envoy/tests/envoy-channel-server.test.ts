@@ -794,15 +794,20 @@ test("a rejected frame's report that landed with no answer back is not said to b
   const written = spyOn(process.stderr, "write").mockImplementation(() => true)
   try {
     const replies: string[] = []
+    // Behind Dispatch's keyed layer, whose own refusal of a repeat that already ran names the
+    // report's key back.
     server = Bun.serve({
       port: 0,
-      fetch: (request) => {
-        replies.push(new URL(request.url).pathname)
-        return Response.json(
-          { code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" },
-          { status: 409 },
-        )
-      },
+      fetch: keyedLayer(
+        (request: Request) => {
+          replies.push(new URL(request.url).pathname)
+          return Response.json(
+            { code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" },
+            { status: 409 },
+          )
+        },
+        { judged: () => true },
+      ),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN

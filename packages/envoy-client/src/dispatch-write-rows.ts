@@ -328,12 +328,13 @@ export const WRITE_ROWS = {
   }),
   /** `messageIssueKey` reads the edited message's issue. */
   editMessage: z.looseObject({ id: messageFields.id, issue_key: messageFields.issue_key }),
-  /** `statusChangeCommand` reads the issue's status and links and each changed entry. */
+  /** `statusChangeCommand` reads the issue's status and links and each changed entry; `changed` is
+   *  a list or null, as `StatusChangeAnswer` declares it. */
   changeIssueStatus: z.looseObject({
     issue: z.looseObject({ key: issueFields.key, status: issueFields.status }),
     changed: z
       .array(z.looseObject({ key: issueFields.key, status: issueFields.status }))
-      .optional(),
+      .nullable(),
   }),
   message: z.looseObject({ id: messageFields.id, advice }),
   agentMessage: z.looseObject({
