@@ -765,7 +765,7 @@ func TestARoleStopSuspendsTheClaimOfAReleaseThatStandsAndNoOther(t *testing.T) {
 			}
 		}},
 		{name: "the claim runs nothing", before: func(t *testing.T, rig *idleRig, _ int64) {
-			if err := rig.machine.Handle(context.Background(), supervise.RequestStop{Claim: rig.token}); err != nil {
+			if err := rig.machine.Handle(context.Background(), supervise.RequestStop{Claim: rig.token, By: supervise.SuspendedByOperator}); err != nil {
 				t.Fatalf("retire the claim the stop is for: %v", err)
 			}
 		}},

@@ -3,6 +3,7 @@ package supervise
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,7 +29,8 @@ func (h *harness) cyberPluginTurn(sequence uint64, status int) {
 }
 
 // wantHeldForCyberPolicy fails the case unless the claim failed under CauseCyberPolicy, with a
-// sentence that names the class and none of the provider's own words.
+// sentence that names the class and none of the provider's own words, and recorded its session as
+// one whose content OpenAI refused (Claim.CyberPolicySessions), in memory and in the store.
 func (h *harness) wantHeldForCyberPolicy() {
 	h.t.Helper()
 	h.wantState(StateFailed)
@@ -46,6 +48,11 @@ func (h *harness) wantHeldForCyberPolicy() {
 	}
 	if stored := h.store.load(h.token); stored.FailureCause != CauseCyberPolicy {
 		h.t.Errorf("the stored claim carries cause %q, want %q persisted", stored.FailureCause, CauseCyberPolicy)
+	}
+	if want := []string{c.Session}; c.Session == "" || !slices.Equal(c.CyberPolicySessions, want) ||
+		!slices.Equal(h.store.load(h.token).CyberPolicySessions, want) {
+		h.t.Errorf("the held claim records the refused sessions %q and the store %q, want its session %q in both",
+			c.CyberPolicySessions, h.store.load(h.token).CyberPolicySessions, c.Session)
 	}
 }
 
@@ -123,7 +130,9 @@ func failedForCyberPolicy(t *testing.T) *harness {
 // resume, the recorded session abandoned under the failure's sentence, the run of provider-error
 // turns started over, and the one line of a retry in a new session, saying why. A resume would
 // hand the refused session the retry's first task, which ends Oh My Pi's hold and sends that
-// content to OpenAI again.
+// content to OpenAI again. The claim is held no more, but the session it left behind stays
+// recorded as refused, in memory and in the store, so its conversation is still answered by no
+// model (Claim.SessionHeldForCyberPolicy).
 func (h *harness) wantStartedInANewSession(retry Event) {
 	h.t.Helper()
 	resumes, spawns := len(h.calls("Resume")), len(h.calls("Spawn"))
@@ -140,6 +149,11 @@ func (h *harness) wantStartedInANewSession(retry Event) {
 	}
 	if c.ProviderErrorRun != 0 {
 		h.t.Errorf("the retried claim keeps a run of %d provider-error turns, want it started over with the new session", c.ProviderErrorRun)
+	}
+	if want := []string{session}; c.HeldForCyberPolicy() || !c.SessionHeldForCyberPolicy(session) || !slices.Equal(c.CyberPolicySessions, want) ||
+		!slices.Equal(h.store.load(h.token).CyberPolicySessions, want) {
+		h.t.Errorf("the retried claim is held %t, its refused sessions %q and the store's %q; want it held no more and %q still refused in both",
+			c.HeldForCyberPolicy(), c.CyberPolicySessions, h.store.load(h.token).CyberPolicySessions, session)
 	}
 	if got := h.records.of("supervise: retrying in a new session"); len(got) != lines+1 {
 		h.t.Errorf("the retry logged %d lines of a retry in a new session, want one", len(got)-lines)
@@ -218,8 +232,9 @@ func TestOnlyADecidedRetryLaunchesTheAgentOfAHeldClaimAgain(t *testing.T) {
 		h.must(RequestRetry{Claim: h.token})
 		h.wantState(StateLaunching)
 		h.wantCalls("Resume", resumes+1)
-		if c := h.claim(); c.Session != session || c.Abandoned.Session != "" {
-			t.Fatalf("the retried claim records session %q and abandoned %+v, want %q resumed", c.Session, c.Abandoned, session)
+		if c := h.claim(); c.Session != session || c.Abandoned.Session != "" || len(c.CyberPolicySessions) != 0 {
+			t.Fatalf("the retried claim records session %q, abandoned %+v and refused sessions %q, want %q resumed and none refused",
+				c.Session, c.Abandoned, c.CyberPolicySessions, session)
 		}
 	})
 }
@@ -257,7 +272,11 @@ func TestTheOperatorsRetryStartsAHeldControllerInANewSession(t *testing.T) {
 // abandoned or logged as a retry in a new session. Every decided retry of a claim held for a
 // cyber-policy refusal takes that road, and so does the operator's --fresh-session retry of any
 // claim. Once the reservation is gone, the same retry leaves the session behind and launches the
-// agent in a new one, which is the control: the claim is one the retry does reach.
+// agent in a new one, which is the control: the claim is one the retry does reach. The held claim
+// records no refused session, as one a release that kept no such record failed does: the
+// admitted retry records the session it leaves behind as refused (Claim.CyberPolicySessions), so
+// the session's conversation stays held after the hold ends, and the refused admission records
+// nothing, while the stopped claim, which no refusal holds, records none either way.
 func TestARefusedAdmissionLeavesTheSessionARetryInANewSessionWouldLeaveBehind(t *testing.T) {
 	held := func() Claim {
 		c := retiredOfEpoch(1)
@@ -292,7 +311,8 @@ func TestARefusedAdmissionLeavesTheSessionARetryInANewSessionWouldLeaveBehind(t 
 			}
 			after := h.m.Claim()
 			if after.Session != before.Session || after.SessionFile != before.SessionFile || after.Abandoned.Session != "" ||
-				after.ProviderErrorRun != before.ProviderErrorRun || after.FailureCause != before.FailureCause || after.State != before.State {
+				after.ProviderErrorRun != before.ProviderErrorRun || after.FailureCause != before.FailureCause || after.State != before.State ||
+				len(after.CyberPolicySessions) != 0 {
 				t.Fatalf("the refused retry left the live claim %s with session %q (%s), abandoned %q, %d provider-error turns and cause %q; want it as it was: %s, %q (%s), nothing abandoned, %d, %q",
 					after.State, after.Session, after.SessionFile, after.Abandoned.Session, after.ProviderErrorRun, after.FailureCause,
 					before.State, before.Session, before.SessionFile, before.ProviderErrorRun, before.FailureCause)
@@ -312,6 +332,13 @@ func TestARefusedAdmissionLeavesTheSessionARetryInANewSessionWouldLeaveBehind(t 
 			}
 			if spawns := len(h.rt.CallsOf("Spawn")); spawns != 1 || len(h.rt.CallsOf("Resume")) != 0 {
 				t.Fatalf("the admitted retry made %d spawns and %d resumes, want one spawn", spawns, len(h.rt.CallsOf("Resume")))
+			}
+			var refused []string
+			if before.HeldForCyberPolicy() {
+				refused = []string{before.Session}
+			}
+			if got := h.m.Claim().CyberPolicySessions; !slices.Equal(got, refused) {
+				t.Fatalf("the admitted retry left the refused sessions %q, want %q", got, refused)
 			}
 		})
 	}

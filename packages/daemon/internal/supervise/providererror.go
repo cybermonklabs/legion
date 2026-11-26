@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -186,6 +187,15 @@ func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTur
 // HeldForCyberPolicy is whether the claim's last failure is OpenAI's cyber-policy refusal and no
 // run has started since (CyberPolicyHolds).
 func (c Claim) HeldForCyberPolicy() bool { return CyberPolicyHolds(c.State, c.FailureCause) }
+
+// SessionHeldForCyberPolicy is whether no model the daemon calls by itself may be sent session's
+// content: OpenAI refused that session's content for cyber policy (CyberPolicySessions), or the
+// claim is held for such a refusal now (HeldForCyberPolicy), whichever of its sessions session
+// is. A retry of a held claim ends the second and never the first, so after it the refused
+// session stays held and the new session, which holds none of that content, is not.
+func (c Claim) SessionHeldForCyberPolicy(session string) bool {
+	return c.HeldForCyberPolicy() || slices.Contains(c.CyberPolicySessions, session)
+}
 
 // CyberPolicyHolds is whether a claim in state whose last failure is cause is held for OpenAI's
 // cyber-policy refusal: the record stands on a failed claim, and on one an operator stopped after

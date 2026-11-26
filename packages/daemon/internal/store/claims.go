@@ -49,7 +49,9 @@ var _ supervise.Store = (*Store)(nil)
 //
 // The two cause columns are read beside held_for, which says whether a `provider_error` either of
 // them holds stands for `cyber_policy` (supervise.DecodeCause); upsertClaim writes the three
-// together (storedCause, heldFor).
+// together (storedCause, heldFor). cyber_policy_sessions is every session of the claim whose
+// content OpenAI refused for cyber policy (supervise.Claim.CyberPolicySessions,
+// 20261126182717_claim_cyber_policy_sessions), which no write takes a session out of.
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.held_for, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -61,7 +63,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.last_turn_start, c.last_turn_end, c.message_mark_at,
 	c.last_death_cause, c.last_death_at, c.last_death_digest,
 	c.last_start_failure, c.last_start_failure_at, c.last_start_failure_digest, c.last_ready,
-	c.turn_outcomes, c.abandoned_session, c.ended_work,
+	c.turn_outcomes, c.abandoned_session, c.cyber_policy_sessions, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
@@ -433,6 +435,12 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
+	// The column holds an array, never NULL, as delivered_rows does: a claim whose sessions OpenAI
+	// never refused writes the empty array.
+	refused := c.CyberPolicySessions
+	if refused == nil {
+		refused = []string{}
+	}
 	_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
@@ -446,10 +454,10 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
 		last_death_at, last_start_failure_at, last_death_digest, last_start_failure_digest, held_for,
-		retired_at_write_mark)
+		cyber_policy_sessions, retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -497,6 +505,11 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		failed_at = excluded.failed_at,
 		pending_cause = excluded.pending_cause,
 		held_for = excluded.held_for,
+		-- A session OpenAI refused stays refused: the stored list is kept, and each session of the
+		-- written one it lacks is added after it, so a write of a copy of the claim read before a
+		-- failure recorded a session drops none (supervise.Claim.CyberPolicySessions).
+		cyber_policy_sessions = claims.cyber_policy_sessions || array(select refused from unnest(excluded.cyber_policy_sessions) as refused
+			where refused <> all(claims.cyber_policy_sessions)),
 		leak_check_cause = excluded.leak_check_cause,
 		ended_work = excluded.ended_work,
 		handshake_entry = excluded.handshake_entry,
@@ -544,7 +557,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
 		causeDigest(c.LastDeathCause, c.LastDeathAt), causeDigest(c.LastStartFailure, c.LastStartFailureAt),
-		heldFor(c),
+		heldFor(c), refused,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -947,7 +960,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd, &messageMark,
 		&c.LastDeathCause, &deathAt, &deathDigest, &c.LastStartFailure, &startFailureAt, &failureDigest, &lastReady,
-		&outcomes, &abandoned, &endedWork,
+		&outcomes, &abandoned, &c.CyberPolicySessions, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
@@ -966,8 +979,12 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	}
 	// An empty array is a claim no row has given a task, which the supervisor holds as no slice at
 	// all: the two read the same everywhere, and a restored claim equals the one that was written.
+	// So is a claim no session of which OpenAI refused for cyber policy.
 	if len(c.DeliveredRows) == 0 {
 		c.DeliveredRows = nil
+	}
+	if len(c.CyberPolicySessions) == 0 {
+		c.CyberPolicySessions = nil
 	}
 	c.Token, c.Role, c.State, c.SuspendedBy = claim.Token(token), claim.Role(role), supervise.ClaimState(state), supervise.SuspendSource(by)
 	c.FailureCause, c.PendingCause = supervise.DecodeCause(cause, held), supervise.DecodeCause(pendingCause, held)

@@ -1185,21 +1185,23 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // which writes every kind of those three, do: the case of a database main migrated applies a
 // version left out of the list before the list's own rewrites of that check, which do not name the
 // later kind, so the row seeded of that kind fails the upgrade. So does one that reads a column a
-// version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
-// claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
-// column. So does one that changes a table a version of the list creates, as the givers of a plan
-// version (20261124033010) add a column to 20261117034837's issue_plans: applied as main's, before
-// that table exists, it fails on the missing table. 20261126170315 is the last migration that
+// version of the list adds, as t-e-54's 20261116144907 reads claims.abandoned_session
+// (20261029121200), dispatch://INFRA-5463's 20261123212127 reads claims.last_start_failure
+// (20261029121000) and the answer loop's 20261126182717 reads claims.abandoned_session too:
+// applied before that version, it fails on the missing column. So does one that changes a table
+// a version of the list creates, as the givers of a plan version (20261124033010) add a column to
+// 20261117034837's issue_plans: applied as main's, before that table exists, it fails on the
+// missing table. 20261126170315 is the last migration that
 // writes outbox_kind_check: it stands above the answer loop's 20261124114223 and main's
 // 20261126110259, 20261122154643, 20261119203047 and 20261119003157, which write it too, and
 // main's 20261111090000, 20261111091500 and 20261116144907 write none. The cache trimmer's two,
 // 20261111090000 and 20261111091500, read no column a version of the list adds either, so neither
-// is in the list, and nor are the answer loop's other five, 20261106214000, 20261106214001,
-// 20261106214002, 20261124021727 and 20261124072849, which write and read only the answer loop's
-// own tables. The project pause's 20261115194357 is in it as well, though it rewrites no kind
-// list: a database migrated before the pause takes it in the upgrade, over a row of every kind the
-// schema admits, and its held_by_pause column on the outbox must take them all. Any other version
+// is in the list, and nor are the answer loop's other six, 20261106214000, 20261106214001,
+// 20261106214002, 20261124021727, 20261124072849 and 20261126183426, which write and read only
+// the answer loop's own tables. The project pause's 20261115194357 is in it as well, though it
+// rewrites no kind list: a database migrated before the pause takes it in the upgrade, over a row
+// of every kind the schema admits, and its held_by_pause column on the outbox must take them
+// all. Any other version
 // left out makes the cases below weaker, never red, which is why the comment says where the list
 // comes from.
 var thisRelease = map[int]bool{
@@ -1213,7 +1215,7 @@ var thisRelease = map[int]bool{
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
 	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124033010: true,
-	20261124114223: true, 20261126110259: true, 20261126170315: true,
+	20261124114223: true, 20261126110259: true, 20261126170315: true, 20261126182717: true,
 }
 
 const idleRelease = 20261101222956

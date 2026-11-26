@@ -351,10 +351,16 @@ func (r *releasedRig) assertStillReleased() {
 
 // releasedHandoff is a Dispatch event the listener hands the daemon for the implementer's session.
 func releasedHandoff(event map[string]any) intake.Handoff {
+	return sessionHandoff(releasedSession, event)
+}
+
+// sessionHandoff is a Dispatch event the listener hands the daemon for session, a session of the
+// implementer.
+func sessionHandoff(session string, event map[string]any) intake.Handoff {
 	payload, _ := json.Marshal(event)
-	topic := "notifications.agent." + releasedSession
+	topic := "notifications.agent." + session
 	return intake.Handoff{
-		OriginalTopic: topic, TargetSession: releasedSession, RoleToken: "legion-legion-legion-208-implementer", Project: "legion",
+		OriginalTopic: topic, TargetSession: session, RoleToken: "legion-legion-legion-208-implementer", Project: "legion",
 		Envelope: intake.HandoffEnvelope{EventID: "dispatch-1", Source: "dispatch", SourceEventID: "1", Topic: topic,
 			DedupeKey: "dispatch-1", PayloadSummary: releasedIssue, Payload: string(payload), TraceID: "t"},
 	}
@@ -362,11 +368,28 @@ func releasedHandoff(event map[string]any) intake.Handoff {
 
 // releasedMessage is a person's Dispatch message id to the implementer on LEGION-208.
 func releasedMessage(id, body string) intake.Handoff {
-	return releasedHandoff(map[string]any{
+	return sessionMessage(releasedSession, id, body)
+}
+
+// sessionMessage is a person's Dispatch message id to the implementer's session on LEGION-208.
+func sessionMessage(session, id, body string) intake.Handoff {
+	return sessionHandoff(session, map[string]any{
 		"event": map[string]any{"type": "message.created", "actor": releasedPerson, "issue_key": releasedIssue, "project": "LEGION",
-			"payload": map[string]any{"id": id, "issue_key": releasedIssue, "body": body, "target": "session:" + releasedSession}},
+			"payload": map[string]any{"id": id, "issue_key": releasedIssue, "body": body, "target": "session:" + session}},
 		"delivery": map[string]any{"attempt": 1, "mode": "btw"},
 	})
+}
+
+// roleHandoff is the architect's Envoy message id to token's role, which the listener hands the
+// daemon while no live session holds the role, targeted at the role's newest session it knows,
+// session: the loop answers it from the role's newest conversation (answerloop's conversationFor).
+func roleHandoff(token claim.Token, session, id, text string) intake.Handoff {
+	topic := notify.RoleTopicPrefix + string(token)
+	return intake.Handoff{
+		OriginalTopic: topic, TargetSession: session, RoleToken: string(token), Project: "legion",
+		Envelope: intake.HandoffEnvelope{EventID: id, Source: "agent", SourceEventID: id, SourceSession: "ses-architect", Topic: topic,
+			DedupeKey: "agent.ses-architect." + id, PayloadSummary: text, TraceID: "t"},
+	}
 }
 
 // releasedComment is actor's root comment id on LEGION-208, which mentions nobody.
@@ -686,5 +709,157 @@ func TestIdleReleasedAgentsDecisionReachesTheArchitectOnceItsClaimIsHeldForCyber
 	}
 	if r.conversation() != r.before {
 		t.Fatal("the held implementer's conversation changed")
+	}
+}
+
+// wantDecisionToTheArchitect fails the test unless one agent-decision notice is queued, an
+// architect's notice (the architect holds its role), carrying the person's answer to the
+// implementer's ask (releasedAnswer).
+func (r *releasedRig) wantDecisionToTheArchitect() {
+	r.t.Helper()
+	decisions := r.noticesOfKind(record.AgentDecisionNotice)
+	if len(decisions) != 1 || decisions[0].row != record.OutboxKindNotice {
+		r.t.Fatalf("agent-decision notices = %+v; want one, an architect's notice: the architect holds its role", decisions)
+	}
+	decided, _ := decisions[0].payload["agent_decision"].(map[string]any)
+	if text, _ := decided["text"].(string); decided["id"] != "dispatch:34" || decided["session"] != releasedSession || !strings.Contains(text, "Selected: B") {
+		r.t.Fatalf("the agent-decision notice = %+v; want the person's answer to the implementer's ask", decisions[0].payload)
+	}
+}
+
+// A person's decision on the released agent's ask goes to the agent alone, through one
+// agent_message row, which carries it (record.AgentMessage.Decision): a decision that asks
+// nothing at once, and one that also asks once its answer is posted. When the claim fails or
+// retires before that row wakes it — held for OpenAI's cyber-policy refusal, or retired by an
+// operator's stop — no session of the claim takes the message any more, so the row passes the
+// decision on as the agent-decision notice of an agent that is not released, routed as such a
+// notice is (to the architect that holds its role), and ends. The control is the same row while
+// the claim stays released: the row wakes the claim, waits for its session, and passes nothing on.
+func TestIdleReleasedAgentsDecisionReachesTheArchitectWhenItsClaimEndsBeforeItsWake(t *testing.T) {
+	t.Parallel()
+	for _, decision := range []struct{ name, text string }{
+		{"a decision that asks nothing", ""},
+		{"a decision that also asks", "Use B. Why did you implement A?"},
+	} {
+		for _, end := range []struct {
+			name string
+			end  func(*releasedRig)
+		}{
+			{"held for cyber policy", (*releasedRig).failForCyberPolicy},
+			{"retired", func(r *releasedRig) {
+				if err := r.machine.Handle(r.ctx, supervise.RequestStop{Claim: r.token, By: supervise.SuspendedByOperator}); err != nil {
+					r.t.Fatalf("retire the implementer: %v", err)
+				}
+			}},
+		} {
+			t.Run(decision.name+", then "+end.name, func(t *testing.T) {
+				t.Parallel()
+				r := newReleasedRig(t, stopByIdleRelease)
+				r.handOff(releasedAnswer(decision.text))
+				r.work()
+				if messages := r.agentMessages(); len(messages) != 1 || messages[0].Decision == nil || messages[0].Decision.ID != "dispatch:34" {
+					t.Fatalf("agent_message rows = %+v; want one, carrying the person's answer", messages)
+				}
+				if decisions := r.noticesOfKind(record.AgentDecisionNotice); len(decisions) != 0 {
+					t.Fatalf("agent-decision notices = %+v before the claim ended; want none: the decision is the released agent's", decisions)
+				}
+				end.end(r)
+				if state := r.machine.Claim().State; !supervise.FailedOrRetired(state) {
+					t.Fatalf("the implementer is %s, want it failed or retired", state)
+				}
+				if err := r.runner.RunOnce(r.ctx); err != nil {
+					t.Fatalf("run the agent_message row: %v", err)
+				}
+				r.wantDecisionToTheArchitect()
+				if rows := r.rows(record.OutboxKindAgentMessage); rows != 0 {
+					t.Fatalf("agent_message rows left = %d; want the row ended", rows)
+				}
+			})
+		}
+	}
+	t.Run("the control: the claim stays released", func(t *testing.T) {
+		t.Parallel()
+		r := newReleasedRig(t, stopByIdleRelease)
+		r.handOff(releasedAnswer(""))
+		if err := r.runner.RunOnce(r.ctx); err != nil {
+			t.Fatalf("run the agent_message row: %v", err)
+		}
+		if decisions := r.noticesOfKind(record.AgentDecisionNotice); len(decisions) != 0 || r.rows(record.OutboxKindAgentMessage) != 1 ||
+			podResumes(t, r.pool, releasedIssue) != 1 {
+			t.Fatalf("agent-decision notices %+v, %d agent_message rows and %d wakes; want no notice, the row waiting for the woken session, one wake",
+				decisions, r.rows(record.OutboxKindAgentMessage), podResumes(t, r.pool, releasedIssue))
+		}
+	})
+}
+
+// A session whose content OpenAI refused for cyber policy stays held after the retry that ends
+// its claim's hold (supervise.Claim.CyberPolicySessions). The held phase's retry, which the
+// architect decided, starts the implementer in a new session, and the refused session's
+// conversation stays in the daemon's history under the same token. A person's message to that
+// session, and the architect's message to the role before the new session registers, which the
+// loop answers from the role's newest conversation, the refused one, call no model: each goes to
+// the controller as held_for_cyber_policy, and the refused conversation is not written. The
+// control is a message to the new session once it registered and the daemon released it: it is
+// answered from that conversation.
+func TestACyberPolicyHeldSessionCallsNoModelAfterTheRetryThatStartsANewOne(t *testing.T) {
+	t.Parallel()
+	r := newReleasedRig(t, stopByIdleRelease)
+	var calls atomic.Int64
+	r.answer = func(req answer.Request) answer.Reply {
+		calls.Add(1)
+		return releasedReply(req, answer.Answered, "Answered: "+req.Question.Text)
+	}
+	r.failForCyberPolicy()
+	if err := r.machine.Handle(r.ctx, supervise.RequestRetry{Claim: r.token, Decided: true}); err != nil {
+		t.Fatalf("the held phase's retry: %v", err)
+	}
+	if retried := r.machine.Claim(); retried.HeldForCyberPolicy() || retried.Session != "" || retried.Abandoned.Session != releasedSession {
+		t.Fatalf("the retried implementer is %s (%q) on %q, abandoned %q; want it held no more, launching a new session, %q left behind",
+			retried.State, retried.FailureCause, retried.Session, retried.Abandoned.Session, releasedSession)
+	}
+
+	r.handOff(releasedMessage("m-old", "Why did you implement A?"))
+	r.handOff(roleHandoff(r.token, releasedSession, "evt-role", "Which fruit did you test?"))
+	r.work()
+	if states := r.states(); calls.Load() != 0 || len(states) != 2 || states[0] != string(store.QuestionPassedOn) || states[1] != string(store.QuestionPassedOn) {
+		t.Fatalf("questions = %v after %d model calls; want both passed on with no model call", states, calls.Load())
+	}
+	questions := r.noticesOfKind(record.AgentQuestionNotice)
+	if len(questions) != 2 {
+		t.Fatalf("agent-question notices = %+v; want two", questions)
+	}
+	for _, question := range questions {
+		if question.row != record.OutboxKindControllerNotice || question.payload["reason"] != string(answerloop.ReasonHeldForCyberPolicy) {
+			t.Fatalf("agent-question notices = %+v; want each a controller notice with the reason %s", questions, answerloop.ReasonHeldForCyberPolicy)
+		}
+	}
+	if r.conversation() != r.before {
+		t.Fatal("the refused session's conversation changed")
+	}
+
+	const newSession = "ses-implementer-new"
+	newPath := filepath.Join(t.TempDir(), newSession+".jsonl")
+	if err := os.WriteFile(newPath, []byte(r.before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	generation := r.machine.Claim().Generation
+	for _, request := range []supervise.Event{
+		supervise.RequestRegister{Claim: r.token, Generation: generation, Session: newSession, SessionFile: newPath},
+		supervise.RequestReady{Claim: r.token, Generation: generation, Session: newSession},
+		supervise.RequestSuspend{Claim: r.token, By: supervise.SuspendedByReleased, Reason: "the issue's idle pod is released"},
+	} {
+		if err := r.machine.Handle(r.ctx, request); err != nil {
+			t.Fatalf("%T of the new session: %v", request, err)
+		}
+	}
+	now := time.Now().UTC()
+	if _, err := r.st.RegisterConversation(r.ctx, store.AgentConversation{Session: newSession, Project: "legion", Issue: releasedIssue,
+		Role: claim.RoleImplementer, Token: r.token, Harness: runtime.BackendOmp, Location: newPath, StartedAt: now, RecordedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	r.handOff(sessionMessage(newSession, "m-new", "Why did you implement B?"))
+	r.work()
+	if states := r.states(); calls.Load() != 1 || len(states) != 3 || states[2] != string(store.QuestionPosted) {
+		t.Fatalf("after the new session's question: questions = %v after %d model calls; want it answered once and posted", states, calls.Load())
 	}
 }

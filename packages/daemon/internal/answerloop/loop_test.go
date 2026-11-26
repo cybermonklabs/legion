@@ -658,7 +658,7 @@ func TestACyberPolicyHeldClaimsQuestionCallsNoModelAndGoesToTheController(t *tes
 	held := newRig(t)
 	path := held.conversation("ses_tester", testerToken, 0)
 	before := fileContent(t, path)
-	held.gate.hold(testerToken)
+	held.gate.hold("ses_tester")
 	held.receive(messageHandoff("ses_tester", "m-1", 1, "Why plum?"))
 	held.drain()
 	q := held.only()
@@ -680,7 +680,7 @@ func TestACyberPolicyHeldClaimsQuestionCallsNoModelAndGoesToTheController(t *tes
 		t.Fatalf("question = %+v at the hand-off; want the released agent's decision held on its question", q)
 	}
 	woken.gate.set(woken.gate.released, "ses_tester", false)
-	woken.gate.hold(testerToken)
+	woken.gate.hold("ses_tester")
 	woken.drain()
 	q = woken.only()
 	if posts := woken.dispatch.posts(); woken.answerCount() != 0 || len(posts) != 1 || !strings.HasPrefix(posts[0].Body["body"].(string), heldReply) {

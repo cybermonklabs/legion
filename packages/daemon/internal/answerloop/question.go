@@ -46,14 +46,14 @@ func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 
 // generate answers q from its conversation, unless the conversation already holds the answer (an
 // earlier pass appended it and stopped before the question was marked appended: it is posted,
-// never answered again), its claim runs the conversation (forwarded), its claim is held for
-// OpenAI's cyber-policy refusal of its session's content, or the day's spend is over the limit
-// (the daemon's reply, for either). It records the reply, adds the exchange to the conversation,
-// then posts the reply. An answer the model gave none to is the daemon's reply naming the fault
-// and every gh and dispatch write the question's calls ran (faultText); when a model call
-// returned anything, the run's turns and that reply are the exchange it adds
-// (conversation.Append.NoAnswer), so the agent's conversation holds every call it made, a write
-// among them.
+// never answered again), its claim runs the conversation (forwarded), the conversation holds
+// content OpenAI refused for cyber policy or its claim is held for such a refusal, or the day's
+// spend is over the limit (the daemon's reply, for either). It records the reply, adds the
+// exchange to the conversation, then posts the reply. An answer the model gave none to is the
+// daemon's reply naming the fault and every gh and dispatch write the question's calls ran
+// (faultText); when a model call returned anything, the run's turns and that reply are the
+// exchange it adds (conversation.Append.NoAnswer), so the agent's conversation holds every call it
+// made, a write among them.
 //
 // For an agent whose claim the daemon released (wakes) a reply the loop does not post as the
 // agent's answer — one not answered, a request for work, a fault, and one that asks nothing — is
@@ -65,11 +65,15 @@ func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 // (keepForResume), whatever the agent: no reply is recorded, and nothing is appended, posted or
 // passed on.
 //
-// Every model call the loop makes is this one, so it is here that a claim held for OpenAI's
-// cyber-policy refusal (Gate.HeldForCyberPolicy) is refused one: no action the daemon starts by
-// itself may send that session's content to OpenAI again, and an answer from its conversation
-// would. Such a question goes to the controller with the daemon's reply naming the hold, and a
-// decision held on it for a wake goes where an unreleased agent's decision goes (passHeld).
+// Every model call the loop makes is this one, so it is here that a conversation held for
+// OpenAI's cyber-policy refusal (Gate.HeldForCyberPolicy) is refused one: no action the daemon
+// starts by itself may send that session's content to OpenAI again, and an answer from its
+// conversation would. The hold is read of the conversation's own session, not of the claim's state
+// alone: a retry of a held claim starts its agent in a new session and ends the claim's hold, and
+// the refused session's conversation, which a reply to an ask it opened or a role message before
+// the new session registers is answered from, stays held. Such a question goes to the controller
+// with the daemon's reply naming the hold, and a decision held on it for a wake goes where an
+// unreleased agent's decision goes (passHeld).
 func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
 	conv, ok, err := l.cfg.Store.AgentConversation(ctx, q.Session)
 	if err != nil {
@@ -100,7 +104,7 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 			"question", q.ID, "session", q.Session, "state", q.State)
 		return l.appended(ctx, q, origin)
 	}
-	if l.cfg.Gate.HeldForCyberPolicy(conv.Token) {
+	if l.cfg.Gate.HeldForCyberPolicy(conv.Token, conv.Session) {
 		return l.passHeld(ctx, q, origin, conv)
 	}
 	// The day's limit is checked before each answer starts, and nothing is reserved: the answers
@@ -350,15 +354,16 @@ func (l *Loop) decideFault(ctx context.Context, q store.AnswerQuestion, origin O
 	return l.post(ctx, q, origin)
 }
 
-// passHeld ends q, a question to an agent whose claim is held for OpenAI's cyber-policy refusal
+// passHeld ends q, a question to a conversation held for OpenAI's cyber-policy refusal
 // (Gate.HeldForCyberPolicy), with no model call: the daemon's reply naming the hold is posted and
-// q goes to the controller (decideFault, ReasonHeldForCyberPolicy), and it wakes nobody, since no
-// start of the daemon's own launches a held claim's agent and a wake would end undelivered (the
-// daemon's deliverHeld). A person's decision that Receive held on q for the agent's wake, its
-// claim released then (store.AnswerQuestion.Wake), is passed on first as the decision of an agent
-// that is not released is (Decisions): the agent-decision notice it would have been. Decisions
-// passes a decision once by its id, so a pass that stops between the two passes it again to no
-// effect.
+// q goes to the controller (decideFault, ReasonHeldForCyberPolicy), and it wakes nobody: no start
+// of the daemon's own launches a held claim's agent, so a wake would end undelivered (the
+// daemon's deliverHeld), and a claim retried since runs a new session, to which a message for the
+// refused session does not belong. A person's decision that Receive held on q for the agent's
+// wake, its claim released then (store.AnswerQuestion.Wake), is passed on first as the decision
+// of an agent that is not released is (Decisions): the agent-decision notice it would have been.
+// Decisions passes a decision once by its id, so a pass that stops between the two passes it
+// again to no effect.
 func (l *Loop) passHeld(ctx context.Context, q store.AnswerQuestion, origin Origin, conv store.AgentConversation) error {
 	if q.Wake {
 		decision, err := heldDecision(q, conv)
@@ -709,9 +714,21 @@ func (l *Loop) woken(ctx context.Context, q store.AnswerQuestion, origin Origin)
 }
 
 // wakeFor gives text to q's released agent through Wakes, keyed by q's id, so a pass the daemon
-// stopped after the row was written writes none again.
+// stopped after the row was written writes none again. A question that holds the person's
+// decision for the wake (store.AnswerQuestion.HoldsDecision) names it on the wake
+// (Wake.Decision), read from q's hand-off as Receive read it (heldDecision), so the decision
+// still reaches Decisions if the claim fails or retires before the wake gives it; a hand-off
+// that no longer reads so is an error before anything is given.
 func (l *Loop) wakeFor(ctx context.Context, q store.AnswerQuestion, text string) error {
-	if err := l.cfg.Wakes.Wake(ctx, Wake{Key: q.ID, Issue: q.Issue, Role: q.Role, Session: q.Session, Text: text}); err != nil {
+	wake := Wake{Key: q.ID, Issue: q.Issue, Role: q.Role, Session: q.Session, Text: text}
+	if q.HoldsDecision {
+		decision, err := heldDecision(q, store.AgentConversation{Session: q.Session, Project: q.Project, Issue: q.Issue, Role: q.Role, Token: q.Token})
+		if err != nil {
+			return fmt.Errorf("read the decision %s holds for its agent's wake: %w", q.ID, err)
+		}
+		wake.Decision = &decision
+	}
+	if err := l.cfg.Wakes.Wake(ctx, wake); err != nil {
 		return fmt.Errorf("give the question %s to the released %s: %w", q.ID, q.Session, err)
 	}
 	l.cfg.Log.Info("answers: the question goes to the released agent through its wake", "question", q.ID, "issue", q.Issue,

@@ -314,31 +314,43 @@ func TestTheGateHoldsAReleasedClaimsConversationAndNoOtherStoppedOne(t *testing.
 	}
 }
 
-// The gate reads a claim's cyber-policy hold off the machine's view of it
-// (supervise.Claim.HeldForCyberPolicy), which the answer loop calls no model for: a claim that
-// failed on OpenAI's cyber-policy refusal, and one an operator retired after it failed so. A claim
-// that failed for another provider error, and one the daemon released, are not held, and the loop
-// answers for them.
+// The gate reads a conversation's cyber-policy hold off the machine's view of its claim
+// (supervise.Claim.SessionHeldForCyberPolicy), which the answer loop calls no model for: every
+// conversation of a claim that failed on OpenAI's cyber-policy refusal, and of one an operator
+// retired after it failed so, and, once a retry has started the claim's agent in a new session,
+// the refused session's conversation alone (supervise.Claim.CyberPolicySessions), not the new
+// one's. A claim that failed for another provider error, and one the daemon released, hold no
+// conversation, and the loop answers for them.
 func TestTheGateReadsACyberPolicyHoldOffTheClaimsView(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name  string
-		state supervise.ClaimState
-		cause supervise.FailureCause
-		by    supervise.SuspendSource
-		held  bool
+		name    string
+		state   supervise.ClaimState
+		cause   supervise.FailureCause
+		by      supervise.SuspendSource
+		session string
+		refused []string
+		// held is which of ses_tester's and ses_new's conversations the gate holds.
+		held map[string]bool
 	}{
-		{name: "failed for cyber policy", state: supervise.StateFailed, cause: supervise.CauseCyberPolicy, held: true},
-		{name: "retired after it failed for cyber policy", state: supervise.StateRetired, cause: supervise.CauseCyberPolicy, held: true},
-		{name: "failed for another provider error", state: supervise.StateFailed, cause: supervise.CauseProviderError},
-		{name: "released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased},
+		{name: "failed for cyber policy", state: supervise.StateFailed, cause: supervise.CauseCyberPolicy, session: "ses_tester",
+			refused: []string{"ses_tester"}, held: map[string]bool{"ses_tester": true, "ses_new": true}},
+		{name: "retired after it failed for cyber policy", state: supervise.StateRetired, cause: supervise.CauseCyberPolicy, session: "ses_tester",
+			refused: []string{"ses_tester"}, held: map[string]bool{"ses_tester": true, "ses_new": true}},
+		{name: "retried in a new session after it failed for cyber policy", state: supervise.StateReady, session: "ses_new",
+			refused: []string{"ses_tester"}, held: map[string]bool{"ses_tester": true}},
+		{name: "failed for another provider error", state: supervise.StateFailed, cause: supervise.CauseProviderError, session: "ses_tester"},
+		{name: "released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, session: "ses_tester"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			views := &claimViews{view: supervise.ClaimView{Claim: supervise.Claim{Token: gateToken, Session: "ses_tester", State: tc.state,
-				FailureCause: tc.cause, SuspendedBy: tc.by, Generation: 3}}}
+			views := &claimViews{view: supervise.ClaimView{Claim: supervise.Claim{Token: gateToken, Session: tc.session, State: tc.state,
+				FailureCause: tc.cause, SuspendedBy: tc.by, CyberPolicySessions: tc.refused, Generation: 3}}}
 			gate := newAnswerGate(&launchChecks{}, views.get, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			if got := gate.HeldForCyberPolicy(gateToken); got != tc.held {
-				t.Fatalf("HeldForCyberPolicy of the claim %s (%q) = %t, want %t", tc.state, tc.cause, got, tc.held)
+			for _, session := range []string{"ses_tester", "ses_new"} {
+				if got := gate.HeldForCyberPolicy(gateToken, session); got != tc.held[session] {
+					t.Errorf("HeldForCyberPolicy of %s's conversation, of the claim %s (%q) on %s that OpenAI refused %q = %t, want %t",
+						session, tc.state, tc.cause, tc.session, tc.refused, got, tc.held[session])
+				}
 			}
 		})
 	}

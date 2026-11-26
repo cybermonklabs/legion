@@ -116,17 +116,18 @@ func (g *answerGate) Released(token claim.Token, session string) bool {
 	return !g.runsLocked(token, view) && view.Released()
 }
 
-// HeldForCyberPolicy is whether token's claim is held for OpenAI's cyber-policy refusal of its
-// session's content, as the machine's view says (supervise.Claim.HeldForCyberPolicy), whatever
-// conversation of the claim the loop answers from (answerloop.Gate): the loop calls no model for
-// it, since no action the daemon starts by itself may send that content to OpenAI again. The view
-// is the whole of the claim's record here: every claim the store holds has a machine before the
-// loop runs (the supervisor's restore at boot, Create after it, and serve starting the loop only
-// once supervision started), and the supervisor removes none, so a token no machine holds is one
-// the store holds no claim of either.
-func (g *answerGate) HeldForCyberPolicy(token claim.Token) bool {
+// HeldForCyberPolicy is whether session's conversation, of token's claim, is one no model may be
+// sent (answerloop.Gate), as the machine's view says (supervise.Claim.SessionHeldForCyberPolicy):
+// a session whose content OpenAI refused for cyber policy (supervise.Claim.CyberPolicySessions),
+// before the retry that ends the claim's hold and after it, and every conversation of a claim held
+// for such a refusal now. No action the daemon starts by itself may send that content to OpenAI
+// again, so the loop calls no model for it. The view is the whole of the claim's record here:
+// every claim the store holds has a machine before the loop runs (the supervisor's restore at
+// boot, Create after it, and serve starting the loop only once supervision started), and the
+// supervisor removes none, so a token no machine holds is one the store holds no claim of either.
+func (g *answerGate) HeldForCyberPolicy(token claim.Token, session string) bool {
 	view, ok := g.view(token)
-	return ok && view.HeldForCyberPolicy()
+	return ok && view.SessionHeldForCyberPolicy(session)
 }
 
 // runningLocked is Running under g.mu, of the claim's view read once (runsLocked).
@@ -148,8 +149,9 @@ func (g *answerGate) runningLocked(token claim.Token, session string) bool {
 // one retired, one closed, and one the daemon released (supervise.Claim.Released): an idle
 // release of its issue pod, which keeps the session, its phase and its pending task for the wake
 // that brings the pod back (INFRA-945), or a project's pause, which suspends a claim the same way.
-// A failed or retired claim held for OpenAI's cyber-policy refusal is answered by no model
-// (HeldForCyberPolicy): the loop passes its questions to the controller.
+// A failed or retired claim held for OpenAI's cyber-policy refusal, and a session whose content
+// OpenAI refused, the claim retried since or not, are answered by no model (HeldForCyberPolicy):
+// the loop passes their questions to the controller.
 // The listener hands a released agent's message to the daemon and raises no wake of its own when
 // it did, so the loop answers the agent's questions from its conversation and gives it everything
 // else through one outbox row that wakes it (answerloop.Wakes, the daemon's releasedWakes). The

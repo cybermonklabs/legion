@@ -22,23 +22,25 @@
 // answers.bounds.concurrent conversations at once. A conversation its claim runs, or is starting,
 // is never written: the question goes to the running agent on its role topic, held until the role
 // is held (Gate). The day's spend is kept per project and UTC day; over answers.bounds.daily_usd a
-// question gets the daemon's reply in the agent's name and is passed on. So does a question to an
-// agent whose claim is held for OpenAI's cyber-policy refusal of its session's content
+// question gets the daemon's reply in the agent's name and is passed on. So does a question to a
+// conversation whose content OpenAI refused under its cyber policy, before the retry that ends its
+// claim's hold and after it, and to any conversation of a claim held for such a refusal now
 // (Gate.HeldForCyberPolicy), and no model is called for it.
 //
 // An agent whose claim the daemon released (an idle release of its issue pod, or a project's
 // pause: Gate.Released) is answered for as any stopped agent, and given everything else that
 // reached it through one outbox row that wakes it (Wakes): a person's decision on its ask, every
-// other hand-off that asks it nothing and is its own (Verdict.ForAgent: a Dispatch message,
-// comment or reply, an edit or resolution of one, the answer to, a reply on, or the resolution or
-// edit of an ask it follows, and a message of a source no agent answers; no act of its own
-// session), a question whose reply the loop does not post (one the controller would hear of, or
-// one that asks nothing), which is then neither appended nor posted, and the loop's own answer to
-// it as an asker. The controller, the architect and the conversation are told none of these. A
+// other hand-off that asks it nothing and is its own (a Dispatch message, comment or reply, an
+// edit or resolution of one, the answer to, a reply on, or the resolution or edit of an ask it
+// follows, and a message of a source no agent answers; no act of its own session: Verdict's
+// wake), a question whose reply the loop does not post (one the controller would hear of, or one
+// that asks nothing), which is then neither appended nor posted, and the loop's own answer to it
+// as an asker. The controller, the architect and the conversation are told none of these. A
 // question the loop answered wakes nothing; one that came with a decision is answered, appended
 // and posted first, and the decision's row then says where. Once the claim is held for OpenAI's
 // cyber-policy refusal such a question wakes nothing, and its decision goes to Decisions as an
-// unreleased agent's does (passHeld).
+// unreleased agent's does (passHeld). A row that carries a decision and finds the claim failed or
+// retired before it can wake it passes that decision to Decisions the same way (Wake.Decision).
 //
 // While the project is paused (Config.Paused) the loop answers, posts and passes on as it does
 // while the project runs, and the answer's tools run their reads and refuse every write
@@ -108,14 +110,16 @@ type Envoy interface {
 // claim's current one and the daemon released the claim (supervise.Claim.Released: an idle
 // release of its issue pod, or a project's pause), which runs nothing and is not starting: the
 // loop answers such an agent's questions as any stopped agent's, and gives it everything else it
-// does not answer through Wakes. HeldForCyberPolicy is whether token's claim is held for OpenAI's
-// cyber-policy refusal of its session's content (supervise.Claim.HeldForCyberPolicy): no action
-// the daemon starts by itself may send that content to OpenAI again, so the loop calls no model
-// for any conversation of such a claim (generate).
+// does not answer through Wakes. HeldForCyberPolicy is whether session's conversation, of
+// token's claim, holds content OpenAI refused under its cyber policy, or the claim is held for
+// such a refusal now (supervise.Claim.SessionHeldForCyberPolicy): no action the daemon starts by
+// itself may send that content to OpenAI again, so the loop calls no model for such a
+// conversation (generate), and a retry of the claim, which starts its agent in a new session,
+// ends the hold of none of its refused sessions.
 type Gate interface {
 	Running(token claim.Token, session string) bool
 	Released(token claim.Token, session string) bool
-	HeldForCyberPolicy(token claim.Token) bool
+	HeldForCyberPolicy(token claim.Token, session string) bool
 	Append(token claim.Token, session string, write func() error) (bool, error)
 }
 
@@ -238,24 +242,30 @@ type Decisions interface {
 // and gives the message to the woken session once it holds its role, written once by the
 // message's Key however often the loop asks, so an implementation writes nothing for a key it
 // wrote before. The loop asks for a decision on the agent's ask in place of passing it to
-// Decisions, for every other hand-off that asks the agent nothing and is its own
-// (Verdict.ForAgent), for a question whose reply it does not post in place of posting it and
-// passing it on (PassOn), and for its own answer to the agent as an asker in place of writing it
-// into the conversation. A question that also carries a decision is asked for once its answer is
-// appended and posted, so the woken agent finds the answer in its conversation.
+// Decisions, for every other hand-off that asks the agent nothing and is its own (Verdict's
+// wake), for a question whose reply it does not post in place of posting it and passing it on
+// (PassOn), and for its own answer to the agent as an asker in place of writing it into the
+// conversation. A question that also carries a decision is asked for once its answer is appended
+// and posted, so the woken agent finds the answer in its conversation. A message that carries a
+// decision names it (Wake.Decision), and an implementation that finds the claim failed or retired
+// before the woken session takes the message passes that decision to Decisions in its place: no
+// session of the claim takes it again, and the decision would reach nobody.
 type Wakes interface {
 	Wake(ctx context.Context, w Wake) error
 }
 
 // Wake is one message for a released agent: Key its own id (QuestionID of the message's identity
 // and the agent's role token, which for a question is the question's id), Issue, Role and Session
-// the agent's conversation's, and Text what the woken agent is told (wakeMessage).
+// the agent's conversation's, Text what the woken agent is told (wakeMessage), and Decision the
+// person's decision on the agent's ask the message carries, nil for none: one that asks nothing
+// besides (Receive), and one a question holds (store.AnswerQuestion.HoldsDecision, wakeFor).
 type Wake struct {
-	Key     string
-	Issue   string
-	Role    claim.Role
-	Session string
-	Text    string
+	Key      string
+	Issue    string
+	Role     claim.Role
+	Session  string
+	Text     string
+	Decision *Decision
 }
 
 // Reason is why a question is passed on: the kind of reply the agent gave, a bound or fault the
@@ -273,9 +283,9 @@ const (
 	ReasonUnmetered      Reason = Reason(answer.Unmetered)
 	// ReasonPostRefused is a reply Dispatch or the listener refused for good.
 	ReasonPostRefused Reason = "post_refused"
-	// ReasonHeldForCyberPolicy is a question to an agent whose claim is held for OpenAI's
-	// cyber-policy refusal of its session's content (Gate.HeldForCyberPolicy), for which the loop
-	// calls no model.
+	// ReasonHeldForCyberPolicy is a question to a conversation whose content OpenAI refused under
+	// its cyber policy, or to a conversation of a claim held for such a refusal
+	// (Gate.HeldForCyberPolicy), for which the loop calls no model.
 	ReasonHeldForCyberPolicy Reason = "held_for_cyber_policy"
 )
 
@@ -472,16 +482,18 @@ func (l *Loop) work(ctx context.Context, session string) {
 // as any stopped agent's, and is given through Wakes, once each, everything else that reached it
 // and that is the agent's own: the loop's answer to it as an asker, in place of writing it into
 // the conversation; a person's decision on its ask that asks nothing besides, in place of
-// Decisions; and every other hand-off that is no question and no decision (Verdict.ForAgent):
-// each Dispatch event that reached it, such as a message, comment or reply that asks nothing or
-// the resolution, answer or edit of an ask it follows, and a message of a source no agent
-// answers. A reply on, or an answer to, an ask the agent follows and did not open is told as made
-// on an ask it follows (Verdict.Followed), never on its own. A decision that also asks is held on
-// its question (store.AnswerQuestion.Wake) and given once the answer is appended and posted, so
-// the woken agent finds the answer in its conversation. The daemon's own notices and posts, the
-// broker's messages, anything carrying the loop's own mark, and a person's review of the agent's
-// own approval request, which the design gate relays to its architect (Verdict.ForArchitect),
-// are none of the agent's, and reach it neither way; nor does an act of the agent's own session
+// Decisions, which the wake names (Wake.Decision) so that it still reaches Decisions if the claim
+// fails or retires before it wakes; and every other hand-off that is no question and no decision
+// and that the verdict says wakes the agent (wakesAgent): each Dispatch event that reached it,
+// such as a message, comment or reply that asks nothing or the resolution, answer or edit of an
+// ask it follows, and a message of a source no agent answers. A reply on, or an answer to, an ask
+// the agent follows and did not open is told as made on an ask it follows (wakesFollower), never
+// on its own. A decision that also asks is held on its question (store.AnswerQuestion.Wake and
+// HoldsDecision) and given once the answer is appended and posted, so the woken agent finds the
+// answer in its conversation. The daemon's own notices and posts, the broker's messages, anything
+// carrying the loop's own mark, and a person's review of the agent's own approval request, which
+// the design gate relays to its architect (reviewForArchitect), are none of the agent's
+// (wakesNobody), and reach it neither way; nor does an act of the agent's own session
 // (actedByAgent), such as its own reply or its own hand-back of its approval request. A claim
 // that is not released is passed its decision as before.
 func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) (dropped bool, err error) {
@@ -501,7 +513,7 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) (dropp
 	released := l.cfg.Gate.Released(conv.Token, conv.Session)
 	switch {
 	case verdict.Delivery != nil && released:
-		return false, l.wakeAgent(ctx, conv, verdict.Delivery.Identity, wakeMessage(*verdict.Delivery), "the loop's own answer to the agent")
+		return false, l.wakeAgent(ctx, conv, verdict.Delivery.Identity, wakeMessage(*verdict.Delivery), nil, "the loop's own answer to the agent")
 	case verdict.Delivery != nil:
 		return l.deliver(ctx, h, conv, *verdict.Delivery)
 	case verdict.Decision != nil && !released:
@@ -510,9 +522,9 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) (dropp
 		}
 	}
 	if verdict.Question == nil {
-		if released && (verdict.Decision != nil || verdict.ForAgent) {
-			identity, text := handoffMessage(h, verdict.Followed)
-			return false, l.wakeAgent(ctx, conv, identity, text, verdict.Because)
+		if released && (verdict.Decision != nil || verdict.wake != wakesNobody) {
+			identity, text := handoffMessage(h, verdict.wake == wakesFollower)
+			return false, l.wakeAgent(ctx, conv, identity, text, verdict.Decision, verdict.Because)
 		}
 		l.cfg.Log.Info("answers: hand-off is no question; not answered", "event", h.Envelope.EventID, "issue", conv.Issue,
 			"role", conv.Role, "session", conv.Session, "because", verdict.Because)
@@ -524,7 +536,8 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) (dropp
 	q, inserted, err := l.cfg.Store.ReceiveQuestion(ctx, store.AnswerQuestion{
 		ID: QuestionID(l.cfg.Project, origin.Identity, string(conv.Token)), Project: l.cfg.Project, Identity: origin.Identity,
 		Session: conv.Session, Token: conv.Token, Issue: conv.Issue, Role: conv.Role, Kind: string(origin.Kind),
-		MayAskNothing: origin.MayAskNothing, Handoff: raw, Wake: released && verdict.Decision != nil, ReceivedAt: now,
+		MayAskNothing: origin.MayAskNothing, Handoff: raw, Wake: released && verdict.Decision != nil,
+		HoldsDecision: released && verdict.Decision != nil, ReceivedAt: now,
 	})
 	if err != nil {
 		return false, err
@@ -541,10 +554,11 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) (dropp
 
 // wakeAgent gives text to conv's agent, whose claim the daemon released, through Wakes, keyed by
 // the message's identity and the agent's role token (QuestionID), so the message is given once
-// however often it is handed off. because says what the message is, for the log.
-func (l *Loop) wakeAgent(ctx context.Context, conv store.AgentConversation, identity, text, because string) error {
+// however often it is handed off; decision is the person's decision the message carries, nil for
+// none. because says what the message is, for the log.
+func (l *Loop) wakeAgent(ctx context.Context, conv store.AgentConversation, identity, text string, decision *Decision, because string) error {
 	key := QuestionID(l.cfg.Project, identity, string(conv.Token))
-	if err := l.cfg.Wakes.Wake(ctx, Wake{Key: key, Issue: conv.Issue, Role: conv.Role, Session: conv.Session, Text: text}); err != nil {
+	if err := l.cfg.Wakes.Wake(ctx, Wake{Key: key, Issue: conv.Issue, Role: conv.Role, Session: conv.Session, Text: text, Decision: decision}); err != nil {
 		return fmt.Errorf("give %s to the released %s: %w", identity, conv.Session, err)
 	}
 	l.cfg.Log.Info("answers: the message goes to the released agent through its wake", "message", identity, "key", key,
@@ -562,12 +576,12 @@ func wakeMessage(o Origin) string {
 // and the message's identity, the one a question of it would have (Origin.Identity), which the
 // same message carries at every delivery attempt. Only a Dispatch event and an agent session's
 // message are read by ReadOrigin, as Classify reads them, and a reply on, or an answer to, an ask
-// the agent follows and did not open (followed, Verdict.Followed) is told as made on an ask it
-// follows (readOrigin), so the agent does not take another agent's ask, or a decision made on it,
-// for its own. A hand-off of any other source, and one ReadOrigin reads nothing of, is told as
-// its sender and where it was sent, then its words: a Dispatch event's actor, type and issue,
-// then the item's body, else the envelope's source and topic, then its payload; its identity is
-// the envelope's dedupe key.
+// the agent follows and did not open (followed: the verdict's wakesFollower) is told as made on
+// an ask it follows (readOrigin), so the agent does not take another agent's ask, or a decision
+// made on it, for its own. A hand-off of any other source, and one ReadOrigin reads nothing of,
+// is told as its sender and where it was sent, then its words: a Dispatch event's actor, type and
+// issue, then the item's body, else the envelope's source and topic, then its payload; its
+// identity is the envelope's dedupe key.
 func handoffMessage(h intake.Handoff, followed bool) (identity, text string) {
 	env := h.Envelope
 	if env.Source == "dispatch" || env.Source == "agent" && env.SourceSession != "" {

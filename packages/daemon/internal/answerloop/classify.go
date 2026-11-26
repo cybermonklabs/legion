@@ -93,25 +93,35 @@ type Verdict struct {
 	Delivery *Origin
 	Decision *Decision
 	Because  string
-	// ForAgent is a hand-off that is no question and no decision but is the agent's own: any
-	// Dispatch event that reached it and asks it nothing, such as a message, a comment or a reply,
-	// or the resolution, answer or edit of an ask it follows, or a message of a source no agent
-	// answers. An agent whose claim the daemon released is given it through Wakes, as it would have
-	// read it running. The loop's own answers and publishes, the daemon's notices and posts, the
-	// broker's messages, a person's review of the agent's own approval request (ForArchitect) and
-	// an event the agent's own session made, its own act (a reply on its own thread, the hand-back
-	// of its own approval request: actedByAgent), are not, and wake nobody.
-	ForAgent bool
-	// Followed is a hand-off on an ask the agent follows and did not open: a reply on its thread
-	// that delivers no mention, or an answer to it. It asks the agent nothing, and a woken agent is
-	// told it as made on an ask it follows (handoffMessage), never on its own: what was decided
-	// there is another agent's.
-	Followed bool
-	// ForArchitect is a person's review of the agent's own approval request (reviewForArchitect),
-	// which the daemon's design gate relays to the agent's architect as the document's review: it
-	// is not the agent's (ForAgent).
-	ForArchitect bool
+	// wake is whom a hand-off that is no question and no decision wakes, of an agent whose claim
+	// the daemon released, and how the woken agent is told it (handoffWake).
+	wake handoffWake
 }
+
+// handoffWake is whom a hand-off that asks nothing wakes, of an agent whose claim the daemon
+// released, and how the woken agent is told it (Receive, handoffMessage).
+type handoffWake string
+
+const (
+	// wakesNobody is a hand-off that is none of the agent's: the loop's own answers and
+	// publishes, the daemon's notices and posts, the broker's messages, an event the agent's own
+	// session made, its own act (a reply on its own thread, the hand-back of its own approval
+	// request: actedByAgent), and a person's review of the agent's own approval request, which
+	// the daemon's design gate relays to the agent's architect as the document's review
+	// (reviewForArchitect, the verdict's reason). A question and a decision wake nobody this way
+	// either: the loop answers the one and passes on or holds the other.
+	wakesNobody handoffWake = ""
+	// wakesAgent is a hand-off that is the agent's own: any Dispatch event that reached it and
+	// asks it nothing, such as a message, a comment or a reply, or the resolution or edit of an
+	// ask, and a message of a source no agent answers. The woken agent is told it as it would have
+	// read it running.
+	wakesAgent handoffWake = "agent"
+	// wakesFollower is a hand-off on an ask the agent follows and did not open: a reply on its
+	// thread that delivers no mention, or an answer to it. It asks the agent nothing, and the woken
+	// agent is told it as made on an ask it follows (handoffMessage), never on its own: what was
+	// decided there is another agent's.
+	wakesFollower handoffWake = "follower"
+)
 
 // Reader reads what Classify decides a hand-off by: an ask's author (Dispatch.AskThread), and the
 // thread of a comment a reply is in (Dispatch.Thread).
@@ -145,9 +155,9 @@ func QuestionID(project, identity, token string) string {
 // that agent's conversation for instead (Delivery). Of the hand-offs never answered, a Dispatch
 // event that is not the daemon's own post, not the loop's own answer, not a review of the agent's
 // approval request and not an act of the agent's own session, and a message of a source no agent
-// answers, are the agent's own all the same (Verdict.ForAgent), which an agent whose claim is
-// released is given through Wakes. The ask's author and the reply's thread are read from
-// Dispatch.
+// answers, are the agent's own all the same (wakesAgent, or wakesFollower on an ask it follows and
+// did not open), which an agent whose claim is released is given through Wakes. The ask's author
+// and the reply's thread are read from Dispatch.
 func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader) (Verdict, error) {
 	env := h.Envelope
 	switch {
@@ -179,19 +189,21 @@ func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversatio
 		}
 		return Verdict{Question: &origin}, nil
 	default:
-		return Verdict{Because: fmt.Sprintf("a message from %q no agent answers", env.Source), ForAgent: true}, nil
+		return Verdict{Because: fmt.Sprintf("a message from %q no agent answers", env.Source), wake: wakesAgent}, nil
 	}
 }
 
 // classifyDispatch is Classify of a Dispatch event. Every event it takes for no question and no
-// decision is still the agent's own (Verdict.ForAgent), whatever it was not answered for: Dispatch
-// routed it to the agent, which would have read it running, a resolution of an ask the agent
-// follows as much as a message. Its reasons say why the loop does not answer an event, not that
-// the event is another's. The loop's own answer and the daemon's own post are not the agent's,
-// nor is a person's review of the agent's own approval request, which the daemon's workflow
-// gives its architect (Verdict.ForArchitect), nor an event the agent's own session made
+// decision is still the agent's own, whatever it was not answered for (wakesAgent, and
+// wakesFollower on an ask the agent follows and did not open): Dispatch routed it to the agent,
+// which would have read it running, a resolution of an ask the agent follows as much as a
+// message. Its reasons say why the loop does not answer an event, not that the event is
+// another's. classifyDispatchEvent says whom each event it takes wakes, and this takes the wake
+// off a question, a decision, a read that failed, and an event the agent's own session made
 // (actedByAgent): a woken agent told of its own reply, or of its own hand-back of its approval
-// request, would be told what it did itself.
+// request, would be told what it did itself. The loop's own answer and the daemon's own post wake
+// nobody, nor does a person's review of the agent's own approval request, which the daemon's
+// workflow gives its architect (reviewForArchitect).
 func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader) (Verdict, error) {
 	event, err := intake.DispatchOf(h.Envelope)
 	if err != nil {
@@ -204,7 +216,9 @@ func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentCon
 		return Verdict{Because: "the daemon's own post"}, nil
 	}
 	verdict, err := classifyDispatchEvent(ctx, h, conv, reader, event)
-	verdict.ForAgent = err == nil && verdict.Question == nil && verdict.Decision == nil && !verdict.ForArchitect && !actedByAgent(h, event)
+	if err != nil || verdict.Question != nil || verdict.Decision != nil || actedByAgent(h, event) {
+		verdict.wake = wakesNobody
+	}
 	return verdict, err
 }
 
@@ -216,13 +230,19 @@ func actedByAgent(h intake.Handoff, event intake.DispatchEvent) bool {
 }
 
 // reviewForArchitect is why a person's review of the agent's own approval request is neither
-// answered nor the agent's (Verdict.ForArchitect): it arrives again as the document's review,
-// which the daemon's design gate relays to the agent's architect (workflow's dispatchAskClosed,
+// answered nor the agent's (wakesNobody): it arrives again as the document's review, which the
+// daemon's design gate relays to the agent's architect (workflow's dispatchAskClosed,
 // record.RelaysAskAnswer).
 const reviewForArchitect = "a review of the agent's document, which reaches its architect as the document's review"
 
+// asksNothing is the verdict on a Dispatch event the agent answers nothing of, for because, which
+// is the agent's own all the same (wakesAgent).
+func asksNothing(because string) Verdict { return Verdict{Because: because, wake: wakesAgent} }
+
 // classifyDispatchEvent is classifyDispatch of an event that is neither the loop's own answer nor
-// the daemon's own post.
+// the daemon's own post. Each verdict it gives on an event that asks the agent nothing says whom
+// that event wakes: the agent (asksNothing), the agent as a follower of another's ask
+// (wakesFollower), or nobody, for a person's review of the agent's own approval request.
 func classifyDispatchEvent(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader, event intake.DispatchEvent) (Verdict, error) {
 	ownAsk := func(askID string) (bool, error) {
 		ask, err := reader.AskThread(ctx, askID)
@@ -235,12 +255,12 @@ func classifyDispatchEvent(ctx context.Context, h intake.Handoff, conv store.Age
 	switch event.Type {
 	case "message.created":
 		if event.Delivery == nil {
-			return Verdict{Because: "a message not sent to the agent, with no delivery to answer"}, nil
+			return asksNothing("a message not sent to the agent, with no delivery to answer"), nil
 		}
 	case "comment.created":
 		if event.Payload.AskID == nil {
 			if because, err := commentSkip(ctx, h, event, reader); err != nil || because != "" {
-				return Verdict{Because: because}, err
+				return asksNothing(because), err
 			}
 			break
 		}
@@ -252,10 +272,10 @@ func classifyDispatchEvent(ctx context.Context, h intake.Handoff, conv store.Age
 		switch {
 		case own && event.HandsTurnBack():
 			if decision, err = readDecision(event, conv); err != nil {
-				return Verdict{Because: err.Error()}, nil
+				return asksNothing(err.Error()), nil
 			}
 		case !own && event.Delivery == nil:
-			return Verdict{Because: "a reply on an ask the agent follows but did not open", Followed: true}, nil
+			return Verdict{Because: "a reply on an ask the agent follows but did not open", wake: wakesFollower}, nil
 		}
 	case "ask.answered":
 		own, err := ownAsk(event.Payload.ID)
@@ -263,24 +283,24 @@ func classifyDispatchEvent(ctx context.Context, h intake.Handoff, conv store.Age
 		case err != nil:
 			return Verdict{}, err
 		case !own:
-			return Verdict{Because: "an answer to an ask the agent did not open", Followed: true}, nil
+			return Verdict{Because: "an answer to an ask the agent did not open", wake: wakesFollower}, nil
 		case !event.Actor.Person():
-			return Verdict{Because: "an answer no person gave"}, nil
+			return asksNothing("an answer no person gave"), nil
 		case event.Payload.Kind == "approval":
-			return Verdict{Because: reviewForArchitect, ForArchitect: true}, nil
+			return Verdict{Because: reviewForArchitect, wake: wakesNobody}, nil
 		}
 		if decision, err = readDecision(event, conv); err != nil {
-			return Verdict{Because: err.Error()}, nil
+			return asksNothing(err.Error()), nil
 		}
 		if answer := event.Payload.Answer; answer == nil || answer.Text == nil || strings.TrimSpace(*answer.Text) == "" {
 			return Verdict{Decision: decision, Because: "a decision whose answer has no text, which asks nothing"}, nil
 		}
 	default:
-		return Verdict{Because: "a " + event.Type + " event, which asks the agent nothing"}, nil
+		return asksNothing("a " + event.Type + " event, which asks the agent nothing"), nil
 	}
 	origin, err := ReadOrigin(h)
 	if err != nil {
-		return Verdict{Decision: decision, Because: err.Error()}, nil
+		return Verdict{Decision: decision, Because: err.Error(), wake: wakesAgent}, nil
 	}
 	if decision != nil {
 		// What the person decided may ask the agent nothing besides.
@@ -419,8 +439,8 @@ func itemRef(issue, kind, id string) string {
 func ReadOrigin(h intake.Handoff) (Origin, error) { return readOrigin(h, false) }
 
 // readOrigin is ReadOrigin, naming the ask a reply or an answer was made on as one the agent
-// follows and did not open where followed (askWhere): Verdict.Followed, which a woken follower is
-// told (handoffMessage).
+// follows and did not open where followed (askWhere): a verdict's wakesFollower, which a woken
+// follower is told (handoffMessage).
 func readOrigin(h intake.Handoff, followed bool) (Origin, error) {
 	env := h.Envelope
 	if env.Source != "dispatch" {

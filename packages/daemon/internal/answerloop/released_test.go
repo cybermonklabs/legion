@@ -366,6 +366,69 @@ func TestIdleReleasedAgentIsGivenWhatAsksItNothingAndNothingThatIsNotItsOwn(t *t
 	}
 }
 
+// A wake that gives a released agent a person's decision on its ask names that decision
+// (Wake.Decision), so the daemon can pass it on if the claim fails or retires before the wake
+// gives it: a decision that asks nothing besides, at the hand-off; one that also asks, once its
+// answer is posted; and one that also asks whose reply the loop does not post, given unanswered.
+// The question of the last two records that it holds the decision
+// (store.AnswerQuestion.HoldsDecision). The control is a comment that asks nothing and a question
+// given unanswered with no decision: their wakes name none.
+func TestIdleReleasedAgentsWakeNamesTheDecisionItGives(t *testing.T) {
+	notAnswered := func(req answer.Request) (answer.Reply, error) {
+		reply := answered(req, "I would need my working copy.")
+		reply.Kind = answer.NotAnswered
+		return reply, nil
+	}
+	for _, tc := range []struct {
+		name     string
+		handoff  intake.Handoff
+		answer   func(answer.Request) (answer.Reply, error)
+		decision string // the decision's id the wake names, "" for none
+		question bool   // whether a question is recorded, and holds the decision
+	}{
+		{name: "a decision that asks nothing", decision: "dispatch:35",
+			handoff: dispatchHandoff("ses_tester", answeredEvent(35, person, askID, "question", []string{"B"}, nil))},
+		{name: "a decision that also asks, answered", decision: "dispatch:34", question: true,
+			handoff: dispatchHandoff("ses_tester", answeredEvent(34, person, askID, "question", []string{"B"}, new("Use B. Why did you test A?")))},
+		{name: "a decision that also asks, given unanswered", decision: "dispatch:34", question: true, answer: notAnswered,
+			handoff: dispatchHandoff("ses_tester", answeredEvent(34, person, askID, "question", []string{"B"}, new("Use B. Why did you test A?")))},
+		{name: "a comment that asks nothing", handoff: dispatchHandoff("ses_tester", bare("comment.created", person, new("LEGION-9"),
+			map[string]any{"id": "c-root", "issue_key": "LEGION-9", "body": "Thanks, that settles it.", "ask_id": nil}))},
+		{name: "a question given unanswered", question: true, answer: notAnswered,
+			handoff: envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-1", "agent.ses_tester.k1", "Run the suite?")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := releasedRig(t)
+			if tc.answer != nil {
+				r.answer = tc.answer
+			}
+			r.receive(tc.handoff)
+			r.drain()
+			if len(r.rec.wakes) != 1 {
+				t.Fatalf("wakes = %+v; want one", r.rec.wakes)
+			}
+			got := ""
+			if d := r.rec.wakes[0].Decision; d != nil {
+				got = d.ID
+				if d.Asker != "user:person@example.com" || d.Ref != "dispatch://LEGION-9/ask/"+askID || !strings.Contains(d.Text, "Selected: B") || !d.Answered {
+					t.Errorf("the wake's decision = %+v; want the person's answer to the agent's ask", *d)
+				}
+			}
+			if got != tc.decision {
+				t.Fatalf("the wake names the decision %q; want %q", got, tc.decision)
+			}
+			if questions := r.questions(); tc.question != (len(questions) == 1) {
+				t.Fatalf("questions = %+v; want one recorded %t", questions, tc.question)
+			} else if tc.question && r.only().HoldsDecision != (tc.decision != "") {
+				t.Fatalf("the question holds a decision %t; want %t", r.only().HoldsDecision, tc.decision != "")
+			}
+			if len(r.rec.decisions) != 0 {
+				t.Fatalf("decisions = %+v; want none passed on while the claim is released", r.rec.decisions)
+			}
+		})
+	}
+}
+
 // A person's resolution of an ask the released agent follows but did not open, which Dispatch
 // sends to every follower and the listener hands off in place of the wake it raised before, is
 // given to the agent once through one wake, however often it is handed off: no model call, no

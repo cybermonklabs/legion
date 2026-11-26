@@ -1806,23 +1806,45 @@ func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
 // person's decision on its ask; every other Dispatch event that reached it, asks it nothing and is
 // no act of its own session (a message, comment or reply, an edit or resolution of one, the answer
 // to, a reply on, or the resolution or edit of an ask it follows but did not open, a hand-back, a
-// claim, an issue event or a delivery receipt: answerloop.Verdict.ForAgent); a message of a source
-// no agent answers; a question whose reply the loop does not post; and the loop's own answer to it
-// as an asker. Role is the agent's role on the row's issue, whose topic the runner publishes Text
-// to, and Session the session the message was handed off for, which the row's log lines name.
-// Text is the whole of what the agent is told: the message as it would have read it, and, when the
-// loop already answered a question in that message, the sentence that says where.
+// claim, an issue event or a delivery receipt: the answer loop's verdict wakes the agent for
+// each); a message of a source no agent answers; a question whose reply the loop does not post;
+// and the loop's own answer to it as an asker. Role is the agent's role on the row's issue, whose
+// topic the runner publishes Text to, and Session the session the message was handed off for,
+// which the row's log lines name. Text is the whole of what the agent is told: the message as it
+// would have read it, and, when the loop already answered a question in that message, the
+// sentence that says where. Decision is the person's decision on the agent's ask the message
+// carries (answerloop.Wake.Decision), absent for a message that carries none and for every row
+// a daemon before the field queued, which decodes as before.
 //
 // Unlike RoleMessage it wakes a released claim, and it holds the message until a session of the
 // role takes it, as a merge-queue removal does (internal/daemon's outbox.agentMessage,
 // deliverHeld): the message is a person's or an agent's own, which nothing else repeats, and a
 // kept copy lives one hour from its publish, which a wake the pacing or a pause holds can
 // outlast. It ends undelivered once the role's claim has failed or retired, or once the issue has
-// left the workflow or its tree lingers, since no wake brings the claim back then.
+// left the workflow or its tree lingers, since no wake brings the claim back then; a decision it
+// carries then goes to the architect or the controller as the agent-decision notice of an agent
+// that is not released, so it reaches someone.
 type AgentMessage struct {
-	Role    claim.Role `json:"role"`
-	Session string     `json:"session"`
-	Text    string     `json:"text"`
+	Role     claim.Role            `json:"role"`
+	Session  string                `json:"session"`
+	Text     string                `json:"text"`
+	Decision *AgentMessageDecision `json:"decision,omitempty"`
+}
+
+// AgentMessageDecision is the person's decision on the agent's ask that an agent_message row
+// carries, as the answer loop read it (answerloop.Decision): its id, who decided, where and what
+// (AgentDecision's ID, Asker, Ref and Text), whether it is the person's answer of the ask rather
+// than a reply on its thread, the ask's kind as the answer's event names it, and the issue the ask
+// stands on, which say whether the parked-decision relay carries it instead (internal/daemon's
+// routedDecisions). The agent's issue, role and session are the row's.
+type AgentMessageDecision struct {
+	ID       string `json:"id"`
+	Asker    string `json:"asker"`
+	Ref      string `json:"ref"`
+	Text     string `json:"text"`
+	Answered bool   `json:"answered,omitempty"`
+	AskKind  string `json:"askKind,omitempty"`
+	AskIssue string `json:"askIssue,omitempty"`
 }
 
 func (AgentMessage) OutboxKind() OutboxKind { return OutboxKindAgentMessage }
@@ -3276,6 +3298,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Session == "" || value.Text == "" {
 			return fmt.Errorf("a message for a released agent names the session it was handed off for and carries the text the agent is told")
+		}
+		if value.Decision != nil && value.Decision.ID == "" {
+			return fmt.Errorf("a decision a message for a released agent carries names the decision's id")
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/answerloop"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -161,8 +162,10 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 // heldMessage is one message a row delivers to a role of its issue and holds until a session of
 // that role takes it (deliverHeld): the issue, the role's claim token and the role, what names the
 // message in the row's waits and errors ("the merge-queue removal of LEGION-208"), the text
-// published, the attributes of the row's log lines, and the two lines the delivery itself logs: the
-// row's end on a claim that failed or retired, and the delivery.
+// published, the attributes of the row's log lines, the two lines the delivery itself logs (the
+// row's end on a claim that failed or retired, and the delivery), and the person's decision on the
+// agent's ask the message carries, nil for none (a released agent's message alone carries one,
+// agentMessage).
 type heldMessage struct {
 	issue      record.Issue
 	token      claim.Token
@@ -172,6 +175,7 @@ type heldMessage struct {
 	attributes []any
 	claimEnded string
 	delivered  string
+	decision   *answerloop.Decision
 }
 
 // deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
@@ -187,7 +191,9 @@ type heldMessage struct {
 //
 // It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
 // m.claimEnded, once the role's claim has failed or retired, since that claim will not hold its
-// role again. A released merger is held by the rule that holds its start
+// role again; a decision the message carries goes on first as the agent-decision notice of an
+// agent that is not released (passUndelivered), so it reaches the architect or the controller
+// rather than nobody. A released merger is held by the rule that holds its start
 // (mergerWaitsForTheDesignGate: the design gate, and the news of the approved design it is owed),
 // and a released role of another kind while the root's design gate is closed (designGateClosed):
 // such a role is neither woken nor told, and the row waits, since a role the gate holds may not
@@ -200,6 +206,9 @@ type heldMessage struct {
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
 	held := r.supervisedClaim(m.token)
 	if supervise.FailedOrRetired(held.State) {
+		if err := r.passUndelivered(ctx, m.decision); err != nil {
+			return err
+		}
 		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
 		return nil
 	}

@@ -1,0 +1,24 @@
+-- 20261126183426_answer_questions_holds_decision.up.sql — whether a question the answer loop holds
+-- carries a person's decision it holds for the agent's wake (dispatch://INFRA-204).
+--
+-- A person's decision on the ask of an agent whose claim the daemon released goes to that agent
+-- alone, through the outbox row that wakes its claim (agent_message), and the architect and the
+-- controller are told nothing of it. A decision that also asks is recorded as a question, held
+-- there, and given with the row the loop writes once the question is answered or given unanswered
+-- (answer_questions.wake, 20261124114223_released_agent_messages). If the claim fails or retires
+-- before that row wakes it, no session of the claim takes the message again, so the row passes the
+-- decision on as the agent-decision notice an unreleased agent's decision is, to the architect
+-- that owns the issue or the controller (internal/daemon's agentMessage). For that the row carries
+-- the decision, and the loop reads whether a question holds one from this column, which the loop
+-- writes where it records the question and never changes (store.AnswerQuestion.HoldsDecision).
+-- wake alone does not say it: the loop also sets wake for a released agent's question whose reply
+-- it does not post, decision or none.
+--
+-- Every row before this one reads false: its wake row, written or still to be written, carries no
+-- decision and ends undelivered, with one line, where the claim has failed or retired, as it did.
+-- No release before this one writes answer_questions.
+--
+-- There is no down file: migrations here are forward-only. No release before this one reads or
+-- writes answer_questions, so a rollback leaves the column standing and needs no statement
+-- (docs/kubernetes.md, "Rolling back below the release that answers for a stopped agent").
+alter table answer_questions add column holds_decision boolean not null default false;

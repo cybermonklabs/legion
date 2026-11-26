@@ -150,6 +150,11 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
 		AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer", Text: "user:person@example.com sent you, in a Dispatch message on LEGION-208:\nThanks, that settles it."},
+		// A message that carries the person's decision on the agent's ask names it, for the
+		// agent-decision notice the row queues if the claim fails or retires first.
+		AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer", Text: "user:person@example.com sent you, in the answer to your ask:\nSelected: B",
+			Decision: &AgentMessageDecision{ID: "dispatch:34", Asker: "user:person@example.com", Ref: "dispatch://LEGION-208/ask/a-1", Text: "Selected: B",
+				Answered: true, AskKind: "question", AskIssue: "LEGION-208"}},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -645,6 +650,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a message for a released agent of no role", payload: AgentMessage{Role: "pilot", Session: "ses_implementer", Text: "Thanks."}, reason: "names the agent's role on the issue"},
 		{name: "a message for a released agent of no session", payload: AgentMessage{Role: claim.RoleImplementer, Text: "Thanks."}, reason: "names the session it was handed off for"},
 		{name: "a message for a released agent with no text", payload: AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer"}, reason: "carries the text the agent is told"},
+		{name: "a message for a released agent carrying a decision with no id", payload: AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer",
+			Text: "Thanks.", Decision: &AgentMessageDecision{Asker: "user:person@example.com", Text: "Selected: B"}}, reason: "names the decision's id"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -861,6 +868,40 @@ func TestAPhaseEndedRowDecodesWithAndWithoutADroppedMergeForward(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			row := OutboxRow{ID: 70, Kind: OutboxKindPhaseEnded, Issue: "LEGION-208", Payload: json.RawMessage(tc.payload)}
+			got, err := DecodeOutboxPayload(row)
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the row decodes as %#v, %v; want %#v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// An agent_message row decodes strictly (DecodeOutboxPayload) whether or not it carries a
+// decision: a row a daemon before the field queued, and one whose message carries no decision,
+// name no `decision` and decode with none, and a row whose message carries the person's decision
+// on the agent's ask decodes it whole.
+func TestAnAgentMessageRowDecodesWithAndWithoutADecision(t *testing.T) {
+	const text = "user:person@example.com sent you, in the answer to your ask:\nSelected: B"
+	plain := AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer", Text: text}
+	decided := plain
+	decided.Decision = &AgentMessageDecision{ID: "dispatch:34", Asker: "user:person@example.com", Ref: "dispatch://LEGION-208/ask/a-1",
+		Text: "Selected: B", Answered: true, AskKind: "question", AskIssue: "LEGION-208"}
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    AgentMessage
+	}{
+		{name: "a row an earlier daemon queued, which names no decision",
+			payload: `{"role":"implementer","session":"ses_implementer","text":"user:person@example.com sent you, in the answer to your ask:\nSelected: B"}`,
+			want:    plain},
+		{name: "a row that carries a decision",
+			payload: `{"role":"implementer","session":"ses_implementer","text":"user:person@example.com sent you, in the answer to your ask:\nSelected: B",` +
+				`"decision":{"id":"dispatch:34","asker":"user:person@example.com","ref":"dispatch://LEGION-208/ask/a-1","text":"Selected: B",` +
+				`"answered":true,"askKind":"question","askIssue":"LEGION-208"}}`,
+			want: decided},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := OutboxRow{ID: 71, Kind: OutboxKindAgentMessage, Issue: "LEGION-208", Payload: json.RawMessage(tc.payload)}
 			got, err := DecodeOutboxPayload(row)
 			if err != nil || !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("the row decodes as %#v, %v; want %#v", got, err, tc.want)

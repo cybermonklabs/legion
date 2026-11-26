@@ -213,6 +213,19 @@ type Claim struct {
 	// before this one is gone whatever happens next. A claim that has abandoned none records a
 	// session of "".
 	Abandoned AbandonedSession
+	// CyberPolicySessions is every session of this claim whose content OpenAI refused under its
+	// cyber policy, oldest first and each once: the session the claim recorded when it failed
+	// under CauseCyberPolicy, or when it forgot a session while still held for such a failure
+	// (holdCyberPolicySession). Nothing clears it, a retry least of all. The retry that
+	// launches a held claim's agent again forgets that session and clears the failure
+	// (freshSession, retry), so the claim is held no more (HeldForCyberPolicy), but the session's
+	// conversation stays in the daemon's history under the same token, and the answer loop can be
+	// asked to answer from it: a person's reply to an ask that session opened, or a role message
+	// sent before the new session registers. So the loop calls no model for a session this lists
+	// (SessionHeldForCyberPolicy, the daemon's answerGate). The claim store writes it as the union
+	// of the stored list and this one (internal/store's upsertClaim), so no write of an older copy
+	// of the claim drops a session.
+	CyberPolicySessions []string
 	// EndedWork is what the last let-go of the claim's process ended of the work its agent had
 	// running, for the next process to be told (EndedWork, recordEnd). It is persisted, since the
 	// prompt that tells it can be a relaunch, a wake and a daemon restart away, and a newer
@@ -4592,9 +4605,17 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // claim that was told once would never be told again until a turn of it ended with no error at
 // all.
 //
+// A claim still held for OpenAI's cyber-policy refusal when its session is forgotten records that
+// session as refused first (holdCyberPolicySession): fail recorded it already where this release
+// failed the claim, and a claim a release that recorded none failed is recorded here, by the
+// decided retry that ends the hold or by the operator's forget-session.
+//
 // why is the sentence the abandoned session is recorded under, which can carry a runtime's or a
 // provider's text, so it is kept as a far side's error text is (storetext.FarSideError).
 func (m *Machine) forgetSession(why string) {
+	if m.claim.HeldForCyberPolicy() {
+		m.holdCyberPolicySession()
+	}
 	if m.claim.Session != "" {
 		// The kept cause goes only with a session dropped here (Machine.lostCause).
 		m.lostCause = ""
@@ -4619,6 +4640,17 @@ func (m *Machine) forgetSession(why string) {
 	m.admitted.Store(nil)
 	m.freshRun()
 	m.claim.ProviderErrorRun = 0
+}
+
+// holdCyberPolicySession records the claim's session, once, as one whose content OpenAI refused
+// for cyber policy (Claim.CyberPolicySessions), so it stays held after the retry that forgets it:
+// fail calls it in the write that fails the claim under CauseCyberPolicy, and forgetSession for a
+// claim still held. The list is clipped first, so the append never writes into an array a copy of
+// the claim still holds.
+func (m *Machine) holdCyberPolicySession() {
+	if s := m.claim.Session; s != "" && !slices.Contains(m.claim.CyberPolicySessions, s) {
+		m.claim.CyberPolicySessions = append(slices.Clip(m.claim.CyberPolicySessions), s)
+	}
 }
 
 // fail puts the claim where nothing relaunches it: its timers stop, its locator goes, and the
@@ -4650,6 +4682,9 @@ func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) erro
 	m.claim.State, m.claim.Failure = StateFailed, why
 	m.claim.FailureCause, m.claim.FailedAt = cause, m.deps.Clock.Now()
 	m.claim.PendingCause = ""
+	if cause == CauseCyberPolicy {
+		m.holdCyberPolicySession()
+	}
 	m.log.Error("supervise: claim failed", "cause", string(cause), "why", why,
 		"launchFailures", m.claim.Budgets.LaunchFailures,
 		"deaths", m.claim.Budgets.Deaths, "promptFailures", m.claim.Budgets.PromptFailures,
@@ -5596,6 +5631,7 @@ func copyClaim(c Claim) Claim {
 	c.BootTokenHash = bytes.Clone(c.BootTokenHash)
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
+	c.CyberPolicySessions = slices.Clone(c.CyberPolicySessions)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
 	return c
 }

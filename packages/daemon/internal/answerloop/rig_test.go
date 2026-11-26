@@ -40,15 +40,16 @@ const (
 var testNow = time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 
 // fakeGate is the daemon's gate as the loop sees it: a session whose claim runs it, one whose
-// claim started (Append refused), one whose claim the daemon released, each set by the test, and
-// a claim held for OpenAI's cyber-policy refusal, by its token; started may be set while an
-// answer is generated, as a claim's start would. onAppend, when set, sees each append's outcome.
+// claim started (Append refused), one whose claim the daemon released, and one whose
+// conversation is held for OpenAI's cyber-policy refusal, each set by the test; started may be set
+// while an answer is generated, as a claim's start would. onAppend, when set, sees each append's
+// outcome.
 type fakeGate struct {
 	mu       sync.Mutex
 	running  map[string]bool
 	started  map[string]bool
 	released map[string]bool
-	held     map[claim.Token]bool
+	held     map[string]bool
 	onAppend func(error)
 }
 
@@ -64,10 +65,10 @@ func (g *fakeGate) Released(_ claim.Token, session string) bool {
 	return g.released[session] && !g.running[session] && !g.started[session]
 }
 
-func (g *fakeGate) HeldForCyberPolicy(token claim.Token) bool {
+func (g *fakeGate) HeldForCyberPolicy(_ claim.Token, session string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.held[token]
+	return g.held[session]
 }
 
 func (g *fakeGate) Append(_ claim.Token, session string, write func() error) (bool, error) {
@@ -90,11 +91,11 @@ func (g *fakeGate) set(field map[string]bool, session string, on bool) {
 	field[session] = on
 }
 
-// hold has token's claim held for OpenAI's cyber-policy refusal from now on.
-func (g *fakeGate) hold(token claim.Token) {
+// hold has session's conversation held for OpenAI's cyber-policy refusal from now on.
+func (g *fakeGate) hold(session string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.held[token] = true
+	g.held[session] = true
 }
 
 // request is one request a stand-in took: its method, path and decoded body.
@@ -289,7 +290,7 @@ func newRig(t *testing.T) *rig {
 	ctx := context.Background()
 	st := testpg.CloneStore(t, "legion_answerloop")
 	r := &rig{
-		t: t, ctx: ctx, st: st, gate: &fakeGate{running: map[string]bool{}, started: map[string]bool{}, released: map[string]bool{}, held: map[claim.Token]bool{}},
+		t: t, ctx: ctx, st: st, gate: &fakeGate{running: map[string]bool{}, started: map[string]bool{}, released: map[string]bool{}, held: map[string]bool{}},
 		tool: &fakeTool{found: map[int]ghtool.Found{}, err: map[int]error{}}, rec: &recorder{st: st}, dir: t.TempDir(),
 	}
 	// Every path that passes a question on writes its reason into the row first (post).
