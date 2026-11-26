@@ -1,0 +1,22 @@
+The gotestsum jsonfiles and rerun reports .github/scripts/ci-ok-retries.test.sh reads, written by
+gotestsum v1.13.0 and go1.27.3 in .github/scripts/go-test.test.sh's own runs on 2026-11-26, with
+the retry on as a merge group turns it on:
+
+  GO_TEST_CAPTURE="$PWD/.github/scripts/testdata/ci-ok-retries" bash .github/scripts/go-test.test.sh
+
+run from the repository root. With GO_TEST_CAPTURE set, the harness copies the jsonfile and the
+rerun report of three of its cases here, each under the case's name:
+
+once.json, once.rerun-fails.txt
+  go-test.sh go test -count=1 ./once/, over the fixture package testdata/go-test/once:
+  TestFailsOnceThenPasses fails its first attempt and passes its rerun, and TestPassesEveryTime
+  passes the first time. The rerun report gives the first two runs and one failure.
+
+twice.json, twice.rerun-fails.txt
+  go-test.sh go test -count=1 ./twice/, over testdata/go-test/twice: TestFailsEveryAttempt fails
+  both attempts, two runs and two failures.
+
+testmain.json, testmain.rerun-fails.txt
+  go-test.sh go test -count=1 ./testmain/, over testdata/go-test/testmain: its TestMain fails the
+  package after its one test passed, and gotestsum's rerun, with -test.run=^$, runs no test and
+  passes. The rerun report is empty: the package's last result is that pass.

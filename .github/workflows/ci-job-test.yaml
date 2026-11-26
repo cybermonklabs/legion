@@ -450,6 +450,21 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_legs_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-legs.test.sh .github/scripts/go-legs.test.sh
 
+      # After setup-go: its cases run the real go and the gotestsum .github/ci-tools.yaml pins over
+      # a fixture module of their own under their mktemp directory, the -race case with cgo.
+      - name: Install gotestsum for the Go test runner's harness
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_test"')
+        uses: ./.github/actions/install-gotestsum
+
+      - name: Test the Go test runner and its retry
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go-test.test.sh .github/scripts/go-test.test.sh
+
+      # Needing no Go: its cases read the jsonfiles and rerun reports the runner's harness wrote.
+      - name: Test the report of the Go tests that passed only on their retry
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_ok_retries_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok-retries.test.sh .github/scripts/ci-ok-retries.test.sh
+
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
       - name: Test the TypeScript filter check

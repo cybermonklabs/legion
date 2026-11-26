@@ -3769,6 +3769,33 @@ check "passes" "$(is "$status" 0)"
 check "the report names the command, the name it sets and that the filter takes every Go file" \
   "$(contains "$out" "^report: app: [0-9]* files (filter app); every Go file and every file under a Go module's directory, since job app step \"Test the app\" runs \`GOOS=linux go test ./cmd/app ./lib\`, which this check does not reduce (it sets GOOS, which can change what go compiles)")"
 
+# .github/scripts/go-test.sh runs the go test command after it under gotestsum, compiling what the
+# bare command compiles, so the wrapper is read past as an ENV_ALLOWED assignment is; another
+# script in its place, and the wrapper before a go command that is not go test, are not.
+echo "case: a claimed simple go command under go-test.sh, with its option and its variables"
+root=$(fixture go-test-wrapper)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" \
+  "run: GO_TEST_RETRY=off ../.github/scripts/go-test.sh --race-memory go test ./cmd/app ./lib"
+run_check "$root"
+check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
+check "counts the job's files, as the bare command's" "$(contains "$out" '^report: app: 8 files (filter app)$')"
+
+echo "case: another script in go-test.sh's place before a claimed simple go command"
+root=$(fixture go-test-other-wrapper)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ../.github/scripts/go-run.sh go test ./cmd/app ./lib"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "the report says the filter takes every Go file, the command starting with that script" \
+  "$(contains "$out" "this check does not reduce (it starts with \`../.github/scripts/go-run.sh\`, not go)")"
+
+echo "case: go-test.sh before a go command that is not go test"
+root=$(fixture go-test-wrapper-vet)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ../.github/scripts/go-test.sh go vet ./cmd/app ./lib"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "the report says the filter takes every Go file, go-test.sh running go test alone" \
+  "$(contains "$out" "this check does not reduce (go-test.sh runs go test alone, not \`go vet\`)")"
+
 echo "case: an earlier step writes GOFLAGS to GITHUB_ENV before a claimed simple go command"
 root=$(fixture github-env-goflags)
 cat > "$root/mod/cmd/app/probe_test.go" <<'GO'

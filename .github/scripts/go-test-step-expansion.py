@@ -399,11 +399,11 @@ AUDITED_SCRIPTS = {path: entry for path, entry in go_test_steps.AUDITED_SCRIPTS.
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
-# The wrappers a step runs a go command under. Each bounds how the test binary runs and changes
-# which tests it runs in no way, so the command behind it is read as though it stood alone; one
-# this tuple does not name is refused rather than guessed at. Matched by the end of the word,
-# since a step writes the path from its own working directory.
-GO_WRAPPERS = (".github/scripts/race_memory.py",)
+# The wrappers a step runs a go command under, and the options a wrapper takes before the command:
+# .github/scripts/go_test_steps.py's GO_WRAPPERS and GO_WRAPPER_OPTIONS, the one list the test-reach
+# search reads too (race_memory.py and go-test.sh).
+GO_WRAPPERS = go_test_steps.GO_WRAPPERS
+GO_WRAPPER_OPTIONS = go_test_steps.GO_WRAPPER_OPTIONS
 # go commands that run no test, so a step may hold one and this script need not read it.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
 # go test flags whose value is the next argument.
@@ -747,8 +747,12 @@ def go_command(line: str) -> tuple[list[str], str]:
             continue
         break
     head = rest.split(None, 1)
-    if len(head) == 2 and head[0].endswith(GO_WRAPPERS) and head[1].split(None, 1)[0] == "go":
-        rest = head[1]
+    if len(head) == 2 and head[0].endswith(GO_WRAPPERS):
+        behind = head[1]
+        while behind.split(None, 1)[0] in GO_WRAPPER_OPTIONS and len(behind.split(None, 1)) == 2:
+            behind = behind.split(None, 1)[1]
+        if behind.split(None, 1)[0] == "go":
+            rest = behind
     return rest.split(), rest
 
 

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Tests for `race_memory.py`: a command's status passes through, a peak over the limit fails the
-# step and names the tests that were running, a run within the limit ends with the peak, and a
-# `go test -json` stream's output reaches the log.
+# step and names the tests that were running, read from the file the command's `--jsonfile`
+# names as it grows, a run within the limit ends with the peak, the command's own output passes
+# through as it stands, and a command given no `--jsonfile` is refused.
 #
 # Each case runs the real script around a stand-in command — a shell or a Python program that
-# prints a -json stream and grows — so no Go, no race binary and no database are needed. The two
-# functions the sampling loop reads its numbers with, `summarize` and `choose_peak`, and the
+# writes a -json stream to the file its `--jsonfile` names and grows — so no Go, no race binary
+# and no database are needed; .github/scripts/go-test.test.sh runs it around gotestsum itself.
+# The two functions the sampling loop reads its numbers with, `summarize` and `choose_peak`, and the
 # `decision_line` written from what they return, are called on their own over fixture
 # `/proc/<pid>/status` texts written here, because one of the rule's two branches cannot be
 # reached on a kernel that reports no `VmHWM` (gVisor) and the other cannot be reached on one
@@ -37,27 +39,32 @@ run_sampler() {
   set -e
 }
 
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
 # peak <python expression over race_memory>: the peak functions called with no process involved.
 peak() {
   env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c "$1"
 }
 
 echo "case: a failing command's status passes through"
-run_sampler '' sh -c 'exit 3'
+run_sampler '' sh -c 'exit 3' sh --jsonfile "$work/exit.json"
 check "exits 3" "$(is "$status" 3)"
 check "names the default limit" "$(contains "$out" 'the limit is 8388608 kB (the default')"
+check "names the file it reads the running tests from" \
+  "$(contains "$out" "the tests running are read from $work/exit.json")"
 
 echo "case: a peak over the limit fails the run and names the test that was running"
-# Prints a -json stream naming a test as running, then grows past a 1 kB limit and lives until
-# the case has seen the sampler take its second sample (the first at 0 s, the next 5 s later, by
-# when the stream has been read), and only then ends: the case waits on the sampler's own lines,
-# not on a clock, so a sampler a loaded runner holds back still samples the grown process. The
-# 60 s bounds only end a run whose sample never comes, which the checks then report.
+# Writes a -json event naming a test as running to its jsonfile, then grows past a 1 kB limit and
+# lives until the case has seen the sampler take its second sample (the first at 0 s, the next 5 s
+# later, by when the file holds the event), and only then ends: the case waits on the sampler's
+# own lines, not on a clock, so a sampler a loaded runner holds back still samples the grown
+# process. The 60 s bounds only end a run whose sample never comes, which the checks then report.
 release=$(mktemp -u)
 grower='
 import json, os, sys, time
-sys.stdout.write(json.dumps({"Action": "run", "Test": "TestTheSamplerNamesMe"}) + "\n")
-sys.stdout.flush()
+with open(sys.argv[3], "w") as jsonfile:
+    jsonfile.write(json.dumps({"Action": "run", "Test": "TestTheSamplerNamesMe"}) + "\n")
 block = b"x" * (64 * 1024 * 1024)
 deadline = time.monotonic() + 60
 while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline:
@@ -65,7 +72,7 @@ while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline:
 sys.stdout.write(str(len(block)) + "\n")
 '
 sampled=$(mktemp)
-env "RACE_MEM_LIMIT_KB=1" "$sampler" python3 -c "$grower" "$release" > "$sampled" 2>&1 &
+env "RACE_MEM_LIMIT_KB=1" "$sampler" python3 -c "$grower" "$release" --jsonfile "$work/grower.json" > "$sampled" 2>&1 &
 sampler_pid=$!
 for _ in $(seq 1200); do
   [ "$(grep -c -- ' s, VmRSS ' "$sampled" || true)" -ge 2 ] && break
@@ -97,7 +104,7 @@ check "took a sample at 0 s and another at 5 s" \
   "$([ "$(grep -c -- ' s, VmRSS ' <<<"$out")" -ge 2 ] && echo true || echo false)"
 
 echo "case: a run within the limit exits 0 and ends with the peak"
-run_sampler '' sh -c 'echo the command spoke'
+run_sampler '' sh -c 'echo the command spoke' sh --jsonfile "$work/spoke.json"
 check "exits 0" "$(is "$status" 0)"
 check "passes the command's own output through" "$(contains "$out" '^the command spoke$')"
 check "its last line gives the peak and the limit" \
@@ -135,21 +142,26 @@ check "its decision line gives the peak and the highest sample it came from" \
 check "its decision line leaves the between-samples warning off a VmRSS peak" \
   "$(is "$(contains "$rss" 'may belong to another moment')" false)"
 
-echo "case: a -json stream's output reaches the log"
+echo "case: the command's standard output passes through as it stands"
+# gotestsum's standard-verbose format is text, so a line is written as the command wrote it,
+# a line that looks like a -json event included: the events are the jsonfile's.
 stream='
 import json, sys
-for event in [
-    {"Action": "run", "Test": "TestA"},
-    {"Action": "output", "Test": "TestA", "Output": "--- FAIL: TestA (0.00s)\n"},
-    {"Action": "fail", "Test": "TestA"},
-    {"Action": "output", "Output": "FAIL\tlegion/internal/dispatch/docs\t0.10s\n"},
-]:
-    sys.stdout.write(json.dumps(event) + "\n")
+sys.stdout.write("--- FAIL: TestA (0.00s)\n")
+sys.stdout.write(json.dumps({"Action": "output", "Test": "TestA", "Output": "not unwrapped\n"}) + "\n")
 '
-run_sampler '' python3 -c "$stream"
+run_sampler '' python3 -c "$stream" --jsonfile "$work/stream.json"
 check "exits 0" "$(is "$status" 0)"
 check "the --- FAIL line shows" "$(contains "$out" '^--- FAIL: TestA (0.00s)$')"
-check "the package's own line shows" "$(contains "$out" '^FAIL.*legion/internal/dispatch/docs')"
-check "the -json envelope does not" "$(is "$(contains "$out" '"Action"')" false)"
+check "a line shaped like a -json event shows whole" "$(contains "$out" '^{"Action": "output"')"
+
+echo "case: a command given no --jsonfile is refused, and not run"
+run_sampler '' sh -c 'echo ran'
+check "exits 2" "$(is "$status" 2)"
+check "says the running tests are read from the command's --jsonfile" \
+  "$(contains "$out" 'is given no --jsonfile, and the tests running at each sample are read from that file')"
+check "runs nothing" "$(is "$(contains "$out" '^ran$')" false)"
+run_sampler '' gotestsum --packages ./... -- --jsonfile after-the-separator.json
+check "a --jsonfile after the command's -- is go test's, and is refused too" "$(is "$status" 2)"
 
 summary "race_memory.py"

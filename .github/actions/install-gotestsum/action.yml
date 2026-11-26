@@ -1,0 +1,33 @@
+name: Install gotestsum
+description: >-
+  Installs gotestsum, which .github/scripts/go-test.sh runs every Go test under so the log names
+  each test's result and a merge group runs a failed test once more, and puts it on PATH for the
+  job's later steps.
+
+  The `gotestsum` row of .github/ci-tools.yaml, or its `gotestsum-aarch64` row on an arm64
+  runner, names the version, the one sha256 of the whole release tarball that both sources are
+  checked against, and the second source this install reads when GitHub's release assets do not
+  serve the bytes: the copy of that tarball in ghcr.io/cybermonklabs/legion/ci.
+runs:
+  using: composite
+  steps:
+    - name: Install gotestsum
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        machine=$(uname -m)
+        case "$machine" in
+          x86_64) row=gotestsum ;;
+          aarch64 | arm64) row=gotestsum-aarch64 ;;
+          *)
+            echo "::error::install-gotestsum: .github/ci-tools.yaml holds no gotestsum row for a $machine runner" >&2
+            exit 1
+            ;;
+        esac
+        tarball="$RUNNER_TEMP/$(basename "$(ci_tools_field "$row" primary)")"
+        ci_tools_fetch "$row" "$tarball"
+        mkdir -p "$RUNNER_TEMP/gotestsum"
+        tar -xzf "$tarball" -C "$RUNNER_TEMP/gotestsum" gotestsum
+        echo "$RUNNER_TEMP/gotestsum" >> "$GITHUB_PATH"

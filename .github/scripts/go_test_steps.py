@@ -102,8 +102,12 @@ GOTESTSUM_REFUSED = ("--raw-command", "--watch")
 # The wrappers a step runs a go command under. Each bounds how the test binary runs and changes
 # which tests it runs in no way, so the command behind it is read as though it stood alone; one
 # this tuple does not name is refused rather than guessed at. Matched by the end of the word,
-# since a step writes the path from its own working directory.
-GO_WRAPPERS = (".github/scripts/race_memory.py",)
+# since a step writes the path from its own working directory. go-test.sh runs the go test
+# command its words after its options are under gotestsum, with the same packages and flags, and
+# a merge group's rerun of a failed test runs no test the command does not; GO_WRAPPER_OPTIONS
+# are the options a wrapper takes before the command.
+GO_WRAPPERS = (".github/scripts/race_memory.py", ".github/scripts/go-test.sh")
+GO_WRAPPER_OPTIONS = ("--race-memory",)
 # The expressions a step's text is read through before its lines are: a matrix value, and an input
 # the job that calls the workflow, or the step that uses the composite action, gives. Any other
 # expression is left as written.
@@ -877,8 +881,12 @@ def go_command(line: str) -> tuple[list[str], str]:
             continue
         break
     head = rest.split(None, 1)
-    if len(head) == 2 and head[0].endswith(GO_WRAPPERS) and head[1].split(None, 1)[0] == "go":
-        rest = head[1]
+    if len(head) == 2 and head[0].endswith(GO_WRAPPERS):
+        behind = head[1]
+        while behind.split(None, 1)[0] in GO_WRAPPER_OPTIONS and len(behind.split(None, 1)) == 2:
+            behind = behind.split(None, 1)[1]
+        if behind.split(None, 1)[0] == "go":
+            rest = behind
     return rest.split(), rest
 
 

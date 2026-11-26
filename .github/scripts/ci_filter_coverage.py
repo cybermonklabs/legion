@@ -1645,6 +1645,8 @@ PACKAGE = re.compile(r"\.\.?(/[A-Za-z0-9_./-]*)?")
 FLAG = re.compile(r"-v|-race|-count=[0-9]+|-timeout=[0-9]+[smh]|-buildvcs=false")
 DURATION = re.compile(r"[0-9]+[smh]")
 TAGS = re.compile(r"[A-Za-z0-9_,]+")
+# .github/scripts/go-test.sh, written from the repository root or from a directory under it.
+GO_TEST_WRAPPER = re.compile(r"(?:\.\./)*\.github/scripts/go-test\.sh")
 
 
 def reduce_line(line: str) -> tuple:
@@ -1665,6 +1667,16 @@ def reduce_line(line: str) -> tuple:
         if assignment.group(1) not in ENV_ALLOWED:
             return *unreduced, f"it sets {assignment.group(1)}, which can change what go compiles"
         words = words[1:]
+    # .github/scripts/go-test.sh, the wrapper every Go test step runs its go test command under,
+    # takes the command as its own words after its one option, --race-memory, and runs it under
+    # gotestsum with the same packages and flags: it compiles what the bare command compiles, so
+    # the wrapper is dropped as an ENV_ALLOWED assignment is. Its path is the one file of that name,
+    # written relative to the step's directory.
+    wrapped = bool(words) and GO_TEST_WRAPPER.fullmatch(words[0]) is not None
+    if wrapped:
+        words = words[1:]
+        if words and words[0] == "--race-memory":
+            words = words[1:]
     if not words or words[0] != "go":
         return *unreduced, f"it starts with `{words[0] if words else line}`, not go"
     # `go -C <directory>` is reduced where a `cd` is not because it names the directory outright,
@@ -1678,6 +1690,8 @@ def reduce_line(line: str) -> tuple:
         chdir, words = words[2], ["go", *words[3:]]
     if len(words) < 2 or words[1] not in ("test", "vet", "build"):
         return *unreduced, f"`{' '.join(words[:2])}` is not go test, vet or build"
+    if wrapped and words[1] != "test":
+        return *unreduced, f"go-test.sh runs go test alone, not `go {words[1]}`"
     pkgs, tags, index = set(), None, 2
     while index < len(words):
         word, value = words[index], words[index + 1] if index + 1 < len(words) else ""
@@ -1740,6 +1754,10 @@ ENV_ALLOWED = frozenset({
     # land in a directory of their own, which the go-envoy-darwin-vet cache family holds.
     "GOCACHE",
     "GOPROXY",
+    # Read by .github/scripts/go-test.sh alone: whether a failed test runs once more, and how many
+    # failed root tests stop that rerun. A rerun runs the same compiled test binary again, so go
+    # compiles the same files with them set as without. go reads neither.
+    "GO_TEST_RERUN_MAX_FAILURES", "GO_TEST_RETRY",
     # The job's state, success, failure or cancelled, which the step "Wait for the script
     # harnesses and judge them" of the test job and envoy-go-checks hands .github/scripts/
     # harness-pool.sh to choose --allow-none and --now. go reads it nowhere.

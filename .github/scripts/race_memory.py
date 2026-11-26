@@ -12,22 +12,28 @@ writes a line every 5 s as the run goes, naming the tests running at that moment
 process of the tree, so the last lines before a kill name what was running and how big it was.
 
 The number is one process, the largest of the tree, and not a sum over it: one race binary is
-what grows, and a total over `go test`, the compiler's children and that binary would hide which
-of them it was. The peak is that process's `VmHWM`, the kernel's own high-water mark of resident
-memory, because it sees what happens between two samples; the largest sampled `VmRSS` is the
-fallback for a kernel that reports no `VmHWM` (gVisor is one), and it can miss a peak that rose
-and fell inside one 5-second gap. choose_peak() says which of the two a run used, and so does the
-last line of the log. Either number is read from a process that was alive when the walk read it,
-so what a test binary grows to in its last seconds is never seen: the next walk finds it gone.
+what grows, and a total over gotestsum, `go test`, the compiler's children and that binary would
+hide which of them it was. The peak is that process's `VmHWM`, the kernel's own high-water mark
+of resident memory, because it sees what happens between two samples; the largest sampled
+`VmRSS` is the fallback for a kernel that reports no `VmHWM` (gVisor is one), and it can miss a
+peak that rose and fell inside one 5-second gap. choose_peak() says which of the two a run used,
+and so does the last line of the log. Either number is read from a process that was alive when
+the walk read it, so what a test binary grows to in its last seconds is never seen: the next walk
+finds it gone.
 
-Usage: race_memory.py <command> [args...], for example
+Usage: race_memory.py <command> [args...], where the command is gotestsum (or anything else) given
+a `--jsonfile <path>` of its own, as .github/scripts/go-test.sh runs it with --race-memory:
 
-    .github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
+    .github/scripts/race_memory.py gotestsum --format standard-verbose --jsonfile <path> \\
+        --packages ./internal/dispatch/docs/ -- -race -count=1 -timeout 60m
 
 It has no options of its own: everything after the script name is the command. RACE_MEM_LIMIT_KB
-sets the limit in kB, 8388608 (8 GiB) when it is unset or empty. The command's stdout is read
-line by line, so a `go test -json` stream is unwrapped back into the test log it carries and the
-running tests are known; the command's stderr is not touched and goes straight to this script's.
+sets the limit in kB, 8388608 (8 GiB) when it is unset or empty. The tests running at each sample
+are read from the file the command's `--jsonfile` names, as that file grows, since gotestsum's
+standard output carries its own format and no `go test -json` stream: a command without one is
+refused. The command's stdout is passed through line by line, between the sample lines, and its
+stderr is not touched and goes straight to this script's. The exit is the command's own where
+that failed, else 1 where the peak passed the limit although every test passed, else 0.
 """
 
 import json
@@ -157,8 +163,8 @@ def summarize(statuses: list[str], seconds: float, tests: str) -> Sample | None:
 
 
 class RunningTests:
-    """The tests the `go test -json` stream says are running, kept by the thread reading that
-    stream and read by the thread sampling memory."""
+    """The tests the jsonfile's `go test -json` events say are running, folded in by Jsonfile
+    before each sample and read by that sample."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -198,29 +204,61 @@ class Log:
         self.write(text + "\n")
 
 
-def pump(stream: Iterable[str], tests: RunningTests, log: Log) -> None:
-    """Pass the command's stdout through, unwrapping a `go test -json` stream as it goes.
-
-    A line that parses as a JSON object with an `Action` key is a -json event: its `Output`, when
-    it has one, is written as it stands (it carries its own newline) so the test log reads as it
-    would without -json, and the event itself tells the sampler which tests are running. Any other
-    line is the command's own and is written whole.
-    """
+def pump(stream: Iterable[str], log: Log) -> None:
+    """Pass the command's stdout through, one whole line at a time, so a sample line never lands
+    inside one of its lines. gotestsum's standard-verbose format is text, and carries no event the
+    sampler could read; the jsonfile does (Jsonfile)."""
     for line in stream:
-        event = None
-        try:
-            parsed = json.loads(line)
-        except ValueError:
-            parsed = None
-        if isinstance(parsed, dict) and "Action" in parsed:
-            event = parsed
-        if event is None:
-            log.write(line)
-            continue
-        tests.record(event)
-        output = event.get("Output")
-        if output:
-            log.write(output)
+        log.write(line)
+
+
+def jsonfile_of(command: list[str]) -> str | None:
+    """The path the command's own `--jsonfile` names, written `--jsonfile <path>` or
+    `--jsonfile=<path>`, read up to a `--`, after which the words are another program's (go test's,
+    under gotestsum); None where it names none."""
+    for index, word in enumerate(command[1:], start=1):
+        if word == "--":
+            return None
+        if word == "--jsonfile":
+            return command[index + 1] if index + 1 < len(command) else None
+        if word.startswith("--jsonfile="):
+            return word.split("=", 1)[1]
+    return None
+
+
+class Jsonfile:
+    """The command's jsonfile, read as it grows: each whole line a `go test -json` event folded into
+    the running tests, and a line still being written kept until its newline arrives. A file that
+    is not there yet, before gotestsum creates it, has nothing to fold."""
+
+    def __init__(self, path: str, tests: RunningTests) -> None:
+        self._path = path
+        self._tests = tests
+        self._handle = None
+        self._pending = ""
+
+    def catch_up(self) -> None:
+        """Fold in every whole line written since the last call."""
+        if self._handle is None:
+            try:
+                self._handle = open(self._path, encoding="utf-8", errors="replace")
+            except OSError:
+                return
+        chunk = self._handle.read()
+        if not chunk:
+            return
+        *lines, self._pending = (self._pending + chunk).split("\n")
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict):
+                self._tests.record(event)
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
 
 
 def limit_from_env(environ: Mapping[str, str]) -> tuple[int, str]:
@@ -263,7 +301,17 @@ def decision_line(peak_kb: int, field: str, limit_kb: int, highest: Sample | Non
 def main(argv: list[str]) -> int:
     if not argv:
         print(
-            "race memory: give a command to run, for example: race_memory.py go test -race ./...",
+            "race memory: give a command to run, for example: race_memory.py gotestsum "
+            "--jsonfile <path> --packages ./... -- -race",
+            file=sys.stderr,
+        )
+        return 2
+    path = jsonfile_of(argv)
+    if path is None:
+        print(
+            f"race memory: {argv[0]} is given no --jsonfile, and the tests running at each sample "
+            "are read from that file as it grows; run it as .github/scripts/go-test.sh "
+            "--race-memory does, with gotestsum's --jsonfile",
             file=sys.stderr,
         )
         return 2
@@ -274,7 +322,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     log = Log()
-    log.line(f"race memory: the limit is {limit_kb} kB ({source})")
+    log.line(f"race memory: the limit is {limit_kb} kB ({source}); the tests running are read from {path}")
 
     try:
         process = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, bufsize=1)
@@ -283,7 +331,8 @@ def main(argv: list[str]) -> int:
         return 127
 
     tests = RunningTests()
-    reader = threading.Thread(target=pump, args=(process.stdout, tests, log), daemon=True)
+    jsonfile = Jsonfile(path, tests)
+    reader = threading.Thread(target=pump, args=(process.stdout, log), daemon=True)
     reader.start()
 
     # The peak and the highest sample are folded in walk by walk rather than kept as every text
@@ -297,6 +346,7 @@ def main(argv: list[str]) -> int:
     started = time.monotonic()
     while True:
         walked = tree_statuses(process.pid)
+        jsonfile.catch_up()
         sample = summarize(walked, time.monotonic() - started, tests.names())
         if sample is not None:
             walk_kb, walk_field = choose_peak(sample.hwm_kb, sample.rss_kb)
@@ -317,6 +367,7 @@ def main(argv: list[str]) -> int:
     reader.join()
     if process.stdout is not None:
         process.stdout.close()
+    jsonfile.close()
     status = process.wait()
 
     peak_kb, field = choose_peak(peak_hwm_kb, peak_rss_kb)
