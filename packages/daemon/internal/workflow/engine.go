@@ -1347,14 +1347,15 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	failure := noticeFailure(fact)
 	if phase.RoleFor(working) != fact.Role {
 		// A merge owed to the role whose claim failed is asked again at the ready of that role's
-		// next launch (askAgainAtLaunch), and the notice its failure sends says so (owedAskClause).
+		// next launch (askAgainAtLaunch), and the notice its failure sends says so (owedAskClause),
+		// after the role's own clauses, so the "it" of noStartOfItsOwn still names the role.
 		owed, err := e.owedAskClause(ctx, tx, *issue, fact.Role)
 		if err != nil {
 			return intake.Result{}, err
 		}
-		reason := fmt.Sprintf("the %s does not work %s's phase %s; nothing is held%s", fact.Role, issue.Key, working, owed)
+		reason := joinReason(fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working), noStartOfItsOwn(fact))
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
-			Reason: joinReason(reason, noStartOfItsOwn(fact))})
+			Reason: reason + owed})
 	}
 	if issue.Phase == phase.Held {
 		return intake.Result{}, nil
