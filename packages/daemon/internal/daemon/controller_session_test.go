@@ -491,13 +491,15 @@ func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
 
 // Row (f) of dispatch://INFRA-2045's c-fresh-after-two-ends, through the keeper: a fresh
 // controller session that has never finished a turn ends two launches in a row, is not replaced
-// again, and one Error line says that a fresh session also failed; the claim fails at its launch
-// budget (two in this supervisor), and the keeper retries it only after its first wait, on the
-// same session. internal/supervise's test of the same name holds rows (a) to (g) on the machine.
-// The control: on main no Error line is written.
+// again, and one Error line says so and names the session it replaced; the claim fails at its
+// launch budget (two in this supervisor), and the keeper retries it only after its first wait, on
+// the same session. internal/supervise's test of the same name holds rows (a) to (g) on the
+// machine, and its turn-bound test the same line for the controller's first session. The
+// control: on main no Error line is written.
 func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *testing.T) {
 	t.Run("f: a fresh session that never finished a turn is retried with the keeper's waits, not replaced", func(t *testing.T) {
-		k, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateReady, Session: "ses_fresh"})
+		k, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateReady, Session: "ses_fresh",
+			Abandoned: supervise.AbandonedSession{Session: "ses_old", Why: "its launches ended before it finished a turn", At: time.Now().Add(-time.Hour), Told: true}})
 		m, _ := sup.Machine(claim.ControllerToken("legion"))
 		dies := func() { controllerDies(t, sup, false) }
 		dies()
@@ -505,8 +507,12 @@ func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *t
 		if c := m.Claim(); c.State != supervise.StateFailed || c.Session != "ses_fresh" {
 			t.Fatalf("the controller is %s on %q after two ends, want failed on ses_fresh kept", c.State, c.Session)
 		}
-		if lines := linesOf(t, logs, "supervise: the controller's session ended two launches in a row and has never finished a turn, so it is not replaced: a fresh session also failed, and the keeper retries it with its waits"); len(lines) != 1 || lines[0]["level"] != "ERROR" {
-			t.Fatalf("the lines that say a fresh session also failed are %+v, want one at Error", lines)
+		lines := linesOf(t, logs, "supervise: the controller's session ended two launches in a row and has never finished a turn, so it is not replaced, and the keeper retries it with its waits")
+		if len(lines) != 1 || lines[0]["level"] != "ERROR" {
+			t.Fatalf("the lines that say the session is not replaced are %+v, want one at Error", lines)
+		}
+		if lines[0]["session"] != "ses_fresh" || lines[0]["replacement"] != true || lines[0]["replaced"] != "ses_old" {
+			t.Errorf("the Error line names session %v, replacement %v, replaced %v; want ses_fresh, true, ses_old", lines[0]["session"], lines[0]["replacement"], lines[0]["replaced"])
 		}
 		resumes := len(rt.CallsOf("Resume"))
 

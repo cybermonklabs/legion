@@ -209,7 +209,7 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		_ = h.handle(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: start})
 		h.wantEnds(1)
 		if lines := h.records.of(sessionNotReplacedLine); len(lines) != 0 {
-			t.Fatalf("the refused take-back wrote %d lines that say a fresh session also failed, want none", len(lines))
+			t.Fatalf("the refused take-back wrote %d lines that say the session is not replaced, want none", len(lines))
 		}
 
 		// The relaunch the standing end makes finds the session gone, so it forgets the session
@@ -225,10 +225,17 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		}
 		lines := h.records.of(sessionNotReplacedLine)
 		if len(lines) != 1 || lines[0].level != slog.LevelError {
-			t.Fatalf("the lines that say a fresh session also failed are %+v, want one at Error", lines)
+			t.Fatalf("the lines that say the session is not replaced are %+v, want one at Error", lines)
 		}
 		if got, _ := lines[0].attr("session"); got.String() != session {
 			t.Errorf("the Error line names session %q, want %q", got, session)
+		}
+		// The controller's first session replaced none, though the relaunch since left it behind.
+		if got, ok := lines[0].attr("replacement"); !ok || got.Kind() != slog.KindBool || got.Bool() {
+			t.Errorf("the Error line says replacement %v (present %t), want false: %q is the controller's first session", got, ok, session)
+		}
+		if got, _ := lines[0].attr("replaced"); got.String() != "" {
+			t.Errorf("the Error line names the replaced session %q, want none", got)
 		}
 		endings, _ := lines[0].attr("endings")
 		for _, want := range []string{"died after the controller was ready", "its turn stayed open longer than 1h30m0s"} {

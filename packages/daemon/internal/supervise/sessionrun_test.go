@@ -217,10 +217,17 @@ func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *t
 		h.wantEnds(2)
 		lines := h.records.of(sessionNotReplacedLine)
 		if len(lines) != 1 || lines[0].level != slog.LevelError {
-			t.Fatalf("the lines that say a fresh session also failed are %+v, want one at Error", lines)
+			t.Fatalf("the lines that say the session is not replaced are %+v, want one at Error", lines)
 		}
 		if got, _ := lines[0].attr("session"); got.String() != replacingSession {
 			t.Errorf("the Error line names session %q, want the fresh one, %q", got, replacingSession)
+		}
+		// The fresh session started in place of the first one, and the line says so.
+		if got, ok := lines[0].attr("replacement"); !ok || got.Kind() != slog.KindBool || !got.Bool() {
+			t.Errorf("the Error line says replacement %v (present %t), want true: the session replaced %q", got, ok, session)
+		}
+		if got, _ := lines[0].attr("replaced"); got.String() != session {
+			t.Errorf("the Error line names the replaced session %q, want %q", got, session)
 		}
 
 		// The launch budget runs out, the claim fails, and the keeper's retry (RequestRetry, made
@@ -232,7 +239,7 @@ func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *t
 		h.must(RequestRetry{Claim: h.token})
 		h.wantResumedSince(resumes, spawns, replacingSession)
 		if lines := h.records.of(sessionNotReplacedLine); len(lines) != 1 {
-			t.Errorf("%d lines say a fresh session also failed, want the one", len(lines))
+			t.Errorf("%d lines say the session is not replaced, want the one", len(lines))
 		}
 		if lines := h.records.of(sessionReplacedLine); len(lines) != 1 {
 			t.Errorf("%d replacement lines, want the one of the first session", len(lines))

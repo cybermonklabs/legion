@@ -8,7 +8,7 @@ The operator ran `legion controller start --config controller.yaml` on their own
 
 ## Launched by the daemon (`controller: daemon`)
 
-The daemon runs you in a pod.
+The daemon runs you in a pod. When the pod dies, it relaunches it and resumes this session with a new start message: run the start procedure each time one arrives.
 
 ## The `legion` tool
 

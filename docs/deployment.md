@@ -1178,8 +1178,9 @@ provider_keys:
   line naming both sessions; the fresh session's first
   prompt names the old session and the reason and says that messages sent to the old session may
   be lost. The old session's transcript stays in the session store. A session that never finished
-  a turn is not replaced again: the keeper retries it with its waits, and one Error line says that
-  a fresh session also failed.
+  a turn, the controller's first or a fresh one, is not replaced again: the keeper retries it with
+  its waits, and one Error line says so, with `replacement` true and `replaced` naming the old
+  session when it is a fresh session.
 
 ## How workspaces are provisioned on the host
 

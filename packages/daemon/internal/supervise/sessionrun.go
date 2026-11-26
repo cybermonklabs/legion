@@ -24,14 +24,15 @@ const controllerSessionEnds = 2
 // The lines of the controller session's replacement (dispatch://INFRA-2045 R4), which an operator
 // and a production check read whole: the Warn line of the launch that replaces the session under
 // R1 (replaceEndedSession) and under R3 (replaceAgedSession), the Error line of a session that is
-// not replaced because it never finished a turn (sessionEnded), the Warn line of a session id R3
-// can read no age off (replaceAgedSession), and the line of the fresh session's ready, which names
-// the session it replaced (the table's ready).
+// not replaced because it never finished a turn (reportNotReplaced), whose `replacement` says
+// whether that session took the place of an earlier one, the Warn line of a session id R3 can read
+// no age off (replaceAgedSession), and the line of the fresh session's ready, which names the
+// session it replaced (the table's ready).
 const (
 	sessionReplacedLine    = "supervise: the controller's session ended two launches in a row before it finished a turn; this launch starts a fresh session in its place"
 	sessionAgedOutLine     = "supervise: the controller's session is older than controller_session_max_age_hours; this relaunch starts a fresh session in its place"
 	sessionUnagedLine      = "supervise: the controller's session id is no UUIDv7, so controller_session_max_age_hours cannot read its age and its relaunches resume it"
-	sessionNotReplacedLine = "supervise: the controller's session ended two launches in a row and has never finished a turn, so it is not replaced: a fresh session also failed, and the keeper retries it with its waits"
+	sessionNotReplacedLine = "supervise: the controller's session ended two launches in a row and has never finished a turn, so it is not replaced, and the keeper retries it with its waits"
 	freshSessionReadyLine  = "supervise: the controller's fresh session is ready in place of the session it replaced"
 )
 
@@ -80,7 +81,7 @@ type SessionRun struct {
 // reportNotReplaced).
 func (m *Machine) sessionEnded(how string) {
 	if m.countEnd(how) {
-		m.reportNotReplaced(m.claim.Session, m.claim.SessionRun.Endings)
+		m.reportNotReplaced(m.claim.Session, m.claim.SessionRun.Endings, m.claim.Abandoned.Session)
 	}
 }
 
@@ -104,10 +105,19 @@ func (m *Machine) countEnd(how string) (reached bool) {
 
 // reportNotReplaced is the one Error line of a controller session that ended
 // controllerSessionEnds launches in a row and never finished a turn: it is not replaced, and only
-// the keeper's retries bring it back. The caller names the session and its endings as they stood
-// at the end, since a relaunch made since may have cleared both (endTurnPastBound).
-func (m *Machine) reportNotReplaced(session string, endings []string) {
-	m.log.Error(sessionNotReplacedLine, "session", session, "endings", endings)
+// the keeper's retries bring it back. Such a session is the controller's first, or one that
+// started in place of a session the claim left behind (replaced, Claim.Abandoned.Session: a fresh
+// session of R1 or R3, of a retry in a new session, or of an operator's forget-session), and the
+// line says which (`replacement`, and `replaced` names the session left behind). An agent that
+// registered the left-behind session itself is no replacement of it. The caller names the
+// session, its endings and the session left behind as they stood at the end, since a relaunch
+// made since may have changed all three (endTurnPastBound).
+func (m *Machine) reportNotReplaced(session string, endings []string, replaced string) {
+	if replaced == session {
+		replaced = ""
+	}
+	m.log.Error(sessionNotReplacedLine, "session", session, "endings", endings,
+		"replacement", replaced != "", "replaced", replaced)
 }
 
 // diedEnding is how a death the machine charged ended the session's launch (died), for the run's
@@ -259,9 +269,10 @@ func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error 
 	// the keeper's next look posts it again, so its count is taken back: one turn is one end.
 	counted, ended := m.claim.SessionRun, m.claim.LastTurnEnd
 	reached := m.countEnd(fmt.Sprintf("its turn stayed open longer than %s, from %s", ev.Bound, start.UTC().Format(time.RFC3339)))
-	// The session and its endings as this end leaves them, for the Error line written once the end
-	// stands: the relaunch the end makes may start a fresh session, which clears both.
-	session, endings := m.claim.Session, m.claim.SessionRun.Endings
+	// The session, its endings and the session it replaced as this end leaves them, for the Error
+	// line written once the end stands: the relaunch the end makes may start a fresh session, which
+	// clears the first two and records this session as the one left behind.
+	session, endings, replaced := m.claim.Session, m.claim.SessionRun.Endings, m.claim.Abandoned.Session
 	// The end closes the turn (Claim.LastTurnEnd), as a death's does (chargeDeath): a death of the
 	// relaunched agent is then judged on the turn it finds rather than charged against this one
 	// (turnOpen).
@@ -277,7 +288,7 @@ func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error 
 		err = errors.Join(err, m.persist(ctx))
 	case reached:
 		// Written once the end stands, so a take-back writes no second line for one end.
-		m.reportNotReplaced(session, endings)
+		m.reportNotReplaced(session, endings, replaced)
 	}
 	m.log.Info("supervise: the end of the controller turn open past its bound", "end", end)
 	return err

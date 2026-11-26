@@ -7,8 +7,9 @@ body: |-
     start the runtime refuses are not counted. A finished turn resets the count, and the claim
     stores the count and whether its session has finished a turn (`claims.session_run`, store
     migration `20261125021636_claim_session_run`), so a daemon restart keeps both. A session that
-    has never finished a turn is not replaced again: the keeper retries it as before, and one Error
-    line says that a fresh session also failed. The replacement writes one Warn line that names the
+    has never finished a turn, the controller's first or a fresh one, is not replaced again: the
+    keeper retries it as before, and one Error line says so and whether the session replaced an
+    earlier one. The replacement writes one Warn line that names the
     old session, the reason and how each of the two launches ended; the fresh session's ready writes
     one line that names both sessions; and the fresh session's first prompt names the old session
     and the reason, and says that Envoy messages sent to the old session may be lost, before the
