@@ -57,6 +57,7 @@
 #
 # Run from anywhere: .github/scripts/check-ci-filters.test.sh
 # CI runs it in ci.yaml's test job.
+# (A throwaway measurement of this file's run at its merge base; not for merge.)
 set -euo pipefail
 shopt -s inherit_errexit
 

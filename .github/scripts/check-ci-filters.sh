@@ -524,6 +524,7 @@
 #                    .github/scripts/check-ci-filters.sh write
 #                    .github/scripts/check-ci-filters.sh generate "$RUNNER_TEMP/ci-filters.yaml"
 # CI runs it in ci.yaml's ci-filters job, and its tests in ci.yaml's test job.
+# (A throwaway measurement of this file's run at its merge base; not for merge.)
 #
 # On a machine whose `go` is a bootstrap that switches to a toolchain in the module cache - every
 # Legion worker pod is one - every closure above fails with `toolchain not available`, because the
