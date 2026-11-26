@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // The plan `implementer reviewer tester`: the implementer is asked in reviewing, and a later read
@@ -176,6 +177,42 @@ func TestAnAskOwedToAFailedClaimIsSentAgainAtItsNextLaunch(t *testing.T) {
 	landsMergeForward(t, pool)
 	if got := toldWho(mergeForwardMessages(t, pool)[len(again):]); !reflect.DeepEqual(got, []string{"tester landed"}) {
 		t.Errorf("the landing queued %v, want the tester told the new head", got)
+	}
+}
+
+// The worker-died notice of a role whose claim failed outside its issue's phase, while the merge
+// of the head is owed to it, names that merge after what main's notice says of the role
+// (owedAskClause after joinReason): that the role does not work the phase, that nothing is held,
+// and, for a claim OpenAI's cyber-policy refusal failed, that it does not start again by itself.
+// So each "it" of the role's own clauses still names the role, and the worker the merge holds is
+// named last. The case is the implementer asked in testing, with the tester held for its merge.
+func TestTheWorkerDiedOfARoleTheMergeIsOwedToNamesTheMergeLast(t *testing.T) {
+	t.Parallel()
+	owed := ". The merge of main forward onto head " + conflictHead + " is owed to the implementer, and its ask is sent again " +
+		"when the implementer starts again; the tester is held for it"
+	for _, tc := range []struct {
+		name  string
+		cause supervise.FailureCause
+		want  string
+	}{
+		{"a claim that died", supervise.CauseDied, "the implementer does not work LEGION-208's phase testing; nothing is held" + owed},
+		{"a claim the cyber-policy refusal failed", supervise.CauseCyberPolicy,
+			"the implementer does not work LEGION-208's phase testing; nothing is held; it does not start again by itself" + owed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+			asksDelivered(t, pool, 1)
+			applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer, Cause: tc.cause})
+			died := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+			if len(died) != 1 {
+				t.Fatalf("the worker-died notices of LEGION-208 are %+v, want one", died)
+			}
+			if died[0].Reason != tc.want {
+				t.Errorf("the worker-died reads %q, want %q", died[0].Reason, tc.want)
+			}
+		})
 	}
 }
 
