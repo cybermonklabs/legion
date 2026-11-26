@@ -267,6 +267,8 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "issues project": "a project's issue list",
   "known-session": "whether Dispatch holds any record of a session, and its title: no post",
   "legion-daemon": "a project's Legion daemon setting",
+  "lens-kinds": "the lens catalogue: each kind's words and its sources' standards",
+  "lens-read": "a lens's chain: lenses, kinds, verdicts, findings, risks and bare addresses",
   "machine-logins": "the reader's machine logins",
   "new-issue-settings": "the label and session a new issue from the bar takes",
   priorities: "the priorities and the work under them",
