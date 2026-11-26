@@ -226,11 +226,8 @@ forward_job() {
   tree=$checkout
   if [ "$label" != head ]; then
     mapfile -t control < <(forward_control "$label")
-    if ! bash "$rig" label-tree "$label" "$commit" "$here/${control[0]}" ||
-      ! bash "$rig" unpatch-holds "$label" "$here/${control[1]}"; then
-      echo "UNKNOWN: ${control[1]} is not the pull request's diff at $commit"
-      exit 3
-    fi
+    bash "$rig" label-tree "$label" "$commit" "$here/${control[0]}"
+    bash "$rig" unpatch-holds "$label" "$here/${control[1]}"
     tree=$SKILL_SCENARIOS_WORK/label-trees/$label/tree
   fi
   bash "$rig" profile "$label" "$tree"
