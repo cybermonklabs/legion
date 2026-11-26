@@ -13,6 +13,7 @@ import { useAgents } from "../conversation/useAgents";
 import { AgentName, AskResolutionLine, askResolutionParts, useAgentText } from "./AgentName";
 import {
   AGENT_REGISTRY_POLL_MS,
+  type AgentRegistry,
   AgentRegistryPoller,
   agentRegistryPollMs,
   useAgentRegistry,
@@ -679,20 +680,18 @@ const REFILLING = new ApiError(503, {
 /** The 503 Dispatch answers `/agents` with while the Envoy listener does not answer. */
 const UNREACHABLE = new ApiError(503, { error: "Envoy listener unreachable" });
 
+/** Plain label for one client's agent registry state. */
+function registryLabel(registry: AgentRegistry): string {
+  if (registry.refilling) return "refilling";
+  if (registry.isError) return "unreachable";
+  if (registry.known) return "listed";
+  return "no answer yet";
+}
+
 /** What one client's registry says of its own list, for a reader of the cases below. */
 function RegistryReading({ name }: { name: string }): ReactNode {
   const registry = useAgentRegistry(true);
-  return (
-    <p data-testid={name}>
-      {registry.refilling
-        ? "refilling"
-        : registry.isError
-          ? "unreachable"
-          : registry.known
-            ? "listed"
-            : "no answer yet"}
-    </p>
-  );
+  return <p data-testid={name}>{registryLabel(registry)}</p>;
 }
 
 /** One `RegistryReading` per name, all on `client`. */

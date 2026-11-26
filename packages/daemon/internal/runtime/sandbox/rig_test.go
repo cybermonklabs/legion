@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -101,6 +102,11 @@ func testOptions() Options {
 		BusyBackoff:           time.Millisecond,
 		TerminationGrace:      200 * time.Millisecond,
 		ProbeInterval:         time.Hour,
+		// The rig's runtime never runs its own gh refresher tick, about 292 years: the tests that
+		// exercise the refresher drive its ticks themselves (refreshTick, readCacheHealth) and count
+		// what each does, and a tick of the runtime's own a run reached would add its reads and
+		// writes to theirs. A test that wants the runtime's ticks sets a short interval.
+		GitHubRefreshInterval: time.Duration(math.MaxInt64),
 		AdoptTimeout:          time.Minute,
 		Tokens:                staticTokens{},
 		GitHubCredential:      staticCredential,
@@ -570,6 +576,9 @@ type rig struct {
 	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
 	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
 	heldStops <-chan struct{}
+	// cacheDial, when set, is the runtime's cacheDial, installed before the runtime starts
+	// (withCacheDial).
+	cacheDial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 type rigOption func(*rig, *Options)
@@ -594,6 +603,31 @@ func withWaitsToTheDeadline() rigOption {
 
 // withoutController runs no controller stand-in: the objects stay as the test wrote them.
 func withoutController() rigOption { return func(g *rig, _ *Options) { g.noController = true } }
+
+// withCacheDial has the runtime open its cache health reads through dial, installed before the
+// runtime starts. start runs the gh refresher on a goroutine of its own, and each of its ticks
+// (r.gitHubRefresh: a minute in the daemon; out of reach in this rig unless a test sets it) reads
+// the caches' health through r.cacheDial; start's go statement orders a dial installed before it
+// ahead of every such read. A test that set the field once newRig had returned was ordered ahead
+// of a tick's read only by the store locks the tick happens to take before it, which no test
+// should rely on.
+func withCacheDial(dial func(ctx context.Context, network, address string) (net.Conn, error)) rigOption {
+	return func(g *rig, _ *Options) { g.cacheDial = dial }
+}
+
+// withHeld starts the controller stand-in with its hold on (setHold), so it makes no pod from its
+// first pass: for a test that seeds a Running Sandbox it means to have no pod. A hold set after
+// newRig returns comes too late for such a Sandbox, since control's first pass can run before it
+// and make the pod. TestProbeImageReplacesOnlyItsOwnProjectsLeftover's foreign probe Sandbox got
+// one that way, the pod reached the runtime's store (the fakes' watches ignore label selectors)
+// without its Sandbox, and the probe waited 10 s for it to go instead of refusing the Sandbox.
+func withHeld() rigOption { return func(g *rig, _ *Options) { g.hold.Store(true) } }
+
+// withoutAutoStart has the controller stand-in leave each pod it makes Pending and on no node from
+// its first pass (autoStart), for a rig that drives its pods' lifecycle itself, as newProbeRig's
+// does. Turned off once newRig had returned, a pass in that gap could already have made a seeded
+// Running Sandbox's pod scheduled and Running.
+func withoutAutoStart() rigOption { return func(g *rig, _ *Options) { g.autoStart.Store(false) } }
 
 // withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the
 // launcher holds it installed when installed is set, as one of a pod whose launcher already took
@@ -847,6 +881,9 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		r, err := configure(opts)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if g.cacheDial != nil {
+			r.cacheDial = g.cacheDial
 		}
 		if err := r.start(ctx, g.clients); err != nil {
 			t.Fatal(err)

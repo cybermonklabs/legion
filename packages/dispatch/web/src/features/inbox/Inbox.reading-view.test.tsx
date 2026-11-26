@@ -44,6 +44,14 @@ beforeAll(async () => {
 
 installInboxApiMocks();
 
+/** An unassigned ask row on an unassigned issue. */
+function orphanAsk(id: string, key: string, question: string): InboxRow {
+  return issueAsk(
+    { id, issue: { assignee: null, key, title: "Nobody's issue" }, issue_key: key, question },
+    null
+  );
+}
+
 test("below 1280 px the page lists short rows, and a row the reader opens is read in place of the list until Inbox takes them back to it", async () => {
   const user = userEvent.setup();
   const rows = [
@@ -281,11 +289,11 @@ test("below 1280 px a short row's checkbox marks the row without opening it, and
   }
 });
 
-// INFRA-3135 (the architect's ruling M2 of round 31): below 1280 px with a row open, the page hides
-// the list under the row's reading view, so the selection bar's hand-off reads the view. Clear
-// selection lands the focus on the view's own checkbox for the open row, and not on a checkbox in
-// the hidden list, from which a browser drops the focus to the page's body: with the open row
-// marked last, and with another row, hidden in the list, marked last.
+// Below 1280 px with a row open, the page hides the list under the row's reading view, so the
+// selection bar's hand-off reads the view. Clear selection lands the focus on the view's own
+// checkbox for the open row, and not on a checkbox in the hidden list, from which a browser drops
+// the focus to the page's body: with the open row marked last, and with another row, hidden in the
+// list, marked last.
 test("below 1280 px with a row open and a row marked, Clear selection on the bar lands the focus on the reading view's own checkbox", async () => {
   const user = userEvent.setup();
   const rows = [
@@ -758,14 +766,9 @@ test("below 1280 px `1`-`9` and `y` on a focused ask row open it and act in its 
 
 test("below 1280 px the reader's own Assign to me under Unassigned moves the view to the next row, as the column does, and says nothing left", async () => {
   const user = userEvent.setup();
-  const orphan = (id: string, key: string, question: string) =>
-    issueAsk(
-      { id, issue: { assignee: null, key, title: "Nobody's issue" }, issue_key: key, question },
-      null
-    );
   const rows = [
-    orphan("ask-oa", "CORE-3", "First orphan?"),
-    orphan("ask-ob", "CORE-4", "Second orphan?"),
+    orphanAsk("ask-oa", "CORE-3", "First orphan?"),
+    orphanAsk("ask-ob", "CORE-4", "Second orphan?"),
   ];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
@@ -991,14 +994,9 @@ test("below 1280 px an open row that leaves on its own brings the list back at i
 
 test("below 1280 px an open row the reader's own Assign to me left in the list, withdrawn later, brings the list back and says it left", async () => {
   const user = userEvent.setup();
-  const orphan = (id: string, key: string, question: string) =>
-    issueAsk(
-      { id, issue: { assignee: null, key, title: "Nobody's issue" }, issue_key: key, question },
-      null
-    );
   const rows = [
-    orphan("ask-oa", "CORE-3", "First orphan?"),
-    orphan("ask-ob", "CORE-4", "Second orphan?"),
+    orphanAsk("ask-oa", "CORE-3", "First orphan?"),
+    orphanAsk("ask-ob", "CORE-4", "Second orphan?"),
   ];
   let served: InboxRow[] = rows;
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
@@ -1059,14 +1057,9 @@ test("below 1280 px an open row the reader's own Assign to me left in the list, 
 // move, and the view moves on as it does for a write that is out.
 test("below 1280 px an open row whose own Assign to me was refused, withdrawn later, moves the view to the next row and says nothing left", async () => {
   const user = userEvent.setup();
-  const orphan = (id: string, key: string, question: string) =>
-    issueAsk(
-      { id, issue: { assignee: null, key, title: "Nobody's issue" }, issue_key: key, question },
-      null
-    );
   const rows = [
-    orphan("ask-oa", "CORE-3", "First orphan?"),
-    orphan("ask-ob", "CORE-4", "Second orphan?"),
+    orphanAsk("ask-oa", "CORE-3", "First orphan?"),
+    orphanAsk("ask-ob", "CORE-4", "Second orphan?"),
   ];
   let served: InboxRow[] = rows;
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);

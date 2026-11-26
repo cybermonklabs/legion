@@ -6230,8 +6230,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
    *  with no band in it. Below the reading column's width a row's Snooze is picked in the reading
    *  view, which stands in the list's place and keeps the list mounted and hidden until the
    *  reader goes back to it: while the view shows, the band is read in that hidden list, the
-   *  count the reader finds there on going back, until two reads a poll apart agree
-   *  (`settledValue`). */
+   *  count the reader finds there on going back. Its words are read until two reads a poll apart
+   *  agree (`settledValue`), with no band reading `Later (0)`. */
   const later = async () => {
     const band = page.getByRole("button", { name: /^Later \(\d+\)/ });
     const shown = await settledState("the Inbox's Later band", [
@@ -6243,8 +6243,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
     if (shown === "band") {
       return /Later \(\d+\)/.exec((await band.innerText()).replace(/\s+/g, " "))?.[0] ?? "";
     }
-    // In the reading view the band is in the hidden list, which `settledState` reads as not shown,
-    // so its words are read until two reads a poll apart agree; no band there is `Later (0)`.
     return settledValue("the Inbox's Later band in the hidden list", async () => {
       const words = await inboxList(page)
         .getByRole("button", { includeHidden: true, name: /^Later \(\d+\)/ })
@@ -13040,18 +13038,13 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
   ).toBe(true);
 });
 
-// INFRA-3135, round 30 (the implementer's own row, by the architect's ruling M2): below 1280 px a
-// row the reader opens is read in place of the list, which the page keeps mounted under `hidden`
-// (#5223), and a focus put in the hidden list falls to the page's body. So in that reading view the
-// selection bar's hand-off reads the view: the view's row is the one row drawn, the view's own
-// checkbox is that row's mark, and the view's scroller is the list's own stop. At 390x664, with
-// one row marked in the list and another row's reading view open, Clear selection takes the bar
-// away with the focus in it, and the focus lands on the view's own checkbox for the open row,
-// wholly in the window and drawn over by nothing: not on the body, and not on the marked row's
-// checkbox in the hidden list.
-// Its engines: the clause of the `webkit` and `firefox` projects that names the row INFRA-3135's
-// round 30 gave main's reading view (e2e/playwright.config.ts): the bar's going takes its focused
-// Clear selection away, a focused control taken away with no `focusout` in those engines.
+// Below 1280 px the Inbox's reading view replaces the list, which the page keeps mounted under
+// `hidden` (#5223). A focus put in the hidden list falls to the page's body. The selection bar's
+// hand-off therefore uses the reading view's row, checkbox and scroller. At 390x664, with one row
+// marked in the list and another open, Clear selection removes the bar while it holds focus.
+// Focus lands on the open row's checkbox, wholly in view and unobscured, not in the hidden list.
+// The `webkit` and `firefox` projects include this case (e2e/playwright.config.ts) because those
+// engines remove the focused Clear selection control without firing `focusout`.
 // SLOW(>=2s): six asks seeded, and a reading view opened before the press.
 test("at 390 with a row marked and another row's reading view open, Clear selection on the Inbox bar lands the focus on the view's own checkbox for the open row, wholly in sight @firefox @webkit", async ({
   page,

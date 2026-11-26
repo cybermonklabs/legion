@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `workspace.FetchBudget`, the bound of an issue pod's whole `workspace-fetch`, grows by the 15-minute attempt on the repository cache's bucket (`workspace.BucketFetchTimeout`) for every deployment, with a bucket or without: from 190 to 205 minutes.
+  So `sandbox.Runtime.ProvisionBound` is 295 minutes (was 280), a launch try's bound (`sandbox.Runtime.LaunchBound`) about 6 h 5 min at the defaults (was 5 h 50 min), and the deadline of a pod that never says hello 301 minutes at the defaults (was 286).
+  A fresh feed filled from a repository cache now says where it came from before the summary line: `workspace-init fetch: source=bucket` and one `workspace-init fetch: bucket object=<name> size=<bytes> sha256=<hex>` line per object, or `workspace-init fetch: source=/tar reason=<why>`; the summary of a feed filled from the bucket names the cache as `<url> (bucket)`.
+time: 2026-11-26T04:04:01Z
+custom:
+    Issue: INFRA-5789
