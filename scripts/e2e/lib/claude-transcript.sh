@@ -82,5 +82,5 @@ resumed_reply_names() {
   text=$(transcript_since "$1" | jq -R -r 'fromjson? | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text')
   grep -Fq -- "$2" <<<"$text"
 }
-# handoff_recorded: the daemon recorded the implementer's handoff of the issue's implementing phase.
-handoff_recorded() { [ -n "$(role_handoff "$issue" implementer implementing)" ]; }
+# handoff_recorded: the daemon recorded the implementer's handoff, in implementing or testing.
+handoff_recorded() { [ -n "$(role_handoff "$issue" implementer implementing testing)" ]; }

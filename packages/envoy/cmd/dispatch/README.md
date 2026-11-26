@@ -3284,8 +3284,8 @@ no server of the earlier release serves while the migration runs, and the releas
 An older release started over the new schema creates a project with no default, which the column now refuses (`23502`), so that create answers `500`;
 recover a failed deploy forward, as `0113` and `0117` require.
 
-Above one replica a migration runs while the build before it is still serving.
-The app Deployment of `envoy-infra:gcp:Dispatch` is recreated at one replica and rolls above one (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
+Above one replica, unless `replaceUnderHold` is set, a migration runs while the build before it is still serving.
+The app Deployment of `envoy-infra:gcp:Dispatch` is recreated at one replica and rolls above one unless `replaceUnderHold` is set (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
 — and again for as long as a rollback lasts — the previous image's queries run against the new schema.
 A migration may therefore only add: a table, an index, a trigger, a column that is nullable or defaulted, a constraint added `not valid`.
 In the same release as the code that depends on it, it may not drop or rename a column or a table, change a column's type, or tighten a constraint the running build's queries would violate.
