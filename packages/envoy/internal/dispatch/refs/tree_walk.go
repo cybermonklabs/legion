@@ -1,9 +1,11 @@
 package refs
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -199,12 +201,68 @@ func treeChildStands(kind, id string) string {
 	  and state.held is distinct from '` + graphstore.StateGone + `'`
 }
 
-// treeChildOrder is the order of one parent's children, over the SQL rank and the child's kind and
-// id: the ranked ones first by rank and then the unranked, a tie by the lower address,
-// `<kind>:<id>`, each compared byte for byte (collate "C"), since a rank is a base-62 string of
-// mixed case.
-func treeChildOrder(rank, kind, id string) string {
-	return rank + ` is null, ` + rank + ` collate "C", (` + kind + ` || ':' || ` + id + `) collate "C"`
+// conversationKinds are the kinds of the nodes the tree orders as its conversation - an ask, a
+// comment, a message, a lens and a risk - which stand first among a node's children
+// (CompareSiblings, this issue's spec R8). The list is wider than the items of R2's conversation
+// test (IsConversationNode): a lens and a risk are discussion too.
+var conversationKinds = []string{graphstore.KindAsk, graphstore.KindComment, graphstore.KindMessage, graphstore.KindLens, graphstore.KindRisk}
+
+// OrderedAsConversation reports whether a node of kind kind stands among the conversation nodes a
+// parent's children begin with (conversationKinds).
+func OrderedAsConversation(kind string) bool { return slices.Contains(conversationKinds, kind) }
+
+// The classes of a node's children, in the order they stand among their siblings (siblingClass).
+const (
+	siblingConversation = iota
+	siblingRanked
+	siblingUnranked
+)
+
+// siblingClass is where a child of kind kind stands among its parent's children (this issue's
+// spec R8): a conversation node first, then a child that holds a rank, then the rest - a block
+// with no rank yet, new in a deferred version before the reconciliation ranks it, a result under
+// its check, a child issue.
+func siblingClass(kind string, ranked bool) int {
+	switch {
+	case OrderedAsConversation(kind):
+		return siblingConversation
+	case ranked:
+		return siblingRanked
+	}
+	return siblingUnranked
+}
+
+// CompareSiblings orders two children of one parent in the tree's order, which the tree read
+// answers (this issue's spec R8) and the record of every query follows (R14 at spec v247: "the
+// conversation nodes by the time each was made, then by address, then the children that hold a
+// rank in increasing rank, the lower address first on a tie, and then the other children that hold
+// no rank by the time each was made, then by address"). The conversation nodes come first because
+// their ids are random, so a read answers the discussion in the order it was written. Every
+// comparison is byte for byte (CompareAddresses; a rank is a base-62 string of mixed case). A child
+// the store holds no row of was made at the zero time, and stands first of its class.
+// treeChildOrder is the same order in SQL.
+func CompareSiblings(left, right TreeChild) int {
+	class := siblingClass(left.Node.Kind, left.Ranked)
+	if other := siblingClass(right.Node.Kind, right.Ranked); class != other {
+		return cmp.Compare(class, other)
+	}
+	if class == siblingRanked {
+		return cmp.Or(strings.Compare(left.Rank, right.Rank), CompareAddresses(left.Node, right.Node))
+	}
+	return cmp.Or(left.MadeAt.Compare(right.MadeAt), CompareAddresses(left.Node, right.Node))
+}
+
+// treeChildOrder is the order of one parent's children, CompareSiblings in SQL, over the SQL rank,
+// made_at, kind and id of a child: its class - a conversation node, then a ranked child, then the
+// rest - then a ranked child's rank, then any other's made_at, a child with no row first, as the
+// zero time stands first, then its address, `<kind>:<id>`, each text compared byte for byte
+// (collate "C").
+func treeChildOrder(rank, madeAt, kind, id string) string {
+	conversation := kind + ` in ('` + strings.Join(conversationKinds, `', '`) + `')`
+	return `case when ` + conversation + ` then 0 when ` + rank + ` is not null then 1 else 2 end, ` +
+		`(case when not ` + conversation + ` then ` + rank + ` end) collate "C", ` +
+		`case when ` + conversation + ` or ` + rank + ` is null then ` + madeAt + ` end nulls first, ` +
+		`(` + kind + ` || ':' || ` + id + `) collate "C"`
 }
 
 // treeChildrenStatement is the children of each parent $1 and $2 name, kinds and ids, at the cut
@@ -215,7 +273,7 @@ var treeChildrenStatement = `
 	from unnest($1::text[], $2::text[]) with ordinality as parent (kind, id, position)
 	` + treeChildJoins(`parent.kind`, `parent.id`) + `
 	where ` + treeChildStands(`parent.kind`, `parent.id`) + `
-	order by parent.position, ` + treeChildOrder(`rank.held`, `child.from_kind`, `child.from_id`)
+	order by parent.position, ` + treeChildOrder(`rank.held`, `node.made_at`, `child.from_kind`, `child.from_id`)
 
 // treeSubtreesStatement is the children of each parent $1 and $2 name, kinds and ids, at the cut
 // whose bounds $3 and $4 are, as treeChildrenStatement reads them, and the children of each child
@@ -238,7 +296,7 @@ var treeSubtreesStatement = `
 		  and ` + treeChildStands(`entered.kind`, `entered.id`) + `
 	)
 	select parent_kind, parent_id, kind, id, held_rank, supertag, made_at, opening from under
-	order by ` + treeChildOrder(`held_rank`, `kind`, `id`)
+	order by ` + treeChildOrder(`held_rank`, `made_at`, `kind`, `id`)
 
 // TreeOwns reports whether node is a node of the tree of the issue owner as its address tells,
 // which the walk of that tree (docs' WalkIssueTree) takes and enters: an issue's node is never one,

@@ -1,0 +1,15 @@
+[
+  {
+    "id": "u-a",
+    "serves": ["a-message-survives-a-restart"],
+    "needs": [],
+    "waits_on": ["a-message-reaches-a-late-session"]
+  },
+  {
+    "id": "u-b",
+    "serves": ["a-message-reaches-a-late-session"],
+    "needs": [],
+    "waits_on": ["a-message-survives-a-restart"]
+  },
+  { "id": "u-c", "serves": [], "needs": [], "waits_on": ["envoy-delivers-messages"] }
+]

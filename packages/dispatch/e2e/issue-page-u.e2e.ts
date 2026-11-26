@@ -8,8 +8,8 @@ import {
   restatesAnswer,
 } from "../web/src/features/issue-page/decision-nodes/decision-nodes";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
+import { chipName } from "../web/src/features/issue-page/first-line";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
-import { chipName } from "../web/src/features/issue-page/issue-tree";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,

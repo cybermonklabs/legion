@@ -329,22 +329,15 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 	return tree, nil
 }
 
-// compareIssues orders two issues of the tree as the tree orders the children of one node (docs'
-// WalkIssueTree, api's compareSiblings), which is the tree's order of the issues under an issue:
-// one whose node holds a rank before one whose node holds none, two that hold one by rank, two
-// others by when each node was made, and each tie by key.
+// compareIssues orders two issues of the tree as the tree orders the children of one node
+// (CompareSiblings), which is the tree's order of the issues under an issue: no issue is a
+// conversation node, so one whose node holds a rank stands before one whose node holds none, two
+// that hold one by rank, two others by when each node was made, and each tie by key.
 func (tree *planTree) compareIssues(a, b string) int {
 	left, right := tree.issues[a], tree.issues[b]
-	switch {
-	case left.ranked != right.ranked:
-		if left.ranked {
-			return -1
-		}
-		return 1
-	case left.ranked:
-		return cmp.Or(strings.Compare(left.rank, right.rank), strings.Compare(a, b))
-	}
-	return cmp.Or(left.madeAt.Compare(right.madeAt), strings.Compare(a, b))
+	return CompareSiblings(
+		TreeChild{Node: Target{Kind: graphstore.KindIssue, ID: a}, Rank: left.rank, Ranked: left.ranked, MadeAt: left.madeAt},
+		TreeChild{Node: Target{Kind: graphstore.KindIssue, ID: b}, Rank: right.rank, Ranked: right.ranked, MadeAt: right.madeAt})
 }
 
 // comparePlans orders two plan nodes of the tree in their document's order (R11): by text_rank,

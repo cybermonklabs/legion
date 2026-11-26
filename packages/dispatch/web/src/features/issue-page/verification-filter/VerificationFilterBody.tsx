@@ -2,13 +2,14 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  type RefObject,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
-import type { Actor, CheckBlock, RequirementCoverage } from "../../../api/types";
+import type { Actor, CheckBlock, IssueCoverage } from "../../../api/types";
 import {
   focusVisibleRing,
   pageFailedText,
@@ -40,7 +41,8 @@ import { parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
-import { chipName, type NodeChip, type TreeNode } from "../issue-tree";
+import { chipName } from "../first-line";
+import type { NodeChip, TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
 import { NODE_EDITED_MARKS } from "../NodeRow";
@@ -64,6 +66,7 @@ import {
 } from "../page-words";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
+import { useAddressActed, useAddressLanding } from "../spec-filter/address-landing";
 import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
@@ -140,7 +143,7 @@ export function queryTyped(query: string): boolean {
  * What it says of a statement and of a check is `statement-state.ts`, which is pure. What it
  * says of the issue - the chips' counts, the summary's counts of statements and checks, how each
  * statement stands and so the state a chip narrows by - is read from the view with no words
- * query, and the summary's covered count from the coverage read (`requirements`). The view the
+ * query, and the summary's covered line from the coverage read (`coverage`). The view the
  * query left says which statements and checks are drawn, and each check drawn is read from the
  * view with no query too: its state, its latest result and its count of earlier results, with
  * the earlier results the query kept drawn under its latest. So a query narrows the rows and
@@ -157,10 +160,12 @@ export function queryTyped(query: string): boolean {
  *   state is told from another by colour alone.
  * - **Covered, never proven.** The summary counts the issue's statements that carry a check as
  *   covered, out of every statement of the issue, both from the coverage read, which no page of
- *   the view read cuts; no count, legend or heading of this body reads proven or met for it,
- *   because a statement that has a check is not a statement that is true. Every other count the
- *   summary and the chips draw is of the statements and checks the view has loaded, and carries
- *   "+" while the view read holds nodes no page read yet holds (R15, `TreeNode.moreToRead`).
+ *   the view read cuts; while a document of the issue is still being indexed, it draws that
+ *   document's line in place of any count. No count, legend or heading of this body reads proven
+ *   or met for it, because a statement that has a check is not a statement that is true. Every
+ *   other count the summary and the chips draw is of the statements and checks the view has
+ *   loaded, and carries "+" while the view read holds nodes no page read yet holds (R15,
+ *   `TreeNode.moreToRead`).
  * - **Every value inside its card.** Each cell is a column of its own that may be zero wide
  *   and breaks inside a word where it has nothing else to break on, and a check's attributes
  *   and a result's are the two-column grid `NodeFacts.tsx` draws, which is what keeps a value
@@ -172,18 +177,32 @@ export function queryTyped(query: string): boolean {
  * body: a `run` as a command with its own copy control, a screenshot as a picture, `when` as
  * words. A statement no check serves carries its gap in full, where the picture draws "No check
  * proves this".
+ *
+ * An address that names a row the tree draws puts the focus on that row, once per following of
+ * the address and once every read the page's tree is built from has settled, as the Spec view's
+ * address does (`SpecFilterBody`), and that row takes the tab stop as the focus does, from where
+ * the reader may move it on. A reader who acted since they followed the address keeps the focus
+ * where they put it, and the tab stop where it was.
  */
 export function VerificationFilterBody({
+  addressActs,
   addressed,
   checks,
   context,
+  coverage,
   namesLine,
   published,
   reads,
-  requirements,
+  readsSettled = false,
+  reveal,
   view,
   whole,
 }: {
+  /** The reader's acts since they followed the address: a controller their first act aborts,
+   *  which the stage starts once for each following (`StageSlot`'s `ReaderActsWatch`) and the
+   *  landing reads, as the Spec view's does (`SpecFilterBody`'s `addressActs`). None where the
+   *  body is drawn without the stage, which then lands as where the reader made no act. */
+  addressActs?: RefObject<AbortController | undefined>;
   /** The node the address names (`named`, its id) and the call told whether the body draws a row
    *  of it with the reader's chip applied (`tell`), before the browser paints and again as what
    *  it draws changes, once all three reads have answered (`slots/view-verification.tsx`). */
@@ -194,6 +213,12 @@ export function VerificationFilterBody({
   /** The ids of the rows the filter draws as context, which under Verification is every
    *  statement (`presets.ts`). */
   context: ReadonlySet<string>;
+  /** The coverage read (`GET /api/v1/issues/{key}/coverage`, the slot's `coverage`): every
+   *  statement of the issue's spec, with how many checks serve it, and any line saying a
+   *  document of the issue is still being indexed, which the summary's covered line is read from
+   *  alone (`issueCovered`). That read is one of the three the body waits on (`reads`), so the
+   *  summary is drawn only once it holds an answer. */
+  coverage: IssueCoverage | undefined;
   /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
    *  `useOutlineReads`), the outline's own: its words and a Retry that asks those reads again, and
    *  none while they do not stand failed. Every reference the rows and the parent lines draw
@@ -218,11 +243,16 @@ export function VerificationFilterBody({
    *  out. A read that has answered once stays answered when a later refetch fails: the body
    *  draws what it last answered. */
   reads: VerificationReads;
-  /** The coverage read's rows (`GET /api/v1/issues/{key}/coverage`, the slot's `requirements`):
-   *  every statement of the issue's spec, with how many checks serve it, which the summary's
-   *  covered count is read from alone (`issueCovered`). That read is one of the three the body
-   *  waits on (`reads`), so the summary is drawn only once it holds an answer. */
-  requirements: readonly RequirementCoverage[];
+  /** Whether every read the page's tree is built from has answered, with its data or with its
+   *  failure (`useOutlineReads`'s `readsSettled`), which the row the address names waits on
+   *  before it takes the focus and the tab stop (`reveal`). False where none is given, so a body
+   *  given no address lands nowhere. */
+  readsSettled?: boolean;
+  /** The id of the node the address names (`useAddressTarget`'s last node of `reveal`). Where
+   *  the tree draws a row of its own for that node, the row takes the focus and the tab stop once
+   *  per following of the address, unless the reader has acted since they followed it
+   *  (`addressActs`). */
+  reveal?: string;
   /** The tree as the Verification filter left it (`presetView`). */
   view: TreeNode;
   /** The Verification view with no words query, where a query is typed: what the issue holds,
@@ -248,7 +278,7 @@ export function VerificationFilterBody({
   // narrowed until they press one.
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
-  const covered = useMemo(() => issueCovered(requirements), [requirements]);
+  const covered = useMemo(() => issueCovered(coverage), [coverage]);
   // Whether the view read holds nodes no page read yet holds, so each count of the statements
   // and checks it has loaded carries "+" (R15).
   const more = (whole ?? view).moreToRead === true;
@@ -320,9 +350,44 @@ export function VerificationFilterBody({
   // The row that holds the tree's one tab stop, by its id in `rows`: the issue's at first. A
   // row the reader's narrowing took out hands it back to the issue's row, in this render rather
   // than in an effect after it, so the tree is never drawn without its stop.
+  // Once every read the page's tree is built from has settled, the row the address names takes
+  // the stop, once per following of the address, only while the tree draws that row and only
+  // where the reader has not acted since they followed the address, as the Spec view's does
+  // (`SpecFilterBody`); a key the reader presses moves it on from there, Home to the issue's row
+  // included, as from any row, and a narrowing that takes the row out hands it back to the
+  // issue's row as above. With no address naming a row the stop is as it was.
   const [rovingId, setRovingId] = useState(view.id);
   if (rovingId !== view.id && !rows.includes(rovingId)) setRovingId(view.id);
+  // The address's row is the stop from the render that lands on it: the stage gives a focus that
+  // rests on nothing to the tab-stop row as that render is drawn (`slots/stage.tsx`), before the
+  // landing's frame, and a landing whose row lost the focus to another row by then leaves the
+  // focus there (`landOnRow`). So the stop is given in this render, as the line above hands it
+  // back, under the key the landing takes (the following and the row, `stopGiven`), and not
+  // again in that following. It is given only where the reader has not acted since the
+  // following, which this one render reads (`addressActs`): for a reader who acted the landing
+  // does nothing, but the stage still gives a focus they left on nothing - a turn of the wheel,
+  // or a key pressed on the page, before any row was drawn - to the tab-stop row as the rows
+  // come, where the address's row would take it off screen; the issue's row, at the view's top,
+  // takes it instead. An act draws nothing, so a stop that read it at every render would move
+  // at whatever render came next; it is read in this one alone. A key that moved the stop in
+  // this following is an act the body holds in its state too (`keyMovedIn`), the one a body
+  // drawn without the stage knows of: the row the reader moved to keeps the stop, as it keeps
+  // the focus, as the Spec view keeps the row the reader moved to first (`SpecFilterBody`'s
+  // `stop`).
+  const { acted, following } = useAddressActed(addressActs);
+  const addressRow =
+    readsSettled && reveal !== undefined && rows.includes(reveal) ? reveal : undefined;
+  const [stopGiven, setStopGiven] = useState<string | undefined>(undefined);
+  const [keyMovedIn, setKeyMovedIn] = useState<string | undefined>(undefined);
+  if (addressRow !== undefined && stopGiven !== `${following}:${addressRow}`) {
+    setStopGiven(`${following}:${addressRow}`);
+    if (keyMovedIn !== following && !acted) setRovingId(addressRow);
+  }
   const tabIndexFor = (id: string): 0 | -1 => (id === rovingId ? 0 : -1);
+  // An address that names a row puts the focus on it once every read the page's tree is built
+  // from has settled, as the Spec view's does (`useAddressLanding`).
+  const tree = useRef<HTMLDivElement>(null);
+  useAddressLanding({ acts: addressActs, drawn: rows.join(" "), id: addressRow, tree });
   // Each drawn check's press, by its row's id in `rows`: true where the reader pressed its facts
   // open, false where they pressed them shut while the focus held them open, and no entry where
   // the focus alone decides. It is held here rather than in each check so the tree's keys and a
@@ -410,6 +475,8 @@ export function VerificationFilterBody({
       // it is, still bring that row back on screen where the reader scrolled it off.
       const id = to.dataset.verificationRow;
       if (id !== undefined) setRovingId(id);
+      // In this following the address's row takes the stop no more (`keyMovedIn`).
+      if (id !== undefined) setKeyMovedIn(following);
       moveToRow(to);
       return;
     }
@@ -447,6 +514,7 @@ export function VerificationFilterBody({
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
         onKeyDown={keyDown}
+        ref={tree}
         role="tree"
         tabIndex={-1}
       >
@@ -887,9 +955,9 @@ function Summary({
   reading,
 }: {
   counts: Readonly<Record<StatementState, number>>;
-  /** How many of the issue's statements carry a check, out of every statement it has, from the
-   *  coverage read (`issueCovered`): the same on every read, whichever page of the view is
-   *  loaded. */
+  /** How the issue's covered count stands, from the coverage read (`issueCovered`): the same on
+   *  every read, whichever page of the view is loaded, or each line saying a document of the
+   *  issue is still being indexed in place of any count. */
   covered: IssueCovered;
   /** Whether the view read holds nodes no page read yet holds: each count of the loaded
    *  statements and checks then carries "+" (R15). */
@@ -920,12 +988,28 @@ function Summary({
       className={`flex min-w-0 flex-wrap items-center gap-[18px] rounded-[10px] border px-[18px] py-3.5 ${pageLineBorder} ${pagePaperBg}`}
       data-verification-summary=""
     >
-      <p className={`text-sm leading-5 font-semibold ${pageInkText}`} data-verification-covered="">
-        <span {...authorText}>{covered.covered}</span>{" "}
-        <span {...pageChrome}>{VERIFICATION_WORDS.of}</span>{" "}
-        <span {...authorText}>{covered.total}</span>{" "}
-        <span {...pageChrome}>{VERIFICATION_WORDS.covered}</span>
-      </p>
+      {covered.kind === "owed" ? (
+        <div
+          className={`flex min-w-0 flex-col gap-0.5 text-sm leading-5 ${pageQuietText}`}
+          data-verification-covered=""
+        >
+          {covered.notes.map((words) => (
+            <p key={words} {...authorText}>
+              {words}
+            </p>
+          ))}
+        </div>
+      ) : (
+        <p
+          className={`text-sm leading-5 font-semibold ${pageInkText}`}
+          data-verification-covered=""
+        >
+          <span {...authorText}>{covered.covered}</span>{" "}
+          <span {...pageChrome}>{VERIFICATION_WORDS.of}</span>{" "}
+          <span {...authorText}>{covered.total}</span>{" "}
+          <span {...pageChrome}>{VERIFICATION_WORDS.covered}</span>
+        </p>
+      )}
       <span
         aria-hidden="true"
         className={`flex h-3 min-w-[220px] flex-1 overflow-hidden rounded-[6px] ${pageGuideBg}`}

@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -275,9 +276,8 @@ func TestGitRefusalReadsAsRefused(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closedURL := closed.URL
-	closed.Close()
+	// A port the test holds and nothing listens on: git's dial to it is refused.
+	closedURL := "http://" + testport.Refused(t)
 	home := t.TempDir()
 	refusal := "fatal: could not read Username for '" + server.URL + "': terminal prompts disabled"
 	for name, tc := range map[string]struct {
@@ -433,6 +433,7 @@ func compactJWT(header, claims, signature string) string {
 // machine lacks reads as C, and the row then cannot see the fault there: the test logs each such
 // locale, and needs one that sees it.
 func TestLiveSetupControlErrorIsRedactedInEveryLocale(t *testing.T) {
+	t.Parallel()
 	emSpace := "\u2003"
 	rows := map[string]struct{ stderr, want string }{
 		"a JWT behind letters outside ASCII": {
@@ -477,6 +478,7 @@ func TestLiveSetupControlErrorIsRedactedInEveryLocale(t *testing.T) {
 // whitespace. It is quiet on CI's record, whose git_from, a name mktemp drew at random, holds eyJ,
 // on a JWT in the paths themselves, and on a dotted host name in the control's error.
 func TestSetupMarkerLeakFindsAJWTOutsideTheRecordsPaths(t *testing.T) {
+	t.Parallel()
 	ci := parseSetupMarkerOrFail(t, "setup:architect:pod-1/3 cwd=/tmp/TestLiveSetupNegativeControlno_DNS_for_the_control3505482992/001/start uid=1001 ppid=67790 git_from=/tmp/TestLiveSetupNegativeControlno_DNS_for_the_control3505482992/001/tmp/tmp.eyJ2Sg7LkC helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok git_without_helper=failed git_without_helper_error=exit 128: fatal: unable to access 'https://***@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com")
 	appJWT := compactJWT(`{"alg":"RS256","typ":"JWT"}`, `{"iat":1764036000,"exp":1764036600,"iss":"123456"}`, "signature")
 	for name, tc := range map[string]struct {

@@ -35,13 +35,14 @@ func (st *settlement) readsBack(document, markdown string) bool {
 // holdUnreadableFragments checks each rendering the settlement would store. It suppresses only
 // the versions the parser refuses and reports whether it suppressed any, so the settlement
 // can leave the room's pending row and block index owed.
-// It also rechecks divergent fragments behind the tree's version. Compaction can fold the
-// content-change flag away once the readable tree fragment advances that version's cursor.
+// It also rechecks divergent fragments behind the tree's version: one its latest version does not
+// hold (roomVersion.holds). Compaction can fold the content-change flag away once the readable
+// tree fragment advances that version's cursor.
 func (st *settlement) holdUnreadableFragments(fragments []roomFragment) bool {
 	held := false
 	for index := range fragments {
 		fragment := &fragments[index]
-		ahead := fragment.latest.cursor < st.latest.docUpdateVersion && fragment.markdown != fragment.latest.markdown
+		ahead := fragment.latest.cursor < st.latest.docUpdateVersion && !fragment.latest.holds(fragment.markdown)
 		if (fragment.changed || ahead) && !st.readsBack(fragment.document, fragment.markdown) {
 			fragment.changed = false
 			held = true

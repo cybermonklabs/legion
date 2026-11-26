@@ -826,13 +826,14 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, recor
 // read from version.Record), at the marking rule rule of the build planning it, with
 // version.Beside, a write planned for the same event that no index pass of its own carries - the
 // removals of answered asks' blocks a person's own write made (removalsOfVersions) - planned into
-// it. It returns the targets it moves, the cited blocks it changes included
-// (refs.BlockIndexing.Cited), and the plan: its Queue writes it, its Stated is what it states in
-// the node and tuple store, held for the event the caller appends for the version, and its Won
-// and Marked say whether it won the revision fence and drains this build's mark. It plans against
-// what the index holds (heldBlockIndex), and records what this one leaves for a later indexing of
-// the same document (recordBlockIndex). Each block's excerpt is cut in the plan, around the
-// dashboard URLs of the deployment at version.ServerURL.
+// it. It decides which of its blocks keep their changed version across another renderer version's
+// spelling (refs.BlockIndexing.KeepRespelled), and returns the targets it moves, the cited blocks
+// it changes included (refs.BlockIndexing.Cited), and the plan: its Queue writes it, its Stated is
+// what it states in the node and tuple store, held for the event the caller appends for the
+// version, and its Won and Marked say whether it won the revision fence and drains this build's
+// mark. It plans against what the index holds (heldBlockIndex), and records what this one leaves
+// for a later indexing of the same document (recordBlockIndex). Each block's excerpt is cut in the
+// plan, around the dashboard URLs of the deployment at version.ServerURL.
 func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.VersionBlocks) ([]refs.Target, refs.BlockIndexing, error) {
 	index, err := heldBlockIndex(ctx, tx, version.ArtifactID)
 	if err != nil {
@@ -844,6 +845,9 @@ func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.Versi
 	}
 	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, version)
 	if err != nil {
+		return nil, refs.BlockIndexing{}, err
+	}
+	if err := indexing.KeepRespelled(ctx, tx); err != nil {
 		return nil, refs.BlockIndexing{}, err
 	}
 	cited, err := indexing.Cited(ctx, tx)
@@ -906,10 +910,10 @@ func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version
 	lead, newest := versions.Newest(artifactID)
 	version := newest.Number
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		if pending, queued := ledger.latest[lead]; queued && pending.version.Number == version {
-			record := refs.IndexedVersion{RefKey: address.RefKey, Issue: address.IssueKey, Authors: pending.version.Authors}
-			if len(pending.version.Authors) > 0 {
-				record.Writer = pending.version.Authors[0]
+		if pending, queued := ledger.latest[lead]; queued && pending.Number == version {
+			record := refs.IndexedVersion{RefKey: address.RefKey, Issue: address.IssueKey, Authors: pending.Authors}
+			if len(pending.Authors) > 0 {
+				record.Writer = pending.Authors[0]
 			}
 			if _, created := pendingArtifact(ctx, artifactID); created {
 				record.Project, record.Parties = graphstore.SessionScope(address.Project, address.Session)

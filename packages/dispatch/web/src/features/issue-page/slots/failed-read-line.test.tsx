@@ -195,6 +195,30 @@ test("a read that names its failures says each again while its line stays drawn,
   }
 });
 
+// A screen reader says an alert as it is drawn, so a line that stands again for a failure it
+// already said is drawn with no live role: its words and its Retry are drawn as ever. A line
+// drawn with nothing said of it speaks.
+test("a line drawn not to speak carries no live role, and draws its words and Retry", () => {
+  const words = "Couldn't read the statements.";
+  const view = render(
+    <FailedReadLine message={words} onRetry={() => undefined} retrying={false} speaks={false} />
+  );
+  try {
+    expect(view.queryByRole("alert"), "a line drawn not to speak spoke").toBeNull();
+    const line = view.getByText(words);
+    expect(line, "a line drawn not to speak carries a live role").not.toHaveAttribute("role");
+    expect(line, "a line drawn not to speak is a live region").not.toHaveAttribute("aria-live");
+    expect(view.getByRole("button", { name: "Retry" }), "no Retry was drawn").toBeInTheDocument();
+    view.rerender(<FailedReadLine message={words} onRetry={() => undefined} retrying={false} />);
+    expect(view.getByText(words), "a line drawn as ever does not speak").toHaveAttribute(
+      "role",
+      "alert"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 /** How a read of `TwoReadsView` stands. */
 type Stands = "failed" | "out" | "answered";
 
@@ -289,6 +313,54 @@ test("a failed read's line that leaves with the focus in it gives the focus to w
     );
   } finally {
     again.unmount();
+  }
+});
+
+// A view's reads are refused in any order, and the view draws their lines in an order of its
+// own: a line drawn above the one whose Retry the stage gave the focus takes the focus, so it
+// rests on the view's first line, as where that line had been drawn first. A focus the reader
+// moved elsewhere stays there.
+test("a failed read's line drawn above the Retry the stage gave the focus takes the focus, unless the reader moved it", async () => {
+  const drawn = (statements: Stands, results: Stands) => (
+    <ViewStage>
+      <TwoReadsView results={results} statements={statements} />
+    </ViewStage>
+  );
+
+  (document.activeElement as HTMLElement | null)?.blur();
+  const view = render(drawn("out", "failed"));
+  try {
+    const results = view.getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(results));
+    view.rerender(drawn("failed", "failed"));
+    const [statements] = view.getAllByRole("button", { name: "Retry" });
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the statements' line drawn above the results' left the focus on the results' Retry"
+      ).toBe(statements)
+    );
+  } finally {
+    view.unmount();
+  }
+
+  const control = document.createElement("button");
+  document.body.append(control);
+  (document.activeElement as HTMLElement | null)?.blur();
+  const moved = render(drawn("out", "failed"));
+  try {
+    const results = moved.getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(results));
+    await act(async () => control.focus());
+    moved.rerender(drawn("failed", "failed"));
+    await frames(2);
+    expect(
+      document.activeElement,
+      "the statements' line drawn above took the focus the reader had moved off the Retry"
+    ).toBe(control);
+  } finally {
+    moved.unmount();
+    control.remove();
   }
 });
 

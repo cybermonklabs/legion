@@ -76,6 +76,7 @@ type brokerLaunch struct {
 // since none of it rides the Sandbox manifest: every DISPATCH_ variable travels in the start
 // command. With the setting off every other golden is the one it was (TestManifestGoldens).
 func TestNoDispatchBearerIsHandedOutWithTheBrokerKey(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	dispatchBroker("")(&opts)
 	r, err := configure(opts)
@@ -99,6 +100,7 @@ func TestNoDispatchBearerIsHandedOutWithTheBrokerKey(t *testing.T) {
 // DISPATCH_TOKEN_BROKER, since its role has no identity to trade until the pod's update round
 // replaces the pod.
 func TestAKeptPodWithoutTheExchangeIdentityGetsTheTransitionToken(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(dispatchBearer))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, dispatchBroker(testTransitionToken))
@@ -132,6 +134,7 @@ func TestAKeptPodWithoutTheExchangeIdentityGetsTheTransitionToken(t *testing.T) 
 // identity whenever the deployment names an exchange audience, nor one that keeps a pod built with
 // it.
 func TestAPodWithTheExchangeIdentityNeverGetsTheTransitionToken(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(dispatchBroker(testTransitionToken)))
 	loc := g.spawn(workerSpec(t))
 	if found := exchangeTokenVolumes(g.pod(loc.Sandbox.Name).Spec, testExchangeAudience); len(found) != 1 {
@@ -154,10 +157,16 @@ func TestAPodWithTheExchangeIdentityNeverGetsTheTransitionToken(t *testing.T) {
 //
 // The refusal names the pod by a locator too (runtime.AwaitingPodRound): the one a process of the
 // refused claim in that pod would have, at the launch's own generation, which this runtime's
-// PodDrift takes as it takes a running process's and answers the identity the pod lacks. That is
-// what the supervisor keeps of a claim that records no process, and what the update round opens
-// over and replaces the pod through where no claim records one.
+// PodDrift takes as it takes a running process's and answers the identity the pod lacks, marked as
+// a drift that breaks the pod (runtime.BreakingDrift, R7 of #5285, spec v26). This is the one case
+// of the exchange identity's drift that breaks the pod: the deployment sets dispatch_token_broker,
+// names no transition file, and the pod carries no identity the exchange trades, so every launch
+// into the pod is refused and the claim runs again only once the round has replaced the pod. No
+// read of the pod's disk keeps it, then. That is what the supervisor keeps of a claim that records
+// no process, and what the update round opens over and replaces the pod through where no claim
+// records one.
 func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(dispatchBearer))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, dispatchBroker(""))
@@ -210,9 +219,9 @@ func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
 	if err := r2.checkLocator(refusal.Pod); err != nil {
 		t.Fatalf("the runtime refuses the locator its own refusal named: %v", err)
 	}
-	identity := (movedAddress{agentSecretsExchangeVolume, "(unset)", enrollmentName(exchangeTokenProjection(r2.agentSecrets))}).String()
+	identity := runtime.BreakingDrift + (movedAddress{agentSecretsExchangeVolume, "(unset)", enrollmentName(exchangeTokenProjection(r2.agentSecrets))}).String()
 	if drifted := driftOf(t, g, r2, refusal.Pod); !slices.Contains(drifted, identity) {
-		t.Errorf("PodDrift through the refusal's locator = %q, want %q among it: the identity the pod lacks is the drift its round is opened for",
+		t.Errorf("PodDrift through the refusal's locator = %q, want %q among it: the identity the pod lacks is the drift its round is opened for, and it breaks the pod",
 			drifted, identity)
 	}
 }
@@ -222,6 +231,7 @@ func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
 // carries the exchange identity: that launch carries no Dispatch token at all, and tells its role
 // DISPATCH_TOKEN_BROKER=1 (dispatch://INFRA-4425 R4).
 func TestTheRoundReplacesThePodItsRefusalNamesAndTheNextLaunchTradesTheIdentity(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(dispatchBearer))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, dispatchBroker(""))
@@ -259,6 +269,7 @@ func TestTheRoundReplacesThePodItsRefusalNamesAndTheNextLaunchTradesTheIdentity(
 // (movedInPod). So under the setting the controller's launch carries no Dispatch token, whether it
 // builds the pod or finds one built before the setting, with no transition file named.
 func TestTheControllerLaunchCarriesNoDispatchToken(t *testing.T) {
+	t.Parallel()
 	t.Run("a pod the launch builds", func(t *testing.T) {
 		g := newRig(t, nil, withOptions(dispatchBroker(testTransitionToken)))
 		g.spawn(controllerSpec(t))

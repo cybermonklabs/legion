@@ -18,7 +18,7 @@ import {
   type Preset,
 } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { getIssue, getIssueCoverage, getIssueEvents, listComments } from "./api";
+import { dashboardOrigin, getIssue, getIssueCoverage, getIssueEvents, listComments } from "./api";
 import { seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import { gotoIssue, phase, presetCount, presetToggle, presetToggles } from "./issue-page";
 import { expectIssuePageDrawn } from "./issue-page-g";
@@ -43,7 +43,6 @@ import {
   convertedGate,
   type DecisionsRead,
   type DrawnNode,
-  decisionNodesGate,
   decisionsAreNodes,
   decisionsReadOf,
   drawnNodes,
@@ -51,6 +50,7 @@ import {
   type OutlineKind,
   outlineAnswerOf,
   owedUnless,
+  partUGate,
   R2_ROW_KINDS,
   seedEventsLanded,
   type TreeView,
@@ -118,13 +118,15 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled, watchApiRequests 
  * `@owed`: each runs for real once its gates are on the base. Each clause a later gate holds is a
  * row of its own, titled its row's title and the clause and tagged `@owed`, which checks that gate
  * the same way and asserts the clause once it is met: row 1's decision clauses, for each seed that
- * holds a decision (`decisionNodesGate`); row 1's author of an agent's decision, drawn by the
- * title its session stamped, for each such seed too, on the tree read answering that title on a
- * session node (`sessionTitleGate`), which row 1 itself leaves out (`ReadingsPart`); row 2's
- * Decisions, row 3's Decisions and row 4's Keep on the server's answer to the tree read's
- * `view=decisions`, read before Decisions is pressed (`decisionsViewServedGate`), so a press that
- * sends no view read fails the row; and row 3's decision lines and row 4's Keep on the page
- * drawing the decisions from the tree read's nodes. Each such row stands in its row's file.
+ * holds a decision, on the page drawing the decisions from the tree read's nodes (`partUGate`);
+ * row 1's author of an agent's decision, drawn by the title its session stamped, for each such
+ * seed too, on the tree read answering that title on a session node (`sessionTitleGate`), which
+ * row 1 itself leaves out (`ReadingsPart`); row 2's Decisions, row 3's Decisions and row 4's Keep
+ * on the server's answer to the tree read's `view=decisions`, read before Decisions is pressed
+ * (`decisionsViewServedGate`), so a press that sends no view read fails the row; row 3's
+ * Decisions and its decision lines on the page drawing the decisions from the tree read's nodes
+ * (`partUGate`); and row 4's Keep on decisions being nodes of the tree read on this branch's base
+ * (`decisionNodesGate`). Each such row stands in its row's file.
  *
  * These helpers name the tree read's modules and its answer's types, so they are not in
  * `e2e/issue-page-t.ts`, which the recorder loads on a base without the tree read. They are not
@@ -133,7 +135,7 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled, watchApiRequests 
  */
 
 /** The seeds whose rows the fixture records a decision row of: row 1's decision clauses read
- *  them (`decisionNodesGate`), and so does its author of an agent's decision (`sessionTitleGate`). */
+ *  them (`partUGate`), and so does its author of an agent's decision (`sessionTitleGate`). */
 export const DECISION_SEEDS = new Set(
   SEEDS.flatMap(([name]) =>
     fixtureSeed(name).rows.some((row) => row.kind.type === "decision") ? [name] : []
@@ -744,10 +746,10 @@ function answeredReviewState(node: IssueTreeNode, changed: boolean): string | nu
   return node.decision?.kept == null ? null : "kept";
 }
 
-/** Row 1's decision clauses, once the seeds' decisions are nodes (`decisionNodesGate`): each
- *  decision row's review state is the answer's, each Change stands under its decision's row, the
- *  section that restates a person's answer is no row, and the answered question's row carries a
- *  chip for each node its `shaped` ties name. */
+/** Row 1's decision clauses, once the page draws the decisions from the tree read's nodes
+ *  (`partUGate`): each decision row's review state is the answer's, each Change stands under its
+ *  decision's row, the section that restates a person's answer is no row, and the answered
+ *  question's row carries a chip for each node its `shaped` ties name. */
 function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): void {
   const { answer, rows } = outline;
   const idOf = treeIdOf(answer, outline.reads);
@@ -850,18 +852,18 @@ export async function expectSameRows(
   });
 }
 
-/** Row 1's decision clauses on the seed `name`, which `seed` seeds, owed on `decisionNodesGate`
- *  and asserted once it is met (`expectDecisionsFromNodes`). */
+/** Row 1's decision clauses on the seed `name`, which `seed` seeds, owed on `partUGate` and
+ *  asserted once it is met (`expectDecisionsFromNodes`). */
 export async function expectSameRowsDecisions(
   browser: Browser,
   name: string,
   seed: NamedSeed[1]
 ): Promise<void> {
+  owedUnless(partUGate);
   await phase(browser, seed, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
     owedUnless(await convertedGate(page, seeded.key));
     const outline = await readOutline(page, seeded);
-    owedUnless(decisionNodesGate(outline.answer, outline.decisions));
     expectDecisionsFromNodes(outline, fixtureSeed(name));
   });
 }
@@ -936,9 +938,16 @@ const PERSON = "user" satisfies Actor["kind"];
  *  names no limit (`maxEventPage`, `packages/envoy/internal/dispatch/api/events.go`). */
 const EVENT_PAGE = 200;
 
-/** How long `editNoticesSent` waits: the 30 s a document stays quiet after a person's last
- *  version before its notice is due (`defaultEditNoticeQuiet`), up to 5 s more for the server's
- *  next sweep (`editNoticeSweepSchedule`), and a margin. */
+/** The server's pace for edit notices (`packages/envoy/internal/dispatch/docs/edit_notices.go`):
+ *  a document stays quiet 30 s after a person's last version before its notice is due
+ *  (`defaultEditNoticeQuiet`, which the harness keeps, since it sets no
+ *  `DISPATCH_TEST_EDIT_NOTICE_QUIET`), and a sweep sends a due notice within 5 s of its due time
+ *  (`editNoticeSweepSchedule`). */
+const EDIT_NOTICE_QUIET_MS = 30_000;
+const EDIT_NOTICE_SWEEP_MS = 5_000;
+
+/** How long `editNoticesSent` waits: the quiet window and one sweep after a person's last
+ *  version, which may be written just before the wait starts, and a margin. */
 const EDIT_NOTICES_WAIT_MS = 60_000;
 
 /** Every event of issue `key`, oldest first: its event log read a page at a time, each page after
@@ -954,21 +963,34 @@ async function issueEventLog(key: string): Promise<DispatchEvent[]> {
 }
 
 /**
- * Each document of `log` the server still owes an edit notice, named with the version it owes it
- * for. The server opens a document's notice window at a version whose authors list a person, and
- * moves the window on at each later one; a document's creation is an upload, which opens none
- * (`recordEditNotice`). The window's `artifact.human_edited` event names the last of those
- * versions in `to_version`, so a document is owed its notice until such an event reaches the
- * last version a person wrote of it.
+ * Each document of `log` the server may still send an edit notice for at `now`, named with the
+ * version it would send it for. The server opens a document's notice window at a version whose
+ * authors list a person, and moves the window on at each later one (`recordEditNotice`). The
+ * window's `artifact.human_edited` event names the last of those versions in `to_version`, so a
+ * document is settled once such an event reaches the last version a person wrote of it. Two such
+ * versions get no notice, by design: an upload's, a document's creation among them, which lists
+ * its uploader and opens no window; and one whose latest edit has no known person sender, whose
+ * window the server holds, sending nothing until a later version names a person
+ * (`holdEditNotice`). The `artifact.version` event does not tell either from a version whose
+ * notice is coming. So a document is settled too once the quiet window and one sweep have passed
+ * since that version was written (its `version.created_at`) with no notice: a notice still to
+ * come would have gone by then.
  */
-function owedEditNotices(log: readonly DispatchEvent[]): string[] {
-  const written = new Map<string, { readonly name: string; readonly version: number }>();
+function owedEditNotices(log: readonly DispatchEvent[], now: number): string[] {
+  const written = new Map<
+    string,
+    { readonly at: number; readonly name: string; readonly version: number }
+  >();
   const noticed = new Map<string, number>();
   for (const event of log) {
     if (event.type === "artifact.version") {
       const { artifact_id, name, version } = event.payload;
       if (version.authors.some((author) => author.kind === PERSON)) {
-        written.set(artifact_id, { name, version: version.number });
+        written.set(artifact_id, {
+          at: Date.parse(version.created_at),
+          name,
+          version: version.number,
+        });
       }
     } else if (event.type === "artifact.human_edited") {
       const { artifact_id, to_version } = event.payload;
@@ -976,33 +998,57 @@ function owedEditNotices(log: readonly DispatchEvent[]): string[] {
     }
   }
   return [...written].flatMap(([id, last]) =>
-    (noticed.get(id) ?? 0) >= last.version
+    (noticed.get(id) ?? 0) >= last.version ||
+    now >= last.at + EDIT_NOTICE_QUIET_MS + EDIT_NOTICE_SWEEP_MS
       ? []
       : [`${last.name} (${id}) at version ${last.version}`]
   );
 }
 
 /**
- * Waits until the server has sent every edit notice issue `key` is owed (`owedEditNotices`), and
- * then for the page to go quiet. The server sends a document's notice, one
- * `artifact.human_edited` event, about 30 s after a person's last version of it, in a sweep every
- * 5 s (`defaultEditNoticeQuiet` and `editNoticeSweepSchedule`,
- * `packages/envoy/internal/dispatch/docs/edit_notices.go`), and the page reads the issue's detail
- * again for each notice it hears. A seed whose documents a person wrote is still owed those
- * notices half a minute on, so a row that counts what a press sends waits them out first,
- * whatever its own timing is.
+ * Waits until the server has sent every edit notice issue `key` is owed, or holds it, by design,
+ * until a later version names a person (`owedEditNotices`), and then for the page to go quiet.
+ * The server sends a document's notice, one `artifact.human_edited` event, about 30 s after a
+ * person's last version of it, in a sweep every 5 s (`EDIT_NOTICE_QUIET_MS` and
+ * `EDIT_NOTICE_SWEEP_MS`), and the page reads the issue's detail again for each notice it hears.
+ * A seed whose documents a person wrote is still owed those notices half a minute on, so a row
+ * that counts what a press sends waits them out first, whatever its own timing is.
  */
 export async function editNoticesSent(key: string, traffic: ApiRequests): Promise<void> {
   await expect
-    .poll(async () => owedEditNotices(await issueEventLog(key)), {
+    .poll(async () => owedEditNotices(await issueEventLog(key), Date.now()), {
       intervals: [1_000],
       message:
         `the server sent no edit notice within ${EDIT_NOTICES_WAIT_MS / 1000} s for each ` +
-        "document listed, whose last version by a person no artifact.human_edited event reaches",
+        "document listed, whose last version by a person no artifact.human_edited event " +
+        "reaches and whose quiet window and sweep have not passed",
       timeout: EDIT_NOTICES_WAIT_MS,
     })
     .toEqual([]);
   await expectLoadSettled(traffic);
+}
+
+/**
+ * Imports every architecture source of issue `key`'s project now, through the signed-in page's
+ * own request context (`POST /api/v1/projects/{key}/architecture-sources/sync`), so that each
+ * holds what the server's own import pass would find, and that pass sends no event while a row
+ * counts what the page sends. The pass re-imports every enabled source about every 5 minutes,
+ * the first at a moment drawn within 5 minutes of the server's start (`SyncInterval` and
+ * `duty.RunJittered`, `packages/envoy/internal/dispatch/architecture/ticker.go`), and it sends an
+ * event only where the source's state changes: `architecture.synced` for a changed model,
+ * `architecture.sync_failed` for a new failure (`importer.go`'s `Sync`). A seed that imports its
+ * source with the App installed and then takes the App away (`seedWholeIssue`) leaves that
+ * failure for the next pass to find, and the page answers its `architecture.sync_failed` by
+ * reading the project's architecture and its sources again (`api/event-refresh.ts`): two requests
+ * in whatever window of the row the pass lands in. This import records the failure, so the pass
+ * finds the same one and sends nothing; the event this import sends is in the log before its
+ * answer, and lands before the load (`seedEventsLanded`).
+ */
+export async function architectureSettled(page: Page, key: string): Promise<void> {
+  const { project } = await getIssue(key);
+  const path = `/api/v1/projects/${encodeURIComponent(project)}/architecture-sources/sync`;
+  const response = await page.request.post(path, { headers: { Origin: dashboardOrigin } });
+  expect(response.ok(), `POST ${path} answers ${response.status()}`).toBe(true);
 }
 
 /** Turns `filter` on and waits for its rows to hold still. */

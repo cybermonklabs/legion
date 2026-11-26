@@ -293,7 +293,8 @@ func requireUnder(t *testing.T, what string, tree docs.IssueTree, address, paren
 // prefix of its own reads apart from the store that splits those bytes another way. The head and a
 // version are read through one builder, and a version's record read after a later comment leaves
 // that comment out. Sibling comments with no rank, and a reply after its head, stand by made_at
-// whatever their ids; a requirement under a comment's block of its own issue stands in the walk's
+// whatever their ids, before the issue's ranked children but its memo, which stands first (R8 at
+// spec v246); a requirement under a comment's block of its own issue stands in the walk's
 // first part after its comment; a criterion of a child under its parent's comment stands in the
 // child's spec record after the walk from the child's tree node, and a write of it moves the
 // child's digest and leaves the parent's; and a document comment anchored inside a decision's
@@ -829,9 +830,22 @@ func digestStepUnranked(t *testing.T, rig *digestRig) {
 	if first < 0 || second < 0 || first >= second {
 		t.Errorf("the walk takes the earlier comment at %d and the later at %d, want the earlier first whatever their ids", first, second)
 	}
+	// Spec v246, R8: "Among a node's children the conversation nodes come first ... Then come the
+	// ranked siblings, by rank", and the memo stands first, before any conversation node, so every
+	// ranked child of the issue but the memo now stands after its last comment, where it stood
+	// before the first.
+	conversation := -1
 	for index, node := range tree.Nodes {
-		if node.Ranked && node.Parent.Kind+":"+node.Parent.ID == issue && index > first {
-			t.Errorf("the walk takes the issue's ranked child %s at %d, after its unranked child %s at %d", node.Address(), index, earlier, first)
+		if refs.OrderedAsConversation(node.Kind) && node.Parent.Kind+":"+node.Parent.ID == issue {
+			conversation = index
+		}
+	}
+	if tree.Memo != 1 {
+		t.Errorf("the walk's memo is %d, want 1: the callout stands first under the issue, before its comments", tree.Memo)
+	}
+	for index, node := range tree.Nodes {
+		if node.Ranked && node.Parent.Kind+":"+node.Parent.ID == issue && index != tree.Memo && index < conversation {
+			t.Errorf("the walk takes the issue's ranked child %s at %d, before its conversation node %s at %d", node.Address(), index, tree.Nodes[conversation].Address(), conversation)
 		}
 	}
 	requireUnder(t, "a reply", tree, graphstore.KindComment+":"+reply, graphstore.KindComment+":"+head)

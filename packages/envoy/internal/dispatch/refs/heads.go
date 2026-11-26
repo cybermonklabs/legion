@@ -709,8 +709,7 @@ func readHeadDocuments(ctx context.Context, q Queryer, issueKey string, read []H
 // newHeadTree is rows, read, with the children of each parent among them, as the children read
 // answers them under it (treeChildJoins, treeChildStands, treeChildOrder): each node whose
 // standing part_of names the parent, unless its kind is one of workflowKinds or its state is gone,
-// the ranked ones first by rank and then the rest, a tie by the lower address, each compared byte
-// for byte.
+// in the tree's order of siblings (CompareSiblings).
 func newHeadTree(rows map[Target]*HeadRow, read []HeadRow) *HeadTree {
 	tree := &HeadTree{Rows: rows, children: map[Target][]TreeChild{}}
 	for index := range read {
@@ -721,18 +720,7 @@ func newHeadTree(rows map[Target]*HeadRow, read []HeadRow) *HeadTree {
 		tree.children[head.Parent] = append(tree.children[head.Parent], head.Child())
 	}
 	for _, children := range tree.children {
-		slices.SortFunc(children, func(left, right TreeChild) int {
-			if left.Ranked != right.Ranked {
-				if left.Ranked {
-					return -1
-				}
-				return 1
-			}
-			if order := strings.Compare(left.Rank, right.Rank); order != 0 {
-				return order
-			}
-			return CompareAddresses(left.Node, right.Node)
-		})
+		slices.SortFunc(children, CompareSiblings)
 	}
 	return tree
 }
