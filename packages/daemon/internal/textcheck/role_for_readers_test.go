@@ -108,16 +108,19 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestPhaseRowAtIsTheRowOfARolesStepWhereTheTaskStands", "TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts"}},
 	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
 	// The worker of the step a task stands at, which the merge forward's hold and landed
-	// (record.MergeForwardWorker, read by Engine.mergeForward and Engine.mergeForwardLanded) and the
-	// design gate's message to each member (Engine.tellGateMoved) are addressed by: the step's own
-	// role at a place the owner works, else RoleAt. Its architect at admitted is told none of
-	// them: record.MergeForwardReaches gives the architect no hold and no landed, and
-	// tellGateMoved passes the architect over and tells the root's architect once.
+	// (record.MergeForwardWorker, which workflow's mergeForwardHold and mergeForwardWorker read for
+	// Engine.mergeForward and Engine.mergeForwardLanded) and the design gate's message to each
+	// member (Engine.tellGateMoved) are addressed by: the step's own role at a place the owner
+	// works, else RoleAt. Its architect at admitted is told none of them:
+	// record.MergeForwardReaches gives the architect no hold and no landed, a merge forward is never
+	// asked at admitted in any case (classify.MergeForwardStands: admitted stands on no task's
+	// line), and tellGateMoved passes the architect over and tells the root's architect once. A
+	// role the deployment lost is told neither merge-forward message (workflow's lostRole).
 	{file: "internal/record/record.go", fn: "Issue.StepWorker"}: {calls: 1, tests: []string{
 		"TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole",
 		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge",
-		"TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole", "TestTheOwnerAtItsOwnStepIsHeldAndToldTheMergeLanded",
-		"TestTheOwnerAtItsOwnStepIsToldTheDesignGateMoved"}},
+		"TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole", "TestAMergeForwardTellsNoRoleTheDeploymentLost",
+		"TestTheOwnerAtItsOwnStepIsHeldAndToldTheMergeLanded", "TestTheOwnerAtItsOwnStepIsToldTheDesignGateMoved"}},
 	{file: "internal/record/record.go", fn: "Issue.OwnersPlace"}: {calls: 1, tests: []string{
 		"TestThePlaceOfAnIssueIsTheOwnersWhereTheArchitectWorksIt", "TestASignOffEndsOnlyTheOwnersOwnAcceptance"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
@@ -160,14 +163,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// issue with none.
 	{file: "internal/workflow/line.go", fn: "Walk.endingRole"}: {calls: 2, tests: []string{
 		"TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
-	// The worker of the step an issue stands at that a merge forward's hold and landed reach, which
-	// Engine.mergeForward and Engine.mergeForwardLanded both read. At admitted it answers the
-	// architect, whom record.MergeForwardReaches reaches with neither message, so the architect is
-	// told nothing there, as at accepting. A merge forward is never asked at admitted in any case
-	// (classify.MergeForwardStands: admitted stands on no task's line).
-	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardWorker"}: {calls: 1, tests: []string{
-		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge",
-		"TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole", "TestAMergeForwardTellsNoRoleTheDeploymentLost"}},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}: {calls: 1, tests: []string{
 		"TestATodoOnAStoppedRootStartsItsTaskAtStepOne", "TestARetryOfADeploymentStepRestartsItsRole"}},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}: {calls: 1, tests: []string{
