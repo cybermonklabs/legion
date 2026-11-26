@@ -150,7 +150,7 @@ export function IssuePriorityLine({
     const known = places.get(id);
     return priorityName(id, known?.place, known?.title);
   };
-  // Why the reads a write made stale have not settled, once the hold over them ran out.
+  // Why the reads the latest write made stale have not settled, once the hold over them ran out.
   const [unsettled, holdThrough] = useReadBound();
   const write = useKeyedWrite({
     // The line says why a write was refused, beside the control it came from.
@@ -177,8 +177,8 @@ export function IssuePriorityLine({
       // write stops pending: the trigger stays `aria-disabled`, and refuses to open, until the
       // issue it draws is the one read after the write, or until the request deadline where
       // that read has not settled - one the network paused while the browser is offline - so no
-      // read holds the line for good, and the line says why until the reads settle
-      // (`useReadBound`).
+      // read holds the line for good, and the line says why until the reads settle or the next
+      // write lands (`useReadBound`).
       if (page === null) return;
       return holdThrough(Promise.all(rereads));
     },
@@ -349,7 +349,8 @@ export function IssuePriorityLine({
         </span>
       )}
       {/* Only inside `NoTooltips` does the line hold through the reads its write made stale, so
-          only there does a read outlive its hold and say why here, until it settles. */}
+          only there does a read outlive its hold and say why here, until it settles or the next
+          write lands. */}
       {unsettled === undefined ? null : (
         <span
           className={`max-w-full [overflow-wrap:anywhere] text-xs ${failed}`}

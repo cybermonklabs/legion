@@ -493,7 +493,7 @@ export function ProofDocument({
   });
   const namingVersion = nameVersion.isPending && !nameVersion.late;
   const oneVersion = useOneCreateOut(nameVersion);
-  // Why the read of the rebuilt document has not settled, once the hold over it ran out.
+  // Why the read of the latest rebuilt document has not settled, once the hold over it ran out.
   const [rebuildUnsettled, holdThrough] = useReadBound();
   const rebuild = useKeyedWrite({
     inline: true,
@@ -504,8 +504,8 @@ export function ProofDocument({
       // before the rebuild stops pending: Rebuild stays refused, and keeps the focus, until the
       // rebuilt document is read, or until the request deadline where that read has not settled -
       // one the network paused while the browser is offline - so no read holds Rebuild for good,
-      // and the offer says why beside Rebuild until the read settles (`useReadBound`). A text
-      // read that succeeds then takes the offer off the page.
+      // and the offer says why beside Rebuild until the read settles or the next rebuild lands
+      // (`useReadBound`). A text read that succeeds then takes the offer off the page.
       if (tooltips) {
         void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
         return;
@@ -1269,7 +1269,8 @@ export function ProofDocument({
             </p>
           ) : null}
           {/* Only inside `NoTooltips` does Rebuild hold through the rebuilt document's read, so
-              only there does a read outlive its hold and say why here, until it settles. */}
+              only there does a read outlive its hold and say why here, until it settles or the
+              next rebuild lands. */}
           {rebuildUnsettled === undefined ? null : (
             <p className={failedText}>{`${REBUILT_DOCUMENT_NOT_READ} ${rebuildUnsettled}.`}</p>
           )}

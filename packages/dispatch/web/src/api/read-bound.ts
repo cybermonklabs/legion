@@ -1,5 +1,5 @@
 import { onlineManager } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { holdHandOff } from "../components/focus-place";
 import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS, requestTimeoutMessage } from "./client";
@@ -37,27 +37,33 @@ export function readWithinBound(read: Promise<unknown>): Promise<string | undefi
 }
 
 /**
- * Why the latest read handed to `keep` with a reason has not settled: `keep` takes a read and
- * why it had not settled by its bound, as `readWithinBound` answers, and keeps nothing for a read
- * that settled in time. The page shows `unsettled` beside the sentence it shows for a read that
- * failed. It goes once that read settles, and a later read kept with a reason puts its own reason
- * in its place.
+ * Why the latest read handed to `waitWithinBound` has not settled, and nothing of an earlier one.
+ * `waitWithinBound` takes a read as it begins, forgets at once why any earlier read had not
+ * settled, and answers once the read settles or `readWithinBound`'s bound ends, whichever is
+ * first. Where the bound ends first and no later read has begun, it keeps why the read has not
+ * settled, which goes once that read settles or a later read begins, whichever is first. An
+ * earlier read whose bound ends, or which settles, once a later read has begun changes nothing
+ * (`latest`). The page shows `unsettled` beside the sentence it shows for a read that failed.
  */
 export function useUnsettledRead(): readonly [
   unsettled: string | undefined,
-  keep: (read: Promise<unknown>, reason: string | undefined) => void,
+  waitWithinBound: (read: Promise<unknown>) => Promise<void>,
 ] {
-  const [unsettled, setUnsettled] = useState<{
-    readonly read: Promise<unknown>;
-    readonly reason: string;
-  }>();
-  const keep = useCallback((read: Promise<unknown>, reason: string | undefined) => {
-    if (reason === undefined) return;
-    setUnsettled({ read, reason });
-    const settled = () => setUnsettled((current) => (current?.read === read ? undefined : current));
+  // The read of the latest call, the one whose reason the page may show.
+  const latest = useRef<Promise<unknown>>(undefined);
+  const [unsettled, setUnsettled] = useState<string>();
+  const waitWithinBound = useCallback(async (read: Promise<unknown>) => {
+    latest.current = read;
+    setUnsettled(undefined);
+    const reason = await readWithinBound(read);
+    if (reason === undefined || latest.current !== read) return;
+    setUnsettled(reason);
+    const settled = () => {
+      if (latest.current === read) setUnsettled(undefined);
+    };
     read.then(settled, settled);
   }, []);
-  return [unsettled?.reason, keep];
+  return [unsettled, waitWithinBound];
 }
 
 /**
@@ -66,22 +72,22 @@ export function useUnsettledRead(): readonly [
  * is first, so a write that returns it from `onSuccess` stays pending, and its control held, for
  * that long and no longer. While it waits, the hold keeps the armed hand-off of the reader's
  * press that made the write live (`holdHandOff`), so a row or a form that read takes away is still
- * the press's doing (`causedByReader`). `unsettled` is why the read of the latest hold that ran out
- * has not settled (`useUnsettledRead`).
+ * the press's doing (`causedByReader`). `unsettled` is why the read of the latest hold has not
+ * settled, once that hold ran out: it goes once that read settles, and at once as a later hold
+ * begins, and an earlier hold's read never puts its reason back (`useUnsettledRead`).
  */
 export function useReadBound(): readonly [
   unsettled: string | undefined,
   holdThrough: (read: Promise<unknown>) => Promise<void>,
 ] {
-  const [unsettled, keep] = useUnsettledRead();
+  const [unsettled, waitWithinBound] = useUnsettledRead();
   const holdThrough = useCallback(
     async (read: Promise<unknown>) => {
       const answered = holdHandOff();
-      const reason = await readWithinBound(read);
+      await waitWithinBound(read);
       answered();
-      keep(read, reason);
     },
-    [keep]
+    [waitWithinBound]
   );
   return [unsettled, holdThrough];
 }

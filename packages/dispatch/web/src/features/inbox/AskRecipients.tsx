@@ -304,9 +304,9 @@ export function AskRecipients({
   // stopped, and what its landing reads again, are of that press's ask, not of the one the card
   // shows.
   // Each write stays pending through the read its landing starts, for the request deadline at
-  // the most (`useReadBound`), and `unsettled` is why such a read has not settled once its hold
-  // ran out. The read waits on a fetch the network had already paused too
-  // (`invalidateWaitingForPaused`), which the bound ends as well.
+  // the most (`useReadBound`), and `unsettled` is why the latest such read has not settled once
+  // its hold ran out, until the next write lands. The read waits on a fetch the network had
+  // already paused too (`invalidateWaitingForPaused`), which the bound ends as well.
   const [unsettled, holdThrough] = useReadBound();
   const unfollow = useKeyedWrite({
     method: "DELETE",

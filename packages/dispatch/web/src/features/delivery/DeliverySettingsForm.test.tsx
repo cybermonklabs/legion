@@ -652,6 +652,66 @@ test("offline, Save whose save landed is let go at the request deadline, and the
   }
 });
 
+// The line under the form for a record read the bound ended is that save's own: the next press of
+// Save takes it away as its save lands, though the earlier read is still out, and that save's
+// read answering says nothing more. Dispatch holds the first save's read until the row answers
+// it, so the next save's read, which waits for that one (`DispatchQueryClient`), answers after it.
+test("the line a save's read the bound ended draws goes as the next save lands, whose read answers", async () => {
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  // Each save's answer, held until the row moves the clock, so what it sets off runs in `act`.
+  const saves: ((saved: DeliverySettings) => void)[] = [];
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<DeliverySettings>();
+    saves.push(resolve);
+    return promise;
+  });
+  const queryClient = renderForm({
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  await screen.findByDisplayValue("acme/widgets");
+  const save = screen.getByRole("button", { name: "Save delivery settings" });
+  const stored = { ...record, updated_at: "2026-10-08T09:00:00Z" };
+  const reread = Promise.withResolvers<DeliverySettings>();
+  getDeliverySettings.mockResolvedValue(stored);
+  getDeliverySettings.mockReturnValueOnce(reread.promise);
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(save);
+    await tick(0);
+    saves[0]?.(stored);
+    await tick(0);
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(save).not.toHaveAttribute("aria-disabled");
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Couldn't load the delivery settings. Dispatch did not answer within 30 seconds."
+    );
+
+    await user.click(save);
+    await tick(0);
+    expect(putDeliverySettings).toHaveBeenCalledTimes(2);
+    saves[1]?.(stored);
+    await tick(0);
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.queryByRole("alert"),
+      "the earlier save's read kept its line past the next save"
+    ).toBeNull();
+
+    await act(async () => reread.resolve(stored));
+    await tick(0);
+    expect(save).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    queryClient.clear();
+    realClock();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
 // Another tab saved, and this tab's read brings the record with its new write time: the fields
 // show the stored record, and a refusal of this tab's draft goes with that draft.
 test("a save of another tab's that the read brings fills the fields from the stored record, and the refusal shown goes", async () => {

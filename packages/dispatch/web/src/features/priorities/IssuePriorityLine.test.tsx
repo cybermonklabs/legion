@@ -589,6 +589,64 @@ test("inside NoTooltips, a landed write whose reads have not answered by the req
   }
 });
 
+// Inside `NoTooltips` the line a write's reads the bound ended draws is that write's own: the next
+// write takes it away as it lands, though the earlier reads are still out, and that write's reads
+// answering say nothing more. Dispatch holds the first write's read of the priorities until the
+// row answers it, so the next write's read, which waits for that one (`DispatchQueryClient`),
+// answers after it.
+test("inside NoTooltips, the line a write's reads the bound ended draws goes as the next write lands, whose reads answer", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], false, body, {
+    page: true,
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  // Each write's answer, held until the row gives it, so what it sets off runs in `act`.
+  const answers: ((answer: never) => void)[] = [];
+  view.patchIssue.mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<never>();
+    answers.push(resolve);
+    return promise;
+  });
+  const reread = Promise.withResolvers<Priorities>();
+  const name = "Edit priorities";
+  const why = "Could not load the priorities. Dispatch did not answer within 30 seconds.";
+  try {
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name);
+    view.listPriorities.mockImplementationOnce(() => reread.promise);
+    await act(async () => answers[0]?.({} as never));
+    await tick(0);
+    expect(view.listPriorities).toHaveBeenCalledTimes(2);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(view.q.getByRole("alert").textContent).toBe(why);
+
+    const user = userOnFakeClock();
+    await user.click(trigger);
+    const listbox = screen.getByRole("listbox", { name: "Priorities options" });
+    await user.click(within(listbox).getByRole("option", { name: "#1 Evals collecting data now" }));
+    await user.keyboard("{Escape}");
+    await tick(0);
+    expect(view.patchIssue).toHaveBeenCalledTimes(2);
+    await act(async () => answers[1]?.({} as never));
+    await tick(0);
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+    expect(
+      view.q.queryByText(why),
+      "the earlier write's reads kept their line past the next write"
+    ).toBeNull();
+
+    await act(async () => reread.resolve(body));
+    await tick(0);
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(view.q.queryByRole("alert")).toBeNull();
+  } finally {
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    realClock();
+  }
+});
+
 test("a closed issue reads its priorities and writes none of them", async () => {
   const view = renderLine([{ id: "rocq-lean", inherited: false }], true);
   try {

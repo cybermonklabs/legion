@@ -2976,6 +2976,89 @@ test("a comment edit's save whose read has not answered by the request deadline 
   }
 });
 
+// The line a save's read the bound ended draws is that save's own: the next save of an edit takes
+// it away as it lands, though the earlier read is still out, and that save's read answering says
+// nothing more. Dispatch holds each read of the comments until the row answers them, and the next
+// save's read waits for the earlier one's fetch (`DispatchQueryClient`), so it answers after it.
+test("the line a comment edit's read the bound ended draws goes as the next save lands, whose read answers", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const listComments = api.listComments as Mock<typeof api.listComments>;
+  // Each save's answer and each read of the comments, held until the row gives them.
+  const saves: ((saved: Comment) => void)[] = [];
+  const editComment = spyOn(api, "editComment").mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<Comment>();
+    saves.push(resolve);
+    return promise;
+  });
+  const rereads: ((comments: Comment[]) => void)[] = [];
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const why = "The edited comment is not read yet. Dispatch did not answer within 30 seconds.";
+
+  try {
+    const card = await screen.findByTestId("margin-comment-root-comment");
+    const turn = card.closest("[data-turn]");
+    if (!(turn instanceof HTMLElement)) throw new Error("the comment's card is drawn in no turn");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() =>
+      expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
+    );
+    listComments.mockImplementation(() => {
+      const { promise, resolve } = Promise.withResolvers<Comment[]>();
+      rereads.push(resolve);
+      return promise;
+    });
+    jest.useFakeTimers();
+    const onClock = userOnFakeClock();
+    /** Saves `body` as the root comment's words through its editor, and lands the save. */
+    const saveRoot = async (body: string) => {
+      await onClock.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+      const editField = screen.getByLabelText("Edit comment");
+      await onClock.clear(editField);
+      await onClock.click(editField);
+      await onClock.paste(body);
+      await onClock.click(screen.getByRole("button", { name: "Save" }));
+      await settle();
+      await act(async () => saves.at(-1)?.({ ...root, body }));
+      await tick(0);
+    };
+
+    await saveRoot("Updated root");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(screen.queryByLabelText("Edit comment")).not.toBeInTheDocument();
+    expect(within(turn).getByText(why)).toBeInTheDocument();
+
+    await saveRoot("Updated again");
+    expect(editComment).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText("Edit comment")).toBeInTheDocument();
+    expect(
+      within(turn).queryByText(why),
+      "the earlier save's read kept its line past the next save"
+    ).toBeNull();
+
+    const saved = [{ ...root, body: "Updated again" }, reply];
+    listComments.mockResolvedValue(saved);
+    await act(async () => {
+      for (const answer of rereads) answer(saved);
+    });
+    await tick(0);
+    expect(screen.queryByLabelText("Edit comment")).not.toBeInTheDocument();
+    expect(screen.queryByText(why)).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
 interface ThreadsPage {
   readonly cleanup: () => void;
   readonly mark: Mock<

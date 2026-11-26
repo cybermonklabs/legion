@@ -194,3 +194,80 @@ test("useReadBound shows why a hold's read has not settled until that read settl
     realClock();
   }
 });
+
+/** Why a read still out online at the bound has not settled, as `readWithinBound` says it. */
+const NOT_ANSWERED = `Dispatch did not answer within ${REQUEST_DEADLINE_MS / 1000} seconds`;
+
+// The page shows why the latest hold's read has not settled, and nothing of an earlier hold's: a
+// later hold forgets the earlier reason as it begins, though the earlier read never settles, and
+// its own read answering in time leaves nothing to show.
+test("useReadBound forgets an earlier hold's reason as a later hold begins", async () => {
+  jest.useFakeTimers();
+  const hook = renderHook(() => useReadBound());
+  try {
+    act(() => {
+      void hook.result.current[1](Promise.withResolvers<void>().promise);
+    });
+    await tick(REQUEST_DEADLINE_MS);
+    expect(hook.result.current[0]).toBe(NOT_ANSWERED);
+
+    const later = Promise.withResolvers<void>();
+    let held = true;
+    act(() => {
+      void hook.result.current[1](later.promise).then(() => {
+        held = false;
+      });
+    });
+    expect(
+      { held, unsettled: hook.result.current[0] },
+      "the earlier hold's reason outlived the start of a later hold"
+    ).toEqual({ held: true, unsettled: undefined });
+
+    await act(async () => later.resolve());
+    await settle();
+    expect({ held, unsettled: hook.result.current[0] }).toEqual({
+      held: false,
+      unsettled: undefined,
+    });
+  } finally {
+    hook.unmount();
+    realClock();
+  }
+});
+
+// An earlier hold whose bound ends after a later hold began puts no reason back: what is shown is
+// the later hold's alone - nothing while its read is still within its own bound, why it has not
+// settled once that bound ends, which the earlier read settling late leaves in place, and nothing
+// once its own read settles.
+test("useReadBound keeps the later hold's state when an earlier hold's bound ends after it began", async () => {
+  jest.useFakeTimers();
+  const hook = renderHook(() => useReadBound());
+  try {
+    const earlier = Promise.withResolvers<void>();
+    act(() => {
+      void hook.result.current[1](earlier.promise);
+    });
+    await tick(REQUEST_DEADLINE_MS / 2);
+    const later = Promise.withResolvers<void>();
+    act(() => {
+      void hook.result.current[1](later.promise);
+    });
+
+    await tick(REQUEST_DEADLINE_MS / 2);
+    expect(
+      hook.result.current[0],
+      "the earlier hold's bound put its reason over the later hold"
+    ).toBeUndefined();
+
+    await tick(REQUEST_DEADLINE_MS / 2);
+    expect(hook.result.current[0]).toBe(NOT_ANSWERED);
+    await act(async () => earlier.resolve());
+    expect(hook.result.current[0]).toBe(NOT_ANSWERED);
+
+    await act(async () => later.resolve());
+    expect(hook.result.current[0]).toBeUndefined();
+  } finally {
+    hook.unmount();
+    realClock();
+  }
+});

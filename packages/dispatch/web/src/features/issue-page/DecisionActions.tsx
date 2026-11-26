@@ -12,7 +12,7 @@ import {
 } from "react";
 
 import { api, NetworkError, RequestTimeoutError } from "../../api/client";
-import { readWithinBound, useUnsettledRead } from "../../api/read-bound";
+import { useUnsettledRead } from "../../api/read-bound";
 import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { useTooltips } from "../../components/tooltips";
@@ -353,10 +353,11 @@ function ChangeComposer({
   const [reading, setReading] = useState(false);
   const readingRef = useRef(false);
   // Why the latest press's document read had not settled by the request deadline: the form says
-  // why the change it sent named no place until that read settles. `useReadBound` is not used
-  // here, since its hold on the press's hand-off would end with the read, before the comment the
-  // press sends has answered.
-  const [unsettled, keepUnsettled] = useUnsettledRead();
+  // why the change it sent named no place until that read settles or the next press of Send
+  // change reads the document again (`useUnsettledRead`). `useReadBound` is not used here, since
+  // its hold on the press's hand-off would end with the read, before the comment the press sends
+  // has answered.
+  const [unsettled, waitWithinBound] = useUnsettledRead();
   // What the form says of the latest press's document read that failed, which left the change it
   // sent no place, from the moment the read fails: before its bound, or after the bound ended it,
   // in the place of why it had not settled. The line is the press's own: it goes at the next
@@ -454,9 +455,10 @@ function ChangeComposer({
         // here, at the send, over the document's own reading, which the send reads once now
         // directly through the API client (`api.getArtifactText`, as `captureUploadBase` does):
         // a direct GET bypasses TanStack's offline pause and carries the client's exchange
-        // deadline, and `readWithinBound` ensures the press proceeds once even if the read does
-        // not settle in time, so a late read can never post a second comment. `changeAnchor`
-        // walks every decision above this one, which no render of a row pays for (decision 92).
+        // deadline, and the bound of `waitWithinBound` (`readWithinBound`) ensures the press
+        // proceeds once even if the read does not settle in time, so a late read can never post a
+        // second comment. `changeAnchor` walks every decision above this one, which no render of a
+        // row pays for (decision 92).
         // With no reading - the read failed, or the bound ended it - the anchor names no place:
         // Dispatch takes it where the quote stands once, and refuses it where the quote stands
         // more than once, which the form says in the page's words with the draft kept. Beside
@@ -465,11 +467,11 @@ function ChangeComposer({
         // `NetworkError`'s message, and nothing for any other failure, whose text is the server's
         // (`readFailed`): the client sets its own deadline (`REQUEST_DEADLINE_MS`) as the read
         // starts, before the bound, so a read Dispatch never answers fails as a timeout. A read
-        // the bound ended adds why it has not settled, until it does (`unsettled`); if it then
-        // fails, the line says why it failed in that place (`readFailed`). No press starts while
-        // `readingRef` holds, and only the bound's end clears it, so a read that fails before its
-        // bound is always the latest press's; one the bound ended says so only while its press is
-        // still the latest (`presses`).
+        // the bound ended adds why it has not settled, until it does or the next press reads the
+        // document again (`unsettled`); if it then fails, the line says why it failed in that
+        // place (`readFailed`). No press starts while `readingRef` holds, and only the bound's end
+        // clears it, so a read that fails before its bound is always the latest press's; one the
+        // bound ended says so only while its press is still the latest (`presses`).
         readingRef.current = true;
         setReading(true);
         setPressLate(false);
@@ -492,10 +494,9 @@ function ChangeComposer({
             );
           }
         );
-        void readWithinBound(read).then((reason) => {
+        void waitWithinBound(read).then(() => {
           readingRef.current = false;
           setReading(false);
-          keepUnsettled(read, reason);
           const anchor = changeAnchor(
             decision,
             queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)

@@ -100,7 +100,8 @@ export function RevocableList<Row>({
   unrevocable?: (row: Row) => string | null;
 }): ReactNode {
   const submitGuard = useSubmitGuard();
-  // Why the read a landed revoke made has not settled, once its hold ran out (`useReadBound`).
+  // Why the read the latest landed revoke made has not settled, once its hold ran out: the next
+  // revoke takes it away as it lands (`useReadBound`).
   const [unsettled, holdThrough] = useReadBound();
   // What the list says of a read that failed, and of the read a landed revoke made that has not
   // settled.

@@ -403,6 +403,74 @@ test("offline, Dismiss whose dismissal landed is let go at the request deadline,
   }
 });
 
+// The line an expired row draws for a list read the bound ended is that dismissal's own: the next
+// press of Dismiss takes it away as its dismissal lands, though the earlier read is still out, and
+// the read after it, once answered, takes the row away. Dispatch holds the first dismissal's read
+// until the row answers it, so the next dismissal's read, which waits for that one
+// (`DispatchQueryClient`), answers after it.
+test("the line a dismissal's read the bound ended draws goes as the next dismissal lands, whose read takes the row away", async () => {
+  const getPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [expiredSecretRow()],
+  });
+  // Each dismissal's answer, held until the row moves the clock, so what it sets off runs in `act`.
+  const dismissals: (() => void)[] = [];
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    dismissals.push(resolve);
+    return promise;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ListedSection />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const name = "Dismiss expired secret request DEEL_API_KEY";
+  const button = await screen.findByRole("button", { name });
+  const row = screen.getByText("DEEL_API_KEY").closest("li") as HTMLElement;
+  const note = /^Couldn't load credential requests\./;
+  const reread = Promise.withResolvers<{ pending: CredentialPendingRow[] }>();
+  getPending.mockResolvedValue({ pending: [] });
+  getPending.mockReturnValueOnce(reread.promise);
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(button);
+    await tick(0);
+    dismissals[0]?.();
+    await tick(0);
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(button).not.toHaveAttribute("aria-disabled");
+    expect(within(row).getByText(note).textContent).toBe(
+      "Couldn't load credential requests. Dispatch did not answer within 30 seconds."
+    );
+
+    await user.click(button);
+    await tick(0);
+    expect(dismiss).toHaveBeenCalledTimes(2);
+    dismissals[1]?.();
+    await tick(0);
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(
+      within(row).queryByText(note),
+      "the earlier dismissal's read kept its line past the next dismissal"
+    ).toBeNull();
+
+    await act(async () => reread.resolve({ pending: [] }));
+    await tick(0);
+    expect(screen.queryByRole("button", { name })).toBeNull();
+  } finally {
+    view.unmount();
+    client.clear();
+    realClock();
+    getPending.mockRestore();
+    dismiss.mockRestore();
+  }
+});
+
 test("renders nothing while the list loads or when it lists none, a broker-less Dispatch's answer", () => {
   for (const status of ["loading", "listed"] as const) {
     const view = renderSection({ requests: [], status });

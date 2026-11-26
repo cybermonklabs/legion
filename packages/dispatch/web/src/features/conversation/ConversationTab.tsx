@@ -791,14 +791,15 @@ function CommentTurn({
   const queryClient = useQueryClient();
   const agentText = useAgentText();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
-  // Why the read of the comments a landed edit started has not settled, once its hold ran out.
+  // Why the read of the comments the latest landed edit started has not settled, once its hold
+  // ran out.
   const [editUnsettled, holdThrough] = useReadBound();
   /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). The attempt
    *  holds the edit - its editor, and every Edit of the card (`savingCommentEditId`) - until the
    *  comments are read again with the saved words, or until the request deadline where that read
    *  has not settled - one the network paused while the browser is offline - so no read holds
-   *  the edit for good, and the turn says why beneath the card until the read settles
-   *  (`useReadBound`). */
+   *  the edit for good, and the turn says why beneath the card until the read settles or the
+   *  next save lands (`useReadBound`). */
   const editComment = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
       setSavingCommentEditId(id);

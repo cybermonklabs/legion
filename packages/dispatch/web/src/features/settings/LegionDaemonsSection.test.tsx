@@ -427,6 +427,78 @@ test.each(
   }
 });
 
+// The line a removal's project read the bound ended draws is that removal's own: the next Remove
+// takes it away as its removal lands, though the earlier read is still out, and that removal's
+// read answering says nothing more. A removal takes its row away at the press, so the next press
+// is the other project's Remove, whose read Dispatch answers at once.
+test("the line a removal's project read the bound ended draws goes as the next removal lands, whose read answers", async () => {
+  const server = legionServer([
+    setting,
+    { ...setting, project: "CORE", state_url: "https://daemon.example" },
+  ]);
+  // The first read of ACME once the row asks for it, held until the row answers it.
+  const reread = Promise.withResolvers<void>();
+  let holding = false;
+  // Each removal's answer, held until the row gives it, so what it sets off runs in `act`.
+  const removals: (() => void)[] = [];
+  answerDaemonRemovals().mockImplementation(async (project) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    removals.push(resolve);
+    await promise;
+    await server.remove(project);
+  });
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(
+    {
+      ...server,
+      get: async (project) => {
+        if (holding && project === "ACME") {
+          holding = false;
+          await reread.promise;
+        }
+        return server.get(project);
+      },
+    },
+    true,
+    queryClient
+  );
+  await section.findByRole("cell", { name: "CORE" });
+  const removeCore = section.getByRole("button", { name: "Remove the Legion daemon of CORE" });
+  const why = "Couldn't load the Legion daemons. Dispatch did not answer within 30 seconds.";
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    holding = true;
+    await user.click(section.getByRole("button", { name: "Remove the Legion daemon of ACME" }));
+    await tick(0);
+    await act(async () => removals[0]?.());
+    await tick(0);
+    expect(heldNotDisabled(removeCore, "Remove the Legion daemon of CORE")).toBe(true);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(removeCore, "Remove the Legion daemon of CORE")).toBe(false);
+    expect(section.getByRole("alert").textContent).toBe(why);
+
+    await user.click(removeCore);
+    await tick(0);
+    expect(removals).toHaveLength(2);
+    await act(async () => removals[1]?.());
+    await tick(0);
+    expect(section.queryByRole("cell", { name: "CORE" })).toBeNull();
+    expect(
+      section.queryByRole("alert"),
+      "the earlier removal's read kept its line past the next removal"
+    ).toBeNull();
+
+    await act(async () => reread.resolve());
+    await tick(0);
+    expect(section.queryByRole("alert")).toBeNull();
+  } finally {
+    cleanup();
+    queryClient.clear();
+    realClock();
+  }
+});
+
 // A write the reader stops while the browser is offline settles at once, and the read of its
 // project that settling asks for is paused by the network. A stopped write is no longer late, so
 // a section that held its controls through that read would hold them again, with nothing to end

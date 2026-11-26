@@ -197,7 +197,8 @@ export function useIssueTableActions({
     [writes]
   );
   const [notice, setNotice] = useState<Notice>();
-  // Why the list read after an action has not settled, once its hold ran out (`useReadBound`).
+  // Why the list read after the latest action has not settled, once its hold ran out: the next
+  // action takes it away as its hold begins (`useReadBound`).
   const [unsettled, holdThrough] = useReadBound();
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
   const [duplicateEpic, setDuplicateEpic] = useState<DuplicateEpic>();

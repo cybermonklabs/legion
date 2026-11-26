@@ -326,6 +326,83 @@ test("Mark read releases its hold when its landed mark's re-read reaches the req
   }
 });
 
+// The line a Mark read's re-read the bound ended draws is that mark's own: the next Mark read
+// takes it away as its mark lands, though the earlier re-read is still out, and that mark's
+// re-read answering says nothing more. Dispatch holds the first mark's re-read until the row
+// answers it, so the next mark's re-read, which waits for that one (`DispatchQueryClient`),
+// answers after it.
+test("the line a Mark read's re-read the bound ended draws goes as the next mark lands, whose re-read answers", async () => {
+  // Each mark's answer, held until the row gives it, so what it sets off runs in `act`.
+  const marks: (() => void)[] = [];
+  const mark = answerThreadReads().mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    marks.push(resolve);
+    return promise;
+  });
+  mockCommentReads();
+  const client = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const key = inboxThreadsQuery().queryKey;
+  client.setQueryData(key, threadsRead([]));
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const reread = Promise.withResolvers<MyRepliesResponse>();
+  let reads = 0;
+  function ReadThreads() {
+    useQuery({
+      queryKey: key,
+      queryFn: () => {
+        reads += 1;
+        return reads === 1 ? reread.promise : Promise.resolve(threadsRead([]));
+      },
+    });
+    return null;
+  }
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ReadThreads />
+        <ThreadRowCard thread={commentRow("comment-1", "The retry budget")} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const why = "Could not load your inbox. Dispatch did not answer within 30 seconds.";
+  try {
+    await screen.findByTestId("inbox-thread-comment");
+    jest.useFakeTimers();
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Mark read" });
+    const user = userOnFakeClock();
+    await user.click(button);
+    await tick(0);
+    await act(async () => marks[0]?.());
+    await tick(0);
+    expect(reads).toBe(1);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(button, "Mark read")).toBe(false);
+    expect(screen.getByRole("alert")).toHaveTextContent(why);
+
+    await user.click(button);
+    await tick(0);
+    expect(mark).toHaveBeenCalledTimes(2);
+    await act(async () => marks[1]?.());
+    await tick(0);
+    expect(heldNotDisabled(button, "Mark read")).toBe(true);
+    expect(
+      screen.queryByRole("alert"),
+      "the earlier mark's re-read kept its line past the next mark"
+    ).toBeNull();
+
+    await act(async () => reread.resolve(threadsRead([])));
+    await tick(0);
+    expect(heldNotDisabled(button, "Mark read")).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    view.unmount();
+    client.clear();
+    realClock();
+  }
+});
+
 // A mark that never answers - offline, each try failing at the network - holds Mark read until
 // its deadline and no longer: past it the mark is still tried, and a press then marks again.
 test("Mark read lets go at the mark's write deadline and marks again", async () => {

@@ -2164,6 +2164,74 @@ test.each([
   }
 });
 
+// The line a retry's read the bound ended draws is that retry's own: the next retry takes it away
+// as it lands, though the earlier read is still out, and that retry's read answering leaves
+// nothing to say. Dispatch holds the first retry's read until the row answers it, so the next
+// retry's read, which waits for that one (`DispatchQueryClient`), answers after it.
+test("the line a retry's read the bound ended draws goes as the next retry lands, whose read answers", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({
+    listedAgents: steerCapableAgents(),
+    messages: [{ message: failedAside.message, replies: [] }],
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  // Each retry's answer, held until the row moves the clock, so what it sets off runs in `act`.
+  const deliveries: ((delivery: MessageDelivery) => void)[] = [];
+  page.createMessageDelivery.mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<MessageDelivery>();
+    deliveries.push(resolve);
+    return promise;
+  });
+  const landed: MessageDelivery = {
+    ...failedAttempt("message-1", "aside"),
+    attempt: 2,
+    envelope_id: "envelope-2",
+    error: null,
+    state: "sent",
+  };
+  const note = /^Could not load this conversation\./;
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const retry = await within(planner).findByRole("button", { name: "Retry" });
+    const reread = Promise.withResolvers<MessageRead[]>();
+    page.listAgentMessages.mockReturnValueOnce(reread.promise);
+    jest.useFakeTimers();
+    const onClock = userOnFakeClock();
+    await onClock.click(retry);
+    await tick(0);
+    deliveries[0]?.(landed);
+    await tick(0);
+    expect(retryButtons(planner, ["Retry"])).toEqual(["Retry: held"]);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(retryButtons(planner, ["Retry"])).toEqual(["Retry: free"]);
+    expect(within(planner).getByText(note).textContent).toBe(
+      "Could not load this conversation. Dispatch did not answer within 30 seconds."
+    );
+
+    await onClock.click(retry);
+    await tick(0);
+    expect(page.createMessageDelivery).toHaveBeenCalledTimes(2);
+    deliveries[1]?.(landed);
+    await tick(0);
+    expect(retryButtons(planner, ["Retry"])).toEqual(["Retry: held"]);
+    expect(
+      within(planner).queryByText(note),
+      "the earlier retry's read kept its line past the next retry"
+    ).toBeNull();
+
+    await act(async () => reread.resolve([{ message: failedAside.message, replies: [] }]));
+    await tick(0);
+    expect(retryButtons(planner, ["Retry"])).toEqual(["Retry: free"]);
+    expect(within(planner).queryByText(note)).toBeNull();
+  } finally {
+    page.view.unmount();
+    page.queryClient.clear();
+    realClock();
+    page.restore();
+  }
+});
+
 test("Use Send instead is disabled when the target does not advertise steer", async () => {
   const user = userEvent.setup();
   const root = message("Can this ship?", {

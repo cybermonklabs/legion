@@ -856,6 +856,74 @@ test("a landed review whose reads have not answered by the request deadline lets
   }
 });
 
+// The line a landed review's reads the bound ended draws is that review's own: the next review
+// takes it away as it lands, though the earlier reads are still out, and that review's reads
+// answering say nothing more. Dispatch holds the first review's read of the issue until the row
+// answers it, so the next review's read, which waits for that one (`DispatchQueryClient`),
+// answers after it.
+test("the line a review's reads the bound ended draws goes as the next review lands, whose reads answer", async () => {
+  // Each review's answer, held until the row gives it, so what it sets off runs in `act`.
+  const answers: ((review: ArtifactReview) => void)[] = [];
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => {
+      const { promise, resolve } = Promise.withResolvers<ArtifactReview>();
+      answers.push(resolve);
+      return promise;
+    }
+  );
+  const waiting = { artifacts: [artifact({ latest_version: 3, state: "awaiting" })] };
+  const readAgain = Promise.withResolvers<{ readonly artifacts: readonly Artifact[] }>();
+  let reads = 0;
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <IssueReadChip
+        read={() => {
+          reads += 1;
+          return reads === 2 ? readAgain.promise : Promise.resolve(waiting);
+        }}
+      />
+    </QueryClientProvider>
+  );
+  const approve = (await screen.findByRole("button", { name: "Approve" })) as HTMLButtonElement;
+  const why = "The new approval is not read yet. Dispatch did not answer within 30 seconds.";
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(approve);
+    await tick(0);
+    await act(async () => answers[0]?.(approvedReview(3)));
+    await tick(0);
+    expect(reads).toBe(2);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(approve, "Approve")).toBe(false);
+    expect(screen.getByRole("alert").textContent).toBe(why);
+
+    await user.click(approve);
+    await tick(0);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(2);
+    await act(async () => answers[1]?.(approvedReview(3)));
+    await tick(0);
+    expect(heldNotDisabled(approve, "Approve")).toBe(true);
+    expect(
+      screen.queryByText(why),
+      "the earlier review's reads kept their line past the next review"
+    ).toBeNull();
+
+    await act(async () => readAgain.resolve(waiting));
+    await tick(0);
+    expect(heldNotDisabled(approve, "Approve")).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    createArtifactVersionReview.mockRestore();
+  }
+});
+
 test("Request changes requires a reason before it can submit, then posts it", async () => {
   const user = userEvent.setup();
   const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockResolvedValue({

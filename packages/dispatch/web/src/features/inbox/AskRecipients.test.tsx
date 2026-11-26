@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldNotDisabled } from "../../__tests__/held-press";
+import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, AskFollower, Subscriber } from "../../api/types";
@@ -394,6 +395,72 @@ test("offline, an Unsubscribe's hold through the read after its write ends at th
     client.clear();
     onlineManager.setOnline(online);
     out.resolve();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// The line a recipients read the bound ended draws is that write's own: the next Unsubscribe
+// takes it away as it lands, though the earlier read is still out, and the read after it, once
+// answered, takes the chip away. Dispatch holds the first Unsubscribe's read until the row answers
+// it, so the next one's read, which waits for that one (`DispatchQueryClient`), answers after it.
+test("the line an Unsubscribe's read the bound ended draws goes as the next Unsubscribe lands, whose read takes the chip away", async () => {
+  // Each Unsubscribe's answer, held until the row gives it, so what it sets off runs in `act`.
+  const answers: (() => void)[] = [];
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    answers.push(resolve);
+    return promise;
+  });
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const page = await renderRecipients({
+    client,
+    subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
+  });
+  const note = /^Could not load the recipients\./;
+  try {
+    const section = screen.getByRole("region", { name: "Recipients" });
+    const viaIssue = await within(section).findByRole("list", { name: "Via issue subscription" });
+    const unsubscribe = within(viaIssue).getByRole("button", { name: "Unsubscribe" });
+    const reread = Promise.withResolvers<Subscriber[]>();
+    page.getIssueSubscribers.mockResolvedValue([]);
+    page.getIssueSubscribers.mockReturnValueOnce(reread.promise);
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      /** Presses Unsubscribe, confirms it, and lands its write. */
+      const unsubscribeOnce = async () => {
+        await user.click(unsubscribe);
+        const dialog = screen.getByRole("dialog", { name: "Unsubscribe" });
+        await user.click(within(dialog).getByRole("button", { name: "Confirm" }));
+        await tick(0);
+        await act(async () => answers.at(-1)?.());
+        await tick(0);
+      };
+
+      await unsubscribeOnce();
+      await tick(REQUEST_DEADLINE_MS);
+      expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(false);
+      expect(within(section).getByText(note).textContent).toBe(
+        "Could not load the recipients. Dispatch did not answer within 30 seconds."
+      );
+
+      await unsubscribeOnce();
+      expect(unsubscribeIssueSession).toHaveBeenCalledTimes(2);
+      expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(true);
+      expect(
+        within(section).queryByText(note),
+        "the earlier Unsubscribe's read kept its line past the next Unsubscribe"
+      ).toBeNull();
+
+      await act(async () => reread.resolve([]));
+      await tick(0);
+      expect(within(section).queryByRole("list", { name: "Via issue subscription" })).toBeNull();
+      expect(within(section).queryByText(note)).toBeNull();
+    });
+  } finally {
+    page.unmount();
+    client.clear();
     unsubscribeIssueSession.mockRestore();
   }
 });

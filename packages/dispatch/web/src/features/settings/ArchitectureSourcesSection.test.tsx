@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate } from "../../__tests__/held-until-late";
@@ -11,7 +11,8 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { ArchitectureSource, Project } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -562,6 +563,75 @@ test("Delete hands focus to the preceding source's Delete after the re-read remo
   } finally {
     await act(async () => updatedList.resolve([before]));
     page.restore();
+  }
+});
+
+// The line a removal's list read the bound ended draws is that removal's own: the next Delete
+// takes it away as its removal lands, though the earlier read is still out, and the read after
+// it, once answered, takes the row away. Dispatch holds the first removal's read until the row
+// answers it, so the next removal's read, which waits for that one (`DispatchQueryClient`),
+// answers after it.
+test("the line a removal's list read the bound ended draws goes as the next Delete lands, whose read takes the row away", async () => {
+  const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
+    architectureSource,
+  ]);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  // Each removal's answer, held until the row gives it, so what it sets off runs in `act`.
+  const removals: (() => void)[] = [];
+  const deleteArchitectureSource = spyOn(api, "deleteArchitectureSource").mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    removals.push(resolve);
+    return promise;
+  });
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ArchitectureSourcesSection />
+    </QueryClientProvider>
+  );
+  const name = "Delete architecture source legion/arch for CORE";
+  const note = /^Couldn't load architecture sources\./;
+  try {
+    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+    const remove = await section.findByRole("button", { name });
+    const reread = Promise.withResolvers<ArchitectureSource[]>();
+    listArchitectureSources.mockResolvedValue([]);
+    listArchitectureSources.mockReturnValueOnce(reread.promise);
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(remove);
+    await tick(0);
+    await act(async () => removals[0]?.());
+    await tick(0);
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(remove).not.toHaveAttribute("aria-disabled");
+    expect(section.getByText(note).textContent).toBe(
+      "Couldn't load architecture sources. Dispatch did not answer within 30 seconds."
+    );
+
+    await user.click(remove);
+    await tick(0);
+    expect(deleteArchitectureSource).toHaveBeenCalledTimes(2);
+    await act(async () => removals[1]?.());
+    await tick(0);
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(
+      section.queryByText(note),
+      "the earlier removal's read kept its line past the next removal"
+    ).toBeNull();
+
+    await act(async () => reread.resolve([]));
+    await tick(0);
+    expect(section.queryByRole("button", { name })).toBeNull();
+    expect(section.queryByText(note)).toBeNull();
+  } finally {
+    cleanup();
+    queryClient.clear();
+    realClock();
+    deleteArchitectureSource.mockRestore();
+    listProjects.mockRestore();
+    listArchitectureSources.mockRestore();
   }
 });
 

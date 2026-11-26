@@ -464,8 +464,8 @@ function AgentMessageList({
   const agentState = useQuery(userAgentStateQuery());
   const [showOlder, setShowOlder] = useState(false);
   const [showCleared, setShowCleared] = useState(false);
-  // A retry's hold through this conversation's read, and why that read has not settled once the
-  // hold ran out (`useReadBound`).
+  // A retry's hold through this conversation's read, and why the latest retry's read has not
+  // settled once its hold ran out, which the next retry takes away as it lands (`useReadBound`).
   const [unsettled, holdThrough] = useReadBound();
   const holdThroughRead = () =>
     holdThrough(

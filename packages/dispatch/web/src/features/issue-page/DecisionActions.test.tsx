@@ -1148,6 +1148,53 @@ test("the line a failed document read draws beside Send change goes at the next 
   }
 });
 
+// The line a read the bound ended draws is the press's own as well: the next press of Send change
+// takes it away as that press reads the document again, though the earlier read never settles,
+// and a read that answers says nothing. Dispatch refuses each change here, so the form stays drawn
+// with its refusal, and only the read's line has gone (the tester's row of `issue-page-q.e2e.ts`,
+// "a Change whose document read the bound ended loses that read's line at the next press").
+test("the line a document read the bound ended draws beside Send change goes at the next press, whose read answers", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    twoDecisionsText("The decisions this issue made.")
+  );
+  // Dispatch never answers the first press's read; the next press's is answered.
+  text.mockReturnValueOnce(new Promise<never>(() => {}));
+  const why = `${STATE_LINES.decisions_document_unreadable} Dispatch did not answer within 30 seconds.`;
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await onFakeClock.click(send);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(alertLines()).toEqual([why, ANSWER_LINES.change_not_sent]);
+
+    // The next press reads the document again, and Dispatch answers: the change names its place,
+    // and the form says nothing of the first press's read.
+    await onFakeClock.click(send);
+    await tick(0);
+    expect(text).toHaveBeenCalledTimes(2);
+    expect(createComment).toHaveBeenCalledTimes(2);
+    expect(createComment.mock.calls[1]?.[1]?.anchor?.occurrence).toBe(1);
+    expect(alertLines(), "the read the bound ended kept its line past the next press").toEqual([
+      ANSWER_LINES.change_not_sent,
+    ]);
+  } finally {
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
 // R6, R8 and the reading list's `decision-change-quote`: the Change quotes the words it is
 // anchored to as the reader reads the decision - the plain-text projection of its first block,
 // a reference in it read as its target's name - while the change it sends is still anchored to

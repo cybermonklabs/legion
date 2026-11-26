@@ -11,7 +11,8 @@ import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { GrantsSection } from "./GrantsSection";
@@ -387,6 +388,82 @@ test("Sign-ins: Revoke by the keyboard hands the focus to the Revoke before it o
   } finally {
     cleanup();
     queryClient.clear();
+    confirm.mockRestore();
+    list.mockRestore();
+    revoke.mockRestore();
+  }
+});
+
+// The line under the table for a list read the bound ended is that revoke's own: the next press of
+// Revoke takes it away as its revoke lands, though the earlier read is still out, and the read
+// after it, once answered, takes the row away. Dispatch holds the first revoke's read until the
+// row answers it, so the next revoke's read, which waits for that one (`DispatchQueryClient`),
+// answers after it.
+test("Sign-ins: the line a revoke's read the bound ended draws goes as the next revoke lands, whose read takes the row away", async () => {
+  const list = spyOn(api, "getSignIns").mockResolvedValue({
+    signins: [
+      {
+        created_at: "2026-10-03T12:00:00Z",
+        last_used_at: "2026-10-03T12:30:00Z",
+        machine: "devbox.example.com",
+        signin_id: "signin-1",
+        thumbprint: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+      },
+    ],
+  });
+  // Each revoke's answer, held until the row moves the clock, so what it sets off runs in `act`.
+  const revokes: (() => void)[] = [];
+  const revoke = spyOn(api, "revokeSignIn").mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    revokes.push(resolve);
+    return promise;
+  });
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const note = /^Couldn't load sign-ins\./;
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SignInsSection />
+      </QueryClientProvider>
+    );
+    const region = within(await screen.findByRole("region", { name: "Sign-ins" }));
+    const button = await region.findByRole("button", { name: "Revoke" });
+    const reread = Promise.withResolvers<{ signins: [] }>();
+    list.mockResolvedValue({ signins: [] });
+    list.mockReturnValueOnce(reread.promise);
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(button);
+    await tick(0);
+    revokes[0]?.();
+    await tick(0);
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(button).not.toHaveAttribute("aria-disabled");
+    expect(region.getByText(note).textContent).toBe(
+      "Couldn't load sign-ins. Dispatch did not answer within 30 seconds."
+    );
+
+    await user.click(button);
+    await tick(0);
+    expect(revoke).toHaveBeenCalledTimes(2);
+    revokes[1]?.();
+    await tick(0);
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(
+      region.queryByText(note),
+      "the earlier revoke's read kept its line past the next revoke"
+    ).toBeNull();
+
+    await act(async () => reread.resolve({ signins: [] }));
+    await tick(0);
+    expect(region.getByText("No sign-ins.")).toBeInTheDocument();
+    expect(region.queryByText(note)).toBeNull();
+  } finally {
+    cleanup();
+    queryClient.clear();
+    realClock();
     confirm.mockRestore();
     list.mockRestore();
     revoke.mockRestore();

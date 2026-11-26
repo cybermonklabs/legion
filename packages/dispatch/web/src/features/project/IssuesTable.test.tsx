@@ -3062,6 +3062,75 @@ test("offline, a row's Start next whose write landed is free again at the reques
   }
 });
 
+// The notice's line for a list read the bound ended is that action's own: the next action takes it
+// away as its write lands, though the earlier read is still out, and the notice then says what
+// that action did alone; its read answering says nothing more. Dispatch holds the first action's
+// list read until the row answers it, so the next action's read, which waits for that one
+// (`DispatchQueryClient`), answers after it.
+test("the line a Start next's list read the bound ended adds goes as the next Start next lands, whose read answers", async () => {
+  // Each write's answer, held until the row gives it, so what it sets off runs in `act`.
+  const answers: ((saved: Issue) => void)[] = [];
+  const send = spyOn(api, "send").mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<Issue>();
+    answers.push(resolve);
+    return promise as never;
+  });
+  restores.push(() => send.mockRestore());
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { listing } = table(
+    [
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "C" }),
+    ],
+    "",
+    { client }
+  );
+  const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const startNext = within(row).getByRole("button", { name: "Start next" });
+  // The first list read after the first write, held until the row answers it.
+  const listed = listing.getMockImplementation();
+  const reread = Promise.withResolvers<void>();
+  listing.mockImplementationOnce(async (...args) => {
+    await reread.promise;
+    if (listed === undefined) throw new Error("the list read has no answer");
+    return listed(...args);
+  });
+  const done = "CORE-2 “Work CORE-2” now starts next.";
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(startNext);
+    await tick(0);
+    await act(async () => answers[0]?.(savedIssue("CORE-2")));
+    await tick(0);
+    expect(startNext).toHaveAttribute("aria-disabled", "true");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(startNext).not.toHaveAttribute("aria-disabled");
+    expect(screen.getByRole("alert").textContent).toBe(
+      `${done} Could not load issues. Dispatch did not answer within 30 seconds.`
+    );
+
+    await user.click(startNext);
+    await tick(0);
+    expect(send).toHaveBeenCalledTimes(2);
+    await act(async () => answers[1]?.(savedIssue("CORE-2")));
+    await tick(0);
+    expect(startNext).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.queryByRole("alert"),
+      "the earlier action's list read kept its line past the next action"
+    ).toBeNull();
+    expect(screen.getByText(done)).toHaveAttribute("role", "status");
+
+    await act(async () => reread.resolve());
+    await tick(0);
+    expect(startNext).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    realClock();
+  }
+});
+
 // Offline, the List's Take out of epic lands its write, and the list read after it is paused until
 // the network returns. The action holds the bar through that read until the request deadline
 // (`REQUEST_DEADLINE_MS`), counted from the write's landing, which is past the write deadline

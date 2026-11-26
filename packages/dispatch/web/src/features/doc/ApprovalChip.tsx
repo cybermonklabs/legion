@@ -498,7 +498,8 @@ export function ApprovalChip({
   const submitGuard = useSubmitGuard();
   const tooltips = useTooltips();
   const page = usePageWords();
-  // Why the reads a landed review made stale have not settled, once the hold over them ran out.
+  // Why the reads the latest landed review made stale have not settled, once the hold over them
+  // ran out.
   const [unsettled, holdThrough] = useReadBound();
 
   const review = useKeyedWrite({
@@ -531,10 +532,10 @@ export function ApprovalChip({
       // approval while the page still draws the request as waiting. A read that has not settled
       // by the request deadline - one the network paused while the browser is offline - ends the
       // wait there, so no read holds the actions for good, and the chip says why beside them
-      // until the reads settle (`useReadBound`). Outside `NoTooltips` the dialog closes as the
-      // write lands, as on `main`. Inside, it closes once the reads are in, and a dialog the
-      // reader has not closed (`onClose`) then gives the focus back to the button that opened it.
-      // The reads are the reviewed document's, from the press.
+      // until the reads settle or the next review lands (`useReadBound`). Outside `NoTooltips`
+      // the dialog closes as the write lands, as on `main`. Inside, it closes once the reads are
+      // in, and a dialog the reader has not closed (`onClose`) then gives the focus back to the
+      // button that opened it. The reads are the reviewed document's, from the press.
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
       const rereads = holdThrough(
