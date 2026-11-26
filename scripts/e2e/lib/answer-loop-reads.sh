@@ -78,12 +78,15 @@ newest_question() {
   boot_log | jq -s -r --arg s "$1" --arg st "$2" \
     '[.[] | select(.msg == "answers: question" and .session == $s and .state == $st) | .question] | last // ""'
 }
-# answer_dropped SESSION: this boot dropped an answer of SESSION's because its conversation had
-# started, and forwarded the question to the agent instead (A7).
+# answer_dropped SESSION [LINES]: this boot dropped an answer of SESSION's because its conversation
+# had started, and forwarded the question to the agent instead (A7). LINES is this boot's log as
+# A7's control read it once (boot_listing), read now where not given.
 answer_dropped() {
-  boot_log | jq -e -s --arg s "$1" 'any(.[];
+  local lines=${2:-}
+  [ -n "$lines" ] || lines=$(boot_listing)
+  jq -e --arg s "$1" 'any(.[]?;
     .msg == "answers: the agent'"'"'s conversation is running or moved; the answer is dropped and the question forwarded"
-    and .started == true and .session == $s)' >/dev/null
+    and .started == true and .session == $s)' <<<"$lines" >/dev/null
 }
 # question_forwarded ROLE: this boot forwarded a question of ROLE's to its agent, which a resume
 # mid-answer does (A18).
@@ -101,11 +104,14 @@ fault_passed_on() {
 answered_fault_is() {
   jq -e --arg f "$2" --argjson c "$3" '.fault == $f and .calls == $c' <<<"${1:-null}" >/dev/null 2>&1
 }
-# boot_tools_line prints this boot's `answers: tools` line, the one line the daemon logs as it
-# builds the answer loop (internal/daemon's answersToolsLine): `tools`, the tools the loop offers,
-# and under each tool it does not offer a key of that tool's name saying why. It prints nothing for
-# a boot that logged none, as a daemon with `answers` removed logs none.
-boot_tools_line() { boot_log | jq -s -c '[.[] | select(.msg == "answers: tools")] | last // empty'; }
+# tools_line_in LINES prints the last `answers: tools` line of LINES, a listing of the daemon's log
+# (boot_listing), the one line the daemon logs as it builds the answer loop (internal/daemon's
+# answersToolsLine): `tools`, the tools the loop offers, and under each tool it does not offer a
+# key of that tool's name saying why. It prints nothing for a log that logged none, as a daemon
+# with `answers` removed logs none, and for a listing that is none. boot_tools_line is that line of
+# this boot's log, read now; A22's and A23's controls read the log once and hand it to the read.
+tools_line_in() { jq -c '[.[]? | select(.msg == "answers: tools")] | last // empty' <<<"${1:-null}"; }
+boot_tools_line() { tools_line_in "$(boot_listing)"; }
 # tools_line_offers LINE TOOL: the `answers: tools` LINE lists TOOL among the loop's tools. No line
 # at all offers nothing.
 tools_line_offers() {
@@ -801,12 +807,12 @@ inbox_replies() {
   fi
   printf '%s\n' "$count"
 }
-# replied_with_keys EVENT ID: the asker received a reply to EVENT (inbox_reply), and it holds every
-# key of question ID (answer_holds). It prints what is missing, the reply or the first key it
+# replied_with_keys EVENT ID [INBOX]: the asker received a reply to EVENT (inbox_reply), and it holds
+# every key of question ID (answer_holds). It prints what is missing, the reply or the first key it
 # lacks, and nothing when it holds. A2's, A4's and A15's answers are read so, each by its own event.
 replied_with_keys() {
   local reply
-  reply=$(inbox_reply "$1") || {
+  reply=$(inbox_reply "$1" "${3:-}") || {
     printf 'no reply to %s\n' "${1:-a send the listener named no event for}"
     return 1
   }
@@ -817,24 +823,28 @@ replied_with_keys() {
 # running agent, which the loop posts nothing for). An empty EVENT is no send at all, and shows
 # nothing.
 no_reply_to() { [ -n "${1:-}" ] && [ "$(inbox_replies "$1" "${2:-}")" = 0 ]; }
-# replies_to EVENT...: the replies the asker received to the sends whose answers named EVENT...,
+# replies_to INBOX EVENT...: the replies the asker received to the sends whose answers named EVENT...,
 # each event's replies counted once. The listener answers a sender's own repeat under one key with
 # its first copy's event (cmd/listener's answerHandedOff), so every send of one envelope can name
 # one event, and a sum over the sends would count that event's one reply once a send (proof run
-# 45136574601, A8: one reply read as 3).
+# 45136574601, A8: one reply read as 3). INBOX is the inbox as A8's control read it once
+# (inbox_listing), empty to read it now.
 replies_to() {
-  local event total=0
+  local inbox=$1 event total=0
+  shift
   for event in $(printf '%s\n' "$@" | sort -u); do
-    total=$((total + $(inbox_replies "$event")))
+    total=$((total + $(inbox_replies "$event" "$inbox")))
   done
   printf '%s\n' "$total"
 }
-# first_reply_of EVENT EVENT: the text of whichever of the two answers reached the asker first, so
-# a check reads the order they were answered in (A9). Either event empty is no pair of sends.
+# first_reply_of EVENT EVENT [INBOX]: the text of whichever of the two answers reached the asker
+# first, so a check reads the order they were answered in (A9). Either event empty is no pair of
+# sends.
+# shellcheck disable=SC2016 # jq's variables, run through inbox_jq
 first_reply_of() {
-  [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -f "$evidence/inbox.jsonl" ] || return 1
-  jq -s -r --arg a "In Reply To: $1" --arg b "In Reply To: $2" \
-    '[.[] | select((.text | contains($a)) or (.text | contains($b)))] | (.[0].text // empty)' "$evidence/inbox.jsonl"
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+  inbox_jq "${3:-}" -r --arg a "In Reply To: $1" --arg b "In Reply To: $2" \
+    '[.[]? | select((.text | contains($a)) or (.text | contains($b)))] | (.[0].text // empty)'
 }
 # controller_notices KIND NEEDLE [INBOX]: how many notices of KIND the controller stand-in received
 # whose text holds NEEDLE. An empty NEEDLE, a person's reply Dispatch took none of, names no notice.
@@ -1501,20 +1511,19 @@ pr_comment_listing() {
   jq -s -c '(.[0] // null) | if type == "array" then . else null end' <<<"$body" 2>/dev/null ||
     printf 'null\n'
 }
-# pr_comments_holding LISTING MARKER prints the comments of LISTING (pr_comment_listing) which hold
-# MARKER, as {id, user, body}: a listing that is none — GitHub's error body, a gh call that printed
-# nothing or failed — holds no comment and prints [].
+# pr_comments_holding LISTING MARKER prints the comments of LISTING (pr_comment_listing) whose body
+# carries MARKER, as {id, user, body}: the one filter of the pull request's comments by a marker. A
+# comment with a null body holds nothing and does not end the read, and a listing that is none —
+# GitHub's error body, a gh call that printed nothing or failed — holds no comment and prints [].
 pr_comments_holding() {
-  jq -c --arg m "$2" '(if type == "array" then . else [] end) | [.[] | select(.body | contains($m)) | {id, user: .user.login, body}]' \
+  jq -c --arg m "$2" '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | {id, user: .user.login, body}]' \
     <<<"${1:-null}" 2>/dev/null || printf '[]\n'
 }
-# comment_ids_holding LISTING MARKER prints, as one JSON array, the ids of the comments of LISTING
-# (pr_comment_listing) whose body carries MARKER, and `[]` for a listing that is none: the one read
-# of A17's comments by the run's refusal marker, which its reads say and record_leak_comments
-# records for the cleanup.
+# comment_ids_holding LISTING MARKER prints, as one JSON array, the ids of the comments
+# pr_comments_holding finds in LISTING, and `[]` for a listing that is none: A17's comments by the
+# run's refusal marker, which its reads say and record_leak_comments records for the cleanup.
 comment_ids_holding() {
-  jq -c --arg m "$2" '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | .id]' \
-    <<<"${1:-null}" 2>/dev/null || printf '[]\n'
+  jq -c 'map(.id)' <<<"$(pr_comments_holding "${1:-null}" "$2")"
 }
 # pr_comments NUMBER MARKER is pr_comments_holding over the listing read from GitHub now.
 pr_comments() {
@@ -1622,16 +1631,23 @@ review_round_undecided() {
 review_round_ended() {
   jq -e --arg id "$2" 'type == "object" and .phase != "reviewing" and ((.review_seen // 0) | tostring) == $id' <<<"${1:-null}" >/dev/null 2>&1
 }
-# tree_is_live ROOT PHASE [held]: the daemon's own state says ROOT's tree is live and does not
-# linger — admission.trees is record.LiveRoots, the very set admission's release pass judges a
+# tree_is_live ROOT PHASE [PHASE|held]...: the daemon's own state says ROOT's tree is live and does
+# not linger — admission.trees is record.LiveRoots, the very set admission's release pass judges a
 # root against (admit's releaseUnslotted) — and ROOT still stands at PHASE, which that release would
-# have left at `done`. With the third argument `held`, a root the workflow holds out of PHASE stands
-# there too: `phase` held and `heldFrom` PHASE (api.Issue.HeldFrom). The daemon holds an issue whose
-# worker failed with work outstanding, and a held issue is still in the workflow and in its tree.
+# have left at `done`. Each further argument widens what stands: another phase ROOT may stand at
+# (A6's seeded parent, which a daemon with a parent waiting for its open children takes from
+# `implementing` to `awaiting_children` at boot and keeps live), or `held`, which lets a root the
+# workflow holds out of PHASE stand there too: `phase` held and `heldFrom` PHASE (api.Issue.HeldFrom).
+# The daemon holds an issue whose worker failed with work outstanding, and a held issue is still in
+# the workflow and in its tree. A root outside admission.trees, whatever its phase, is not live.
 tree_is_live() {
+  local root=$1 phase=$2
+  shift 2
   legion_cmd state --json |
-    jq -e --arg root "$1" --arg phase "$2" --arg held "${3:-}" '(.admission.trees | index($root)) != null
-      and (.issues[$root] | .phase == $phase or ($held == "held" and .phase == "held" and .heldFrom == $phase))' >/dev/null
+    jq -e --arg root "$root" --arg phase "$phase" '(.admission.trees | index($root)) != null
+      and (.issues[$root] | .phase == $phase
+        or (.phase | IN($ARGS.positional[] | select(. != "held")))
+        or (.phase == "held" and .heldFrom == $phase and ($ARGS.positional | index("held")) != null))' --args "$@" >/dev/null
 }
 # passed_to_controller EVENT REASON: legion state lists a question passed on for REASON whose id or
 # reference names EVENT.
