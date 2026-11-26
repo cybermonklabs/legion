@@ -3275,31 +3275,55 @@ func TestPlainStatePrintsNoControlCharacterOfAGiveUp(t *testing.T) {
 // so. Nothing here is the daemon's to clear, so the line names them and stops.
 func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
-	// The line reads `blocked` alone, so the state names nothing else of the admission block and no
-	// `issues`: the daemon lists an issue in `active`, `waiting` or `blocked` only beside its record
-	// in `issues` (projection's Project), which an empty object would deny.
-	admission := func(blocked string) string {
-		return `"admission":{"cap":2,"blocked":` + blocked + `}`
+	// Each case serves a state the daemon serves: every issue its admission block names has its
+	// record in `issues` and stands in the list the daemon puts it in (projection's Project,
+	// record.HeldList). LEGION-208 runs its tree from a slot. LEGION-209 is a child of that tree
+	// the workflow holds at `admitted` for its Dispatch link, so it stands in `held` under
+	// dispatch_blocker. LEGION-211 is a root that has not started, so it waits in the line, and
+	// admission passes over it for its links (blockers.Blocked). The line reads `blocked` alone.
+	admission := func(active, waiting, trees, blocked, held string) string {
+		return `"admission":{"cap":2,"active":` + active + `,"waiting":` + waiting + `,"trees":` + trees +
+			`,"blocked":` + blocked + `,"held":` + held + `}`
 	}
+	running := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress","tree":"LEGION-208"}`
+	heldChild := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"admitted","status":"todo","tree":"LEGION-208"}`
+	// The waiting member carries its place in the line as the daemon writes it for a root that has
+	// not started.
+	queuedRoot := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"admitted","status":"todo","tree":"LEGION-211",` +
+		`"waitingLine":{"place":1,"length":1,"part":"starting","kind":"queued_root","partPlace":1,"partLength":1,"holdsSlot":false,` +
+		`"rootRank":"00011","ownRank":"00011","rootKey":"LEGION-211","priority":null,"reason":"It has not started. ` +
+		`It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."}}`
+	heldByLink := `[{"issue":"LEGION-209","reason":"dispatch_blocker","heldBy":["LEGION-300"]}]`
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},`
 	for _, tc := range []struct {
-		name, blocked, want string
+		name, active, waiting, trees, blocked, held, issues, want string
 	}{
 		{
-			name: "a held child and a waiting root",
+			name:    "a held child and a waiting root",
+			active:  `["LEGION-208"]`,
+			waiting: `["LEGION-211"]`,
+			trees:   `["LEGION-208","LEGION-211"]`,
 			blocked: `[{"issue":"LEGION-209","blockedBy":["LEGION-300"]},` +
 				`{"issue":"LEGION-211","blockedBy":["LEGION-301","LEGION-302"]}]`,
-			want: "blocked on Dispatch links: 2 — LEGION-209 waits on LEGION-300; LEGION-211 waits on LEGION-301, LEGION-302\n",
+			held:   heldByLink,
+			issues: `{` + running + `,` + heldChild + `,` + queuedRoot + `}`,
+			want:   "blocked on Dispatch links: 2 — LEGION-209 waits on LEGION-300; LEGION-211 waits on LEGION-301, LEGION-302\n",
 		},
 		{
 			name:    "one",
+			active:  `["LEGION-208"]`,
+			waiting: `[]`,
+			trees:   `["LEGION-208"]`,
 			blocked: `[{"issue":"LEGION-209","blockedBy":["LEGION-300"]}]`,
+			held:    heldByLink,
+			issues:  `{` + running + `,` + heldChild + `}`,
 			want:    "blocked on Dispatch links: 1 — LEGION-209 waits on LEGION-300\n",
 		},
-		{name: "none", blocked: `[]`, want: "blocked on Dispatch links: none\n"},
+		{name: "none", active: `[]`, waiting: `[]`, trees: `[]`, blocked: `[]`, held: `[]`, issues: `{}`, want: "blocked on Dispatch links: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + admission(tc.blocked) + `,"pendingStatusWrites":[]}`
+			served := "{" + daemon + admission(tc.active, tc.waiting, tc.trees, tc.blocked, tc.held) +
+				`,"issues":` + tc.issues + `,"pendingStatusWrites":[]}`
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(served))
@@ -3328,44 +3352,76 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 // source would pass on a comment, so this reads what the command prints.
 func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
-	// The line reads `held` alone, so the state names no `active`, `waiting` or `issues`: the
-	// daemon lists an issue in any of the three lists only beside its record in `issues`
-	// (projection's Project, record.HeldList), which an empty object would deny.
-	admission := func(held string) string {
-		return `"admission":{"cap":2,"blocked":[],"held":` + held + `}`
+	// Each case serves a state the daemon serves: every issue its admission block names, and every
+	// issue that holds one of them, has its record in `issues` and stands in the list the daemon
+	// puts it in (projection's Project, record.HeldList). Each record stands at the phase and status
+	// internal/projection's TestEveryIssueInTheWorkflowHasAPlace gives an issue of the same word.
+	// The line reads `held` alone.
+	admission := func(active, trees, held string) string {
+		return `"admission":{"cap":2,"active":` + active + `,"waiting":[],"trees":` + trees + `,"blocked":[],"held":` + held + `}`
+	}
+	issue := func(key, tree, at, status string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"` + at + `","status":"` + status + `","tree":"` + tree + `"}`
+	}
+	// A root held from its retro, by the stop of its task or for the issues beneath it.
+	heldFromRetro := func(key string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"held","status":"needs_review","tree":"` + key + `","heldFrom":"retro"}`
+	}
+	records := func(issues ...string) string {
+		return `{` + strings.Join(issues, ",") + `}`
 	}
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},`
 	for _, tc := range []struct {
-		name, held, want string
+		name, active, trees, held, issues, want string
 	}{
 		{
-			name: "two words, counted in the ladder's order",
+			// LEGION-208's architect writes its design from a slot while its gate stands shut, so
+			// its members LEGION-209 and LEGION-213 read design_gate. LEGION-212 is parked in
+			// backlog, so its member LEGION-210 reads tree_parked, and its tree is no live one.
+			name:   "two words, counted in the ladder's order",
+			active: `["LEGION-208"]`,
+			trees:  `["LEGION-208"]`,
 			held: `[{"issue":"LEGION-209","reason":"design_gate","heldBy":["LEGION-208"]},` +
 				`{"issue":"LEGION-210","reason":"tree_parked","heldBy":["LEGION-212"]},` +
 				`{"issue":"LEGION-213","reason":"design_gate","heldBy":["LEGION-208"]}]`,
+			issues: records(issue("LEGION-208", "LEGION-208", "admitted", "in_progress"), issue("LEGION-209", "LEGION-208", "admitted", "todo"),
+				issue("LEGION-210", "LEGION-212", "admitted", "todo"), issue("LEGION-212", "LEGION-212", "admitted", "backlog"),
+				issue("LEGION-213", "LEGION-208", "admitted", "todo")),
 			want: "admission.held: 3 issues — tree_parked 1, design_gate 2\n",
 		},
 		{
-			name: "one issue no word is true of",
-			held: `[{"issue":"LEGION-209","reason":"unclassified"}]`,
-			want: "admission.held: 1 issue — unclassified 1\n",
+			// A root at implementing that holds no slot row and that the line does not place: a gap,
+			// which no word names (record.HeldUnclassified).
+			name:   "one issue no word is true of",
+			active: `[]`,
+			trees:  `["LEGION-209"]`,
+			held:   `[{"issue":"LEGION-209","reason":"unclassified"}]`,
+			issues: records(issue("LEGION-209", "LEGION-209", "implementing", "in_progress")),
+			want:   "admission.held: 1 issue — unclassified 1\n",
 		},
 		{
 			// The two holds of an owner's plan stand after accepted_ancestor and before at_work and
 			// unclassified in the ladder, so they are counted there, whatever order the rows come in.
 			// LEGION-218 stands under LEGION-215, whose stopped task holds it from retro: that counts
 			// as accepted, and LEGION-216's hold before its retro does not (record.Accepted).
-			name: "the two holds of a plan, in the ladder's order",
+			// LEGION-217, at work beneath LEGION-216, holds a slot. LEGION-214 is a root at
+			// implementing that holds no slot row, as in the case above.
+			name:   "the two holds of a plan, in the ladder's order",
+			active: `["LEGION-217"]`,
+			trees:  `["LEGION-214","LEGION-215","LEGION-216"]`,
 			held: `[{"issue":"LEGION-214","reason":"unclassified"},` +
 				`{"issue":"LEGION-215","reason":"task_stopped"},` +
 				`{"issue":"LEGION-216","reason":"children_before_retro","heldBy":["LEGION-217"]},` +
 				`{"issue":"LEGION-218","reason":"accepted_ancestor","heldBy":["LEGION-215"]}]`,
+			issues: records(issue("LEGION-214", "LEGION-214", "implementing", "in_progress"), heldFromRetro("LEGION-215"),
+				heldFromRetro("LEGION-216"), issue("LEGION-217", "LEGION-216", "implementing", "in_progress"),
+				issue("LEGION-218", "LEGION-215", "admitted", "todo")),
 			want: "admission.held: 4 issues — accepted_ancestor 1, children_before_retro 1, task_stopped 1, unclassified 1\n",
 		},
-		{name: "none", held: `[]`, want: "admission.held: none\n"},
+		{name: "none", active: `[]`, trees: `[]`, held: `[]`, issues: `{}`, want: "admission.held: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + admission(tc.held) + `,"pendingStatusWrites":[]}`
+			served := "{" + daemon + admission(tc.active, tc.trees, tc.held) + `,"issues":` + tc.issues + `,"pendingStatusWrites":[]}`
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(served))
