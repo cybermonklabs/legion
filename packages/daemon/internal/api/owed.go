@@ -183,23 +183,25 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // entry's work, so the row is all that says the work stands. A merger in merging whose pull
 // request is not merged owes the merge, since the merger merges.
 //
-// The claim decides one thing only, which kind of work its turn is on, read exactly as the
-// completion route reads it (handoffComplete): a claim serving a look of a production check owes
-// that look and nothing of a phase, and every other claim owes its phase or nothing. A look is
-// owed while the record holds it open — the check open, its look open, the look the claim serves
-// being the check's current one of this check instance, and the check the claim's role's — and a
-// look the check has left owes nothing. A look the record holds open for
-// the claim's role while the claim serves none — its task not yet taken, or a testing turn still
-// running behind a merged close — is not owed yet: a report sent from that turn is refused as no
-// report on production (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
+// The claim decides one thing first: whether its turn is on a look of a production check. A claim
+// serving a look the record holds open — the check open, its look open, the look the claim serves
+// being the check's current one of this check instance, and the check the claim's role's — owes
+// that look. Every other claim owes its phase or nothing, by the rule above, and that includes a
+// claim whose served look the check has left: a phase task leaves the served look in place
+// (supervise's ServingCheck), so a tester that once served a look and holds testing work again,
+// a root reopened in its linger, owes its testing phase, and the completion route takes that
+// phase's completion from it, since only a report that names its check (checkOpenedAt) is taken
+// on the check route. A look the record holds open for the claim's role while the claim serves
+// none — its task not yet taken, or a testing turn still running behind a merged close — is not
+// owed yet: a report sent from that turn is refused as no report on production
+// (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
 //
 // Neither the claim's prompts nor the daemon's own delivery of a relaunch's record change that
 // reading. A prompt of the task Oh My Pi acknowledged and has not answered (supervise's
 // Machine.outstanding) makes a late turn the task's, so the confirmation it gives is what
-// ServingCheck, and the completion route with it, read here. The relaunch's delivery
-// (supervise.HoldsTask) carries no run, no entry and no look, only the sentence of what the last
-// let-go ended, so a claim holding it, confirmed or not, is answered as one holding nothing is:
-// by the record, and by what it was left serving.
+// ServingCheck reads here. The relaunch's delivery (supervise.HoldsTask) carries no run, no entry
+// and no look, only the sentence of what the last let-go ended, so a claim holding it, confirmed
+// or not, is answered as one holding nothing is: by the record, and by what it was left serving.
 func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, roleFor func(phase.Phase) claim.Role) OwedResponse {
 	issue := position.issue
 	if issue == nil {
@@ -207,12 +209,10 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, r
 	}
 	nothing := OwedResponse{Architect: owner}
 	if look := c.ServingCheck(); look.Look > 0 {
-		check := position.check
-		if check == nil || !check.Open() || !check.LookOpen || check.Looks != look.Look ||
-			!check.NamedBy(look.OpenedAt) || check.Role != c.Role {
-			return nothing
+		if check := position.check; check != nil && check.Open() && check.LookOpen && check.Looks == look.Look &&
+			check.NamedBy(look.OpenedAt) && check.Role == c.Role {
+			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 		}
-		return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 	}
 	if position.lingers || roleFor(issue.Phase) != c.Role || position.merged() {
 		return nothing

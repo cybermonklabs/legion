@@ -278,6 +278,32 @@ func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
 	}
 }
 
+// A phase task leaves the look a claim served in place (supervise's ServingCheck), and the
+// completion route takes a phase's completion from such a claim unless its report names its check
+// (checkOpenedAt). So a tester that served a look of a check that has since closed, and holds a
+// confirmed testing task in testing again, a root reopened in its linger, owes the testing phase,
+// not nothing; while the check still holds its served look open, it owes that look.
+func TestClaimOwedIsThePhaseOnceTheCheckHasLeftTheLookItsTesterServed(t *testing.T) {
+	opened := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	closed := opened.Add(2 * time.Hour)
+	testing := &supervise.Delivery{ID: "testing:3", Task: "Test the change.", Generation: 2, Entry: 3, ConfirmedAt: opened.Add(3 * time.Hour)}
+	tester := supervise.Claim{Role: claim.RoleTester, Pending: testing, GivenEntry: 3,
+		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: opened}}
+	if served := tester.ServingCheck(); served.Look != 2 {
+		t.Fatalf("the tester's confirmed testing task serves look %d, want the look it served before, 2, kept in place", served.Look)
+	}
+	check := func(closedAt *time.Time) completionPosition {
+		return completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 2}, entry: 3,
+			check: &record.ProductionCheck{Issue: "LEGION-208", OpenedAt: opened, ClosedAt: closedAt, Role: claim.RoleTester, Looks: 2, LookOpen: closedAt == nil}}
+	}
+	if got, want := owedBy(tester, check(&closed), "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
+		t.Errorf("a tester whose served look's check closed, holding a confirmed testing task in testing, owes %+v, want %+v", got, want)
+	}
+	if got, want := owedBy(tester, check(nil), "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
+		t.Errorf("a tester whose served look the check still holds open owes %+v, want %+v", got, want)
+	}
+}
+
 // The route never answers another claim's work, and it refuses exactly as claims/activity does:
 // another claim's token, a wrong secret and a claim the daemon does not hold are each
 // claim.InvalidSecret, and a body naming no claim is a 400 naming the field. It holds the session
