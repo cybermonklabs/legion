@@ -1826,6 +1826,44 @@ func TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild(t *testing.T) {
 	expectTruth(t, "after the roll and the rollback", r.storedFigures(t), r.truthFigures(t))
 }
 
+// TestAnUnlistedSeriesMovesNoFoldKey: an eval's fold key (foldKeyOf) fingerprints what its stored
+// figures fold, its listed series alone (listedAndHeadline): an unlisted series added, or one
+// whose fold or role moves, leaves the key as it was and the figures to be served; a listed
+// series' fold moved, and a series listed or unlisted, each move it.
+func TestAnUnlistedSeriesMovesNoFoldKey(t *testing.T) {
+	t.Parallel()
+	series := func(name, agg string, listed bool) Series {
+		return Series{EvalID: "EVAL/spend", Series: name, SeriesComputation: SeriesComputation{Role: RoleHeadline, Listed: listed, Agg: agg}}
+	}
+	entry := func(series ...Series) Entry {
+		return Entry{Definition: Definition{EvalID: "EVAL/spend", ProjectKey: "EVAL", Source: SourceLogged}, Series: series}
+	}
+	base := foldKeyOf(entry(series("dollars", AggSum, true)))
+	for _, same := range []struct {
+		name  string
+		entry Entry
+	}{
+		{"an unlisted series added", entry(series("dollars", AggSum, true), series("cents", AggSum, false))},
+		{"an unlisted series of another fold", entry(series("dollars", AggSum, true), series("cents", AggMax, false))},
+	} {
+		if got := foldKeyOf(same.entry); got != base {
+			t.Errorf("%s moves the fold key from %d to %d, and the figures fold the listed series alone", same.name, base, got)
+		}
+	}
+	for _, moved := range []struct {
+		name  string
+		entry Entry
+	}{
+		{"the listed series' fold moved", entry(series("dollars", AggMax, true))},
+		{"the series unlisted", entry(series("dollars", AggSum, false))},
+		{"a second series listed", entry(series("dollars", AggSum, true), series("cents", AggSum, true))},
+	} {
+		if got := foldKeyOf(moved.entry); got == base {
+			t.Errorf("%s leaves the fold key at %d, and it moves what the figures fold", moved.name, base)
+		}
+	}
+}
+
 // TestTheDayRowsAreFoldedInDayOrderWhateverOrderTheReadAnswers: a read of the day rows answers
 // them in its plan's order, and a sum of floats depends on the order of its parts, so
 // SeriesValuesOf folds them in day order, as the stored figures are folded (newFigureGroup): three

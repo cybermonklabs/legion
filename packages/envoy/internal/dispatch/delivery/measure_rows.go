@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -263,6 +264,76 @@ func ReadHistoryRows(ctx context.Context, pool *store.Pool, deployRepos []string
 		rows.Deploys[repo] = deploys[i]
 	}
 	return rows, nil
+}
+
+// ReadPullRequestsMergedBefore reads HistoryRows' pull requests alone: every population pull
+// request merged before to, in ListPullRequestsInWindow's order, for a reader that attributes them
+// beside its read of the deploy runs (ReadDeployHistory).
+func ReadPullRequestsMergedBefore(ctx context.Context, pool *store.Pool, to time.Time) ([]DeliveryPullRequest, error) {
+	return listPullRequestsMergedBefore(ctx, pool, to)
+}
+
+// ReadDeployHistory reads HistoryRows' Deploys alone, the same answer ReadHistoryRows gives of
+// deployRepos and names (each repository's deploy runs on main, and the jobs named names of each
+// run), read another way: each repository's runs side by side, and then the jobs of those runs by
+// their ids (ListRunJobsForRuns), runsPerRead runs a statement, the statements dealt to readers
+// reads side by side. A read of the jobs of every deploy run on main by a subselect (what
+// ReadHistoryRows does) descends delivery_run_jobs' primary key (repo, run_id, name) over every
+// run of the repository, PR-checks runs among them, whose 24,000 jobs a day at ten times the stated
+// run rate it passes over for the few it keeps: 190 to 500 ms of the 2.2 s of a settings rewrite
+// there (dispatch://INFRA-2916); by the ids it descends once for each run and name.
+func ReadDeployHistory(ctx context.Context, pool *store.Pool, deployRepos, names []string, readers, runsPerRead int) (map[string]RunsWithJobs, error) {
+	deploys := make([]RunsWithJobs, len(deployRepos))
+	reads := make([]func(context.Context) error, len(deployRepos))
+	for i, repo := range deployRepos {
+		deploys[i].Jobs = make(map[int64][]DeliveryRunJob)
+		reads[i] = func(ctx context.Context) (err error) {
+			deploys[i].Runs, err = listDeployRunsOnMain(ctx, pool, repo)
+			return err
+		}
+	}
+	if err := store.ReadSideBySide(ctx, reads...); err != nil {
+		return nil, err
+	}
+	type read struct {
+		repo int
+		ids  []int64
+		jobs map[int64][]DeliveryRunJob
+	}
+	var statements []read
+	for i := range deployRepos {
+		ids := make([]int64, len(deploys[i].Runs))
+		for j, run := range deploys[i].Runs {
+			ids[j] = run.RunID
+		}
+		for part := range slices.Chunk(ids, max(runsPerRead, 1)) {
+			statements = append(statements, read{repo: i, ids: part})
+		}
+	}
+	dealt := make([]func(context.Context) error, min(max(readers, 1), len(statements)))
+	for d := range dealt {
+		dealt[d] = func(ctx context.Context) error {
+			for s := d; s < len(statements); s += len(dealt) {
+				jobs, err := ListRunJobsForRuns(ctx, pool, deployRepos[statements[s].repo], statements[s].ids, names)
+				if err != nil {
+					return err
+				}
+				statements[s].jobs = jobs
+			}
+			return nil
+		}
+	}
+	if err := store.ReadSideBySide(ctx, dealt...); err != nil {
+		return nil, err
+	}
+	for _, one := range statements {
+		maps.Copy(deploys[one.repo].Jobs, one.jobs)
+	}
+	byRepo := make(map[string]RunsWithJobs, len(deployRepos))
+	for i, repo := range deployRepos {
+		byRepo[repo] = deploys[i]
+	}
+	return byRepo, nil
 }
 
 // Deploys is the measures' deploys of a window: every deploy run on main of the deploy repository

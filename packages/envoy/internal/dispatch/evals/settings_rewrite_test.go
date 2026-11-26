@@ -674,6 +674,83 @@ func TestAProductionRuleChangeSendsOnlyTheMembersItMoves(t *testing.T) {
 		len(moved), len(gone), standing, len(before))
 }
 
+// TestAProductionRuleChangeSendsOnlyTheDayRowsItMoves: over a settled history, the apply step
+// named moves the deploys whose step was skipped out of production; the rewrite sends eval_days
+// (as a trigger of the test's own database records each row an insert, and so an upsert, or a
+// delete is handed) exactly the rows whose values moved or that are new, and deletes exactly those
+// the days no longer hold: none of the rows that stand, which the rewrite builds all the same.
+func TestAProductionRuleChangeSendsOnlyTheDayRowsItMoves(t *testing.T) {
+	t.Parallel()
+	r, deliveries := newSettingsRig(t, walkBatch)
+	for _, statement := range []string{
+		`create table evals_test_rows_sent (op text not null, project_key text not null, eval_id text not null, deploy_repo text not null,
+			series text not null, repo text not null, day date not null)`,
+		`create function evals_test_rows_sent() returns trigger language plpgsql as $$
+		begin
+			if tg_op = 'DELETE' then
+				insert into evals_test_rows_sent values ('delete', old.project_key, old.eval_id, old.deploy_repo, old.series, old.repo, old.day);
+				return old;
+			end if;
+			insert into evals_test_rows_sent values ('insert', new.project_key, new.eval_id, new.deploy_repo, new.series, new.repo, new.day);
+			return new;
+		end $$`,
+		`create trigger evals_test_rows_sent before insert or delete on eval_days for each row execute function evals_test_rows_sent()`,
+	} {
+		r.exec(t, "record the day rows the writes are handed", statement)
+	}
+	before := r.dayRows(t)
+	settings := deliveries.Settings
+	settings.ProductionApplyStepName = new(settingsApplyStep)
+	r.putSettings(t, settings, alice)
+	r.exec(t, "forget the rows the setup was handed", `delete from evals_test_rows_sent`)
+	r.pass(t)
+	after := r.dayRows(t)
+
+	sent := map[string][]string{}
+	rows, err := r.database.Pool.Query(t.Context(), `select op, project_key, eval_id, deploy_repo, series, repo, day from evals_test_rows_sent`)
+	if err != nil {
+		t.Fatalf("read the day rows sent: %v", err)
+	}
+	var op string
+	var row DayRow
+	if _, err := pgx.ForEachRow(rows, []any{&op, &row.ProjectKey, &row.EvalID, &row.DeployRepo, &row.Series, &row.Repo, &row.Day}, func() error {
+		sent[op] = append(sent[op], rowKey(row))
+		return nil
+	}); err != nil {
+		t.Fatalf("read the day rows sent: %v", err)
+	}
+	var moved, gone []string
+	standing := 0
+	for key, now := range after {
+		if was, held := before[key]; !held || !was.UpdatedAt.Equal(now.UpdatedAt) {
+			moved = append(moved, key)
+		} else {
+			standing++
+		}
+	}
+	for key := range before {
+		if _, kept := after[key]; !kept {
+			gone = append(gone, key)
+		}
+	}
+	slices.Sort(moved)
+	slices.Sort(gone)
+	slices.Sort(sent["insert"])
+	slices.Sort(sent["delete"])
+	if !slices.Equal(sent["insert"], moved) {
+		t.Errorf("the rewrite sent %d day rows to its upsert, want the %d that moved:\n\tsent %v\n\tmoved %v",
+			len(sent["insert"]), len(moved), sent["insert"][:min(len(sent["insert"]), 10)], moved[:min(len(moved), 10)])
+	}
+	if !slices.Equal(sent["delete"], gone) {
+		t.Errorf("the rewrite deleted the day rows %v, want those its days no longer hold, %v", sent["delete"], gone)
+	}
+	if len(moved) == 0 || standing <= len(moved) {
+		t.Errorf("the apply step moved %d day rows and left %d standing, want some moved and more standing", len(moved), standing)
+	}
+	t.Logf("the apply step moved %d day rows, deleted %d and left %d of %d standing; the rewrite sent the moved and the deleted alone",
+		len(moved), len(gone), standing, len(before))
+}
+
 // TestOnlyTheSettingsRewritesEvalDaysChangesCarryItsMark: over a settled history, the eval_days
 // changes of the passes that walked it carry no cause in run_kind, but the changes of no eval
 // with which the first page publishes the projects' default repositories, which carry that
@@ -747,9 +824,9 @@ func TestOnlyTheSettingsRewritesEvalDaysChangesCarryItsMark(t *testing.T) {
 }
 
 // historyJobReads is a tracer (storetest.Traced) that records each read of the history's jobs on
-// the pool it traces: delivery.ReadHistoryRows' read of a repository's jobs, the one statement of
-// delivery_run_jobs that names the deploy runs on main by a subquery, with the job names it asks
-// for and the rows it answers.
+// the pool it traces: delivery.ReadDeployHistory's read of the jobs of a repository's deploy runs
+// by their ids (ListRunJobsForRuns), one statement for every rewriteRunsPerRead runs, with the job
+// names it asks for and the rows it answers.
 type historyJobReads struct {
 	mu    sync.Mutex
 	reads []historyJobRead
@@ -765,10 +842,10 @@ type historyJobRead struct {
 type historyJobReadAt struct{}
 
 func (h *historyJobReads) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if !strings.Contains(data.SQL, "from delivery_run_jobs") || !strings.Contains(data.SQL, "head_branch = 'main'") || len(data.Args) < 2 {
+	if !strings.Contains(data.SQL, "from delivery_run_jobs") || !strings.Contains(data.SQL, "run_id = any($2)") || !strings.Contains(data.SQL, "name = any($3)") || len(data.Args) < 3 {
 		return ctx
 	}
-	names, ok := data.Args[1].([]string)
+	names, ok := data.Args[2].([]string)
 	if !ok {
 		return ctx
 	}
