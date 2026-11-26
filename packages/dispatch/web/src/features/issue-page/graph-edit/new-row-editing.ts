@@ -11,7 +11,7 @@ import { loadEditsHold } from "../node-caret";
 import { rowSelectorOf } from "../tree-focus";
 import { type DrawnRow, placesAlong } from "../tree-fold";
 import { rowKeyOf } from "../tree-keys";
-import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
+import type { TreeAnswer } from "../tree-read/tree-read";
 import {
   abortOnReaderAct,
   type EditedRow,
@@ -31,11 +31,11 @@ import {
   subscribeRefusedPlacings,
   typeNewRow,
 } from "./new-rows";
-import { type NewEntry, readAfterRoomWrite } from "./node-writes";
+import { heldRead, type NewEntry, readAfterRoomWrite } from "./node-writes";
 import type { NewPlace, PlaceLine, RetypeAttributes, RetypeKind } from "./placement";
 import { retypeKinds, writeNewBlock, writeRetype } from "./room-writes";
 import type { RowEditor, RowReveal } from "./row-edits";
-import { ownPathTo } from "./row-reveal";
+import { ownPathTo, ownPathWhere } from "./row-reveal";
 
 /**
  * How Graph's outline makes and edits a new row (INFRA-5705's R3), and retypes a prose block (R5),
@@ -111,20 +111,6 @@ function drawnRowOf(
   );
 }
 
-/** The path from `node` down to the own row of the node the menu and the keys name by `readId`,
- *  its placement that is no transclusion (part T's second rows): the node the read gives that id,
- *  or a new row named by its block id while the read holds none of it (`RowEditor.readIdOf`).
- *  Undefined where the tree under `node` draws none. */
-function ownPathOfRead(node: TreeNode, readId: string): TreeNode[] | undefined {
-  if ((node.readId ?? node.id) === readId) return [node];
-  for (const child of node.children) {
-    if (child.transcluded) continue;
-    const below = ownPathOfRead(child, readId);
-    if (below !== undefined) return [node, ...below];
-  }
-  return undefined;
-}
-
 /**
  * Graph's new rows and retypes for the outline of `issue` (Graph's alone: undefined anywhere else,
  * where nothing is set): sets `bridge`'s `fresh`, `write` and `caretIn`, starts the editing of each
@@ -178,9 +164,7 @@ export function useNewRowEditing({
   // The schema the page gives the editor of the issue's documents, from what Graph's read
   // answers as `view_of` (decision 359).
   const schema = editorBlockSchema(
-    issue === undefined
-      ? undefined
-      : client.getQueryData<TreeAnswer>(outlineQuery(issue, "graph").queryKey)?.view_of
+    issue === undefined ? undefined : heldRead(client, issue)?.view_of
   );
 
   bridge.fresh =
@@ -255,12 +239,14 @@ export function useNewRowEditing({
   const newRow = useCallback(
     (node: string, entry: NewEntry, place: NewPlace, line: PlaceLine | undefined) => {
       if (issue === undefined) return;
-      const held = client.getQueryData<TreeAnswer>(outlineQuery(issue, "graph").queryKey);
+      const held = heldRead(client, issue);
       const parent =
         entry === "new_under" ? node : held?.nodes?.find((each) => each.id === node)?.parent?.id;
       // The row is drawn under the row the tree draws its place's parent in, found from the own
-      // row of the node it is made from, by the drawn id that the read's `parent` need not share.
-      const path = ownPathOfRead(root, node);
+      // row of the node it is made from, by the drawn id that the read's `parent` need not share:
+      // the node the read gives that read id, or a new row named by its block id while the read
+      // holds none of it (`RowEditor.readIdOf`).
+      const path = ownPathWhere(root, (each) => (each.readId ?? each.id) === node);
       const under = (entry === "new_under" ? path : path?.slice(0, -1))?.at(-1)?.id;
       if (parent === undefined || under === undefined) return;
       const blockId = crypto.randomUUID();
@@ -376,19 +362,24 @@ export function useNewRowEditing({
 
   return useMemo(() => {
     if (issue === undefined) return undefined;
+    // Graph's held read with the new rows, made once for each answer while the rows stand: every
+    // row of the outline reads it on each draw (`RowMenu.tsx`' `RowMenuPlace`).
+    const views = new WeakMap<TreeAnswer, TreeAnswer>();
     const editor: RowEditor = {
-      held: (answer) => heldWithNewRows(answer, newRows),
+      held: (answer) => {
+        let view = views.get(answer);
+        if (view === undefined) {
+          view = heldWithNewRows(answer, newRows);
+          views.set(answer, view);
+        }
+        return view;
+      },
       kinds: retypeKinds(schema),
       lineOf: (node) => newRowLine(newRows, node.id),
       newRow,
       readIdOf: (id) => (newRows.some((row) => row.blockId === id) ? id : undefined),
       retype,
-      unplaced: (node) =>
-        newRowUnplaced(
-          newRows,
-          client.getQueryData<TreeAnswer>(outlineQuery(issue, "graph").queryKey),
-          node
-        ),
+      unplaced: (node) => newRowUnplaced(newRows, heldRead(client, issue), node),
     };
     return editor;
   }, [client, issue, newRow, newRows, retype, schema]);

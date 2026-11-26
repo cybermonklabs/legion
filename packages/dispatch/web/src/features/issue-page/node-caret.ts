@@ -199,12 +199,17 @@ function endKeyOf(
   return event.shiftKey ? "paragraph" : "new_below";
 }
 
+/** Whether `event` is held with Ctrl or Meta, or is a key of an input method's composition or the
+ *  one that ends it (`inputMethodKey`, and the `Process` key an input method sends): a key that
+ *  types no word and asks for no move, so the input method keeps it. */
+function heldOrComposing(event: KeyboardEvent): boolean {
+  return event.ctrlKey || event.metaKey || inputMethodKey(event) || event.key === "Process";
+}
+
 /** The words `event` types where it types any: one character, held with neither Ctrl nor Meta,
  *  and no input method's key. */
 function typedWordsOf(event: KeyboardEvent): string | undefined {
-  if (event.ctrlKey || event.metaKey || inputMethodKey(event) || event.key === "Process") {
-    return undefined;
-  }
+  if (heldOrComposing(event)) return undefined;
   return [...event.key].length === 1 ? event.key : undefined;
 }
 
@@ -217,16 +222,13 @@ function enterInEditor(view: EditorView): void {
 
 /**
  * The move `event` asks for, or undefined: Tab indents, Shift+Tab outdents, Alt+Shift+Up moves
- * up and Alt+Shift+Down moves down (R4), each held with neither Ctrl nor Meta. The key catalogue
- * of cybermonklabs/legion#4304 is not on this branch's base, so each binds as part I's keys do,
- * by the key itself (R10, decision 470 (3)). A key of an input method's composition, or the one
- * that ends it, asks for no move (`inputMethodKey`, and the `Process` key an input method sends),
- * so the input method keeps it.
+ * up and Alt+Shift+Down moves down (R4), each held with neither Ctrl nor Meta. Each binds by the
+ * key itself, as part I's keys do (R10, decision 470 (3)). A key of an input method's
+ * composition, or the one that ends it, asks for no move (`heldOrComposing`), so the input method
+ * keeps it.
  */
-export function moveKeyOf(event: KeyboardEvent): MoveKey | undefined {
-  if (event.ctrlKey || event.metaKey || inputMethodKey(event) || event.key === "Process") {
-    return undefined;
-  }
+function moveKeyOf(event: KeyboardEvent): MoveKey | undefined {
+  if (heldOrComposing(event)) return undefined;
   if (event.key === "Tab" && !event.altKey) return event.shiftKey ? "outdent" : "indent";
   if (!event.altKey || !event.shiftKey) return undefined;
   if (event.key === "ArrowUp") return "move_up";
@@ -316,24 +318,16 @@ export function confineKey(
     }
     return;
   }
-  const move = onMove === undefined ? undefined : moveKeyOf(event);
-  if (move !== undefined && onMove !== undefined) {
-    // The move keeps the caret the editor holds, which it reads now where the page's selection
+  const key =
+    onMove === undefined ? undefined : (moveKeyOf(event) ?? endKeyOf(event, block, ...selected));
+  if (key !== undefined && onMove !== undefined) {
+    // The key keeps the caret the editor holds, which it reads now where the page's selection
     // is not yet its own, as before any key it answers (below).
     if (!holdsSelection(view, ...selected)) document.dispatchEvent(new Event("selectionchange"));
-    if (onMove(move)) {
+    if (onMove(key)) {
       event.preventDefault();
       event.stopPropagation();
-      return;
-    }
-  }
-  const end = onMove === undefined ? undefined : endKeyOf(event, block, ...selected);
-  if (end !== undefined && onMove !== undefined) {
-    if (!holdsSelection(view, ...selected)) document.dispatchEvent(new Event("selectionchange"));
-    if (onMove(end)) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (end === "paragraph" && view !== undefined) enterInEditor(view);
+      if (key === "paragraph" && view !== undefined) enterInEditor(view);
       return;
     }
   }
@@ -601,7 +595,9 @@ const BLOCK_ID_PROPERTY = "blockId";
  * A transaction of the editor's own that Graph makes on purpose applies wherever it lands too:
  * one carrying `GRAPH_EDIT_META` (`graph-edit/room-writes.ts`) - a new row's block, written
  * at the end of the document with the selection in it (INFRA-5705's R3), which `heldBlock`
- * names already, so the reader's next letters keep to it.
+ * names already, so the reader's next letters keep to it; and a retype of the held block (R5),
+ * which leaves the selection at the end of the block's words, so what the editor appends to it
+ * keeps to the block.
  */
 export function holdEditsToBlock(
   view: EditorView,
@@ -701,7 +697,7 @@ function blockStart(
 
 /** The reader's caret in a held block, its anchor and its head each counted from the block's
  *  start in the editor's document (`keptCaret`). */
-export interface KeptCaret {
+interface KeptCaret {
   readonly anchor: number;
   readonly head: number;
 }
@@ -749,7 +745,7 @@ function noteCaret(
 
 /** The reader's caret in `blockId`'s block of the editor `view`, as its hold last saw it
  *  (`noteCaret`), or undefined where it saw none there. */
-export function keptCaret(
+function keptCaret(
   view: EditorView | undefined,
   blockId: string | undefined
 ): KeptCaret | undefined {
@@ -758,19 +754,19 @@ export function keptCaret(
 }
 
 /**
- * Puts the caret back at `kept` - by default the reader's caret its hold last saw
- * (`keptCaret`) - in `blockId`'s block of the editor in `host`, wherever the block stands in the
- * document now, as the editor's own at once (`selectInEditor`), giving the editable the focus
- * where it does not hold it; and answers whether it did. Nothing where the editor draws no such
- * block, keeps no caret for it, holds an input method's composition, or where the place no
- * longer stands in the block's text: the caller then places the caret as it does without this.
+ * Puts the caret back where the hold last saw the reader hold it (`keptCaret`) in `blockId`'s
+ * block of the editor in `host`, wherever the block stands in the document now, as the editor's
+ * own at once (`selectInEditor`), giving the editable the focus where it does not hold it; and
+ * answers whether it did. Nothing where the editor draws no such block, keeps no caret for it,
+ * holds an input method's composition, or where the place no longer stands in the block's text:
+ * the caller then places the caret as it does without this.
  */
 export function putKeptCaret(
   host: HTMLElement,
   blockId: string | undefined,
-  view: EditorView | undefined,
-  kept: KeptCaret | undefined = keptCaret(view, blockId)
+  view: EditorView | undefined
 ): boolean {
+  const kept = keptCaret(view, blockId);
   const drawn = drawnBlock(host, blockId);
   if (drawn === null || view === undefined || kept === undefined) return false;
   if (view.isDestroyed || view.composing) return false;

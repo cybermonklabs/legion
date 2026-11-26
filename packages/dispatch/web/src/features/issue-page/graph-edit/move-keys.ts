@@ -1,23 +1,24 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { focusOnDocument } from "../../shell/roving";
 import type { TreeNode } from "../issue-tree";
-import { useLensAct } from "../lenses/LensMenu";
 import type { EndKey, MoveKey } from "../node-caret";
 import { type DrawnRow, placesAlong } from "../tree-fold";
 import { rowKeyOf } from "../tree-keys";
-import { outlineQuery, readNextTreePage, type TreeAnswer } from "../tree-read/tree-read";
 import type { EditedRow, MoveKeyBridge } from "../useNodeEditing";
-import { useNodeWrites } from "./node-writes";
+import { useNodeActs } from "./node-writes";
+import { isTyped, NOT_ADMITTED } from "./placement";
 import {
-  type GreyReason,
-  type Placement,
-  type PlacementRow,
-  placementOf,
-  type Verdict,
-} from "./placement";
-import type { RowEditor } from "./row-edits";
+  type NodeDrawnRow,
+  placementRowOf,
+  placeNewRow,
+  type RowEditor,
+  readIdsOf,
+  verdictsFor,
+  writesIssueOf,
+  zoomReadOf,
+} from "./row-edits";
 import { ownPathTo } from "./row-reveal";
 
 /**
@@ -28,7 +29,7 @@ import { ownPathTo } from "./row-reveal";
  * `MoveKeyBridge`); Conversation and every filter give it nowhere, and keep today's keys.
  *
  * A key reads the node menu's own verdict for the node, from Graph's held read as it stands, on the
- * row the caret is in (`placement.ts`' `placementOf`, as `RowMenu.tsx` reads it): a move goes into
+ * row the caret is in (`row-edits.tsx`' `verdictsFor`, as `RowMenu.tsx` reads it): a move goes into
  * the node's queue (`node-writes.ts`' `move`), which makes its body again as its turn comes, as
  * the menu's entries do; at a grey edge the key writes nothing, the caret stays, and the row draws
  * the entry's reason (`NodeWrites.grey`). A block R2 does not admit - a kind it does not edit, a node
@@ -50,31 +51,6 @@ import { ownPathTo } from "./row-reveal";
  * file is a literal: the reasons are `ANSWER_LINES`'.
  */
 
-/** The reasons R2 greys every editing entry of a block it does not admit, where the move keys are
- *  no keys of this part's and keep today's behaviour (R10): every other grey reason is an edge of
- *  a block it admits, where a key writes nothing and the row shows why (R4). */
-const NOT_ADMITTED: Readonly<Partial<Record<GreyReason, true>>> = {
-  grey_closed: true,
-  grey_kind: true,
-  grey_own_issue: true,
-};
-
-/** The supertags of R2's typed blocks - a criterion, a statement, a check, a plan task - inside
- *  which Shift+Enter at the end makes a paragraph (R3). */
-const TYPED: Readonly<Record<string, true>> = {
-  check: true,
-  criterion: true,
-  plan_task: true,
-  requirement: true,
-};
-
-/** One row of the outline that stands for a node. */
-type NodeDrawnRow = Extract<DrawnRow, { kind: "node" }>;
-
-/** The issue's status as the verdicts read it: `"done"` closes it (`row-edits.tsx`). */
-const CLOSED_STATUS = "done";
-const OPEN_STATUS = "open";
-
 /** The bridge between a tree's row editing and its move keys, one for the tree's life. */
 export function useMoveKeyBridge(): MoveKeyBridge {
   return useState<MoveKeyBridge>(() => ({}))[0];
@@ -82,11 +58,12 @@ export function useMoveKeyBridge(): MoveKeyBridge {
 
 /**
  * Graph's move keys for the rows `rows` of the tree `root` (`IssueTree.tsx`): sets the bridge's
- * `take` in Graph alone, and follows a node a move key moved to its new row. `closed` is the set
- * of places of the rows the outline draws folded (`tree-fold.ts`' `OpenedBranches`), and
- * `unfoldPath` how it unfolds a path; `zoomRoot` is the id of the node the outline is zoomed to
- * (`TreeNode.id`); `editor` is the room editor the outline gives its rows (`RowEditor`), which
- * Enter's new row is made through.
+ * `take` in Graph alone, where `issue` is the key of the issue Graph draws (undefined anywhere
+ * else), and follows a node a move key moved to its new row. `closed` is the set of places of the
+ * rows the outline draws folded (`tree-fold.ts`' `OpenedBranches`), and `unfoldPath` how it
+ * unfolds a path; `zoomRoot` is the id of the node the outline is zoomed to (`TreeNode.id`);
+ * `editor` is the room editor the outline gives its rows (`RowEditor`), which Enter's new row is
+ * made through.
  */
 export function useMoveKeys({
   bridge,
@@ -94,6 +71,7 @@ export function useMoveKeys({
   editing,
   editor,
   isClosed,
+  issue: key,
   root,
   rows,
   unfoldPath,
@@ -104,27 +82,16 @@ export function useMoveKeys({
   readonly editing: EditedRow | undefined;
   readonly editor: RowEditor | undefined;
   readonly isClosed: boolean;
+  readonly issue: string | undefined;
   readonly root: TreeNode;
   readonly rows: readonly DrawnRow[];
   readonly unfoldPath: (above: readonly string[]) => void;
   readonly zoomRoot: string | undefined;
 }): void {
-  const act = useLensAct();
-  const key = act?.outline === "graph" ? act.issueKey : undefined;
   const client = useQueryClient();
-  const readIds = new Map<string, string>();
-  for (const row of rows) {
-    if (row.kind === "node" && row.node.readId !== undefined) {
-      readIds.set(row.node.id, row.node.readId);
-    }
-  }
-  const zoomRead = zoomRoot === undefined ? undefined : readIds.get(zoomRoot);
-  const status = isClosed ? CLOSED_STATUS : OPEN_STATUS;
-  const writes = useNodeWrites({
-    key: key ?? "",
-    status,
-    ...(zoomRead === undefined ? {} : { zoomRoot: zoomRead }),
-  });
+  const readIds = useMemo(() => readIdsOf(rows), [rows]);
+  const issue = writesIssueOf(key ?? "", isClosed, zoomReadOf(readIds, zoomRoot));
+  const writes = useNodeActs(issue);
   // The node a move key of the edited row went for (`TreeNode.id`), and the row it is edited in
   // now, while that editing lasts.
   const moving = useRef<{ readonly id: string; row: string } | undefined>(undefined);
@@ -147,35 +114,23 @@ export function useMoveKeys({
           if (row === undefined || readId === undefined) return false;
           // A second row of a node stands under a node it serves, which the verdicts name by its
           // read id, as the menu's row does (`row-edits.tsx`).
-          const above = row.trail.at(-1);
-          const from: PlacementRow =
-            !row.node.transcluded || above === undefined
-              ? "own"
-              : { under: readIds.get(above) ?? above };
+          const from = placementRowOf(row, readIds);
           // The verdicts from Graph's held read as it stands, with the new rows it does not hold
           // yet (`RowEditor.held`), or undefined where it does not hold the node.
-          const verdictsNow = (): { held: TreeAnswer; verdicts: Placement } | undefined => {
-            const read = client.getQueryData<TreeAnswer>(outlineQuery(key, "graph").queryKey);
-            const held = read === undefined ? undefined : (editor?.held?.(read) ?? read);
-            if (held?.converted !== true) return undefined;
-            if (!(held.nodes ?? []).some((node) => node.id === readId)) return undefined;
-            const verdicts = placementOf({
-              held,
-              node: readId,
-              row: from,
-              status,
-              unplaced: editor?.unplaced?.(readId) === true ? true : undefined,
-              zoomRoot: zoomRead,
-            });
-            return { held, verdicts };
-          };
+          const verdictsNow = () =>
+            verdictsFor(
+              client,
+              { editor, issue },
+              { node: readId, row: from, unplaced: editor?.unplaced?.(readId) === true }
+            );
           const now = verdictsNow();
           if (now === undefined) return false;
           if (move === "paragraph") {
             const below = now.verdicts.new_below;
-            const supertag = now.held.nodes?.find((node) => node.id === readId)?.supertag ?? "";
+            const node = now.held.nodes?.find((each) => each.id === readId);
             return (
-              TYPED[supertag] === true &&
+              node !== undefined &&
+              isTyped(node) &&
               !(below.kind === "grey" && NOT_ADMITTED[below.reason] === true)
             );
           }
@@ -189,14 +144,14 @@ export function useMoveKeys({
             if (editor === undefined) return false;
             // A place on a page the page has not read is asked again once that page is read, as
             // the menu's entry does.
-            void (async () => {
-              let next: Verdict | undefined = verdict;
-              while (next?.kind === "read_next") {
-                await readNextTreePage(client, key, "graph");
-                next = verdictsNow()?.verdicts.new_below;
-              }
-              if (next?.kind === "new") editor.newRow(readId, "new_below", next.place, next.line);
-            })().catch(() => undefined);
+            void placeNewRow(
+              client,
+              key,
+              editor,
+              readId,
+              move,
+              () => verdictsNow()?.verdicts.new_below
+            ).catch(() => undefined);
             return true;
           }
           moving.current = { id: row.node.id, row: rowKey };

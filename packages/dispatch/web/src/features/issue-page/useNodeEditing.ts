@@ -968,7 +968,7 @@ export function useNodeEditing({
           hold.current === "on" ? editingBlock : undefined,
           event,
           onMove,
-          editorView.current,
+          view,
           onFirst
         );
       },

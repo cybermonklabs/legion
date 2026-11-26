@@ -107,10 +107,8 @@ export function dropViews(queryClient: QueryClient, key: string): void {
 /** The page's two outlines (R1, R10): Conversation, which draws Conversation's read - the tree
  *  read with `kind` repeated for `CONVERSATION_KINDS` - and Graph, which draws the tree read with
  *  no view. Each outline's read stands under a key of its own, both under the tree's
- *  (`issueTreeKey`), so every event of the issue reaches both. Graph's node menu reads each
- *  outline the cache holds again after its writes (`graph-edit/node-writes.ts`), and the Lens act
- *  reads the one a row is drawn in (`lenses/lens-reads.ts`). */
-export type Outline = "conversation" | "graph";
+ *  (`issueTreeKey`), so every event of the issue reaches both. */
+type Outline = "conversation" | "graph";
 
 /** The tree route's query as the page writes it: the route's own (`view`, `kind`, `v`, `cursor`,
  *  `comments_before`). `routeUrl` writes a list as one `kind=` per value (`paths.ts`'

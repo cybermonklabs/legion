@@ -88,7 +88,7 @@ export function TreeRows({
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
    *  which draws it (`NodeRow`'s `report`). */
   report?: { readonly line: string; readonly row: string | undefined };
-  /** The issue's room editor the rows' node menus write a new row through, in Graph
+  /** The issue's room editor the rows' node menus write a new row and a retype through, in Graph
    *  (`graph-edit/new-row-editing.ts`); none elsewhere. */
   rowEditor?: RowEditor;
   /** The outline's way of taking the reader to a row, which Graph's node menu takes them by after

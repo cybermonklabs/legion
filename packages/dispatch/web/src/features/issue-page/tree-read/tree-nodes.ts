@@ -982,10 +982,10 @@ function pointersOf(node: TreeAnswerNode, name: string): readonly string[] {
 }
 
 /** When the node was made and who made it, as the read answers them: what the outline draws for
- *  an ask, a comment, a message, a criterion and a result, and for no other document block, nor a
- *  decision or a child issue. The read lists every author of the node's first version, whoever
- *  made it first ahead of the rest, and a row draws one name: the first, and none where the list
- *  is empty or null; and no time where the store records none. */
+ *  an ask, a comment, a message, a criterion, a result and a reading, and for no other document
+ *  block, nor a decision or a child issue. The read lists every author of the node's first
+ *  version, whoever made it first ahead of the rest, and a row draws one name: the first, and none
+ *  where the list is empty or null; and no time where the store records none. */
 function madeBy(draft: Draft, node: TreeAnswerNode): void {
   if (node.made_at !== null) draft.at = node.made_at;
   const author = node.author?.[0];

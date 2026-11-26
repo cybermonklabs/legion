@@ -37,25 +37,49 @@ export function addLastHeldChips(
     const words = draft.tree === undefined ? draft.text : wordsOf(draft.tree);
     for (const reference of citedAddresses(words)) {
       const chip = context.chipOf(reference);
-      if (chip.ambiguous === true || chip.lastHeld === undefined) continue;
-      if (lastHeldPath(chip.lastHeld) === undefined) continue;
+      if (chip.ambiguous === true || lastHeldPath(chip.lastHeld) === undefined) continue;
       if (draft.chips.some((held) => held.ref === reference)) continue;
       draft.chips = [...draft.chips, chip];
     }
   }
 }
 
+/** How many drafts' words the page keeps the cited addresses of (`citedAddresses`). The largest
+ *  issue the page draws holds 2,106 blocks over all its documents, 86 comments and 11 messages
+ *  (`row-references.ts`' `READINGS_KEPT`), and the tree is built from the outline read and from
+ *  each view read: the cap keeps the words of an outline and a view of that issue whole, with
+ *  room to spare. */
+const CITED_KEPT = 8_192;
+
+/** Each text's cited addresses, with the origin they were read against, the text read first
+ *  first: the one dropped when a new text comes past `CITED_KEPT`. */
+const citedByWords = new Map<
+  string,
+  { readonly addresses: readonly string[]; readonly origin: string }
+>();
+
 /** Every address `words` cite, as `row-references.ts`' `citedReferences` reads them for the
  *  page's names read, which this module cannot import: `row-references.ts` imports
  *  `issue-tree.ts`, which imports this one. A bare key and a question are left out: neither
- *  names a block, the one kind of target the read names a version of. */
-function citedAddresses(words: string): string[] {
+ *  names a block, the one kind of target the read names a version of. Read once for each text and
+ *  origin while it is kept (`CITED_KEPT`): the tree is built again with every names answer and
+ *  read refresh, and reads every draft's words each time. */
+function citedAddresses(words: string): readonly string[] {
   if (words === "") return [];
+  const origin = window.location.origin;
+  const kept = citedByWords.get(words);
+  if (kept?.origin === origin) return kept.addresses;
   const cited = new Set<string>();
-  for (const found of readTextReferences(words).references) {
+  for (const found of readTextReferences(words, { origin }).references) {
     if (found.form === "address" && found.reference !== undefined) cited.add(found.reference);
   }
-  return [...cited];
+  const addresses = [...cited];
+  if (kept === undefined && citedByWords.size >= CITED_KEPT) {
+    const oldest = citedByWords.keys().next();
+    if (oldest.done !== true) citedByWords.delete(oldest.value);
+  }
+  citedByWords.set(words, { addresses, origin });
+  return addresses;
 }
 
 /**

@@ -23,16 +23,26 @@ interface DeleteWatch extends RowDelete {
 
 const NODE_ROW = "[data-node-row]";
 
-/** The path from `node` down to the own row of the node `id`, its placement that is no
- *  transclusion (part T's second rows), or undefined where the tree under `node` holds none. */
-export function ownPathTo(node: TreeNode, id: string): TreeNode[] | undefined {
-  if (node.id === id) return [node];
+/** The path from `node` down to the own row of the first node under it, in the walk's order, that
+ *  `match` holds for: its placement that is no transclusion (part T's second rows). Undefined
+ *  where the tree under `node` holds none. */
+export function ownPathWhere(
+  node: TreeNode,
+  match: (node: TreeNode) => boolean
+): TreeNode[] | undefined {
+  if (match(node)) return [node];
   for (const child of node.children) {
     if (child.transcluded) continue;
-    const below = ownPathTo(child, id);
+    const below = ownPathWhere(child, match);
     if (below !== undefined) return [node, ...below];
   }
   return undefined;
+}
+
+/** The path from `node` down to the own row of the node `id`, its placement that is no
+ *  transclusion (part T's second rows), or undefined where the tree under `node` holds none. */
+export function ownPathTo(node: TreeNode, id: string): TreeNode[] | undefined {
+  return ownPathWhere(node, (each) => each.id === id);
 }
 
 /** The node the tree read gives the read id `readId`, in the tree under `node`. */
@@ -182,7 +192,7 @@ export function useRowReveal({
       },
       kept: (readId) => {
         const id = nodeOfRead(latest.current.root, readId)?.id;
-        const focused = document.activeElement?.closest<HTMLElement>("[data-node-row]");
+        const focused = document.activeElement?.closest<HTMLElement>(NODE_ROW);
         const from = focused?.dataset.rowKey;
         // Only the focus on a row of the node is kept: a reader who moved it elsewhere keeps it
         // where they put it.

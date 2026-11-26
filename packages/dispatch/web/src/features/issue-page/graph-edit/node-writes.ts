@@ -14,10 +14,10 @@ import { type Query, routeUrl } from "../../../api/paths";
 import { refreshQueries } from "../../../api/query-refresh";
 import { newSendKey } from "../../../lib/send-key";
 import { plainWrite, writesOf } from "../../writes/write-store";
+import type { Outline } from "../lenses/lens-reads";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import { nextTreeCursor } from "../tree-read/tree-nodes";
 import {
-  type Outline,
   outlineQuery,
   readNextTreePage,
   type TreeAnswer,
@@ -374,7 +374,7 @@ export function dryRunDelete(
 }
 
 /** Graph's held outline read of `issue`, which the moves are made on. */
-function heldRead(client: QueryClient, issue: string): TreeAnswer | undefined {
+export function heldRead(client: QueryClient, issue: string): TreeAnswer | undefined {
   return client.getQueryData<TreeAnswer>(outlineQuery(issue, "graph").queryKey);
 }
 
@@ -435,13 +435,19 @@ function subtreeEnd(nodes: readonly TreeAnswerNode[], at: number): number {
 }
 
 /** The parent reference the read gives `parent` on a node under it; where it holds none, one made
- *  of the parent's own fields, with no first line, which the read gives only on a child. */
+ *  of the parent's own fields (`parentRefOf`). */
 function parentRef(
   nodes: readonly TreeAnswerNode[],
   parent: TreeAnswerNode
 ): NonNullable<TreeAnswerNode["parent"]> {
   const held = nodes.find((each) => each.parent?.id === parent.id)?.parent;
   if (held !== undefined && held !== null) return held;
+  return parentRefOf(parent);
+}
+
+/** The parent reference of a node under `parent`, made of the parent's own fields, with no first
+ *  line, which the read gives only on a child. */
+export function parentRefOf(parent: TreeAnswerNode): NonNullable<TreeAnswerNode["parent"]> {
   const { id, issue, kind, supertag } = parent;
   return { first_line: "", id, kind, supertag, ...(issue === undefined ? {} : { issue }) };
 }
@@ -503,7 +509,9 @@ function placeHeld(client: QueryClient, issue: string, node: string, answer: Nod
   }
 }
 
-/** Sets the line of `node` on `issue`'s rows, or clears it, and tells each hook. */
+/** Sets the line of `node` on `issue`'s rows, or clears it, and tells each hook. A line that says
+ *  what the node's line says already - its words, its container and its act made again - changes
+ *  nothing, and tells none: a grey key held at an edge sets the same line on each repeat. */
 function setLine(
   client: QueryClient,
   issue: string,
@@ -513,6 +521,16 @@ function setLine(
   const state = stateOf(client);
   const now = state.lines.get(issue) ?? NO_LINES;
   if (line === undefined && !now.has(node)) return;
+  const held = now.get(node);
+  if (
+    held !== undefined &&
+    line !== undefined &&
+    held.text === line.text &&
+    held.container === line.container &&
+    held.again === line.again
+  ) {
+    return;
+  }
   const next = new Map(now);
   if (line === undefined) next.delete(node);
   else next.set(node, line);
@@ -793,17 +811,9 @@ export function placeNode(
   return promise;
 }
 
-/**
- * The writes of Graph's node menu for `issue` (`NodeWrites`), under the page's query client,
- * whose held tree is Graph's outline read. Every hook of one client shares each node's chain and
- * each row's line, so the menu and the editor's keys queue on one chain, and a line outlives the
- * menu that drew it. A move takes the issue's status and zoom root as they stood at its press;
- * each act reads the held read as it stands at its turn, never one a render held.
- */
-export function useNodeWrites({ key, status, zoomRoot }: NodeWritesIssue): NodeWrites {
-  const queryClient = useQueryClient();
-  const state = stateOf(queryClient);
-  const subscribe = useCallback(
+/** How a hook hears each change of the lines of `state`'s rows (`setLine`). */
+function useLineListener(state: NodeWriteState): (listener: () => void) => () => void {
+  return useCallback(
     (listener: () => void) => {
       state.listeners.add(listener);
       return () => {
@@ -812,7 +822,20 @@ export function useNodeWrites({ key, status, zoomRoot }: NodeWritesIssue): NodeW
     },
     [state]
   );
-  const lines = useSyncExternalStore(subscribe, () => state.lines.get(key) ?? NO_LINES);
+}
+
+/** The acts of Graph's node menu for one issue (`NodeWrites` without its `lines`), for a caller
+ *  that draws no line: it is drawn again for no line that changes (`useNodeActs`). */
+export type NodeActs = Omit<NodeWrites, "lines">;
+
+/**
+ * The acts of Graph's node menu for `issue` (`NodeActs`), under the page's query client, as
+ * `useNodeWrites` has them, with no line: the editor's move keys and the delete's confirm, which
+ * draw none, queue on the node's one chain and write its rows' lines all the same, and are drawn
+ * again for no line that changes.
+ */
+export function useNodeActs({ key, status, zoomRoot }: NodeWritesIssue): NodeActs {
+  const queryClient = useQueryClient();
   const move = useCallback(
     (node: string, entry: MoveEntry, row?: PlacementRow) =>
       pressMove(queryClient, key, node, { entry, row, status, zoomRoot }),
@@ -843,5 +866,30 @@ export function useNodeWrites({ key, status, zoomRoot }: NodeWritesIssue): NodeW
       setLine(queryClient, key, node, { text: ANSWER_LINES[reason] }),
     [key, queryClient]
   );
-  return useMemo(() => ({ count, grey, lines, move, remove }), [count, grey, lines, move, remove]);
+  return useMemo(() => ({ count, grey, move, remove }), [count, grey, move, remove]);
+}
+
+/**
+ * The writes of Graph's node menu for `issue` (`NodeWrites`), under the page's query client,
+ * whose held tree is Graph's outline read. Every hook of one client shares each node's chain and
+ * each row's line, so the menu and the editor's keys queue on one chain, and a line outlives the
+ * menu that drew it. A move takes the issue's status and zoom root as they stood at its press;
+ * each act reads the held read as it stands at its turn, never one a render held.
+ */
+export function useNodeWrites(issue: NodeWritesIssue): NodeWrites {
+  const state = stateOf(useQueryClient());
+  const subscribe = useLineListener(state);
+  const lines = useSyncExternalStore(subscribe, () => state.lines.get(issue.key) ?? NO_LINES);
+  const acts = useNodeActs(issue);
+  return useMemo(() => ({ ...acts, lines }), [acts, lines]);
+}
+
+/** The line of the row of read id `node` of `issue` (`NodeWrites.lines`), or undefined where it
+ *  has none or `node` is undefined: the row that draws it is drawn again for its own line alone. */
+export function useNodeLine(issue: string, node: string | undefined): NodeLine | undefined {
+  const state = stateOf(useQueryClient());
+  const subscribe = useLineListener(state);
+  return useSyncExternalStore(subscribe, () =>
+    node === undefined ? undefined : state.lines.get(issue)?.get(node)
+  );
 }

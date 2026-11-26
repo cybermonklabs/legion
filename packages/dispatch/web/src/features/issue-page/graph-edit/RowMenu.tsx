@@ -29,19 +29,16 @@ import {
 } from "../lenses/LensMenu";
 import { pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, LENS_WORDS } from "../page-words";
-import {
-  outlineQuery,
-  readNextTreePage,
-  type TreeAnswer,
-  type TreeAnswerNode,
-} from "../tree-read/tree-read";
+import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { abortOnReaderAct } from "../useNodeEditing";
 import {
   type DeleteCount,
   type DeleteOutcome,
+  heldRead,
   type MoveEntry,
   type MoveOutcome,
   type NewEntry,
+  useNodeLine,
   useNodeWrites,
 } from "./node-writes";
 import {
@@ -49,12 +46,18 @@ import {
   type Entry,
   type GreyReason,
   type Placement,
-  placementOf,
   RETYPE_KINDS,
   type RetypeKind,
   type RetypeOption,
 } from "./placement";
-import type { OutlineEdits, RowEdit } from "./row-edits";
+import {
+  editingRead,
+  type OutlineEdits,
+  placeNewRow,
+  type RowEdit,
+  rowsUnit,
+  verdictsFor,
+} from "./row-edits";
 
 /**
  * The node menu of Graph's focused row (INFRA-5705's R1 to R8): the WAI-ARIA menu button and
@@ -170,8 +173,7 @@ function focusRowOf(inside: HTMLElement | null): void {
 
 /** The node of read id `node` as Graph's held read of issue `key` holds it now. */
 function heldNode(client: QueryClient, key: string, node: string): TreeAnswerNode | undefined {
-  const held = client.getQueryData<TreeAnswer>(outlineQuery(key, "graph").queryKey);
-  return held?.nodes?.find((each) => each.id === node);
+  return heldRead(client, key)?.nodes?.find((each) => each.id === node);
 }
 
 /** Lens's entry of the menu of `node`: the act part W offers on it, where it offers one
@@ -190,25 +192,13 @@ function readIdOf(outline: OutlineEdits, node: TreeNode): string | undefined {
   return node.readId ?? outline.editor?.readIdOf?.(node.id);
 }
 
-/** Graph's held read of the outline's issue as the verdicts read it: with each new row it does not
- *  hold yet (`RowEditor.held`). */
-function heldRead(client: QueryClient, outline: OutlineEdits): TreeAnswer | undefined {
-  const held = client.getQueryData<TreeAnswer>(outlineQuery(outline.issue.key, "graph").queryKey);
-  return held === undefined ? undefined : (outline.editor?.held?.(held) ?? held);
-}
-
 /** Whether the menu holds R1's editing entries for `node`: where Graph's held read as the verdicts
- *  read it (`heldRead`) is of a converted issue and holds the node the menu names it by
- *  (`readIdOf`). The focused row's control and every other row's place (`RowMenuPlace`) ask it
+ *  read it is of a converted issue and holds the node the menu names it by (`editingRead`,
+ *  `readIdOf`). The focused row's control and every other row's place (`RowMenuPlace`) ask it
  *  alike, so a row, a new row among them, keeps its height as the focus comes and goes. */
 function holdsEditing(client: QueryClient, outline: OutlineEdits, node: TreeNode): boolean {
-  const held = heldRead(client, outline);
   const readId = readIdOf(outline, node);
-  return (
-    held?.converted === true &&
-    readId !== undefined &&
-    (held.nodes ?? []).some((each) => each.id === readId)
-  );
+  return readId !== undefined && editingRead(client, outline, readId) !== undefined;
 }
 
 /**
@@ -276,8 +266,7 @@ export function RowMenu({
   const controlId = useId();
   const retypeId = useId();
   const failedId = useId();
-  const { key, status, zoomRoot } = edit.outline.issue;
-  // A new row the read does not hold yet is named by the block id the page chose for it (R3).
+  const { key } = edit.outline.issue;
   const readId = readIdOf(edit.outline, node);
   const unplaced = readId !== undefined && editor?.unplaced?.(readId) === true;
   const lens = lensOf(act, node);
@@ -285,20 +274,15 @@ export function RowMenu({
   /** Each entry's verdict for the node from Graph's held read as it stands now, or undefined
    *  where the menu holds Lens alone: an issue the conversion has not reached, and a node the
    *  held read does not hold. */
-  const verdictsNow = (): Placement | undefined => {
-    const held = heldRead(client, edit.outline);
-    if (held?.converted !== true || readId === undefined) return undefined;
-    if (!(held.nodes ?? []).some((each) => each.id === readId)) return undefined;
-    return placementOf({
-      held,
-      kinds: editor?.kinds,
-      node: readId,
-      row: edit.row,
-      status,
-      unplaced: unplaced ? true : undefined,
-      zoomRoot,
-    });
-  };
+  const verdictsNow = (): Placement | undefined =>
+    readId === undefined
+      ? undefined
+      : verdictsFor(client, edit.outline, {
+          kinds: editor?.kinds,
+          node: readId,
+          row: edit.row,
+          unplaced,
+        })?.verdicts;
 
   useEffect(() => () => out.current?.abort(), []);
 
@@ -395,18 +379,12 @@ export function RowMenu({
   // first, and the place is asked again from the read that holds it. A refused page draws no
   // row, and leaves the next page's control for another press, as the outline's own reads of a
   // page do.
-  const placeNew = async (entry: NewEntry): Promise<void> => {
-    if (editor === undefined || readId === undefined) return;
-    let verdict = verdictsNow()?.[entry];
-    while (verdict?.kind === "read_next") {
-      await readNextTreePage(client, key, "graph");
-      verdict = verdictsNow()?.[entry];
-    }
-    if (verdict?.kind === "new") editor.newRow(readId, entry, verdict.place, verdict.line);
-  };
   const pickNew = (entry: NewEntry) => {
     finish();
-    void placeNew(entry).catch(() => undefined);
+    if (editor === undefined || readId === undefined) return;
+    void placeNewRow(client, key, editor, readId, entry, () => verdictsNow()?.[entry]).catch(
+      () => undefined
+    );
   };
 
   const pickRetype = (kind: RetypeKind, option: RetypeOption) => {
@@ -460,7 +438,7 @@ export function RowMenu({
       }
       case "counted": {
         const { count } = counted;
-        const unit = count === 1 ? CONTROL_LABELS.delete_row : CONTROL_LABELS.delete_rows;
+        const unit = rowsUnit(count);
         const pick = () => {
           finish();
           edit.outline.confirmDelete(nodeId, count);
@@ -792,12 +770,10 @@ export function RowEditLine({
   node: TreeNode;
   tabStops: boolean;
 }): ReactNode {
-  const writes = useNodeWrites(edit.outline.issue);
   const { editor } = edit.outline;
   const client = useQueryClient();
-  // A new row the read does not hold yet is named by the block id the page chose for it (R3).
   const readId = readIdOf(edit.outline, node);
-  const written = readId === undefined ? undefined : writes.lines.get(readId);
+  const written = useNodeLine(edit.outline.issue.key, readId);
   const own = editor?.lineOf?.(node);
   const line = written ?? (own === undefined ? undefined : { text: own });
   if (line === undefined) return null;

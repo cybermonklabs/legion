@@ -29,9 +29,10 @@ import { rowKeyOf } from "./tree-keys";
  */
 
 /** How a drawn row carries the current point: its own row (`here`), or, while its own row is
- *  folded away or stands past its parent's first page of children, a row above it on its path or
- *  the row that pages those children (`path`). A folded branch or a page still says where the
- *  conversation is, so the reader can open or page their way down to it. */
+ *  folded away or not drawn, a row above it on its path and, where the point is among a node's
+ *  children that no row draws yet or under one of them, the row that pages those children
+ *  (`path`). A folded branch or a page still says where the conversation is, so the reader can
+ *  open or page their way down to it. */
 export type PointMark = "here" | "path";
 
 /** The writer's two targets as `OutlineWriter` holds them (outline-writer.tsx): the entry the

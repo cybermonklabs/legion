@@ -1537,7 +1537,7 @@ function Chip({
   // A target the read answers gone with the version that last held it opens that version on the
   // page (R9 of INFRA-5705), by the page's own address of it and never the address as written: a
   // `last_held` the page cannot read opens nothing, and the chip draws as any gone one does.
-  const lastHeld = gone && chip.lastHeld !== undefined ? lastHeldPath(chip.lastHeld) : undefined;
+  const lastHeld = gone ? lastHeldPath(chip.lastHeld) : undefined;
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
   return (

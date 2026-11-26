@@ -153,11 +153,6 @@ const NO_TARGET_NAMING: Omit<PublishedReferences, "asked"> = {
   unnamed: new Set(),
 };
 
-/** The versions that last held a gone reference the page publishes until the batched name read
- *  answers: none, and the same empty map on every render, as `NO_TARGET_NAMING` is the same empty
- *  value. */
-const NO_LAST_HELD_TARGETS: ReadonlyMap<string, string | undefined> = new Map();
-
 /** The set of addresses the batched names read is given until the gate first opens: none, and
  *  the same empty set on every render, so the read's options are made once meanwhile. */
 const NO_REFS: readonly string[] = [];
@@ -291,10 +286,12 @@ function builtTree(reads: IssueTreeReads): TreeNode {
  * addresses than the server reads at once costs one request per batch of them, which no ordinary
  * issue reaches), and the tree is built again with the names in it. No node's own address is
  * read for the node: the tree read holds every node's words, its stored source among them
- * (`treeReferences`). That is the one names read of a round: the names add no chip and no
- * citation to the tree. Until the names answer the tree draws, with a chip naming its target's
- * address; on every read after the first the names already in hand stand while the new set
- * loads, and after its read fails (`IssueTreeView.namesFailure`).
+ * (`treeReferences`). That is the one names read of a round: the names add no citation to the
+ * tree, and each chip they add - for a node a draft's words cite that the read answers gone with
+ * the version that last held it (`last-held-chips.ts`' `addLastHeldChips`) - names a reference
+ * the round asked already. Until the names answer the tree draws, with a chip naming its
+ * target's address; on every read after the first the names already in hand stand while the new
+ * set loads, and after its read fails (`IssueTreeView.namesFailure`).
  */
 export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
@@ -576,9 +573,9 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   usePublishReferenceNames(published);
   // Beside them go the versions that last held each gone reference, by the rule its chip
   // carries one by (`targetLastHeld`, R9 of INFRA-5705), so a reference in a node's words opens
-  // the version its chip does (`graph-edit/last-held-store.ts`).
+  // the version its chip does (`graph-edit/last-held-store.ts`); none until the names answer.
   const lastHeld = useMemo(
-    () => (named === undefined ? NO_LAST_HELD_TARGETS : targetLastHeld(named)),
+    () => (named === undefined ? undefined : targetLastHeld(named)),
     [named]
   );
   usePublishLastHeldReferences(lastHeld);

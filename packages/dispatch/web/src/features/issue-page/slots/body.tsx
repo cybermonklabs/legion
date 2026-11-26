@@ -199,9 +199,15 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // nowhere, since the names read then names it not. The Spec view's own address is its slot's
   // (`view-spec.tsx`), and an address naming no document is `useUnqualifiedLastHeld`'s (below).
   const outlineAnswer = useTreeRead(issue).answer;
+  // Whether the tree cites a reference: one function while the tree stands, so the address's
+  // answer is worked out again only for a new tree or a new address (`useLastHeldAddress`).
+  const cites = useCallback(
+    (reference: string) => treeReferences(root).includes(reference),
+    [root]
+  );
   const opened = useLastHeldAddress({
     address,
-    cites: (reference) => treeReferences(root).includes(reference),
+    cites,
     held: readsHeld ? outlineAnswer : undefined,
     reveal: addressed.reveal,
     route,

@@ -610,14 +610,16 @@ export function IssueTree({
     stopEditing,
     unfoldPath,
   });
-  // In Graph, the keys of the moves with the caret in a block R2 admits, and the editing kept on
-  // a node they drew under another row's key, its folded new parent unfolded, in this render.
+  // In Graph, the keys of the moves and Enter and Shift+Enter at a block's end, with the caret in
+  // a block R2 admits, and the editing kept on a node they drew under another row's key, its
+  // folded new parent unfolded, in this render.
   useMoveKeys({
     bridge: moveKeys,
     closed: shown.closed,
     editing,
     editor: rowEditor,
     isClosed,
+    issue: graphKey,
     root,
     rows,
     unfoldPath,

@@ -379,14 +379,12 @@ const ROW_LAST_HELD = "data-row-last-held";
  *  (`lastHeldPath`). Undefined for a reference `names` names, one the read named no version of
  *  and one whose version the page cannot read: its link goes to `RowReference.path` and reads
  *  `rowReferenceWords`, as before. */
-export function lastHeldRowPath(
+function lastHeldRowPath(
   reference: string,
   names: ReadonlyMap<string, string>,
   lastHeld: ReadonlyMap<string, string | undefined>
 ): string | undefined {
-  if (names.has(reference)) return undefined;
-  const held = lastHeld.get(reference);
-  return held === undefined ? undefined : lastHeldPath(held);
+  return names.has(reference) ? undefined : lastHeldPath(lastHeld.get(reference));
 }
 
 /**

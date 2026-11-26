@@ -33,10 +33,11 @@ const QUERY_FILTERS: Readonly<Record<string, "plan" | "verification">> = {
  * any other block its document at version N (`/issues/<KEY>/artifacts/<slug>?v=<N>#b-<id>`), a
  * plain `artifact/spec` among them, with the slug and the block id each written by the page's own
  * encoder (`buildIssuePath`, `blockFragment`) and N written as the reference's digits. Undefined
- * for anything else: an address that pins no version, one of no issue's spec or artifact, and one
- * the reader does not read.
+ * for anything else: no address (`undefined`), an address that pins no version, one of no issue's
+ * spec or artifact, and one the reader does not read.
  */
-export function lastHeldPath(lastHeld: string): string | undefined {
+export function lastHeldPath(lastHeld: string | undefined): string | undefined {
+  if (lastHeld === undefined) return undefined;
   const route = parseNodeReference(lastHeld);
   if (route === undefined || (route.kind !== "spec" && route.kind !== "artifact")) return undefined;
   const block = route.block;

@@ -508,17 +508,11 @@ export function lastHeldAsk({
   return answerHolds(held, target) ? undefined : reference;
 }
 
-/** The page's own address of the version `lastHeld` names (`lastHeldPath`), else `unblocked`:
- *  the same address without its fragment, which draws no line. */
-function openingOf(lastHeld: string | undefined, unblocked: string): string {
-  return (lastHeld === undefined ? undefined : lastHeldPath(lastHeld)) ?? unblocked;
-}
-
 /**
  * Where an address opens that names a block the read its view draws from lacks
  * (`lastHeldAsk`), by the member `reference-targets` answered for the block: where it answers the
  * block gone, the version that last held it, at the page's own address of it (`lastHeldOf`), and
- * with no version the page can read, `unblocked` (`openingOf`). Undefined where it answers the
+ * with no version the page can read, `unblocked` (`lastHeldPath`). Undefined where it answers the
  * block live, or answers nothing of it: the address stands as it is, so a live block no tree read
  * holds - a plain paragraph of a document - opens as today.
  */
@@ -526,7 +520,7 @@ export function lastHeldOpening(
   member: ReferenceTarget | undefined,
   unblocked: string
 ): string | undefined {
-  return member?.gone === true ? openingOf(lastHeldOf(member), unblocked) : undefined;
+  return member?.gone === true ? (lastHeldPath(lastHeldOf(member)) ?? unblocked) : undefined;
 }
 
 /**
@@ -538,7 +532,7 @@ export function lastHeldOpening(
  * The page's names read (`useIssueTree`) adds a block to its set for the Spec view's own address
  * alone. Where the tree cites this one (`cites`), that read names it already, and its answer, as
  * the page publishes it (`useKnownLastHeldReferences`), opens the address: the block gone, with
- * the version that last held it or with none (`openingOf`); named live, or not answered yet, the
+ * the version that last held it or with none (`lastHeldPath`); named live, or not answered yet, the
  * address stands, and no second read of it is sent. Where the tree cites it nowhere, this is the
  * one read of it: one `reference-targets` read of the block's reference alone
  * (`referenceTargetsQuery`), sent once and never again for that address, which its answer
@@ -566,14 +560,16 @@ export function useLastHeldAddress({
   const history = useKnownLastHeldReferences();
   const asked =
     route.kind === "artifact" ? lastHeldAsk({ address, hash, held, reveal, route }) : undefined;
-  const cited = asked !== undefined && cites(asked);
+  const cited = useMemo(() => asked !== undefined && cites(asked), [asked, cites]);
   const answer = useQuery({
     ...referenceTargetsQuery(asked === undefined || cited ? [] : [asked]),
     enabled: asked !== undefined && !cited,
   }).data;
   const unblocked = `${pathname}${search}`;
   if (asked === undefined) return undefined;
-  if (cited) return history.has(asked) ? openingOf(history.get(asked), unblocked) : undefined;
+  if (cited) {
+    return history.has(asked) ? (lastHeldPath(history.get(asked)) ?? unblocked) : undefined;
+  }
   if (answer === undefined) return undefined;
   return lastHeldOpening(
     answer.targets.find((one) => one.ref === asked),
@@ -727,8 +723,7 @@ export function lastHeldDestination(
 ): string | undefined {
   const opened = new Set<string>();
   for (const member of targets) {
-    const lastHeld = asked.includes(member.ref) ? lastHeldOf(member) : undefined;
-    const path = lastHeld === undefined ? undefined : lastHeldPath(lastHeld);
+    const path = lastHeldPath(asked.includes(member.ref) ? lastHeldOf(member) : undefined);
     if (path !== undefined) opened.add(path);
   }
   return opened.size === 1 ? [...opened][0] : undefined;

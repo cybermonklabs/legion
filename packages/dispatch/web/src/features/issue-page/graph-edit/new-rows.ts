@@ -6,7 +6,7 @@ import type { TreeNode } from "../issue-tree";
 import { editWords } from "../own-act";
 import { ANSWER_LINES } from "../page-words";
 import { outlineQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
-import { type NewEntry, placeNode, readOutlinesAgain } from "./node-writes";
+import { heldRead, type NewEntry, parentRefOf, placeNode, readOutlinesAgain } from "./node-writes";
 import { type NewPlace, type PlaceLine, placingOf } from "./placement";
 import { ownPathTo } from "./row-reveal";
 
@@ -296,7 +296,7 @@ function readOwed(client: QueryClient, issue: string): void {
   const now = Date.now();
   const typed = [...held.waits.values()];
   if (!typed.some((at) => now < at + NEW_ROW_WAIT_MS)) return;
-  const answer = client.getQueryData<TreeAnswer>(outlineQuery(issue, "graph").queryKey);
+  const answer = heldRead(client, issue);
   if (answer !== undefined && owesTree(answer)) readOutlinesAgain(client, issue, ["graph"]);
   if (typed.some((at) => now + NEW_ROW_READ_MS < at + NEW_ROW_WAIT_MS)) {
     held.poll = window.setTimeout(() => readOwed(client, issue), NEW_ROW_READ_MS);
@@ -315,7 +315,7 @@ export function readNodeOf(answer: TreeAnswer, blockId: string): TreeAnswerNode 
  *  with a rank and a `placement_seq`, within its 2 minutes. */
 function placeHeld(client: QueryClient, issue: string): void {
   const held = stateOf(client).issues.get(issue);
-  const answer = client.getQueryData<TreeAnswer>(outlineQuery(issue, "graph").queryKey);
+  const answer = heldRead(client, issue);
   if (held === undefined || answer === undefined) return;
   const now = Date.now();
   for (const [blockId, at] of [...held.waits]) {
@@ -509,7 +509,6 @@ export function heldWithNewRows(answer: TreeAnswer, rows: readonly NewRow[]): Tr
   const added = rows.flatMap((row): TreeAnswerNode[] => {
     const parent = nodes.find((node) => node.id === row.parent);
     if (parent === undefined || readNodeOf(answer, row.blockId) !== undefined) return [];
-    const { id, issue, kind, supertag } = parent;
     return [
       {
         attributes: null,
@@ -518,7 +517,7 @@ export function heldWithNewRows(answer: TreeAnswer, rows: readonly NewRow[]): Tr
         id: row.blockId,
         kind: "block",
         made_at: null,
-        parent: { first_line: "", id, kind, supertag, ...(issue === undefined ? {} : { issue }) },
+        parent: parentRefOf(parent),
         placement_seq: null,
         rank: null,
         role: "tree",

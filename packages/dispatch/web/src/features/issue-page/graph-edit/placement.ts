@@ -164,6 +164,18 @@ function move(body: MoveBody): Verdict {
   return { body, kind: "move" };
 }
 
+/** Why R2 greys every editing entry of a node it does not admit (`refusal`). */
+type Refusal = Extract<GreyReason, "grey_closed" | "grey_kind" | "grey_own_issue">;
+
+/** The reasons R2 greys every editing entry of a block it does not admit (`refusal`): every other
+ *  grey reason is an edge of a block it admits. The editor's keys (`move-keys.ts`) keep today's
+ *  behaviour on a block of these, and write nothing at an edge of any other. */
+export const NOT_ADMITTED: Readonly<Partial<Record<GreyReason, true>>> = {
+  grey_closed: true,
+  grey_kind: true,
+  grey_own_issue: true,
+} satisfies Readonly<Record<Refusal, true>>;
+
 /** The entries of the menu with their verdicts for `input.node`, as the page asks them for the
  *  node's own row or its second row. A node the held read lacks is a bug of the caller. */
 export function placementOf(input: PlacementInput): Placement {
@@ -337,6 +349,12 @@ function classOf(node: TreeAnswerNode): "item" | "other" | "prose" | "typed" {
   }
 }
 
+/** Whether `node` is one of R2's typed blocks (`classOf`): a criterion, a statement, a check or a
+ *  plan task, inside which Shift+Enter at the end makes a paragraph (R3). */
+export function isTyped(node: TreeAnswerNode): boolean {
+  return classOf(node) === "typed";
+}
+
 /** Why R2 greys an entry on the node, or undefined where it admits it. On a closed issue every
  *  editing entry says the issue is closed, whatever the node; on an open one the reason is the
  *  node's kind, then whose issue it is. `offered` is `under` for New node under, which an ask, a
@@ -345,7 +363,7 @@ function refusal(
   { held, node }: Focus,
   closed: boolean,
   offered: "edit" | "under"
-): GreyReason | undefined {
+): Refusal | undefined {
   if (closed) return "grey_closed";
   const kind = classOf(node);
   if (!held.converted || kind === "other" || (kind === "item" && offered === "edit")) {
