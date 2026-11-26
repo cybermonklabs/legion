@@ -87,6 +87,13 @@ const DAEMON: Actor = { id: DAEMON_SESSION, kind: "session" };
 const HEAD_SHA = "d".repeat(40);
 const PULL_NUMBER = 7;
 
+/** The head of a second pull request of the issue, opened before `PULL_NUMBER`'s: a `before_merge`
+ *  check compares with every head the issue holds, so a result recorded here stands at its
+ *  check's basis too, and its check reads Passed on its own row. Every result here is recorded
+ *  before any at `HEAD_SHA`, so `HEAD_SHA` is the commit the page names. */
+const EARLIER_SHA = "e".repeat(40);
+const EARLIER_PULL_NUMBER = 8;
+
 // ---------------------------------------------------------------------------------------------
 // Which main this is (R27)
 // ---------------------------------------------------------------------------------------------
@@ -397,6 +404,15 @@ export interface DashboardSeed {
     readonly children: TileCount;
     readonly questions: TileCount;
   };
+  /** The statement whose two checks passed at different commits, each standing at its check's
+   *  basis: `older` at the earlier pull request's head, recorded first, and `newer` at
+   *  `HEAD_SHA`, the commit the page names. The statement counts in no Met tile and `older` in no
+   *  passed tile, while `older` reads Passed on its own row (R6). */
+  readonly twoCommits: {
+    readonly statement: string;
+    readonly older: string;
+    readonly newer: string;
+  };
   /** The names a record of this issue carries, which Dashboard may draw: logins, sessions and
    *  their titles, keys, and the roles of its Legion state. */
   readonly names: readonly string[];
@@ -418,6 +434,7 @@ const REQUIREMENTS = {
   r2: "Each item is answered where it is drawn.",
   r3: "The list draws five items at a time.",
   r4: "The count above the list is the number of its items.",
+  r5: "The tiles count every check at one commit.",
 } as const;
 const R4_AGAIN = "The count above the list is the number of its items, and no total.";
 
@@ -433,16 +450,19 @@ function specText(): string {
     .join("\n\n")}\n`;
 }
 
-/** A check of the Verification document: what it serves, and how its one result reads. */
+/** A check of the Verification document: what it serves, how its one result reads, and the
+ *  commit that result is recorded at, `HEAD_SHA` where it names none. */
 interface SeededCheck {
   readonly id: string;
   readonly serves: readonly (keyof typeof REQUIREMENTS)[];
   readonly verdict: "fail" | "pass" | null;
+  readonly commit?: string;
   readonly words: string;
 }
 
 /** Met: r1 (c1 and c5 passed) and r4 (c3 and c5 passed); not met: r2 (c2 failed); unknown: r3
- *  (c4 has no result). Passed: c1, c3 and c5 of five. */
+ *  (c4 has no result) and r5 (c6 passed at `EARLIER_SHA`, which is not the commit the page names,
+ *  and c7 at `HEAD_SHA`). Passed at that commit: c1, c3, c5 and c7 of seven. */
 const CHECKS: readonly SeededCheck[] = [
   { id: "c1", serves: ["r1"], verdict: "pass", words: "The list holds each seeded item once." },
   { id: "c2", serves: ["r2"], verdict: "fail", words: "Each item takes its act in place." },
@@ -454,8 +474,29 @@ const CHECKS: readonly SeededCheck[] = [
     verdict: "pass",
     words: "The newest item stands first and is counted.",
   },
+  {
+    commit: EARLIER_SHA,
+    id: "c6",
+    serves: ["r5"],
+    verdict: "pass",
+    words: "The passed tile counts the checks that passed at the named commit.",
+  },
+  {
+    id: "c7",
+    serves: ["r5"],
+    verdict: "pass",
+    words: "The met tile counts the statements met at the named commit.",
+  },
 ];
+
+/** The commit `check`'s result is recorded at. */
+function commitOf(check: SeededCheck): string {
+  return check.commit ?? HEAD_SHA;
+}
+
 const MET = ["r1", "r4"] as const;
+/** The statement of `DashboardSeed.twoCommits` and its two checks. */
+const TWO_COMMITS = { newer: "c7", older: "c6", statement: "r5" } as const;
 const VERIFICATION_LEAD = "How the Dashboard is proved.";
 const VERIFICATION_LEAD_AGAIN = "How the Dashboard is proved, check by check.";
 const RUN = "bun run e2e -- e2e/issue-dashboard-today.e2e.ts";
@@ -646,8 +687,9 @@ async function awaitApproval(
  *
  * - its Legion state (`SEEDED_LEGION`, or `legion`) and the rounds of `ROUNDS`;
  * - seven children, three of them done;
- * - a Verification document of five checks, each serving its statements by their full
- *   `dispatch://<KEY>/spec#b-<id>` address, with a result at the pull request's head for four;
+ * - a Verification document of seven checks, each serving its statements by their full
+ *   `dispatch://<KEY>/spec#b-<id>` address, with a result for six: one at the head of a second
+ *   pull request of the issue, recorded first, and five at `HEAD_SHA`, the commit the page names;
  * - questions that wait on the reader (one with options, one without, and one whose thread the
  *   reader wrote in and the planner wrote in last), one whose turn is the planner's and one
  *   handed on to bob, and one the reader answered;
@@ -680,11 +722,16 @@ export async function seedDashboard(
   const specArtifactId = issue.primary_artifact_id ?? "";
   await seedFakeGithub({
     [repository]: {
-      commit_pulls: { [HEAD_SHA]: [PULL_NUMBER] },
+      commit_pulls: { [EARLIER_SHA]: [EARLIER_PULL_NUMBER], [HEAD_SHA]: [PULL_NUMBER] },
       contents: "read",
       installation_id: 512,
       pull_requests: "read",
       pulls: {
+        [EARLIER_PULL_NUMBER]: {
+          head_sha: EARLIER_SHA,
+          state: "open",
+          title: `${key} the first tiles`,
+        },
         [PULL_NUMBER]: { head_sha: HEAD_SHA, state: "open", title: `${key} the Dashboard` },
       },
     },
@@ -799,13 +846,19 @@ export async function seedDashboard(
   );
   const verificationArtifactId = verification.artifact.id;
   await reviewArtifact(verificationArtifactId, { state: "approved" }, { login: READER });
-  for (const check of CHECKS) {
+  // The result at the earlier pull request's head first, so the newest result of the issue is at
+  // `HEAD_SHA`, the commit the page names.
+  const earlierFirst = [
+    ...CHECKS.filter((check) => commitOf(check) !== HEAD_SHA),
+    ...CHECKS.filter((check) => commitOf(check) === HEAD_SHA),
+  ];
+  for (const check of earlierFirst) {
     if (check.verdict === null) continue;
     await recordCheckResult(
       key,
       {
         check: check.id,
-        commit: HEAD_SHA,
+        commit: commitOf(check),
         failed: check.verdict === "fail" ? 1 : 0,
         negative_control: "Drew no Dashboard and the row failed.",
         observed: check.verdict === "fail" ? "1 failed" : "1 passed",
@@ -912,11 +965,14 @@ export async function seedDashboard(
       children: { ids: done, whole: children.length },
       met: { ids: MET, whole: Object.keys(REQUIREMENTS).length },
       passed: {
-        ids: CHECKS.filter((check) => check.verdict === "pass").map((check) => check.id),
+        ids: CHECKS.filter((check) => check.verdict === "pass" && commitOf(check) === HEAD_SHA).map(
+          (check) => check.id
+        ),
         whole: CHECKS.length,
       },
       questions: { ids: [agentsTurn.id, handedOn.id], whole: 6 },
     },
+    twoCommits: TWO_COMMITS,
     verificationArtifactId,
   };
 }

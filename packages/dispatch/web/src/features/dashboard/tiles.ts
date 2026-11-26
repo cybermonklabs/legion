@@ -11,7 +11,9 @@ import type {
 import {
   blockNodeId,
   checkStanding,
+  namedCommit,
   nodeIdOf,
+  stateAtCommit,
   statementState,
 } from "../issue-page/statement-rules";
 import { issueStatuses } from "../project/board-model";
@@ -47,11 +49,13 @@ export const TILE_LIST_STEP = 20;
 
 /**
  * The statements that read Met by root R17's rule (`statementState`), of all the statements the
- * coverage read holds. A statement's checks are the checks of the results read whose `serves`
- * names it, each reference read as the tree addresses a node (`nodeIdOf`), so the spec's block
- * written in full or under the spec's own slug name the same statement, and a reference to
+ * coverage read holds (R6): a statement reads Met only where every check that serves it passed at
+ * the one commit the page names (`namedCommit`), each check read there by `stateAtCommit`, as the
+ * Verification view reads it. A statement's checks are the checks of the results read whose
+ * `serves` names it, each reference read as the tree addresses a node (`nodeIdOf`), so the spec's
+ * block written in full or under the spec's own slug name the same statement, and a reference to
  * another issue's statement - an ancestor's, as Verification documents write them - serves none
- * of this issue's. Each check reads as `checkStanding` reads it.
+ * of this issue's.
  */
 export function metTile(
   issue: TileIssue,
@@ -61,9 +65,11 @@ export function metTile(
   const statements = coverage?.requirements ?? [];
   const specSlug = primarySpec(issue)?.slug ?? "";
   const nodeOf = nodeIdOf(issue);
-  const checks = (results?.checks ?? []).map((check) => ({
+  const read = results?.checks ?? [];
+  const commit = namedCommit(read);
+  const checks = read.map((check) => ({
+    atCommit: stateAtCommit(checkStanding(check), commit),
     serves: new Set((check.serves ?? []).map(nodeOf)),
-    state: checkStanding(check).state,
   }));
   return {
     counted: statements.filter((statement) => {
@@ -74,12 +80,16 @@ export function metTile(
   };
 }
 
-/** The checks that read Passed, each read on its own by `checkStanding` as the Verification view
- *  reads it (decision 152), of all the checks of the results read. */
+/** The checks that read Passed at the one commit the page names (`namedCommit`), each read there
+ *  by `stateAtCommit`, of all the checks of the results read: the rule the Met tile reads, so the
+ *  two tiles count by one rule (R6). A check's own row reads it on its own (`checkStanding`,
+ *  decision 152), so a check whose pass is older than that commit reads Passed on its row and is
+ *  no check this tile counts. */
 export function passedTile(results: IssueCheckResults | undefined): Tile<CheckBlock> {
   const checks = results?.checks ?? [];
+  const commit = namedCommit(checks);
   return {
-    counted: checks.filter((check) => checkStanding(check).state === "passed"),
+    counted: checks.filter((check) => stateAtCommit(checkStanding(check), commit) === "passed"),
     whole: checks.length,
   };
 }

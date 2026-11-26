@@ -8,8 +8,11 @@ import type { CheckState, StatementState } from "./page-words";
 /**
  * The pure rules the tree and Dashboard both read: how the issue addresses a node (`nodeIdOf`,
  * `blockNodeId`), which references name a statement of the review list (`coverageStatements`),
- * how a check stands (`checkStanding`), how a statement stands over its checks
- * (`statementState`), and how a title is read as one text run (`titleReading`).
+ * how a check stands on its own row (`checkStanding`), the one commit the page names for the
+ * issue's results (`namedCommit`), how a check stands at that commit (`stateAtCommit`), how a
+ * statement stands over its checks read there (`statementState`), and how a title is read as one
+ * text run (`titleReading`). Dashboard's two tiles, the Verification view and the Spec view read a
+ * statement by these alone, so each draws the same Met, Unknown and Out of date (R6, R14).
  *
  * They hold no React, make no request, and import no code of the tree's model - `tree-drafts.ts`,
  * `issue-tree.ts`, `useIssueTree.ts` - only its types, so Dashboard reads the one rule the tree
@@ -151,12 +154,14 @@ export interface CheckStanding {
 }
 
 /**
- * How a check stands: the page's one reading of a check's state (R10, R17), and the only one -
- * `checkState` is its own fallback and nothing else reads it. The tree's check node holds it
- * (`tree-drafts.ts`'s `addChecks`), so the outline's row, the fold's frontier (`tree-fold.ts`)
- * and the Verification filter's failing count (`presets.ts`'s `filterSignals`) read it, and so
- * does the Verification filter's body (`statement-state.ts`'s `checkReading`): one check never
- * reads Passed on its row and Failed in the filter.
+ * How a check stands on its own: the page's one reading of a check's state (R10, R17), and the
+ * only one - `checkState` is its own fallback and nothing else reads it. The tree's check node
+ * holds it (`tree-drafts.ts`'s `addChecks`), so the outline's row, the fold's frontier
+ * (`tree-fold.ts`) and the Verification filter's failing count (`presets.ts`'s `filterSignals`)
+ * read it, and so does the Verification filter's body (`statement-state.ts`'s `checkReading`):
+ * one check never reads Passed on its row and Failed in the filter. A statement's state reads each
+ * of its checks at the one commit the page names instead (`stateAtCommit`, R6), which starts from
+ * this reading.
  *
  * Each result is read against the commit the server names for its own check - the basis the
  * check compares with, which the result's `commit_stands` answers (`at_basis`, `other_commit`,
@@ -221,6 +226,54 @@ export function newestFirst(results: readonly CheckResult[]): readonly CheckResu
   return [...results].sort((first, second) => newestTimeFirst(first.created_at, second.created_at));
 }
 
+/**
+ * The one commit the page names for the issue's results (root R17): the commit of the newest
+ * result recorded against any check of the issue that still stands, against the words its check
+ * has now, and names one. A result nobody withdrew is the evidence the page reads, so a withdrawn
+ * result names no commit here; nor does one recorded against words its check no longer has
+ * (`check_words_moved`), which the server's `standingCommit` (`results_comparison.go`) gives no
+ * standing; and a result recorded with no commit at all names none either. It is `undefined`
+ * where no result names one.
+ *
+ * The Verification view's body names it, and every statement's state is read at it (R6): each
+ * check of a statement is read there by `stateAtCommit`, which Dashboard's two tiles read too, so
+ * a statement reads Met only where every check that serves it passed at this commit. A check's own
+ * row is not read at it: the row reads each check at the commit the server names for that check
+ * (`checkStanding`, decision 152).
+ */
+export function namedCommit(checks: readonly CheckStateReads[]): string | undefined {
+  const named = checks.flatMap((check) =>
+    standingResults(check).filter(
+      (result) => result.commit_sha !== "" && result.check_words_moved !== true
+    )
+  );
+  return newestFirst(named)[0]?.commit_sha;
+}
+
+/**
+ * How a check stands at the one commit the page names (`namedCommit`), which is how a statement's
+ * state and Dashboard's two tiles read it (R6, root R17), so a tile and the view that draws the
+ * same statements count by one rule. Passed and Failed hold only where the result the check's own
+ * state stands on (`CheckStanding.stands`) was recorded at that commit; at any other commit the
+ * check reads Out of date (`older`), so a pass at its own basis that another check's newer result
+ * at another commit left behind leaves its statement Unknown. So does a check the server says
+ * passed whose pass the read does not hold, since no result read shows it passed at that commit.
+ * Each of the five other states is the check's own, since none of them is Passed or Failed at any
+ * commit.
+ *
+ * Where no commit is named (`commit` is `undefined`: no result that stands names one), nothing is
+ * read against a commit, and the check reads as it stands on its own (`checkStanding`), which is
+ * how every statement read before R6 named the commit.
+ *
+ * A check's own row never reads it: its word is `checkStanding`'s (decision 152), so a check can
+ * read Passed on its row and Out of date here.
+ */
+export function stateAtCommit(standing: CheckStanding, commit: string | undefined): CheckState {
+  if (commit === undefined) return standing.state;
+  if (standing.state !== "passed" && standing.state !== "failed") return standing.state;
+  return standing.stands?.commit_sha === commit ? standing.state : "older";
+}
+
 /** One check of a statement, as the body draws it. */
 export interface CheckReading {
   /** Whether the result its state stands on stands for something at the commit the server names
@@ -229,6 +282,11 @@ export interface CheckReading {
    *  `standsAtBasis`, which `checkStanding` reads too, so this mark and the check's state never
    *  disagree. */
   readonly atBasis: boolean;
+  /** How the check stands at the one commit the page names (`stateAtCommit`), which its
+   *  statement's state reads (R6), or `undefined` where `state` is. The row draws `state`, the
+   *  check's own (decision 152), so a pass at its own basis older than the commit the page names
+   *  reads Passed on its row and Out of date here. */
+  readonly atCommit?: CheckState;
   /** Every other result of the check, newest first, which the body folds into one line with
    *  their count under the latest (a check with 431 results drew a page 149,936 px tall). */
   readonly earlier: readonly TreeNode[];
@@ -249,15 +307,19 @@ export interface CheckReading {
 }
 
 /**
- * How a statement stands, from its checks' own states (R17): Met where every check of it reads
- * Passed, Not met where one reads Failed, and Unknown otherwise, which is where it carries no
- * check, where a check's evidence was recorded against another commit than the one the server
- * names for it, and where a check stands in any of the other five states.
+ * How a statement stands, from how its checks stand at the one commit the page names
+ * (`stateAtCommit`, R6, root R17): Met where every check of it reads Passed there, Not met where
+ * one reads Failed there, and Unknown otherwise, which is where it carries no check, where a
+ * check's result was recorded at another commit than the one the page names, where a check's
+ * evidence was recorded against another commit than the one the server names for it, and where a
+ * check stands in any of the other five states. Dashboard's Met tile, the Verification view's
+ * body and `statementStandings`, the Spec view's reading of the same statements, all read it, so
+ * one statement reads one state in each.
  */
-export function statementState(checks: readonly Pick<CheckReading, "state">[]): StatementState {
+export function statementState(checks: readonly Pick<CheckReading, "atCommit">[]): StatementState {
   if (checks.length === 0) return "unknown";
-  if (checks.every((check) => check.state === "passed")) return "met";
-  if (checks.some((check) => check.state === "failed")) return "not_met";
+  if (checks.every((check) => check.atCommit === "passed")) return "met";
+  if (checks.some((check) => check.atCommit === "failed")) return "not_met";
   return "unknown";
 }
 

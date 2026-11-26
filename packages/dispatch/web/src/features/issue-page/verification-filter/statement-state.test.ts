@@ -4,11 +4,10 @@ import type { Artifact, ArtifactBlock, CheckBlock, IssueDetails } from "../../..
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
-import { blockNodeId } from "../statement-rules";
+import { blockNodeId, namedCommit } from "../statement-rules";
 import { treeRows } from "../tree-fold";
 import {
   COMMIT_CHARACTERS,
-  namedCommit,
   shortCommit,
   statementCounts,
   statementStandings,
@@ -557,8 +556,10 @@ test("a check reads one state on its row, in the fold, in the filter row and in 
 // with the branch the pull request merged into, so a newer result of the second at another
 // commit says nothing of the first. The page read every check against the one commit it names,
 // the newest result's, so a pass at the head read Out of date on its row while its own fact read
-// "Up to date". The commit each check is read at is the one the server names for it, so the row
-// reads what the fact reads.
+// "Up to date". The commit each check's row is read at is the one the server names for it, so the
+// row reads what the fact reads (decision 152). The statement the two serve is read at the one
+// commit the page names (R6): the pass at the head is not at it, so it reads Out of date there and
+// leaves the statement Unknown.
 test("a before_merge pass at the head reads Passed beside another check's newer result elsewhere", () => {
   const atHead = check({
     block_id: "c-one",
@@ -589,11 +590,13 @@ test("a before_merge pass at the head reads Passed beside another check's newer 
     ?.children.find((child) => child.id === blockNodeId(VERIFICATION_SLUG, "c-one"));
   const read = verificationReading({ checks, view: presetView(tree, "verification", "").root });
 
-  // The page names the newest result's commit, and reads no check against it.
+  // The page names the newest result's commit, and reads no check's row against it.
   expect(read.commit).toBe(OTHER_COMMIT);
   expect(row?.state).toBe("passed");
   expect(read.statements[0]?.checks.map((held) => held.state)).toEqual(["passed", "passed"]);
-  expect(read.statements.map((held) => held.state)).toEqual(["met"]);
+  expect(read.statements[0]?.checks.map((held) => held.atCommit)).toEqual(["older", "passed"]);
+  expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
+  expect(statementStandings(tree, checks).get(blockNodeId(SPEC_SLUG, "r1"))?.state).toBe("unknown");
   expect(filterSignals(tree, "").verification).toEqual({ count: 2 });
   // The pass's own fact reads the server's answer, which is the row's.
   const stands = row?.children

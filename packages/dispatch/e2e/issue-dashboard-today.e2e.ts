@@ -2,8 +2,9 @@
  *  each of its parts is what these rows read - the issue's Legion phase and claims from the rows
  *  the sampler writes, the rounds from the handoffs, which open asks wait on the reader and whose
  *  turn each is, which decisions wait for a review, which approval a later version made stale,
- *  which threads hold a write the reader has not read, how each check stands at the pull
- *  request's head, and what each act in place writes. */
+ *  which threads hold a write the reader has not read, how each check stands at the commit the
+ *  page names, and what each act in place writes. The tiles row turns the setting on at its end,
+ *  to read the new page's Verification view by the rule its tiles count by (R6). */
 
 // The DOM contract these rows read, which the Dashboard tasks build (dispatch://INFRA-5702):
 //
@@ -33,11 +34,24 @@
 //   `link`s to what the number counts.
 // - Agents at work: a `list` with one `listitem` per role that holds a claim, in the order the
 //   Legion state gives, each its role and then its role words.
+// - The new page's Verification view, which the tiles row opens at its own address with the
+//   setting on (`e2e/issue-page-option.ts`), is the contract `e2e/issue-page-v.ts` states: each
+//   statement a `[data-verification-card]` with `data-node-id` and `data-statement-state`, and its
+//   word in `span[data-statement-state]`; each check under it a `[data-verification-check]` with
+//   `data-node-id` and `data-node-state`.
 
 import { DISPATCH_WRITING_BOXES } from "@legion/contracts";
 
-import { DECLARED_WORDS, wordsIn } from "../web/src/features/issue-page/page-words";
-import { checkStanding } from "../web/src/features/issue-page/statement-rules";
+import {
+  DECLARED_WORDS,
+  VERIFICATION_WORDS,
+  wordsIn,
+} from "../web/src/features/issue-page/page-words";
+import {
+  blockNodeId,
+  checkStanding,
+  namedCommit,
+} from "../web/src/features/issue-page/statement-rules";
 import {
   getArtifact,
   getAsk,
@@ -70,6 +84,9 @@ import {
   writeRounds,
 } from "./dashboard-seed";
 import { focusThePage } from "./issue-page-g";
+import { openPreset } from "./issue-page-i";
+import { withIssuePage } from "./issue-page-option";
+import { verificationCard } from "./issue-page-v";
 import { expect, type Locator, type Page, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -574,10 +591,12 @@ test("each item is acted on in place and leaves the list and the count", async (
   expect(await page.evaluate(() => performance.timeOrigin), "the page loaded again").toBe(origin);
 });
 
-/** What each tile counts, computed from the reads Dashboard reads: the statements of `coverage`
- *  each of whose checks in `results` (by their `serves`) reads Passed, the checks that read
- *  Passed by `checkStanding`, the children done of the issue read, and the open questions whose
- *  turn is not the reader's. */
+/** What each tile counts, computed from the reads Dashboard reads by R6's rule: the commit the
+ *  page names is the newest standing result's (`namedCommit`), and a check passed at it where it
+ *  reads Passed (`checkStanding`) on a result recorded at that commit, or on its own where no
+ *  result names a commit; the statements of `coverage` each of whose checks in `results` (by
+ *  their `serves`) passed at it; the children done of the issue read; and the open questions
+ *  whose turn is not the reader's. */
 async function countedTiles(key: string): Promise<Record<keyof typeof TILES, TileCount>> {
   const statements = ((await getIssueCoverage(key)).requirements ?? []).map(
     (requirement) => requirement.block_id
@@ -585,7 +604,14 @@ async function countedTiles(key: string): Promise<Record<keyof typeof TILES, Til
   const checks = (await getIssueResults(key)).checks ?? [];
   const serves = (check: object): readonly unknown[] =>
     "serves" in check && Array.isArray(check.serves) ? check.serves : [];
-  const passed = checks.filter((check) => checkStanding(check).state === "passed");
+  const commit = namedCommit(checks);
+  const passed = checks.filter((check) => {
+    const standing = checkStanding(check);
+    return (
+      standing.state === "passed" &&
+      (commit === undefined || standing.stands?.commit_sha === commit)
+    );
+  });
   const issue = await getIssue(key);
   const children = issue.children ?? [];
   const open = (await listIssueAsks(key)).filter((ask) => ask.state === "open");
@@ -629,6 +655,10 @@ test("the four tiles count what the reads hold and open their lists", async ({ p
     ).toEqual(sorted(seed.tiles[tile]));
   }
 
+  /** Each of `hrefs` that links `id`. */
+  const linking = (hrefs: readonly string[], id: string) =>
+    hrefs.filter((href) => new RegExp(`(?:^|[/#=-])${literal(id)}(?:$|[/?#&])`).test(href));
+  const linked: Partial<Record<keyof typeof TILES, readonly string[]>> = {};
   for (const [tile, name] of Object.entries(TILES) as [keyof typeof TILES, string][]) {
     const { ids, whole } = counted[tile];
     const button = progress.getByRole("button", { name: new RegExp(`^${name}`) });
@@ -644,11 +674,61 @@ test("the four tiles count what the reads hold and open their lists", async ({ p
       anchors.map((anchor) => anchor.getAttribute("href") ?? "")
     );
     for (const id of ids) {
-      expect(
-        hrefs.filter((href) => new RegExp(`(?:^|[/#=-])${literal(id)}(?:$|[/?#&])`).test(href)),
-        `the ${name} list does not link ${id} once`
-      ).toHaveLength(1);
+      expect(linking(hrefs, id), `the ${name} list does not link ${id} once`).toHaveLength(1);
     }
+    linked[tile] = hrefs;
+  }
+
+  // R6: the statement whose two checks passed at different commits. Its older check reads Passed
+  // on its own row, and Out of date at the commit the page names, the newer check's: the statement
+  // counts in no Met tile, and that check in no passed tile.
+  const { newer, older, statement } = seed.twoCommits;
+  const olderCheck = ((await getIssueResults(seed.key)).checks ?? []).find(
+    (check) => check.block_id === older
+  );
+  expect(
+    olderCheck === undefined ? undefined : checkStanding(olderCheck).state,
+    `${older} does not read Passed on its own row`
+  ).toBe("passed");
+  expect(counted.met.ids, `${statement} counts as met`).not.toContain(statement);
+  expect(counted.passed.ids, `${older} counts as passed`).not.toContain(older);
+  expect(counted.passed.ids, `${newer} does not count as passed`).toContain(newer);
+  expect(linking(linked.met ?? [], statement), `the met list links ${statement}`).toEqual([]);
+  expect(linking(linked.passed ?? [], older), `the passed list links ${older}`).toEqual([]);
+
+  // The new page's Verification view reads each statement by the same rule: that statement
+  // Unknown while both its checks read Passed on their rows, and Met exactly the statements the
+  // Met tile counts.
+  await withIssuePage(page.context(), READER);
+  await openPreset(page, seed.key, "verification");
+  const specSlug = (await getArtifact(seed.specArtifactId)).slug;
+  const verificationSlug = (await getArtifact(seed.verificationArtifactId)).slug;
+  const card = verificationCard(page, blockNodeId(specSlug, statement));
+  for (const id of [older, newer]) {
+    await expect(
+      card.locator(
+        `[data-verification-check][data-node-id="${blockNodeId(verificationSlug, id)}"]`
+      ),
+      `the Verification view does not draw ${id} Passed on its row`
+    ).toHaveAttribute("data-node-state", "passed");
+  }
+  await expect(card, `the Verification view does not draw ${statement} Unknown`).toHaveAttribute(
+    "data-statement-state",
+    "unknown"
+  );
+  await expect(card.locator("span[data-statement-state]")).toHaveText(
+    VERIFICATION_WORDS.states.unknown
+  );
+  for (const id of ((await getIssueCoverage(seed.key)).requirements ?? []).map(
+    (requirement) => requirement.block_id
+  )) {
+    await expect(
+      verificationCard(page, blockNodeId(specSlug, id)),
+      `the Verification view and the Met tile read ${id} otherwise`
+    ).toHaveAttribute(
+      "data-statement-state",
+      counted.met.ids.includes(id) ? "met" : /^(?:not_met|unknown)$/
+    );
   }
 });
 

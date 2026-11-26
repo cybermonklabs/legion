@@ -112,11 +112,14 @@ test("the children's bar draws a child in review in the progress colour", () => 
   ]);
 });
 
-test("the passed tile counts what checkStanding reads Passed", () => {
+// R6: the passed tile counts the checks that passed at the one commit the page names, the commit
+// of the newest result of the issue, which is the Met tile's rule; a check's own row reads it on
+// its own (`checkStanding`, decision 152).
+test("the passed tile counts the checks that read Passed at the commit the page names", () => {
   const c1 = checkOf("c1");
   const pass = resultOf(c1);
-  // A pass at the check's basis, and a newer fail at another commit: the fail says nothing
-  // about the basis, so the check reads Passed, and the tile counts it.
+  // A pass at the check's basis, and a fail at another commit: the fail says nothing about the
+  // basis, so the check reads Passed on its own row.
   const failElsewhere: CheckResult = {
     ...pass,
     commit_sha: "e".repeat(40),
@@ -125,9 +128,19 @@ test("the passed tile counts what checkStanding reads Passed", () => {
     id: "6f7e8d9c-0b1a-4c2d-9e8f-7a6b5c4d3e2f",
     verdict: "fail",
   };
+  // Recorded before the pass, the fail is not the newest result, so the commit the page names is
+  // the pass's, and the tile counts the check.
+  const failedBefore: CheckBlock = {
+    ...c1,
+    results: [pass, { ...failElsewhere, created_at: "2026-11-25T22:20:00.000001Z" }],
+  };
+  expect(checkStanding(failedBefore).state).toBe("passed");
+  expect(passedTile({ ...RESULTS, checks: [failedBefore] }).counted).toEqual([failedBefore]);
+  // Recorded after it, the fail is the newest result and names its own commit: the pass is Out of
+  // date there, so the tile leaves the check out, while its row still reads Passed.
   const passedHere: CheckBlock = { ...c1, results: [failElsewhere, pass] };
   expect(checkStanding(passedHere).state).toBe("passed");
-  expect(passedTile({ ...RESULTS, checks: [passedHere] }).counted).toEqual([passedHere]);
+  expect(passedTile({ ...RESULTS, checks: [passedHere] }).counted).toEqual([]);
   // A newer fail at the basis is the check's state, whatever pass the server still counts.
   const failHere: CheckBlock = {
     ...c1,
@@ -135,6 +148,73 @@ test("the passed tile counts what checkStanding reads Passed", () => {
   };
   expect(checkStanding(failHere).state).toBe("failed");
   expect(passedTile({ ...RESULTS, checks: [failHere] }).counted).toEqual([]);
+});
+
+// R6: "A result recorded at another commit reads Out of date and makes its statement Unknown."
+// The captured reads with one statement more, r5, served by two checks that each passed at their
+// own basis, a head of one of the issue's two pull requests: c6 at the older head, before every
+// captured result, and c7 at the captured head, after them, which is the commit the page names.
+test("a statement whose two checks passed at different commits is in no Met tile, and its older check in no passed tile", () => {
+  const c1 = checkOf("c1");
+  const pass = resultOf(c1);
+  const olderHead = "e".repeat(40);
+  const statement = "dispatch://ACME-1/spec#b-r5";
+  const servingR5 = (blockId: string, commit: string, at: string, id: string): CheckBlock => ({
+    ...c1,
+    block_id: blockId,
+    compared_with: [
+      ...(c1.compared_with ?? []),
+      { commit: olderHead, kind: "pull_request", pull_request: 8 },
+    ],
+    ref: `dispatch://ACME-1/artifact/verification-md#b-${blockId}`,
+    results: [
+      {
+        ...pass,
+        check_block_id: blockId,
+        commit_sha: commit,
+        commit_stands: { answer: "at_basis" },
+        created_at: at,
+        id,
+      },
+    ],
+    serves: [statement],
+  });
+  const c6 = servingR5(
+    "c6",
+    olderHead,
+    "2026-11-25T22:24:59.000001Z",
+    "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+  );
+  const c7 = servingR5(
+    "c7",
+    pass.commit_sha,
+    "2026-11-25T22:25:00.100001Z",
+    "1b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e"
+  );
+  const results: IssueCheckResults = { ...RESULTS, checks: [...(RESULTS.checks ?? []), c6, c7] };
+  const coverage: IssueCoverage = {
+    ...COVERAGE,
+    requirements: [
+      ...(COVERAGE.requirements ?? []),
+      {
+        block_id: "r5",
+        checks: 2,
+        gaps: [],
+        plan_tasks: 0,
+        ref: statement,
+        text: "The tiles count by one commit.",
+      },
+    ],
+  };
+
+  // Each of the two reads Passed on its own row.
+  expect([c6, c7].map((check) => checkStanding(check).state)).toEqual(["passed", "passed"]);
+  const met = metTile(ISSUE, coverage, results);
+  expect(met.counted.map((requirement) => requirement.block_id)).toEqual(["r1", "r4"]);
+  expect(met.whole).toBe(5);
+  const passed = passedTile(results);
+  expect(passed.counted.map((check) => check.block_id)).toEqual(["c1", "c3", "c5", "c7"]);
+  expect(passed.whole).toBe(7);
 });
 
 test(`a tile's list draws ${TILE_LIST_STEP} entries at a time and says how many are left`, () => {
