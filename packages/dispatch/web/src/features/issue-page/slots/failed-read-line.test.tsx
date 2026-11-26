@@ -292,6 +292,54 @@ test("a failed read's line that leaves with the focus in it gives the focus to w
   }
 });
 
+// A view's reads are refused in any order, and the view draws their lines in an order of its
+// own: a line drawn above the one whose Retry the stage gave the focus takes the focus, so it
+// rests on the view's first line, as where that line had been drawn first. A focus the reader
+// moved elsewhere stays there.
+test("a failed read's line drawn above the Retry the stage gave the focus takes the focus, unless the reader moved it", async () => {
+  const drawn = (statements: Stands, results: Stands) => (
+    <ViewStage>
+      <TwoReadsView results={results} statements={statements} />
+    </ViewStage>
+  );
+
+  (document.activeElement as HTMLElement | null)?.blur();
+  const view = render(drawn("out", "failed"));
+  try {
+    const results = view.getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(results));
+    view.rerender(drawn("failed", "failed"));
+    const [statements] = view.getAllByRole("button", { name: "Retry" });
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the statements' line drawn above the results' left the focus on the results' Retry"
+      ).toBe(statements)
+    );
+  } finally {
+    view.unmount();
+  }
+
+  const control = document.createElement("button");
+  document.body.append(control);
+  (document.activeElement as HTMLElement | null)?.blur();
+  const moved = render(drawn("out", "failed"));
+  try {
+    const results = moved.getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(results));
+    await act(async () => control.focus());
+    moved.rerender(drawn("failed", "failed"));
+    await frames(2);
+    expect(
+      document.activeElement,
+      "the statements' line drawn above took the focus the reader had moved off the Retry"
+    ).toBe(control);
+  } finally {
+    moved.unmount();
+    control.remove();
+  }
+});
+
 /** A view whose row is drawn from a read that answered, under the lines of two other reads that
  *  failed, the first of them while `first`. */
 function RowsUnderLinesView({ first }: { first: boolean }): ReactNode {
