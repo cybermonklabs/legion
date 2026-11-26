@@ -113,7 +113,9 @@ func As(fsys fs.FS, id, procedure, subject string) (fstest.MapFS, error) {
 	return out, nil
 }
 
-// writtenAs is the printed YAML document of a check, written as a check of procedure and subject.
+// writtenAs is the printed YAML document of a check, written as a check of procedure and subject:
+// for no program, without the line "test:" and the lines indented under it, and with each other
+// line as it was, such as time_limit, which the printer writes after the test part.
 func writtenAs(document, procedure, subject string) (string, error) {
 	write := func(key, value string) error {
 		prefix := key + ": "
@@ -135,14 +137,19 @@ func writtenAs(document, procedure, subject string) (string, error) {
 		return "", err
 	}
 	if procedure != "program" {
-		start := strings.Index(document, "test:\n")
-		if start >= 0 {
-			end := strings.Index(document[start:], "claim:")
-			if end < 0 {
-				return "", fmt.Errorf("specgraphtest: the document's test has no claim after it")
+		var kept []string
+		inTest := false
+		for line := range strings.Lines(document) {
+			switch {
+			case line == "test:\n":
+				inTest = true
+			case inTest && strings.HasPrefix(line, " "):
+			default:
+				inTest = false
+				kept = append(kept, line)
 			}
-			document = document[:start] + document[start+end:]
 		}
+		document = strings.Join(kept, "")
 	}
 	return document, nil
 }
