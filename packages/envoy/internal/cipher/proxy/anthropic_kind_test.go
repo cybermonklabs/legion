@@ -12,6 +12,8 @@
 package proxy
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -184,7 +186,7 @@ func newAnthropicRig(t *testing.T) *anthropicRig {
 		}).Mint},
 		// Two strings the release carries to the session unread: the session here is the rig's
 		// own client, which is pointed at the rig's proxy and trusts its authority.
-		AirlockProxyURL: "http://127.0.0.1:13381", AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nanthropic-rig\n-----END CERTIFICATE-----\n",
+		AirlockProxyURL: "http://127.0.0.1:13381", ProxyRoots: func() string { return "-----BEGIN CERTIFICATE-----\nanthropic-rig\n-----END CERTIFICATE-----\n" },
 	}
 	k.machine.Chain = requests.NewChainVerifier(k.st, profileAudience, time.Minute, k.machine.Policy)
 	grants := &rolledGrants{}
@@ -218,9 +220,20 @@ func (k *anthropicRig) grant(t *testing.T, name string) (grantID string, release
 	if err != nil || request.State != "pending" || request.RecordID == nil {
 		t.Fatalf("Create(%s) = %+v, %v; want it pending on a person, as an admin's federation secret is", name, request, err)
 	}
-	decision, err := k.machine.ApplyDecision(t.Context(), *request.RecordID, true, profileOperator)
+	// A person decides only under an approval-page session (requests.Machine.ApplyPageDecision), so
+	// the operator signs in to the page first, as the page's sign-in callback writes a session.
+	secret := make([]byte, 32)
+	_, _ = rand.Read(secret) // crypto/rand.Read never fails.
+	page := store.BrowserSessionRef{Hash: sha256.Sum256(secret), Login: profileOperator}
+	if err := k.st.CreateBrowserSession(t.Context(), store.BrowserSignIn{
+		Hash: page.Hash, Login: profileOperator, Expires: time.Now().Add(time.Hour),
+		Account: store.IssuerSubject{Issuer: "https://accounts.google.com", Subject: "sub-" + profileOperator},
+	}); err != nil {
+		t.Fatalf("sign %s in to the approval page: %v", profileOperator, err)
+	}
+	decision, err := k.machine.ApplyPageDecision(t.Context(), *request.RecordID, true, page)
 	if err != nil || decision.GrantID == "" {
-		t.Fatalf("ApplyDecision(%s) = %+v, %v; want a grant", name, decision, err)
+		t.Fatalf("ApplyPageDecision(%s) = %+v, %v; want a grant", name, decision, err)
 	}
 	release, err := k.machine.Values(t.Context(), decision.GrantID, k.enrollmentID, requests.ReleaseCall{})
 	if err != nil || release.Airlock == nil {

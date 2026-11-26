@@ -35,6 +35,8 @@ func captureAccessLog(t *testing.T) *logBuffer {
 // A request for an API path no route answers writes its line too, so a client calling a route
 // that does not exist, or a route with a method it does not serve, shows among the callers.
 func TestAnUnknownAPIPathWritesOneAccessLogLine(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// captureAccessLog).
 	for _, request := range []struct{ method, path string }{
 		{http.MethodGet, "/api/v1/does-not-exist"},
 		{http.MethodPost, "/auth/whoami"},
@@ -62,6 +64,8 @@ func TestAnUnknownAPIPathWritesOneAccessLogLine(t *testing.T) {
 
 // A sign-in that succeeds names the person it signed in on its callback's line.
 func TestASignInCallbackNamesThePersonItSignedIn(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// captureAccessLog).
 	rig := newSignInRig(t, "")
 	logged := captureAccessLog(t)
 	if response := rig.signIn(t, personClaims("other-group", rigGroup)); response.Code != http.StatusFound {
