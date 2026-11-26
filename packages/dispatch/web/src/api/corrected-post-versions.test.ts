@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { correction, readAroundAFailedRefetch } from "../__tests__/correction-feed";
 import type { Artifact, ArtifactVersionText, DispatchEvent, IssueDetails } from "./types";
 
-// The architect's ruling of 2026-11-20 09:18Z on dispatch://INFRA-1523: an accept names the
+// The architect's decision of 2026-11-20 09:18Z on dispatch://INFRA-1523: an accept names the
 // document version it makes after the comment's body, and the comment's delete renames that
 // version on the server (`renameAcceptedVersion` in `api/comment_delete.go`). Every cached answer
 // that lists the document's versions draws that name - the issue's details (`["issue", key]`), the

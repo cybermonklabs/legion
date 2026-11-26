@@ -1383,7 +1383,7 @@ describe("a document write that superseded a person's approval", () => {
   // `dispatch request-approval`, for a plan review's approval and for a person's approval of a
   // plan alike (a person approves a plan from its document header: the reviews route has no plan
   // check). Each answer below says the document is a plan as Dispatch answers it, role `plan` and
-  // slug `plan-md`, which is what the architect's ruling keys on
+  // slug `plan-md`, which is what the architect's decision keys on
   // (dispatch://INFRA-3327/comment/d19c71f5-6186-44f0-9017-858947155b75). Each row also puts a
   // review `kind` on `superseded_approval`, which Dispatch does not send, and it decides nothing.
   const planUpload = { issue: "DSP-42", name: "plan.md", content: "# Plan\n\nTwo.\n", force: true };

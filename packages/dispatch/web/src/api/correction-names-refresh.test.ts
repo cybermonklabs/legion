@@ -5,8 +5,8 @@ import { eventRefreshTargets } from "./event-refresh";
 import type { RefreshTarget } from "./query-refresh";
 import type { DispatchEvent } from "./types";
 
-// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-19 15:31Z on the names
-// reads: an edit or a delete of a post refreshes every names read (`["reference-targets",
+// R2 and R3 of dispatch://INFRA-1523, and the architect's decision of 2026-11-19 15:31Z on the
+// names reads: an edit or a delete of a post refreshes every names read (`["reference-targets",
 // <addresses>]`) that holds a member naming that post, or the chip and the published name keep its
 // old words. GET /api/v1/reference-targets names a comment or a message by its id, whatever owner
 // its address is written under (the server reads `dispatch://<KEY>/comment/<id>` by the id alone),

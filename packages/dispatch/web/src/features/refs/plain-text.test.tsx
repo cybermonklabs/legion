@@ -74,7 +74,7 @@ function client(): QueryClient {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
 }
 
-// The architect's ruling on the CI row `margin-thread-reply`, which lost its click to a margin
+// The architect's decision on the CI row `margin-thread-reply`, which lost its click to a margin
 // that changed shape between the press's aim and the press: a line sets nothing while it is
 // drawn, so it is drawn once for each change of what it reads and never twice for one - the
 // projection's answer, the store's name landing, the projection read again with it - and a page
@@ -121,7 +121,7 @@ const CORE_2: IssueReferenceSummary = {
   title: "Drain the queue",
 };
 
-// The architect's ruling on `publishedAnswer`, by R8: a batched read that answered for a target
+// The architect's decision on `publishedAnswer`, by R8: a batched read that answered for a target
 // and sent no words for it - another issue's block - has not answered that the target has no
 // name. A plain line reads the target itself, as the painted link to it does, by the same query,
 // so the two read one target by one request and name it in the same words.
@@ -172,7 +172,7 @@ const LONG_ASK = `dispatch://CORE-1/ask/${LONG_ASK_ID}`;
 const LONG_QUESTION =
   "Should the outline keep every folded branch closed after the reader reloads the page twice?";
 
-// The architect's ruling (A) on R8's one rule: a name reads as a link to its target reads it. A
+// The architect's decision (A) on R8's one rule: a name reads as a link to its target reads it. A
 // link titles an ask, a comment, a message and a block by the first 60 characters of its own
 // text and an ellipsis (`linkTitleMax`), so the name the page's batched read publishes for one is
 // cut there too: a plain line fed by the batch, a plain line that reads the ask itself and the

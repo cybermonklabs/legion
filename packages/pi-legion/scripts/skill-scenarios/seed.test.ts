@@ -1032,10 +1032,10 @@ describe("capture-spec", () => {
     expect(JSON.parse(readFileSync(path.join(dir, "agent-texts.json"), "utf8"))).toEqual([]);
   });
 
-  // Catches (dispatch://INFRA-1523, census row X.3, the architect's ruling of 2026-11-21 10:44Z): a
-  // post the agent under test deleted reaches agent-texts.json as an empty, unmarked text, which the
-  // judges score as something the agent said. Dispatch reads a deleted post with its body empty and
-  // its deleted_at set; the capture must leave it out or mark it deleted.
+  // Catches (dispatch://INFRA-1523, census row X.3, the architect's decision of 2026-11-21 10:44Z):
+  // a post the agent under test deleted reaches agent-texts.json as an empty, unmarked text, which
+  // the judges score as something the agent said. Dispatch reads a deleted post with its body empty
+  // and its deleted_at set; the capture must leave it out or mark it deleted.
   test("a post the run deleted reaches the judges neither as an empty text nor unmarked", async () => {
     const spec = dispatch.issue("LWEVAL-2");
     const post = (id: string, body: string, at: string, deleted: boolean) => ({

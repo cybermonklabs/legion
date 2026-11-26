@@ -42,7 +42,7 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // and reviews a pull request of every repository its App reaches, whichever owner's it is, and
 // which repository its own issue names decides the bundle's default directory and nothing else
 // (INFRA-2543 R2). A reading lease in another owner's directory, which this bundle held until
-// that ruling, refused a role the work its App is installed for.
+// INFRA-2543's change, refused a role the work its App is installed for.
 //
 // The one directory whose lease is minted on another account is the one a configured rename puts
 // in the bundle — an owner the App is installed on none of, which a resolving pair moved a

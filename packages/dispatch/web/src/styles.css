@@ -431,7 +431,7 @@ html:has([data-issue-page]) {
   }
 
   /* The new issue page's view row, `[data-filter-row]`, is one line of 35 px at every width
-     (the architect's ruling 5), so its controls take WCAG
+     (the architect's build decision 5), so its controls take WCAG
      2.2's 24 px target (2.5.8) rather than the floor above. A menu or a dialog the row opens
      keeps the floor. Only the new page draws the row (`identity-block.ts`'s
      `FILTER_ROW_ATTRIBUTE`), so the rule takes no `html:has()` scope: under one, each row the
@@ -1099,7 +1099,7 @@ html:has([data-issue-page]) {
 
 /* A link in a node's words is the words' own ink, underlined in the bullets' grey 3 px under the
    text (the prototype's `.body a`), never the app's link blue: the underline says it is a link,
-   and the page's colours are its palette's (part G's R4, ruling 5). */
+   and the page's colours are its palette's (part G's R4, build decision 5). */
 [data-node-words] .dispatch-markdown {
   --tw-prose-links: currentColor;
 }
@@ -1162,7 +1162,7 @@ html:has([data-issue-page]) {
 }
 
 /* A node's ties stand at the end of its words, on their line (the prototype's `.trail` inside
-   its `.body`, ruling 5): the words' own box, and the last paragraph of a drawn text, flow
+   its `.body`, build decision 5): the words' own box, and the last paragraph of a drawn text, flow
    inline, so the trail follows the last word (`NodeRow.tsx`). */
 [data-node-words]:has(> [data-node-trail]) > [data-author-text],
 [data-node-words]:has(> [data-node-trail]) > [data-author-text] > .dispatch-markdown,

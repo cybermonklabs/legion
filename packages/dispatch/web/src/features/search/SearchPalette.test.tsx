@@ -324,7 +324,7 @@ function EventFeed(): ReactNode {
   return null;
 }
 
-// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. The bar
+// R2 and R3 of dispatch://INFRA-1523, and the architect's decision of 2026-11-20 00:23Z. The bar
 // says a search failed only while it holds no answer, so a refetch that fails behind a held one
 // leaves its hits on screen: a post's correction writes its own facts into every answer the cache
 // holds (`markCorrectedPost`). The post's hit carries the edited mark once its author edits it,

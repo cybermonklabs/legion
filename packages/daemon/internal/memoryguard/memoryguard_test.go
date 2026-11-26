@@ -7901,9 +7901,9 @@ func TestMemoryGuardReadsFirstAtAnUrgentReadingWhatTheWaitsLastReadingRead(t *te
 
 // A process's size as of a kill, as INFRA-3531 R1 of spec version 43 asks for it by INFRA-3368's
 // architect's decision of 2026-11-20
-// (dispatch://INFRA-3531/comment/b3d48079-f88b-4b86-838b-dd06ccb53837), which follows the ruling on
-// run r40 at 7512cc38 (dispatch://INFRA-3531/comment/0aa53120-89cf-498a-aac5-75d0727c9991), is the
-// lowest of its reads of the program it runs now, from its last read that finished before the
+// (dispatch://INFRA-3531/comment/b3d48079-f88b-4b86-838b-dd06ccb53837), which follows the decision
+// on run r40 at 7512cc38 (dispatch://INFRA-3531/comment/0aa53120-89cf-498a-aac5-75d0727c9991), is
+// the lowest of its reads of the program it runs now, from its last read that finished before the
 // kill's reading up to the decision's read; where every read of it before the kill is of another
 // program, it is 0; and only a process the guard never read before the kill takes its first read
 // after it. It holds for the sizes as of the stay's first kill, which the order's third tier
@@ -8105,7 +8105,7 @@ func TestMemoryGuardEndsAGrowerTheBandReadBeforeItsExecBeforeTheParentAfterAFall
 
 // Run r40's shape with the fork's exec after the kill's reading (INFRA-3531 R1 of spec version 43;
 // INFRA-3368's architect's decision of 2026-11-20,
-// dispatch://INFRA-3531/comment/b3d48079-f88b-4b86-838b-dd06ccb53837, and ruling of 2026-11-20,
+// dispatch://INFRA-3531/comment/b3d48079-f88b-4b86-838b-dd06ccb53837, and decision of 2026-11-20,
 // dispatch://INFRA-3531/comment/a81dfa03-66d1-4f14-a0c8-d5ad7af91df9: the program a process runs
 // now is the one it runs at the reading that measures its growth, and a size kept as of a kill
 // counts only while it runs that program). The agent holds 1.03 GiB; the probe's parent, pid 700,
@@ -8638,7 +8638,7 @@ func endedPIDs(cs []endedChoice) []int {
 // Run `4g-r15latepool-r206` of the latepool probe at 00405eb3 under gVisor at 4 GiB, the
 // controller pod's shape, replayed with the readings and times of its trace, the sizes its sizes
 // log read at each reading and its kill lines (INFRA-3531 R1 of spec version 45; INFRA-3368's
-// architect's ruling of 2026-11-20T13:55Z on r206, and decision of 14:00Z on the sets the urgent
+// architect's decision of 2026-11-20T13:55Z on r206, and decision of 14:00Z on the sets the urgent
 // rule ends). The shim, pid 99 (7136), and the agent, pid 100 (7142), which holds 1.1 GB, are
 // protected. The probe's parent, pid 700 (7147), grows from 2.08 to 2.41 GB over the band's first
 // readings, the first at 1033 ms, and is flat from 1351 ms. Its three sleeping forks, pids 701 to
@@ -8747,8 +8747,8 @@ func TestMemoryGuardEndsAtAnUrgentReadingEveryGrowerThatStartedDuringTheStayInTh
 
 // At a reading at or above the urgent share in a stay with history, the guard ends a process that
 // grew since the stay's first kill by more than growthNoise, though it grew neither over the window
-// nor since the previous kill (INFRA-3531 R1 of spec version 45; INFRA-3368's architect's ruling of
-// 2026-11-20T13:55Z and decision of 14:00Z, set a). The stay's first table lists pids 300 to 304.
+// nor since the previous kill (INFRA-3531 R1 of spec version 45; INFRA-3368's architect's decisions
+// of 2026-11-20T13:55Z and 14:00Z, set a). The stay's first table lists pids 300 to 304.
 // At the reading at the mark, 3500 MiB, below the urgent share, nothing has grown, and the guard
 // ends pid 303, the largest, which then lingers. Pid 300 steps from 300 to 400 MiB after that kill
 // and pid 301 from 200 to 350 MiB; once pid 303 has exited the guard ends pid 301, the one grown
@@ -8824,8 +8824,8 @@ func TestMemoryGuardEndsAtAnUrgentReadingAProcessThatGrewSinceTheStaysFirstKill(
 // At a reading at or above the urgent share in a stay with history, the guard ends a process that
 // started during the stay and holds memory of its own, though it grew neither over the window nor
 // since the stay's first kill and is not new to the stay; and in the wait after a kill such a
-// process is a reason to act (INFRA-3531 R1 of spec version 45; INFRA-3368's architect's ruling of
-// 2026-11-20T13:55Z and decision of 14:00Z, set b). The stay's first table, at 3200 MiB, lists
+// process is a reason to act (INFRA-3531 R1 of spec version 45; INFRA-3368's architect's decisions
+// of 2026-11-20T13:55Z and 14:00Z, set b). The stay's first table, at 3200 MiB, lists
 // pids 300 and 301; pid 310 starts after it, so no earlier table of the stay lists it, and the
 // band's next two readings read it flat. Pid 300 grows 60 MiB in the band. Where the first reading
 // at the mark is at or above the urgent share, 3800 MiB, the guard ends pid 300, which grew, and
@@ -8879,8 +8879,8 @@ func TestMemoryGuardEndsAtAnUrgentReadingAProcessThatStartedDuringTheStayWithMem
 
 // At a reading at or above the urgent share in a stay with history, the guard does not end a
 // parent that grew in the band before the stay's first kill and has been flat since, as r206's 2.4
-// GB parent (INFRA-3531 R1 of spec version 45; INFRA-3368's architect's ruling of
-// 2026-11-20T13:55Z and decision of 14:00Z: growth since the stay's first kill, not growth during
+// GB parent (INFRA-3531 R1 of spec version 45; INFRA-3368's architect's decisions of
+// 2026-11-20T13:55Z and 14:00Z: growth since the stay's first kill, not growth during
 // the stay, decides). Pid 700 grows from 500 to 800 MiB between the band's first two readings and
 // holds; its child pid 800 steps 50 MiB at the band's last reading, and the guard ends it at the
 // reading at the mark, 3500 MiB. Its child pid 801 steps 64 MiB after that kill, and at the urgent
@@ -8922,14 +8922,14 @@ func TestMemoryGuardDoesNotEndAtAnUrgentReadingAParentThatGrewInTheBandBeforeThe
 
 // At a reading at or above the urgent share in a stay with history, the guard does not end a fork
 // that started during the stay and ranks at nothing, its parent's read size covering its own: it
-// holds no memory of its own (INFRA-3531 R1 of spec version 45; INFRA-3368's architect's ruling of
-// 2026-11-20T13:55Z: "A fork still ranks by its size less its parent's, so a sleeping fork is not
-// ended by this", and decision of 14:00Z, set b). The stay's first table lists the parent, pid 700,
-// of 800 MiB, and its children pids 800 and 801, which run the grow program; pid 701, a fork of the
-// parent that runs its program and reports its 800 MiB as its own, starts after that table, and
-// the band reads it twice. The guard ends pid 800, which grew in the band, at the reading at the
-// mark, 3500 MiB, and pid 801, grown since that kill, at the urgent reading, 3800 MiB, and not pid
-// 701. At 00405eb3 the guard did the same.
+// holds no memory of its own (INFRA-3531 R1 of spec version 45; INFRA-3368's architect's decision
+// of 2026-11-20T13:55Z: "A fork still ranks by its size less its parent's, so a sleeping fork is
+// not ended by this", and decision of 14:00Z, set b). The stay's first table lists the parent, pid
+// 700, of 800 MiB, and its children pids 800 and 801, which run the grow program; pid 701, a fork
+// of the parent that runs its program and reports its 800 MiB as its own, starts after that table,
+// and the band reads it twice. The guard ends pid 800, which grew in the band, at the reading at
+// the mark, 3500 MiB, and pid 801, grown since that kill, at the urgent reading, 3800 MiB, and not
+// pid 701. At 00405eb3 the guard did the same.
 func TestMemoryGuardDoesNotEndAtAnUrgentReadingAForkThatStartedDuringTheStayAndRanksAtNothing(t *testing.T) {
 	pod := newFakePod(t)
 	first := fakeProcess{pid: 800, ppid: 700, start: 6000, args: []string{"python3", "grow.py"}, anon: 100 * mib}
@@ -8964,7 +8964,7 @@ func TestMemoryGuardDoesNotEndAtAnUrgentReadingAForkThatStartedDuringTheStayAndR
 // Where every process the guard may end is new to the stay, an urgent reading ends the window's
 // growers alone beside its first kill, and no process that started during the stay or is new to it
 // with memory of its own (INFRA-3531 R1 of spec version 45; INFRA-3368's architect's decision of
-// 2026-11-20T14:00Z, on the ruling of 13:55Z: sets a and b apply only where the decision also
+// 2026-11-20T14:00Z, on the decision of 13:55Z: sets a and b apply only where the decision also
 // holds a process it may end that is not new to the stay).
 // TestMemoryGuardEndsAtAnUrgentReadingWhereEveryProcessIsNewTheFirstAndTheWindowsGrowersAlone
 // holds no process started during the stay. Here the band holds one reading, 3400 MiB, after one
@@ -9005,8 +9005,8 @@ func TestMemoryGuardEndsAtAnUrgentReadingWhereEveryProcessIsNewTheWindowsGrowers
 // in a stay with history, where it has not grown since the stay's first kill nor over the window,
 // the guard does not end it (INFRA-3531 R1 of spec version 45: "a process started during the stay
 // is one that no earlier process table of the stay listed, by its pid and start time";
-// INFRA-3368's architect's decision of 2026-11-20T14:06Z, on the ruling of 13:55Z and the decision
-// of 14:00Z). The guard's reading before the stay, 3000 MiB, lists pids 300 and 301; pid 310, of
+// INFRA-3368's architect's decision of 2026-11-20T14:06Z, on the decisions of 13:55Z and
+// 14:00Z). The guard's reading before the stay, 3000 MiB, lists pids 300 and 301; pid 310, of
 // 300 MiB, starts after it, and the stay's first reading, 3200 MiB, lists it. Pid 300 grows 50
 // MiB in the band, and the guard ends it at the reading at the mark, 3500 MiB; pid 301 steps 64 MiB
 // after that kill, and the guard ends it at the urgent reading, 3800 MiB, and not pid 310, flat
@@ -9046,8 +9046,8 @@ func TestMemoryGuardDoesNotEndAtAnUrgentReadingAProcessTheStaysFirstTableListedT
 // kill: its parent's read at that reading makes it a fork whether that read came before or after
 // its own (discountFork), and a read that is a fork's read is its size as of that kill
 // (firstReadSince; INFRA-3531 R1 of spec version 43, the order's third tier, and of spec version
-// 46, the sets the urgent rule ends; INFRA-3368's architect's decision of 2026-11-20T08:13Z, item
-// 2, and ruling of 13:55Z, by which a sleeping fork is not ended by the urgent clause). This is the
+// 46, the sets the urgent rule ends; INFRA-3368's architect's decisions of 2026-11-20T08:13Z, item
+// 2, and of 13:55Z, by which a sleeping fork is not ended by the urgent clause). This is the
 // finding of thread PRRT_kwDORFy7ds66JVV0 of review round 4 of cybermonklabs/legion#4273, and the
 // deep review's two probes at 98207b42. Pid 400, python3 pool.py of 300 MiB, its fork pid 401,
 // which runs its program and reports its pages as its own, and pid 402, python3 new.py of 450 MiB,
@@ -9636,7 +9636,7 @@ func TestMemoryGuardEndsAtAnUrgentReadingOfTheWaitTheSetsItReadAgainBeforeItRead
 // kill counts from 0, all that program holds is growth since the kill, and the guard goes on
 // (asOfKill, keepKillSizes, keepGrowth; INFRA-3531 R1 of spec versions 43 and 48: "ends the next
 // process in the same order at once, but only while a process it may end has grown since the
-// previous kill"; INFRA-3368's architect's decision of 2026-11-20T08:13Z, item 1, and its ruling of
+// previous kill"; INFRA-3368's architect's decision of 2026-11-20T08:13Z, item 1, and decision of
 // 2026-11-20 by which a size as of a kill from a fork's read counts from 0 at a reading that finds
 // the process running another program; INFRA-3368's architect, 2026-11-21T08:54Z, item 2, and its
 // rule of 2026-11-21T16:43Z, item 1). This is the finding of thread PRRT_kwDORFy7ds66UWB0 of review
@@ -10112,9 +10112,9 @@ func forkExecsAtTheMark(t *testing.T, last, atMark uint64, exec forkExec) (*harn
 // goes on (asOfKill, keepGrowth; INFRA-3531 R1 of spec version 43: "ends the next process in the
 // same order at once, but only while a process it may end has grown since the previous kill";
 // INFRA-3368's architect's decision of 2026-11-20 that keepKillSizes states: "its first read after
-// the kills only where the guard never read it before them", and its ruling of 2026-11-20 by which
-// a size as of a kill from a fork's read counts from 0 at a reading that finds the process running
-// another program; INFRA-3368's architect, 2026-11-21T08:54Z, item 2). The stay is
+// the kills only where the guard never read it before them", and its decision of 2026-11-20 by
+// which a size as of a kill from a fork's read counts from 0 at a reading that finds the process
+// running another program; INFRA-3368's architect, 2026-11-21T08:54Z, item 2). The stay is
 // forkReadBeforeItsParentAtTheFirstKill's, each smaps read at the mark taking 20 ms: the first
 // reading at the mark, 3800 MiB, at or above the urgent share, reads pid 300 again and ends it, the
 // stay's first kill; the search after that kill reads pid 402, then pid 401, a fork of pid 400 that

@@ -42,11 +42,11 @@ func correctionDeleteRoutes(t *testing.T) map[refs.ItemKind]string {
 	return routes
 }
 
-// R3 of dispatch://INFRA-1523, and the architect's ruling 3 of 2026-11-20 07:48Z: no correction
+// R3 of dispatch://INFRA-1523, and the architect's decision 3 of 2026-11-20 07:48Z: no correction
 // event carries text of another post. The test makes every kind of post a correction deletes - a
 // comment and a message, a reply of each both plain and to a block, a reply to a part of an ask, an
 // anchored comment, a suggestion, an accepted suggestion, whose delete names the version it
-// renamed (renamed_version, the architect's ruling of 2026-11-20 09:18Z), a pending insert
+// renamed (renamed_version, the architect's decision of 2026-11-20 09:18Z), a pending insert
 // suggestion with a comment anchored on the words it inserted, and a comment of a project
 // document with a reply to its first block - each with words of its own. It deletes each one
 // through the route the route table names for its kind (correctionDeleteRoutes), every reply
@@ -63,7 +63,7 @@ func correctionDeleteRoutes(t *testing.T) map[refs.ItemKind]string {
 //
 // The inserted words are no phrase of the insert's post here. The spec holds them, and the comment
 // on them quoted them as document text; the document's history keeps them, that quote included,
-// though the insert's delete takes them out of the live document (the architect's ruling of
+// though the insert's delete takes them out of the live document (the architect's decision of
 // 2026-11-21 19:47Z on dispatch://INFRA-1523). So that comment's events, its anchor refresh and its
 // own delete among them, may carry them; what none may carry is the insert's body.
 //

@@ -63,7 +63,7 @@ func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
 // asks, after it read the rows and before it updates the comments, which is the window a loaded
 // CI runner hit on its own.
 //
-// The shape of the test changed with INFRA-636's ruling that the backfill takes the owner lock of
+// The shape of the test changed with INFRA-636's decision that the backfill takes the owner lock of
 // each row it writes. Before it, the backfill wrote on the pool, so it could pin the comment
 // inside that window and the test ran it there, under the name it had then
 // ("...KeepsABlockIDPinnedAfterItReadTheRow"); now both writers take the row's owner lock - the

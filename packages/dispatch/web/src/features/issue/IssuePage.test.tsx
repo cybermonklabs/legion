@@ -2851,7 +2851,7 @@ test("IssuePage lists a deleted match as deleted and marks an edited one", async
   }
 });
 
-// Census row 7.13 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-21 03:47Z: the
+// Census row 7.13 of dispatch://INFRA-1523, and the architect's decision of 2026-11-21 03:47Z: the
 // list of an id's matches is drawn from Dispatch's refusal, which the page holds as the read's
 // error, not its answer. A match deleted after the list was drawn, and another edited, are
 // corrected there as every other copy of a post is (`markCorrectedPost`): the deleted one draws

@@ -3697,7 +3697,7 @@ package api
 // (This change keeps 275 at the merge that brought main in at c227d04661, which declares 256
 // (#5349's entry above), 275 being above it.)
 // (This change takes 275, the number INFRA-3118's architect allocated to it on 2026-11-24T18:27Z
-// under INFRA's controller's ruling that it allocates contract numbers until #5399 merges, at
+// under INFRA's controller's decision that it allocates contract numbers until #5399 merges, at
 // the merge that brought main in at 5df00e2f13, which declares 250.)
 // (This change takes 248, the lowest number above main's 246 that no other open pull request
 // declares, at the merge that brought main in at 7e75126fae: a reading of `const

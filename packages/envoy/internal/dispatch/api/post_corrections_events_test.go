@@ -339,7 +339,7 @@ func TestEveryEventOfADeletedMessageGivesNoBodyAndKeepsTheReplysFrozenPreview(t 
 }
 
 // A delete event carries no body, whoever's body it is (dispatch://INFRA-1523, the architect's
-// ruling of 2026-11-16, and chk-events: "the payload of each delete event carries no body"). A
+// decision of 2026-11-16, and chk-events: "the payload of each delete event carries no body"). A
 // reply's own creation froze a preview of the post it answers, which the event log keeps. Its
 // delete is a new event, written after the fact, so it writes no new copy of that other post's
 // text: comment.deleted and message.deleted of a reply carry no reply_body and no reply_block

@@ -9,11 +9,12 @@ import { NoTooltips } from "./NoTooltips";
 import { CONTROL_LABELS } from "./page-words";
 
 /**
- * What a child issue's row of the outline draws beside its title (the architect's ruling 5 on
- * R12): how it stands, what blocks it and who holds it, and its key as the tag. Two builds answer
- * one load balancer during a rollout (`e2e/two-builds.multiprocess.e2e.ts`), so this page can read
- * `GET /api/v1/issues/{key}` from a build whose `IssueChild` carries no `claim` at all, and a field
- * read as `null` alone would put every issue with children into the page's error boundary.
+ * What a child issue's row of the outline draws beside its title (the architect's build decision 5
+ * on R12): how it stands, what blocks it and who holds it, and its key as the tag. Two builds
+ * answer one load balancer during a rollout (`e2e/two-builds.multiprocess.e2e.ts`), so this page
+ * can read `GET /api/v1/issues/{key}` from a build whose `IssueChild` carries no `claim` at all,
+ * and a field read as `null` alone would put every issue with children into the page's error
+ * boundary.
  */
 
 /** A child that waits on nothing and that nobody holds: the read leaves `needs` and `claim` out. */

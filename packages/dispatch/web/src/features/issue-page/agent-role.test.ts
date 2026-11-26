@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import { agentRoleWord } from "./agent-role";
 
-// The architect's ruling 6: a row names an agent by its role's word, as the approved
+// The architect's build decision 6: a row names an agent by its role's word, as the approved
 // pictures do, and not by its session's whole title.
 
 test("a Legion role's title reads as the role's word", () => {

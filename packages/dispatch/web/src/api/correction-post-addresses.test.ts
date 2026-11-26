@@ -7,7 +7,7 @@ import { referenceTargetsQuery } from "./queries";
 import { refreshQueries } from "./query-refresh";
 import type { DispatchEvent, ReferenceTarget } from "./types";
 
-// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-19 22:21Z. GET
+// R2 and R3 of dispatch://INFRA-1523, and the architect's decision of 2026-11-19 22:21Z. GET
 // /api/v1/reference-targets names a comment or a message by the id its address writes, whatever
 // owner the address is written under (`refs.TargetNames`, by `text.TargetID`, the id alone), and
 // resolves an id written short among the items of the owner the address names alone

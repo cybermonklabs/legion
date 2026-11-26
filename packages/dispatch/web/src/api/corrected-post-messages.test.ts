@@ -6,7 +6,7 @@ import { messageCorrectionFields } from "../__tests__/message-fixture";
 import { markCorrectedPost } from "./corrected-post";
 import type { MessageRead, MessageWithTrees } from "./types";
 
-// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling 4 of 2026-11-19 22:21Z: a read a
+// R2 and R3 of dispatch://INFRA-1523, and the architect's decision 4 of 2026-11-19 22:21Z: a read a
 // correction refreshes keeps its answer when the refetch fails, so the feed writes the correction's
 // own facts into every copy of the post a surface draws with no error of its own
 // (`markCorrectedPost`). The new issue page draws the issue's messages from `["issue-messages",

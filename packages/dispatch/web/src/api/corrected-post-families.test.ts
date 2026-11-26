@@ -46,7 +46,7 @@ import type {
   ReferenceLink,
 } from "./types";
 
-// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 07:46Z and 07:48Z:
+// R2 and R3 of dispatch://INFRA-1523, and the architect's decision of 2026-11-20 07:46Z and 07:48Z:
 // a correction writes its own facts into every cached family whose answer holds a comment or an
 // issue message, or a copy of one's body or marks (`markCorrectedPost`), so a refetch that fails
 // shows no old words. The list of those families was made by hand and missed two (test round
@@ -1158,7 +1158,7 @@ test("a delete empties the name of an issue's references row whose node is the p
   }
 });
 
-// The architect's ruling of 2026-11-21 03:47Z on census rows 7.13 and 8.54: Dispatch refuses the
+// The architect's decision of 2026-11-21 03:47Z on census rows 7.13 and 8.54: Dispatch refuses the
 // graph read of an id written short that names several items (`ID_AMBIGUOUS`), listing each with
 // its first line, and the page holds that refusal as the query's error, not as its answer. The
 // family's writer writes a correction into it as into an answer (`REFUSAL_FAMILIES`): the post's
@@ -1342,7 +1342,7 @@ test("references to: a delete writes its mark into an answer a refused prefix re
   }
 });
 
-// The architect's ruling of 2026-11-20 07:52Z: an answer composed before a correction cannot take
+// The architect's decision of 2026-11-20 07:52Z: an answer composed before a correction cannot take
 // the correction's mark out. A read already out when the delete arrives was asked before it, so
 // the feed puts the delete's mark over it (`replaceQueryData`): the read is given up in the same
 // step and the list read again, so the answer the held read composed lands nowhere, and the
@@ -1456,7 +1456,7 @@ test("a correction is kept only while a read out at its arrival is out", async (
   client.clear();
 });
 
-// The architect's ruling of 2026-11-20 13:35Z (W3): a kept correction is written into the answer
+// The architect's decision of 2026-11-20 13:35Z (W3): a kept correction is written into the answer
 // of a read it was kept for, and into no other. Here the delete is kept for the read of CORE-1's
 // list, out with no answer yet. CORE-2's list, of the same family, is read and answered while
 // that read is still out: the delete was not kept for it, and its answer is left as it lands.
@@ -1496,7 +1496,7 @@ const SPEC: Artifact = {
   versions: [],
 };
 
-// The architect's ruling of 2026-11-20 13:35Z, item 2: a write made after a correction's event
+// The architect's decision of 2026-11-20 13:35Z, item 2: a write made after a correction's event
 // from an answer read before it. A margin action on a comment (`useMarginItems`) writes its value
 // over the issue's comments as it starts, and puts back the comments it read then where Dispatch
 // refuses it. Here the comment's author deletes it while an accept of its suggestion is out: the

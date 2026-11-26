@@ -1822,8 +1822,8 @@ describe("EnvoyClient", () => {
     expect(message.length).toBeLessThan(400);
   });
 
-  // F6's class (the coordinator's ruling on the review of 81d860a8f7): any answer whose body is not
-  // the listener's error JSON was written by something in its place, a proxy's or a load
+  // F6's class (the coordinator's decision on the review of 81d860a8f7): any answer whose body is
+  // not the listener's error JSON was written by something in its place, a proxy's or a load
   // balancer's page, which can echo the request back, the bearer with it. The error names that
   // body as the Dispatch client names a gateway's page: one line, the bearer and any
   // `Authorization` or `Bearer` value redacted, never the page whole.

@@ -10070,7 +10070,7 @@ describe("executeDispatchTool", () => {
   // stale approval of a plan never tells the agent to request approval again, whoever gave it; it
   // names `dispatch plan-approve`, in `dispatch read` and in the trailer of `dispatch doc-read`
   // alike. The document is a plan as Dispatch answers it, role `plan` and slug `plan-md`, which is
-  // what the architect's ruling keys on
+  // what the architect's decision keys on
   // (dispatch://INFRA-3327/comment/d19c71f5-6186-44f0-9017-858947155b75).
   test("a stale approval a person gave a plan names dispatch plan-approve, not a request", async () => {
     const hash = "cd".repeat(32);

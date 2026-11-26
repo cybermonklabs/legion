@@ -578,8 +578,8 @@ export function lineReading(node: {
   return block === undefined ? { none: true } : { tree: block };
 }
 
-/** The words a chip draws for a target `name` names (ruling 5): a block's first line, as a row
- *  draws one (R1, `firstLineOf`, `drawnLine`), and any other target's name, each cut to a
+/** The words a chip draws for a target `name` names (build decision 5): a block's first line, as a
+ *  row draws one (R1, `firstLineOf`, `drawnLine`), and any other target's name, each cut to a
  *  chip's room (`chipWords`). The page publishes every name as a link to its target reads it
  *  (R8), so a tie's chip (`NodeRow.tsx`), a block or a document drawn as a chip in a node's words
  *  (`row-references.ts`), the Plan chart's needs and serves (`plan-filter/PlanFilterBody.tsx`)

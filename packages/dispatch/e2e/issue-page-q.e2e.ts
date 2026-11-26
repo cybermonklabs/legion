@@ -811,7 +811,7 @@ test("under Decisions a row draws the outline's layout, short names and the six-
       ).toEqual([]);
 
       if (size.width === DESKTOP.width) {
-        // Ruling 1 on a question: the long one a person answered is cut, with more than 20
+        // Build decision 1 on a question: the long one a person answered is cut, with more than 20
         // words held back, and the long one that waits on the reader is drawn whole.
         // The page measures a row's cut once the row stands within a screen of the viewport, in
         // the frames after it comes there, and draws a far row whole until then, so each cut

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import { CHIP_LIMIT, chipWords } from "./node-row-chip";
 
-// The architect's ruling 5: a chip is the target's short name where the model holds one,
+// The architect's build decision 5: a chip is the target's short name where the model holds one,
 // and until then the target's first words, cut at a word within 32 characters.
 
 test("a name that fits is drawn whole, its white space as single spaces", () => {

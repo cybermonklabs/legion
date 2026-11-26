@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// The architect's ruling of 2026-11-20 09:18Z on dispatch://INFRA-1523: the delete of a comment
+// The architect's decision of 2026-11-20 09:18Z on dispatch://INFRA-1523: the delete of a comment
 // whose accepted suggestion named a document version after the comment's body renames that
 // version (renameAcceptedVersion), and no event of the document says so, so a reader holding the
 // document's versions - the web app's cached issue read - kept the old name, the comment's words,

@@ -843,10 +843,10 @@ export const pageWaitingBg = "bg-page-waiting";
  *  and below `md`, `min-h-6` lifts it to 24 px; but below 1280 px the 44 px floor that
  *  `styles.css` gives every control outranks those classes, so the control is 24 px tall from
  *  1280 px up and 44 px below, until the header's own rule lowers that floor. 24 px is the least
- *  a touch target may be (WCAG 2.5.8), and ruling 3 gives the header's controls that size at
- *  390 px because the header there is held to eight lines and 250 px, nine and 280 px while an
+ *  a touch target may be (WCAG 2.5.8), and build decision 3 gives the header's controls that size
+ *  at 390 px because the header there is held to eight lines and 250 px, nine and 280 px while an
  *  approval request waits on the reader, which leaves no room for more (dispatch://INFRA-1196
- *  R13, rulings 3 and 8 of its build-rulings-md). */
+ *  R13, build decisions 3 and 8 of its build-rulings-md). */
 export const pageHeaderControl = `inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center gap-1.5 rounded-[7px] border px-2.5 text-xs leading-5 font-medium md:min-h-0 md:min-w-0 md:py-px border-page-line bg-page-paper text-page-muted ${focusVisibleRing}`;
 /** The filter row's box for words, opened from its control (`IssuePresets.tsx`): the page's
  *  hairline rule, its paper and its ink, the rule in the ink while it holds the caret. */

@@ -333,7 +333,7 @@ test("a pinned message event of a post edited and then deleted reads as deleted,
   }
 });
 
-// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. The Pinned
+// R2 and R3 of dispatch://INFRA-1523, and the architect's decision of 2026-11-20 00:23Z. The Pinned
 // tab draws its cards from the margin's own reads - a pinned comment from the issue's comments, a
 // pinned message from its own read, a pinned event from the issue's events - and says nothing
 // when a refetch of one fails: each keeps what it held, so a post's correction writes its own

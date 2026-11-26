@@ -419,12 +419,12 @@ test("the words filter matches the words a node draws, never its stored source",
   expect(markup.root.children).toEqual([]);
 });
 
-// The architect's ruling of 2026-11-20 07:52Z on dispatch://INFRA-1523: a deleted post's node holds
-// its deleted line as its text, as the model writes it (`tree-drafts.ts`'s `deletedPostLine`): a
-// session named by its short id and the time as stored, which its row draws as neither, since the
-// row draws the page's own deleted line (`DeletedLine`). A deleted post has no words of its own
-// left, so the words filter matches it by none: not by the session's id, the raw time or the
-// line's words. A post nobody deleted still matches by its words.
+// The architect's decision of 2026-11-20 07:52Z on dispatch://INFRA-1523: a deleted post's node
+// holds its deleted line as its text, as the model writes it (`tree-drafts.ts`'s
+// `deletedPostLine`): a session named by its short id and the time as stored, which its row draws
+// as neither, since the row draws the page's own deleted line (`DeletedLine`). A deleted post has
+// no words of its own left, so the words filter matches it by none: not by the session's id, the
+// raw time or the line's words. A post nobody deleted still matches by its words.
 test("the words filter matches a deleted post by no words", () => {
   const session = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" } as const;
   const deletion = { at: "2026-11-05T12:00:00Z", by: session };

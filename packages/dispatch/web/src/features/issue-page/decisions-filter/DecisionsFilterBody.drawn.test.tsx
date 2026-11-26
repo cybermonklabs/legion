@@ -1668,8 +1668,8 @@ test("an entry's parent line reads a reference in its parent's words by its targ
   }
 });
 
-// R5 (c), ruling 5: a decision's row draws no author in its margin, so its focused body says
-// the model holds none, in the page's own words; an agent's margin names it by its role's word
+// R5 (c), build decision 5: a decision's row draws no author in its margin, so its focused body
+// says the model holds none, in the page's own words; an agent's margin names it by its role's word
 // alone, so its focused body gives the session's whole title.
 test("a focused row says Author unknown for a decision with no author, and gives an agent's whole title", async () => {
   const planner: Actor = {

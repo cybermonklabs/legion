@@ -824,7 +824,7 @@ test("with no filter the page is the conversation, each node edited once, folded
       "the answer is drawn as a row of its own"
     ).toEqual([]);
 
-    // A folded branch is where the page draws one line for a node (the architect's ruling on a
+    // A folded branch is where the page draws one line for a node (the architect's decision on a
     // node's one line): that line ends at a sentence end or at 100 characters, always at a word,
     // and is the first line of the words the server stores for the node, cut by the page's own
     // rule (`firstLineOf`). Every other row draws its words whole, so the focused row holds them.
@@ -933,7 +933,7 @@ async function expectPhoneBulletGaps(page: Page, spec: string, where: string): P
 // c-tree, at the widths the tree is read one node at a time at, which is a row of its own:
 // the row above reads the whole tree at 1440 px, and every level it names, every ancestor it
 // walks and every fold it counts is that tree's. This reads the clauses the narrow tree keeps:
-// a drawn row draws its node's words whole (the architect's ruling on a node's one line), and a
+// a drawn row draws its node's words whole (the architect's decision on a node's one line), and a
 // folded branch draws one line - its node's first line, cut at a word by that rule - and how
 // many nodes it holds, in a box that hides none of it. It carries `@phone-only` beside `@phone`
 // because the row above reads the same clauses wherever the tree draws the whole of itself.
@@ -1643,7 +1643,7 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
   });
 });
 
-// The tester's finding at #4205's e3136741, and the architect's ruling of 2026-11-16: while a
+// The tester's finding at #4205's e3136741, and the architect's decision of 2026-11-16: while a
 // row edits a block of a document the model holds whole, its editor opens at that block with
 // the caret there, and the row is no taller than the window, with a scroll of its own, so the
 // page around it stays where it was. At e3136741 Enter on the first requirement of a real issue
@@ -1750,7 +1750,7 @@ test("a row that edits a statement is no taller than the window, and the page ar
   });
 });
 
-// The architect's ruling of 2026-11-18 on the width of a row's editor: its box never scrolls
+// The architect's decision of 2026-11-18 on the width of a row's editor: its box never scrolls
 // sideways. Prose wraps, a run with no space in it too, and a wide block scrolls sideways inside
 // itself alone, as the document's reading view draws it. On a real spec at 390 by 664, Enter on a
 // plain statement opened a box whose words were 414 px wide in a 320 px one. Read in this row's
@@ -1827,7 +1827,7 @@ test("a row's editor on a phone does not scroll sideways, and its words wrap @ph
   });
 });
 
-// The same ruling's other half: a wide block the node itself holds is still whole by its own
+// The same decision's other half: a wide block the node itself holds is still whole by its own
 // scroll, so a box held to its width cuts none of it. A note is the block that holds a table - a
 // statement holds paragraphs alone (`pmdoc/schema/blocks.json`) - and this one names an issue too,
 // whose title is what widened the box at f5d49c35, while the table already scrolled inside itself.
@@ -1925,7 +1925,7 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
   });
 });
 
-// The editor's own part of the same ruling: a collaborator's caret label hung from the caret
+// The editor's own part of the same decision: a collaborator's caret label hung from the caret
 // toward the line's end, so with the caret near a line's end it passed the end of the box and the
 // box scrolled sideways while the caret stood there. Measured at 390 by 664 with a caret drawn
 // as the editor draws one, 1 px inside the box's end, the label ran 195 px past it and the box's
@@ -2725,7 +2725,7 @@ async function expectCrumbTargets(page: Page, where: string): Promise<void> {
   ).toBe(await page.locator("[data-crumb]").count());
 }
 
-// c-tree, the crumb (the architect's ruling on a node's one line): where the tree is read one
+// c-tree, the crumb (the architect's decision on a node's one line): where the tree is read one
 // node at a time, a crumb is the node's first line by that rule, cut at a word, never cut again
 // mid-word by its box, and a line that is a whole sentence carries no ellipsis after its own full
 // stop. The issue's crumb is its key. The Contents entry's half is left to the Contents pane's
@@ -2874,7 +2874,7 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
 
 /** Reads that the outline holds no row the focus left any more, `after` something: no body is
  *  drawn, no row draws its acts and no row has the focused look (`pageFocusedRow`), each of which
- *  the row kept while it was held (the architect's ruling on a press, as amended). */
+ *  the row kept while it was held (the architect's decision on a press, as amended). */
 async function expectRowLetGo(page: Page, after: string): Promise<void> {
   await expect(nodeBodies(page), `a row's body is still drawn after ${after}`).toHaveCount(0);
   await expect(
@@ -2951,7 +2951,7 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     expect(await pinnedBodies(page).count(), "o did not close the pinned body").toBe(0);
 
     // A press on a control of the page outside the outline fires with a row's body open (the
-    // architect's ruling on a press, as amended). The press focuses the control as it goes down,
+    // architect's decision on a press, as amended). The press focuses the control as it goes down,
     // and the body closing as the focus left the outline shortened the page under the pointer:
     // the press ended on something else, and the control never fired. The body stays drawn while
     // the press is held and through its click, and the row is let go once the press has ended.
@@ -4421,7 +4421,7 @@ test("an editable row shows it takes typing under the pointer and at focus, and 
 });
 
 // The tester's finding at #4205's 2ff6850a, on "a node the room keeps read-only draws neither"
-// of the architect's ruling on the cue that a block takes typing: the server admits a document
+// of the architect's decision on the cue that a block takes typing: the server admits a document
 // read-only to a page whose schema it cannot trust with writes, as for a page whose build is out
 // of date, and no block of that document takes typing then. The page here presents schema version
 // 0 on every document socket, which no server admits writable (`admits` in

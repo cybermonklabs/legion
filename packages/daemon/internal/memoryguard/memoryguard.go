@@ -206,7 +206,7 @@
 // INFRA-3368's architect's answer of 2026-11-20T09:24Z): at a reading that finds it no longer
 // one, as where it exec'd after the kill's reading, its size as of the kill is 0, and all that
 // program holds is growth since the kill once it is growthNoise or more, as any growth is
-// (keepGrowth; INFRA-3368's architect's ruling of 2026-11-20,
+// (keepGrowth; INFRA-3368's architect's decision of 2026-11-20,
 // dispatch://INFRA-3531/comment/a81dfa03-66d1-4f14-a0c8-d5ad7af91df9). Only a process the guard
 // never read before the kill takes its first read after it, since a fork reports its parent's
 // shared pages as its own. So a step that lands after a process's last read before the kill's
@@ -3771,7 +3771,7 @@ func lists(t *Table, key procKey) bool {
 // c's executable or arguments become: an argument rewrite, as setproctitle or process.title makes,
 // is not an exec (anotherProgram). By INFRA-3368's architect's decision of 2026-11-20T08:13Z on
 // INFRA-3531 R1 of spec version 43, item 1, that fork test is what "the program it runs now" of its
-// ruling of 2026-11-20 (dispatch://INFRA-3531/comment/a81dfa03-66d1-4f14-a0c8-d5ad7af91df9)
+// decision of 2026-11-20 (dispatch://INFRA-3531/comment/a81dfa03-66d1-4f14-a0c8-d5ad7af91df9)
 // compares, at the reading that measures growth. A process kept holds no size of, one the guard
 // first reads after the kill, has that read kept as its size as of the kill and has not grown at
 // it. growthSinceStayKill keeps such a process's size as of the stay's first kill (atFirstKill) by

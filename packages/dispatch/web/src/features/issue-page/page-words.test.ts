@@ -335,7 +335,7 @@ function sentencesIn(phrase: string): readonly string[] {
   return phrase.split(/(?<=[.!?])\s+/u).filter((sentence) => /\p{L}/u.test(sentence));
 }
 
-// R22 and the architect's ruling on it: what the page draws unasked - a name, a state, a label,
+// R22 and the architect's decision on it: what the page draws unasked - a name, a state, a label,
 // an empty line - is no sentence about the page or about Dispatch. The sentences it may draw
 // unasked are the lines that say what a place, a node or the issue holds or lacks; every other
 // full stop, and any of the words a sentence about the page or Dispatch is made of, fails here.

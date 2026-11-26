@@ -24,7 +24,7 @@ import (
 // workflow role's every directory carries that lease at the role's own permissions and none is
 // read-only; a controller's bundle is the one made of reading leases (appauth's
 // GitHubCredential and ControllerCredential, INFRA-2543). The name authorises nothing — the
-// token in the directory does. A run of before that ruling also wrote `<owner>/<repo>`
+// token in the directory does. A run from before INFRA-2543's change also wrote `<owner>/<repo>`
 // directories under an owner's own; no bundle holds one now, and the one trace of that shape left
 // here is WriteBundle's prune, which removes every subdirectory of an owner's directory such a
 // run left behind.
@@ -81,7 +81,7 @@ func RepositoryName(repo string) string {
 // renames a request is routed by (Bundle.Pairs), one pair a line, `<from> <to>`, each side an
 // `<owner>/<name>` as GitHub spells it, in configured order and ending in a newline. A bundle
 // with no pair to route by holds the file empty, so a root this daemon wrote always has it and a
-// root without one was written before that ruling (sandbox's movedGhDirs).
+// root without one was written before INFRA-2543's change (sandbox's movedGhDirs).
 //
 // It is a line a field rather than YAML because `legion git-credential` reads it on every object
 // git asks a credential for, and a text line needs no decoder; a name GitHub allows holds no

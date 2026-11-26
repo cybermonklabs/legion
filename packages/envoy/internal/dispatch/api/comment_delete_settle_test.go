@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// The architect's ruling of 2026-11-20 22:18Z on dispatch://INFRA-1523, census class V (a): the
+// The architect's decision of 2026-11-20 22:18Z on dispatch://INFRA-1523, census class V (a): the
 // delete of a comment whose pending insert suggestion it rejects writes the document's next
 // version in its own transaction, as the document's settlement would (docs.SettleVersion), so no
 // store built from the latest version gives the insert's words once the delete has committed.
@@ -143,7 +143,7 @@ func latencySpec() string {
 // writes exactly one version, and one left to the settlement writes none, or what is timed would
 // not be the settle; a delete that writes another count fails the benchmark.
 //
-// The architect's rulings on dispatch://INFRA-1523: on 2026-11-20 22:18Z, that the settle should
+// The architect's decisions on dispatch://INFRA-1523: on 2026-11-20 22:18Z, that the settle should
 // add no more than about a second to the delete's p99 on the heaviest fixture, measured in a
 // build Job without -race; on 2026-11-21 15:02Z, that this is a measurement and not a CI
 // assertion, since a wall-clock bound on a shared runner is a test defect (the class

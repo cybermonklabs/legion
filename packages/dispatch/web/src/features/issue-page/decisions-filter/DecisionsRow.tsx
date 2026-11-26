@@ -75,7 +75,7 @@ interface RowPerson {
  * question the person declined, never an answer.
  *
  * A decision draws its words - whole where it waits for the reader's review, cut as an agent's
- * words are anywhere else (ruling 6) - how it stands in the states the page declares
+ * words are anywhere else (build decision 6) - how it stands in the states the page declares
  * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each by the name
  * the body gives it (`DecisionsFilterBody.tsx`) and each a link to that statement. A decision
  * of the review list draws Keep and Change with no focus, as the picture does; no other row
@@ -178,8 +178,8 @@ export function DecisionsRow({
   const press = useRowOnScreen(row, focused);
   // An answered question and an agent's decision are cut at six lines, as an agent's words are
   // on every row; a question that waits on the reader and a decision that waits for their
-  // review are drawn whole, since they are what the reader is asked to read (rulings 1 and 6).
-  // So is the node an address names, which the reader was sent to read: R5 (d) cuts no other
+  // review are drawn whole, since they are what the reader is asked to read (build decisions 1 and
+  // 6). So is the node an address names, which the reader was sent to read: R5 (d) cuts no other
   // words.
   const cuttable =
     entry.kind === "ask"
@@ -350,8 +350,8 @@ export function DecisionsRow({
               `NodeBody`), for a decision as for an ask: who made the node where the margin does
               not say it whole - "Author unknown", with its own shape, where the model holds no
               author, and an agent's whole session title where the margin names it by its role's
-              word alone (ruling 5) - and the control that keeps the body open (R6). The open
-              body also draws the rest of a cut text and what each option says beside its name,
+              word alone (build decision 5) - and the control that keeps the body open (R6). The
+              open body also draws the rest of a cut text and what each option says beside its name,
               in their own places above. */}
           {body ? (
             <div

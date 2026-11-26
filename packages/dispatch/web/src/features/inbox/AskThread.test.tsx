@@ -218,7 +218,7 @@ test("an edited reply in an ask thread marks its byline edited, and one nobody e
   }
 });
 
-// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. A thread
+// R2 and R3 of dispatch://INFRA-1523, and the architect's decision of 2026-11-20 00:23Z. A thread
 // drawn inline reads the ask's shared thread (`["ask-thread", id]`) and says nothing when its
 // refetch fails: it keeps the replies it held, so a reply's correction writes its own facts into
 // the thread the cache holds (`markCorrectedPost`). The edited reply reads as edited, the deleted

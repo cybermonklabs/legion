@@ -472,9 +472,9 @@ test("--from-whoami resumes the feed from whoami's event_head under the cookie i
   ]);
 });
 
-// The coordinator's ruling on the review of 81d860a8f7: a whoami answer with no event_head is named
-// in one line with the credential the probe sent redacted, as the Dispatch client names a body
-// that is not Dispatch's own, never quoted whole: whatever answered can echo the cookie back.
+// The coordinator's decision on the review of 81d860a8f7: a whoami answer with no event_head is
+// named in one line with the credential the probe sent redacted, as the Dispatch client names a
+// body that is not Dispatch's own, never quoted whole: whatever answered can echo the cookie back.
 test("--from-whoami names a refusal that echoes the cookie in one line, the cookie redacted", async () => {
   const directory = scratch();
   const cookieFile = join(directory, "cookie");

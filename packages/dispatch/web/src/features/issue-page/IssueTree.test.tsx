@@ -951,7 +951,7 @@ test("a press on a row draws nothing new until it ends, and then the row opens",
   expect(first.querySelector("[data-node-body]")).toBeNull();
 });
 
-// The architect's ruling on a press, as amended: a press on a control outside the outline - a
+// The architect's decision on a press, as amended: a press on a control outside the outline - a
 // view control, a control of Details, one under the outline - focuses that control as it goes
 // down, and the focused row's body closing then shortened the page under the pointer: the press
 // ended on something else, and the control never fired. The body and the row's acts stay drawn
@@ -1589,7 +1589,7 @@ function composingEscape(target: Element): void {
   );
 }
 
-// The tester's finding at #4205's 2ff6850a, on the ruling that a key that ends an input-method
+// The tester's finding at #4205's 2ff6850a, on the decision that a key that ends an input-method
 // composition acts on nothing: a reader typing in Japanese, Chinese or Korean in a row's editor
 // presses Escape to drop the candidate the input method shows, and that Escape is the input
 // method's. At 2ff6850a the editor's own Escape (`useNodeEditing.ts`'s `leave`) reads the key
@@ -8618,7 +8618,7 @@ test("r and a on the focused row set the page's writer", async () => {
   expect(tree.writer()?.reply).toBeNull();
 });
 
-// The architect's ruling on a node's one line: a crumb draws one line for a node, so it is the
+// The architect's decision on a node's one line: a crumb draws one line for a node, so it is the
 // node's first line (`firstLineOf`), cut at a word, never cut again mid-word by its box; the
 // issue's crumb is its key.
 test("a crumb is its node's first line cut at a word, and the issue's is its key", async () => {
@@ -8784,7 +8784,7 @@ test("a row of the outline waits on the page's read for a reference the page ask
   }
 });
 
-// The architect's ruling on a block chip's line: a tie's chip names a block by the line the names
+// The architect's decision on a block chip's line: a tie's chip names a block by the line the names
 // store projects beside the block's name from what the page published (`KnownReferences.lines`),
 // as a block drawn as a chip in a node's words is named, and projects none of its own. The page
 // hands its rows what it publishes in the render that draws them, the store's lines with it
@@ -11829,7 +11829,7 @@ test("a Retry whose read answers that the id names several items leaves the focu
   }
 });
 
-// Census row 8.54 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-21 03:47Z: the
+// Census row 8.54 of dispatch://INFRA-1523, and the architect's decision of 2026-11-21 03:47Z: the
 // list of an id's matches stays drawn while its read runs again (`Following.settled`), and what it
 // draws then is the refusal the cache holds, which every correction is written into
 // (`markCorrectedPost`), never a list kept from before one. A match deleted while the list is
@@ -12106,7 +12106,7 @@ test("under a view whose slot is not filled, the view's own address and an addre
   }
 });
 
-// The architect's ruling: a block of the spec on the Spec view's own address opens the Spec view
+// The architect's decision: a block of the spec on the Spec view's own address opens the Spec view
 // at that block, never the outline, while the view's slot is not filled. The view is a stand-in,
 // so the case reads the stage's rule apart from what the Spec view draws.
 // It names the spec on purpose: the one view whose address can open a document (`routeDocument`).

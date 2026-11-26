@@ -286,7 +286,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// these two are guarded: tree_closed and tree_parked ask the same of the record above, and
 	// every word below reads facts of the issue itself, so an issue with no recorded root that
 	// a Dispatch link holds still reads dispatch_blocker, which is C1's order (the architect's
-	// ruling of 2026-11-12T07:28Z on dispatch://INFRA-3107).
+	// decision of 2026-11-12T07:28Z on dispatch://INFRA-3107).
 	switch {
 	case recorded && root.AwaitingPerson():
 		return HeldRootAwaitingPerson, []string{issue.Tree}

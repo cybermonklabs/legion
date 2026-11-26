@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The architect's ruling (b) of 2026-11-20 08:08Z on dispatch://INFRA-1523: a suggestion records
+// The architect's decision (b) of 2026-11-20 08:08Z on dispatch://INFRA-1523: a suggestion records
 // the kind of its mark when it is made, in the row's suggestion column (storedSuggestion), and the
 // delete of a suggestion whose mark a browser edit took out of the document reads that kind to
 // tell an insert's quote, which is the comment's own words, from document text (deleteComment).
@@ -193,7 +193,7 @@ func (f suggestionToDelete) deleteAndFindTheWords(t *testing.T) (model.Comment, 
 	}](t, read).Comment, giving
 }
 
-// Row 1 of the ruling. A browser edit changed some of an insert's words under its mark, an anchor
+// Row 1 of the decision. A browser edit changed some of an insert's words under its mark, an anchor
 // refresh moved the anchor's quote to the words as retyped, and a later browser edit took the
 // words and the mark out of the document. The quote is no longer the suggestion's replace_with, so
 // no fact of the row's text tells it from document text; the kind the create stored says it is an
@@ -212,7 +212,7 @@ func TestDeletingAnOrphanedInsertSuggestionABrowserRetypedLeavesNoneOfItsWords(t
 	}
 }
 
-// Row 2 of the ruling. A replace suggestion's quote is document text, which stays in the document
+// Row 2 of the decision. A replace suggestion's quote is document text, which stays in the document
 // whatever the delete does, so the delete of one whose mark a browser edit took out keeps it. Its
 // replace_with is the very text it quotes: that is the one replace whose quote the rule for a row
 // with no stored kind empties, so only the stored kind keeps it.
@@ -250,7 +250,7 @@ func TestDeletingAnOrphanedReplaceSuggestionKeepsItsQuote(t *testing.T) {
 	}
 }
 
-// Row 3 of the ruling. A row made before the create stored the kind holds none, and the delete of
+// Row 3 of the decision. A row made before the create stored the kind holds none, and the delete of
 // its orphaned suggestion takes the rule it had before: the quote goes when it is the suggestion's
 // replace_with, byte for byte, and stays otherwise, as the words of an insert a browser retyped
 // stay, which no fact of such a row tells from document text.
@@ -361,7 +361,7 @@ func TestASuggestionStoresTheKindOfItsMarkAndNoAnswerCarriesIt(t *testing.T) {
 	}
 }
 
-// The architect's ruling of 2026-11-20 16:33Z on dispatch://INFRA-1523: only an accepted insert's
+// The architect's decision of 2026-11-20 16:33Z on dispatch://INFRA-1523: only an accepted insert's
 // words became document text. A pending or a rejected insert's words were only ever the post's
 // own, so the delete empties a suggestion's quote unless an accept decided it, by the kind the
 // create stored, which the accept and the reject keep (commentAction), and on a row with no stored
@@ -431,7 +431,7 @@ func rejectedSuggestion(t *testing.T, kind string, retyped, legacy bool) suggest
 	return suggestionToDelete{handler: handler, database: database, issueKey: issue.Key, comment: comment, quote: quote}
 }
 
-// Row 1 of the ruling of 16:33Z. A browser edit changed some of an insert's words under its mark,
+// Row 1 of the decision of 16:33Z. A browser edit changed some of an insert's words under its mark,
 // an anchor refresh moved the anchor's quote to the words as retyped, and a reject took the words
 // and the mark out of the document. The quote is no longer the suggestion's replace_with, so only
 // the kind the create stored, which the reject kept, says it is the comment's own words, and the
@@ -452,7 +452,7 @@ func TestDeletingARejectedInsertSuggestionLeavesNoneOfItsWords(t *testing.T) {
 	}
 }
 
-// Row 2 of the ruling of 16:33Z. A replace suggestion's quote is document text, which its reject
+// Row 2 of the decision of 16:33Z. A replace suggestion's quote is document text, which its reject
 // left in the document, so the delete of a rejected replace keeps it. Its replace_with is the very
 // text it quotes, the one quote the rule for a row with no stored kind empties, so only the kind
 // the reject kept keeps it.
@@ -484,7 +484,7 @@ func TestDeletingARejectedReplaceSuggestionKeepsItsQuote(t *testing.T) {
 	}
 }
 
-// Row 3 of the ruling of 16:33Z. A row made before the create stored the kind holds none, and the
+// Row 3 of the decision of 16:33Z. A row made before the create stored the kind holds none, and the
 // delete of its rejected suggestion takes the rule the delete of an orphaned one takes: the quote
 // goes when it is the suggestion's replace_with, byte for byte, as the words of an insert no
 // browser retyped are.

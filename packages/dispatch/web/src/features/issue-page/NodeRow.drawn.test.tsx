@@ -77,7 +77,7 @@ import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-
 
 /**
  * What one row of the tree draws, read as a reader reads it (R1, R6, R9,
- * R34, and the architect's ruling 1 on R1).
+ * R34, and the architect's build decision 1 on R1).
  *
  * The row is rendered on its own rather than through `IssueTree`, because what these rows are
  * about is the words and the shapes one node draws: the tree's fold, its keys and its placements
@@ -239,9 +239,9 @@ beforeAll(async () => {
 
 // R9: a node whose author the model holds says who made it by a name and a shape, never by
 // colour alone and never by an id, and two authors of different kinds never share a shape.
-// Ruling 5: a node the model holds no author for draws none on its row, and its opened body
-// says so. Ruling 6: an agent is named by its role's word, and its opened body gives its whole
-// title.
+// Build decision 5: a node the model holds no author for draws none on its row, and its opened body
+// says so. Build decision 6: an agent is named by its role's word, and its opened body gives its
+// whole title.
 test("an author is drawn by a name and a shape of its own kind", () => {
   // A comment, which a person and an agent both write: a decision's body draws Keep and
   // Change, which are writes, and this row is about the words and the shape alone.
@@ -502,7 +502,7 @@ function wordsByMark(region: Element | null | undefined) {
   return marked;
 }
 
-// The architect's ruling of 2026-11-20 07:52Z on dispatch://INFRA-1523: the deleted line
+// The architect's decision of 2026-11-20 07:52Z on dispatch://INFRA-1523: the deleted line
 // ("Deleted by …", "Deleted") and the edited mark (" · edited") a row draws are the page's own
 // words, so each carries the page-chrome mark and is declared in `page-words.ts`, as its rule says;
 // the actor's name, and the time, stay its author's. That holds of the row's words whole and
@@ -731,8 +731,8 @@ test("a plan's requirement row reads requirement with no statement mark, and a s
   });
 });
 
-// R1, ruling 1: a folded branch is the one place a row draws one line of its node: the first
-// line, cut at its first sentence end, and how many nodes it holds. The focus draws its words
+// R1, build decision 1: a folded branch is the one place a row draws one line of its node: the
+// first line, cut at its first sentence end, and how many nodes it holds. The focus draws its words
 // whole, and keeps the count of what the fold still hides after them.
 test("a folded branch draws its first line and its count, and its focus its words", () => {
   const text = "The page draws the whole issue in one reading. Nothing is lost on the way.";
@@ -899,7 +899,7 @@ test("a numbered step keeps its number in a chip and in a folded line", async ()
   }
 });
 
-// R8 over ruling 5: the page publishes a target's name as a link to the target reads it - a
+// R8 over build decision 5: the page publishes a target's name as a link to the target reads it - a
 // comment's words within a link's 60 characters - as every surface reads the target by it, and
 // a chip cuts it to a chip's room where it draws it. So the plain line a row draws beside the
 // chip - here its parent's line - reads the target by that name, and only the chip by the cut.
@@ -943,7 +943,7 @@ test("a plain line beside a chip reads the chip's target by the name a link read
   }
 });
 
-// The architect's ruling on block names, by R8: a block reads in a plain line as a link to it
+// The architect's decision on block names, by R8: a block reads in a plain line as a link to it
 // reads it - the headline of its whole text, cut to a link's 60 characters - so the page
 // publishes the block's whole reading (`tree-drafts.ts`'s `treeContext`). A chip of the block
 // keeps G's own rule (decisions 66 and 88): it is named by the first block of its words that
@@ -1324,7 +1324,7 @@ test("a parent line is its parent's projected first line, a reference in it read
   }
 });
 
-// R1, R9, ruling 1: an answered ask carries the person's answer in its own row,
+// R1, R9, build decision 1: an answered ask carries the person's answer in its own row,
 // and no row of its own: who answered by a name and a shape, what they chose among the ask's own
 // options, and what they wrote, word for word and whole. Here the read sent no reading of what
 // they wrote, so the page parses it, and each paragraph drawn is the paragraph the store holds.
@@ -1811,8 +1811,8 @@ test("the links a row's words draw are out of the tab order", async () => {
   }
 });
 
-// Ruling 5: a tie is a chip at the end of the node's words, named by its target's name cut at a
-// word within 32 characters, and never by an address, a slug or a document's name (R22). A
+// Build decision 5: a tie is a chip at the end of the node's words, named by its target's name cut
+// at a word within 32 characters, and never by an address, a slug or a document's name (R22). A
 // target the reference read has not named yet draws nothing.
 test("a chip names its target by its first words and never by an address", async () => {
   const chips: NodeChip[] = [
@@ -1939,7 +1939,7 @@ test("a chip names a deleted post by its deleted line, and an edited one by its 
   }
 });
 
-// R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 07:52Z, on a chip cut
+// R3 of dispatch://INFRA-1523, and the architect's decision of 2026-11-20 07:52Z, on a chip cut
 // short: a deleted post's chip whose actor is named by one long word is cut right after "Deleted
 // by" (`chipWords`), and that cut still draws the deleted line, in its italic, its opening marked
 // as the page's own words and none of it as the author's.
@@ -2455,10 +2455,10 @@ function layOut(
   };
 }
 
-// Ruling 1, and the reviewer's reading of it: "more · N words" opens the rest of a cut text, so
-// it is drawn only while the words are cut. A row whose body is open draws its words whole, and
-// no control that would open what is already open. The count is written with its thousands
-// separator. The page measures only the words of rows near the viewport, so each
+// Build decision 1, and the reviewer's reading of it: "more · N words" opens the rest of a cut
+// text, so it is drawn only while the words are cut. A row whose body is open draws its words
+// whole, and no control that would open what is already open. The count is written with its
+// thousands separator. The page measures only the words of rows near the viewport, so each
 // row's words are brought near and measured before the row is read.
 test("more is drawn on a cut row and never beside words a body draws whole", async () => {
   const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
@@ -2493,8 +2493,8 @@ test("more is drawn on a cut row and never beside words a body draws whole", asy
     } finally {
       open.unmount();
     }
-    // Ruling 6: a statement is an agent's words as much as its comment is, and is cut the same;
-    // a person's words never are.
+    // Build decision 6: a statement is an agent's words as much as its comment is, and is cut the
+    // same; a person's words never are.
     const statement = renderRow(node({ id: "spec#b-r1", text, type: "requirement" }), {
       body: false,
     });
@@ -2892,8 +2892,9 @@ test("a press on an option of a closed row picks it and opens the row in one", a
   }
 });
 
-// Ruling 5: a child issue's row is one line - its title, then how it stands and what blocks it -
-// and its key is the row's tag, a link to the child's own page; it names no author and no time.
+// Build decision 5: a child issue's row is one line - its title, then how it stands and what blocks
+// it - and its key is the row's tag, a link to the child's own page; it names no author and no
+// time.
 test("a child issue's row draws its title, its facts and its key as the tag", () => {
   const child: IssueChild = {
     active_at: "2026-11-05T12:00:00Z",

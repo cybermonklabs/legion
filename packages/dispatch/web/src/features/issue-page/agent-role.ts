@@ -1,6 +1,6 @@
 /**
- * An agent's name as its role's word, which an issue page's row draws (the architect's ruling 6,
- * R9's "an agent by its role as
+ * An agent's name as its role's word, which an issue page's row draws (the architect's build
+ * decision 6, R9's "an agent by its role as
  * its session's title gives it"): the title `AgentText.author` names it by (`AgentName.tsx`),
  * without the deployment's own word before it and without what it names the role for after it -
  * `Legion architect · ACME-1` reads `architect`, `Planner (issue layout)` reads `Planner`.

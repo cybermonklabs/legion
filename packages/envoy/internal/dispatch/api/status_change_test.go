@@ -1371,7 +1371,7 @@ func TestARefusalBeforeTheKeyedLayerAnswersChanged(t *testing.T) {
 // answer is written, and the answer's own issue as the uninterrupted call answers it (spec v10: a
 // repeat "answers with the entries that the first run's committed steps read, which its recovery
 // point stores"; c-route-fence: "the entries of the first run's steps being the ones those steps
-// read"; the architect's ruling of 2026-11-21 in round 2 of testing). A client such as the Legion
+// read"; the architect's decision of 2026-11-21 in round 2 of testing). A client such as the Legion
 // daemon takes every event of an entry's issue after previous_last_seq up to issue.last_seq as the
 // call's own, so an issue read after another writer touched it hands that writer's events to the
 // call. Here another writer labels a step's issue after the step committed and before each answer:

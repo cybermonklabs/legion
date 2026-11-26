@@ -71,22 +71,23 @@ import { titleReading } from "./tree-drafts";
 
 /**
  * One row of the issue's outline, and the body it opens on focus (R1, R6, R9, R34, and the
- * architect's rulings 1, 4, 5 and 6).
+ * architect's build decisions 1, 4, 5 and 6).
  *
  * A row reads from the left as the prototype's `.card` does: its bullet in its kind's colour,
  * which is also its fold control where it holds nodes, then its words, and at their end the
  * chips that name what the node points at. At the right end of its first line stand the node's
  * kind as one tag where it has a typed kind, then its author and its time in grey, all on one
  * line in a column as wide as that line needs, and under them, on a smaller line, its state
- * where the model holds one (ruling 5). The words of every node start at one left edge, so
+ * where the model holds one (build decision 5). The words of every node start at one left edge, so
  * nothing stands between a bullet and its words; the reader's own words carry an ink rule and
  * its indent, which is the outline's second left edge and its last (R34). At 760 px and below
- * the tag, the author, the time and the state are one small line under the words (ruling 4). A
- * node the model holds no author for draws none on its row, and an agent is named by its role's
- * word: the body says "Author unknown", and gives an agent's whole title (rulings 5 and 6).
+ * the tag, the author, the time and the state are one small line under the words (build decision
+ * 4). A node the model holds no author for draws none on its row, and an agent is named by its
+ * role's word: the body says "Author unknown", and gives an agent's whole title (build decisions 5
+ * and 6).
  *
- * A drawn row draws its node's words whole (ruling 1). An agent's words, of every kind, and an
- * answered question are cut at six lines where more than 20 words would be hidden, and
+ * A drawn row draws its node's words whole (build decision 1). An agent's words, of every kind, and
+ * an answered question are cut at six lines where more than 20 words would be hidden, and
  * "more · N words" opens the rest in place; a row of pictures the sixth line crosses is drawn
  * whole, and a person's words and a question that waits on the reader are never cut. A folded
  * branch is the one place a row draws a single line (R1): its first line, cut at a word by
@@ -222,11 +223,11 @@ export function NodeRow({
   const collapsed = expanded === false;
   const oneLine = collapsed && !body;
   // The prototype's `CUT_LINES`: an agent's words and an answered question may be cut, the
-  // reader's own words and a question waiting on the reader never are (ruling 1). An agent's
-  // words are every kind's - a statement, a check, a plan task, a decision and a result, which an
-  // agent's document or run holds, as much as its comment - so a twenty-line statement opens on
-  // six lines in every view (ruling 6). A person's words, the issue's own and a child's title
-  // are drawn whole.
+  // reader's own words and a question waiting on the reader never are (build decision 1). An
+  // agent's words are every kind's - a statement, a check, a plan task, a decision and a result,
+  // which an agent's document or run holds, as much as its comment - so a twenty-line statement
+  // opens on six lines in every view (build decision 6). A person's words, the issue's own and a
+  // child's title are drawn whole.
   const cuttable =
     !oneLine &&
     editing === undefined &&
@@ -262,9 +263,9 @@ export function NodeRow({
     );
   const edges = node.alsoUnder.length > 0 || node.chips.length > 0 || node.gaps.length > 0;
   // The node's ties, its gap words and a focused branch's count, at the end of its words, on
-  // their line, as the prototype's `.trail` stands inside its `.body` (ruling 5). Where the words
-  // are cut, or being edited, they stand under them instead, beside the control that opens the
-  // rest, so a cut never hides one.
+  // their line, as the prototype's `.trail` stands inside its `.body` (build decision 5). Where the
+  // words are cut, or being edited, they stand under them instead, beside the control that opens
+  // the rest, so a cut never hides one.
   const trail =
     !edges && count === null ? null : (
       <span
@@ -277,7 +278,7 @@ export function NodeRow({
     );
   const trailInWords = !clamped && editing === undefined;
   // "more · N words" opens the rest of a cut text, and closes it again; a body draws the words
-  // whole, so a row whose body is open draws no such control (ruling 1).
+  // whole, so a row whose body is open draws no such control (build decision 1).
   const more = clamp !== undefined && !body;
   return (
     <div
@@ -367,7 +368,8 @@ export function NodeRow({
                 />
               ) : (
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
-                // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
+                // then how it stands, what blocks it and who holds it, small and grey (build
+                // decision 5).
                 <p className="break-words">
                   {/* A title holds no markup: the reading list's `node-row-child-title`. */}
                   <span {...authorText}>{node.text}</span>
@@ -456,9 +458,9 @@ const BULLET_BOX =
  *
  * From 761 px up the row is three columns: the bullet's 18 px, the words, and the column of the
  * kind's tag, the author and the time, which is as wide as that one line needs and never more
- * than two fifths of the row; a state takes a second, smaller line under it (ruling 5). At 760 px
- * and below the bullet's column is 16 px and the tag, the author, the time and the state stand on
- * one small line under the words, the tag first (ruling 4, the 390 px pictures).
+ * than two fifths of the row; a state takes a second, smaller line under it (build decision 5). At
+ * 760 px and below the bullet's column is 16 px and the tag, the author, the time and the state
+ * stand on one small line under the words, the tag first (build decision 4, the 390 px pictures).
  *
  * A phone class is `max-[761px]:`, not `max-[760px]:`: Tailwind writes an arbitrary `max-[N]`
  * as `(width < N)`, so only 761 draws 760 px itself as a phone, as the prototype's query and the
@@ -474,7 +476,7 @@ export const NODE_ROW_LAYOUT = {
    *  kept at the column's middle, where the guide of the level under it hangs. */
   foldControl: `${BULLET_BOX} cursor-pointer max-[761px]:-ml-1 max-[761px]:w-6 max-[761px]:justify-start max-[761px]:pl-[8.5px]`,
   /** The box the row's parts stand in (the prototype's `.card`). Below 768 px the words stand
-   *  6 px past the bullet's column, as the prototype's do (the architect's ruling on this part's
+   *  6 px past the bullet's column, as the prototype's do (the architect's decision on this part's
    *  pull request). Not named `card`: `text-on-background.test.ts` reads that name as
    *  `classes.ts`'s `card` ground, which a row is not drawn on. */
   box: "relative grid min-w-0 grid-cols-[18px_minmax(0,1fr)_fit-content(40%)] gap-x-2 rounded-md py-0.5 pr-1.5 max-[768px]:gap-x-1.5 max-[761px]:grid-cols-[16px_minmax(0,1fr)] max-[761px]:pr-1",
@@ -703,10 +705,11 @@ export const NODE_EDITED_MARKS: Readonly<Record<string, string>> = freeze({
  * node's kind as one tag - its word and its shape, in its colour - where it has a typed kind,
  * then who made it, by a name and a shape, and when, in the page's short form, all on one line;
  * and under them its state, by a word and a shape, with the one word a decision the model marks
- * unsure says of itself, on a second, smaller line (ruling 5). All of it is grey but the tag, the
- * reader's own name and a state that asks something of the reader. A node the model holds no
- * author for draws none here: its body says so (`NodeBody`, ruling 5). From 761 px up it is a
- * column as wide as its first line; on a phone it is one small line under the words (ruling 4).
+ * unsure says of itself, on a second, smaller line (build decision 5). All of it is grey but the
+ * tag, the reader's own name and a state that asks something of the reader. A node the model holds
+ * no author for draws none here: its body says so (`NodeBody`, build decision 5). From 761 px up it
+ * is a column as wide as its first line; on a phone it is one small line under the words (build
+ * decision 4).
  */
 export function RowMargin({
   author,
@@ -729,7 +732,7 @@ export function RowMargin({
   const agentText = useAgentText();
   if (node.child !== undefined) {
     // A child issue's tag is its key, a link to its own page; its row names no author, no time
-    // and no state, which its facts after its title say (ruling 5, the prototype's `.kr`).
+    // and no state, which its facts after its title say (build decision 5, the prototype's `.kr`).
     return (
       <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
         <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
@@ -780,7 +783,7 @@ export function RowMargin({
                   {...authorText}
                 >
                   {/* An agent by its role's word; its opened body gives the whole title
-                      (ruling 6). */}
+                      (build decision 6). */}
                   {author.kind === "agent" ? agentRoleWord(author.name) : author.name}
                 </span>
               </span>
@@ -1062,8 +1065,8 @@ export function RowActs({
  * A person's answer to an ask, which is part of the ask and no node of its own
  * (R1): the page's word for it, who answered by
  * a name and a shape as every author is drawn (R9), what they chose where the ask offers no list
- * to mark it in, and what they wrote, whole (R9, ruling 1). The reader's own answer carries the
- * ink rule their own words carry (R34).
+ * to mark it in, and what they wrote, whole (R9, build decision 1). The reader's own answer carries
+ * the ink rule their own words carry (R34).
  *
  * What they wrote is drawn as the row draws its node's words (`RowText`): by the renderer, from
  * the server's reading of it, and where the read sent none from the page's own parse of it. What
@@ -1165,7 +1168,7 @@ function AnswerChoices({
 /** Every edge of the node that is not the spine, and every gap on it, at the end of its words
  *  (the prototype's `.trail`): the chips naming what it also sits under and what it points at,
  *  each with the page's word for its tie where the model gives one, and the one word each gap is
- *  known by, which its body says in full (R4, R10, ruling 5). */
+ *  known by, which its body says in full (R4, R10, build decision 5). */
 export function NodeEdges({
   node,
   tabStops = false,
@@ -1200,8 +1203,8 @@ export function NodeEdges({
 }
 
 /**
- * One tie of the node that is not the spine, on the node's own line (ruling 5): the page's word
- * for the tie where it has one, then the target by its name, cut as a chip's words are
+ * One tie of the node that is not the spine, on the node's own line (build decision 5): the page's
+ * word for the tie where it has one, then the target by its name, cut as a chip's words are
  * (`chipName`): a block's first line, and at a word within 32 characters, as the link a reader
  * follows to it; a whole document by the page's word for it (`ReferenceNameReading.chipWord`),
  * since a chip never draws a document's file name (decision 39), though the page publishes the
@@ -1353,8 +1356,8 @@ function Chip({
 
 /**
  * What the focused node's body adds to its row (R6): who made it where the row draws no author
- * - "Author unknown", with its own shape, where the model holds none (R9, ruling 5) - the facts
- * of a check and of a result (`NodeFacts.tsx`), the gaps said in full, the two counts the
+ * - "Author unknown", with its own shape, where the model holds none (R9, build decision 5) - the
+ * facts of a check and of a result (`NodeFacts.tsx`), the gaps said in full, the two counts the
  * coverage read carries for a requirement, what a reader does with a decision
  * (`DecisionActions.tsx`), and the control that keeps the body open once the focus leaves it.
  * The node's words are the row's own, drawn whole there with the rest of a cut text once the
@@ -1411,10 +1414,10 @@ function NodeBody({
   );
 }
 
-/** Who made the focused node, in its body (R6, R9, ruling 5): "Author unknown", with its own
- *  shape, where the model holds no author, and an agent's session's whole title where the row
- *  names the agent by its role's word alone (ruling 6); nothing for any other author, whom the
- *  row already names whole. */
+/** Who made the focused node, in its body (R6, R9, build decision 5): "Author unknown", with its
+ *  own shape, where the model holds no author, and an agent's session's whole title where the row
+ *  names the agent by its role's word alone (build decision 6); nothing for any other author, whom
+ *  the row already names whole. */
 export function BodyAuthor({
   author,
 }: {
@@ -1478,9 +1481,9 @@ export function KeepOpen({
 }
 
 /**
- * The control under cut words (ruling 1): "more · N words", `hidden` the words the cut holds
- * back, which draws the rest in place, and "less" once `opened` holds. A press on it leaves the
- * focus where it is: focusing the row would draw the words whole under the pointer and move the
+ * The control under cut words (build decision 1): "more · N words", `hidden` the words the cut
+ * holds back, which draws the rest in place, and "less" once `opened` holds. A press on it leaves
+ * the focus where it is: focusing the row would draw the words whole under the pointer and move the
  * control before the press ends, so the press would land on nothing. It is out of the tab order
  * unless `tabStops` holds. A row of the outline and `CutWords` draw it, and so can any view that
  * cuts a node's words; `className` adds the place it takes in its own box.

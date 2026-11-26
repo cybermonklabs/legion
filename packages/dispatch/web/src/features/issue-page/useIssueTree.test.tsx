@@ -1970,7 +1970,7 @@ test("a cited comment's edit reads the names once more, and the page publishes i
   }
 });
 
-// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-19 22:21Z: a names
+// R2 and R3 of dispatch://INFRA-1523, and the architect's decision of 2026-11-19 22:21Z: a names
 // read (`["reference-targets", <addresses>]`) that a post's edit or delete refreshes keeps the
 // answer it held while the refetch is out, and TanStack keeps that answer when the refetch fails.
 // So the feed writes the correction's own facts into the answer it keeps (`markCorrectedPost`):

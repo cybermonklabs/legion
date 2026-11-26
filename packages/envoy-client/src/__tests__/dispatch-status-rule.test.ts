@@ -411,7 +411,7 @@ describe("dispatch issue-update with an option of the status change", () => {
   });
 
   // A call that names no owner keeps every other problem of its rule in the refusal, for every
-  // command (the architect's ruling of 2026-11-21 on this change's CLI). dispatch issue-update's
+  // command (the architect's decision of 2026-11-21 on this change's CLI). dispatch issue-update's
   // issue is a field its schema requires, so with neither --issue nor LEGION_ISSUE the reason's and
   // the options' parts must still be named beside the missing issue: supplying the issue alone
   // leaves both, and the next call is refused again for them.

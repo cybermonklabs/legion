@@ -251,7 +251,7 @@ func hydrateThreadReplyBlocks(ctx context.Context, q queryer, who model.Actor, r
 // event carries it: every field that routes the event and says which block it is - its node id,
 // which names the kind and the id of the item holding it, its reference, its id, whether it is
 // removed and the quoted post's marks - and no text. A delete event carries no text of another
-// post (dispatch://INFRA-1523, the architect's ruling of 2026-11-19): the reply's creation froze
+// post (dispatch://INFRA-1523, the architect's decision of 2026-11-19): the reply's creation froze
 // a preview of its parent, which the event log keeps, and the delete is a new event written after
 // it, so it writes no new copy of that text. Both correction builders apply it on a delete
 // (commentCorrectionPayload, messageCorrectionEvent), and a message's delete leaves out

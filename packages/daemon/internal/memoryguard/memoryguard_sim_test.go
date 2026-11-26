@@ -38,7 +38,7 @@ import (
 //     more than growthNoise, also where no other reason to act holds in the wait after a kill; and
 //     by the urgent rule it ends neither a sleeping fork that ranks at nothing nor the parent, flat
 //     since before the stay's first kill (INFRA-3531 R1 of spec version 45; INFRA-3368's
-//     architect's ruling of 2026-11-20T13:55Z on `4g-r15latepool-r206` at 00405eb3, and decisions
+//     architect's decision of 2026-11-20T13:55Z on `4g-r15latepool-r206` at 00405eb3, and decisions
 //     of 14:00Z and 14:06Z: a process started during the stay is one the stay's first table did not
 //     list). Its cases are started, since, fork and parent (checkUrgent).
 //
@@ -116,7 +116,7 @@ import (
 //
 // Those are the first simSeeds seeds, which run as they did before the burst seeds. The
 // simBurstSeeds seeds after them are burst seeds (planBurst), r206's shape, by draws of their own
-// (INFRA-3368's architect's ruling of 2026-11-20T13:55Z: "a simulation case of a burst of growers
+// (INFRA-3368's architect's decision of 2026-11-20T13:55Z: "a simulation case of a burst of growers
 // that start together inside the band and step together after an urgent reading"): the parent
 // fills its block over the band's first readings, its three sleeping forks start during the stay,
 // and the six growers start together, in the band or after its last reading, and step 64 MiB
@@ -447,7 +447,7 @@ func (s *simRun) planRise(seed uint64) {
 }
 
 // planBurst makes a burst seed's run, the shape of `4g-r15latepool-r206` at 00405eb3 (INFRA-3368's
-// architect's ruling of 2026-11-20T13:55Z: "a simulation case of a burst of growers that start
+// architect's decision of 2026-11-20T13:55Z: "a simulation case of a burst of growers that start
 // together inside the band and step together after an urgent reading"), by a stream of draws of
 // the seed's own. At the guard's first reading, in the band, the parent holds 60 MiB or more less
 // than its block, and it fills the block in three equal steps 30 to 400 ms into the run, as r206's
@@ -918,7 +918,7 @@ func (s *simRun) check() []simFailure {
 }
 
 // checkUrgent judges reading i, at or above the urgent share and one the guard decides at, by R1's
-// urgent clause of spec version 45 (INFRA-3368's architect's ruling of 2026-11-20T13:55Z on r206
+// urgent clause of spec version 45 (INFRA-3368's architect's decision of 2026-11-20T13:55Z on r206
 // and decisions of 14:00Z and 14:06Z), in the stay whose first reading is stay and whose first kill
 // was at reading stayFirst, -1 before it; held is whether the guard decides at i on the band's held
 // reads. Where the decision holds a process the guard may end that is not new to the stay, the

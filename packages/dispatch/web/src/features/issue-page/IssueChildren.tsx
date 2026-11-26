@@ -10,10 +10,10 @@ import { issueStatusWord } from "./page-words";
 
 /**
  * What a child issue's row of the outline draws beside its title (R12, the
- * architect's ruling 5, the prototype's `.kr`): the children are one group of rows of the outline,
- * each child a row the reader focuses and moves through as any other, and no section above the
- * outline. The row's words are the child's title (`tree-drafts.ts`'s `addChildren`); after them,
- * in the margin's small grey, how it stands, what blocks it and who holds it
+ * architect's build decision 5, the prototype's `.kr`): the children are one group of rows of the
+ * outline, each child a row the reader focuses and moves through as any other, and no section above
+ * the outline. The row's words are the child's title (`tree-drafts.ts`'s `addChildren`); after
+ * them, in the margin's small grey, how it stands, what blocks it and who holds it
  * (`ChildIssueFacts`); and its key is the row's tag, a link to its own page (`ChildIssueTag`).
  * The header keeps the children's bar and both counts (R13).
  *

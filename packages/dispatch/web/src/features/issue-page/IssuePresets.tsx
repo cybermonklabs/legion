@@ -34,8 +34,8 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * controls, Conversation - the page with no view on - then Spec, Verification, Plan and
  * Decisions, each with its signal; and Keys at its right end.
  *
- * The row is one line at every width (the architect's ruling 5, the 1440 and 390 px pictures).
- * At 760 px and below the row is the one control and Outline,
+ * The row is one line at every width (the architect's build decision 5, the 1440 and 390 px
+ * pictures). At 760 px and below the row is the one control and Outline,
  * which stay at the top of the screen while the header scrolls away (`identity-block.ts` finds
  * the row by `FILTER_ROW_ATTRIBUTE`), and Keys is not drawn.
  *

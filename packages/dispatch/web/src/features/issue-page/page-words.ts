@@ -421,7 +421,8 @@ export const VERIFICATION_WORDS = joinWords("VERIFICATION_WORDS", {
   commit: "Commit",
   /** The count of the statements that carry a check: "6 of 13 covered" (R17, R22). */
   covered: "covered",
-  /** After the count of a check's other results, which the line opens in place (ruling 6). */
+  /** After the count of a check's other results, which the line opens in place (build
+   *  decision 6). */
   earlier_many: "earlier results",
   earlier_one: "earlier result",
   /** After the count of the checks the coverage read counts for a statement beyond those the
@@ -448,7 +449,7 @@ export const VERIFICATION_WORDS = joinWords("VERIFICATION_WORDS", {
 export type StatementState = keyof typeof VERIFICATION_WORDS.states;
 
 /**
- * The words the Plan filter's body draws of its own (dispatch://INFRA-1196 R26, ruling 5 of
+ * The words the Plan filter's body draws of its own (dispatch://INFRA-1196 R26, build decision 5 of
  * build-rulings-md, `plan-filter/`): the two ways it draws the plan, which its one control
  * switches between, the chart's two headings, the line for tasks that need each other, and the
  * mark of a bar whose task holds no size.
@@ -988,7 +989,7 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   github_checks: "checks",
   /** The labels of the issue's three sentences, each before its sentence in the order the spec's
    *  summary holds them: what the issue is, why it matters, and what is true when it is done
-   *  (R8, the architect's ruling 5, the approved pictures' "In short"). */
+   *  (R8, the architect's build decision 5, the approved pictures' "In short"). */
   in_short_what: "What it is:",
   in_short_why: "Why it matters:",
   in_short_done: "Done when:",
@@ -1014,7 +1015,7 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   pinned: "Pinned",
   /** The count that ends the header's properties line when the issue's labels do not all fit
    *  on it, after the number of labels left over: "+1 label", "+17 labels". It opens Details
-   *  at its Labels row, which lists every label (R13, the ruling of
+   *  at its Labels row, which lists every label (R13, the architect's decision in
    *  dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4). */
   labels_left_one: "label",
   labels_left_many: "labels",
@@ -1067,7 +1068,7 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   reject: "Reject",
   /** Opens, in place, the rest of the words a row cut at six lines, and closes them again: an
    *  agent's words and an answered question are cut where more than 20 words would be hidden,
-   *  and the control says how many, "more · 80 words" (the architect's ruling 1 on R1, the
+   *  and the control says how many, "more · 80 words" (the architect's build decision 1 on R1, the
    *  prototype's `CUT_LINES`). The count is the node's own and carries
    *  `AUTHOR_TEXT_ATTRIBUTE`. */
   read_more: "more",

@@ -1076,7 +1076,7 @@ const KEPT_EDIT_LINE =
 // its author then deletes - holding words of the reader's own, or a save Dispatch refused - is
 // not left open on an empty body: the comment reads as deleted where its body was, and the edit
 // waits as the reader's own until Discard my edit drops it where it is kept. By the architect's
-// ruling of 2026-11-20 07:52Z the edit is announced and not drawn: an edit is mostly the words of
+// decision of 2026-11-20 07:52Z the edit is announced and not drawn: an edit is mostly the words of
 // the comment it was written over, so the card says under the deleted line that the unsaved edit
 // is kept in this browser, offers Copy my edit and Discard my edit and nothing else - no editor,
 // no Save - and draws no word of the edit, and so none of the comment the edit was written over.
@@ -1416,8 +1416,8 @@ test("a margin reply's quote of a passage of an edited post marks the post as ed
   }
 });
 
-// R3 of dispatch://INFRA-1523 and the architect's ruling of 2026-11-20 05:13Z: an edit kept under a
-// comment its author deleted holds no word of the comment the edit was written over. An edit that
+// R3 of dispatch://INFRA-1523 and the architect's decision of 2026-11-20 05:13Z: an edit kept under
+// a comment its author deleted holds no word of the comment the edit was written over. An edit that
 // adds to the comment's own words, rather than replacing them, keeps those words in its draft, and
 // the card drew them under the deleted line as "Your edit is kept here: Root comment Also Friday."
 // (test round at 869d340e). The comment's words are not drawn anywhere in the card; Discard my edit

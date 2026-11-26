@@ -2,7 +2,7 @@ package api
 
 import "testing"
 
-// A delete event carries no text of another post (dispatch://INFRA-1523, the architect's ruling
+// A delete event carries no text of another post (dispatch://INFRA-1523, the architect's decision
 // of 2026-11-19 22:21Z), and a block reply's delete event still says which block of its parent
 // the reply names: message.deleted and comment.deleted of such a reply carry reply_block with its
 // node and its id and an empty text, beside the fields that route the reply, and message.deleted

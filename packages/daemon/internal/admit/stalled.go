@@ -356,7 +356,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 // the per-tree refusal of tellStalledTrees and the claim term of the liveness clause
 // (lineCanMove), which R5 writes in the same words. A worker the daemon names silent makes no
 // phase change and no status change, so it frees no slot and keeps the line moving no more than
-// an idle claim does (the architect's ruling on this change).
+// an idle claim does (the architect's decision on this change).
 //
 // Why the daemon's own judgement and not one of this measure's: the claim is named silent by
 // workflow.SilentPhaseWorker over the role's run, with the bound the silence handler and the
@@ -591,7 +591,7 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //
 //  1. an issue waiting on a person (record.Issue.AwaitingPerson, a root in awaiting_person,
 //     answered or not) waits by design wherever the walk placed it: it keeps its slot while it
-//     waits (record.KeepsSlot, the ruling on dispatch://INFRA-1909), and once answered it
+//     waits (record.KeepsSlot, the decision in dispatch://INFRA-1909), and once answered it
 //     stands in the line as well, so neither membership says anything of why it stands still;
 //  2. an entry of the waiting line waits by design exactly where it holds no slot
 //     (record.LineEntry.Holds): that is the cap's own hold, in both its shapes — a start written
@@ -651,7 +651,7 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 //     that waits exactly as it should;
 //   - an issue of this project that no tree of this daemon runs, through a blocked-by link,
 //     which is a blocker like one in another project and waits by design for the same reason
-//     (the architect's ruling on cybermonklabs/legion#3715). The controller still sees that
+//     (the architect's decision on cybermonklabs/legion#3715). The controller still sees that
 //     wait: the waiter stands in the state's `admission.waiting`, its `waitingLine` kind
 //     `waiting_on_issue`, in `admission.blocked`, and in the `blocked` list of the controller's
 //     tick notice, which the daily report reads.
@@ -667,7 +667,7 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 // filed and left unreleased — is none of these: releasing that child is the tree's own work,
 // which nothing but that architect does. Such a waiter is answered false here and read by
 // waitsByDesign as every other wait of the daemon's is, so a project that fails every term of
-// lineCanMove names its tree (the architect's ruling on cybermonklabs/legion#3715).
+// lineCanMove names its tree (the architect's decision on cybermonklabs/legion#3715).
 func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 	entry, stands := h.line[issue.Key]
 	if !stands || entry.Kind != record.LineWaitingOnIssue || len(entry.Waits) == 0 {

@@ -3,8 +3,8 @@ import { referenceTargetKind } from "../refs/target-id";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 
 /**
- * The words a chip names its target by, on the node's own line (the architect's ruling 5): the
- * target's short name where the model
+ * The words a chip names its target by, on the node's own line (the architect's build decision 5):
+ * the target's short name where the model
  * holds one, and until then the target's first words, cut at a word within `CHIP_LIMIT`
  * characters, the ellipsis included. No address, slug or document name is drawn in its place
  * (R22): a target with no words of its own answers `""`, and its chip draws nothing to name it by.
@@ -36,11 +36,11 @@ export function chipWords(name: string): string {
 
 /**
  * The page's word for the whole document `route` names, or undefined where it names no whole
- * document (part G's R4, ruling 5): a document's own name is its file name, which no chip draws
- * (decision 39), so a chip names a document by the page's word for one, and the spec of `issue`,
- * the issue the row belongs to, by the Spec's name. This is the rule the page's store names a
- * document by (`tree-drafts.ts`'s `documentWord`), as far as an address and the row's issue say
- * it: another issue's spec is a document as any other is, since another issue's document plays
+ * document (part G's R4, build decision 5): a document's own name is its file name, which no chip
+ * draws (decision 39), so a chip names a document by the page's word for one, and the spec of
+ * `issue`, the issue the row belongs to, by the Spec's name. This is the rule the page's store
+ * names a document by (`tree-drafts.ts`'s `documentWord`), as far as an address and the row's issue
+ * say it: another issue's spec is a document as any other is, since another issue's document plays
  * no part of this one, and which of the issue's own documents plays the plan's, Verification's
  * or the decisions' part is the issue read's answer alone, so each is a document here. A tie's
  * chip and one in place in a node's words draw this where the page gave them no word of its own

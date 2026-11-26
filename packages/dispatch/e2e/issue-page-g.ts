@@ -798,9 +798,9 @@ export function expectRowLayouts(
   }
 }
 
-/** What rulings 4 and 5 read of one row (R1, R4, R5): the line of the kind's tag, the author and
- *  the time against the row's words, the state under it, the chips, the links in its words and
- *  in a child's facts, and its fold control's box. */
+/** What build decisions 4 and 5 read of one row (R1, R4, R5): the line of the kind's tag, the
+ *  author and the time against the row's words, the state under it, the chips, the links in its
+ *  words and in a child's facts, and its fold control's box. */
 export interface RowGroup {
   readonly author: string | null;
   /** Each chip: the words it names its target by, all it draws, and whether it stands inside
@@ -902,8 +902,8 @@ export function rowGroups(page: Page): Promise<RowGroup[]> {
 }
 
 /**
- * Rulings 4 and 5 on every row one view draws. At 761 px and above a row that is not open draws
- * its kind, its author and its time on one line, and its state on a second line under it; at
+ * Build decisions 4 and 5 on every row one view draws. At 761 px and above a row that is not open
+ * draws its kind, its author and its time on one line, and its state on a second line under it; at
  * 760 px and below that line stands under the row's words. No row draws the page's words for an
  * author nobody recorded. Each tie is a chip inside the box of the node's words, named by at most
  * 32 characters and by no address, slug or short form of one (`addresses`). A link in a node's
@@ -1385,8 +1385,8 @@ export interface WideNoteSeed {
  * outline takes the spec's first callout for the issue's summary and draws no row of it
  * (`spec-summary.ts`), so a note that stood first would have no row, and its table would be
  * drawn nowhere on the Conversation view.
- * A row cuts words taller than six lines (ruling 1), and the table is two lines tall, so its row
- * draws it whole. It is an issue of its own, so no seed another row reads changes,
+ * A row cuts words taller than six lines (build decision 1), and the table is two lines tall, so
+ * its row draws it whole. It is an issue of its own, so no seed another row reads changes,
  * and no row that reads every row of `seedRows` - c-row-layout reads where each typed row's first
  * line ends against its tag - meets a table wider than a row's words.
  */

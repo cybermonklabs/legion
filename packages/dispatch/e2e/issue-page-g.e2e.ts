@@ -461,7 +461,7 @@ test("at 390 px a note's table of sixteen columns scrolls inside its row, and th
   });
 });
 
-// c-cut: ruling 1 on R2 at 1440 px.
+// c-cut: build decision 1 on R2 at 1440 px.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
 // ten presses and focus moves, each waited on until the row redraws.
 test("an agent message and an answered question are cut at six lines, and the words of the reader and a waiting question are whole", async ({

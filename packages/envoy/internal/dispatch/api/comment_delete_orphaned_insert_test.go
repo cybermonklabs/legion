@@ -11,7 +11,7 @@ import (
 )
 
 // R3 of dispatch://INFRA-1523: a delete leaves no part of the post's body readable, and an insert
-// suggestion's anchor quote is its own suggested words (the architect's ruling of 2026-11-20
+// suggestion's anchor quote is its own suggested words (the architect's decision of 2026-11-20
 // 00:47Z). TestDeletingAPendingInsertSuggestionClearsTheQuoteOfItsWords holds that for a pending
 // insert whose mark still stands. A browser edit can take the inserted words out of the live
 // document first, which orphans the mark: the delete's reject then finds no mark and answers no

@@ -672,7 +672,7 @@ test("a reference answers the edit and the deletion of the post it names, or who
   }
 });
 
-// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. A hover
+// R2 and R3 of dispatch://INFRA-1523, and the architect's decision of 2026-11-20 00:23Z. A hover
 // card, a link's label and an unfurl card read a post's own read, or a block's graph read, and
 // keep what it answered through any failure, so a post's correction writes its own facts into
 // each read the cache holds (`markCorrectedPost`). After refetches that all fail, a comment, a

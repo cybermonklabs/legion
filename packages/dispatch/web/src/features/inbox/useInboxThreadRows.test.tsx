@@ -109,7 +109,7 @@ test("the Dismissed pages are flattened once, so a second render over them sets 
   }
 });
 
-// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. Neither
+// R2 and R3 of dispatch://INFRA-1523, and the architect's decision of 2026-11-20 00:23Z. Neither
 // Inbox read says that a refetch failed: each keeps the rows it held, so a post's correction
 // writes its own facts into the rows the cache holds (`markCorrectedPost`). A row whose root is
 // the post reads as edited, then, once deleted, as the deleted line with no word of its subject;
