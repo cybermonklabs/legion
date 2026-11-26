@@ -81,6 +81,25 @@ describe("a Dispatch request goes to its route joined onto the configured URL's 
   }
 });
 
+// `dispatch api`'s read of a route no method names (readRoute) goes where every other route goes:
+// joined onto the configured URL's path, the URL's query ahead of the route's own. Resolved
+// against the URL's text with a slash appended, it asked /api/v1/... on the bare host and lost the
+// URL's query.
+describe("dispatch api's route read is joined onto the configured URL's path", () => {
+  for (const [name, base, query] of [
+    ["query", "http://dispatch.test/dispatch?key=v", "?key=v&scope=open"],
+    ["no-query", "http://dispatch.test/dispatch", "?scope=open"],
+  ] as const) {
+    test(name, async () => {
+      const read = recordingFetch({ limits: [] });
+      await new DispatchClient(base, bearerCredential("secret"), read.fetchImpl).readRoute(
+        "/api/v1/limits?scope=open"
+      );
+      expect(read.asked).toEqual([["", "", "dispatch.test", "/dispatch/api/v1/limits", query]]);
+    });
+  }
+});
+
 /** The designated assertion: capture text, then fail where it holds the token. */
 function requireNone(capture: string, text: string): void {
   console.log(`REDACT-CAPTURE ${capture} ${Buffer.from(text, "utf8").toString("base64")}`);

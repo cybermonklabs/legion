@@ -198,7 +198,7 @@ func TestADesignGateStepPrintsNoBearerItEchoes(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"secret": "s", "designGateSteps": []string{"decisions", bearerOf(r)}})
 	}))
 	t.Cleanup(daemon.Close)
-	_, _, err := fetchControllerSecret(context.Background(), daemon.URL, echoProbe, api.DaemonAPIVersion)
+	_, _, err := fetchControllerSecret(context.Background(), daemon.URL, echoProbe, api.DaemonAPIVersion())
 	if err == nil {
 		t.Fatal("the secret fetch took a design gate step this legion does not know")
 	}

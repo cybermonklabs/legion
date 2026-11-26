@@ -141,6 +141,9 @@ export class DispatchServiceError extends Error {
   readonly issues: DispatchServiceErrorShape["issues"] | undefined;
   /** A status change's refusal: the entry of each step that wrote before it. */
   readonly changed: DispatchServiceErrorShape["changed"] | undefined;
+  /** Dispatch's `hint`, where to look next, which only its answer to a path no route serves
+   *  carries (`DispatchServiceErrorShape["hint"]`); `messageFor` prints it after the message. */
+  readonly hint: string | undefined;
 
   constructor(
     readonly code: string,
@@ -149,7 +152,7 @@ export class DispatchServiceError extends Error {
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
      *  its answer's JSON, or another refusal whose members it keeps. */
     details: {
-      readonly [Member in "candidates" | "changed" | "current" | "issues" | "mismatches"]?:
+      readonly [Member in "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches"]?:
         | DispatchServiceErrorShape[Member]
         | undefined;
     } = {}
@@ -160,6 +163,7 @@ export class DispatchServiceError extends Error {
     this.mismatches = details.mismatches;
     this.issues = details.issues;
     this.changed = details.changed;
+    this.hint = details.hint;
   }
 }
 
@@ -1412,6 +1416,30 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "limits"]);
   }
 
+  /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
+   *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
+   *  scheme, a host and a dot segment, so it resolves under this client's server as every other
+   *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it.
+   *
+   *  It sends the GET once (one `#send`) and throws a refusal as `#response` throws it, an answer
+   *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
+   *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
+   *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
+   *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
+   *  so Dispatch's own refusal, which names the route, is printed as it came. */
+  async readRoute(path: string): Promise<unknown> {
+    let url: string;
+    try {
+      // Joined onto the configured URL's path, its query kept ahead of the path's own (`joinUrl`),
+      // as `#url` joins every other route: resolved against the URL's text with a slash appended,
+      // a configured query would take the slash and the read would lose the URL's path and query.
+      url = joinUrl(this.#baseUrl, path.slice(1)).toString();
+    } catch {
+      throw new Error(`${DISPATCH_URL_SETTING} is not an absolute URL with a host (not printed)`);
+    }
+    return this.#response("GET", url, await this.#send("GET", url));
+  }
+
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
    *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
@@ -2119,8 +2147,9 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
-   *  with its plan, each retro's rating, its time and its count of failed steps. `since` and
-   *  `until` bound the close to `[since, until)`, and a bound left out is not sent. */
+   *  with its plan, each retro's rating, its time, its count of failed steps, and the experiment
+   *  and the variant the step records of its newest run name, null where they name none. `since`
+   *  and `until` bound the close to `[since, until)`, and a bound left out is not sent. */
   async listProjectPlans(
     project: string,
     window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}
@@ -2879,7 +2908,7 @@ export class DispatchClient {
           error.code ?? `HTTP_${response.status}`,
           response.status,
           error.error,
-          error
+          { ...error, hint: typeof error.hint === "string" ? error.hint : undefined }
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

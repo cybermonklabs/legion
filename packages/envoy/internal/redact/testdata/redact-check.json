@@ -332,6 +332,10 @@
         "test": "print-oauth2call.CodedRefusal"
       },
       {
+        "holder": "github.com/sjawhar/legion/daemon/internal/dispatch.Caller",
+        "test": "print-dispatch.Caller"
+      },
+      {
         "holder": "github.com/sjawhar/legion/daemon/internal/dispatch.Error",
         "test": "print-dispatch.Error"
       },
@@ -601,6 +605,12 @@
         "function": "github.com/sjawhar/envoy/internal/dispatch/store/storetest.xidHoldThread",
         "operands": ["*int", "*uint64", "unsafe.Pointer"],
         "why": "the xid window rig's get_mempolicy and set_mempolicy system calls, given a local mode and node mask by address: they print nothing and reach no answer"
+      },
+      {
+        "file": "packages/envoy/internal/dispatch/store/storetest/xidwindow_threadclock_linux.go",
+        "function": "github.com/sjawhar/envoy/internal/dispatch/store/storetest.xidTracerRanges",
+        "operands": ["*[64]byte", "uintptr", "unsafe.Pointer"],
+        "why": "the xid window rig's address of a heap probe it allocated, as the number it compares with the ranges of /proc/self/maps to tell the tracer's memory from the heap's: it prints nothing and reaches no answer"
       },
       {
         "file": "packages/envoy/internal/dispatch/store/storetest/large_arguments.go",
@@ -3280,6 +3290,36 @@
         "capture": "dispatch.answer-words/plan-block-needs"
       },
       {
+        "row": "cipherclient-token-transport-url",
+        "base": "718b54fc062aabc66987aa3ce3efea1c75eae896",
+        "files": ["packages/envoy/internal/cipherclient/tokentransport_url_test.go"],
+        "capture": "cipherclient.token-transport/url"
+      },
+      {
+        "row": "ciphertoken-origin-words-userinfo",
+        "base": "718b54fc062aabc66987aa3ce3efea1c75eae896",
+        "files": ["packages/envoy/internal/ciphertoken/brokertoken_origin_words_test.go"],
+        "capture": "ciphertoken.origin-words/userinfo"
+      },
+      {
+        "row": "ciphertoken-origin-words-unparsed",
+        "base": "718b54fc062aabc66987aa3ce3efea1c75eae896",
+        "files": ["packages/envoy/internal/ciphertoken/brokertoken_origin_words_test.go"],
+        "capture": "ciphertoken.origin-words/unparsed"
+      },
+      {
+        "row": "daemon-whoami-words-session",
+        "base": "718b54fc062aabc66987aa3ce3efea1c75eae896",
+        "files": ["packages/daemon/internal/daemon/whoami_words_test.go"],
+        "capture": "daemon.whoami-words/session"
+      },
+      {
+        "row": "daemon-whoami-words-project",
+        "base": "718b54fc062aabc66987aa3ce3efea1c75eae896",
+        "files": ["packages/daemon/internal/daemon/whoami_words_test.go"],
+        "capture": "daemon.whoami-words/project"
+      },
+      {
         "row": "workspace-cache-echo-bare-encoded",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
         "files": ["packages/daemon/internal/workspace/cache_echo_test.go"],
@@ -4736,6 +4776,11 @@
     },
     "boundary_exempt": [
       {
+        "file": "packages/daemon/internal/dispatch/client.go",
+        "callee": "(net/http.RoundTripper).RoundTrip",
+        "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
+      },
+      {
         "file": "packages/daemon/internal/modeltoken/modeltoken.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
@@ -4767,6 +4812,11 @@
       },
       {
         "file": "packages/envoy/internal/cipherclient/dpop.go",
+        "callee": "(net/http.RoundTripper).RoundTrip",
+        "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
+      },
+      {
+        "file": "packages/envoy/internal/cipherclient/tokentransport.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
@@ -4865,7 +4915,7 @@
           "why": "a test's own words, for the value a client would have decoded from an answer: Said is a maker (gate.answers.makers), so the census holds every call of it outside a test file to the record rule, and only test files call it"
         }
       ],
-      "functions": ["Holds", "Unmarshal"],
+      "functions": ["Echoes", "Holds", "Unmarshal"],
       "decoders": [
         "encoding/json.Unmarshal",
         "(*encoding/json.Decoder).Decode",
@@ -10536,6 +10586,13 @@
       "production": "github.com/sjawhar/envoy/oauth2call.CodedRefusal: every printer at every placement"
     },
     {
+      "id": "print-dispatch.Caller",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/dispatch.Caller",
+      "production": "github.com/sjawhar/legion/daemon/internal/dispatch.Caller: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
       "id": "print-dispatch.Error",
       "requirement": "r2-held",
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
@@ -11065,8 +11122,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",
       "test": "TestABrokerRedirectNamesNoRunOfTheDaemonsBearer/unparsed",
-      "production": "daemon cipher Client.do: a redirect whose Location does not parse names the call's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/cipher.Client).do",
+      "production": "daemon cipher Client.send: a redirect whose Location does not parse names the call's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/cipher.Client).send",
       "capture": "cipher.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/cipher/client.go",
@@ -12430,13 +12487,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/api",
       "test": "TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses/id-bearer",
-      "production": "daemon dispatch HTTPClient.PlanDocument: a plan block whose id holds a run of the bearer the read carried (carries, through oauth2call.Tokens) is refused naming its place, its type and the rule, so register_plan answers a refused plan and never the id",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).carries",
+      "production": "daemon dispatch HTTPClient.PlanDocument: a plan block whose id holds a run of a credential the read carried (planBlockRule, through oauth2call.Echoes of the read's own answer) is refused naming its place, its type and the rule, so register_plan answers a refused plan and never the id",
+      "function": "github.com/sjawhar/legion/daemon/internal/dispatch.planBlockRule",
       "capture": "api.plan-route-words/id-bearer",
       "mutation": {
         "file": "packages/daemon/internal/dispatch/client.go",
-        "preimage": "return oauth2call.Tokens(text, -1, c.token) != text",
-        "replacement": "return false"
+        "preimage": "case oauth2call.Echoes(answer, id):",
+        "replacement": "case false:"
       }
     },
     {
@@ -12452,7 +12509,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/api",
       "test": "TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses/id-grammar",
       "production": "daemon dispatch HTTPClient.planBlockRule: a plan block whose id is outside plan.TaskIDGrammar, which Dispatch stores, is refused naming its place and the grammar, so register_plan answers no id it cannot hold to the grammar",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).planBlockRule",
+      "function": "github.com/sjawhar/legion/daemon/internal/dispatch.planBlockRule",
       "capture": "api.plan-route-words/id-grammar",
       "mutation": {
         "file": "packages/daemon/internal/dispatch/client.go",
@@ -12507,14 +12564,98 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestAPlanDocumentHandsOnNoNeedsValueThatEchoesTheBearer",
-      "production": "daemon dispatch HTTPClient.planBlockRule: a needs value holding a run of the bearer the read carried is refused naming the block's place and the value's, where PlanDocument handed it on in the block's attributes to any caller that prints them",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).planBlockRule",
+      "production": "daemon dispatch HTTPClient.planBlockRule: a needs value holding a run of a credential the read carried (oauth2call.Echoes) is refused naming the block's place and the value's, where PlanDocument handed it on in the block's attributes to any caller that prints them",
+      "function": "github.com/sjawhar/legion/daemon/internal/dispatch.planBlockRule",
       "capture": "dispatch.answer-words/plan-block-needs",
       "mutation": {
         "file": "packages/daemon/internal/dispatch/client.go",
-        "preimage": "if c.carries(value) {",
-        "replacement": "if false && c.carries(value) {"
+        "preimage": "if oauth2call.Echoes(answer, value) {",
+        "replacement": "if false && oauth2call.Echoes(answer, value) {"
       }
+    },
+    {
+      "id": "dispatch-plan-block-query-value",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestAPlanBlockNamedAsTheReadsQueryValueIsHandedOn",
+      "production": "daemon dispatch HTTPClient.planBlockRule: a task named `true`, the query value of the read's own ?blocks=true, which the read's record counts, is handed on, since a value shorter than redact.TokenPiece holds no run oauth2call.Echoes reads as an echo"
+    },
+    {
+      "id": "redact-echoes-bearer",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEchoesFindsARunOfACredentialTheReadCarried/bearer",
+      "production": "redact Echoes: a word that holds a run of TokenPiece characters of a credential the answer's requests carried, the bearer whole or cut, is an echo (Tokens of the read's record), so a caller that hands on only words Echoes passes hands on none of the bearer",
+      "function": "github.com/sjawhar/envoy/internal/redact.Echoes",
+      "capture": "redact.echoes/bearer",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "return len(runs) > 0 && Tokens(text, -1, runs...) != text",
+        "replacement": "return false"
+      }
+    },
+    {
+      "id": "redact-echoes-short-query-value",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestEchoesFindsARunOfACredentialTheReadCarried/short-query-value",
+      "production": "redact Echoes: a word equal to a value the read carried that is shorter than TokenPiece (the `true` of ?blocks=true) is no echo: Echoes reads only credentials of TokenPiece characters or more, the run Tokens redacts wherever it stands"
+    },
+    {
+      "id": "cipherclient-token-transport-url",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestADroppedTokensLineNamesTheURLOnlyAsTheRuleReadsIt",
+      "production": "cipherclient tokenTransport.RoundTrip: the line that says a server refused the broker's token as not live names the request's URL through the URL rule (redact.URL), where URL.Redacted kept a credential in its query or its user name",
+      "function": "(*github.com/sjawhar/envoy/internal/cipherclient.tokenTransport).RoundTrip",
+      "capture": "cipherclient.token-transport/url",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/tokentransport.go",
+        "preimage": "\"url\", redact.URL(presented.URL.String()), \"code\", tokenNotActive)",
+        "replacement": "\"url\", presented.URL.Redacted(), \"code\", tokenNotActive)"
+      }
+    },
+    {
+      "id": "ciphertoken-origin-words-userinfo",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestNewRefusesAnOriginByItsPlaceAndPrintsNoneOfItsCredential/userinfo",
+      "production": "ciphertoken New: an origin that is not an absolute http(s) URL with no path is refused by its place among the origins and as the URL rule prints it (redact.URL), where the refusal quoted it whole, its user information's password included",
+      "function": "github.com/sjawhar/envoy/internal/ciphertoken.New",
+      "capture": "ciphertoken.origin-words/userinfo",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/brokertoken.go",
+        "preimage": "must be an absolute http(s) URL with no path\", i+1, len(options.Origins), redact.URL(raw))",
+        "replacement": "must be an absolute http(s) URL with no path\", i+1, len(options.Origins), raw)"
+      }
+    },
+    {
+      "id": "ciphertoken-origin-words-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestNewRefusesAnOriginByItsPlaceAndPrintsNoneOfItsCredential/unparsed",
+      "production": "ciphertoken New: an origin url.Parse cannot read is refused by its place among the origins and as the URL rule prints it, with no url.Parse error, which quotes it whole",
+      "function": "github.com/sjawhar/envoy/internal/ciphertoken.New",
+      "capture": "ciphertoken.origin-words/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/brokertoken.go",
+        "preimage": "does not parse\", i+1, len(options.Origins), redact.URL(raw))",
+        "replacement": "does not parse\", i+1, len(options.Origins), raw)"
+      }
+    },
+    {
+      "id": "daemon-whoami-words-session",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheBootsWhoamiRefusalPrintsDispatchsWordsOnlyAsTheRuleReadsThem/session",
+      "production": "daemon checkDaemonCaller: the boot's refusal of a broker token whose whoami session is not the daemon's quotes Dispatch's session as the rule reads it (dispatch.Caller holds it as oauth2call.RemoteText with the read's record, whoamiValue), where it quoted the session as it came, an echo of the token included"
+    },
+    {
+      "id": "daemon-whoami-words-project",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheBootsWhoamiRefusalPrintsDispatchsWordsOnlyAsTheRuleReadsThem/project",
+      "production": "daemon checkDaemonCaller: the boot's refusal of a broker token whose whoami project is not the daemon's quotes Dispatch's project as the rule reads it, where it quoted it as it came"
     },
     {
       "id": "workspace-cache-echo-bare-encoded",
@@ -20320,6 +20461,13 @@
       "file": "packages/envoy-client/src/__tests__/dispatch-url-join.test.ts",
       "test": "a Dispatch request goes to its route joined onto the configured URL's path > query",
       "production": "DispatchClient #url: a Dispatch URL with a path and a query (http://host/dispatch?key=...) sends each request to its route joined onto that path, the configured query first and the request's own after it (joinUrl: /dispatch/api/v1/search?key=...&q=...), where new URL(path, base + \"/\") put the slash in the query and asked /api/v1/... on the bare host with the query lost"
+    },
+    {
+      "id": "dispatch-http-read-route-url-query-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/dispatch-url-join.test.ts",
+      "test": "dispatch api's route read is joined onto the configured URL's path > query",
+      "production": "DispatchClient readRoute (dispatch api): a Dispatch URL with a path and a query reads the route joined onto that path, the configured query ahead of the route's own (joinUrl), where new URL(path, base + \"/\") put the slash in the query and asked /api/v1/... on the bare host with the query lost"
     },
     {
       "id": "dispatch-http-url-query-trailing-slash-ts",

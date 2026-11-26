@@ -82,8 +82,8 @@
 #     legion/testdata/<key in lower case>-legion.yaml: the deployment's TestCommittedStackConfig
 #     holds that file byte for byte to what its legion program renders (renderLegionYAML), and the
 #     project files themselves carry no legion.yaml key. That program renders no plugins key today
-#     (renderLegionYAML, legion/main.go:2743-2892 when this was written) and refuses a project field
-#     it does not know (parseProjects' DisallowUnknownFields, legion/main.go:4771-4774), so the
+#     (renderLegionYAML, in the deployment repository's legion/main.go) and refuses a project field
+#     it does not know (the DisallowUnknownFields of parseProjects, in the same file), so the
 #     linked pair decides; reading the rendering keeps the gate right if the program starts to set
 #     the key. A rendering it cannot read or that sets no runtime.kubernetes, a legion that links no
 #     pair where the rendering sets none, and a second line that names no pi-envoy version are

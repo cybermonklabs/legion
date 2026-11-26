@@ -22,25 +22,62 @@ import (
 
 const requestTimeout = 10 * time.Second
 
-// HTTPClient calls Dispatch's native /api/v1 routes with the daemon's bearer token.
+// HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
+// transport it was made with (New).
 type HTTPClient struct {
 	baseURL    string
-	token      string
 	timeout    time.Duration
 	httpClient *http.Client
 }
 
 // New creates a client for one Dispatch server at baseURL, each route joined onto its path
-// (answer). The token is sent only as a bearer header, and the client follows no redirect
-// (redirects.Refused): Dispatch answers none, and a followed one would hand the bearer to the host
-// the Location names. A 3xx is Dispatch's refusal by its status.
-func New(baseURL, token string) *HTTPClient {
+// (answer), whose every request goes through transport, which presents the daemon's credential:
+// BearerTransport for the bearer dispatch_token_file names, or, under dispatch_token_broker, the
+// daemon's own broker token (cipherclient.NewTokenTransport). The client sets no Authorization of
+// its own, and it follows no redirect (redirects.Refused): Dispatch answers none, and a followed
+// one would hand the credential to the host the Location names. A 3xx is Dispatch's refusal by its
+// status.
+func New(baseURL string, transport http.RoundTripper) *HTTPClient {
 	return &HTTPClient{
 		baseURL:    baseURL,
-		token:      token,
 		timeout:    requestTimeout,
-		httpClient: redirects.Refused(&http.Client{}),
+		httpClient: redirects.Refused(&http.Client{Transport: transport}),
 	}
+}
+
+// BearerTransport is a RoundTripper that sends each request through base (http.DefaultTransport
+// when nil) with `Authorization: Bearer <token>` and changes nothing else, so a request goes on the
+// wire as it did when the client set the header itself. A redirect to another host name than the
+// request was made to is sent without it, as Go's client sent no Authorization header its caller
+// set on such a redirect: the bearer reaches Dispatch's host and no other. Go's client also kept
+// it on a redirect to a subdomain of that host; this does not.
+func BearerTransport(token string, base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return bearerTransport{authorization: "Bearer " + token, base: base}
+}
+
+type bearerTransport struct {
+	authorization string
+	base          http.RoundTripper
+}
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	presented := r.Clone(r.Context())
+	if strings.EqualFold(r.URL.Hostname(), firstRequest(r).URL.Hostname()) {
+		presented.Header.Set("Authorization", b.authorization)
+	}
+	return b.base.RoundTrip(presented)
+}
+
+// firstRequest is the request the caller made that r is a redirect of, or r itself: Go's client
+// sets each redirect's Response to the answer that redirected it, whose Request is the one before.
+func firstRequest(r *http.Request) *http.Request {
+	for r.Response != nil && r.Response.Request != nil {
+		r = r.Response.Request
+	}
+	return r
 }
 
 // ListIssues reads GET /api/v1/issues?project=<project>. Dispatch accepts one status filter, so
@@ -247,6 +284,27 @@ func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write St
 		StepWrite:  write,
 		PlanRating: rating,
 		Actor:      daemonActor(key),
+	}, nil)
+}
+
+// PutStepExperiment writes the experiment and the variant of the record's issue onto the record id
+// of the issue key, through the record's experiment route, PUT
+// /api/v1/issues/{key}/steps/{id}/experiment, as the daemon's own session. The body is the run's
+// identity out of write, of which Dispatch sets each field the record does not hold yet and keeps
+// each it holds, and the pair, and no other field: the start, the end and the rating are the
+// record's own writes, which the outbox sends first (publishStepRecord), so a Dispatch older than
+// this route takes the record and only the pair waits. The pair has a route of its own because the
+// step route and the rating route ignore a member they do not declare, so a pair sent there would
+// be answered 200 and lost. Dispatch answers the step route's refusals, and 400 STEP_INPUT for a
+// pair off its rule; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on.
+func (c *HTTPClient) PutStepExperiment(ctx context.Context, key, id string, write StepWrite, experiment StepExperiment) error {
+	identity := StepWrite{Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role, Type: write.Type,
+		Agent: write.Agent, Generation: write.Generation}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/experiment", stepExperimentWrite{
+		StepWrite:      identity,
+		StepExperiment: experiment,
+		Actor:          daemonActor(key),
 	}, nil)
 }
 
@@ -597,18 +655,22 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 // and gives ErrNoBlocks. An answer for another version, or a block whose range is not a fenced
 // block of its markdown, is an error naming it; a refusal of Dispatch's passes through (Missing).
 // A block is named by its place in the answer, never by its id or its text: both are Dispatch's
-// words, or the words of whatever answers in its place, which can echo the bearer the read carried.
-// So a block of a plan's two types whose words the daemon would hand on to a caller that prints
-// them is refused, naming its place, its type and the rule it breaks (RefusedBlockError,
+// words, or the words of whatever answers in its place, which can echo the credential the read
+// carried. So a block of a plan's two types whose words the daemon would hand on to a caller that
+// prints them is refused, naming its place, its type and the rule it breaks (RefusedBlockError,
 // planBlockRule).
 func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error) {
 	if version < 1 {
 		return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: a version is 1 or more", artifactID, version)
 	}
-	var response versionBlocksResponse
 	path := "/api/v1/artifacts/" + url.PathEscape(artifactID) + "/versions/" + strconv.Itoa(version) + "?blocks=true"
-	if err := c.request(ctx, http.MethodGet, path, nil, &response); err != nil {
+	answer, err := c.answer(ctx, http.MethodGet, path, nil)
+	if err != nil {
 		return DocumentVersion{}, err
+	}
+	var response versionBlocksResponse
+	if err := answer.Decode(&response); err != nil {
+		return DocumentVersion{}, fmt.Errorf("decode Dispatch %s %s response: %w", http.MethodGet, path, err)
 	}
 	if response.Blocks == nil {
 		return DocumentVersion{}, ErrNoBlocks
@@ -631,7 +693,7 @@ func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, versio
 		for _, attribute := range block.Attributes {
 			attributes[attribute.Name] = attribute.Value
 		}
-		if rule := c.planBlockRule(block.Type, block.ID, attributes); rule != "" {
+		if rule := planBlockRule(answer, block.Type, block.ID, attributes); rule != "" {
 			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: %w", artifactID, version, &RefusedBlockError{Place: i + 1, Type: block.Type, Rule: rule})
 		}
 		document.Blocks = append(document.Blocks, DocumentBlock{ID: block.ID, Type: block.Type, Attributes: attributes, Text: rest[:closing]})
@@ -649,11 +711,14 @@ func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, versio
 // planBlockRule is the rule a block of one of a plan's two types (plan_task, plan_role) breaks,
 // "" where it breaks none and for a block of any other type, which no plan reads. Its id is a
 // task's id or a role's name, which the plan route answers back and prints in its refusals, so it
-// is held to plan.TaskIDGrammar, which refuses ids Dispatch stores, and to no run of the bearer the
-// read carried (carries). Its `steps`, whose words a refusal names, and each value of its `needs`,
-// a reference to a block that the plan holds, are held to no run of that bearer alone; a value is
-// named by its place among the values, split as plan's FromBlocks splits them.
-func (c *HTTPClient) planBlockRule(typ, id string, attributes map[string]string) string {
+// is held to plan.TaskIDGrammar, which refuses ids Dispatch stores, and to no run of a credential
+// the read that answered it carried (oauth2call.Echoes, by the rule envoy redacts a request's
+// echo by): the bearer dispatch_token_file names, or the broker token and proof the daemon's
+// transport presents, which the client itself never holds. Its `steps`, whose words a refusal
+// names, and each value of its `needs`, a reference to a block that the plan holds, are held to
+// no run of that credential alone; a value is named by its place among the values, split as
+// plan's FromBlocks splits them.
+func planBlockRule(answer oauth2call.Answer, typ, id string, attributes map[string]string) string {
 	if typ != plan.TaskBlockType && typ != plan.RoleBlockType {
 		return ""
 	}
@@ -661,24 +726,17 @@ func (c *HTTPClient) planBlockRule(typ, id string, attributes map[string]string)
 	switch {
 	case !plan.IsTaskID(id):
 		return "has an id outside the task-id grammar " + plan.TaskIDGrammar
-	case c.carries(id):
+	case oauth2call.Echoes(answer, id):
 		return "has an id holding " + carried
-	case c.carries(attributes["steps"]):
+	case oauth2call.Echoes(answer, attributes["steps"]):
 		return "has steps holding " + carried
 	}
 	for i, value := range strings.Fields(attributes["needs"]) {
-		if c.carries(value) {
+		if oauth2call.Echoes(answer, value) {
 			return fmt.Sprintf("has value %d of its needs holding %s", i+1, carried)
 		}
 	}
 	return ""
-}
-
-// carries says whether text holds a run of the bearer every request of the client carries, by the
-// rule envoy redacts a request's echo by (oauth2call.Tokens): text that echoes it, as whatever
-// answers in Dispatch's place can.
-func (c *HTTPClient) carries(text string) bool {
-	return oauth2call.Tokens(text, -1, c.token) != text
 }
 
 // ArtifactChanges reads GET /api/v1/artifacts/{id}/changes?from=&to=: what changed in the document
@@ -757,6 +815,16 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 	return response.handoff(), nil
 }
 
+// Whoami reads GET /api/v1/whoami: who Dispatch takes this client's credential for. The boot reads
+// it under dispatch_token_broker, to refuse a broker token whose writes Dispatch would refuse.
+func (c *HTTPClient) Whoami(ctx context.Context) (Caller, error) {
+	var caller Caller
+	if err := c.request(ctx, http.MethodGet, "/api/v1/whoami", nil, &caller); err != nil {
+		return Caller{}, err
+	}
+	return caller, nil
+}
+
 // request sends one request to Dispatch (answer) and decodes its 2xx answer into into through the
 // answer (Answer.Decode), whose error names the member that did not decode and quotes no value; a
 // nil into reads nothing of the answer.
@@ -803,7 +871,6 @@ func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) 
 		return oauth2call.Answer{}, fmt.Errorf("create Dispatch %s %s: %w", method, path, oauth2call.Unanswered(err, nil, ""))
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

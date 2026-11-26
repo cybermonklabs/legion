@@ -212,6 +212,9 @@ func (d *outboxDispatch) PutStep(context.Context, string, string, dispatch.StepW
 func (d *outboxDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return d.recordErr
 }
+func (d *outboxDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return d.recordErr
+}
 func (d *outboxDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return d.recordErr
 }

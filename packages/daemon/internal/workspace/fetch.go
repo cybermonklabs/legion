@@ -85,6 +85,12 @@ type FetchRequest struct {
 	// The stream from the repository cache is no stage of this kind: it holds the low-speed bound
 	// (CacheStreamLowSpeedBytes) and no clock at all.
 	Bound time.Duration
+	// ReplaceForeign is the repository cache's own fetch (repocache), whose clone no other clone
+	// borrows objects from: an issue pod takes a tar of it. A feed Fetch finds present in a shape it
+	// does not write is then removed, logged naming why, and filled afresh (ownFeedRepository). An
+	// issue pod's workspace-fetch leaves it false: the pod's clone reads its feed's objects through
+	// its alternates, so a foreign feed fails the fetch and is kept.
+	ReplaceForeign bool
 }
 
 // bound is the time each clocked stage of the fetch gets once it may start: Bound, or FetchTimeout.
@@ -162,13 +168,18 @@ type FetchReport struct {
 // A feed that holds the repository already — the cache's clone at each refresh, or an issue pod's
 // feed when the kubelet retries its fetch container in the same pod — has the delta fetched into
 // it from GitHub, once the locks and partial packs a killed fetch left are gone
-// (RemoveStaleFeedLocks). A feed that does not is filled in a temporary sibling, its garbage
-// collection turned off (feedConfiguration), and renamed into place once everything that fills it
-// succeeded, so the feed's repository is whole and current, or absent. With a cache named, it comes
-// from the cache alone: Fetch waits for the cache to be ready (waitForCache), unpacks its tar
-// (unpackCache), verifies it (verifyCache), then fetches from GitHub, by name, the default branch
-// GitHub names and the issue's recorded default, and the Legion issue branches, which is what the
-// issue's clone is made from, after deleting every other branch that is not exactly GitHub's tip
+// (RemoveStaleFeedLocks). An issue pod's feed found present is never removed or replaced: one in a
+// shape Fetch does not write fails the fetch and is kept (ownFeedRepository), since the pod's clone
+// reads the feed's objects through its alternates; the repository cache's own clone, which no clone
+// borrows from, is removed in that case and filled afresh (FetchRequest.ReplaceForeign). A feed
+// that does not exist is filled in a temporary sibling, its garbage collection turned off
+// (feedConfiguration), and renamed into place once everything that fills it succeeded, so the
+// feed's repository is whole and current, or absent.
+// With a cache named, it comes from the cache alone: Fetch waits for the cache to be ready
+// (waitForCache), unpacks its tar (unpackCache), verifies it (verifyCache), then fetches from
+// GitHub, by name, the default branch GitHub names and the issue's recorded default, and the
+// Legion issue branches, which is what the issue's clone is made from, after deleting every other
+// branch that is not exactly GitHub's tip
 // (pruneToGitHub, fetchInto); a cache that is not ready within CacheWaitTimeout, or whose tar a
 // feed does not take, fails the fetch, and nothing is cloned from GitHub instead, so the cache's
 // own first clone is the one full download of the repository. With none, the feed is cloned bare
@@ -260,7 +271,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	// presented: every line goes through the fetch's one filter.
 	log := request.Log
 	request.Log = func(line string) { log(held.scrub(line)) }
-	present, err := ownFeedRepository(feed, request.Repo, request.Clock.Now(), request.Log)
+	present, err := ownFeedRepository(feed, request.Repo, request.Clock.Now(), request.Log, request.ReplaceForeign)
 	if err != nil {
 		return FetchReport{}, err
 	}
@@ -1184,9 +1195,9 @@ const cloneSuffix = ".clone-"
 
 // feedConfiguration is what the feed repository's own configuration sets: no automatic garbage
 // collection or maintenance, ever, and every fetch's objects kept as the pack they arrived in
-// (`fetch.unpackLimit=1`). The clone owns entries for its history, so this keeps feed refreshes
-// predictable and preserves the repository cache's pack-only stream; it is not the clone's only
-// copy of history.
+// (`fetch.unpackLimit=1`). An issue pod's clone reads the feed's objects through its alternates
+// (feedClone), so no maintenance may remove an object the clone borrows; it also keeps feed
+// refreshes predictable and preserves the repository cache's pack-only stream.
 func feedConfiguration(ctx context.Context, run Runner, gitDir string) error {
 	for _, pair := range [][2]string{{"gc.auto", "0"}, {"maintenance.auto", "false"}, {"fetch.unpackLimit", "1"}} {
 		if _, err := FeedGit(ctx, run, gitDir, "config", pair[0], pair[1]); err != nil {

@@ -38,7 +38,7 @@ func TestADispatchCallGoesToTheRouteJoinedOntoTheDispatchURL(t *testing.T) {
 				_, _ = io.WriteString(w, `{"key":"LEGION-1","status":"todo"}`)
 			}))
 			defer server.Close()
-			client := New(server.URL+c.suffix, "dispatch-token")
+			client := New(server.URL+c.suffix, BearerTransport("dispatch-token", nil))
 			ask := func(call string, path, query string, err error) {
 				t.Helper()
 				select {
@@ -91,7 +91,7 @@ func TestADispatchURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 		holds(t, err.Error())
 	})
 	t.Run("unparsed", func(t *testing.T) {
-		_, err := New(unparsed, "dispatch-token").GetIssue(context.Background(), "LEGION-1")
+		_, err := New(unparsed, BearerTransport("dispatch-token", nil)).GetIssue(context.Background(), "LEGION-1")
 		if err == nil {
 			t.Fatal("GetIssue took a Dispatch URL that does not parse")
 		}
@@ -112,7 +112,7 @@ func TestADispatchURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 		holds(t, err.Error())
 	})
 	t.Run("reparsed", func(t *testing.T) {
-		_, err := New(reparsed, "dispatch-token").GetIssue(context.Background(), "LEGION-1")
+		_, err := New(reparsed, BearerTransport("dispatch-token", nil)).GetIssue(context.Background(), "LEGION-1")
 		if err == nil {
 			t.Fatal("GetIssue took a Dispatch URL whose joined URL does not parse")
 		}

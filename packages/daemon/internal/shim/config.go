@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // The readers below are the command's refusals, each one naming the flag and the path or value at
@@ -67,6 +69,12 @@ func ReadBootToken(path string) (string, error) {
 // is read from that file by its consumer, and must not also sit in the environment every tool
 // the agent runs inherits. A NAME that is already a variable of the shim's environment — an empty
 // value included — is refused: the export would land over it with nothing saying so (LEGION-186).
+//
+// Under DISPATCH_TOKEN_BROKER=1 in the shim's environment, the role's Dispatch credential is a
+// token its client trades its pod's identity for, and no launch carries a Dispatch token, so no
+// DISPATCH_TOKEN_FILE pointer stops a providers-Secret key DISPATCH_TOKEN from landing in the
+// agent's environment as the shared bearer the setting exists to take away. That key and
+// DISPATCH_TOKEN_FILE are refused there, naming the key and its file, before Oh My Pi starts.
 // lookup is the shim's environment.
 func ReadProviderEnv(dir string, lookup func(string) (string, bool)) ([]string, error) {
 	entries, err := os.ReadDir(dir)
@@ -74,6 +82,8 @@ func ReadProviderEnv(dir string, lookup func(string) (string, bool)) ([]string, 
 		return nil, fmt.Errorf("--provider-env-dir %s is unreadable: %w", dir, err)
 	}
 	var env []string
+	brokerValue, _ := lookup(shimwire.DispatchTokenBrokerVariable)
+	broker := brokerValue == "1"
 	for _, entry := range entries {
 		name := entry.Name()
 		path := filepath.Join(dir, name)
@@ -83,6 +93,10 @@ func ReadProviderEnv(dir string, lookup func(string) (string, bool)) ([]string, 
 		}
 		if !info.Mode().IsRegular() {
 			continue
+		}
+		if broker && (name == "DISPATCH_TOKEN" || name == "DISPATCH_TOKEN_FILE") {
+			return nil, fmt.Errorf("--provider-env-dir key %s (%s) is a Dispatch credential, and this shim's environment holds %s=1: "+
+				"the role trades its pod's identity for its own Dispatch token, so the providers Secret may hold no shared one — remove the key", name, path, shimwire.DispatchTokenBrokerVariable)
 		}
 		if _, ok := lookup(name + "_FILE"); ok {
 			continue
