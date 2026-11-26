@@ -649,6 +649,33 @@ test("retype keeps the node's place in its parent and serves attributes and grey
   });
 });
 
+test("retype under the question's block names the ask it was asked on as the parent", () => {
+  // Graph draws the question as the block of the spec it was asked on, so a paragraph made under
+  // that row stands under the block; a criterion and a statement there name the ask itself, which
+  // the read joins to its block by the ask's `asked_on` tuple.
+  const question = nodeOf(converted, "<question-block>");
+  const asked = converted.tuples?.find(
+    (tuple) => tuple.kind === "asked_on" && tuple.to.id === question.id
+  );
+  expect(asked?.from.id, "the read asks the question on its block").toBe("<question>");
+  const paragraph: TreeAnswerNode = {
+    ...nodeOf(converted, "<tree/paragraph>"),
+    id: "<paragraph-under-question>",
+    parent: {
+      first_line: "Which edits does the graph take?",
+      id: question.id,
+      kind: "block",
+      supertag: "ask",
+    },
+  };
+  const held: TreeAnswer = { ...converted, nodes: [...(converted.nodes ?? []), paragraph] };
+  const retyped = place("<paragraph-under-question>", {}, held).retype;
+  if (retyped.kind !== "retype") throw new Error("Retype is not offered on the paragraph");
+  const ask = { attributes: { parent: "dispatch://<issue>/ask/<question>" }, kind: "to" } as const;
+  expect(retyped.kinds.criterion).toStrictEqual(ask);
+  expect(retyped.kinds.statement).toStrictEqual(ask);
+});
+
 test("retype offers the kinds the editor's schema lets it make, so a view offers no statement", () => {
   // The kinds the editor of a child that is a view of its ancestor's spec lets it make: the
   // schema in which `requirement` may not be made (`viewBlockSchema`, decision 359).

@@ -470,6 +470,21 @@ function isOneParagraph(node: TreeAnswerNode): boolean {
   return content.length === 1 && content[0]?.type === "paragraph";
 }
 
+/** The `dispatch://` address of the conversation item `parent` is, which a criterion and a
+ *  statement under it name as their `parent` (R5): an ask, a comment or a message by its own node,
+ *  and an ask by the block of a document it was asked on (its `asked_on` tuple), the row Graph
+ *  draws the question as. Undefined for any other parent. */
+function itemAddress(parent: Parent, held: TreeAnswer): string | undefined {
+  const issue = parent.issue ?? held.issue;
+  if (Object.hasOwn(ITEM_KINDS, parent.kind))
+    return `dispatch://${issue}/${parent.kind}/${parent.id}`;
+  if (parent.kind !== "block" || parent.supertag !== "ask") return undefined;
+  const asked = (held.tuples ?? []).find(
+    (tuple) => tuple.kind === "asked_on" && tuple.from.kind === "ask" && tuple.to.id === parent.id
+  );
+  return asked === undefined ? undefined : `dispatch://${issue}/ask/${asked.from.id}`;
+}
+
 /** Retype (R5): on a prose block that is one paragraph alone, each kind its place can give, with
  *  the attributes that keep the node where it stands. */
 function retype({ held, walk, node }: Focus, kinds: readonly RetypeKind[]): Verdict {
@@ -480,9 +495,7 @@ function retype({ held, walk, node }: Focus, kinds: readonly RetypeKind[]): Verd
     if (above === undefined) throw new Error(`the held read holds no parent ${parent.id}`);
     return blockAddress(above, held);
   };
-  const item = Object.hasOwn(ITEM_KINDS, parent.kind)
-    ? `dispatch://${parent.issue ?? held.issue}/${parent.kind}/${parent.id}`
-    : undefined;
+  const item = itemAddress(parent, held);
   const to = (attributes: RetypeAttributes): RetypeOption => ({ attributes, kind: "to" });
   const refused = (reason: GreyReason): RetypeOption => ({ kind: "grey", reason });
   const view = typeof held.view_of === "string" && held.view_of !== "";
