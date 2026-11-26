@@ -131,7 +131,7 @@ func readBounded(r io.Reader, bound int) ([]byte, error) {
 	return data, nil
 }
 
-// quotedBound is the most bytes of a value of the input that quoted prints whole. encoding/json/v2
+// quotedBound is the most bytes of a value of the input that Cut keeps whole. encoding/json/v2
 // and encoding/json/jsontext cut a JSON pointer to about 100 bytes in their own errors
 // (jsonwire.TruncatePointer(pointer, 100) in Go 1.27's src/encoding/json), so a refusal in the
 // package's words is no longer than the library's was, and still names the place.

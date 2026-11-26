@@ -318,10 +318,13 @@ func (a Approved) Since(id string) time.Time {
 }
 
 // versionText is the tree of the one node that version v of the approved node id holds, at the
-// position "approved <id> version <n>". problems is each reason it holds none: a line that Parse
-// refuses, or bad-approved-document for a document of no node or of two, of a node with another id
-// or with an id that is no id, or not as Print writes its node. A relation of the node is a fact of
-// the whole approved spec, which relationFault reads.
+// position "approved <id> version <n>". problems is each reason it holds none: a problem of the
+// reader in the document (bad-yaml, no-node, bad-time-limit, not-printed), or bad-approved-document
+// (approvalKinds) for a document of no node or of two, of a node with another id, with a value at an
+// id place that is not an id (notAnID), or not as Print writes its node. The schema's other
+// problems are the rules' of the files, as Validate's are, and pass here: an approved text that
+// breaks a rule reads as its node, so a check with no failing example reads as such (R9). A
+// relation of the node is a fact of the whole approved spec, which relationFault reads.
 func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	name := fmt.Sprintf("approved %s version %d", id, v.Version)
 	tree, problems := Parse(map[string][]byte{name: []byte(v.Document)})
@@ -365,7 +368,7 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 // parent or the statement that a check serves, is one that the node does not set, and each entry
 // of a list is set.
 // The problem is bad-approved-document: <member> "<value>" is no id, with the value as quoted
-// prints it, and ReadApproved refuses the version with it (ApprovedNode.textFault).
+// prints it, and ReadApproved refuses the version with it (approvedFault).
 func notAnID(node any) (member, value string, found bool) {
 	type place struct {
 		member, value string
