@@ -787,7 +787,7 @@ func (e *Engine) fixLines(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	case err != nil || facts.Own:
 		return "", err
 	case facts.Kept:
-		return keptSentence(facts), nil
+		return keptSentence(facts, claim.IssueBranch(issue.Key)), nil
 	case facts.Fix > 0:
 		return besideStepSentence(facts), nil
 	case len(facts.Failed) == 0:

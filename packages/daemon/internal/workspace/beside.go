@@ -39,15 +39,16 @@ func BesideTakeCommands(dir, prefix, own, taskBranch string) []string {
 		`remote_bookmarks(glob:"*", exact:"origin") ~ remote_bookmarks(exact:"`+own+`", exact:"origin")`)
 }
 
-// KeptTakeCommands are the commands with which a step that a way runs again takes, in its
-// workspace, the commits of its kept branch beside the fix, branch, that the task's branch
-// taskBranch does not hold: a fetch of both, then a copy under the working copy of each such commit.
+// KeptTakeCommands are the commands with which a step that a way runs again after a fix ended
+// takes, in its workspace, the commits of its kept branch beside the fix, branch, that the task's
+// branch taskBranch does not hold (`::<branch>@origin ~ ::<taskBranch>@origin`): a fetch of both,
+// then the take of takeCommands, in which a commit of the step's own is one that no branch on origin
+// holds. The fix's end push took some of the kept commits, as they are, and those are already
+// ancestors of the task's branch; the rest come under the step's working copy as they are.
 func KeptTakeCommands(branch, taskBranch string) []string {
-	taken := `::remote_bookmarks(exact:"` + branch + `", exact:"origin") ~ ::remote_bookmarks(exact:"` + taskBranch + `", exact:"origin")`
-	return []string{
-		besideJJ + shellprefix.Command([]string{"git", "fetch", "--remote", "origin", "--branch", taskBranch, "--branch", branch}),
-		besideJJ + shellprefix.Command([]string{"duplicate", taken, "--insert-before", "@"}),
-	}
+	return takeCommands(func(args ...string) string { return besideJJ + shellprefix.Command(args) },
+		[]string{taskBranch, branch}, `remote_bookmarks(exact:"`+branch+`", exact:"origin")`, taskBranch,
+		`remote_bookmarks(glob:"*", exact:"origin")`)
 }
 
 // takenMerge is the description of the merge commit a take makes where the working copy has no

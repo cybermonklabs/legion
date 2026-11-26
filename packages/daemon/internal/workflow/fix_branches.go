@@ -397,12 +397,13 @@ const refusedPushSentence = " If GitHub refuses that push, push nothing else, an
 
 // keptSentence is what the task of a step that a way 2 runs again says of its kept branch beside
 // the fix (fixLines), from the start's facts (startFacts, Kept): the fix ended, and the commits the
-// step pushed to its own branch while the fix ran stay there, at the pushed head, kept by the way;
-// the step takes first each of them whose change the task's branch does not hold yet, since the
-// fix's end push may have taken some, then pushes to the task's branch as its task says.
-func keptSentence(facts startFacts) string {
+// step pushed to its own branch while the fix ran stay there, at the pushed head, kept by the way.
+// The step takes first, by ancestry, those of them that the task's branch taskBranch does not hold
+// (workspace.KeptTakeCommands), since the fix's end push took some as they are, and a take run
+// again on a resumed turn takes nothing more; then it pushes to the task's branch as its task says.
+func keptSentence(facts startFacts, taskBranch string) string {
 	return fmt.Sprintf(" Fix %d of this task ended at %s, and the steps after it run again. Your own branch %s keeps the commits you pushed there beside the fix, at %s. "+
-		"Take them first: run jj -R \"$LEGION_WORKSPACE\" git fetch --remote origin --branch %s, then copy onto your working copy each of those commits whose change the branch of the task does not hold yet, "+
-		"with jj -R \"$LEGION_WORKSPACE\" duplicate <commit> --insert-before @, and never rebase or rewrite one. Then push to the branch of the task as this task says.",
-		facts.Fix, facts.Head, facts.Branch, facts.Pushed, facts.Branch)
+		"Take first those of them that the branch of the task does not hold: run %s. "+
+		"That puts them under your working copy as they are, and a run of it again changes nothing; never rebase or rewrite one. Then push to the branch of the task as this task says.",
+		facts.Fix, facts.Head, facts.Branch, facts.Pushed, strings.Join(workspace.KeptTakeCommands(facts.Branch, taskBranch), ", then "))
 }
