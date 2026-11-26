@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -62,8 +61,9 @@ func (s *Service) TextWithAsks(ctx context.Context, artifactID string, withBlock
 // selection and invalid (keptTextTakesOff), so that reader still reads which asks are answered or
 // resolved, and by whom, and no answer's words, which R3 holds on the ask's node alone. Its token
 // is TextWithAsks's, since no token weighs a server-owned attribute, so a precondition holds
-// whichever of the two its reader read; and its asks are TextWithAsks's, read off the same tree
-// with every server-owned attribute taken off.
+// whichever of the two its reader read; and its asks are TextWithAsks's, since the asks member
+// reads none of an ask block's server-owned attributes (textAsks), off whichever of the two trees
+// the read serves (servedAskTree).
 //
 // kept for one release: stored-ask-state
 func (s *Service) KeptText(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error) {
@@ -75,6 +75,18 @@ func (s *Service) KeptText(ctx context.Context, artifactID string, withBlocks bo
 //
 // kept for one release: stored-ask-state
 var keptTextTakesOff = []string{"selected", "answer", "invalid"}
+
+// servedAskTree is tree as the text routes serve it, and whether an ask block of it held an
+// attribute the read takes off: every server-owned attribute of each ask block taken off
+// (withoutAskServerAttributes) for TextWithAsks, and only those KeptText takes off
+// (keptTextTakesOff) where kept. The asks member is read off the tree it answers (textAsks).
+func servedAskTree(tree *pmdoc.Node, kept bool) (*pmdoc.Node, bool) {
+	// kept for one release: stored-ask-state
+	if kept {
+		return withoutAskAttributes(tree, keptTextTakesOff)
+	}
+	return withoutAskServerAttributes(tree)
+}
 
 // askedText is TextWithAsks, or KeptText where kept.
 func (s *Service) askedText(ctx context.Context, artifactID string, withBlocks, kept bool) (AskedText, error) {
@@ -110,14 +122,9 @@ func (s *Service) askedText(ctx context.Context, artifactID string, withBlocks, 
 	}
 	var answer AskedText
 	if pmdoc.HoldsAskBlock(tree) {
-		stripped, took := withoutAskServerAttributes(tree)
-		if answer.Asks, err = s.textAsks(ctx, artifactID, stripped); err != nil {
+		served, took := servedAskTree(tree, kept)
+		if answer.Asks, err = s.textAsks(ctx, artifactID, served); err != nil {
 			return AskedText{}, err
-		}
-		served := stripped
-		// kept for one release: stored-ask-state
-		if kept {
-			served, took = withoutAskAttributes(tree, keptTextTakesOff)
 		}
 		if took {
 			tree, text = served, nil
@@ -150,45 +157,42 @@ func (s *Service) askedText(ctx context.Context, artifactID string, withBlocks, 
 // version, which a room of this process holds, where the history the room stands behind does not
 // decode (unloadable, the read's error): the version's markdown read back into a tree
 // (pmdoc.ParseRendering), rendered again only where an ask block of it held an attribute the
-// read takes off (kept: KeptText's), with the version's own token, and the asks of that tree. A
-// markdown that does not read back answers unloadable.
+// read takes off (servedAskTree), with the version's own token, and the asks of the tree it
+// serves. A markdown that does not read back answers unloadable.
 func (s *Service) storedAskedText(ctx context.Context, artifactID string, stored AskedText, unloadable error, kept bool) (AskedText, error) {
 	tree, err := pmdoc.ParseRendering(stored.Markdown)
 	if err != nil {
 		return AskedText{}, unloadable
 	}
-	stripped, took := withoutAskServerAttributes(tree)
-	served := stripped
-	// kept for one release: stored-ask-state
-	if kept {
-		served, took = withoutAskAttributes(tree, keptTextTakesOff)
-	}
+	served, took := servedAskTree(tree, kept)
 	if took {
 		if stored.Markdown, err = documentMarkdown(served); err != nil {
 			return AskedText{}, err
 		}
 	}
-	if stored.Asks, err = s.textAsks(ctx, artifactID, stripped); err != nil {
+	if stored.Asks, err = s.textAsks(ctx, artifactID, served); err != nil {
 		return AskedText{}, err
 	}
 	return stored, nil
 }
 
-// textAsks is the asks member of tree, a tree of document artifactID with no server-owned
-// attribute on any ask block: one entry per ask block, in document order, its answer read off the
-// node of the ask that answers for it (askNodeAnswers, textAskOf). A block an ask of the document
-// indexes reads that ask; a copy of an ask of another document of its owner (readBlockAsks) reads
-// its source, and names it and its document; on a closed issue's document, a readable block that
-// neither has an ask nor copies one - a block no settlement has
-// indexed yet, which opens no ask while the issue is closed - reads resolved, since the close
-// withdrew every ask of its issue; and every other block reads no state, a question nobody has
-// opened yet, which the text routes showed with no state before they took the attributes off, and
-// so does every block of a tree that repeats an ask block's id, which settlement reads no block
-// under (askNodes). The asks rows say which ask indexes which block, and the node holds the
-// answer (R3): while a process of the release before answers an ask whose node the decisions
-// step's catch-up has not stated that answer on yet, the asks member reads the ask as its node
-// holds it. Everything is read in a transaction of the read's own that writes nothing and locks no
-// row.
+// textAsks is the asks member of tree, a tree of document artifactID as the text routes serve it
+// (servedAskTree), of whose ask blocks it reads no server-owned attribute (askNodes,
+// parseAskBlock): one entry per ask block, in document order, its answer as every read of an ask
+// shows it (asks.NodeAnswer.ApplyTo) - off the node of the ask that answers for it
+// (askNodeAnswers), or off that ask's row where the row names no node, its answer's only record
+// (textAskOf). A block an ask of the document indexes reads that ask; a copy of an ask of another
+// document of its owner (readBlockAsks) reads its source, and names it and its document; on a
+// closed issue's document, a readable block that neither has an ask nor copies one - a block no
+// settlement has indexed yet, which opens no ask while the issue is closed - reads resolved,
+// since the close withdrew every ask of its issue; and every other block reads no state, a
+// question nobody has opened yet, which the text routes showed with no state before they took the
+// attributes off, and so does every block of a tree that repeats an ask block's id, which
+// settlement reads no block under (askNodes). The asks rows say which ask indexes which block, and
+// the node holds the answer (R3): while a process of the release before answers an ask whose node
+// the decisions step's catch-up has not stated that answer on yet, the asks member reads the ask as
+// its node holds it. Everything is read in a transaction of the read's own that writes nothing and
+// locks no row.
 func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.Node) ([]model.TextAsk, error) {
 	var blocks []*pmdoc.Node
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
@@ -232,12 +236,16 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 		if err != nil {
 			return err
 		}
+		shown := func(ask model.Ask) model.Ask {
+			answers[ask.ID].ApplyTo(&ask)
+			return ask
+		}
 		for index := range entries {
 			id := entries[index].BlockID
 			if ask, held := indexed[id]; held {
-				entries[index] = textAskOf(id, answers[ask.ID], "", "")
+				entries[index] = textAskOf(id, shown(ask), "", "")
 			} else if source, copied := sources[id]; copied {
-				entries[index] = textAskOf(id, answers[source.ask.ID], source.ask.ID, source.document)
+				entries[index] = textAskOf(id, shown(source.ask), source.ask.ID, source.document)
 			} else if closed && parsed[id] {
 				// A readable block no ask indexes on a closed issue's document opens no ask until
 				// the issue reopens (reconcileAskBlocks), and the close withdrew every ask of the
@@ -255,61 +263,64 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 }
 
 // askNodeAnswer is what an ask's node holds of its answer, as the one decoder of the node's
-// answer reads it (asks.NodeAnswer): its answer state, and for an answer who gave it, when, the
-// options chosen and the words, each "" or nil where the node holds none. planned is whether it
-// is what a change the reading transaction plans leaves on the node (plannedAskNodeAnswer), which
-// the transaction may not have written to the node or the row yet.
+// answer reads it (asks.NodeAnswer): whether the ask's row names the node, its answer state, and
+// for an answer who gave it, when, the options chosen and the words, each "" or nil where the node
+// holds none. planned is whether it is what a change the reading transaction plans leaves on the
+// node (plannedAskNodeAnswer), which the transaction may not have written to the node or the row
+// yet.
 type askNodeAnswer struct {
 	asks.NodeAnswer
 	// kept for one release: catch-up
 	planned bool
 }
 
-// askNodeAnswerKinds are the tuples of an ask's node askNodeAnswers reads.
-var askNodeAnswerKinds = []string{
-	graphstore.TupleAnswerState, graphstore.TupleAnswer, graphstore.TupleSelected,
-	graphstore.TupleAnsweredAt, graphstore.TupleAnsweredBy,
-}
+// askNodeAnswersQuery reads what the node of each ask $1 lists holds of its answer, for each ask
+// whose row names its node (asks.node_kind): each fact of its answer that stands on the node, as
+// every statement that reads the answer off the node reads them (asks.NodeAnswerTuples), one row
+// each, and one row with no fact for a node that holds none.
+var askNodeAnswersQuery = `
+	select a.id::text, f.kind, f.to_id
+	from asks a
+	left join lateral (` + asks.NodeAnswerTuples(`a.id::text`) + `) f on f.asserted
+	where a.id = any($1::uuid[]) and a.node_kind is not null`
 
 // askNodeAnswers reads, in tx, what the node of each ask ids names holds of its answer, by ask
-// id, from the node's tuples as they stand now (graphstore.CurrentTupleRead), as a read of an
-// ask's row reads them (api's askNodeAnswerColumn). An ask whose node holds no answer_state - one
-// a process of the release before wrote, before the decisions step states it - is absent, and
-// reads open (textAskOf). An ask whose answer state the ledger that queues tx's
-// writes has planned a change of (Ledger.PlanSettle) - a reopen's restore, planned before the
-// reopen writes its asks' blocks (WriteRestoredAsks, WriteIssueAskStates) - reads as that change
-// leaves its node (plannedAskNodeAnswer): a block written in the same transaction shows the node
-// as the commit leaves it.
+// id, from the node's tuples as they stand now (askNodeAnswersQuery), as a read of an ask's row
+// reads them (api's askNodeAnswerColumn). An ask whose row names no node - one a process of the
+// release before wrote, until the boot step's backfill marks it, or one whose relations are past
+// the store's bound (graphstore.AskFacts) - is absent, and reads as its row holds it, its answer's
+// only record (asks.NodeAnswer.ApplyTo, keptFromItsNode); an ask whose node holds no answer_state
+// - one this build opened, or one a process of the release before answered, before the decisions
+// step states it - reads open (asks.NodeAnswer.ApplyTo). An ask whose answer state the ledger
+// that queues tx's writes has planned a change of (Ledger.PlanSettle) - a reopen's restore,
+// planned before the reopen writes its asks' blocks (WriteRestoredAsks, WriteIssueAskStates) -
+// reads as that change leaves its node (plannedAskNodeAnswer): a block written in the same
+// transaction shows the node as the commit leaves it.
 func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askNodeAnswer, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `
-		select k.id, f.kind, f.to_id
-		from unnest($1::text[]) k (id)
-		cross join lateral (`+graphstore.CurrentTupleRead(
-		`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
-		`t.kind, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = k.id and t.kind = any($2::text[])`)+`
-		) f
-		where f.asserted
-	`, ids, askNodeAnswerKinds)
+	rows, err := tx.Query(ctx, askNodeAnswersQuery, ids)
 	if err != nil {
 		return nil, fmt.Errorf("read the answers of the document's asks off their nodes: %w", err)
 	}
 	defer rows.Close()
 	held := map[string]*askNodeAnswer{}
 	for rows.Next() {
-		var id, kind, value string
+		var id string
+		var kind, value *string
 		if err := rows.Scan(&id, &kind, &value); err != nil {
 			return nil, fmt.Errorf("read an answer of the document's asks off its node: %w", err)
 		}
 		answer := held[id]
 		if answer == nil {
-			answer = &askNodeAnswer{}
+			answer = &askNodeAnswer{NodeAnswer: asks.NodeAnswer{Named: true}}
 			held[id] = answer
 		}
-		if err := answer.Read(kind, value); err != nil {
+		if kind == nil {
+			continue
+		}
+		if err := answer.Read(*kind, *value); err != nil {
 			return nil, fmt.Errorf("read the answer of ask %s off its node: %w", id, err)
 		}
 	}
@@ -318,9 +329,7 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 	}
 	answers := make(map[string]askNodeAnswer, len(held))
 	for id, answer := range held {
-		if answer.State != "" {
-			answers[id] = *answer
-		}
+		answers[id] = *answer
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
 		for _, id := range ids {
@@ -335,9 +344,11 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 // plannedAskNodeAnswer is what the node of an ask holds of its answer once a planned change of its
 // answer state is written, from ask, the ask as that change leaves it (asks.Settled.Ask): the
 // state, and for an answer the person, the time, the options and the words it states on the node
-// (asks' answerFacts).
+// (asks' answerFacts). It reads as a node its row names (asks.NodeAnswer.Named) whether or not the
+// row names one yet: what the change leaves is the ask's answer, on its node or, for a row that
+// names none, on its row alone (asks.Settle).
 func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
-	held := askNodeAnswer{NodeAnswer: asks.NodeAnswer{State: ask.State}}
+	held := askNodeAnswer{NodeAnswer: asks.NodeAnswer{Named: true, State: ask.State}}
 	// kept for one release: catch-up
 	held.planned = true
 	if answer := ask.Answer; answer != nil {
@@ -350,26 +361,23 @@ func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
 	return held
 }
 
-// textAskOf is the entry of the ask block blockID whose ask's node holds answer, or, for a copy,
-// whose source, the ask source on the document whose address is copied, holds it: under the
-// names the roll window writes into the block while another build serves (rollWindowAskWrite) -
-// the state, open where the node holds none; who answered, when, the options chosen (never a nil
-// list) and the words, for an answered ask; and for a copy, the source ask and its document.
-func textAskOf(blockID string, answer askNodeAnswer, source, copied string) model.TextAsk {
-	entry := model.TextAsk{BlockID: blockID, State: answer.State}
-	if entry.State == "" {
-		entry.State = asks.StateOpen
-	}
+// textAskOf is the entry of the ask block blockID whose ask is ask, or, for a copy, whose source,
+// the ask source on the document whose address is copied, is, as every read of an ask shows it
+// (asks.NodeAnswer.ApplyTo): under the names the roll window writes into the block while another
+// build serves (rollWindowAskWrite) - the state; who answered, when, the options chosen (never a
+// nil list) and the words, for an answered ask; and for a copy, the source ask and its document.
+func textAskOf(blockID string, ask model.Ask, source, copied string) model.TextAsk {
+	entry := model.TextAsk{BlockID: blockID, State: ask.State}
 	if copied != "" {
 		entry.CopiedFrom, entry.CopiedFromDocument = source, copied
 	}
-	if entry.State == asks.StateAnswered {
+	if answer := ask.Answer; entry.State == asks.StateAnswered && answer != nil {
 		selected := append([]string{}, answer.Selected...)
-		entry.AnsweredBy = answer.AnsweredBy
-		if answer.AnsweredAt != nil {
-			entry.AnsweredAt = asks.AnsweredAtValue(*answer.AnsweredAt)
+		entry.AnsweredBy = answer.User
+		if !answer.At.IsZero() {
+			entry.AnsweredAt = asks.AnsweredAtValue(answer.At)
 		}
-		entry.Selected, entry.Answer = &selected, answer.Answer
+		entry.Selected, entry.Answer = &selected, answer.Text
 	}
 	return entry
 }

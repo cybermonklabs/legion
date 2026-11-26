@@ -119,8 +119,8 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	}, {
 		// The settlement of a document whose ask block, opened by an earlier settlement, a person's
 		// own editor left with no question: the block fails the strict read, and the settlement
-		// states the reason on the ask's node (docs' stateInvalidReasons, through
-		// asks.PlanInvalidReasons). No server write takes such a block (the edits route refuses
+		// states the reason on the ask's node (asks.PlanInvalidReasons, from docs'
+		// stateCopiesAndReadability). No server write takes such a block (the edits route refuses
 		// it, INVALID_ASK_BLOCK), so alice's browser writes it.
 		Name: "asks/invalid.go#PlanInvalidReasons", Database: r.database,
 		Sites: []string{"asks/invalid.go#PlanInvalidReasons"},

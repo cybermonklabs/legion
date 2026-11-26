@@ -180,7 +180,7 @@ func artifactMissing(err error) bool {
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
 // shape every ask read has (askReadColumns, with the newest reply beside the row). An ask is open
-// as its node holds it (askNodeAnswer.applyTo), which every read of an answer reads (R3), so the
+// as its node holds it (asks.NodeAnswer.ApplyTo), which every read of an answer reads (R3), so the
 // statement reads each of the spec's asks and the scan keeps the open ones. reader is the
 // answer's own, and each row registers its texts with it once the slice has stopped growing: a
 // shaping registers a pointer into the row, and an append that moved the backing array would

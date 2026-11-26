@@ -26,12 +26,11 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 // nodeAnswer is the answer of the ask a as every read of an answer shows it (R3), as
 // model.AskAnswer's JSON without its act: where the row names its node (asks.node_kind), the answer
 // the node holds on an ask it holds answered - its words, its selection, its time and its person,
-// each fact that stands read through the store's one reading of the log
-// (graphstore.CurrentTupleRead), as api's askNodeAnswerColumn reads them - and null on an ask it
-// holds otherwise; and the row's own answer where the row names no node, its answer's one record
-// until the boot step's backfill marks it. The node holds no act, so scan lays the row's on it
-// where the row holds the same person's answer at the same time, as api's askNodeAnswer.applyTo
-// does.
+// each fact that stands read through the one reading of the node's answer in SQL
+// (asks.NodeAnswerTuples), as api's askNodeAnswerColumn reads them - and null on an ask it holds
+// otherwise; and the row's own answer where the row names no node, its answer's one record until
+// the boot step's backfill marks it. The node holds no act, so scan lays the row's on it where the
+// row holds the same person's answer at the same time, as asks.NodeAnswer.ApplyTo does.
 //
 // It decodes the node's facts in SQL rather than through the decoder every reader in Go shares
 // (asks.NodeAnswer): the one statement of List reads the answers of every ask that reached the
@@ -48,12 +47,7 @@ var nodeAnswer = `case when a.node_kind is null then a.answer else (
 			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleSelected + `') as selected,
 			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnsweredAt + `') as answered_at,
 			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnsweredBy + `') as answered_by
-			from (` + graphstore.CurrentTupleRead(
-	`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
-	`t.kind, t.to_id, t.asserted`,
-	`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = a.id::text and t.kind in ('`+
-		graphstore.TupleAnswerState+`', '`+graphstore.TupleAnswer+`', '`+graphstore.TupleSelected+`', '`+
-		graphstore.TupleAnsweredAt+`', '`+graphstore.TupleAnsweredBy+`')`) + `) n
+			from (` + asks.NodeAnswerTuples(`a.id::text`) + `) n
 			where n.asserted
 		) f
 	) end`
@@ -298,7 +292,7 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 			return model.SessionAnswer{}, fmt.Errorf("decode ask %s answer: %w", item.ID, err)
 		}
 		// The node holds no act: the answer carries the row's where the row holds the node's own
-		// answer, the same person's at the same time, as api's askNodeAnswer.applyTo lays it.
+		// answer, the same person's at the same time, as asks.NodeAnswer.ApplyTo lays it.
 		if current.Act == nil && len(rowAnswer) > 0 {
 			var row model.AskAnswer
 			if err := json.Unmarshal(rowAnswer, &row); err != nil {

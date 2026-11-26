@@ -172,23 +172,41 @@ func onItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
 // the node is behind the row. The one writer of an answer state writes the row and the node in one
 // transaction (asks.Settle), so the two differ only where a process of the release before wrote
 // the row alone, before the decisions step's catch-up states it on the node at its next tick: an
-// answer, a resolution or a reopen that release wrote into the row of an ask whose node holds
-// another state, or none - an ask this build opened, or one that release made, whose row names no
-// node until the step's backfill marks it. There the row is the newer of the two, and a node that
-// holds no answer state, or another state than the row's that no change the transaction plans
-// puts there (askNodeAnswer.planned), is behind it. That release's last process can leave the
-// fleet before the tick, and a version written in between keeps the state, the answerer and the
-// time that release recorded, which its CLI and pages read off the version (R5), where the node's
-// would take them off for good, since the catch-up writes no version. Once the node is caught up
-// it holds the row's state, and the node decides (R3).
+// answer, a change of an answer, a resolution or a reopen that release wrote into the row of an
+// ask whose node holds another state or answer, or none - an ask this build opened, or one that
+// release made, whose row names no node until the step's backfill marks it (askNodeAnswers leaves
+// such an ask out). There the row is the newer of the two, and a node that holds no answer state,
+// another state than the row's, or for an answered ask another answer (answeredOtherwise), that
+// no change the transaction plans puts there (askNodeAnswer.planned), is behind it. That
+// release's last process can leave the fleet before the tick, and a version written in between
+// keeps the state, the answerer and the time that release recorded, which its CLI and pages read
+// off the version (R5), where the node's would take them off for good, since the catch-up writes
+// no version. Once the node is caught up it holds the row's state and answer, and the node decides
+// (R3).
 //
 // kept for one release: stored-ask-state
 // kept for one release: catch-up
 func keptFromItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
-	if held, stated := nodes[ask.ID]; !stated || held.State != ask.State && !held.planned {
+	if held, stated := nodes[ask.ID]; !stated || !held.planned && (held.State != ask.State || answeredOtherwise(ask, held.NodeAnswer)) {
 		return ask
 	}
 	return onItsNode(ask, nodes)
+}
+
+// answeredOtherwise reports whether node, the node of ask, a row of the asks table that holds it
+// answered, holds another answer than the row: another person's (asks.AnswererOf, the person the
+// node's answered_by names for an answer), or one given at another time. The release before lets
+// a person change an answer while the ask stays answered, with a new time, and writes the change
+// into the row alone, so such a node is behind the row as one in another state is
+// (keptFromItsNode).
+//
+// kept for one release: stored-ask-state
+// kept for one release: catch-up
+func answeredOtherwise(ask model.Ask, node asks.NodeAnswer) bool {
+	if ask.State != asks.StateAnswered || ask.Answer == nil {
+		return false
+	}
+	return node.AnsweredBy != asks.AnswererOf(*ask.Answer) || node.AnsweredAt == nil || !node.AnsweredAt.Equal(ask.Answer.At)
 }
 
 // shownAsks is how a write shows on its block each ask read holds, for the fleet as it stands

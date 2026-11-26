@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -509,13 +510,37 @@ func AnswerKinds() []string {
 	return kinds
 }
 
+// NodeAnswerTuples is the read of the answer the node of an ask holds as it stands now, as SQL a
+// statement splices in: the newest tuple of each fact of AnswerKinds out of the node of the ask
+// whose id, as text, the SQL expression id names, a value by its kind and a relation by its far
+// end (graphstore.CurrentTupleRead), as t.kind, t.to_kind, t.to_id and t.asserted, which the
+// caller's `where asserted` cuts to the facts that stand. A fact of a kind a reader does not read
+// is left by it, as Read leaves one. It is the one reading of the node's answer in SQL, which
+// every statement that reads the answer off the node shares: api's ask reads
+// (askNodeAnswerOf), docs' text routes and writes (askNodeAnswers), the answers a session was
+// delivered (sessionanswers' nodeAnswer) and the replay's check of the answers it serves
+// (loadtest's servedAnswersQuery).
+func NodeAnswerTuples(id string) string {
+	return graphstore.CurrentTupleRead(
+		`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
+		`t.kind, t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = `+id+` and t.kind in ('`+strings.Join(AnswerKinds(), `', '`)+`')`)
+}
+
 // NodeAnswer is what an ask's node holds of its answer state, read off the facts of AnswerKinds
 // that stand on it (Read): the answer state, "" where the node holds none; the answer's words,
 // the options it selects, its time and the person who gave it (answered_by), each nil or "" where
 // the node holds none; and the resolution, nil for none. decided_by names the person answered_by
 // names (answerFacts), so it is read as nothing more. It is the one decoder of the node's answer,
 // which every reader of it in Go shares (R3).
+//
+// Named says the ask's row names the node (asks.node_kind), which its reader reads beside the
+// facts. Settle states an answer on the node only once the row names it, so the row of an ask a
+// process of the release before wrote, until the boot step's backfill marks it, and of an ask
+// whose relations are past the store's bound (graphstore.AskFacts) is its answer's only record,
+// and every read of such an ask reads its answer off the row (ApplyTo).
 type NodeAnswer struct {
+	Named      bool
 	State      string
 	Answer     *string
 	Selected   []string
@@ -562,4 +587,37 @@ func (n *NodeAnswer) Read(kind, value string) error {
 		n.Resolution = &resolution
 	}
 	return nil
+}
+
+// ApplyTo lays n over ask, read from its row, as every read of an ask shows its answer state and
+// answer (R3), in the shape the row projects them in (migration 0007's asks_answer_state_check
+// and asks_resolution_state_check): the answer state the node holds, open where it holds none - an
+// ask no settlement has written (Settle); its answer on an answered ask alone, with its words,
+// selection, time and person; and its resolution on a resolved ask alone. The node holds no act
+// (model.AskAnswer.Act), so the answer carries the row's where the row holds the node's own
+// answer, the same person's at the same time, and none otherwise. A row that names no node
+// (Named) is left as it reads, its answer's only record. api's ask reads and docs' text routes
+// both read an ask's answer through it.
+func (n NodeAnswer) ApplyTo(ask *model.Ask) {
+	if !n.Named {
+		return
+	}
+	row := ask.Answer
+	ask.State, ask.Answer, ask.Resolution = StateOpen, nil, nil
+	if n.State != "" {
+		ask.State = n.State
+	}
+	switch ask.State {
+	case StateAnswered:
+		answer := &model.AskAnswer{Selected: append([]string{}, n.Selected...), Text: n.Answer, User: n.AnsweredBy}
+		if n.AnsweredAt != nil {
+			answer.At = *n.AnsweredAt
+		}
+		if row != nil && row.At.Equal(answer.At) && model.CanonicalLogin(row.User) == answer.User {
+			answer.Act = row.Act
+		}
+		ask.Answer = answer
+	case StateResolved:
+		ask.Resolution = n.Resolution
+	}
 }

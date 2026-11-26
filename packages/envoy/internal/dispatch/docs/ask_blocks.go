@@ -59,7 +59,7 @@ type settlementReconciliation struct {
 	indexedAskBlocks []string
 	// invalid is the reason each ask whose block settlement could not read fails the strict read
 	// for (readAskBlockStrictly), by ask id, where the block has an ask row; readable is each ask
-	// whose block reads again. stateInvalidReasons writes both on the asks' nodes.
+	// whose block reads again. Settlement states both on the asks' nodes (asks.PlanInvalidReasons).
 	invalid  map[string]string
 	readable []string
 	// follows are the follows of the asks this settlement opened, each beside the ask it follows:
@@ -223,16 +223,6 @@ func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, a
 		b.Queue(fmt.Sprintf("state the copies of %s", artifactID), "with "+arms+"\nselect 1", params...)
 		return nil
 	}, nil
-}
-
-// stateInvalidReasons plans what settlement writes on the node of each ask it read the
-// readability of the block of: the reason each block that fails the strict read fails it for,
-// where the block has an ask row (invalid), as the node's `invalid` value; and, for each ask whose
-// block reads again (readable), the retraction of the value its node holds. The one writer of the
-// ask node's tuples plans them (asks.PlanInvalidReasons). It answers the step that states them
-// under cause, nil where there is none to state, in who's name at at.
-func (r *settlementReconciliation) stateInvalidReasons(ctx context.Context, tx pgx.Tx, who model.Actor, at time.Time) (func(b *store.WriteBatch, cause int64) error, error) {
-	return asks.PlanInvalidReasons(ctx, tx, r.invalid, r.readable, who, at)
 }
 
 // blockRepair is one attribute repair settlement made to the block of type blockType carrying
@@ -582,7 +572,7 @@ func closeWithdrawn(ask model.Ask) bool {
 // indexes it, and none of the seven where none does. `invalid` is written into the live tree
 // either way: onto a block that fails the strict read, and off one that reads again, and
 // where the block has an ask row its node holds the reason too, until the block reads again
-// (stateInvalidReasons).
+// (asks.PlanInvalidReasons).
 //
 // issueClosed is whether the issue row, as the settlement's transaction locked it, reads closed
 // (settlement.issueClosed), and on a closed issue no ask changes: the close withdrew every ask of

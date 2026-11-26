@@ -770,9 +770,9 @@ func (s *server) readMyReplyRows(
 // whose ask holds no answer as its node holds it keeps the reply the page's statement read for it,
 // a reply with no author and no line. It is a statement of its own, over the asks of those rows
 // alone, rather than a lateral of the page's: the node's facts are read through one text
-// (askNodeFacts), whose relations and values no one index orders, and the page's plan is held to
-// sorting nothing (TestMyRepliesQueriesReadTheirStatesIndex). It runs in the page's transaction,
-// so it reads the snapshot the page read.
+// (asks.NodeAnswerTuples), whose relations and values no one index orders, and the page's plan is
+// held to sorting nothing (TestMyRepliesQueriesReadTheirStatesIndex). It runs in the page's
+// transaction, so it reads the snapshot the page read.
 func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, answered []int, serverURL string) error {
 	if len(answered) == 0 {
 		return nil

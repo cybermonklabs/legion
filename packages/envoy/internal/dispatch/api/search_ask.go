@@ -9,7 +9,7 @@ import (
 )
 
 // attachAskStates sets Ask, in place, on every ask hit of a search page: the ask's state, its
-// answer and its resolution, read off its node (askNodeAnswerColumn, askNodeAnswer.applyTo), as
+// answer and its resolution, read off its node (askNodeAnswerColumn, asks.NodeAnswer.ApplyTo), as
 // every read of an answer reads them (R3), and Author, the ask's asker, from its row. A resolved
 // ask's answer is the last one its ask.answered events recorded (loadAskAnswersByAsk), since a
 // resolved ask holds no answer in the shape every ask read gives it, and one that document
@@ -46,7 +46,7 @@ func (s *server) attachAskStates(ctx context.Context, q queryer, results []model
 		if err != nil {
 			return fmt.Errorf("read search ask %s: %w", ask.ID, err)
 		}
-		node.applyTo(&ask)
+		node.ApplyTo(&ask)
 		if ask.State == "resolved" {
 			resolvedIDs = append(resolvedIDs, ask.ID)
 		}

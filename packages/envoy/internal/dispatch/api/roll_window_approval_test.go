@@ -22,7 +22,7 @@ import (
 // its asks row (docs' rollWindowAskAttributes), the release before's second copy of the answer. A
 // test's editor presents no schema_creatable, so its creatable version is 1, at most the lowest
 // version the fleet reads, and its document socket stays writable beside the release before
-// (docs' schemaFleet.admits), as a page creating nothing past version 4 is in a roll.
+// (docs' schemaFleet.admits), as a page creating nothing past version 5 is in a roll.
 func registerTwoBuilds(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -35,11 +35,12 @@ func registerTwoBuilds(t *testing.T, database *store.Store) {
 }
 
 // baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of the release
-// before registers: the base release's pmdoc/schema/blocks.json is version 4, and creates nothing
-// past it.
+// before registers: the base release's pmdoc/schema/blocks.json is version 5, one below this
+// build's 6, and creates nothing past it. So a fleet holding one drives the fleet guard at the
+// real boundary, version 5 against this build's 6.
 const (
-	baseSchemaVersion   = 4
-	baseSchemaCreatable = 4
+	baseSchemaVersion   = 5
+	baseSchemaCreatable = 5
 )
 
 // whileTheReleaseBeforeServes runs write with a live process of the release before registered
