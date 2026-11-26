@@ -167,10 +167,12 @@ func (m *Machine) replaceEndedSession(ctx context.Context) (applied bool) {
 // one launch asks mayForget once. A launch an operator's own request raises keeps its session,
 // because the operator asked for that session: an operator's resume (RequestResume), and a task an
 // operator delivers to a suspended controller (deliverResuming). Those are the controller's two
-// exempt launches (exemptWake; an operator's retry is refused for the controller, the operator's
-// spawn route names an issue, and the keeper's start message, the daemon's own task of no row,
-// resumes nothing: RequestDeliver.ResumesNothing), and the wake gate lets every launch of the
-// controller through by identity, so for the controller exempt is read for this rule alone. The
+// exempt launches that keep a session (exemptWake; an operator's retry reaches the controller only
+// when it is held for a cyber-policy refusal, Claim.KeeperRetries, and that retry leaves the session
+// behind before its launch, freshSession; the operator's spawn route names an issue; and the
+// keeper's start message, the daemon's own task of no row, resumes nothing:
+// RequestDeliver.ResumesNothing), and the wake gate lets every launch of the controller through by
+// identity, so for the controller exempt is read for this rule alone. The
 // fresh agent is told in its first prompt which session it replaces and why (abandonedTask), and
 // one Warn line names the old session, the reason and when it started (R4). The old session's
 // transcript stays in its store.

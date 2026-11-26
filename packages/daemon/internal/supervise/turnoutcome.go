@@ -139,9 +139,11 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 //
 // A turn that ran no prompt of the daemon's — a phase reminder the plugin sent (pi.sendMessage),
 // an Envoy message, a background job's result — is held to dispatch://INFRA-4508's R1 as a
-// prompt's turn is. A refusal whose status cannot clear (holdsTheIssue) fails the claim at once
-// with CauseProviderError, so the workflow holds the issue for its architect, and the plugin's
-// reminders end: their record check drops every reminder of a failed claim. A refusal that can
+// prompt's turn is. A refusal whose status cannot clear (classifyProviderError) fails the claim at
+// once with CauseProviderError, and one the producer classed as OpenAI's cyber-policy refusal
+// (RequestTurnOutcome.Code) with CauseCyberPolicy whatever its status, so the workflow holds the
+// issue for its architect, and the plugin's reminders end: their record check drops every
+// reminder of a failed claim. A refusal that can
 // clear, or whose report carries no status, fails nothing, and the reminders keep their pace; it
 // counts in the claim's one run of provider-error turns (ProviderErrorRun) beside refused prompts,
 // so the project's controller is told once when that run reaches providerErrorRunTold.
@@ -169,7 +171,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message}
 	kept := m.recordTurnOutcome(o)
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
-		"refused", r.Refused, "httpStatus", r.HTTPStatus, "unprompted", r.Unprompted,
+		"refused", r.Refused, "httpStatus", r.HTTPStatus, "code", r.Code, "unprompted", r.Unprompted,
 		"refusedRun", m.claim.RefusedRun())
 	switch {
 	case !kept || r.Generation != m.claim.Generation:
@@ -191,21 +193,32 @@ func (m *Machine) newestTurnOutcome(o TurnOutcome) bool {
 	return len(window) > 0 && compareTurnOutcomes(window[len(window)-1], o) == 0
 }
 
-// freshSession is whether a retry starts a new session rather than relaunching the recorded one,
-// and why, for the line it logs: only when the retry asks for one, with `legion claims retry
+// freshSession is whether a retry of c starts a new session rather than relaunching the recorded
+// one, and why, for the line it logs: when the retry asks for one, with `legion claims retry
 // --fresh-session` or the controller's fresh_session, since a new session is an operator's or the
-// controller's choice (dispatch://INFRA-956's Design). Every other retry — its architect's
-// retry_or_escalate, the next start of its role, an operator's retry that asks for nothing —
-// resumes the recorded session with fresh budgets, but for the one case below, whatever the
-// claim's run of refused turns (dispatch://INFRA-4508's R5). That run is no sign that the session
-// is bad: a refusal that cannot clear fails the claim on the turn it ends, and holds the issue, so
-// a run is mostly refusals that can clear or carry no status, such as a team limit's 429, which
-// refuses every session of the team alike. A claim failed on a refusal that cannot clear resumes
-// too; if its session is refused again, it fails again at once. The one case is the project
-// controller's launch after its session's second end in a row since a finished turn: whatever this
-// answers, that launch forgets the session and spawns a fresh agent (launchNow's
-// replaceEndedSession, dispatch://INFRA-2045 R1).
-func freshSession(ev Event) (bool, string) {
+// controller's choice (dispatch://INFRA-956's Design), and for every retry of a claim held for
+// OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy), whoever makes it. Every other retry —
+// its architect's retry_or_escalate, the next start of its role, an operator's retry that asks for
+// nothing — resumes the recorded session with fresh budgets, but for the one case at the end,
+// whatever the claim's run of refused turns (dispatch://INFRA-4508's R5). That run is no sign that
+// the session is bad: a refusal that cannot clear fails the claim on the turn it ends, and holds
+// the issue, so a run is mostly refusals that can clear or carry no status, such as a team limit's
+// 429, which refuses every session of the team alike. A claim failed on a refusal that cannot clear
+// resumes too; if its session is refused again, it fails again at once.
+//
+// A cyber-policy refusal is the one failure that a resume would repeat by itself: the retry's
+// first task is input from outside the session, which ends Oh My Pi's hold, so the session's
+// refused content goes to OpenAI again, the claim fails again, and its architect, told again,
+// retries again. The retries that reach such a claim are the ones someone decided (retry's
+// RetryHeld refuses the rest), and none of them decided to send that content again, so each
+// leaves the session behind: the claim's failure sentence is the reason the abandoned session is
+// recorded under (retry), and the run of provider-error turns starts over with it
+// (Machine.forgetSession).
+//
+// The one case at the end is the project controller's launch after its session's second end in a
+// row since a finished turn: whatever this answers, that launch forgets the session and spawns a
+// fresh agent (launchNow's replaceEndedSession, dispatch://INFRA-2045 R1).
+func freshSession(c Claim, ev Event) (bool, string) {
 	asked := false
 	switch ev := ev.(type) {
 	case RequestRetry:
@@ -213,8 +226,11 @@ func freshSession(ev Event) (bool, string) {
 	case RequestOperatorRetry:
 		asked = ev.FreshSession
 	}
-	if asked {
+	switch {
+	case asked:
 		return true, "the retry asked for a new session"
+	case c.HeldForCyberPolicy():
+		return true, "the claim failed on OpenAI's cyber_policy refusal of its session's content, which a relaunch of that session would send again"
 	}
 	return false, ""
 }

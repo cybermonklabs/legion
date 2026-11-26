@@ -817,7 +817,7 @@ func TestOnlyAProviderFailureFillsThePromptResultsError(t *testing.T) {
 				t.Errorf("the error's message %q is not Claude Code's own words", got)
 			}
 			// False for every failure of the bridge's: it knows nothing that says one can clear,
-			// and the daemon decides from the status alone (supervise's holdsTheIssue).
+			// and the daemon decides from the status alone (supervise's classifyProviderError).
 			if failure["retryable"] != false {
 				t.Errorf("retryable = %v, want false", failure["retryable"])
 			}

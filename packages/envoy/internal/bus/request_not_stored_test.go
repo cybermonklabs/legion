@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A role forward is a window's Request to the holder's agent subject, under the forward's
@@ -69,16 +70,10 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 		}
 		return info.State.Subjects[subject]
 	}
-	// answer waits for outcome's answer, far longer than any request's own timeout here.
+	// answer waits for outcome's answer, which each request's own timeout here bounds.
 	answer := func(outcome <-chan error) error {
 		t.Helper()
-		select {
-		case err := <-outcome:
-			return err
-		case <-time.After(30 * time.Second):
-			t.Fatal("no answer within 30 s")
-			return nil
-		}
+		return testwait.Receive(t, "the request to be answered", outcome)
 	}
 	// refused fills the stream, forwards item to holder under opts, which the full stream refuses
 	// with an error acknowledgement that settles the forward as ErrStreamFull at once, and purges

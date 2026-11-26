@@ -49,7 +49,7 @@ type CompactResponse struct {
 // daemon did not write: Oh My Pi's for a compaction it refused or skipped, and through that a
 // summarizer model's own explanation of a refusal. It reaches the controller's tool result and
 // so its next prompt, where no text the daemon did not write belongs
-// (dispatch://INFRA-956 R2, supervise's providerErrorCause). The known refusals are one short
+// (dispatch://INFRA-956 R2, supervise's classifyProviderError). The known refusals are one short
 // sentence each ("Nothing to compact (session too small)" is 37 bytes), and a transport
 // failure's is of the same order, so 200 bytes carries every reason the operation has and no
 // model's essay.
@@ -209,19 +209,19 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     this server as Options.Backend, which the daemon fills from config.Config.BackendFor.
 //
 // The project's own controller claim is not refused here, where a fresh session of it is
-// (freshSession's NOT_THE_CONTROLLER). The asymmetry is the two operations' own, not an
-// oversight: a fresh session stops the controller's process and starts it again, which is the
-// daemon's controller keeper's to do in every state the controller is in, and a compaction
+// (freshSession's NOT_THE_CONTROLLER), unless it is held for OpenAI's cyber-policy refusal, which
+// its keeper retries no more (supervise.Claim.KeeperRetries). The asymmetry is the two operations'
+// own, not an oversight: a fresh session stops the controller's process and starts it again, which
+// is the daemon's controller keeper's to do in every state the controller is in, and a compaction
 // stops nothing — the session, its process and everything the controller holds stay, and only
 // the transcript gets shorter. The controller's own door still cannot name it, since
 // `controller` is no role a claim token is built from (claimCompact).
 //
-// So the refusals of this door are the only ones a controller claim ever reads, and what they
-// name as starting it again is never the fresh session, which would refuse the very claim they
-// send there: it is that keeper for a controller suspended, failed or retired, and the
-// operator's own suspend and resume for one stored working over a dead process, which the
-// keeper ends only past its turn bound (startsAgainName, refuseState, refuseHeldSuspension,
-// refuseDeadController).
+// So what the refusals of this door name as starting a controller claim again is never the fresh
+// session: it is that keeper for a controller suspended, failed or retired, the operator's retry
+// of the claim for one held for a cyber-policy refusal (startsAgainOf), and the operator's own
+// suspend and resume for one stored working over a dead process, which the keeper ends only past
+// its turn bound (startsAgainName, refuseState, refuseHeldSuspension, refuseDeadController).
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, and the
 // ladder's wait goes with it, so the owed task goes now rather than at the end of a wait
@@ -395,9 +395,9 @@ func (s *server) refuseState(w http.ResponseWriter, r *http.Request, m *supervis
 			s.refuseDeadController(w, r, token)
 			return false
 		}
-		s.refuseNotRunning(w, r, token, overADeadProcess, view.Role)
+		s.refuseNotRunning(w, r, token, overADeadProcess, view.Claim)
 	case startsAgain(state):
-		s.refuseNotRunning(w, r, token, string(state), view.Role)
+		s.refuseNotRunning(w, r, token, string(state), view.Claim)
 	default:
 		s.writeFailure(w, r, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 			"%s is %s. %s. %s", token, state, compactOp.reaches, askAgainLater))
@@ -416,13 +416,14 @@ const overADeadProcess = "stored working over a process that is no longer runnin
 // stored working that the read of its process found nothing behind (refuseState). doing is
 // what that claim is, in the words the sentence reads it as — the state for the first, and
 // what the read found for the second (overADeadProcess). There is no session to compact either
-// way, so both are named what starts the claim again, which the claim's role decides
-// (claimNotRunning, startsAgainName). The one claim of the second window it is not given to is
-// the project's own controller, which has a sentence of its own (refuseDeadController).
-func (s *server) refuseNotRunning(w http.ResponseWriter, r *http.Request, token claim.Token, doing string, role claim.Role) {
+// way, so both are named what starts the claim again, which the claim's role decides, and for
+// the project's own controller whether it is held for a cyber-policy refusal (claimNotRunning,
+// startsAgainOf). The one claim of the second window it is not given to is the project's own
+// controller, which has a sentence of its own (refuseDeadController).
+func (s *server) refuseNotRunning(w http.ResponseWriter, r *http.Request, token claim.Token, doing string, c supervise.Claim) {
 	s.writeFailure(w, r, http.StatusConflict, claimNotRunning, fmt.Sprintf(
 		"%s is %s, so it runs no Oh My Pi session to compact; %s starts it again instead",
-		token, doing, startsAgainName(role)))
+		token, doing, startsAgainOf(c)))
 }
 
 // refuseDeadController is the compaction's refusal of the project's own controller stored
@@ -454,21 +455,35 @@ const freshSessionName = "fresh_session (`legion claims retry --fresh-session`)"
 // suspended stands until that operator resumes it, and a refusal that named the keeper alone
 // would leave the operator waiting on a resume that never comes (the daemon's controllerKeeper,
 // supervise.Claim.RuleHolds). The keeper launches a queued controller, resumes one the daemon
-// suspended, and retries one that failed or retired.
+// suspended, and retries one that failed or retired, but for one held for OpenAI's cyber-policy
+// refusal, which it retries no more (startsAgainOf).
 const controllerKeeperName = "the daemon's controller keeper (whose resume an operator's own suspension holds)"
 
 // startsAgainName is what a refusal names as starting the claim again once its process is gone —
 // a claim that is suspended, failed or retired (startsAgain) — which the claim's role decides.
 // Every workflow role's is the fresh session, which reaches all three of those states
 // (freshSessionOp). The project's own controller's is the daemon's controller keeper: the fresh
-// session refuses the controller in every state, since stopping its process and starting it
+// session refuses every controller its keeper retries, since stopping its process and starting it
 // again is that keeper's alone (freshSession's NOT_THE_CONTROLLER), so a controller sent to the
-// fresh session is sent to a door that refuses it. Only the compaction's refusals have a
-// controller to answer, because the compaction is the one of the two recoveries that reaches it
-// (compact).
+// fresh session is sent to a door that refuses it; a controller the keeper retries no more is
+// startsAgainOf's. Only the compaction's refusals have a controller to answer, because the
+// compaction is the one of the two recoveries that reaches it (compact).
 func startsAgainName(role claim.Role) string {
 	if role == claim.RoleController {
 		return controllerKeeperName
 	}
 	return freshSessionName
+}
+
+// startsAgainOf is what a refusal names as starting c again once its process is gone: its role's
+// (startsAgainName), but for the project's controller held for OpenAI's cyber-policy refusal,
+// which its keeper retries no more (supervise.Claim.KeeperRetries). That controller's way back is
+// the operator's retry, which starts its agent again in a new session (supervise.RetryCommand); the
+// controller's own fresh_session cannot name the controller's claim, so freshSessionName would
+// send the operator to a door that does not reach it.
+func startsAgainOf(c supervise.Claim) string {
+	if c.Role == claim.RoleController && !c.KeeperRetries() {
+		return "the operator's `" + supervise.RetryCommand(c.Token) + "`"
+	}
+	return startsAgainName(c.Role)
 }
