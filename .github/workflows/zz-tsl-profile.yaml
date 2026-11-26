@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [base, early, earlytsgo]
+        leg: [tsgo, earlytsgo]
         rep: [1, 2, 3]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
@@ -23,13 +23,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Warm the tsgo download
-        if: matrix.leg == 'earlytsgo'
+        if: matrix.leg == 'earlytsgo' || matrix.leg == 'tsgo'
         run: bunx --package @typescript/native-preview tsgo --version
       - name: Compute every filter from what each job reads
         env:
           CI_TS_INSTALL: ''
-          CI_TSGO: ${{ matrix.leg == 'earlytsgo' && '1' || '' }}
-          CI_EARLY_GO: ${{ matrix.leg != 'base' && '1' || '' }}
+          CI_TSGO: '1'
+          CI_EARLY_GO: ${{ matrix.leg == 'earlytsgo' && '1' || '' }}
           PROF_LOG: ${{ runner.temp }}/prof.json
           PROF_SAMPLE: ${{ runner.temp }}/sample.json
         run: |
