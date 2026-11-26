@@ -106,8 +106,8 @@ each requirement of that spec as a `requirement` block, and write the child's Ve
 document (`verification.md`) with it: one `check` block per thing that must be proved, each with
 `serves`, `surface`, `run`, `when` and `negative_control`, since a reviewer step counts no check
 but this issue's own, your acceptance reads them, and the retro holds or sends the issue back for
-one with no pass standing (`skill://legion-retro`). A check carrying `ci_check` is CI's and takes
-no `run` (`skill://legion-architect/references/design-gate.md`). When your `Production check` line
+one with no pass standing (`skill://legion-retro`). A check carrying `ci_check` is CI's and
+takes no `run` (`skill://legion-architect/references/design-gate.md`). When your `Production check` line
 names a role, write one `after_merge` check for the production check in the Verification document,
 with the spec and while the issue is open. Under `Production check: off`, write none. A child
 issue's spec is never gated: the architect above you reviews each version of this child's spec and
