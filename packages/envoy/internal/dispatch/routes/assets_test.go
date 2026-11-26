@@ -857,7 +857,9 @@ func (s *gatheringStore) GetAsset(ctx context.Context, _ string) ([]byte, error)
 // A route of a stale tab, or many tabs of one build at once, ask for one chunk together before the
 // store has answered any of them: the store is read once and every request is answered with it.
 func TestStaticHandlerReadsTheStoreOnceForConcurrentMisses(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the store holds its first read 1 s for the other misses to arrive, and a miss
+	// load delays past that second finds the cache filled, which passes the test without a concurrent
+	// miss.
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	const object = "console.log('another build')"

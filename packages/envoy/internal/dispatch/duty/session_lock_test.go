@@ -94,11 +94,9 @@ func TestFreeSessionLockClosesTheConnectionWhenItsUnlockAnsweredFalse(t *testing
 
 // An unlock that does not answer within leaseCallTimeout fails at the bound, and the connection is
 // closed: a half-open connection would otherwise hold the caller until TCP gave it up.
-//
-// The elapsed time is read around the one call, so the parallel tests' load can only lengthen it,
-// and the ceiling leaves ten seconds past duty.LeaseCallTimeout for that.
 func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the unlock must give up within LeaseCallTimeout and 10 s more, a ceiling on a
+	// measured span that load could push a correct unlock past.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7003)

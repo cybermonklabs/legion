@@ -592,7 +592,9 @@ func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
 // first 120 s and had not reached the newest. Every event that committed before that write took its
 // id is final, so event_head may stand below the open write but not below those.
 func TestWhoamiDoesNotSendAPageToReplayTheWholeLogWhileAWriteFromBeforeBootIsOpen(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the write from before boot ends 3 s after the server starts, and the answer
+	// must come while it is open: load could hold the answer past that end and pass the test without
+	// the open write.
 	const committed = 1000
 	database := storetest.Open(t)
 	ctx := t.Context()

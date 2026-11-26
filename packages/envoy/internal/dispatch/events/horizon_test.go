@@ -437,7 +437,8 @@ func TestHorizonLogsAFailedObservationAtMostOnceEveryWarnEvery(t *testing.T) {
 // A write that drew a lower id and is still open keeps the horizon below it however often a reader
 // asks, while a higher id beside it has committed; once it commits, Await reaches past both.
 func TestHorizonStaysBelowAnOpenLowerWrite(t *testing.T) {
-	t.Parallel()
+	// Not parallel: requireHorizonBelow reads Await running out of a 300 ms context as Await
+	// waiting behind the writer, a window load could spend before Await waits at all.
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -473,7 +474,8 @@ func TestHorizonStaysBelowAnOpenLowerWrite(t *testing.T) {
 // committed while both stay open is final at once: one observation proves it, and Await answers it
 // well inside the time a stall takes to be reported.
 func TestHorizonIsNotHeldByATransactionThatWritesNoEvent(t *testing.T) {
-	t.Parallel()
+	// Not parallel: Await must answer within horizonStallAfter (5 s), the time a stall takes to be
+	// reported, which is the subject.
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -521,7 +523,8 @@ func TestHorizonProvesItsOwnObservationWithNoEventWriteOpen(t *testing.T) {
 // since the read cannot tell which ids a writer holds. H moves once the write ends and a later
 // observation runs.
 func TestHorizonDoesNotProveItsOwnObservationWhileAnEventWriteIsOpen(t *testing.T) {
-	t.Parallel()
+	// Not parallel: requireHorizonBelow reads Await running out of a 300 ms context as Await
+	// waiting behind the writer, a window load could spend before Await waits at all.
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -555,7 +558,8 @@ func TestHorizonDoesNotProveItsOwnObservationWhileAnEventWriteIsOpen(t *testing.
 // session inserts an event it is an event writer, holding a transaction id below every later
 // observer's, and the next event committed beside it waits for it.
 func TestHorizonIsHeldByASessionOnlyOnceItWritesAnEvent(t *testing.T) {
-	t.Parallel()
+	// Not parallel: requireHorizonBelow reads Await running out of a 300 ms context as Await
+	// waiting behind the writer, a window load could spend before Await waits at all.
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -643,7 +647,8 @@ func TestAnObservationReadsTheEventWritersAfterItsMark(t *testing.T) {
 // has notified, so only an event write that bypassed that trigger can prepare: the writer here
 // bypasses it as a logical replication apply worker does (session_replication_role = replica).
 func TestAnObservationFindsAnEventWriterThatPreparesDuringItsRead(t *testing.T) {
-	t.Parallel()
+	// Not parallel: requireHorizonBelow reads Await running out of a 300 ms context as Await
+	// waiting behind the writer, a window load could spend before Await waits at all.
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

@@ -596,7 +596,8 @@ func (s slowLeases) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 // TestALoneRunnerMakesAPassOnEveryTick lost one tick in ten. Read by when it was due, each tick
 // serves its own period.
 func TestExclusiveCountsALateTickInThePeriodItWasDueIn(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its second read must run before the next period boundary, 200 ms after its due
+	// time; load could push it past the boundary and pass a gate that buckets by when the read ran.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()

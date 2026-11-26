@@ -649,7 +649,8 @@ func issueUpdated(key string) model.Event {
 // owner's row (Broker.Append). The second write here must commit while the first is still open,
 // and its own backend must never queue behind a lock the first holds.
 func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the second write must commit within its 5 s deadline, and load could hold a
+	// correct write past it.
 	ctx := context.Background()
 	database := storetest.Open(t)
 	seedEventOwners(t, database)

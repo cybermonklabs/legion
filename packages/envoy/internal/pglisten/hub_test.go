@@ -144,7 +144,8 @@ func wantNoSignal(t *testing.T, signal <-chan struct{}, what string) {
 // every wake registered on its channel, and no other channel's; each wake is also signalled after
 // the LISTEN, so a caller that catches up on its wake catches up on its first connection too.
 func TestTheHubDeliversEachChannelToEveryHandlerAndWakeRegisteredOnIt(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it reads silence as no delivery over a 200 ms window (quiet), which a delivery
+	// load delays could fall outside.
 	database := storetest.Open(t)
 	probe := newHubProbe()
 	hub := probe.hub(database.Pool.Listener)
@@ -311,7 +312,8 @@ func TestAWakeNobodyReadsFoldsItsSignalsAndBlocksNothing(t *testing.T) {
 // redial whose LISTEN runs OnConnected and signals every wake again, and once when Run ends
 // holding one. A process that is no longer listening learns it at once, not a backoff later.
 func TestTheHubReportsALostConnectionAndItsReturn(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it reads silence as no report over a 200 ms window (quiet), which a report load
+	// delays could fall outside.
 	database := storetest.Open(t)
 	probe := newHubProbe()
 	hub := probe.hub(database.Pool.Listener)

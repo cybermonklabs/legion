@@ -141,7 +141,8 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 // that waits on Exited sees what afterExit did. afterExit sleeps before it records anything, so
 // an Exited closed before afterExit returned would show here as nothing recorded.
 func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the order it proves rests on a 200 ms sleep in the callback, which load could
+	// outlast and pass the test without the order.
 	// -test.run=^$ makes this test binary run no test and exit 0.
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	var runs int

@@ -893,7 +893,8 @@ func TestARefusedDeliveryOutsideTheWindowIsAskedAgain(t *testing.T) {
 // included, until that time has passed by the database's clock: its own backoff holds at least a
 // minute, and the App's limit holds GitHub's wait as given.
 func TestARateLimitStopsTheSweepUntilGitHubsRetryTime(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it reads the limit's time left on Postgres's clock, which must be within 10 s of
+	// the 60 s GitHub asked for: load between the record and the read could fail a correct sweep.
 	retryAfter := func(*harness) http.Header { return http.Header{"Retry-After": {"60"}} }
 	for _, tc := range []struct {
 		name   string
@@ -1078,7 +1079,8 @@ func TestASweepPausedBeforeItsRequestSendsNothingUnderANewLimit(t *testing.T) {
 // (one, two, then four minutes), and only the sweep's: the App's limit holds GitHub's minute, so
 // once that minute has passed the App's own calls reach GitHub while the sweep still waits.
 func TestARedeliveryBackoffHoldsTheSweepAndNotTheApp(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it reads the backoff's time left on Postgres's clock, which must be within 10 s
+	// of the 240 s it set: load between the record and the read could fail a correct sweep.
 	h := newHarness(t)
 	h.fail("guid-limited", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.Limit(http.MethodPost, http.StatusForbidden, nil) // a secondary limit: GitHub asks for a minute
