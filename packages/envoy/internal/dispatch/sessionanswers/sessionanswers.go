@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -22,35 +21,6 @@ import (
 // declinedResolution is the SQL predicate, on a resolution the events carry, that holds for an
 // ask a person declined to answer (model.AskResolutionDeclined).
 const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
-
-// nodeAnswer is the answer of the ask a as every read of an answer shows it (R3), as
-// model.AskAnswer's JSON without its act: where the row names its node (asks.node_kind), the answer
-// the node holds on an ask it holds answered - its words, its selection, its time and its person,
-// each fact that stands read through the store's one reading of the log
-// (graphstore.CurrentTupleRead), as api's askNodeAnswerColumn reads them - and null on an ask it
-// holds otherwise; and the row's own answer where the row names no node, its answer's one record
-// until the boot step's backfill marks it. The node holds no act, so scan lays the row's on it
-// where the row holds the same person's answer at the same time, as api's askNodeAnswer.applyTo
-// does. api's reader is not this package's to import (api imports it), so the statement is written
-// here over the same facts.
-var nodeAnswer = `case when a.node_kind is null then a.answer else (
-		select case when f.state = '` + asks.StateAnswered + `' then jsonb_build_object(
-			'user', f.answered_by, 'selected', coalesce(f.selected::jsonb, '[]'::jsonb), 'text', f.answer, 'at', f.answered_at) end
-		from (
-			select max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnswerState + `') as state,
-			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnswer + `') as answer,
-			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleSelected + `') as selected,
-			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnsweredAt + `') as answered_at,
-			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnsweredBy + `') as answered_by
-			from (` + graphstore.CurrentTupleRead(
-	`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
-	`t.kind, t.to_id, t.asserted`,
-	`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = a.id::text and t.kind in ('`+
-		graphstore.TupleAnswerState+`', '`+graphstore.TupleAnswer+`', '`+graphstore.TupleSelected+`', '`+
-		graphstore.TupleAnsweredAt+`', '`+graphstore.TupleAnsweredBy+`')`) + `) n
-			where n.asserted
-		) f
-	) end`
 
 // ownsAsk is the SQL predicate, on the ask that the alias a names, that holds when the session $1
 // owns that ask: it wrote the ask (asks.author) or follows it, read through ask_followers' primary
@@ -96,7 +66,7 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 //
 // Each source names a row by its id, and each kind's ids are a set, so an item reached several ways
 // is one row. Every row is then read at its current words: an ask's current answer, as its node
-// holds it (nodeAnswer), when that answer's own time is in the window, a comment's current body, a
+// holds it (asks.NodeAnswerJSONOf), when its own time is in the window, a comment's current body, a
 // message's body, each with the time of its edit and the mark of its delete, so a reader meets a
 // post its author withdrew as deleted and not as an empty line. A decline is read from its
 // ask.resolved event instead, since that event is where the read already keeps the rows whose
@@ -180,7 +150,7 @@ var query = `
 	       ` + ownsAsk + ` as owns
 	from answer_ids x
 	join asks a on a.id::text = x.id
-	cross join lateral (select ` + nodeAnswer + ` as answer) n
+	cross join lateral (select ` + asks.NodeAnswerJSONOf("a") + ` as answer) n
 	left join issues i on i.key = a.issue_key
 	left join artifacts ar on ar.id = a.artifact_id
 	where n.answer is not null and (n.answer->>'at')::timestamptz >= $2
@@ -296,7 +266,7 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 			return model.SessionAnswer{}, fmt.Errorf("decode ask %s answer: %w", item.ID, err)
 		}
 		// The node holds no act: the answer carries the row's where the row holds the node's own
-		// answer, the same person's at the same time, as api's askNodeAnswer.applyTo lays it.
+		// answer, the same person's at the same time, as asks.NodeAnswer.ApplyTo lays it.
 		if current.Act == nil && len(rowAnswer) > 0 {
 			var row model.AskAnswer
 			if err := json.Unmarshal(rowAnswer, &row); err != nil {

@@ -38,7 +38,9 @@ const (
 	issueLinkBatchDrive        = "graphcensus/census_issues.go#writeIssueLinkBatch"
 	referenceBatchDrive        = "graphcensus/census_refs.go#writeReferenceBatch"
 	anchorBatchDrive           = "graphcensus/census_anchors.go#writeAnchorBatch"
+	askedOnBatchDrive          = "graphcensus/census_citations_asks.go#writeAskedOnBatch"
 	keepSumBatchDrive          = "graphcensus/census_keeps.go#writeKeepSumBatch"
+	approvesBatchDrive         = "graphcensus/census_approvals.go#writeApprovesBatch"
 	resultBatchDrive           = "graphcensus/census_results.go#writeResultBatch"
 	resultRetractionBatchDrive = "graphcensus/census_results.go#writeResultRetractionBatch"
 	componentBatchDrive        = "graphcensus/census_components.go#writeComponentBatch"
@@ -301,6 +303,15 @@ func passDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindComment, graphstore.TuplePartOf}:     {"anchor_block"},
 		},
 	}, {
+		Name: askedOnBatchDrive, Database: database,
+		Sites: []string{askedOnBatchDrive, "graphstore/write.go#Write"},
+		Ready: func(t *testing.T) {
+			document, refKey := drivenDocument(t, database, "asked-on-md")
+			seedAskWithoutBlockTuple(t, database, drivenProject, drivenIssue, document, refKey)
+		},
+		Drive:  drivenPass(database, backfillAskedOn),
+		Counts: map[StoredKind][]string{{graphstore.KindAsk, graphstore.TupleAskedOn}: {"ask_opened"}},
+	}, {
 		// The result pass (backfillResults) over a failed result a release before this one
 		// recorded, by alice, of check c1 of DRIVE-1's Verification document, its row and no
 		// node: the result's node with its base attributes, its values, its part_of, its result_of
@@ -480,6 +491,33 @@ func passDrives(t *testing.T) []StoreDrive {
 		},
 		Drive:  drivenPass(database, backfillKeepSums),
 		Counts: map[StoredKind][]string{{refs.BlockNodeKind, refs.ValueKeptTextSum}: {"keep"}},
+	}, {
+		// The approves pass (backfillApproves) over an approval request this build wrote with its
+		// node, naming version 1 of a document of DRIVE-1 in its row, whose node states no approves
+		// tuple, as a process of the release before leaves a request it moves: the one approves
+		// tuple to the version node, which the term ask_opened counts.
+		Name: approvesBatchDrive, Database: database,
+		Sites: []string{approvesBatchDrive},
+		Ready: func(t *testing.T) {
+			document, _ := drivenDocument(t, database, "approved-md")
+			const request = "d0d0d0d0-0000-4000-8000-0000000000a1"
+			createdAt := time.Now().UTC().Add(-48 * time.Hour)
+			drivenTx(t, database, "write the approval request with its node", func(tx pgx.Tx) error {
+				node := graphstore.AskNode(request, drivenProject, nil, drivenAuthor, createdAt)
+				if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+					return err
+				}
+				_, err := tx.Exec(ctx, `
+					insert into asks (id, issue_key, author, question, kind, approval, created_at, node_kind, node_address)
+					values ($1::uuid, $2, '{"kind":"session","id":"ses_requester"}', 'Approve approved-md (version 1)?', 'approval',
+					        jsonb_build_object('artifact_id', $3::text, 'name', 'approved-md', 'version', 1, 'requested_version', 1),
+					        $4, $5, $1::text)
+				`, request, drivenIssue, document, createdAt, graphstore.KindAsk)
+				return err
+			})
+		},
+		Drive:  drivenPass(database, backfillApproves),
+		Counts: map[StoredKind][]string{{graphstore.KindAsk, TupleApproves}: {"ask_opened"}},
 	}}
 }
 

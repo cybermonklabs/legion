@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
 
@@ -252,6 +253,69 @@ func TestTheGatedStepsWriteTakesTheDecisionsStepAndStoresTheListWithoutIt(t *tes
 		}
 		if listed := listedGatedSteps(t, handler, "OLDER"); !slices.Equal(listed, read.listed) {
 			t.Fatalf("a stored %v reads %v, want %v", read.stored, listed, read.listed)
+		}
+	}
+}
+
+// A stored list that holds the retired `decisions` step stays on the row until the decisions step
+// rewrites it, and this build answers the row without that step wherever it answers it: the
+// project list does (above), and so do the writes that read the row to answer it or to carry it as
+// project.updated's payload - PUT and DELETE /api/v1/projects/{key}/proven-sessions, and PUT
+// /api/v1/projects/{key}/default-repository. A list of that step alone reads as [spec], never as
+// none, which would gate nothing. Each write changes the row, so each appends one event.
+func TestAProjectWriteAnswersAndCarriesAStoredListWithoutTheDecisionsStep(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	for _, held := range []struct {
+		project      string
+		stored, read []string
+	}{
+		{"HELDSPEC", []string{"decisions", "spec"}, []string{"spec"}},
+		{"HELDALONE", []string{"decisions"}, []string{"spec"}},
+	} {
+		createAdviceProject(t, handler, held.project)
+		if _, err := database.Pool.Exec(context.Background(), `update projects set gated_steps = $1 where key = $2`, held.stored, held.project); err != nil {
+			t.Fatalf("store %v on %s as the release before published it: %v", held.stored, held.project, err)
+		}
+		base := "/api/v1/projects/" + held.project
+		for _, write := range []struct {
+			what    string
+			send    func() *httptest.ResponseRecorder
+			answers bool
+		}{
+			{"PUT proven-sessions", func() *httptest.ResponseRecorder {
+				return agentRequest(t, handler, http.MethodPut, base+"/proven-sessions", map[string]any{"actor": sessionActor()}, "agent-token")
+			}, true},
+			{"DELETE proven-sessions", func() *httptest.ResponseRecorder {
+				return dispatchRequest(t, handler, http.MethodDelete, base+"/proven-sessions", nil, "alice")
+			}, true},
+			{"PUT default-repository", func() *httptest.ResponseRecorder {
+				return dispatchRequest(t, handler, http.MethodPut, base+"/default-repository", map[string]any{"repo": "acme/widgets"}, "alice")
+			}, false},
+		} {
+			updates := projectUpdates(t, database, held.project)
+			response := write.send()
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s on %s: status=%d body=%s", write.what, held.project, response.Code, response.Body.String())
+			}
+			if write.answers {
+				if answered := decodeBody[model.Project](t, response).GatedSteps; !slices.Equal(answered, held.read) {
+					t.Errorf("%s on %s holding %v answers the gated steps %v, want %v", write.what, held.project, held.stored, answered, held.read)
+				}
+			}
+			if after := projectUpdates(t, database, held.project); after != updates+1 {
+				t.Fatalf("%s on %s left %d project.updated events, want %d: the write changes the row", write.what, held.project, after, updates+1)
+			}
+			if carried := latestProjectUpdate(t, database, held.project).gatedSteps; !slices.Equal(carried, held.read) {
+				t.Errorf("%s on %s holding %v appends project.updated carrying the gated steps %v, want %v", write.what, held.project, held.stored, carried, held.read)
+			}
+		}
+		var stored []string
+		if err := database.Pool.QueryRow(context.Background(), `select gated_steps from projects where key = $1`, held.project).Scan(&stored); err != nil {
+			t.Fatalf("read the stored list of %s: %v", held.project, err)
+		}
+		if !slices.Equal(stored, held.stored) {
+			t.Fatalf("%s now stores %v, want %v: only the decisions step rewrites a stored list", held.project, stored, held.stored)
 		}
 	}
 }

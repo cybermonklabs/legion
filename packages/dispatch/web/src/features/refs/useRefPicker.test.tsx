@@ -730,6 +730,62 @@ test("a node's row lists its blocks from its part_of backlinks, and a block pick
   await waitFor(() => expect(comment.value).toBe("dispatch://CORE-2/comment/comment-1#b-block-1"));
 });
 
+// A document hit's href names the block the hit matched (`#b-`), so its reader lands on the
+// passage (the server's `searchHref`). The row is the document all the same: its detail and the
+// address a pick writes are the document's, and it lists the document's blocks, which the graph
+// answers for the document's address alone - a block holds no blocks of its own.
+test("a document hit that matched one of its blocks is offered as the document, and lists the document's blocks", async () => {
+  const user = userEvent.setup();
+  const notes = "dispatch://CORE-2/artifact/notes-md";
+  const page = renderHost({
+    searchAnswer: async () =>
+      searchResponse([
+        {
+          artifact: { name: "notes.md", slug: "notes-md" },
+          href: "/issues/CORE-2/artifacts/notes-md?q=notes#b-block-2",
+          id: "document-1",
+          kind: "document",
+          owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
+          rank: 0.08,
+          snippet: "The relay <mark>notes</mark>",
+        },
+      ]),
+  });
+  page.getReferences.mockImplementation(async (reference) => ({
+    edges:
+      reference === notes
+        ? [
+            {
+              created_at: "2026-11-01T00:00:00Z",
+              direction: "in",
+              excerpt: { text: "The relay notes." },
+              kind: "part_of",
+              node: graphNode({ block_id: "block-2", id: "document-1", kind: "block" }),
+              source_seq: null,
+            },
+          ]
+        : [],
+    node: graphNode({ id: "document-1", kind: reference === notes ? "artifact" : "block" }),
+  }));
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard(`${BRACKETS}notes`);
+  await waitFor(() => expect(drawnRows()).toEqual(["Documents: notes.md"]));
+  const row = screen.getByRole("option", { name: /^notes\.md/ });
+  expect(within(row).getByTitle("CORE-2 notes-md")).toBeInTheDocument();
+
+  await user.click(within(row).getByRole("button", { name: "Blocks" }));
+
+  await waitFor(() => expect(page.getReferences).toHaveBeenCalledWith(notes, { kind: "part_of" }));
+  await waitFor(() =>
+    expect(drawnRows()).toEqual(["Documents: notes.md", "Document blocks: The relay notes."])
+  );
+
+  await user.click(screen.getByRole("option", { name: /^notes\.md/ }));
+  await waitFor(() => expect(comment.value).toBe(notes));
+});
+
 test("an agent's row lists its conversation's documents, and a document pick is its address", async () => {
   const user = userEvent.setup();
   const page = renderHost();

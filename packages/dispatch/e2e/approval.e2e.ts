@@ -62,12 +62,18 @@ const session = {
   as: "agent" as const,
 };
 
+/** A spec whose one requirement says "The plan.". An approval covers the record of the Spec query
+ *  - the spec's memo, criteria and requirements - and not its paragraphs (R14), so a row that
+ *  approves a spec and has an edit of "The plan." stale that approval writes it as this
+ *  requirement's body: as a paragraph, the edit would carry the approval to the new version. */
+const PLAN_SPEC = ":::requirement{#r-plan}\nThe plan.\n:::\n";
+
 // @pr: Create through answer to close: an approval requested, answered in the Inbox, made stale by an edit, and changes requested from the header.
 test("a spec's approval is a human review pinned to its version: requested by the agent, answered in the Inbox, stale after an edit, changes requested from the header @pr", async ({
   browser,
 }) => {
   await createProject({ key: "GATE", name: "Gate" });
-  const issue = await createIssue({ project: "GATE", spec: "The plan.", title: "Design gate" });
+  const issue = await createIssue({ project: "GATE", spec: PLAN_SPEC, title: "Design gate" });
   const artifactID = issue.primary_artifact_id;
 
   // The agent asks for approval; the Inbox shows the request and the two reviews it offers.
@@ -103,7 +109,7 @@ test("a spec's approval is a human review pinned to its version: requested by th
     await expect(page.getByRole("button", { name: "Approved v1" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
 
-    // The agent edits the spec: the approval goes stale.
+    // The agent edits the words of the spec's requirement: the approval goes stale.
     await editArtifact(
       artifactID,
       { ops: [{ op: "replace", find: "The plan.", with: "The revised plan." }] },
@@ -210,22 +216,37 @@ interface AdvisedWrite {
   readonly advice?: WriteAdvice;
 }
 
-/** The decision block the restore tests hold open in a spec. */
+/** The decision block the restore tests hold open in the approved document. */
 const waveAsk =
   ':::ask{#wave urgency="med" multiple="false"}\nHow many regions take the first wave?\n\n- Two: The two with the fewest tenants.\n- Five: Half of them.\n:::\n';
 
+/** The name of the document of the issue, beside its spec, that the restore row whose subject is
+ *  the approved text approves: no query covers it, so an approval of it covers its stored text. */
+const NOTES_DOCUMENT = "design-notes.md";
+
 /**
- * Creates a spec holding `spec`, waits for each of its decision blocks to be an ask, has alice
- * approve version 1 from its header, then has the agent change "The plan." by accident. The edit
- * stales the approval and its advice says so. Returns the spec's issue.
+ * Creates an issue whose approved document holds `body` - the issue's spec, or, `on` "notes", one
+ * more document of the issue named `NOTES_DOCUMENT` - waits for each of that document's decision
+ * blocks to be an ask, has alice approve its version 1, then has the agent change "The plan." by
+ * accident. The edit stales the approval and its advice says so. Returns the issue's key, the
+ * approved document's id, and the address of the page whose header draws that document's chip.
  */
 async function approveThenChange(
-  spec: string,
-  blocks: number
-): Promise<{ key: string; id: string }> {
+  body: string,
+  blocks: number,
+  on: "spec" | "notes" = "spec"
+): Promise<{ key: string; id: string; page: string }> {
   await createProject({ key: "GATE", name: "Gate" });
-  const issue = await createIssue({ project: "GATE", spec, title: "Design gate" });
-  const id = issue.primary_artifact_id;
+  const issue = await createIssue(
+    on === "spec"
+      ? { project: "GATE", spec: body, title: "Design gate" }
+      : { project: "GATE", title: "Design gate" }
+  );
+  const notes =
+    on === "spec"
+      ? undefined
+      : (await createIssueArtifact(issue.key, { content: body, name: NOTES_DOCUMENT })).artifact;
+  const id = notes?.id ?? issue.primary_artifact_id;
   await expect
     .poll(async () => (await listIssueAsks(issue.key)).filter((ask) => ask.block_artifact).length)
     .toBe(blocks);
@@ -245,13 +266,15 @@ async function approveThenChange(
     state: "stale",
     version: 1,
   });
-  return { id, key: issue.key };
+  const page =
+    notes === undefined ? `/issues/${issue.key}` : `/issues/${issue.key}/artifacts/${notes.slug}`;
+  return { id, key: issue.key, page };
 }
 
 test("the agent's undo of an accidental edit to an approved spec makes that approval current at the undo's version, so no approval request is needed", async ({
   browser,
 }) => {
-  const issue = await approveThenChange("The plan.", 0);
+  const issue = await approveThenChange(PLAN_SPEC, 0);
 
   // The undo's text is version 1's again: version 3 carries alice's approval of version 1, and
   // the undo superseded no approval.
@@ -300,7 +323,7 @@ test("the agent's undo of an accidental edit to an approved spec makes that appr
 test("an undo one character away from the approved spec leaves its approval stale", async ({
   browser,
 }) => {
-  const issue = await approveThenChange("The plan.", 0);
+  const issue = await approveThenChange(PLAN_SPEC, 0);
 
   await editArtifact(
     issue.id,
@@ -330,11 +353,14 @@ test("an undo one character away from the approved spec leaves its approval stal
 // A version carries an approval only where its text is the approved text exactly, or where every
 // change is one Dispatch carries an approval over: a reading, a server-owned attribute of an ask
 // block, or the decisions step's own write. A version holding the approved text around a block the
-// agent reworded is neither, so its approval stays stale.
+// agent reworded is neither, so its approval stays stale. That is a rule of an approval of a
+// document's text, so the row approves a document of the issue that no query covers: a decision
+// block is no node of the Spec query, so in the spec the restored words would carry the approval
+// by its record's digest (R14).
 test("an undo that restores the approved text around a decision block the agent reworded leaves the approval stale", async ({
   browser,
 }) => {
-  const issue = await approveThenChange(`The plan.\n\n${waveAsk}`, 1);
+  const issue = await approveThenChange(`The plan.\n\n${waveAsk}`, 1, "notes");
 
   await editArtifact(
     issue.id,
@@ -374,7 +400,7 @@ test("an undo that restores the approved text around a decision block the agent 
         state: "stale",
         version: 1,
       });
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(issue.page);
     await expect(page.getByRole("button", { name: "Approved v1 · changed since" })).toBeVisible();
   } finally {
     await alice.close();

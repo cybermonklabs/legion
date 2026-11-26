@@ -1,6 +1,6 @@
-import type { CheckBlock } from "../../../api/types";
+import type { CheckBlock, IssueCoverage } from "../../../api/types";
 import { isCheck, isStatement, type TreeNode } from "../issue-tree";
-import type { CheckState, StatementState } from "../page-words";
+import { type CheckState, coverageNotes, type StatementState } from "../page-words";
 import { checkStanding, newestFirst, standingResults, standsAtBasis } from "../tree-drafts";
 import { outOfCounts } from "../tree-fold";
 
@@ -25,8 +25,17 @@ import { outOfCounts } from "../tree-fold";
  *   against another commit than its check compares with, a withdrawn one, or a check Dispatch
  *   could not read. The checks' own states say which of those it is, in the words
  *   `NODE_STATE_WORDS.check` declares.
- * - **Covered.** How many statements carry a check. It is covered and never proven or met: a
- *   statement that has a check is not a statement that is true (R17, R22).
+ * - **Covered.** How many of the issue's statements carry a check. It is covered and never proven
+ *   or met: a statement that has a check is not a statement that is true (R17, R22). It is the
+ *   coverage read's count (`issueCovered`), which answers every statement of the issue's spec,
+ *   and not a count of the statements the view draws: the view read answers its nodes a page at
+ *   a time, and the server ends a page at a bound of bytes as well as of nodes, so the statements
+ *   on its first page move with every node written before the cut - a check an issue under this
+ *   one adds under the first statement pushes the last one onto the next page. A statement the
+ *   read marks proposed or closed is in neither the count nor the total it is out of, as no other
+ *   count of the page reads one (`outOfCounts`). While a document of the issue is still being
+ *   indexed (`coverageNotes`), the coverage read's counts may not hold what serves a statement
+ *   yet, so the summary draws that document's line in place of any count.
  *
  * How one check stands is `tree-drafts.ts`'s `checkStanding`, the page's one reading of it:
  * each of its results read against the commit the server names for that check, the basis it
@@ -89,8 +98,6 @@ export interface VerificationReading {
   /** The one commit the page names for the issue's results, or `undefined` where no result
    *  that stands names one. */
   readonly commit?: string;
-  /** How many of the statements carry a check (R17's covered count). */
-  readonly covered: number;
   /** The checks the filter draws that serve no statement of the issue: a `serves` naming
    *  nothing places the check under the issue (`tree-drafts.ts`), and the filter draws it as a
    *  row of its own, so the body draws it too rather than dropping a node the filter kept. */
@@ -134,14 +141,15 @@ export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
 
 /**
  * The reading the body draws: the one commit, each statement with its checks and their latest
- * results, how each statement stands, and how many carry a check.
+ * results, and how each statement stands.
  *
- * `view` is the tree the Verification filter left (`presets.ts`'s `presetView`): its top rows
- * are the statements the filter draws as context, each with the checks that serve it under it
- * and each check's results under that. `checks` is the issue's results read, which the page has
- * already made for its tree (`useIssueTree.ts`), and which is what holds a result's commit, its
- * verdict and its withdrawal; a check node is tied to its block by its own address, which the
- * tree carries (`tree-drafts.ts` writes `check.ref` into the node's `reference`).
+ * `view` is the tree the Verification filter left (`presets.ts`'s `presetView`): its statements
+ * are the requirements the filter draws as context, top-level or nested under another statement,
+ * in document order, each with the checks that serve it under it and each check's results under
+ * that. `checks` is the issue's results read, which the page has already made for its tree
+ * (`useIssueTree.ts`), and which is what holds a result's commit, its verdict and its
+ * withdrawal; a check node is tied to its block by its own address, which the tree carries
+ * (`tree-drafts.ts` writes `check.ref` into the node's `reference`).
  */
 export function verificationReading({
   checks,
@@ -152,17 +160,55 @@ export function verificationReading({
 }): VerificationReading {
   const read = checkReader(checks);
   const commit = namedCommit(checks);
-  const statements = view.children.filter(isStatement).map((node): StatementReading => {
-    const readings = node.children.filter(isCheck).map(read);
-    return { checks: readings, node, state: statementState(readings) };
-  });
+  const statements: StatementReading[] = [];
+  const seen = new Set<string>();
+  const walk = (node: TreeNode): void => {
+    if (isStatement(node) && !seen.has(node.id)) {
+      seen.add(node.id);
+      const readings = node.children.filter(isCheck).map(read);
+      statements.push({ checks: readings, node, state: statementState(readings) });
+    }
+    for (const child of node.children) walk(child);
+  };
+  for (const child of view.children) walk(child);
   return {
     ...(commit === undefined ? {} : { commit }),
-    covered: statements.filter((statement) => carriesCheck(statement.node, statement.checks))
-      .length,
     loose: view.children.filter(isCheck).map(read),
     others: view.children.filter((node) => !isStatement(node) && !isCheck(node)),
     statements,
+  };
+}
+
+/** How the issue's covered count stands (R17): how many of its statements carry a check out of
+ *  how many it has, or, while a document of the issue is still being indexed, the coverage read's
+ *  own lines saying so (`coverageNotes`) in place of any count. */
+export type IssueCovered =
+  | { readonly covered: number; readonly kind: "count"; readonly total: number }
+  | { readonly kind: "owed"; readonly notes: readonly string[] };
+
+/**
+ * The issue's covered count, from the coverage read alone (`GET /api/v1/issues/{key}/coverage`):
+ * every `requirement` block of the issue's spec is one of its rows (`requirements`), and one is
+ * covered where a check of the issue or of an issue under it serves it (`checks`), a proposed or
+ * overtaken check left out of that count by the server. No page of the view read cuts that read,
+ * so the count is the same on every read of the same issue, whichever of its statements the view
+ * has loaded. A row the read marks `proposed` (a statement only put forward) or `closed` (one at
+ * or under an overtaken node, which a later one replaced) is in neither the count nor the total,
+ * as `outOfCounts` keeps such a statement out of every other count of the page
+ * (`coverage_tuples.go`'s `coverTreeRequirements`). While a document of the issue is still being
+ * indexed (`coverageNotes`), the coverage read's counts may not hold what serves a statement
+ * yet, so this answers those lines in place of any count.
+ */
+export function issueCovered(coverage: IssueCoverage | undefined): IssueCovered {
+  const notes = coverageNotes(coverage);
+  if (notes.length > 0) return { kind: "owed", notes };
+  const requirements = (coverage?.requirements ?? []).filter(
+    (requirement) => requirement.coverage !== "proposed" && requirement.coverage !== "closed"
+  );
+  return {
+    covered: requirements.filter((requirement) => requirement.checks > 0).length,
+    kind: "count",
+    total: requirements.length,
   };
 }
 

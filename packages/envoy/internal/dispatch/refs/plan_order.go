@@ -2,13 +2,13 @@ package refs
 
 import (
 	"cmp"
-	"container/heap"
 	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -85,7 +85,7 @@ type OrderNode struct {
 // size, the whole number of minutes a plan node holds (AttributePlanSize) written in decimal, ""
 // for an issue half and for a plan node whose author gave none; the skills and the docs a plan
 // node's implementer should read (AttributePlanSkills, AttributePlanDocs), each in the order its
-// author wrote them and an empty list for a plan node that holds none, never nil, and nil for an
+// author wrote them, and an empty list, never nil, for a plan node that holds none and for an
 // issue half; and every node it waits on, sorted (compareOrderNodes), the fixed nodes among them,
 // and no overtaken one.
 type OrderedNode struct {
@@ -132,17 +132,30 @@ const planOrderDepth = authoredChainDepth
 //
 // It reads the tree in two statements beside IssueDescendants', however large: the walk down
 // the current part_of tuples into each issue (graph_tuples_inbound), through every node who may
-// see and never into an issue, which answers each issue's parent and each plan node with its
-// issue, its current size, skills and docs values (graph_tuples_values), which the block index
-// states from the node's opening line (planBlockValues), and whether it or a node above it is
+// see and never into an issue, which answers each issue's parent, its node's current rank and
+// when its node was made, and each plan node with its issue, its current text_rank, size, skills
+// and docs values (graph_tuples_values), which the block index states from the node's place in
+// its document and its opening line (planBlockValues), and whether it or a node above it is
 // overtaken; and one read of every current needs tuple out of those nodes (graph_tuples_current).
 //
-// It orders by Tarjan's strongly connected components, iteratively, so a long chain costs no
-// depth of the stack: every component of more than one node, or of one node that needs itself,
-// is a cycle, and every other node comes back once, after every node it needs that has a
-// position, the first node by id among those whose needs are all placed going first, so one
-// tree reads one answer. A node whose state is overtaken, every node under it on its part_of
-// chain, and an overtaken issue with every issue and node under it get no position.
+// It finds the cycles by Tarjan's strongly connected components, iteratively, so a long chain
+// costs no depth of the stack: every component of more than one node, or of one node that needs
+// itself, is a cycle, and every other node comes back once, after every node it needs that has a
+// position. The position is a needs-first depth-first walk, which keeps each chain of steps
+// together (R11, waitGraph.order): it starts from the nodes that no node needs, in the base
+// order, and before it places a node it places that node's unplaced needs the same way, so each
+// need stands just before the first node that needs it. For plan nodes written a, b, c, where c
+// needs a, the order is b, a, c. The base order (baseOrder) is the issue's start, its own plan
+// nodes in their document's order - by text_rank, and by address on a tie (comparePlans) - then
+// each issue under it in the tree's order, the order the tree read gives an issue's children
+// (compareIssues), each the same way, and last the issue's done. The halves stand so because a
+// start opens its issue and a done closes it: every plan node and every child of an issue waits
+// on its start, and its done waits on each of them (IssueHalf). The waits of a done do not count
+// as needs: the walk reaches a done at its place in the base order, or earlier through a node
+// that needs its issue, and then places first the nodes it waits on that no node needs, so the
+// plan nodes of an issue keep the order the issue's own read gives them. A node whose state is
+// overtaken, every node under it on its part_of chain, and an overtaken issue with every issue
+// and node under it get no position.
 func PlanOrder(ctx context.Context, q Queryer, who model.Actor, issueKey string) (TreeOrder, error) {
 	if issueKey == "" {
 		return TreeOrder{}, nil
@@ -170,20 +183,26 @@ type planTree struct {
 }
 
 // planIssue is one issue of the tree: its parent ("" for the root), whether its node is
-// overtaken, its children and plan nodes in the tree, and the far ends of its needs tuples.
+// overtaken, its node's current rank and whether it holds one, when its node was made (zero where
+// the store holds no node of it), its children in the tree's order (compareIssues), its plan nodes
+// in their document's order (comparePlans), and the far ends of its needs tuples.
 type planIssue struct {
 	parent    string
 	overtaken bool
+	rank      string
+	ranked    bool
+	madeAt    time.Time
 	children  []string
 	plans     []string
 	needs     []Target
 }
 
-// planNode is one plan node of the tree: the issue it stands under, its size, its skills and its
-// docs (OrderedNode), whether it or a node above it is overtaken, and the far ends of its needs
-// tuples.
+// planNode is one plan node of the tree: the issue it stands under, its current text_rank ("" for
+// none), its size, its skills and its docs (OrderedNode), whether it or a node above it is
+// overtaken, and the far ends of its needs tuples.
 type planNode struct {
 	issue        string
+	textRank     string
 	size         string
 	skills, docs []string
 	overtaken    bool
@@ -195,15 +214,15 @@ type planNode struct {
 // plan node (PlanOrder).
 func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, descendants []string) (*planTree, error) {
 	rows, err := q.Query(ctx, `
-		with recursive below (issue, parent, kind, id, depth, state, overtaken) as (
+		with recursive below (issue, parent, kind, id, depth, state, overtaken, made) as (
 			select i.key, i.parent_key, '`+graphstore.KindIssue+`'::text, i.key, 0, n.state,
-			       coalesce(n.state = '`+graphstore.StateOvertaken+`', false)
+			       coalesce(n.state = '`+graphstore.StateOvertaken+`', false), n.made_at
 			from issues i
 			left join graph_nodes n on n.kind = '`+graphstore.KindIssue+`' and n.id = i.key
 			where i.key = any($1::text[]) and `+VisibleKind(graphstore.KindIssue, "i.key", "$3")+`
 			union all
 			select below.issue, null::text, held.from_kind, held.from_id, below.depth + 1, n.state,
-			       below.overtaken or coalesce(n.state = '`+graphstore.StateOvertaken+`', false)
+			       below.overtaken or coalesce(n.state = '`+graphstore.StateOvertaken+`', false), null::timestamptz
 			from below
 			cross join lateral (
 				`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
@@ -214,16 +233,24 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 			where held.asserted and held.from_kind <> '`+graphstore.KindIssue+`' and below.depth < $2
 			  and `+VisibleNodeOfRow("held.from_kind", "held.from_id", "n", "$3")+`
 		)
-		select found.issue, found.parent, found.id, found.root, found.overtaken,
+		select found.issue, found.parent, found.id, found.root, found.overtaken, found.made,
+		       case when ranked.asserted then ranked.value end,
 		       case when sized.asserted then sized.value end, case when skilled.asserted then skilled.value end,
 		       case when documented.asserted then documented.value end
 		from (
-			select below.issue, below.parent, below.id, below.depth, below.depth = 0 as root, below.overtaken
+			select below.issue, below.parent, below.kind, below.id, below.depth, below.depth = 0 as root, below.overtaken, below.made
 			from below
 			where below.depth = 0
 			   or (below.kind = '`+BlockNodeKind+`' and coalesce(below.state, '`+graphstore.StateLive+`') <> '`+graphstore.StateGone+`'
 			       and exists (select 1 from document_blocks d where d.node_id = below.id and d.type = '`+planTaskType+`'))
 		) found
+		left join lateral (
+			select t.to_id as value, t.asserted from graph_tuples t
+			where t.from_kind = found.kind and t.from_id = found.id
+			  and t.kind = case when found.root then '`+AttributeRank+`' else '`+AttributeTextRank+`' end
+			  and t.to_kind = '`+graphstore.KindValue+`'
+			order by t.seq desc limit 1
+		) ranked on true
 		left join lateral (
 			select t.to_id as value, t.asserted from graph_tuples t
 			where not found.root and t.from_kind = '`+BlockNodeKind+`' and t.from_id = found.id
@@ -249,20 +276,30 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 	}
 	tree := &planTree{root: root, issues: map[string]*planIssue{}, plans: map[string]*planNode{}}
 	var issue, id string
-	var parent, size, skills, docs *string
+	var parent, rank, size, skills, docs *string
+	var made *time.Time
 	var isIssue, overtaken bool
-	if _, err := pgx.ForEachRow(rows, []any{&issue, &parent, &id, &isIssue, &overtaken, &size, &skills, &docs}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&issue, &parent, &id, &isIssue, &overtaken, &made, &rank, &size, &skills, &docs}, func() error {
 		switch {
 		case isIssue:
 			held := &planIssue{overtaken: overtaken}
 			if parent != nil && id != root {
 				held.parent = *parent
 			}
+			if rank != nil {
+				held.rank, held.ranked = *rank, true
+			}
+			if made != nil {
+				held.madeAt = *made
+			}
 			tree.issues[id] = held
 		case tree.plans[id] == nil:
 			// A node a raced move left under two parents is under the nearer of them, then the
 			// first issue by key: the rows come in that order.
 			held := &planNode{issue: issue, overtaken: overtaken}
+			if rank != nil {
+				held.textRank = *rank
+			}
 			if size != nil {
 				held.size = *size
 			}
@@ -279,17 +316,41 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 	}); err != nil {
 		return nil, fmt.Errorf("read the plan nodes of the tree of %s: %w", root, err)
 	}
-	for _, key := range slices.Sorted(maps.Keys(tree.issues)) {
+	for _, key := range slices.SortedFunc(maps.Keys(tree.issues), tree.compareIssues) {
 		if parent := tree.issues[tree.issues[key].parent]; parent != nil {
 			parent.children = append(parent.children, key)
 		}
 	}
-	for _, address := range slices.Sorted(maps.Keys(tree.plans)) {
+	for _, address := range slices.SortedFunc(maps.Keys(tree.plans), tree.comparePlans) {
 		if issue := tree.issues[tree.plans[address].issue]; issue != nil {
 			issue.plans = append(issue.plans, address)
 		}
 	}
 	return tree, nil
+}
+
+// compareIssues orders two issues of the tree as the tree orders the children of one node (docs'
+// WalkIssueTree, api's compareSiblings), which is the tree's order of the issues under an issue:
+// one whose node holds a rank before one whose node holds none, two that hold one by rank, two
+// others by when each node was made, and each tie by key.
+func (tree *planTree) compareIssues(a, b string) int {
+	left, right := tree.issues[a], tree.issues[b]
+	switch {
+	case left.ranked != right.ranked:
+		if left.ranked {
+			return -1
+		}
+		return 1
+	case left.ranked:
+		return cmp.Or(strings.Compare(left.rank, right.rank), strings.Compare(a, b))
+	}
+	return cmp.Or(left.madeAt.Compare(right.madeAt), strings.Compare(a, b))
+}
+
+// comparePlans orders two plan nodes of the tree in their document's order (R11): by text_rank,
+// one that holds none first, and on a tie by address.
+func (tree *planTree) comparePlans(a, b string) int {
+	return cmp.Or(strings.Compare(tree.plans[a].textRank, tree.plans[b].textRank), strings.Compare(a, b))
 }
 
 // planList is the list the value text of the plan node address's attribute name holds, a JSON
@@ -410,6 +471,36 @@ func (tree *planTree) waits(node OrderNode) []OrderNode {
 	return append(held, other...)
 }
 
+// baseOrder is the order the walk takes the tree's nodes in wherever their waits leave it a
+// choice (R11, waitGraph.order): from the root down, an issue's start, its own plan nodes in their
+// document's order, each issue under it in the tree's order with everything under it the same
+// way, and last its done. The walk down the issues runs with a stack of its own.
+func (tree *planTree) baseOrder() []OrderNode {
+	base := make([]OrderNode, 0, 2*len(tree.issues)+len(tree.plans))
+	type step struct {
+		key  string
+		done bool
+	}
+	walk := []step{{key: tree.root}}
+	for len(walk) > 0 {
+		at := walk[len(walk)-1]
+		walk = walk[:len(walk)-1]
+		base = append(base, halfOf(IssueHalf{Key: at.key, Done: at.done}))
+		if at.done {
+			continue
+		}
+		issue := tree.issues[at.key]
+		for _, address := range issue.plans {
+			base = append(base, OrderNode{Kind: BlockNodeKind, ID: address})
+		}
+		walk = append(walk, step{key: at.key, done: true})
+		for _, child := range slices.Backward(issue.children) {
+			walk = append(walk, step{key: child})
+		}
+	}
+	return base
+}
+
 // order orders the tree (PlanOrder).
 func (tree *planTree) order() TreeOrder {
 	var placed, overtaken []OrderNode
@@ -435,14 +526,14 @@ func (tree *planTree) order() TreeOrder {
 			placed = append(placed, node)
 		}
 	}
-	graph := newWaitGraph(placed)
+	graph := newWaitGraph(placed, tree.baseOrder())
 	gone := make(map[OrderNode]bool, len(overtaken))
 	for _, node := range overtaken {
 		gone[node] = true
 	}
 	fixed := map[OrderNode]bool{}
 	answer := func(node OrderNode) OrderedNode {
-		ordered := OrderedNode{OrderNode: node, Issue: issue[node]}
+		ordered := OrderedNode{OrderNode: node, Issue: issue[node], Skills: []string{}, Docs: []string{}}
 		if node.Kind == BlockNodeKind {
 			plan := tree.plans[node.ID]
 			ordered.Size, ordered.Skills, ordered.Docs = plan.size, plan.skills, plan.docs
@@ -485,8 +576,7 @@ func (tree *planTree) order() TreeOrder {
 }
 
 // compareOrderNodes orders the nodes of the ordered read by id, then kind, then an issue's start
-// before its done: the order every list of the answer is sorted in, and the one the order breaks
-// a tie by.
+// before its done: the order every list of the answer is sorted in, a cycle's nodes among them.
 func compareOrderNodes(a, b OrderNode) int {
 	return cmp.Or(strings.Compare(a.ID, b.ID), strings.Compare(a.Kind, b.Kind), halfRank(a.Half)-halfRank(b.Half))
 }
@@ -503,21 +593,36 @@ func halfRank(half string) int {
 	return 0
 }
 
-// waitGraph is the nodes the ordered read places, sorted (compareOrderNodes), and what each of
-// them waits on among them, by position in nodes.
+// waitGraph is the nodes the ordered read places, sorted (compareOrderNodes), what each of them
+// waits on among them, by position in nodes, and each one's rank in the base order the walk takes
+// them in (order), from 0.
 type waitGraph struct {
 	nodes []OrderNode
 	index map[OrderNode]int
 	waits [][]int
+	rank  []int
 }
 
-// newWaitGraph is the graph of nodes, which it sorts, waiting on nothing yet.
-func newWaitGraph(nodes []OrderNode) *waitGraph {
+// newWaitGraph is the graph of nodes, which it sorts, waiting on nothing yet, each ranked at its
+// place among them in base, the base order (planTree.baseOrder); a node base does not hold ranks
+// after every node it holds, in the sort.
+func newWaitGraph(nodes, base []OrderNode) *waitGraph {
 	sorted := slices.SortedFunc(slices.Values(nodes), compareOrderNodes)
 	sorted = slices.Compact(sorted)
-	graph := &waitGraph{nodes: sorted, index: make(map[OrderNode]int, len(sorted)), waits: make([][]int, len(sorted))}
+	graph := &waitGraph{nodes: sorted, index: make(map[OrderNode]int, len(sorted)), waits: make([][]int, len(sorted)), rank: make([]int, len(sorted))}
 	for position, node := range sorted {
-		graph.index[node] = position
+		graph.index[node], graph.rank[position] = position, -1
+	}
+	ranked := 0
+	for _, node := range base {
+		if position, held := graph.index[node]; held && graph.rank[position] < 0 {
+			graph.rank[position], ranked = ranked, ranked+1
+		}
+	}
+	for position, rank := range graph.rank {
+		if rank < 0 {
+			graph.rank[position], ranked = ranked, ranked+1
+		}
 	}
 	return graph
 }
@@ -537,10 +642,14 @@ func (g *waitGraph) wait(from, to OrderNode) bool {
 
 // order answers the graph's nodes in no cycle, by position, each after every node it waits on
 // that the order places, and its cycles, each by position and the cycles by their first node.
-// The components are Tarjan's (stronglyConnected); they are placed as Kahn's algorithm places the
-// nodes of a graph with no cycle, the component whose first node sorts first among those whose
-// waits are all placed going first, and a cycle places none of its nodes but frees the nodes
-// that wait on it.
+// The components are Tarjan's (stronglyConnected), and they are placed by R11's needs-first
+// depth-first walk, run with a stack of its own so a long chain costs no depth: it starts from
+// each component that no node outside it needs, by its first node in the base order (rank), and
+// before it places a component it places each component it waits on that is not placed yet, the
+// same way, first those that no node needs and then the rest, each in the base order. The waits
+// of a done half need nothing: a done closes its issue, and the steps it waits on keep the order
+// the walk gives them without it. A cycle places none of its nodes, and a node that waits on one
+// keeps its place.
 func (g *waitGraph) order() (order []int, cycles [][]int) {
 	for node := range g.waits {
 		slices.Sort(g.waits[node])
@@ -548,62 +657,76 @@ func (g *waitGraph) order() (order []int, cycles [][]int) {
 	}
 	component, count := stronglyConnected(g.waits)
 	members := make([][]int, count)
+	first := make([]int, count)
+	for held := range first {
+		first[held] = len(g.nodes)
+	}
 	for node, held := range component {
 		members[held] = append(members[held], node)
+		first[held] = min(first[held], g.rank[node])
 	}
-	waiters := make([][]int, count)
+	// What each component waits on, and whether a node outside it that is no done half needs it.
+	before := make([][]int, count)
+	needed := make([]bool, count)
 	for node, targets := range g.waits {
 		for _, target := range targets {
 			if from, to := component[node], component[target]; from != to {
-				waiters[to] = append(waiters[to], from)
+				before[from] = append(before[from], to)
+				needed[to] = needed[to] || g.nodes[node].Half != HalfDone
 			}
 		}
 	}
-	pending := make([]int, count)
-	for held := range waiters {
-		slices.Sort(waiters[held])
-		waiters[held] = slices.Compact(waiters[held])
-		for _, waiter := range waiters[held] {
-			pending[waiter]++
+	walkOrder := func(a, b int) int {
+		if needed[a] != needed[b] {
+			if needed[a] {
+				return 1
+			}
+			return -1
 		}
+		return first[a] - first[b]
 	}
-	// A component is pushed as its first node, its lowest position, since members are ascending.
-	ready := &firstNodes{}
+	for held := range before {
+		slices.SortFunc(before[held], walkOrder)
+		before[held] = slices.Compact(before[held])
+	}
+	var starts []int
 	for held := range count {
-		if pending[held] == 0 {
-			heap.Push(ready, members[held][0])
+		if !needed[held] {
+			starts = append(starts, held)
 		}
 	}
-	for ready.Len() > 0 {
-		held := component[heap.Pop(ready).(int)]
-		nodes := members[held]
-		if len(nodes) > 1 || slices.Contains(g.waits[nodes[0]], nodes[0]) {
-			cycles = append(cycles, nodes)
-		} else {
-			order = append(order, nodes[0])
+	slices.SortFunc(starts, walkOrder)
+	reached := make([]bool, count)
+	type frame struct{ held, next int }
+	var walk []frame
+	for _, start := range starts {
+		if reached[start] {
+			continue
 		}
-		for _, waiter := range waiters[held] {
-			if pending[waiter]--; pending[waiter] == 0 {
-				heap.Push(ready, members[waiter][0])
+		reached[start] = true
+		walk = append(walk, frame{held: start})
+		for len(walk) > 0 {
+			top := &walk[len(walk)-1]
+			if top.next < len(before[top.held]) {
+				next := before[top.held][top.next]
+				top.next++
+				if !reached[next] {
+					reached[next] = true
+					walk = append(walk, frame{held: next})
+				}
+				continue
+			}
+			nodes := members[top.held]
+			walk = walk[:len(walk)-1]
+			if len(nodes) > 1 || slices.Contains(g.waits[nodes[0]], nodes[0]) {
+				cycles = append(cycles, nodes)
+			} else {
+				order = append(order, nodes[0])
 			}
 		}
 	}
 	slices.SortFunc(cycles, func(a, b []int) int { return a[0] - b[0] })
 	return order, cycles
-}
-
-// firstNodes is a min-heap of positions, the components ready to be placed by their first node.
-type firstNodes []int
-
-func (h firstNodes) Len() int           { return len(h) }
-func (h firstNodes) Less(i, j int) bool { return h[i] < h[j] }
-func (h firstNodes) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *firstNodes) Push(x any)        { *h = append(*h, x.(int)) }
-func (h *firstNodes) Pop() any {
-	old := *h
-	last := old[len(old)-1]
-	*h = old[:len(old)-1]
-	return last
 }
 
 // stronglyConnected numbers the strongly connected component of each node of waits, by Tarjan's

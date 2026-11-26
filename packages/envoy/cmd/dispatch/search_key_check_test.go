@@ -152,10 +152,29 @@ func TestThisBuildBootsAndRemovesWithTheRootsSearchTablesDropped(t *testing.T) {
 	if err := json.Unmarshal(call(http.MethodPost, owner, `{"name":"notes.md","content":"The first version.\n"}`, http.StatusCreated), &notes); err != nil || notes.Artifact.ID == "" {
 		t.Fatalf("upload notes.md: %v", err)
 	}
+	var refKey string
+	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, untouched.Artifact.ID).Scan(&refKey); err != nil {
+		t.Fatalf("read the document's ref_key: %v", err)
+	}
+	hasSearchRow := func() bool {
+		t.Helper()
+		var held bool
+		if err := database.Pool.QueryRow(ctx, `select exists (
+			select 1 from node_search where node_kind = 'artifact' and node_address = $1)`, refKey).Scan(&held); err != nil {
+			t.Fatalf("read the document row of %s: %v", refKey, err)
+		}
+		return held
+	}
+	if !hasSearchRow() {
+		t.Fatalf("the empty document %s holds no search row before removal", refKey)
+	}
 
 	if removed := searchKeySend(t, process, cookies, http.MethodDelete, "/api/v1/artifacts/"+untouched.Artifact.ID, ""); removed.status != http.StatusNoContent {
 		t.Errorf("DELETE /api/v1/artifacts/%s answers %s, want 204: the removal's statement over document_search runs only where to_regclass('public.document_search') finds it; the server's lines naming document_search:\n%s",
 			untouched.Artifact.ID, removed, searchKeyLogLines(process))
+	}
+	if hasSearchRow() {
+		t.Errorf("node_search still holds the removed document %s", refKey)
 	}
 
 	var text struct {

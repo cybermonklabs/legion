@@ -184,9 +184,11 @@ func validateParents(typ BlockTypeSchema, declared map[string]struct{}) error {
 // validated, whose blocks are nodes of the link graph, which a `block[]` attribute's targets may
 // name: a type the renderer records a block offset for (renderer.block: any node but the document
 // and inline nodes), so one GET /api/v1/artifacts/{id}/blocks lists, less the types the renderer
-// writes without recording one - a list item and a table's rows and cells - which no block list
-// holds. It reads value's own nodes rather than the installed manifest's, since the manifest
-// being validated is not installed yet (compileManifest).
+// writes without recording one - a table's rows and cells - which no block list holds, and less a
+// list item. The renderer records a list item's offset (renderer.list), so the block list holds
+// it and the block index gives it a node, but it has no words of its own, so no pointer names it.
+// It reads value's own nodes rather than the installed manifest's, since the manifest being
+// validated is not installed yet (compileManifest).
 func builtInBlockNode(value BlockSchema, name string) bool {
 	switch name {
 	case "doc", "list_item", "table_header_row", "table_row", "table_header", "table_cell":

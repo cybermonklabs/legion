@@ -15,7 +15,7 @@ import type { SlotProps } from "../slot-props";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { NextViewPage } from "../tree-read/view-read";
 import { useIssueTree } from "../useIssueTree";
-import { usePublishViewParents } from "./view-parents";
+import { usePublishViewReadings } from "./view-readings";
 
 /**
  * The Spec view's slot: what the stage draws in place of the outline
@@ -45,8 +45,8 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
     [address.filter, named, root]
   );
   // The other statements a decision is under are named by the page's names, which the view names
-  // where only its own tree holds them (`PresetView.parents`).
-  usePublishViewParents(view.parents);
+  // where only its own tree holds them (`PresetView.readings`).
+  usePublishViewReadings(view.readings);
   const request = useOutlineRequest();
   // The document a row of the view is being edited in, and that document's one editor, which the
   // view draws for the row to take onto its own stage: `IssuePresetPanels.tsx`'s

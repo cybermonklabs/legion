@@ -41,6 +41,10 @@
 #   verification.md, plan.md and notes-NNN.md documents, each of two versions and each holding the
 #   shapes, with standing approvals of the spec, verification.md, plan.md and every tenth notes
 #   document.
+#   The role documents of LARGEST_ISSUE, read from Dispatch with the pod's token. On a separate
+#   test issue, each reference to the source issue names the test issue instead. Pointer attributes
+#   with targets outside the three copied documents are omitted and counted. No source text is
+#   printed. The conversion dry run measures this issue by its printed test key.
 # What the earlier release's API cannot write is not here: c-old-versions-render's block written
 # author-only. That release writes every block at the visibility `project` (refs/block_nodes.go
 # at BASELINE_SHA), no route takes a visibility, and a `visibility` attribute on a typed block is
@@ -59,7 +63,8 @@
 # CORPUS_LARGE_COMMENTS, CORPUS_LARGE_MESSAGES and CORPUS_LARGE_ASKS, each defaulting to the
 # measured size above, so a quick run can ask for a smaller one. Run from packages/dispatch:
 #   DATABASE_URL=… PROJECT=CORE DEV_SIGNIN_LOGIN=alice DISPATCH_TOKEN=e2e-token \
-#     BASELINE_SHA=<commit> bash e2e/acceptance/seed-corpus.sh
+#     LARGEST_ISSUE=ACME-1 BASELINE_SHA=<commit> bash e2e/acceptance/seed-corpus.sh
+# DISPATCH_URL and DISPATCH_TOKEN_FILE are the pod's deployment URL and bearer file, for GET only.
 #
 # It prints every issue, document and item it wrote, `count <name>=<value> at <time>` for each
 # count it wrote and read, one `PASS: <section> <what>` per assertion, and ends with
@@ -553,12 +558,12 @@ fi
 usage() {
   cat >&2 <<'USAGE'
 Usage: DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<empty database>?sslmode=disable \
-         PROJECT=CORE DEV_SIGNIN_LOGIN=alice [DISPATCH_TOKEN=e2e-token] \
+         PROJECT=CORE DEV_SIGNIN_LOGIN=alice LARGEST_ISSUE=<issue-key> [DISPATCH_TOKEN=e2e-token] \
          [BASELINE_SHA=<commit> | BASELINE_BINARY=<path>] [BASELINE_EXTRA_ENV=$'NAME=value\n...'] \
          [CORPUS_LARGE_BLOCKS=10842] [CORPUS_LARGE_DOCUMENTS=243] [CORPUS_LARGE_COMMENTS=34] \
          [CORPUS_LARGE_MESSAGES=34] [CORPUS_LARGE_ASKS=0] bash e2e/acceptance/seed-corpus.sh
-       (run from packages/dispatch; DATABASE_URL names an empty database on this machine, which
-       this script leaves holding the earlier release's schema and the corpus)
+       (run from packages/dispatch; set the pod's DISPATCH_URL and DISPATCH_TOKEN_FILE for the
+       source reads. DATABASE_URL names an empty loopback database for the earlier release.)
 USAGE
 }
 
@@ -569,8 +574,13 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=lib-tree.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib-tree.sh"
 
-require_env DATABASE_URL PROJECT DEV_SIGNIN_LOGIN
-require_commands base64 curl date jq psql
+require_env LARGEST_ISSUE DATABASE_URL PROJECT DEV_SIGNIN_LOGIN DISPATCH_URL DISPATCH_TOKEN_FILE
+require_commands base64 curl date jq psql python3
+[[ "$LARGEST_ISSUE" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || tree_refuse "LARGEST_ISSUE must be an issue key"
+[[ -r "$DISPATCH_TOKEN_FILE" ]] || tree_refuse "DISPATCH_TOKEN_FILE is not readable"
+readonly source_issue="$LARGEST_ISSUE" source_url="${DISPATCH_URL%/}"
+[[ "$source_url" == https://* || "$source_url" == http://* ]] ||
+  tree_refuse "DISPATCH_URL must be an HTTP(S) URL"
 # shellcheck disable=SC2153 # PROJECT and DATABASE_URL are the caller's inputs, checked by name above
 project="$PROJECT"
 readonly project
@@ -578,13 +588,141 @@ readonly project
 # shellcheck disable=SC2031 # the run's own DATABASE_URL, which no server's subshell changes
 database_url="$DATABASE_URL"
 readonly person_login="$DEV_SIGNIN_LOGIN"
-case "$database_url" in
-  *@127.0.0.1:* | *@localhost:* | *@\[::1\]:* | *@127.0.0.1/* | *@localhost/*) ;;
-  *)
-    printf 'seed-corpus.sh: DATABASE_URL names no loopback host; the corpus is written to this pod'"'"'s own test database alone\n' >&2
-    exit 2
-    ;;
-esac
+loopback_database_url "$database_url" ||
+  tree_refuse "DATABASE_URL must name one loopback test database with no connection override"
+
+# Read the deployment only with GET. Neither a source response nor a copied document's write
+# refusal can be printed: either may contain the source issue's words or a private reference.
+corpus_source_get() {
+  local what="$1" path="$2" file="$3" code
+  code="$(curl -q -s --max-time 120 --proto '=http,https' -H "@$work/source-auth" \
+    -o "$file" -w '%{http_code}' "$source_url$path")" ||
+    fail largest "read the source $what" "transport failed"
+  [[ "$code" == 200 ]] || fail largest "read the source $what" "HTTP $code"
+}
+
+corpus_read_largest() {
+  local bearer role field id
+  bearer="$(<"$DISPATCH_TOKEN_FILE")"
+  bearer="${bearer#"${bearer%%[![:space:]]*}"}"
+  bearer="${bearer%"${bearer##*[![:space:]]}"}"
+  [[ -n "$bearer" && "$bearer" != *[[:space:]]* ]] ||
+    tree_refuse "DISPATCH_TOKEN_FILE must hold one bearer"
+  printf 'Authorization: Bearer %s\n' "$bearer" >"$work/source-auth"
+  unset bearer
+  corpus_source_get issue "/api/v1/issues/$source_issue" "$work/source-issue.json"
+  corpus_source_get "block schema" /api/v1/schema/blocks "$work/source-schema.json"
+  for role in spec verification-md plan-md; do
+    case "$role" in
+      spec) field=primary_artifact_id ;;
+      verification-md) field=verification_artifact_id ;;
+      plan-md) field=plan_artifact_id ;;
+    esac
+    id="$(jq -er --arg f "$field" '.[$f] | strings | select(test("^[a-f0-9-]{36}$"))' \
+      "$work/source-issue.json" 2>/dev/null)" ||
+      fail largest "find the source $role" "the issue read has no artifact id for this role"
+    corpus_source_get "$role markdown" "/api/v1/artifacts/$id/text" "$work/source-text.json"
+    jq -ej '.markdown | strings' "$work/source-text.json" >"$work/$role.source.md" 2>/dev/null ||
+      fail largest "read the source $role" "the text read has no markdown string"
+  done
+  rm -f "$work/source-auth" "$work/source-issue.json" "$work/source-text.json"
+}
+
+# Strip a whole pointer attribute if one of its targets will not be present in the copy.
+# An attribute is one Yjs item even when its value contains multiple pointers. Bootstrap the
+# three documents without forward pointers and restore those pointers after their targets exist.
+corpus_rewrite_largest() {
+  if ! python3 - "$work" "$source_issue" "$1" 2>"$work/rewrite-error" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+work, source, seeded = sys.argv[1:]
+work = Path(work)
+schema = json.loads((work / "source-schema.json").read_text(encoding="utf-8"))
+pointers = {
+    block["name"]: {
+        name for name, attr in block.get("attributes", {}).items()
+        if attr["kind"] in ("block[]", "block", "ask")
+    } for block in schema["types"]
+}
+if not {"serves", "needs"} <= pointers.get("plan_task", set()):
+    raise ValueError("missing plan pointer attributes")
+
+roles = ("spec", "verification-md", "plan-md")
+self_ref = re.compile(r"dispatch://" + re.escape(source) + r"(?![A-Za-z0-9-])")
+block_ref = re.compile(
+    rf"dispatch://{re.escape(source)}/(?:artifact/)?({'|'.join(roles)})#b-\S+"
+)
+directive = re.compile(r"(?P<open>[ \t>]*:{3,}(?P<type>\w+)\{)(?P<attrs>.*)\}(?P<end>[ \t]*)$")
+attribute = re.compile(r'[ \t]+(?P<name>[a-z_][a-z0-9_-]*)=(?P<value>"(?:\\.|[^"\\])*"|[^ \t"]+)')
+code_fence = re.compile(r"(`{3,}|~{3,})(.*)")
+
+def rewrite(markdown, available):
+    lines, drops, fence = [], 0, None
+    for line in markdown.split("\n"):
+        code = code_fence.fullmatch(line.lstrip(" \t>"))
+        if fence is not None:
+            if code and code[1].startswith(fence) and not code[2].strip():
+                fence = None
+        elif code:
+            fence = code[1]
+        else:
+            opener = directive.fullmatch(line)
+            if opener:
+                names = pointers.get(opener["type"], set())
+
+                def keep(match):
+                    nonlocal drops
+                    if match["name"] not in names:
+                        return match[0]
+                    values = match["value"].strip('"').split()
+                    targets = [block_ref.fullmatch(value) for value in values]
+                    if all(target and target[1] in available for target in targets):
+                        return match[0]
+                    drops += 1
+                    return ""
+
+                attrs = attribute.sub(keep, opener["attrs"])
+                line = opener["open"] + attrs + "}" + opener["end"]
+        lines.append(self_ref.sub(f"dispatch://{seeded}", line))
+    return "\n".join(lines), drops
+
+dropped = 0
+for index, role in enumerate(roles):
+    source_text = (work / f"{role}.source.md").read_text(encoding="utf-8")
+    final, drops = rewrite(source_text, roles)
+    bootstrap, _ = rewrite(source_text, roles[:index + 1])
+    dropped += drops
+    (work / f"{role}.bootstrap.md").write_text(bootstrap, encoding="utf-8")
+    (work / f"{role}.copy.md").write_text(final, encoding="utf-8")
+print(dropped)
+PY
+  then
+    fail largest "rewrite the copied role documents" "could not read their canonical markdown or pointer schema"
+  fi
+}
+
+# Unlike the synthetic fixture writer, this writer never includes a response body in a failure.
+corpus_upload_largest_role() {
+  local issue="$1" role="$2" name="$3" file="$4" version_token=""
+  tree_send GET "/api/v1/issues/$issue/artifacts/$role/text"
+  case "$status" in
+    200) version_token="$(jq -er '.token | strings | select(length > 0)' "$work/body" 2>/dev/null)" ||
+      fail largest "read the current token of $role on $issue" "no token" ;;
+    404) ;;
+    *) fail largest "read the current token of $role on $issue" "HTTP $status" ;;
+  esac
+  jq -cn --arg n "$name" --rawfile c "$file" --arg t "$version_token" --argjson a "$(tree_actor)" \
+    '{name: $n, content: $c, actor: $a} + (if $t == "" then {} else {precondition: {document: $t}} end)' \
+    >"$work/largest-upload.json" 2>/dev/null ||
+    fail largest "prepare the upload of $role on $issue" "could not encode its markdown"
+  tree_send POST "/api/v1/issues/$issue/artifacts" "@$work/largest-upload.json"
+  [[ "$status" == 201 ]] || fail largest "upload $role on $issue" "HTTP $status (body withheld)"
+  jq -e --arg slug "$role" '.artifact.slug == $slug' "$work/body" >/dev/null 2>&1 ||
+    fail largest "the upload writes $role on $issue" "unexpected artifact slug (body withheld)"
+}
 
 # The large issue's size: the measured one, unless the run asks for another.
 large_blocks="${CORPUS_LARGE_BLOCKS:-$corpus_measured_blocks}"
@@ -634,6 +772,7 @@ corpus_count measured_largest_issue_documents "$corpus_measured_documents" "$cor
 corpus_count measured_largest_issue_comments "$corpus_measured_comments" "$corpus_measured_at"
 corpus_count measured_largest_issue_messages "$corpus_measured_messages" "$corpus_measured_at"
 corpus_count measured_largest_issue_asks "$corpus_measured_asks" "$corpus_measured_at"
+corpus_read_largest
 baseline_start
 # The bearer is the one the earlier release's server accepts: the run's DISPATCH_TOKEN, or the one
 # baseline_start made. It is printed nowhere, and no child process inherits it.
@@ -872,6 +1011,29 @@ corpus_large_issue "$section" "$large_blocks" "$large_documents" "$large_comment
 large="$corpus_key"
 readonly large
 
+section=largest
+printf 'The earlier release assigns a key before the role documents are copied.\n' >"$work/largest-starter.md"
+corpus_issue "$section" "Copy of the largest issue's role documents" "$work/largest-starter.md"
+readonly largest_copy="$corpus_key"
+dropped_pointers="$(corpus_rewrite_largest "$largest_copy")" ||
+  fail "$section" "prepare the role documents for $largest_copy" "rewrite failed"
+[[ "$dropped_pointers" =~ ^[0-9]+$ ]] ||
+  fail "$section" "count removed pointer attributes" "the rewrite returned no count"
+declare -Ar role_names=([spec]=spec [verification-md]=verification.md [plan-md]=plan.md)
+for role in spec verification-md plan-md; do
+  corpus_upload_largest_role "$largest_copy" "$role" "${role_names[$role]}" "$work/$role.bootstrap.md"
+done
+corpus_wait_settled "$section"
+for role in spec verification-md plan-md; do
+  if ! cmp -s "$work/$role.bootstrap.md" "$work/$role.copy.md"; then
+    corpus_upload_largest_role "$largest_copy" "$role" "${role_names[$role]}" "$work/$role.copy.md"
+  fi
+done
+corpus_wait_settled "$section"
+printf 'largest_issue_copy=%s pointer_attributes_dropped=%s at %s (match this key to items= in the conversion dry run)\n' \
+  "$largest_copy" "$dropped_pointers" "$(corpus_now)"
+pass "$section" "wrote the three role documents of $largest_copy through the earlier release"
+
 section=counts
 corpus_wait_settled "$section"
 corpus_approvals_stand "$section"
@@ -938,4 +1100,4 @@ baseline_stop_server
 printf 'seed-corpus.sh wrote project %s from %s to %s: shapes %s, child %s, boundary %s %s %s %s %s, large %s\n' \
   "$project" "$started" "$(corpus_now)" "$shapes" "$child" "$standing" "$superseded" \
   "$changed" "$closed" "$alone" "$large"
-printf 'PASS: seed-corpus.sh complete 5 sections\n'
+printf 'PASS: seed-corpus.sh complete 6 sections\n'

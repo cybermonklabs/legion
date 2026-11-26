@@ -4,7 +4,6 @@ import type { DisplayTree, IssueTreeParent } from "../../api/types";
 import { actorLabelText } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { deletedLineText } from "../refs/post-marks";
-import { wordsOf } from "../refs/tree-fragment";
 import type { AddressFallback } from "./address-target";
 import type { AddressTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
@@ -19,7 +18,7 @@ import {
   presetView,
   tagFilter,
 } from "./presets";
-import { parentLinkWords } from "./projection-fixture";
+import { nameOf, parentLinkWords } from "./projection-fixture";
 import { addressView } from "./slots/body";
 import { type DrawnRow, treeRows } from "./tree-fold";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
@@ -1009,11 +1008,82 @@ test("a view's row drawn from its own tree names each other parent it serves by 
   const root = node("CORE-1", "issue", [], { views: { plan: answer, trees: { plan: tree } } });
   const drawn = presetView(root, "plan", "").root.children.find((row) => row.id === "plan#b-t1");
   expect(
-    drawn?.alsoUnder.map((chip) =>
-      chip.reading !== undefined && "tree" in chip.reading ? wordsOf(chip.reading.tree) : undefined
-    ),
+    drawn?.alsoUnder.map(nameOf),
     "the task does not name the second statement it serves"
   ).toEqual(["The second statement."]);
+});
+
+// R19: the Plan view's read answers each task's size in whole minutes, from the task's `size`
+// attribute (`plan.size`), and on an issue with issues under it the tasks of every issue under it
+// beside the issue's own, each marked with its issue, as context. Each is a row of Plan, with its
+// size where it holds one and its issue where it is another issue's, and the Plan control counts
+// them all; a size that is no whole number of minutes is none. The view hands the issue's own
+// tasks first, then each other issue's in the order its document writes them, the written order
+// the plan's walk starts from. No other view takes another issue's node as a row.
+test("a plan task's size and issue come from the plan view's answer", () => {
+  const plan = (size: string | null) => ({
+    cycle: false,
+    docs: null,
+    needs: [],
+    position: 0,
+    size,
+    skills: null,
+  });
+  const answer = treeAnswer(
+    [
+      viewNode("t1", "plan_task", "query", { in: "plan", plan: plan("90") }),
+      viewNode("x1", "plan_task", "context", {
+        document: { artifact_id: "artifact-child-plan", position: 1, slug: "plan" },
+        issue: "CORE-2",
+        parent: "CORE-2",
+        plan: plan("45"),
+      }),
+      viewNode("x0", "plan_task", "context", {
+        document: { artifact_id: "artifact-child-plan", position: 0, slug: "plan" },
+        issue: "CORE-2",
+        parent: "CORE-2",
+        plan: plan(null),
+      }),
+      viewNode("t2", "plan_task", "query", { in: "plan", plan: plan(null) }),
+      viewNode("t3", "plan_task", "query", { in: "plan", plan: plan("soon") }),
+    ],
+    [],
+    { view: "plan" }
+  );
+  const tree = node("CORE-1", "issue", [
+    node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" }),
+    node("plan#b-t2", "plan_task", [], { readId: "CORE-1/plan#t2" }),
+    node("plan#b-t3", "plan_task", [], { readId: "CORE-1/plan#t3" }),
+    node("x1", "plan_task", [], { readId: "CORE-2/plan#x1" }),
+    node("x0", "plan_task", [], { readId: "CORE-2/plan#x0" }),
+  ]);
+  const root = node("CORE-1", "issue", [], { views: { plan: answer, trees: { plan: tree } } });
+  expect(
+    presetView(root, "plan", "").root.children.map((row) => [row.id, row.size, row.issue])
+  ).toEqual([
+    ["plan#b-t1", 90, undefined],
+    ["plan#b-t2", undefined, undefined],
+    ["plan#b-t3", undefined, undefined],
+    ["x0", undefined, "CORE-2"],
+    ["x1", 45, "CORE-2"],
+  ]);
+  expect(filterSignals(root, "").plan.count).toBe(5);
+  const verification = treeAnswer(
+    [viewNode("c9", "check", "context", { in: "verification", issue: "CORE-2", parent: "CORE-2" })],
+    [],
+    { view: "verification" }
+  );
+  const checks = node("CORE-1", "issue", [], {
+    views: {
+      trees: {
+        verification: node("CORE-1", "issue", [
+          node("c9", "check", [], { readId: "CORE-2/verification#c9", state: "no-result" }),
+        ]),
+      },
+      verification,
+    },
+  });
+  expect(presetView(checks, "verification", "").root.children).toEqual([]);
 });
 
 // Two documents of an issue that has not converted can hold one block id, and each block is a row

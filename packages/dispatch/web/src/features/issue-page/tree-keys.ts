@@ -1,5 +1,5 @@
 import type { TreeNode } from "./issue-tree";
-import type { DrawnRow } from "./tree-fold";
+import { type DrawnRow, placeOf } from "./tree-fold";
 
 /**
  * What the tree's keyboard asks of the model. Pure, over the tree `issue-tree.ts` builds and the
@@ -7,14 +7,14 @@ import type { DrawnRow } from "./tree-fold";
  * test answers the same question the page does.
  */
 
-/** What tells two rows apart: the path from the root down to the node the row draws. A node
- *  drawn under two requirements is two rows, and so is every row below each of them, which is
- *  why the whole path and not the direct parent is the key: the focus, the editing and the
- *  tree's one tab stop belong to the row rather than to the node they are on, and two rows
- *  sharing a key would move together. The row that pages a node's children is keyed by that
- *  node's path, marked as the page's. */
+/** What tells two rows apart: the path from the root down to the node the row draws, its place
+ *  (`placeOf`). A node drawn under two requirements is two rows, and so is every row below each
+ *  of them, which is why the whole path and not the direct parent is the key: the focus, the
+ *  editing, the tree's one tab stop, the reader's folds and the pages of children belong to the
+ *  row rather than to the node they are on, and two rows sharing a key would move together. The
+ *  row that pages a node's children is keyed by that node's place, marked as the page's. */
 export function rowKeyOf(row: DrawnRow): string {
-  const path = [...row.trail, row.kind === "page" ? row.of.id : row.node.id].join(">");
+  const path = placeOf(row.trail, row.kind === "page" ? row.of.id : row.node.id);
   return row.kind === "page" ? `page:${path}` : path;
 }
 

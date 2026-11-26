@@ -20,6 +20,7 @@ import type {
 import type {
   ArtifactCreatedEventPayload,
   ArtifactHumanEditedEventPayload,
+  ArtifactIndexedEventPayload,
   ArtifactRemovedEventPayload,
   ArtifactRenamedEventPayload,
   ArtifactReviewEventPayload,
@@ -27,6 +28,7 @@ import type {
   BlockInvalidEventPayload,
   BlockRepairedEventPayload,
   DecisionKeptEventPayload,
+  DocumentRetiredEventPayload,
 } from "./dispatch-api-documents";
 import type {
   CheckResultEventPayload,
@@ -146,6 +148,10 @@ export type DispatchEvent =
       readonly type: "decision.kept";
       readonly payload: DecisionKeptEventPayload;
     })
+  | (DispatchEventBase & {
+      readonly type: "document.retired";
+      readonly payload: DocumentRetiredEventPayload;
+    })
   /** A priority's write: it names no owner, so `issue_key` is null and `project` empty, and it
    *  never notifies. */
   | (DispatchEventBase & {
@@ -194,6 +200,13 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "artifact.human_edited";
       readonly payload: ArtifactHumanEditedEventPayload;
+    })
+  /** The block index caught up on documents of the issue a write left owed one: written by the
+   *  block-index reconciliation as a system actor, after the documents' own `artifact.version`,
+   *  and quiet. */
+  | (DispatchEventBase & {
+      readonly type: "artifact.indexed";
+      readonly payload: ArtifactIndexedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "artifact.approved";
@@ -374,6 +387,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "artifact.changes_requested": true,
   "artifact.created": true,
   "artifact.human_edited": true,
+  "artifact.indexed": true,
   "artifact.removed": true,
   "artifact.renamed": true,
   "artifact.version": true,
@@ -400,6 +414,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.reopened": true,
   "comment.resolved": true,
   "decision.kept": true,
+  "document.retired": true,
   "handoff.recorded": true,
   "issue.claimed": true,
   "issue.closed": true,

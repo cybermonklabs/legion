@@ -233,6 +233,9 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		if err := mentions.write(ctx, tx); err != nil {
 			return err
 		}
+		if r.noHeadRows {
+			return nil
+		}
 		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, nil))
 	})
 }
@@ -270,15 +273,20 @@ func (r *seedRun) itemProject(issue, document int) string {
 // the seed owns no session's state or visibility, so a node written again keeps the ones the
 // store holds, and a node the store does not hold yet is made as graphstore.SessionNode states
 // it. Without it a seeded ask's followed_by edges would answer no node in any read, and the
-// census would report every follower. The nodes go in one graphstore.Write, which takes their
-// rows in ascending (kind, id) and appends their base attributes after them; the follower rows
-// carry no foreign key into the store, so where the copy falls beside this moves no lock of the
-// store's order.
+// census would report every follower. The nodes go in one store write (graphstore.QueueWrite),
+// which takes their rows in ascending (kind, id) and appends their base attributes after them; the
+// follower rows carry no foreign key into the store, so where the copy falls beside this moves no
+// lock of the store's order. It writes no head row: a session is a node of no issue's tree, whose
+// head write reads and writes no row on any schema, and none can run on a database that holds no
+// head projection (seedRun.noHeadRows).
 func writeFollowerNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
 	for index := range nodes {
 		nodes[index].Restates = true
 	}
-	if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nodes, nil)
+		return nil
+	}); err != nil {
 		return fmt.Errorf("the ask followers' nodes: %w", err)
 	}
 	return nil
@@ -300,7 +308,7 @@ func (r *seedRun) askAnswer(ask askPlan, options []model.AskOption) model.AskAns
 }
 
 // writeComments writes the comments, indexes each one's blocks with the server's own indexer
-// (refs.IndexItem) and writes the comment's own mentions. An edited comment is indexed twice, as
+// (indexComment) and writes the comment's own mentions. An edited comment is indexed twice, as
 // its write and its edit indexed it: the blocks the edit dropped keep their rows with a null
 // position.
 //
@@ -334,7 +342,8 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		next++
 	}
 	// The address of the comment's own node, which the batch writes before its first row. The insert
-	// claims the head rows kept (graphstore.KeptHeadRows), which the batch writes last.
+	// claims the head rows kept (graphstore.KeptHeadRows), which the batch writes last on a database
+	// that holds the head projection (seedRun.noHeadRows).
 	columns += ", node_kind, node_address"
 	parameters += fmt.Sprintf(", $%d, $%d", next, next+1)
 	insert := "insert into comments (" + columns + ") select " + parameters + " where " + graphstore.KeptHeadRows
@@ -354,7 +363,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		// (node_kind, node_address) is checked inside the statement that writes the row, so a
 		// node written after it would be too late. The seed appends no event of its own, so
 		// all of it takes the sentinel. Their head rows are the batch's last write, once the
-		// rows they read stand.
+		// rows they read stand, on a database that holds the head projection.
 		nodes, tuples := r.commentStoreWrite(from, to)
 		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 			graphstore.QueueWrite(b, nodes, tuples)
@@ -419,8 +428,8 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				// stored body second is the order the write and the edit ran in, and it leaves
 				// the dropped block with a null position.
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer, serverURL,
-					comment.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
+				if err := r.indexComment(ctx, tx, comment.ID, longer,
+					comment.CreatedAt, text.ExtractAt(longer, serverURL)); err != nil {
 					return fmt.Errorf("index comment %s before its edit: %w", comment.ID, err)
 				}
 			}
@@ -429,8 +438,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				at = comment.CreatedAt.Add(time.Hour)
 			}
 			located := text.ExtractAt(body, serverURL)
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, serverURL, at,
-				located, nil); err != nil {
+			if err := r.indexComment(ctx, tx, comment.ID, body, at, located); err != nil {
 				return fmt.Errorf("index comment %s: %w", comment.ID, err)
 			}
 			// The windows the index no longer writes, as the tick's window arm writes them
@@ -443,7 +451,36 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		if err := mentions.write(ctx, tx); err != nil {
 			return err
 		}
+		if r.noHeadRows {
+			return nil
+		}
 		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples))
+	})
+}
+
+// indexComment indexes the blocks of comment id from body, written at `at`, as a writer that
+// queues no write phase indexes an item it wrote (refs.IndexItem): it reads the index the comment
+// holds, plans body against it (refs.PlanItemIndex), its excerpts cut around the seed's server URL,
+// and runs the plan's statements at once, as a batch of their own. On a database that holds none
+// of the head projection (seedRun.noHeadRows) the plan is queued without the head rows of the
+// comment's blocks (refs.ItemIndexing.QueueKeepingNoHeadRows), which that database's server
+// writes none of.
+func (r *seedRun) indexComment(ctx context.Context, tx pgx.Tx, id, body string, at time.Time, located []text.Located) error {
+	index, err := refs.ReadItemIndex(ctx, tx, refs.ItemComment, id)
+	if err != nil {
+		return err
+	}
+	indexing, err := refs.PlanItemIndex(index, refs.ItemComment, id, body, serverURL, at, located, nil)
+	if err != nil {
+		return err
+	}
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if r.noHeadRows {
+			indexing.QueueKeepingNoHeadRows(b)
+		} else {
+			indexing.Queue(b)
+		}
+		return nil
 	})
 }
 
@@ -578,8 +615,10 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 		if err := mentions.write(ctx, tx); err != nil {
 			return err
 		}
-		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, nil)); err != nil {
-			return err
+		if !r.noHeadRows {
+			if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, nil)); err != nil {
+				return err
+			}
 		}
 		return r.writeSessionMention(ctx, tx, from, to)
 	})

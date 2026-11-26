@@ -44,7 +44,6 @@ import {
   firstLineOf,
   type IssueTreeReads,
   lineWordsRaw,
-  type NodeChip,
   nodeWords,
   type TreeAsk,
   type TreeNode,
@@ -54,6 +53,7 @@ import { useNodeLine } from "./node-line";
 import { NODE_TYPE_NAMES, NODE_TYPES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import {
+  drawnChip,
   nameOf,
   namesOf,
   nodeLineOf,
@@ -94,13 +94,6 @@ import {
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
-
-/** A chip as a row reads it: its fields, with the name it draws (`nameOf`) in place of the
- *  reading. */
-function drawnChip(chip: NodeChip): Omit<NodeChip, "reading"> & { readonly name: string } {
-  const { reading: _reading, ...fields } = chip;
-  return { ...fields, name: nameOf(chip) };
-}
 
 const KEY = "CORE-1";
 const SPEC = "spec";
@@ -2071,6 +2064,14 @@ test("a document chip names a part only where the issue read names that document
       ...issueDetails([flagged, made, plan]),
       decisions_artifact_id: made.id,
       plan_artifact_id: plan.id,
+      queries: [
+        {
+          query: "plan",
+          artifact_id: plan.id,
+          takes: ["plan_task", "plan_role"],
+          subtree: `issue:${KEY}`,
+        },
+      ],
       primary_artifact_id: "",
     },
   });
@@ -2118,11 +2119,11 @@ test("a decision sits under the ask it answers, and one that answers none under 
   expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips).toEqual([]);
 });
 
-// The server builds a decision's links paragraph by paragraph and keeps every repeat
-// (`api/decisions.go`), and the tree read answers them on the node as that read built them, so a
-// decision whose two paragraphs link one statement names it twice. It is one placement under the
-// question the read places it under, counted once in what the question holds, and one chip for
-// the statement, stale where either of its links is.
+// A read of the release before built a decision's asks and links paragraph by paragraph and
+// kept every repeat, so a decision whose two paragraphs cite one question and link one statement
+// named each twice; this build's read names each tie once, from the decision's node. A repeat is
+// still one placement under that question, counted once in what the question holds, and one chip
+// for the statement, stale where either of its links is.
 test("a decision naming one question and one statement twice is drawn once, with one chip", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -2248,8 +2249,9 @@ test("a person's decision is the answered ask's own node, which carries what it 
   expect(nodeOf(root, blockNodeId(SPEC, "q1"))?.chips.map((chip) => chip.ref)).toEqual([
     `dispatch://${KEY}/spec#b-r1`,
   ]);
-  // The edge is read from the ask's node.
-  expect(nodeOf(root, blockNodeId(SPEC, "r-shaped"))?.gaps).toEqual(["shaped_disagreement"]);
+  // The edge is read from the ask's node, and its disagreeing with the statement's own origin
+  // draws no gap on the new page.
+  expect(nodeOf(root, blockNodeId(SPEC, "r-shaped"))?.gaps).toEqual([]);
   expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.gaps).toEqual([]);
   expect(decisionBehind(root, blockNodeId(SPEC, "r-shaped"))?.id).toBe("ask-own");
   // The agent's decision that settles the question in the spec sits under it.
@@ -3456,6 +3458,20 @@ test("a requirement block outside the spec is no statement, and the spec's are, 
         ...issueDetails([spec, plan, checks]),
         plan_artifact_id: plan.id,
         verification_artifact_id: checks.id,
+        queries: [
+          {
+            query: "verification",
+            artifact_id: checks.id,
+            takes: ["check", "result"],
+            subtree: `issue:${KEY}`,
+          },
+          {
+            query: "plan",
+            artifact_id: plan.id,
+            takes: ["plan_task", "plan_role"],
+            subtree: `issue:${KEY}`,
+          },
+        ],
       },
     });
 
@@ -3525,6 +3541,20 @@ test("a check block outside the Verification document draws no state and is coun
         ...issueDetails([spec, plan, checks]),
         plan_artifact_id: plan.id,
         verification_artifact_id: checks.id,
+        queries: [
+          {
+            query: "verification",
+            artifact_id: checks.id,
+            takes: ["check", "result"],
+            subtree: `issue:${KEY}`,
+          },
+          {
+            query: "plan",
+            artifact_id: plan.id,
+            takes: ["plan_task", "plan_role"],
+            subtree: `issue:${KEY}`,
+          },
+        ],
       },
       ...(answered ? { results } : {}),
     });

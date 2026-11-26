@@ -179,15 +179,18 @@ var documentRouteXidWindows = []routeXidWindowCase{
 
 // specRestoreFill names what a restore of the approved text reads before its COMMIT to hold the
 // approval's pin to the restored version's record (docs' writeStatedRenders, R14): the record of
-// the spec's query at one cut, by the walk of the issue's tree as the batch left the store - the
-// cut, the five reads of the issue's conversation (its items, the asks the conversation test
-// passes, their blocks, and the ask and its blocks as their loaders read them), the read of the
-// items' rows, the one read of the tree, every level of it (refs.TreeSubtrees), the read of the
-// issues above the issue and that of the issue a view shows. The spec query takes none of the
-// fixture's blocks, so the record reads no node's values or relations.
+// the spec's query at one cut, by the walk of the issue's tree as the batch left the store, nine
+// statements - the cut (refs.HeadCut), the five reads of the issue's conversation (its items, the
+// asks the conversation test passes, their blocks, and the ask and its blocks as their loaders read
+// them), the read of the items' rows, the one read of the tree, every level of it
+// (refs.TreeSubtrees), and the one read of the issues above the issue and of whether the issue is
+// a view (docs' viewChainStatement) - and a tenth, the values and relations of the one block of the
+// fixture the spec query takes, its requirement rv (refs.TreeFactsOf, revisionRequirement). The
+// issue has no issue above it, so the walk reads no node placed under one (refs.TreePlacedAbove).
 const specRestoreFill = "the read of the spec query's record of the issue at one cut once the batch has run (R14): " +
 	"the cut, the five reads of the issue's conversation - its items, the asks the conversation test passes, their blocks, and the ask and its blocks as their loaders read them - " +
-	"the read of the items' rows, the one read of the tree, every level of it, the read of the issues above the issue and that of the issue a view shows"
+	"the read of the items' rows, the one read of the tree, every level of it, the one read of the issues above the issue and of whether it is a view, " +
+	"and the read of the values and relations of the one node the spec query takes"
 
 // specRestoreWindow is the window of a version of the spec restoring the approved text under an
 // open approval request (docs' writeRestored), root R29's second exception the owner approved, 17
@@ -401,7 +404,8 @@ func readyEditUnderApprovalRequest(t *testing.T, base routeFixture) lockedItemWr
 
 // approvedThenRequested has alice approve the fixture's spec at version 1, the agent edit it to
 // version 2, which stales that approval, and the agent open an approval request at version 2,
-// which follows the approval of version 1. It answers the request's ask.
+// which follows the approval of version 1. It answers the request's ask. The fixture's revision
+// token stands in a requirement (revisionRequirement), so the edit moves the spec's record.
 func approvedThenRequested(t *testing.T, fixture itemRowFixture) carriedAsk {
 	t.Helper()
 	waitForArtifactVersion(t, fixture.handler, fixture.artifactID, 1)
@@ -409,11 +413,36 @@ func approvedThenRequested(t *testing.T, fixture itemRowFixture) carriedAsk {
 		t.Fatalf("review = %#v, want an approval of version 1", review)
 	}
 	reviseDocument(t, fixture.handler, fixture.artifactID, "Revision token r0", "Revision token r1", 2)
+	requireNoCarry(t, fixture.handler, fixture.artifactID, 1, "stale")
 	request := requestApproval(t, fixture.handler, fixture.artifactID)
 	if request.Approval.Version != 2 || request.Approval.Approved == nil || request.Approval.Approved.Version != 1 {
 		t.Fatalf("request = %#v, want one at version 2 following the approval of version 1", request.Approval)
 	}
 	return request
+}
+
+// revisionRequirement is base with its spec's revision token stated as a requirement
+// (revisionRequirementSpec), which the restore rows' agent edit rewords.
+func revisionRequirement(t *testing.T, base routeFixture) routeFixture {
+	t.Helper()
+	base.spec = revisionRequirementSpec(t, base.spec)
+	return base
+}
+
+// revisionRequirementSpec is spec, the harness's large one (xidSpec), with its revision token
+// stated as the requirement rv. R14 covers the spec's approval by the Spec query's record, which
+// takes memo callouts, criteria and requirements alone, so a change of the token in the spec's
+// paragraph moves no record: the record carry would carry alice's approval to that version, and a
+// restore after it would restore the text of that carry, not of her approval, and a request opened
+// on it would open no ask for the restore to answer. A change of the token in rv moves the record
+// and stales the approval, as the restore windows need.
+func revisionRequirementSpec(t *testing.T, spec string) string {
+	t.Helper()
+	const token = "Revision token r0\n"
+	if held := strings.Count(spec, token); held != 1 {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): the harness's spec holds %q %d times, want once", token, held)
+	}
+	return strings.Replace(spec, token, ":::requirement{#rv}\n"+token+":::\n", 1)
 }
 
 // requireRequestAnsweredByTheCarry fails t unless the request is answered Approve in alice's name
@@ -437,7 +466,7 @@ func requireRequestAnsweredByTheCarry(t *testing.T, fixture itemRowFixture, askI
 // answerApprovalAsk).
 func readyEditRestoringTheApprovedText(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := base.issue(t, "Edit restoring the approved text")
+	fixture := revisionRequirement(t, base).issue(t, "Edit restoring the approved text")
 	request := approvedThenRequested(t, fixture)
 	return fixture.routeWrite(t, "the restoring version and the request its carry answers",
 		func(handler http.Handler) *httptest.ResponseRecorder {
@@ -459,7 +488,7 @@ func readyEditRestoringTheApprovedText(t *testing.T, base routeFixture) lockedIt
 // (docs.CarryUploadedApproval, writeCarriedReview, answerApprovalAsk).
 func readyUploadRestoringTheApprovedText(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := base.issue(t, "Upload restoring the approved text")
+	fixture := revisionRequirement(t, base).issue(t, "Upload restoring the approved text")
 	request := approvedThenRequested(t, fixture)
 	approved := versionMarkdown(t, fixture.handler, fixture.artifactID, 1)
 	// The upload replaces the spec, so it names the token of the version it replaces.
@@ -525,12 +554,16 @@ func readyVerificationUploadAboveTheBound(converted bool) func(*testing.T, route
 }
 
 // The deep spec's shape: deepXidChains chains, each a paragraph and a list nested deepXidLevels
-// levels below it, a list and its one item's paragraph at each level, under the spec's heading and
-// its revision token line - 2 + 360 × 13 = 4,682 blocks, past the bound (docs' deferBlockIndexBlocks).
+// levels below it, a list, its one item and that item's paragraph at each level, under the spec's
+// heading and its revision token line - 2 + 360 × 19 = 6,842 blocks, past the bound (docs'
+// deferBlockIndexBlocks). The item is a block of its own beside its paragraph because R7 of the
+// issue-tree spec nests a moved block "under a container that has no words of its own: a
+// `callout` or a list item", so the renderer records each list item's offset (renderer.list in
+// pmdoc/render.go) and the block index gives the item a node.
 const (
 	deepXidChains = 360
 	deepXidLevels = 6
-	deepXidBlocks = 2 + deepXidChains*(1+2*deepXidLevels)
+	deepXidBlocks = 2 + deepXidChains*(1+3*deepXidLevels)
 )
 
 // deepXidSpec is the spec the table's deferred rows measure on, a spec of more than 2,000 blocks

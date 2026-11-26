@@ -11,7 +11,7 @@ import {
   useState,
 } from "react";
 
-import type { Actor, Artifact, CheckBlock } from "../../../api/types";
+import type { Actor, Artifact, CheckBlock, IssueCoverage } from "../../../api/types";
 import {
   focusVisibleRing,
   pageFailedText,
@@ -75,7 +75,9 @@ import { type OnEditing, pressAsksCaret, useNodeEditing, useWordsPress } from ".
 import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
+  type IssueCovered,
   inCounts,
+  issueCovered,
   STATEMENT_STATES,
   type StatementReading,
   shortCommit,
@@ -145,14 +147,16 @@ export function queryTyped(query: string): boolean {
  * them: a binding of the page's keymap is a row of that list.
  *
  * What it says of a statement and of a check is `statement-state.ts`, which is pure. What it
- * says of the issue - the summary, the chips' counts, how each statement stands and so the
- * state a chip narrows by - is read from the view with no words query. The view the query left
- * says which statements and checks are drawn, and each check drawn is read from the view with
- * no query too: its state, its latest result and its count of earlier results, with the earlier
- * results the query kept drawn under its latest. So a query narrows the rows and never changes
- * how a statement or a check reads, what the summary counts, or how much of a check it draws
- * for matching more of it. A query that matches nothing keeps the issue's row, and the table
- * says so under its headings. Four rules of the page are drawn here:
+ * says of the issue - the chips' counts, the summary's counts of statements and checks, how each
+ * statement stands and so the state a chip narrows by - is read from the view with no words
+ * query, and the summary's covered line from the coverage read (`coverage`). The view the
+ * query left says which statements and checks are drawn, and each check drawn is read from the
+ * view with no query too: its state, its latest result and its count of earlier results, with
+ * the earlier results the query kept drawn under its latest. So a query narrows the rows and
+ * never changes how a statement or a check reads, what the summary counts, or how much of a
+ * check it draws for matching more of it. A query that matches nothing keeps the issue's row,
+ * and the table says under its headings that the query left nothing. Four rules of the page are
+ * drawn here:
  *
  * - **One commit, drawn once.** The summary names the commit the issue's results are read
  *   against; no result draws a commit of its own, on its line or in its opened facts, and a
@@ -160,9 +164,14 @@ export function queryTyped(query: string): boolean {
  * - **Seven states, each a word and a shape.** A check's state is the page's own
  *   (`NODE_STATE_WORDS.check`), drawn with the shape its token carries (`NodeGlyph`), so no
  *   state is told from another by colour alone.
- * - **Covered, never proven.** The summary counts the statements that carry a check as
- *   covered; no count, legend or heading of this body reads proven or met for it, because a
- *   statement that has a check is not a statement that is true.
+ * - **Covered, never proven.** The summary counts the issue's statements that carry a check as
+ *   covered, out of every statement of the issue, both from the coverage read, which no page of
+ *   the view read cuts; while a document of the issue is still being indexed, it draws that
+ *   document's line in place of any count. No count, legend or heading of this body reads proven
+ *   or met for it, because a statement that has a check is not a statement that is true. Every
+ *   other count the summary and the chips draw is of the statements and checks the view has
+ *   loaded, and carries "+" while the view read holds nodes no page read yet holds (R15,
+ *   `TreeNode.moreToRead`).
  * - **Every value inside its card.** Each cell is a column of its own that may be zero wide
  *   and breaks inside a word where it has nothing else to break on, and a check's attributes
  *   and a result's are the two-column grid `NodeFacts.tsx` draws, which is what keeps a value
@@ -190,6 +199,7 @@ export function VerificationFilterBody({
   artifacts,
   checks,
   context,
+  coverage,
   isClosed,
   namesLine,
   onEditing,
@@ -211,6 +221,12 @@ export function VerificationFilterBody({
   /** The ids of the rows the filter draws as context, which under Verification is every
    *  statement (`presets.ts`). */
   context: ReadonlySet<string>;
+  /** The coverage read (`GET /api/v1/issues/{key}/coverage`, the slot's `coverage`): every
+   *  statement of the issue's spec, with how many checks serve it, and any line saying a
+   *  document of the issue is still being indexed, which the summary's covered line is read from
+   *  alone (`issueCovered`). That read is one of the three the body waits on (`reads`), so the
+   *  summary is drawn only once it holds an answer. */
+  coverage: IssueCoverage | undefined;
   /** Whether the issue is closed: its documents take no typing, so no press on a row's words
    *  puts a caret in them (`takesCaret`). */
   isClosed: boolean;
@@ -244,12 +260,13 @@ export function VerificationFilterBody({
   /** The tree as the Verification filter left it (`presetView`). */
   view: TreeNode;
   /** The Verification view with no words query, where a query is typed: what the issue holds,
-   *  whatever the query left of it. The summary, the chips' counts, each statement's state and
-   *  its count of checks elsewhere, and every check drawn are read from it. A query is typed
-   *  where it is not empty once trimmed, as `presetView` reads it, so a query of spaces alone is
-   *  none. Where none is typed it is `undefined`: the body reads all of that from `view` as it
-   *  comes, before a pressed chip narrows it into another one, which then holds no result of its
-   *  own (`withoutResults`), so no result counts as kept by a query. */
+   *  whatever the query left of it. The summary's counts of statements and checks, the chips'
+   *  counts, each statement's state and its count of checks elsewhere, and every check drawn are
+   *  read from it. A query is typed where it is not empty once trimmed, as `presetView` reads
+   *  it, so a query of spaces alone is none. Where none is typed it is `undefined`: the body
+   *  reads all of that from `view` as it comes, before a pressed chip narrows it into another
+   *  one, which then holds no result of its own (`withoutResults`), so no result counts as kept
+   *  by a query. */
   whole: TreeNode | undefined;
 }): ReactNode {
   // What the issue holds, which the summary, the chips and every check drawn are read from: the
@@ -305,6 +322,10 @@ export function VerificationFilterBody({
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
   if (chosen !== only) setChosen(only);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
+  const covered = useMemo(() => issueCovered(coverage), [coverage]);
+  // Whether the view read holds nodes no page read yet holds, so each count of the statements
+  // and checks it has loaded carries "+" (R15).
+  const more = (whole ?? view).moreToRead === true;
   const shown = useMemo(
     () => (only === undefined ? statements : statements.filter(({ state }) => state === only)),
     [only, statements]
@@ -573,9 +594,10 @@ export function VerificationFilterBody({
               role="treeitem"
               tabIndex={tabIndexFor(view.id)}
             >
-              <Summary counts={counts} reading={issue} />
+              <Summary counts={counts} covered={covered} more={more} reading={issue} />
               <Chips
                 counts={counts}
+                more={more}
                 onlyState={only}
                 onPress={setOnly}
                 total={issue.statements.length}
@@ -1005,29 +1027,37 @@ function checkTone(state: CheckState): string {
 }
 
 /**
- * How the issue stands, in one card over the table (the prototype's `.vsum`): how many
- * statements carry a check, the bar of how they stand, the count in each state, the one commit
- * the page names for the issue's results, drawn here and nowhere else, and how many of the
- * issue's checks stand in each of the seven states a check can be in, each by its word and its
- * shape, so the shapes the table draws are named once over it. It is the issue's whatever a
- * words query left of it.
+ * How the issue stands, in one card over the table (the prototype's `.vsum`): how many of the
+ * issue's statements carry a check, out of every statement it has, the bar of how the statements
+ * the view has loaded stand, the count in each state, the one commit the page names for the
+ * issue's results, drawn here and nowhere else, and how many of the loaded checks stand in each
+ * of the seven states a check can be in, each by its word and its shape, so the shapes the table
+ * draws are named once over it. It is the issue's whatever a words query left of it.
  */
 function Summary({
   counts,
+  covered,
+  more,
   reading,
 }: {
   counts: Readonly<Record<StatementState, number>>;
-  /** The issue's reading, the view with no query: its commit, its covered count, its statements,
-   *  which the covered count is out of, and its checks, each counted once however many
-   *  statements it serves. */
+  /** How the issue's covered count stands, from the coverage read (`issueCovered`): the same on
+   *  every read, whichever page of the view is loaded, or each line saying a document of the
+   *  issue is still being indexed in place of any count. */
+  covered: IssueCovered;
+  /** Whether the view read holds nodes no page read yet holds: each count of the loaded
+   *  statements and checks then carries "+" (R15). */
+  more: boolean;
+  /** The issue's reading, the view with no query: its commit, its loaded statements, which the
+   *  bar is drawn over, and its checks, each counted once however many statements it serves. */
   reading: VerificationReading;
 }): ReactNode {
-  const { commit, covered } = reading;
-  // What the summary counts: every statement and check but those
+  const { commit } = reading;
+  // What the summary counts of the loaded view: every statement and check but those
   // `outOfCounts` leaves out - a proposed statement or check, and each one at or under an
-  // overtaken node. `counts` and the covered count leave them out already; this leaves them out
-  // of what the covered count is out of and of the legend's count of how the checks stand,
-  // while the table still draws every row.
+  // overtaken node. `counts` leaves them out already; this leaves them out of the statements the
+  // bar is drawn over and of the legend's count of how the checks stand, while the table still
+  // draws every row. The covered line is the coverage read's (`covered`).
   const drawn = reading;
   reading = useMemo(
     () => ({
@@ -1040,7 +1070,8 @@ function Summary({
     }),
     [drawn]
   );
-  const total = reading.statements.length;
+  const loaded = reading.statements.length;
+  const plus = more ? "+" : "";
   // How many of the issue's checks stand in each state, counted once for each reading rather
   // than once for each state the legend draws.
   const inState = useMemo(() => {
@@ -1060,11 +1091,28 @@ function Summary({
       className={`flex min-w-0 flex-wrap items-center gap-[18px] rounded-[10px] border px-[18px] py-3.5 ${pageLineBorder} ${pagePaperBg}`}
       data-verification-summary=""
     >
-      <p className={`text-sm leading-5 font-semibold ${pageInkText}`} data-verification-covered="">
-        <span {...authorText}>{covered}</span> <span {...pageChrome}>{VERIFICATION_WORDS.of}</span>{" "}
-        <span {...authorText}>{total}</span>{" "}
-        <span {...pageChrome}>{VERIFICATION_WORDS.covered}</span>
-      </p>
+      {covered.kind === "owed" ? (
+        <div
+          className={`flex min-w-0 flex-col gap-0.5 text-sm leading-5 ${pageQuietText}`}
+          data-verification-covered=""
+        >
+          {covered.notes.map((words) => (
+            <p key={words} {...authorText}>
+              {words}
+            </p>
+          ))}
+        </div>
+      ) : (
+        <p
+          className={`text-sm leading-5 font-semibold ${pageInkText}`}
+          data-verification-covered=""
+        >
+          <span {...authorText}>{covered.covered}</span>{" "}
+          <span {...pageChrome}>{VERIFICATION_WORDS.of}</span>{" "}
+          <span {...authorText}>{covered.total}</span>{" "}
+          <span {...pageChrome}>{VERIFICATION_WORDS.covered}</span>
+        </p>
+      )}
       <span
         aria-hidden="true"
         className={`flex h-3 min-w-[220px] flex-1 overflow-hidden rounded-[6px] ${pageGuideBg}`}
@@ -1074,7 +1122,7 @@ function Summary({
           <i
             className={`block h-full ${STATEMENT_FILLS[state]}`}
             key={state}
-            style={{ width: `${(counts[state] / Math.max(total, 1)) * 100}%` }}
+            style={{ width: `${(counts[state] / Math.max(loaded, 1)) * 100}%` }}
           />
         ))}
       </span>
@@ -1090,6 +1138,7 @@ function Summary({
             />
             <span className={pageInkText} {...authorText}>
               {counts[state]}
+              {plus}
             </span>
             <span {...pageChrome}>{VERIFICATION_WORDS.states[state]}</span>
           </span>
@@ -1111,6 +1160,7 @@ function Summary({
             />
             <span className={pageInkText} {...authorText}>
               {inState.get(state) ?? 0}
+              {plus}
             </span>
             <span {...pageChrome}>{NODE_STATE_WORDS.check[state]}</span>
           </span>
@@ -1129,21 +1179,25 @@ function Summary({
 }
 
 /** The chips over the table (the prototype's `.vchips`): All, and one per state a statement can
- *  be in with how many of the issue's stand in it. Pressing one draws those statements alone,
+ *  be in with how many of the loaded statements stand in it, each count carrying "+" while the
+ *  view read holds nodes no page read yet holds (R15). Pressing one draws those statements alone,
  *  pressing it again or pressing All draws them all, as the filter row's own controls work.
  *  Every chip is a press the keyboard reaches, one whose state holds no statement too, which
  *  draws the page's line for it. */
 function Chips({
   counts,
+  more,
   onlyState,
   onPress,
   total,
 }: {
   counts: Readonly<Record<StatementState, number>>;
+  more: boolean;
   onlyState: StatementState | undefined;
   onPress: (state: StatementState | undefined) => void;
   total: number;
 }): ReactNode {
+  const plus = more ? "+" : "";
   const chip = (on: boolean): string =>
     `rounded-full border px-3 py-0.5 text-sm leading-5 font-semibold ${focusVisibleRing} ${FORCED_PRESSED} ${
       on ? `${pageInkFill} ${pageInkBorder}` : `${pageHairBorder} ${pagePaperBg} ${pageMutedText}`
@@ -1161,6 +1215,7 @@ function Chips({
         {VERIFICATION_WORDS.all}{" "}
         <span className="text-xs font-medium" {...authorText}>
           {total}
+          {plus}
         </span>
       </button>
       {STATEMENT_STATES.map((state) => (
@@ -1176,6 +1231,7 @@ function Chips({
           {VERIFICATION_WORDS.states[state]}{" "}
           <span className="text-xs font-medium" {...authorText}>
             {counts[state]}
+            {plus}
           </span>
         </button>
       ))}

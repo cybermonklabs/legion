@@ -29,8 +29,8 @@
 #
 # What it asserts, each a `PASS: <section> <what>` line or the first `FAIL: <section> <what>:
 # <observed>`, exit 1:
-#   log     the log holds the test's own --- PASS line, at least one TOUCHED: line, TOUCHED: and
-#           SHAPE: of comments, TOUCHED: events, and each SIZE: line names the limit
+#   log     the log holds the test's own --- PASS line, TOUCHED: and SHAPE: of comments and
+#           document_block_versions, and TOUCHED: events. Each SIZE: line names the limit
 #           pgmigrate.CensusTableLimit holds in packages/envoy/internal/pgmigrate/census.go;
 #   tables  every TOUCHED: table is a row of the table list, printed with its migration, its
 #           recorded reading and that reading's source, a reading with no source failing; a table
@@ -132,10 +132,11 @@ mapfile -t sized < <(sed -nE 's/^SIZE: ([A-Za-z0-9_]+ [0-9]+ [0-9]+)$/\1/p' "$te
 printf 'TOUCHED: %s\n' "${touched[@]}"
 ((${#shaped[@]} == 0)) || printf 'SHAPE: %s\n' "${shaped[@]}"
 pass "$section" "the log names ${#touched[@]} touched tables and ${#shaped[@]} whose shape a migration changes"
-for wanted in "TOUCHED: comments" "SHAPE: comments" "TOUCHED: events"; do
+for wanted in "TOUCHED: comments" "SHAPE: comments" "TOUCHED: events" \
+  "TOUCHED: document_block_versions" "SHAPE: document_block_versions"; do
   grep -qxF "$wanted" "$test_log" || fail "$section" "the log holds '$wanted'" "$test_log holds no such line"
 done
-pass "$section" "the log holds TOUCHED: comments, SHAPE: comments and TOUCHED: events"
+pass "$section" "the log names comments and document_block_versions as touched and shaped, and events as touched"
 migration_census_body_limit "$(<"$checkout/$census_go")"
 readonly head_limit="$census_limit"
 printf 'pgmigrate.CensusTableLimit at this checkout: %d bytes (%s)\n' "$head_limit" "$census_go"

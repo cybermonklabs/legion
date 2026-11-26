@@ -8,10 +8,15 @@ import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
-import type { Ask, AskRead, Comment } from "../../api/types";
+import type { Ask, AskRead, Comment, TextAsk } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskBlockCard } from "./AskBlockCard";
-import { type AskBlockHost, type ServedAsk, servedAskOf } from "./typed-block-drawing";
+import {
+  type AskBlockHost,
+  type ServedAsk,
+  servedAskOf,
+  servedAskOfBlock,
+} from "./typed-block-drawing";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -452,16 +457,44 @@ test("a block with an ask of its own names no source, whatever its attributes ho
   }
 });
 
-test("a copy reads its source's state and answer from the server's read of the source ask, not from its own attributes", () => {
-  // The copy's block holds none of the answer: it is on the source ask alone, which the issue's
-  // asks list carries under the same block id on another document.
-  const source: Ask = {
-    ...answeredAsk,
-    block_artifact: { id: "artifact-plan", primary: false, slug: "plan" },
-    id: "ask-source",
+/** The ask a copy of block `b-1` on another document is a copy of: the issue plan's, answered. */
+const copySource: Ask = {
+  ...answeredAsk,
+  block_artifact: { id: "artifact-plan", primary: false, slug: "plan" },
+  id: "ask-source",
+};
+
+/** Another document's ask under the copy's block id, which the issue's asks list beside the
+ *  copy's source: a block id such as `b-1` or `decision` is no document's own. */
+const sameIdElsewhere: Ask = {
+  ...answeredAsk,
+  block_artifact: { id: "artifact-notes", primary: false, slug: "notes-md" },
+  id: "ask-elsewhere",
+};
+
+/** What a copy's block asks, below its opening line. */
+const COPY_BODY = "Should we ship?\n\n- Ship: Release it\n- Hold\n:::\n";
+
+/** The live text of the copy's document as this release serves it: no state in the markdown, and
+ *  the block's entry of `asks` as `entry` gives it. */
+function copyText(entry: Omit<TextAsk, "block_id">) {
+  return {
+    asks: [{ block_id: "b-1", ...entry }],
+    markdown: `:::ask{#b-1 urgency="high"}\n${COPY_BODY}`,
   };
-  const served = servedAskOf([source], "artifact-copy", "b-1");
-  expect(served).toEqual({ ask: source, copiedFrom: "dispatch://CORE-1/artifact/plan" });
+}
+
+test("a copy reads its source's state and answer from the ask its live text names, not from its own attributes", () => {
+  // The copy's block holds none of the answer: it is on the source ask alone, which the issue's
+  // asks list carries, and the copy's document's live text names that ask as its source by id.
+  // Another document's ask under the same block id, listed first, is no source of it.
+  const text = copyText({
+    copied_from: "ask-source",
+    copied_from_document: "dispatch://CORE-1/artifact/plan",
+    state: "answered",
+  });
+  const served = servedAskOfBlock([sameIdElsewhere, copySource], text, "artifact-copy", "b-1");
+  expect(served).toEqual({ ask: copySource, copiedFrom: "dispatch://CORE-1/artifact/plan" });
   const card = renderCard({ indexed: false, node: askNode({ state: "open" }), served });
   try {
     expect(card.header.getByText(/Copied from/).textContent).toBe(
@@ -474,6 +507,65 @@ test("a copy reads its source's state and answer from the server's read of the s
   } finally {
     card.unmount();
   }
+});
+
+/** The read of a block no ask stands behind yet, and that names no source: open, with no answer. */
+const openRead: ServedAsk = {
+  rendered: {
+    answerText: "",
+    answeredAt: undefined,
+    answeredBy: "",
+    copiedFrom: undefined,
+    selected: [],
+    state: "open",
+  },
+};
+
+test("a block whose live text names no source takes no other document's ask under its block id", () => {
+  const open = copyText({ state: "open" });
+  expect(servedAskOfBlock([sameIdElsewhere], open, "artifact-copy", "b-1")).toEqual(openRead);
+  // A source the asks do not list - a project document's, whose asks list no other document's -
+  // is read from the live text's entry, which names it, never from the ask of the same block id.
+  const unlisted = copyText({
+    answer: "Ship it.",
+    answered_at: "2026-11-16T09:00:00Z",
+    answered_by: "carol",
+    copied_from: "ask-unlisted",
+    copied_from_document: "dispatch://CORE/artifact/plan",
+    selected: [],
+    state: "answered",
+  });
+  expect(servedAskOfBlock([sameIdElsewhere], unlisted, "artifact-copy", "b-1")).toEqual({
+    rendered: {
+      answerText: "Ship it.",
+      answeredAt: "2026-11-16T09:00:00Z",
+      answeredBy: "carol",
+      copiedFrom: { ask: "ask-unlisted", document: "dispatch://CORE/artifact/plan" },
+      selected: [],
+      state: "answered",
+    },
+  });
+  // Until the live text is read, nothing names a source.
+  expect(servedAskOfBlock([sameIdElsewhere], undefined, "artifact-copy", "b-1")).toBeUndefined();
+  // The block's own ask is read whatever the text says.
+  const own = servedAskOfBlock([sameIdElsewhere], open, "artifact-notes", "b-1");
+  expect(own).toEqual({ ask: sameIdElsewhere });
+});
+
+// A Dispatch of the release before sends no `asks` and names a copy's source on its opening line
+// (`copied_from`), which the page reads where the member is absent: by that id, as it reads a
+// text of this release's, and by no ask of another document that shares the block id.
+test("a copy on a text of the release before reads the source its opening line names", () => {
+  const asks = [sameIdElsewhere, copySource];
+  const named = {
+    markdown: `:::ask{#b-1 urgency="high" state="answered" answered_by="bob" copied_from="ask-source" copied_from_document="dispatch://CORE-1/artifact/plan"}\n${COPY_BODY}`,
+  };
+  expect(servedAskOfBlock(asks, named, "artifact-copy", "b-1")).toEqual({
+    ask: copySource,
+    copiedFrom: "dispatch://CORE-1/artifact/plan",
+  });
+  const unnamed = { markdown: `:::ask{#b-1 urgency="high" state="open"}\n${COPY_BODY}` };
+  expect(servedAskOfBlock(asks, unnamed, "artifact-copy", "b-1")).toEqual(openRead);
 });
 
 test("a read-only block reads who answered, when and what from the server, whatever its attributes hold", () => {

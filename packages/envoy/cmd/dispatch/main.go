@@ -824,7 +824,9 @@ func main() {
 	blockIndexLeases := reserve("block index")
 	// The reference forms drain's, a caller of its own beside the block index's: the two passes
 	// run on their own goroutines under their own leases, so each can hold a connection while the
-	// other does.
+	// other does. It drains all of its queues under the one lease, a pass of each one after the
+	// other (docs.Service.RunRefsFormsReconciliation), so it keeps the one connection it had
+	// before the added queues, and the pool's size stays what it was.
 	refsFormsLeases := reserve("refs forms")
 	issueAskRepairLeases := reserve("issue ask repair")
 	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
@@ -1113,6 +1115,18 @@ func main() {
 	// is woken by the trigger that announces each notice given a due time, and waits for the
 	// earliest one.
 	go documentService.RunEditNotices(ctx, editNoticesLeases, editNoticesWake)
+	// Whether graph_edges still holds the four arms the graph-store spec moved, read from the
+	// database before this process serves, so the backlink counts read the arm set the view holds
+	// from the first request (refs.SetFourArmsDeleted), whichever process's step deleted them; read
+	// again about every minute for the life of the process (graphcensus.FollowViewArms), and set
+	// once more by this boot's own step below, which deletes them where it may.
+	armsGone, err := graphcensus.ViewArmsGone(ctx, database.Pool)
+	if err != nil {
+		slog.Error("dispatch: read whether graph_edges holds its four old arms", "error", err)
+		os.Exit(1)
+	}
+	refs.SetFourArmsDeleted(armsGone)
+	go graphcensus.FollowViewArms(ctx, database.Pool, slog.Default())
 	// Every boot runs the graph store's backfill once (graphcensus.Backfill), whatever it finds owed,
 	// off the boot's path. The boot records the backfill's horizon of the event log here, before it
 	// starts the block-index reconciliation below, so, where the record completes, that
@@ -1128,14 +1142,18 @@ func main() {
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar. Then the reference forms drain: each comment, ask,
 	// issue message and document a build that predates an issue's tab addresses and a document's
-	// dashboard URLs indexed without them (refs_forms_owed). The drain is a loop of its own under a
-	// lease of its own, on the block index's interval: a period a process of the previous release
-	// served under the block index's lease would otherwise drain none of it, and a document's row
-	// is settled only by this build's own index of the document. DISPATCH_TEST_HOLD_BLOCK_INDEX,
-	// under the test hooks, holds both loops - the block index, its tick and its pass, and the
-	// drain, which indexes a document through the block index's own index (drainFormsDocument), so
-	// a hold of the block index alone would see a document it left owed indexed anyway - and
-	// nothing else. Each loop's lease is reserved above whether or not it starts.
+	// dashboard URLs indexed without them (refs_forms_owed), and each one the release before
+	// settled that reads an issue's Decisions page as no more than its document
+	// (refs_decisions_forms_owed, and refs_decisions_forms_seed_owed for the text stored before
+	// it), each queue drained in turn by the one loop (docs.Service.RunRefsFormsReconciliation).
+	// The drain is a loop of its own under a lease of its own, on the block index's interval: a
+	// period a process of the previous release served under the block index's lease would
+	// otherwise drain none of it, and a document's row is settled only by this build's own index
+	// of the document. DISPATCH_TEST_HOLD_BLOCK_INDEX, under the test hooks, holds both loops -
+	// the block index, its tick and its pass, and the drain of every one of its queues, which
+	// indexes a document through the block index's own index (drainFormsDocument), so a hold of
+	// the block index alone would see a document it left owed indexed anyway - and nothing else.
+	// Each loop's lease is reserved above whether or not it starts.
 	if !boot.HoldBlockIndex {
 		go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases, daemonThreadStep.Tick)
 		go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
@@ -2751,8 +2769,9 @@ func bootBackfillHorizonBound(boot bootConfig) time.Duration {
 // anything the boot does after this call, and nothing of the boot waits for the passes.
 // DISPATCH_TEST_HOLD_BOOT_BACKFILL, under the test hooks, holds the passes once the horizon is
 // recorded, until the process stops. Once the run has logged that it is done, the same goroutine
-// runs R26's step (graphcensus.RunTypedBlockSupertagsStep), which a run that logged no done line
-// never reaches; fresh says this boot created the database from empty.
+// runs the step that deletes the four old arms of graph_edges (graphcensus.RunViewArmsStep) and then
+// R26's step (graphcensus.RunTypedBlockSupertagsStep), neither of which a run that logged no done
+// line ever reaches; fresh says this boot created the database from empty.
 func startBootBackfill(ctx context.Context, database *store.Store, boot bootConfig, fresh bool) {
 	var run graphcensus.BackfillRun
 	record := func(ctx context.Context) error {
@@ -2772,6 +2791,13 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 			_, err := run.Passes(ctx, io.Discard)
 			return err
 		}, func(ctx context.Context) {
+			gone, err := graphcensus.RunViewArmsStep(ctx, database, buildCommit, fresh, slog.Default())
+			if err != nil {
+				slog.Error(graphcensus.ViewArmsStepLine+" failed", "error", err)
+			}
+			if gone {
+				refs.SetFourArmsDeleted(true)
+			}
 			if err := graphcensus.RunTypedBlockSupertagsStep(ctx, database, buildCommit, fresh, slog.Default()); err != nil {
 				slog.Error("dispatch: the typed block supertags step failed", "error", err)
 			}

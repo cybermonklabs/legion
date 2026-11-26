@@ -2,6 +2,7 @@ package graphstore
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -270,6 +271,14 @@ const headFactFarEnd = `t.to_kind collate "C", (case when t.to_kind = '` + KindV
 // them (refs' itemBlockNodes, BlockTexts); and of both, the comment's marks, when its author last
 // edited it and when and by whom it was deleted, as both loaders read them. A node the store holds no row of, that states nothing
 // and that is no current block of a comment has no row.
+//
+// Whether a block of an issue room has stood in more than one of its documents, which leaves it no
+// first version Dispatch knows (refs.MovedRoomBlockSQL), is read as refs' blockAuthors reads it: a
+// probe of the room's tree artifact by its primary key for the block's address, then a probe of
+// that address's own in_document tuples, each behind an offset 0 the planner cannot flatten.
+// Joined plainly, as MovedRoomBlockSQL joins the two, a plan made on the estimate of a near-empty
+// graph_tuples may read the in_document tuples of every block once for each block, a cost that
+// grows with the square of the room (TestThePassLockTimeGrowsLinearlyWithTheRoom).
 func HeadRowsSQL(nodes string) string {
 	return `
 	with recursive head_targets (kind, id) as (
@@ -342,10 +351,18 @@ func HeadRowsSQL(nodes string) string {
 		) block on true
 		left join lateral (
 			select true as moved
-			from artifacts moved_tree
-			join graph_tuples stood on stood.from_kind = '` + blockKind + `' and stood.from_id = moved_tree.ref_key || '#' || block.block_id
-			  and stood.kind = 'in_document' and stood.asserted
-			where moved_tree.id = block.artifact_id and moved_tree.kind = 'tree'
+			from (
+				select moved_tree.ref_key || '#' || block.block_id as address
+				from artifacts moved_tree
+				where moved_tree.id = block.artifact_id and moved_tree.kind = 'tree'
+				offset 0
+			) moved_block
+			cross join lateral (
+				select t.to_id from graph_tuples t
+				where t.from_kind = '` + blockKind + `' and t.from_id = moved_block.address
+				  and t.kind = 'in_document' and t.asserted
+				offset 0
+			) stood
 			having count(distinct stood.to_id) > 1
 		) moved on true
 		left join lateral (
@@ -454,3 +471,46 @@ var headWriteStatement = `
 	insert into issue_head_nodes (issue_key, node_kind, node_address, ` + HeadColumns + `)
 	select * from head_rows
 	on conflict (issue_key, node_kind, node_address) do update set (` + HeadColumns + `) = (` + prefixed("excluded.", HeadColumns) + `)`
+
+// CustomPlansStatement makes Postgres plan every statement the rest of the transaction runs for
+// that run's own arguments and at the sizes its tables have then (a custom plan), never by the
+// generic plan a connection cached for a statement it prepared before. Postgres reads
+// plan_cache_mode at each run of a cached statement, so a plan cached before the transaction
+// began is not used in it.
+//
+// Each background transaction that writes the blocks of a whole room sends it as its first
+// statement (PlanAtCurrentSizes): the block-index reconciliation's pass over a document or a room
+// (docs' indexOwedDocument, indexOwedRoom) and its repair of a version marked tree_mismatch
+// (repairDocumentMismatch, repairRoomMismatch), a room's settlement (settleRoomWithin), an issue's
+// conversion into its room (ConvertIssue), and the fill of an issue's head rows (graphcensus'
+// fillEachIssueHeads, which FillIssueHeads and the backfill run). Their reads probe a table once a
+// block: refs' planRoomBlocks and blockAuthors, and the head write (headWriteStatement). pgx
+// prepares every statement it sends and keeps it on its connection, and from a statement's sixth
+// run Postgres may take a generic plan, made without the arguments and costed at the sizes the
+// tables had when it was made, which it keeps until an ANALYZE or a change of a table's definition
+// drops it. A generic plan made while a probed table held a few pages reads it by a sequential
+// scan, which costs less than an index probe there, and goes on doing so once a block after the
+// rooms grow. Measured on 2026-11-25 by docs' TestThePassLockTimeGrowsLinearlyWithTheRoom, with
+// the statistics of a near-empty graph_tuples: planRoomBlocks' read of the moved blocks scanned
+// issue_room_blocks once for each of 20,000 blocks, 54,048 rows each, in 36.7 s; blockAuthors
+// scanned document_block_texts once for each of 20,000 blocks, 34,066 rows each, in 33.8 s; and
+// the head write scanned issue_room_blocks, document_blocks, document_block_texts, artifacts and
+// issues once for each of 2,342 targets, in 7.3 s. Under a statement timeout of 45 s the
+// reconciliation's pass over 20,000 blocks took 7.04 times its pass over 4,682 (medians 55.9 s and
+// 7.9 s), above the test's bound of 6.40; with no timeout that measurement ran 33 min 36 s. A
+// custom plan costs the planning of each run of a statement, and each of those reads runs once
+// over all its blocks, so a transaction plans it once, not once a block.
+//
+// A request's own transactions are left out - a version write (docs' writeVersionTx) and the api
+// routes' head writes - and run under the server's default plan_cache_mode: a route that writes a
+// version of a large room marks its write deferred (docs' WithDeferredBlockIndex), which leaves a
+// room of more than deferBlockIndexBlocks blocks to the reconciliation, whose pass sends this.
+const CustomPlansStatement = `set local plan_cache_mode = force_custom_plan`
+
+// PlanAtCurrentSizes sends CustomPlansStatement in tx, as the transaction's first statement.
+func PlanAtCurrentSizes(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, CustomPlansStatement); err != nil {
+		return fmt.Errorf("plan the transaction's statements at the tables' current sizes: %w", err)
+	}
+	return nil
+}

@@ -110,9 +110,10 @@ function replyingTo(id: string, parentKind: "ask" | "comment" | "message"): Poin
   return { ...NOTHING_AIMED, reply: { actor: BOB, excerpt: "Earlier words", id, parentKind } };
 }
 
-/** Folds the branch of each of `ids` shut by hand. */
-function closed(...ids: string[]): OpenedBranches {
-  return { ...NOTHING_OPENED, closed: new Set(ids) };
+/** Folds the row at each of `places` shut by hand: a fold is the row's, kept by its place, the
+ *  path from the issue down to it (`placeOf`), as the page keeps it. */
+function closed(...places: string[]): OpenedBranches {
+  return { ...NOTHING_OPENED, closed: new Set(places) };
 }
 
 /** The nodes `path` runs through, each found among its parent's children by its id, which no
@@ -318,7 +319,7 @@ test("the point's own row is marked here, and no other row is marked", () => {
 test("with the point folded away, each drawn row on its path is marked path", () => {
   const root = deepQuestion();
   const path = currentPath(root, NOTHING_AIMED);
-  const rows = treeRows(root, closed("c2"));
+  const rows = treeRows(root, closed("CORE-1>c1>c2"));
   expect(Object.fromEntries(pointMarks(rows, path))).toEqual({
     "CORE-1": "path",
     "CORE-1>c1": "path",
@@ -328,7 +329,7 @@ test("with the point folded away, each drawn row on its path is marked path", ()
     "CORE-1>c1": "path",
     "CORE-1>c1>c2": "path",
   });
-  expect(Object.fromEntries(pointMarks(treeRows(root, closed("c1")), path))).toEqual({
+  expect(Object.fromEntries(pointMarks(treeRows(root, closed("CORE-1>c1")), path))).toEqual({
     "CORE-1": "path",
     "CORE-1>c1": "path",
   });
@@ -346,14 +347,15 @@ test("the rows of a zoomed outline are marked by their trails", () => {
   expect(Object.fromEntries(pointMarks(zoomed(NOTHING_OPENED), path))).toEqual({
     "CORE-1>c1>c2>a1": "here",
   });
-  expect(Object.fromEntries(pointMarks(zoomed(closed("c2")), path))).toEqual({
+  expect(Object.fromEntries(pointMarks(zoomed(closed("CORE-1>c1>c2")), path))).toEqual({
     "CORE-1>c1": "path",
     "CORE-1>c1>c2": "path",
   });
 });
 
 // The rows of a transcluded placement carry the same node ids as the edited one's, and a mark is
-// on the edited placement's rows alone, folded or not.
+// on the edited placement's rows alone, folded or not: folded, each placement is folded at its
+// own place.
 test("a transcluded placement's rows are never marked", () => {
   const root = placedTwice(true, [waitingAsk("a1", at(1))]);
   const path = currentPath(root, NOTHING_AIMED);
@@ -362,7 +364,7 @@ test("a transcluded placement's rows are never marked", () => {
   expect(Object.fromEntries(pointMarks(open, path))).toEqual({
     [`CORE-1>spec#b-r2>${CHECK}>a1`]: "here",
   });
-  const folded = treeRows(root, closed(CHECK));
+  const folded = treeRows(root, closed(`CORE-1>spec#b-r1>${CHECK}`, `CORE-1>spec#b-r2>${CHECK}`));
   expect(folded.filter((row) => row.kind === "node" && row.node.id === CHECK)).toHaveLength(2);
   expect(Object.fromEntries(pointMarks(folded, path))).toEqual({
     "CORE-1": "path",
