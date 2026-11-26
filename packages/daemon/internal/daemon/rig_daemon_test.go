@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -49,7 +50,7 @@ func TestRigDaemon(t *testing.T) {
 	t.Run("the route", func(t *testing.T) {
 		t.Parallel()
 		r := newRigDaemon(t, rigDaemonSteps)
-		r.passSteps(len(rigDaemonSteps))
+		r.passSteps(0, len(rigDaemonSteps))
 		implementer := r.worker(claim.RoleImplementer)
 		implementer.take()
 		const text = "rig route case: src/config.ts loadConfig returns DEFAULTS on a parse error"
@@ -82,7 +83,7 @@ func TestRigDaemon(t *testing.T) {
 	t.Run("the transfer", func(t *testing.T) {
 		t.Parallel()
 		r := newRigDaemon(t, rigDaemonSteps)
-		r.passSteps(1)
+		r.passSteps(0, 1)
 		token := r.token(claim.RoleImplementer)
 		first := r.worker(claim.RoleImplementer)
 		launch := lastLaunch(t, r.rt, token)
@@ -140,6 +141,9 @@ type rigDaemon struct {
 	world                               rigDaemonWorld
 	calls                               *rigCalls
 	controllerSession, controllerSecret string
+	// daemonLog is where the booted daemon writes its log, the rig's quiet one (liveProof.log) when
+	// nil.
+	daemonLog *slog.Logger
 }
 
 // newRigDaemon is TestRigDaemon's daemon: Task 11a's own issue ACME-1, its pull request at
@@ -150,9 +154,13 @@ type rigDaemon struct {
 func newRigDaemon(t *testing.T, steps []string) *rigDaemon {
 	t.Helper()
 	natsURL := workflowNATS(t)
+	// The proof creates the stream the daemon consumes before Dispatch starts, as Task 11a's rig
+	// does: Dispatch reconciles that stream to its own settings as it starts, and a create of the
+	// test's settings after that is refused as a stream already in use.
+	proof := newLiveProofOn(t, natsURL)
 	standIn := newDoneByChecksGitHub(t)
 	dispatch := startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL, github: standIn.url})
-	r := rigDaemonOver(t, newLiveProofOn(t, natsURL), dispatch, standIn, rigDaemonWorld{
+	r := rigDaemonOver(t, proof, dispatch, standIn, rigDaemonWorld{
 		issue: doneByChecksIssue, title: doneByChecksTitle, number: doneByChecksPull, head: stepRecordsHead, steps: steps,
 	})
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(dispatch.token+"\n"), 0o600); err != nil {
@@ -171,8 +179,10 @@ func newRigDaemon(t *testing.T, steps []string) *rigDaemon {
 	}
 	r.person(http.MethodPost, "/api/v1/issues/"+r.key+"/artifacts",
 		map[string]string{"name": "verification.md", "content": doneByChecksVerification}, http.StatusCreated, nil)
+	var handed createdIssue
+	r.person(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &handed)
 	r.built = &built{}
-	r.start(fakeRuntime(r.rt, r.built))
+	r.start(fakeRuntime(r.rt, r.built), handed)
 	return r
 }
 
@@ -209,22 +219,24 @@ func rigDaemonOver(t *testing.T, proof liveProof, dispatch *scratchDispatch, sta
 	return r
 }
 
-// start hands the issue to Legion in Dispatch, seeds the daemon's store with it (seedAt), opens
+// start seeds the daemon's store with the issue as Dispatch handed it to Legion (seedAt), opens
 // its pull request at the world's head in GitHub's stand-in and publishes GitHub's opened of it,
 // boots the daemon over o, puts the recording handler in front of the daemon's HTTP API, and
 // registers the tree's architect, a fake claimant, at the boot's relaunch.
-func (r *rigDaemon) start(o overrides) {
+func (r *rigDaemon) start(o overrides, handed createdIssue) {
 	t := r.t
 	t.Helper()
-	var handed createdIssue
-	r.person(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &handed)
 	r.standIn.open(r.number, claim.IssueBranch(r.key), r.world.head)
 	r.seedAt(handed.Rank, handed.LastSeq)
 	opened := r.publishPullRequest("opened")
 	t.Logf("GitHub opened pull request #%d of %s from %s at %s: envelope %s", r.number, liveRepo, claim.IssueBranch(r.key), r.world.head, opened)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), stepRecordsWait)
+	log := r.daemonLog
+	if log == nil {
+		log = r.log()
+	}
+	r.d = startDaemonWithin(t, r.cfg, o, log, stepRecordsWait)
 	r.calls = newRigCalls(t, r.d.base)
 	r.d.base = r.calls.url
 	r.worker(claim.RoleArchitect)
@@ -269,13 +281,13 @@ func (r *rigDaemon) seedAt(rank string, seq int64) {
 	}
 }
 
-// passSteps has fake claimants pass the first n steps of the task, each step's agent taking its
-// task and finishing it, and waits after each for the issue to stand in the next step's phase, or
-// in retro after the last step.
-func (r *rigDaemon) passSteps(n int) {
+// passSteps has fake claimants pass the steps of the task from place from up to, not including,
+// place to, each step's agent taking its task and finishing it, and waits after each for the
+// issue to stand in the next step's phase, or in retro after the last step.
+func (r *rigDaemon) passSteps(from, to int) {
 	r.t.Helper()
-	for place, step := range r.world.steps[:n] {
-		next := phase.Retro
+	for place := from; place < to; place++ {
+		step, next := r.world.steps[place], phase.Retro
 		if place+1 < len(r.world.steps) {
 			next = stepPhase(r.t, r.world.steps[place+1])
 		}
@@ -338,6 +350,11 @@ func (r *rigDaemon) signOffTo(next phase.Phase) {
 		t.Fatalf("the architect's sign-off of %s = %d %s, want 200", r.key, status, body)
 	}
 	r.waitPhase(next)
+}
+
+// dispatchAPI is the run's Dispatch as the agent's bearer reaches it.
+func (r *rigDaemon) dispatchAPI() rigDispatch {
+	return rigDispatch{base: r.dispatch.base, token: r.dispatch.token}
 }
 
 // reportDefect is c's report_defect of text at the world's head, sent as its `legion` tool sends
@@ -519,8 +536,9 @@ func (r *rigDaemon) rigRecord() rigDaemonRecord {
 	if !ok {
 		t.Fatalf("the daemon's state holds no issue %s", r.key)
 	}
-	read, err := r.readSteps()
-	if err != nil {
+	// Read with the agent's bearer, which the run's own Dispatch takes as well as the test's.
+	var read stepRecordsRead
+	if err := r.dispatchAPI().call(http.MethodGet, "/api/v1/issues/"+r.key+"/steps", nil, &read, http.StatusOK); err != nil {
 		t.Fatalf("read the steps of %s: %v", r.key, err)
 	}
 	steps := []rigDaemonStep{}
