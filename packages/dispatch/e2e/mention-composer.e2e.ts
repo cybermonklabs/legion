@@ -24,7 +24,7 @@ import {
 } from "./api";
 import { barAction, documentEditor, selectEditorText } from "./editor";
 import { pickReference } from "./ref-picker";
-import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
+import { answeredPost, holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { expect, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
@@ -50,12 +50,7 @@ type IssueCommentBody = Body<"/api/v1/issues/{key}/comments", "post">;
 
 async function issueCommentPayload(page: Page, issueKey: string): Promise<IssueCommentBody> {
   const path = routePath("post", "/api/v1/issues/{key}/comments", { key: issueKey });
-  const response = page.waitForResponse(
-    (candidate) =>
-      candidate.request().method() === "POST" &&
-      new URL(candidate.url()).pathname === path &&
-      candidate.status() === 201
-  );
+  const response = answeredPost(page, path, 201);
   await page
     .getByRole("form", { name: "Comment composer" })
     .getByRole("button", { name: "Send" })

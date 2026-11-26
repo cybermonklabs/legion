@@ -1,5 +1,6 @@
 import { type PathsOf, type Result, routePath } from "../web/src/api/paths";
 import {
+  agentMention,
   agentRow,
   agentSessions,
   type FakeSession,
@@ -30,11 +31,10 @@ const DWELL_MS = 1_000;
 // and the unread set it opened with - and that while a closed group hides it, it marks nothing
 // read.
 
-/** What the issue channel seeds into Silent's draft: the mention that names the party, which is
- *  the whole record of who the comment addresses. Silent's id is the running row's own
- *  (`seedWithFold`), so a row reads it inside itself. */
+/** What the issue channel seeds into Silent's draft (`agentMention`). Silent's id is the running
+ *  row's own (`seedWithFold`), so a row reads it inside itself. */
 function silentMention(): string {
-  return `[@Silent](dispatch://agent/${rowSessionId("silent")})`;
+  return agentMention({ session_id: rowSessionId("silent"), title: "Silent" });
 }
 
 /** `seedAgents`, plus `Quiet` and `Silent`: live sessions with no Dispatch activity, which the

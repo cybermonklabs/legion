@@ -1,4 +1,4 @@
-import { type FakeSession, setLiveSessions, setSessionSendStatus } from "./agents";
+import { agentMention, type FakeSession, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, listComments } from "./api";
 import { selectMention } from "./mention";
 import { expect, type Page, rowKey, rowSessionId, test } from "./test";
@@ -48,14 +48,14 @@ test("/btw with a surviving mention strips its token and sends one comment-level
     await page.goto(`/issues/${issue.key}/conversation`);
     await selectMention(page, "/btw @", "planner");
     expect(await post(page)).toEqual({
-      body: `[@planner](dispatch://agent/${planner.session_id})`,
+      body: agentMention(planner),
       delivery: "btw",
     });
     await expect
       .poll(() => listComments(issue.key))
       .toMatchObject([
         {
-          body: `[@planner](dispatch://agent/${planner.session_id})`,
+          body: agentMention(planner),
           mentions: [{ target: `session:${planner.session_id}` }],
         },
       ]);
@@ -110,7 +110,7 @@ test("an unsupported selected mode warns but does not prevent Send", async ({ br
     ).toBeVisible();
     await setSessionSendStatus(offline.session_id, 404);
     expect(await post(page)).toEqual({
-      body: `[@worker](dispatch://agent/${offline.session_id})`,
+      body: agentMention(offline),
       delivery: "aside",
     });
   } finally {

@@ -34,6 +34,7 @@ import {
 } from "./api";
 import { frontLiveView } from "./live-views";
 import {
+  asReadingSession,
   expectReadsReferences,
   readingSessionId,
   readingText,
@@ -101,7 +102,7 @@ test("agents-row-reply: a row's reply turn draws every form of a stored referenc
   const reply = await replyToMessageDelivery(
     asked.id,
     { attempt: 1, body: readingText(world) },
-    { id: readingSessionId(), kind: "session" }
+    asReadingSession.actor
   );
   if (!("id" in reply)) throw new Error("setup: the delivery returned no reply message");
   const row = await openReadingRow(page);
@@ -146,7 +147,7 @@ test("agents-row-reply/direct-message: a row's reply to a message sent on no iss
   const reply = await replyToMessageDelivery(
     asked.id,
     { attempt: 1, body: readingText(world) },
-    { id: readingSessionId(), kind: "session" }
+    asReadingSession.actor
   );
   if (!("id" in reply)) throw new Error("setup: the delivery returned no reply message");
   const row = await openReadingRow(page);
@@ -282,7 +283,7 @@ test("session-switch-answer: the header's line after a model switch draws every 
   await replyToMessageDelivery(
     delivery.id,
     { attempt: delivery.attempt, body: readingText(world) },
-    { id: readingSessionId(), kind: "session" }
+    asReadingSession.actor
   );
   await expect(status).toContainText("The session answered:");
 

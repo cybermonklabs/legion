@@ -15,6 +15,7 @@ import {
   pickerHeadings,
   pickerRows,
   refPicker,
+  within,
 } from "./ref-picker";
 import {
   ANCHOR,
@@ -151,7 +152,7 @@ test("the three doors open one list over the same rows, each ranking the kinds i
     await field.fill("");
     const other = await openRefPicker(field, `#${query}`);
     // The query finds both projects of this row. The option detail includes the issue key.
-    const otherRow = new RegExp(`^${world.other.title}.*${world.other.key}`);
+    const otherRow = within(new RegExp(`^${world.other.title}`), world.other.key);
     await other.getByRole("option", { name: otherRow }).click();
     await expect(field).toHaveValue(`dispatch://${world.other.key}`);
   } finally {
@@ -206,7 +207,7 @@ test("the arrows move, Enter and Tab take the row, and the pick lands at the car
     await field.fill("");
     await field.pressSequentially(`[the warm one](#${referenceSearchWord(world.projects.core)}`);
     // The option detail identifies the target's issue key among this row's matches.
-    const targetRow = new RegExp(`^${world.target.title}.*${world.target.key}`);
+    const targetRow = within(new RegExp(`^${world.target.title}`), world.target.key);
     await list.getByRole("option", { name: targetRow }).click();
     await expect(field).toHaveValue(`[the warm one](dispatch://${world.target.key}`);
   } finally {

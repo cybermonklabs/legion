@@ -1,4 +1,5 @@
 import {
+  agentMention,
   type FakeSession,
   getSentMessages,
   setInterests,
@@ -359,7 +360,7 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     await expect(composer.getByRole("link", { name: "— Can this ship?" })).toBeVisible();
     const field = composer.getByLabel("Comment");
     // The prefill ends in one space, so the reply's first word is a word of its own.
-    await expect(field).toHaveValue(`[@planner](dispatch://agent/${planner.session_id}) `);
+    await expect(field).toHaveValue(`${agentMention(planner)} `);
     await field.press("End");
     await field.pressSequentially("It is green now - ship it.");
     const response = page.waitForResponse(
@@ -369,7 +370,7 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     );
     await composer.getByRole("button", { name: "Send" }).click();
     expect((await response).request().postDataJSON()).toEqual({
-      body: `[@planner](dispatch://agent/${planner.session_id}) It is green now - ship it.`,
+      body: `${agentMention(planner)} It is green now - ship it.`,
       delivery: "steer",
       reply_to: parent.id,
     });

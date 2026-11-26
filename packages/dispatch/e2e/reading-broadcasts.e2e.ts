@@ -22,6 +22,7 @@
 import { agentRow, BROADCAST_REFUSED, refuseBroadcasts } from "./agents";
 import { createBroadcast, replyToMessageDelivery } from "./api";
 import {
+  asReadingSession,
   expectReadsReferences,
   READING_SESSION_TITLE,
   readingSessionId,
@@ -56,7 +57,7 @@ test("broadcast-recipient-reply: a recipient's reply on the broadcast's page dra
   await replyToMessageDelivery(
     recipient.message.id,
     { attempt: 1, body: readingText(world) },
-    { id: readingSessionId(), kind: "session" }
+    asReadingSession.actor
   );
 
   await page.goto(`/agents/broadcasts/${sent.id}`);

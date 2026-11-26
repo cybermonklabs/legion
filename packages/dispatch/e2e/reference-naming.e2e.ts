@@ -1,5 +1,5 @@
 import { type Body, type Result, routePath } from "../web/src/api/paths";
-import { agentSessions, setLiveSessions } from "./agents";
+import { agentMention, agentSessions, setLiveSessions } from "./agents";
 import {
   baseUrl,
   createAgentMessage,
@@ -403,7 +403,7 @@ test("a session renamed after it was picked reads as its new name in the pill an
     await page.goto(`/issues/${host.key}/conversation`);
     const field = commentField(page);
     await pickReference(field, "@", planner.title);
-    await expect(field).toHaveValue(`[@${planner.title}](${address})`);
+    await expect(field).toHaveValue(agentMention(planner));
     await field.press("End");
     await field.pressSequentially(` and [${WORDS}](${address})`);
     const composer = page.getByRole("form", { name: "Comment composer" });
@@ -423,7 +423,7 @@ test("a session renamed after it was picked reads as its new name in the pill an
     await composer.getByRole("button", { exact: true, name: "Send" }).click();
     const stored = (await (await sent).json()) as Result<"/api/v1/issues/{key}/comments", "post">;
     // The text keeps the name the pick wrote; only what it reads as follows the party.
-    expect(stored.body).toBe(`[@${planner.title}](${address}) and [${WORDS}](${address})`);
+    expect(stored.body).toBe(`${agentMention(planner)} and [${WORDS}](${address})`);
     const card = await expandedComment(page, stored.id);
     await expect(card.getByRole("link", { exact: true, name: `@${renamed}` })).toHaveCount(1);
     await expect(card.getByRole("link", { exact: true, name: WORDS })).toHaveCount(1);

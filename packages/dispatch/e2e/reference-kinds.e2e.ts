@@ -2,7 +2,7 @@ import { type Result, routePath } from "../web/src/api/paths";
 import { agentFilter } from "./agents";
 import { baseUrl, createProjectDocument, userHeaders } from "./api";
 import { recordClipboard } from "./clipboard";
-import { commentField, highlightedRow, refPicker } from "./ref-picker";
+import { commentField, highlightedRow, refPicker, within } from "./ref-picker";
 import {
   COMPONENT_ID,
   COMPONENT_TITLE,
@@ -101,14 +101,6 @@ function blockOf(address: string): string {
   const id = address.split("#b-")[1];
   if (id === undefined) throw new Error(`${address} names no block`);
   return id;
-}
-
-/** `row`, narrowed to the picker row of the node under `owner`, an issue's key or a project's.
- *  The search the picker reads is the whole stack's, so a node of another row's world can carry
- *  the same words; the line under a row's words is part of its accessible name and holds its
- *  owner's key (`shortForm`, `features/refs/routes.ts`), which no other row's world holds. */
-function within(row: RegExp, owner: string): RegExp {
-  return new RegExp(`${row.source}.*${owner}`);
 }
 
 // SLOW(>=2s): the one reference world - three projects, fifteen issues, the host's question
