@@ -281,7 +281,7 @@ A counted message costs its sender one where the route stores it, may have store
 a wake for it, whatever it answers (`senderCharge`). So a send to a target with no entry costs
 one once the route reports its wake. A role send's `504` costs one whether or not a forward went
 out, also when the window ended before the first forward (`roleSend.timedOut`), and so does its
-`503` for a window that ended with its forward in process (`roleSend.endedInProcess`). A role send
+`503` for a window that ended with its forward in process (`roleSend.maybeStored`). A role send
 costs one for a forward the stream confirmed, also one it answered as a duplicate. The listener does
 not tell a `504` that forwarded nothing from one whose forward the stream may hold. A `503` after
 the listener sent the message to the stream and the write's acknowledgement did not arrive in time
@@ -345,11 +345,12 @@ answer carries. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
 `session_stopped` for a
 `connected_only` send whose target is stopped, `capability_refused` for send and a role send,
 `publish_denied` for send and publish alike, since a publish on either transport can be denied,
-and `role_unclaimed`, `role_lapsed`,
+and `role_unclaimed`, `role_lapsed`, `role_no_source_session`,
 `role_claim_unreadable` and a role send's one 504 reason, `delivery_failed`, for publish, where a
 role send whose window ends with its forward in process is `earlier_attempt_in_process`. A role
 send whose message the listener kept is `accepted`, because its 202 is an answer and not a
-refusal, so `role_unclaimed` and `role_lapsed` name a send that kept nothing. Two
+refusal, so `role_unclaimed` and `role_lapsed` name a send that kept nothing, and
+`role_no_source_session` a send that named no source session and so was kept for nobody. Two
 refusals carry no such line, because neither reaches a handler: the 401 the API auth wrapper
 writes, and a request the starting gate turns away while the routes are still opening, which logs
 `request refused while starting` itself. The line of a message the sender limit refused, and of
@@ -483,7 +484,12 @@ gone horizon, `gone` past it) and its `last_seen`. Such a claim stands: the publ
 forwarded to its holder, nothing releases the claim, and an `unresponsive` holder is not dead, so
 the sender starts no replacement for it. It answers `404` with `reason` `unclaimed` or
 `holder_lapsed` when no live session holds the role and nothing was kept: the sender asked for
-that with `keep: false`, or the keep was refused or failed. A `holder_lapsed` 404 names the same
+that with `keep: false`, the publish names no `source_session`, or the keep was refused or
+failed. A publish that names no `source_session` is never kept, because the dead letter of a
+copy that expires goes to that session and there is none: its 404's `error` names the role and
+says that nothing was kept and why, and the listener reads that the role has no live holder from
+the role bucket stream's leader and the holder's registration from the session bucket stream's
+leader, never from a copy (`roleSend.resolve`). A `holder_lapsed` 404 names the same
 holder fields and `claim_released: false`. Also the 503 or 500 `GET /v1/roles/<role>` gives when
 its first resolution of
 the holder, within 3.5 s of the request's arrival, fails (see "Send and publish answers"); `403`
@@ -494,11 +500,31 @@ above. That reason is always `delivery_failed`, the one 504 reason the route giv
 is not known to have been stored for its holder (no live holder to forward to, a holder lookup
 that failed or ran out of time, a publish or flush to the server that failed or timed out, or the
 stream did not acknowledge storing the forward,
-`bus.ErrForwardNotStored`). A send whose last attempt ended while the stream still refused its
-forward as in process is answered instead `503` with `code: "maybe_stored"`, `Retry-After: 1` and
-the error `envoy: an earlier attempt of this message is still being stored: <reason>`, recorded
+`bus.ErrForwardNotStored`). A forward the stream stored later than `roles.ForwardFenceAge` and the
+route's 3.5 s budget after the resolution that chose its holder (`roles.ForwardStoredTooLate`)
+may sit on a holder that lost the role. The route reads the role's claim from the role bucket
+stream's leader before it answers (`withdrawLateForward`). When the claim still names the
+forward's holder, the holder reads the forward from its own subject, a takeover copies it should
+the holder lose the role later, and the send is answered `200`. When the claim names another
+session or none, the route withdraws the forward. It publishes a withdrawal mark to the role's
+kept lane under the `Nats-Msg-Id` that a takeover pass's or the session relay's copy of that frame
+takes, and the stream's own duplicate window (72 hours, longer than any takeover record's life)
+decides which landed first. When the mark landed first, no copy of the frame can store, and the
+send is answered `504 delivery_failed` with an error that wraps `roles.ErrForwardStoredTooLate`;
+the sender's retry resolves the holder again and is the message's delivery, unless the role is
+back with the forward's holder by then, when the retry meets the withdrawn frame as a duplicate
+and is answered `200` for a frame no takeover copies. When a copy landed first, the mark comes
+back a duplicate, the copy is already on the kept lane, and the send is answered `200`. When the
+claim cannot be read, or no mark can be published at all, the send is answered `503` with
+`code: "maybe_stored"` and `Retry-After: 1`. That branch can give the role's holder a second copy
+under a new event id if a later pass copies the forward and the sender retries: that duplicate is
+accepted in place of a loss nothing reports. Nothing is deleted: the forward stays on the holder's
+subject and the mark on the kept lane, where the walk ends it with an Info line and forwards it to
+no one. A send whose last attempt ended while the stream still refused its forward as in process
+is answered instead `503` with `code: "maybe_stored"`, `Retry-After: 1` and the error `envoy: an
+earlier attempt of this message is still being stored: <reason>`, recorded
 `earlier_attempt_in_process`: the stream may yet store the earlier forward for the holder
-(`roleSend.endedInProcess`). The route publishes no exception: its sender has the answer.
+(`roleSend.maybeStored`). The route publishes no exception: its sender has the answer.
 
 The listener keeps a role message on a stored subject of its own,
 `notifications.envoy.kept.role.<role>`. No session may register that subject, and no consumer of
@@ -528,7 +554,8 @@ message's age.
 Each copy is kept for one hour from the time the stream stored it. No walk forwards a copy whose
 hour ended: the first walk that reads it drops it, whether or not any session holds the role, and
 counts it on `envoy_role_kept_expired_total`. When the listener kept that copy and its publish
-named a sender session, the walk sends that session a dead letter. The walk also sends that
+named a sender session, the walk sends that session a dead letter; the publish route keeps no copy
+for a publish that names none. The walk also sends that
 session a dead letter for such a copy inside its hour whose live holder does not take the copy's
 delivery mode, and `envoy_role_dead_letters_total` counts both. The dead letter is a stored
 envelope from source `envoy` on the sender's agent subject, and it names the role, the copy's

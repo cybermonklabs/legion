@@ -1049,7 +1049,7 @@
         },
         "plugins": {
           "pi_legion": "10.4.0",
-          "pi_envoy": "https://xxxxx@plugins.internal.example/pi-envoy-10.4.0.tgz"
+          "pi_envoy": "https://[a URL with credentials]/pi-envoy-10.4.0.tgz"
         },
         "setup": [
           "/bin/sh",
@@ -1127,9 +1127,9 @@
     "prompt_retire_limit": 3,
     "worker_wakes_per_minute": 12,
     "worker_wake_burst": 2,
-    "envoy_url": "http://xxxxx@envoy-listener.internal.example:9020",
+    "envoy_url": "http://[a URL with credentials]",
     "nats_urls": [
-      "nats://xxxxx@nats.internal.example:4222",
+      "nats://[a URL with credentials]",
       "nats://nats-2.internal.example:4222"
     ],
     "dispatch_url": "https://dispatch.internal.example",

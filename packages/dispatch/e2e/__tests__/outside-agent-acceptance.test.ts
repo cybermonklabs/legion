@@ -26,7 +26,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -1248,6 +1248,37 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
       },
       // The four runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+
+    // The leg links, at its start, the real program behind each tool its helper, its probe and
+    // its peer run under its PATH. A program it found and could not link leaves them to whatever
+    // PATH holds, so every row from the pins on reads UNKNOWN naming the program and the reason,
+    // and the gate with them.
+    test(
+      "a tailnet leg that cannot link a program it found reads every row UNKNOWN naming it",
+      async () => {
+        const prepared = await prepareStandIn(scratch, passingControls);
+        try {
+          rmSync(join(prepared.env.PATH as string, "ln"), { force: true });
+        } catch (error) {
+          prepared.dispatch.stop();
+          throw error;
+        }
+        const run = await runStandIn(prepared);
+        expect({ problems: unknownProblems(run, tailnetRows), stdout: run.stdout }).toEqual({
+          problems: [],
+          stdout: run.stdout,
+        });
+        const rows = rowsOf(run.stdout);
+        for (const name of tailnetRows.filter((name) => name !== "gate")) {
+          const got = rows.get(name)?.got ?? "";
+          for (const part of ["bun (", "was not linked into", "command not found"]) {
+            expect({ name, got }).toEqual({ name, got: expect.stringContaining(part) });
+          }
+        }
+      },
+      // The run, a bounded child under the short bound.
+      rowLimit("short")
     );
 
     test(
