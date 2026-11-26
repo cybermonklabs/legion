@@ -11,7 +11,6 @@ import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { stateAtPhase } from "../test/daemon-state";
 import { createLegionDaemonClient } from "./daemon-client";
 import type { HandoffReport } from "./handoff-record";
-import * as phaseOps from "./legion-phase-ops";
 import {
   type ClaimCapability,
   executePhaseOp,

@@ -9,8 +9,7 @@ import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legi
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import pkg, { name, version } from "../package.json" with { type: "json" }
-import * as legionTool from "../src/legion-tool"
-import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
+import { answerLegionTool, executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** The contract this build speaks, as `legion-tool.ts` reads it (`daemonContract`): this
  * checkout's. */
@@ -172,6 +171,40 @@ const grantRequest = {
     issue: "LEGION-208",
   },
 }
+
+test("answerLegionTool tells the host an update answered and nothing of a completion or a look", async () => {
+  const { client } = await daemon({ state: stateAtPhase("testing") })
+  const calls: string[] = []
+  const runtime = {
+    daemon: client,
+    claim: () => implementer,
+    handoffReport: async () => ({ commit: "c0ffee" }),
+    branchHead: async () => "",
+  }
+  const hook = {
+    updateAnswered: () => {
+      calls.push("update")
+    },
+  }
+  await answerLegionTool(
+    runtime,
+    {
+      op: "handoff_complete",
+      summary: "looked",
+      verdict: "pass",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    },
+    hook,
+  )
+  await answerLegionTool(
+    runtime,
+    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    hook,
+  )
+  expect(calls).toEqual([])
+  await answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
+  expect(calls).toEqual(["update"])
+})
 
 test("a named look of a running issue reaches the daemon through executeLegionTool", async () => {
   const { client, requests } = await daemon({ state: stateAtPhase("implementing") })
