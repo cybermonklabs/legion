@@ -41,12 +41,15 @@
 -- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
 -- (that migration set none), and deletes this migration's version row, so the roll forward runs
 -- this file again. The release before this one, main's build that carries contract entries
--- 20261125161436 (#4580's role-identities) and 20261125181543 (#5463's look-names-its-check) after
--- contract 275 (the one whose internal/api/version.go carries the entry for dispatch://INFRA-4425,
--- cybermonklabs/legion#4392's daemon that writes to Dispatch as itself under
--- dispatch_token_broker), as main releases it after #5575, whose 20261125212800_claims_tree is its
--- newest migration, carries 20261119203047 and not the task numbers, and then reads the function it
--- wrote; a rollback to a release before #5463 also runs that release's step (docs/kubernetes.md,
+-- 20261125161436 (#4580's role-identities), 20261125181543 (#5463's look-names-its-check) and
+-- 20261125211005 (#5566's wake-due-earliest-moment) after contract 275 (the one whose
+-- internal/api/version.go carries the entry for dispatch://INFRA-4425, cybermonklabs/legion#4392's
+-- daemon that writes to Dispatch as itself under dispatch_token_broker), as main releases it after
+-- #5566, whose newest migration is #5575's 20261125212800_claims_tree, carries 20261119203047 and
+-- not the task numbers, and then reads the function it wrote; a rollback to a release before #5566
+-- runs the way back in the header of 20261125163328_message_wake_pacing first of all, before this
+-- block, with every daemon of the database stopped; a rollback to a release before #5463 also runs
+-- that release's step (docs/kubernetes.md,
 -- "Rolling back the release whose check report names its check"), one to a release before #4472
 -- takes private_name_rules_file out of legion.yaml where the file sets it, one to a release before
 -- #4580 deletes <state_dir>/bin/jj under a tmux daemon, and one to a release before #5385 runs the
