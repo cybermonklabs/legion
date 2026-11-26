@@ -230,8 +230,6 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the tree's run, the fence of each member's queued idle release, suspension and design-news credit and of the run of the tree's architect: it parts from the root's `generation` only at the root's next change, which leaves the members and the architect running, so a reader acts on their work and their claims and never on the fence itself"},
 	{Field: "Merge", Column: ColumnWithheld,
 		Reason: "the merge snapshot, which a next change bases its branch on (record.IssueBranchOf) and the close reads the checks and the production check against: a reader is told of the merge by the open production check's own `check.pullRequest` and `check.mergeCommit`, and by close-wait.md"},
-	{Field: "MergeHistory", Column: ColumnWithheld,
-		Reason: "the evidence class of the issue's merges, ANSWERED, PARTIAL or NONE, which decides whether a request for new work on the issue starts a next change or stands unread: a reader is told of the request that stands unread, never of the class"},
 	{Field: "CloseWaitSince", Column: ColumnWithheld,
 		Reason: "since when the issue's close waits, the merge's time or the time a request applied: the state serves it as `closeWait.since` once it carries `closeWait`, and until then it reaches a reader only as the first line of the issue's Dispatch document close-wait.md"},
 	{Field: "CloseWait", Column: ColumnWithheld,
