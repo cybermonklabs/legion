@@ -263,11 +263,11 @@ describe("run_room", () => {
       placed("cordoned", [{ cpu: "1", memory: "1Gi" }]),
     ],
   };
-  // room is run_room under the run's SELECTOR and TOLERATIONS and the RuntimeClass RUNTIME_CLASS,
-  // with `admits`, whether the preflight's gate lets the run's four pods through.
+  // room is run_room under the scheduling the run's SELECTOR and TOLERATIONS carry once admitted
+  // under the RuntimeClass RUNTIME_CLASS.
   const room = (selector: object, tolerations: object[] = [], runtimeClass: object = gvisor()) =>
     jq(
-      "run_room($selector; $tolerations; $runtime_class; $nodes[0]; $pods[0]; $pod) | .admits = (.room == null or .room >= 4)",
+      "admitted_scheduling($selector; $tolerations; $runtime_class) as $scheduling | run_room($scheduling; $nodes[0]; $pods[0]; $pod)",
       null,
       [
         "--argjson",
@@ -304,9 +304,7 @@ describe("run_room", () => {
     ]);
     expect(got.free_nodes[0].free.cpu).toBeCloseTo(1.92);
     expect(got.free_nodes[1].free).toEqual({ cpu: 5.91, memory: 52 * GiB });
-    expect(got.matched).toBe(3);
     expect(got.room).toBeNull();
-    expect(got.admits).toBe(true);
   });
 
   test("with a selector, counts only the nodes that carry each of its labels at its value", () => {
@@ -316,17 +314,13 @@ describe("run_room", () => {
     ]);
     const got = room(general);
     expect(counted(got)).toEqual([["small", 0]]);
-    expect(got.matched).toBe(1);
     expect(got.room).toBeNull();
-    expect(got.admits).toBe(true);
   });
 
   test("with a selector that matches no node, keeps none and has room 0, so the gate blocks", () => {
     const got = room({ "kubernetes.io/arch": "s390x" });
-    expect(got.matched).toBe(0);
     expect(got.free_nodes).toEqual([]);
     expect(got.room).toBe(0);
-    expect(got.admits).toBe(false);
     // The one node it selects carries a taint the run does not tolerate.
     expect(room({ "example.com/dedicated-node": "yes" }).room).toBe(0);
   });
@@ -408,23 +402,27 @@ describe("two_pods_per_node", () => {
     ],
   };
   const decide = (selector: object, tolerations: object[] = [], runtimeClass: object = gvisor()) =>
-    jq("two_pods_per_node($selector; $tolerations; $runtime_class; $nodes[0]; $pod)", null, [
-      "--argjson",
-      "selector",
-      JSON.stringify(selector),
-      "--argjson",
-      "tolerations",
-      JSON.stringify(tolerations),
-      "--argjson",
-      "runtime_class",
-      JSON.stringify(runtimeClass),
-      "--argjson",
-      "nodes",
-      JSON.stringify([nodes]),
-      "--argjson",
-      "pod",
-      JSON.stringify(defaultPod),
-    ]);
+    jq(
+      "admitted_scheduling($selector; $tolerations; $runtime_class) as $scheduling | two_pods_per_node($scheduling; $nodes[0]; $pod)",
+      null,
+      [
+        "--argjson",
+        "selector",
+        JSON.stringify(selector),
+        "--argjson",
+        "tolerations",
+        JSON.stringify(tolerations),
+        "--argjson",
+        "runtime_class",
+        JSON.stringify(runtimeClass),
+        "--argjson",
+        "nodes",
+        JSON.stringify([nodes]),
+        "--argjson",
+        "pod",
+        JSON.stringify(defaultPod),
+      ]
+    );
 
   test("says the pods may share a node when one of the nodes the run may use holds two in its allocatable", () => {
     expect(decide({})).toEqual({

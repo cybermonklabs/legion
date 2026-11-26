@@ -71,19 +71,17 @@ def run_node($scheduling):
   | select(.metadata.labels as $labels | all($scheduling.selector | to_entries[]; $labels[.key] == .value))
   | select(all(.spec.taints[]? | select(.effect == "NoSchedule" or .effect == "NoExecute"); tolerated($scheduling.tolerations)));
 
-# run_room($selector; $tolerations; $runtime_class; $nodes; $pods; $pod) is the room for pods of
-# reservation POD on the nodes the run's pods may use, from the run's SELECTOR and TOLERATIONS and
-# their RuntimeClass RUNTIME_CLASS (admitted_scheduling, run_node), every node of the cluster NODES
-# (a node list) and every pod of the cluster PODS (a pod list across namespaces): `pod`, the
-# reservation; `scheduling`, the admitted selector and tolerations it read the nodes by; `matched`,
-# how many nodes run_node kept; `free_nodes`, each of them with what its allocatable has free beside
-# every non-terminal pod placed on it and how many such pods fit there; and `room`, 0 when it kept
-# no node, else null. Null bounds nothing: no one NodePool's limits bound the run's pods and the
-# cluster may add nodes, so the read reports the free nodes and decides nothing, while 0 says no
-# node of the cluster can take the run's pods at all.
-def run_room($selector; $tolerations; $runtime_class; $nodes; $pods; $pod):
-  admitted_scheduling($selector; $tolerations; $runtime_class) as $scheduling
-  | ([$pods.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed") | select(.spec.nodeName != null)]) as $placed
+# run_room($scheduling; $nodes; $pods; $pod) is the room for pods of reservation POD on the nodes
+# the run's pods may use, from the SCHEDULING they carry once admitted (admitted_scheduling,
+# run_node), every node of the cluster NODES (a node list) and every pod of the cluster PODS (a pod
+# list across namespaces): `pod`, the reservation; `scheduling`, the admitted selector and
+# tolerations it read the nodes by; `free_nodes`, each node run_node kept, with what its allocatable
+# has free beside every non-terminal pod placed on it and how many such pods fit there; and `room`,
+# 0 when it kept no node, else null. Null bounds nothing: no one NodePool's limits bound the run's
+# pods and the cluster may add nodes, so the read reports the free nodes and decides nothing, while
+# 0 says no node of the cluster can take the run's pods at all.
+def run_room($scheduling; $nodes; $pods; $pod):
+  ([$pods.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed") | select(.spec.nodeName != null)]) as $placed
   | [$nodes.items[] | run_node($scheduling)
       | .metadata.name as $name
       | ([$placed[] | select(.spec.nodeName == $name) | pod_request]) as $requests
@@ -91,22 +89,21 @@ def run_room($selector; $tolerations; $runtime_class; $nodes; $pods; $pod):
          free: {cpu: ((.status.allocatable.cpu | quantity) - ([$requests[].cpu] | add // 0)),
                 memory: ((.status.allocatable.memory | quantity) - ([$requests[].memory] | add // 0))}}
       | .fits = fits(.free; $pod)] as $free_nodes
-  | {pod: $pod, scheduling: $scheduling, matched: ($free_nodes | length), free_nodes: $free_nodes,
+  | {pod: $pod, scheduling: $scheduling, free_nodes: $free_nodes,
      room: (if ($free_nodes | length) == 0 then 0 else null end)};
 
-# two_pods_per_node($selector; $tolerations; $runtime_class; $nodes; $pod) is whether two pods of
-# reservation POD can share one of the nodes of NODES the run's pods may use (admitted_scheduling,
-# run_node): `fit` is true when one of those nodes' allocatable holds twice POD's cpu and twice its
-# memory, and null otherwise, since a node the cluster adds may hold two. It is never false: no
+# two_pods_per_node($scheduling; $nodes; $pod) is whether two pods of reservation POD can share one
+# of the nodes of NODES the run's pods may use under the SCHEDULING they carry once admitted
+# (admitted_scheduling, run_node): `fit` is true when one of those nodes' allocatable holds two such
+# pods (fits), and null otherwise, since a node the cluster adds may hold two. It is never false: no
 # bound on the nodes the cluster may add is known, so the read never says two of the run's pods
 # cannot share a node. `reason` says which case, with the numbers.
-def two_pods_per_node($selector; $tolerations; $runtime_class; $nodes; $pod):
+def two_pods_per_node($scheduling; $nodes; $pod):
   def gib: . / 1073741824 * 100 | floor / 100;
-  admitted_scheduling($selector; $tolerations; $runtime_class) as $scheduling
-  | {cpu: ($pod.cpu * 2), memory: ($pod.memory * 2)} as $two
+  {cpu: ($pod.cpu * 2), memory: ($pod.memory * 2)} as $two
   | [$nodes.items[] | run_node($scheduling)
       | {node: .metadata.name, cpu: (.status.allocatable.cpu | quantity), memory: (.status.allocatable.memory | quantity)}] as $usable
-  | ([$usable[] | select(.cpu >= $two.cpu and .memory >= $two.memory)] | first) as $holder
+  | ([$usable[] | select(fits(.; $pod) >= 2)] | first) as $holder
   | if $holder != null then
       {fit: true, reason: "node \($holder.node)'s allocatable, \($holder.cpu) CPU and \($holder.memory | gib) GiB, holds two of the run's pods (\($two.cpu) CPU, \($two.memory | gib) GiB), so the pods may share a node"}
     else

@@ -414,8 +414,9 @@ child4_pod=
 tree2=
 tree3=
 tree4=
-# How preflight read the nodes the run's pods may use against two of its pods (lib/stage4b-room.jq
-# two_pods_per_node), which issue-independence notes beside the nodes tree 1's pods landed on.
+# How preflight read the nodes the run's pods may use against two of its pods (run_pod_room's
+# two_pods, lib/stage4b-room.jq two_pods_per_node), which issue-independence notes beside the nodes
+# tree 1's pods landed on.
 two_pods_reason=
 pr_number=
 smoke_file=
@@ -498,13 +499,16 @@ rk() { timeout --foreground 300 kubectl --kubeconfig "$runtime_kubeconfig" --con
 # run_pod_room prints, as JSON, the room for the run's pods on the nodes they may use
 # (lib/stage4b-room.jq run_room): the pod's reservation (cores, bytes); the scheduling the pods
 # carry once admitted, the run's (run_node_selector, run_tolerations) with RuntimeClass gvisor's
-# scheduling, which admission adds to every pod that runs under it; how many nodes of the cluster
-# that scheduling admits that are Ready, schedulable, not tainted karpenter.sh/disrupted and not
-# being deleted; each such node, with what its allocatable has free beside every non-terminal pod's
-# effective request there, of every namespace, and how many of the run's pods fit in it; and the
-# room, 0 when no node is admitted, else null, which bounds nothing: no one NodePool's limits bound
-# the run's pods, and the cluster may add nodes. The reads go through files in the run's work
-# directory: a cluster's pods can exceed the argument list a --argjson would put them in.
+# scheduling, which admission adds to every pod that runs under it (admitted_scheduling); each node
+# of the cluster that scheduling admits that is Ready, schedulable, not tainted
+# karpenter.sh/disrupted and not being deleted, with what its allocatable has free beside every
+# non-terminal pod's effective request there, of every namespace, and how many of the run's pods
+# fit in it; the room, 0 when no node is admitted, else null, which bounds nothing: no one
+# NodePool's limits bound the run's pods, and the cluster may add nodes; and `two_pods`, whether
+# one of those nodes' allocatable holds two of the run's pods (two_pods_per_node), {fit: true|null,
+# reason}, null when none does, since a node the cluster adds may. The reads go through files in
+# the run's work directory: a cluster's pods can exceed the argument list a --argjson would put
+# them in.
 # expected_issue_pod_reservation reads the cpu and memory reservation the run passes to the
 # capacity checks. A malformed run_resources must stop preflight before the room read.
 expected_issue_pod_reservation() {
@@ -529,17 +533,10 @@ run_pod_room() {
     --slurpfile runtime_class "$work/room-runtimeclass.json" --slurpfile nodes "$work/room-nodes.json" \
     --slurpfile pods "$work/room-pods.json" --argjson expected "$run_resources" '
     include "stage4b-room";
-    run_room($selector; $tolerations; $runtime_class[0]; $nodes[0]; $pods[0]; issue_pod_reservation($expected))'
-}
-# run_two_pods_per_node prints, as JSON, whether one of the nodes the run's pods may use holds two
-# of them in its allocatable (lib/stage4b-room.jq two_pods_per_node): {fit: true|null, reason}, null
-# when none does, since a node the cluster adds may. It reads the nodes and the RuntimeClass
-# run_pod_room fetched.
-run_two_pods_per_node() {
-  jq -cn -L "$root/scripts/e2e/lib" --argjson selector "$run_node_selector" --argjson tolerations "$run_tolerations" \
-    --slurpfile runtime_class "$work/room-runtimeclass.json" --slurpfile nodes "$work/room-nodes.json" --argjson expected "$run_resources" '
-    include "stage4b-room";
-    two_pods_per_node($selector; $tolerations; $runtime_class[0]; $nodes[0]; issue_pod_reservation($expected))'
+    issue_pod_reservation($expected) as $pod
+    | admitted_scheduling($selector; $tolerations; $runtime_class[0]) as $scheduling
+    | run_room($scheduling; $nodes[0]; $pods[0]; $pod)
+    | .two_pods = two_pods_per_node($scheduling; $nodes[0]; $pod)'
 }
 
 # limit_pending SELECTOR prints each pod of the run matching SELECTOR (label pairs added to the
@@ -3419,14 +3416,13 @@ preflight_issue_pod_reservation
 room=$(run_pod_room) || blocked "the operator context could not read the cluster's nodes, its pods or RuntimeClass gvisor"
 pod_reservation=$(jq -r '"\(.pod.cpu) CPU, \(.pod.memory / 1073741824) GiB"' <<<"$room")
 admitted_scheduling=$(jq -c .scheduling <<<"$room")
-note "[operator] the $(jq -r .matched <<<"$room") nodes the run's pods may use (the run's node_selector $run_node_selector and tolerations $run_tolerations, with RuntimeClass gvisor's scheduling: $admitted_scheduling), against the run's pods ($pod_reservation each, an issue pod under this run's reservations; room null bounds nothing): $(jq -c '{room, free_nodes: [.free_nodes[] | {node, fits, free: {cpu: .free.cpu, memoryGiB: (.free.memory / 1073741824 * 100 | floor / 100)}}]}' <<<"$room")"
-jq -e --argjson need "$run_pods_at_once" '.room == null or .room >= $need' <<<"$room" >/dev/null ||
-  blocked "capacity: the run's node_selector $run_node_selector, with RuntimeClass gvisor's scheduling ($admitted_scheduling), matches no Ready, schedulable node whose taints those tolerations admit, so no node can place the $run_pods_at_once pods of $pod_reservation the run needs at once: tree 1's root, its $tree1_children children and tree 2's root"
+note "[operator] the $(jq -r '.free_nodes | length' <<<"$room") nodes the run's pods may use (the run's node_selector $run_node_selector and tolerations $run_tolerations, admitted under RuntimeClass gvisor as $admitted_scheduling), against the run's pods ($pod_reservation each, an issue pod under this run's reservations; room null bounds nothing): $(jq -c '{room, free_nodes: [.free_nodes[] | {node, fits, free: {cpu: .free.cpu, memoryGiB: (.free.memory / 1073741824 * 100 | floor / 100)}}]}' <<<"$room")"
+jq -e '.room == null' <<<"$room" >/dev/null ||
+  blocked "capacity: the run's node_selector $run_node_selector and tolerations $run_tolerations, admitted under RuntimeClass gvisor as $admitted_scheduling, admit no Ready, schedulable node, so no node can place the $run_pods_at_once pods of $pod_reservation the run needs at once: tree 1's root, its $tree1_children children and tree 2's root"
 # Whether two of the run's pods can share a node, read from the allocatable of the nodes they may
 # use: the read says they may, or decides nothing, never that they cannot, so issue-independence
 # asserts no node count.
-two_pods=$(run_two_pods_per_node) || fail "the nodes the run's pods may use could not be read against the run's pod reservation"
-two_pods_reason=$(jq -r '.reason' <<<"$two_pods")
+two_pods_reason=$(jq -r '.two_pods.reason' <<<"$room")
 note "[operator] the nodes the run's pods may use against two of its pods: $two_pods_reason"
 # The run's Dispatch bearer authenticates as an agent session, the actor Dispatch's routes and its
 # document websocket require, and the read is what says so: the same read with an invalid bearer
