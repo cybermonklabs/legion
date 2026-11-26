@@ -1,14 +1,9 @@
 package projection
 
-//ci:reads packages/contracts/fixtures/daemon-api/* golden (testgolden.Check)
-
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -16,38 +11,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
-
-var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
 
 // The daemon's own controller (`controller: daemon`) holds a claim on no issue and no tree. It is
 // the project's controller, which the state shows as controllerLocator, and no issue's worker: an
 // issue keyed "" with a `controller` worker refuses the whole document at every client, which
 // reads an issue's `key` as a non-empty string — among them the daemon-launched controller's own
-// claim, which reads the state before it registers, and every agent's read_record. The document
-// is what Project emits for that claim beside a tree's architect, completed as the state route
-// completes it (internal/daemon's source.State), and it is packages/contracts'
-// state-controller-claim fixture: the contract's own
-// schema parses it (packages/contracts/src/legion-api.test.ts), and the plugin's daemon-launched
-// controller reads it as its daemon's state (packages/pi-legion/extensions/legion.test.ts).
+// claim, which reads the state before it registers, and every agent's read_record. This holds
+// Project to that for the claim beside a tree's architect. packages/contracts'
+// state-controller-claim fixture is the daemon's whole state over the same case, composed by
+// internal/daemon's TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds (seedDaemonController).
 //
 // It carries what Legion is waiting for too (INFRA-225), judged from the project's mirror: the
 // child LEGION-209, held at `admitted` behind an issue still in progress, and the waiting root
 // LEGION-210, behind one the daemon has never observed and so cannot call finished. LEGION-211
 // waits in the same line on an issue of its own, and is in neither `blocked` nor any judgement:
 // a root carrying a run is work already under way.
-//
-// It carries the trees too (dispatch://INFRA-980): LEGION-208's lifecycle stands open under the
-// workflow, and the two roots waiting in the line are live trees of their own, so `trees` names
-// three roots while one issue alone holds a slot — which is the reading `active` can no longer
-// give. Each issue's `tree` names its root, so the child LEGION-209 is told from the three roots.
-func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
+func TestTheControllersClaimIsOnNoIssue(t *testing.T) {
 	const issue = "LEGION-208"
 	architect, err := claim.NewToken("legion", issue, claim.RoleArchitect)
 	if err != nil {
@@ -79,7 +63,7 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 	architectLocator := sandboxLocator(architect, "legion-legion-legion-208", "4b7e1c2a-0d93-4f6e-8a51-3c2f9e7d1b04", 1)
 	// The architect's session sent its live rows on a `claims/ready` of its own, measured at an
 	// idle tick of its own interval rather than at its boot (LEGION-663, INFRA-927), from the
-	// process the locator names, so the fixture carries a claim's capability report; the
+	// process the locator names, so the state carries a claim's capability report. The
 	// controller measures nothing and sends none, and its claim is on no issue besides.
 	reports := map[claim.Token]capabilities.Report{
 		architect: {
@@ -155,23 +139,6 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 	if !reflect.DeepEqual(state.Admission.Blocked, want) {
 		t.Errorf("the state's blocked = %#v, want %#v: LEGION-211 carries a run and is never judged", state.Admission.Blocked, want)
 	}
-
-	state.Daemon = api.DaemonInfo{Project: "LEGION", SchemaVersion: 35, Boots: 2, FirstBootAt: admitted.Add(-time.Hour), StartedAt: admitted.Add(-time.Minute)}
-	state.Admission.Cap = 2
-	// The resolved file of a tmux daemon at every default, as the loader resolves a minimal
-	// legion.yaml (the DSN is required and never emitted); the api package's goldens pin the
-	// maximal kubernetes shape.
-	minimal := filepath.Join(t.TempDir(), "legion.yaml")
-	if err := os.WriteFile(minimal, []byte("project: LEGION\nstate_dir: /var/lib/legion\nadmission_cap: 2\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"), 0o600); err != nil {
-		t.Fatalf("write legion.yaml: %v", err)
-	}
-	cfg, err := config.Load(minimal, func(string) string { return "" })
-	if err != nil {
-		t.Fatalf("config.Load: %v", err)
-	}
-	state.Settings = api.SettingsOf(cfg)
-	state.ControllerLocator = &api.ControllerLocator{Runtime: "kubernetes", External: true, SessionID: "ses_controller", RegisteredAt: admitted.Add(-30 * time.Second)}
-	golden(t, "state-controller-claim.json", state)
 }
 
 // sandboxLocator is one role process in a Sandbox: the Sandbox's name, the pod's uid, the pod's one
@@ -186,14 +153,4 @@ func sandboxLocator(token claim.Token, sandbox, podUID string, generation uint64
 		Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(podUID, generation),
 		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: sandbox, PodUID: podUID, Container: container, Generation: generation},
 	}
-}
-
-// golden pins the state document Project's caller serves: Go writes it (`-update`), and
-// `packages/contracts/src/legion-api.test.ts` parses it through the schema the plugin reads the
-// state with and holds the parse equal to the file. A fixture that differs from what Go now
-// writes is stale (testgolden.Check).
-func golden(t *testing.T, name string, value any) {
-	t.Helper()
-	testgolden.Check(t, filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name), value, *updateGolden,
-		"go test ./internal/projection/ -run Golden -update")
 }

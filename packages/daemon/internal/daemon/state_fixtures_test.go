@@ -173,6 +173,7 @@ func TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds(t *testing.T) {
 		{name: "stage3", file: "state-stage3.json", seed: seedStage3},
 		{name: "operator-claim", file: "state-operator-claim.json", seed: seedOperatorClaim},
 		{name: "last-pause", file: "state-last-pause.json", seed: seedLastPause},
+		{name: "controller-claim", file: "state-controller-claim.json", seed: seedDaemonController},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
