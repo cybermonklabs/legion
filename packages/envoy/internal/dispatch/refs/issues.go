@@ -33,21 +33,20 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // refuseBlockPointers) and the plan of a status change that passes include_parent (api's
 // readStatusChange) are all this query.
 //
-// It binds no visibility predicate and takes no acting person, because every issue of the chain
-// is one every reader of the key's issue may see: a parent is in its child's project (api's
-// validateIssueParent refuses another project's), and an issue node is never reserved for its
-// author (the registry of visibility.go takes the kind by resolvedKind), so each is
-// project-visible, which everyone who may read the project reads. The issue and artifact events
-// above put the chain in a payload every reader of the event gets, and it names no issue hidden
-// from such a reader, while a chain that skipped an issue would route the event short of its
-// root. The rules of a write among its callers - a reparent's cycle refusal, a block pointer's
-// ancestor rule, the status change's plan, the near-copy gate's exclusion of the new issue's
-// chain and the scope a result's check resolves in - need the whole chain too: a rule that
-// skipped an issue it may not see would let a cycle through that issue, or leave an ancestor out
-// of work above an issue in work. The status change's plan moves each ancestor that is not in
-// work into work, so that the parent status rule (R24) holds. It names those ancestors to the
-// caller who asked to move them: its dry run and its answer list them, and its 403 PROJECT_SCOPE
-// names one that is in a project the caller's credential may not write.
+// It binds no visibility predicate and takes no acting person. A parent may be an issue of any
+// project (api's validateIssueParent), a private one included, so the chain can name an issue that
+// a reader of the key's issue may not see. The issue events and the three artifact events above
+// carry the chain to every reader of the event, as an issue's own read and its events' payloads
+// name its parent to every reader of it: leaving an ancestor out for a reader would be one policy
+// for all of those together, and this walk does not make it. A chain that skipped an issue would
+// also route an event short of its root. The rules of a write among its callers - a reparent's
+// cycle refusal, a block pointer's ancestor rule, the status change's plan, the near-copy gate's
+// exclusion of the new issue's chain and the scope a result's check resolves in - need the whole
+// chain too: a rule that skipped an issue it may not see would let a cycle through that issue, or
+// leave an ancestor out of work above an issue in work. The status change's plan moves each
+// ancestor that is not in work into work, so that the parent status rule (R24) holds. It names
+// those ancestors to the caller who asked to move them: its dry run and its answer list them, and
+// its 403 PROJECT_SCOPE names one that is in a project the caller's credential may not write.
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {
